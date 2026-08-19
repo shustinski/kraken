@@ -168,6 +168,82 @@ def is_valid_closed_polygon_vertex_move(points: list[tuple[float, float]], verte
     return True
 
 
+def _three_share_axis(
+    prev_point: tuple[float, float],
+    current_point: tuple[float, float],
+    next_point: tuple[float, float],
+) -> bool:
+    same_x = (
+        abs(prev_point[0] - current_point[0]) < _POINT_EQ_EPS
+        and abs(current_point[0] - next_point[0]) < _POINT_EQ_EPS
+    )
+    same_y = (
+        abs(prev_point[1] - current_point[1]) < _POINT_EQ_EPS
+        and abs(current_point[1] - next_point[1]) < _POINT_EQ_EPS
+    )
+    return same_x or same_y
+
+
+def _dedupe_consecutive_polyline_vertices(
+    points: list[tuple[float, float]],
+    *,
+    closed: bool,
+) -> list[tuple[float, float]]:
+    if not points:
+        return []
+    cleaned: list[tuple[float, float]] = [points[0]]
+    for point in points[1:]:
+        if not _point_equal(cleaned[-1], point):
+            cleaned.append(point)
+    if closed and len(cleaned) >= 2 and _point_equal(cleaned[0], cleaned[-1]):
+        cleaned.pop()
+    return cleaned
+
+
+def collapse_redundant_polyline_vertices(
+    points: list[tuple[float, float]],
+    *,
+    closed: bool = True,
+    min_vertices: int = 3,
+) -> list[tuple[float, float]]:
+    """Drop consecutive duplicates and axis-aligned extra vertices.
+
+    Two neighbors must not share both X and Y. Three neighbors must not share
+    the same X or the same Y, which would leave a point that does not change
+    the axis-aligned outline.
+    """
+
+    pts = _dedupe_consecutive_polyline_vertices(points, closed=closed)
+    floor = max(0, int(min_vertices))
+    while len(pts) > floor:
+        kill: int | None = None
+        if closed:
+            count = len(pts)
+            if count < 3:
+                break
+            for index in range(count):
+                prev_point = pts[(index - 1) % count]
+                current_point = pts[index]
+                next_point = pts[(index + 1) % count]
+                if _point_equal(prev_point, current_point) or _three_share_axis(
+                    prev_point, current_point, next_point
+                ):
+                    kill = index
+                    break
+        else:
+            if len(pts) < 3:
+                break
+            for index in range(1, len(pts) - 1):
+                if _three_share_axis(pts[index - 1], pts[index], pts[index + 1]):
+                    kill = index
+                    break
+        if kill is None:
+            break
+        pts.pop(kill)
+        pts = _dedupe_consecutive_polyline_vertices(pts, closed=closed)
+    return pts
+
+
 def is_valid_open_polyline_last_edge(points: list[tuple[float, float]]) -> bool:
     """After appending the last point, the new edge must not cross earlier non-adjacent edges."""
     m = len(points)

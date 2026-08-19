@@ -30,3 +30,4 @@ htmlcov/
 *.png
 plugins/*/dist/
 plugins/*/build/
+blob_gateway/

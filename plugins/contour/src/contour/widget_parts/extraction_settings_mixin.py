@@ -159,7 +159,7 @@ class WidgetExtractionSettingsMixin:
         ]
         for _mw in (
             "metal_preset_combo",
-            "metal_contrast_bias_spin",
+            "metal_min_contrast_slider",
             "metal_gap_bridge_spin",
             "metal_speckle_removal_spin",
             "metal_epsilon_spin",
@@ -179,6 +179,8 @@ class WidgetExtractionSettingsMixin:
             "metal_min_length_spin",
             "metal_min_points_spin",
             "metal_min_angle_spin",
+            "metal_min_hole_source_contrast_spin",
+            "metal_min_hole_source_contrast_fraction_spin",
             "metal_approximation_checkbox",
             "metal_hierarchy_combo",
             "metal_border_handling_combo",
@@ -464,9 +466,9 @@ class WidgetExtractionSettingsMixin:
                 mp = self.metal_preset_combo.findText(mp_label)
                 if mp >= 0:
                     self.metal_preset_combo.setCurrentIndex(mp)
-                if hasattr(self, "metal_contrast_bias_spin"):
-                    self.metal_contrast_bias_spin.setValue(
-                        int(round(float(getattr(settings, "metal_contrast_bias", 0.0))))
+                if hasattr(self, "metal_min_contrast_slider"):
+                    self.metal_min_contrast_slider.setValue(
+                        int(round(float(getattr(settings, "metal_min_contrast", 50.0))))
                     )
                 if hasattr(self, "metal_gap_bridge_spin"):
                     self.metal_gap_bridge_spin.setValue(int(getattr(settings, "metal_gap_bridge_px", 2) or 2))
@@ -486,6 +488,12 @@ class WidgetExtractionSettingsMixin:
                 self.metal_min_length_spin.setValue(float(getattr(settings, "metal_min_trace_length_px", 8.0) or 8.0))
                 self.metal_min_points_spin.setValue(int(settings.min_points))
                 self.metal_min_angle_spin.setValue(float(settings.min_polygon_angle))
+                self.metal_min_hole_source_contrast_spin.setValue(
+                    float(getattr(settings, "metal_min_hole_source_contrast", 8.0))
+                )
+                self.metal_min_hole_source_contrast_fraction_spin.setValue(
+                    float(getattr(settings, "metal_min_hole_source_contrast_fraction", 0.35))
+                )
                 self.metal_approximation_checkbox.setChecked(
                     bool(getattr(settings, "metal_approximation_enabled", True))
                 )
@@ -753,9 +761,17 @@ class WidgetExtractionSettingsMixin:
             via_display_show_candidates=self.debug_candidates_checkbox.isChecked(),
             metal_structural_pipeline=(raw_rec == "conductors"),
             metal_preset=self._current_metal_preset_key() if hasattr(self, "metal_preset_combo") else "standard",
-            metal_contrast_bias=float(self.metal_contrast_bias_spin.value())
-            if hasattr(self, "metal_contrast_bias_spin")
+            metal_min_contrast=float(self.metal_min_contrast_slider.value())
+            if hasattr(self, "metal_min_contrast_slider")
             else 0.0,
+            metal_min_hole_source_contrast=float(self.metal_min_hole_source_contrast_spin.value())
+            if hasattr(self, "metal_min_hole_source_contrast_spin")
+            else 8.0,
+            metal_min_hole_source_contrast_fraction=float(
+                self.metal_min_hole_source_contrast_fraction_spin.value()
+            )
+            if hasattr(self, "metal_min_hole_source_contrast_fraction_spin")
+            else 0.35,
             metal_segmentation_strategy="legacy_otsu",
             metal_gap_bridge_px=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
@@ -856,6 +872,7 @@ class WidgetExtractionSettingsMixin:
             # "No extraction" disables recognition only; existing imported or
             # manually edited vectors remain part of the editor overlay.
             self.polygon_editor.set_polygon_overlays_visible(True)
+            self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
         self.polygon_editor.set_debug_candidates([])
         if hasattr(self, "_update_extraction_profile_controls_state"):
             self._update_extraction_profile_controls_state()
@@ -936,8 +953,8 @@ class WidgetExtractionSettingsMixin:
             ix = self.metal_preset_combo.findText(label)
             if ix >= 0:
                 self.metal_preset_combo.setCurrentIndex(ix)
-        if hasattr(self, "metal_contrast_bias_spin"):
-            self.metal_contrast_bias_spin.setValue(int(round(defaults.metal_contrast_bias)))
+        if hasattr(self, "metal_min_contrast_slider"):
+            self.metal_min_contrast_slider.setValue(int(round(defaults.metal_min_contrast)))
         if hasattr(self, "metal_gap_bridge_spin"):
             self.metal_gap_bridge_spin.setValue(int(defaults.metal_gap_bridge_px))
         if hasattr(self, "metal_speckle_removal_spin"):
@@ -965,6 +982,12 @@ class WidgetExtractionSettingsMixin:
             self.metal_min_points_spin.setValue(int(defaults.min_points))
         if hasattr(self, "metal_min_angle_spin"):
             self.metal_min_angle_spin.setValue(float(defaults.min_polygon_angle))
+        if hasattr(self, "metal_min_hole_source_contrast_spin"):
+            self.metal_min_hole_source_contrast_spin.setValue(defaults.metal_min_hole_source_contrast)
+        if hasattr(self, "metal_min_hole_source_contrast_fraction_spin"):
+            self.metal_min_hole_source_contrast_fraction_spin.setValue(
+                defaults.metal_min_hole_source_contrast_fraction
+            )
         if hasattr(self, "metal_approximation_checkbox"):
             self.metal_approximation_checkbox.setChecked(bool(defaults.metal_approximation_enabled))
         if hasattr(self, "metal_hierarchy_combo"):

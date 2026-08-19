@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QPoint, QPointF, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -68,7 +68,7 @@ def test_legacy_metal_settings_migration() -> None:
     migrated = migrate_legacy_metal_settings(
         {"metal_sensitivity_0_100": 77, "metal_sensitivity": "low", "metal_segmentation_method": "otsu"}
     )
-    assert "metal_contrast_bias" in migrated
+    assert "metal_min_contrast" in migrated
     assert migrated["metal_segmentation_strategy"] == "auto"
     settings = ContourExtractionSettings.from_dict(migrated)
     assert settings.metal_segmentation_strategy == "auto"
@@ -507,6 +507,62 @@ def test_contact_template_click_explains_template_number_and_similarity(
         assert "Оценка:" not in shown[0]
         assert "Округлость:" not in shown[0]
         assert "Причина:" not in shown[0]
+    finally:
+        widget.close()
+        widget.deleteLater()
+
+
+def test_conductor_click_shows_complete_geometry_properties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    widget = PolygonExtractionWidget()
+    try:
+        widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("conductors"))
+        polygon = PolygonData(
+            id=17,
+            points=[(10, 10), (30, 10), (30, 20), (10, 20)],
+            category="conductor",
+            shape_hint="polygon",
+            recognition_score=92.5,
+        )
+        widget._workspace._current_state = ImageProcessingState(
+            image_path="sample.png",
+            source_image=np.zeros((40, 40), dtype=np.uint8),
+            polygons=[polygon],
+            debug_candidates=[],
+        )
+        widget.polygon_editor.set_polygons([polygon])
+        widget.polygon_editor.set_via_debug_inspection_enabled(widget._via_debug_inspection_enabled())
+        shown: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            widget,
+            "_show_nonblocking_via_debug_message",
+            lambda title, message: shown.append((str(title), str(message))),
+        )
+
+        QTest.mouseClick(
+            widget.polygon_editor.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            widget.polygon_editor.mapFromScene(QPointF(15.0, 15.0)),
+        )
+        app.processEvents()
+
+        assert widget._via_debug_inspection_enabled()
+        assert len(shown) == 1
+        title, message = shown[0]
+        assert title == "Свойства контура"
+        assert "ID: 17" in message
+        assert "Количество точек: 4" in message
+        assert "Площадь: 200,00 px²" in message
+        assert "Периметр: 60,00 px" in message
+        assert "Длина: 20,00 px" in message
+        assert "Ширина: 10,00 px" in message
+        assert "Ориентация:" in message
+        assert "Округлость:" in message
+        assert "Выпуклость:" in message
+        assert "Оценка распознавания: 92,5" in message
     finally:
         widget.close()
         widget.deleteLater()

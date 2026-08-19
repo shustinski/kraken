@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import sin
 from unittest.mock import patch
 
 from shapely import unary_union
@@ -17,6 +18,7 @@ from contour.graphics.brush_vector import (
     polygon_equivalent_preserved,
     region_geometry,
     shapely_to_polygon_data_list,
+    simplify_polygonal_geometry,
     tool_geometry,
 )
 
@@ -50,6 +52,32 @@ def test_sparse_points_stroke_fills_gap_with_swept_geometry() -> None:
 
     # Midpoint must be inside the swept stroke footprint.
     assert sparse.buffer(1e-7).contains(Point(150.0, 0.0))
+
+
+def test_dense_freehand_stroke_simplifies_committed_vertices() -> None:
+    points = [(float(x_coord), 8.0 if x_coord % 4 == 0 else 0.0) for x_coord in range(0, 401, 2)]
+    stroke = brush_stroke_geometry(points, 16.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    merged = unary_union(stroke)
+    raw_ring = list(merged.exterior.coords)
+    raw_count = max(0, len(raw_ring) - 1)
+    simplified = simplify_polygonal_geometry(stroke)
+    polys = shapely_to_polygon_data_list(simplified)
+    outer = next(polygon for polygon in polys if not polygon.is_hole)
+    committed_area = sum(abs(float(polygon.area)) * (-1.0 if polygon.is_hole else 1.0) for polygon in polys)
+
+    assert raw_count > 100
+    assert len(outer.points) < raw_count * 0.5
+    assert abs(committed_area - float(merged.area)) <= max(25.0, 0.04 * float(merged.area))
+
+
+def test_shapely_conversion_does_not_reshape_stroke_without_tool_simplify() -> None:
+    points = [(float(x_coord), 40.0 + 25.0 * sin(x_coord / 7.0)) for x_coord in range(0, 360)]
+    stroke = brush_stroke_geometry(points, 16.0, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+    converted = shapely_to_polygon_data_list(stroke)
+    simplified = shapely_to_polygon_data_list(simplify_polygonal_geometry(stroke))
+    assert converted
+    assert simplified
+    assert len(converted[0].points) > len(simplified[0].points)
 
 
 def test_straight_brush_stroke_does_not_emit_collinear_side_vertices() -> None:

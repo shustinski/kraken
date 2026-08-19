@@ -7,7 +7,7 @@ name = "krona"
 dynamic = ["version"]
 description = "EDIF and netlist viewer plugin for Kraken."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "kraken",
     "PyQt6>=6.6",

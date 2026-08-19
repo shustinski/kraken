@@ -8,9 +8,12 @@ from shapely import BufferCapStyle, BufferJoinStyle, make_valid, unary_union
 from shapely.geometry import LineString, Polygon
 from shapely.geometry.base import BaseGeometry
 
+from ..application.polygon_antialiasing import _simplify_closed_ring
 from ..domain import PolygonData, compute_polygon_metrics, integer_points
+from ..domain.polygon_ring import collapse_redundant_polyline_vertices
 
 QUAD_SEGS_BRUSH_DEFAULT = 8
+BRUSH_RING_SIMPLIFY_EPSILON_PX = 1.0
 
 
 def densify_polyline(points: list[tuple[float, float]], max_segment_length: float) -> list[tuple[float, float]]:
@@ -335,6 +338,34 @@ def geometry_validation_message(geom: BaseGeometry) -> str | None:
     return None
 
 
+def _simplify_committed_ring(coords: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    simplified = _simplify_closed_ring(coords, BRUSH_RING_SIMPLIFY_EPSILON_PX)
+    if len(simplified) < 3:
+        return coords
+    collapsed = collapse_redundant_polyline_vertices(
+        integer_points(simplified),
+        closed=True,
+        min_vertices=3,
+    )
+    return collapsed if len(collapsed) >= 3 else coords
+
+
+def simplify_polygonal_geometry(geom: BaseGeometry) -> BaseGeometry:
+    """Douglas–Peucker simplify tool rings without remeshing an existing boolean union."""
+
+    polygons = shapely_to_polygon_data_list(geom)
+    if not polygons:
+        return Polygon()
+    for polygon in polygons:
+        polygon.points = _simplify_committed_ring(polygon.points)
+        area, perimeter, bbox = compute_polygon_metrics(polygon.points)
+        polygon.area = float(area)
+        polygon.perimeter = float(perimeter)
+        polygon.bbox = bbox
+    by_id = {polygon.id: polygon for polygon in polygons}
+    return region_geometry(by_id, [polygon.id for polygon in polygons])
+
+
 def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
     polygons_out: list[PolygonData] = []
     geom = unary_union(make_valid(extract_polygonal_union(result)))
@@ -350,6 +381,7 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
 
     def push_polygon(poly: Polygon) -> None:
         coords = integer_points([(float(x), float(y)) for x, y in poly.exterior.coords[:-1]])
+        coords = collapse_redundant_polyline_vertices(coords, closed=True, min_vertices=3)
         if not ring_is_valid_for_polygon(coords):
             return
 
@@ -370,6 +402,7 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
 
         for interior_ring in poly.interiors:
             hcoords = integer_points([(float(x), float(y)) for x, y in interior_ring.coords[:-1]])
+            hcoords = collapse_redundant_polyline_vertices(hcoords, closed=True, min_vertices=3)
             if not ring_is_valid_for_polygon(hcoords):
                 continue
 

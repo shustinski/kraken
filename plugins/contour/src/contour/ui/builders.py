@@ -52,8 +52,10 @@ from ..application.processing import (
     VIA_SIZE_MODE_FIXED,
     VIA_SIZE_MODE_RANGE,
 )
+from ..application.vector_geometry_postprocess import VectorGeometrySettings
 from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from ..gamification.ui import GamificationPanel
+from ..graphics.tools import MIN_MANUAL_STROKE_WIDTH_PX
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
 from .frame_matrix_view import FrameMatrixGraphicsView
 from .frame_path_list_model import FramePathListView
@@ -295,16 +297,17 @@ def build_paths_tab(self) -> QWidget:
     self._configure_compact_form(vg_form)
     self.vector_geom_clip_checkbox = QCheckBox("Обрезать по границе кадра и удалить внешние объекты")
     self.vector_geom_clip_checkbox.setChecked(True)
+    _vector_geom_defaults = VectorGeometrySettings()
     self.vector_geom_min_outer_spin = QDoubleSpinBox()
     self.vector_geom_min_outer_spin.setRange(0.0, 1_000_000.0)
     self.vector_geom_min_outer_spin.setDecimals(3)
     self.vector_geom_min_outer_spin.setSingleStep(1.0)
-    self.vector_geom_min_outer_spin.setValue(9.0)
+    self.vector_geom_min_outer_spin.setValue(_vector_geom_defaults.min_outer_area_px2)
     self.vector_geom_min_hole_spin = QDoubleSpinBox()
     self.vector_geom_min_hole_spin.setRange(0.0, 1_000_000.0)
     self.vector_geom_min_hole_spin.setDecimals(3)
     self.vector_geom_min_hole_spin.setSingleStep(1.0)
-    self.vector_geom_min_hole_spin.setValue(0.0)
+    self.vector_geom_min_hole_spin.setValue(_vector_geom_defaults.min_hole_area_to_remove_px2)
     self.vector_geom_merge_checkbox = QCheckBox("Объединять пересекающиеся полигоны после перемещения")
     self.vector_geom_merge_checkbox.setChecked(True)
     self.vector_geom_spike_angle_spin = QDoubleSpinBox()
@@ -444,7 +447,6 @@ def build_files_tab(self) -> QWidget:
     )
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    self.thumbnail_grid.itemClicked.connect(self._on_thumbnail_item_clicked)
     self.thumbnail_grid.frameNavigationRequested.connect(self._on_frame_navigation_requested)
     self.thumbnail_grid.installEventFilter(self)
     self.thumbnail_grid.viewport().installEventFilter(self)
@@ -1615,9 +1617,20 @@ def build_extraction_tab(self) -> QWidget:
     _metal_preset_layout.addWidget(self.delete_metal_preset_button, 1, 2)
     self._refresh_metal_preset_combo()
 
-    self.metal_contrast_bias_spin = QSpinBox()
-    self.metal_contrast_bias_spin.setRange(-50, 50)
-    self.metal_contrast_bias_spin.setValue(0)
+    self.metal_min_contrast_slider = QSlider(Qt.Orientation.Horizontal)
+    self.metal_min_contrast_slider.setRange(1, 255)
+    self.metal_min_contrast_slider.setPageStep(5)
+    self.metal_min_contrast_slider.setTickInterval(25)
+    self.metal_min_contrast_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+    self.metal_min_contrast_slider.setValue(50)
+    self.metal_min_contrast_value_label = QLabel("50")
+    self.metal_min_contrast_value_label.setMinimumWidth(28)
+    self.metal_min_contrast_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    self.metal_min_contrast_widget = QWidget()
+    _metal_contrast_layout = QHBoxLayout(self.metal_min_contrast_widget)
+    _metal_contrast_layout.setContentsMargins(0, 0, 0, 0)
+    _metal_contrast_layout.addWidget(self.metal_min_contrast_slider, 1)
+    _metal_contrast_layout.addWidget(self.metal_min_contrast_value_label)
 
     self.metal_gap_bridge_spin = QSpinBox()
     self.metal_gap_bridge_spin.setRange(0, 25)
@@ -1649,7 +1662,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_epsilon_spin.setValue(2.0)
 
     _metal_basic_form.addRow("Пресет", self.metal_preset_widget)
-    _metal_basic_form.addRow("Контраст проводника", self.metal_contrast_bias_spin)
+    _metal_basic_form.addRow("Мин. контраст проводника", self.metal_min_contrast_widget)
     _metal_basic_form.addRow("Сшивка разрывов, px", self.metal_gap_bridge_spin)
     _metal_basic_form.addRow("Удаление шума (opening), px", self.metal_speckle_removal_spin)
     _metal_basic_form.addRow("Ширина проводника, px", self.metal_width_row)
@@ -1725,6 +1738,15 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_min_angle_spin = QDoubleSpinBox()
     self.metal_min_angle_spin.setRange(0.0, 180.0)
     self.metal_min_angle_spin.setValue(30.0)
+    self.metal_min_hole_source_contrast_spin = QDoubleSpinBox()
+    self.metal_min_hole_source_contrast_spin.setRange(0.0, 255.0)
+    self.metal_min_hole_source_contrast_spin.setDecimals(1)
+    self.metal_min_hole_source_contrast_spin.setValue(8.0)
+    self.metal_min_hole_source_contrast_fraction_spin = QDoubleSpinBox()
+    self.metal_min_hole_source_contrast_fraction_spin.setRange(0.0, 1.0)
+    self.metal_min_hole_source_contrast_fraction_spin.setDecimals(2)
+    self.metal_min_hole_source_contrast_fraction_spin.setSingleStep(0.05)
+    self.metal_min_hole_source_contrast_fraction_spin.setValue(0.35)
     self.metal_approximation_checkbox = QCheckBox("Режим аппроксимации контуров")
     self.metal_approximation_checkbox.setChecked(True)
     self.metal_hierarchy_combo = QComboBox()
@@ -1747,6 +1769,11 @@ def build_extraction_tab(self) -> QWidget:
     _metal_adv_form.addRow("Режим иерархии", self.metal_hierarchy_combo)
     _metal_adv_form.addRow("Мин. площадь отверстия для заливки, px²", self.min_inner_hole_area_spin)
     self.min_inner_hole_area_label_widget = _metal_adv_form.labelForField(self.min_inner_hole_area_spin)
+    _metal_adv_form.addRow("Мин. контраст отверстия", self.metal_min_hole_source_contrast_spin)
+    _metal_adv_form.addRow(
+        "Доля контраста классов для отверстия",
+        self.metal_min_hole_source_contrast_fraction_spin,
+    )
     _metal_adv_form.addRow("Обработка объектов на границе", self.metal_border_handling_combo)
     _adv_box_l = QVBoxLayout()
     _adv_box_l.setContentsMargins(8, 4, 8, 4)
@@ -1770,7 +1797,10 @@ def build_extraction_tab(self) -> QWidget:
     self.apply_metal_preset_button.clicked.connect(self._apply_selected_metal_preset)
     self.save_metal_preset_button.clicked.connect(self._save_current_metal_preset)
     self.delete_metal_preset_button.clicked.connect(self._delete_selected_metal_preset)
-    self.metal_contrast_bias_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_min_contrast_slider.valueChanged.connect(
+        lambda value: self.metal_min_contrast_value_label.setText(str(value))
+    )
+    self.metal_min_contrast_slider.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_gap_bridge_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_speckle_removal_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -1794,6 +1824,8 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_min_length_spin,
         self.metal_min_points_spin,
         self.metal_min_angle_spin,
+        self.metal_min_hole_source_contrast_spin,
+        self.metal_min_hole_source_contrast_fraction_spin,
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
@@ -2125,6 +2157,7 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_mode_combo = QComboBox()
     self.polygon_mode_combo.addItem(self._mode_text("polygon_points"), PolygonCreateMode.POINTS)
     self.polygon_mode_combo.addItem(self._mode_text("polygon_rectangle"), PolygonCreateMode.RECTANGLE)
+    self.polygon_mode_combo.setCurrentIndex(self.polygon_mode_combo.findData(PolygonCreateMode.RECTANGLE))
     self.polygon_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     )
@@ -2142,12 +2175,13 @@ def build_editor_toolbar(self) -> QWidget:
     self.brush_mode_combo = QComboBox()
     self.brush_mode_combo.addItem(self._mode_text("brush_freeform"), BrushMode.FREEFORM)
     self.brush_mode_combo.addItem(self._mode_text("brush_45deg"), BrushMode.ANGLED)
+    self.brush_mode_combo.setCurrentIndex(self.brush_mode_combo.findData(BrushMode.ANGLED))
     self.brush_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
     )
     self.brush_size_label = QLabel("Толщина" if self._ui_language == "ru" else "Width")
     self.brush_size_spin = QSpinBox()
-    self.brush_size_spin.setRange(1, 256)
+    self.brush_size_spin.setRange(int(MIN_MANUAL_STROKE_WIDTH_PX), 256)
     self.brush_size_spin.setValue(12)
     self.brush_size_spin.valueChanged.connect(lambda value: self.polygon_editor.set_brush_thickness(float(value)))
     _brush_blk.addWidget(self.brush_mode_label)
@@ -2161,7 +2195,7 @@ def build_editor_toolbar(self) -> QWidget:
     _trace_blk.setSpacing(6)
     self.trace_width_label = QLabel("Ширина" if self._ui_language == "ru" else "Width")
     self.trace_width_spin = QSpinBox()
-    self.trace_width_spin.setRange(1, 256)
+    self.trace_width_spin.setRange(int(MIN_MANUAL_STROKE_WIDTH_PX), 256)
     self.trace_width_spin.setValue(12)
     self.trace_width_spin.valueChanged.connect(lambda value: self.polygon_editor.set_trace_width(float(value)))
     _trace_blk.addWidget(self.trace_width_label)
@@ -2194,6 +2228,7 @@ def build_editor_toolbar(self) -> QWidget:
     self.delete_vertex_mode_combo = QComboBox()
     self.delete_vertex_mode_combo.addItem(self._mode_text("delete_single"), DeleteVertexMode.SINGLE)
     self.delete_vertex_mode_combo.addItem(self._mode_text("delete_area"), DeleteVertexMode.AREA)
+    self.delete_vertex_mode_combo.setCurrentIndex(self.delete_vertex_mode_combo.findData(DeleteVertexMode.AREA))
     self.delete_vertex_mode_combo.currentIndexChanged.connect(
         lambda _index: self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
     )
@@ -2319,6 +2354,7 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
     self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))
+    self.polygon_editor.set_trace_width(float(self.trace_width_spin.value()))
     self._sync_editor_via_size()
     self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
     self.polygon_editor.set_antialias_grade(int(self.antialias_grade_spin.value()))

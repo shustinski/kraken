@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QRectF
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt
+from PyQt6.QtGui import QMouseEvent, QPixmap
 from PyQt6.QtWidgets import QListWidgetItem
 
 import contour.application.frame_lod as frame_lod_module
@@ -72,6 +72,49 @@ def test_frame_matrix_uses_only_three_most_zoomed_out_lods(_qt_application) -> N
     view.setPyramidFrameStore(store)
 
     assert view.navigatorLods() == (2, 3, 4)
+
+
+def test_frame_matrix_middle_mouse_drag_pans_without_selecting(_qt_application) -> None:
+    view = FrameMatrixGraphicsView()
+    view.resize(200, 160)
+    view.scene().setSceneRect(0.0, 0.0, 1200.0, 900.0)
+    view.show()
+    _qt_application.processEvents()
+    view.horizontalScrollBar().setValue(400)
+    view.verticalScrollBar().setValue(300)
+    clicked: list[object] = []
+    view.frameNavigationRequested.connect(clicked.append)
+
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(100.0, 80.0),
+        Qt.MouseButton.MiddleButton,
+        Qt.MouseButton.MiddleButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(70.0, 50.0),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.MiddleButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    release = QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        QPointF(70.0, 50.0),
+        Qt.MouseButton.MiddleButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    view.mousePressEvent(press)
+    view.mouseMoveEvent(move)
+    view.mouseReleaseEvent(release)
+
+    assert view.horizontalScrollBar().value() == 430
+    assert view.verticalScrollBar().value() == 330
+    assert view._middle_pan_active is False
+    assert clicked == []
 
 
 def test_frame_matrix_store_setup_does_not_decode_source_image(_qt_application, tmp_path, monkeypatch) -> None:

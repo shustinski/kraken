@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+# Brush and trace-pen width in image pixels. 1 px is too thin to author reliably.
+MIN_MANUAL_STROKE_WIDTH_PX = 2.0
+
 
 class EditorTool(StrEnum):
     SELECT = "select"

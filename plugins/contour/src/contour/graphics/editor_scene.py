@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QGraphicsView,
 )
 from shapely import make_valid, unary_union
+from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry import box as shapely_box
 
 from ..adapters.qt.image_conversion import cv_to_qimage
@@ -31,15 +32,16 @@ from ..application.polygon_antialiasing import antialias_polygons
 from ..application.processing import DisplaySettings, normalize_via_display_mode
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    collapse_redundant_vertices_in_polygons,
     postprocess_after_editor_mutation,
     postprocess_changed_polygon_edit,
+    union_after_removing_polygon_ids,
 )
 from ..commands import (
     AddPolygonCommand,
     AddPolygonsCommand,
     AddVertexCommand,
     DeletePolygonCommand,
-    DeletePolygonsCommand,
     DeleteVertexCommand,
     ReplacePolygonSetCommand,
 )
@@ -55,13 +57,15 @@ from .brush_vector import (
     QUAD_SEGS_BRUSH_DEFAULT,
     apply_boolean,
     bbox_intersects_geom_bounds,
-    densify_chain_with_new_vertex,
+    extract_polygonal_union,
     polygon_equivalent_preserved,
     polygon_footprint_geom,
     region_geometry,
     shapely_to_polygon_data_list,
+    simplify_polygonal_geometry,
     tool_geometry,
 )
+from ..domain.polygon_ring import collapse_redundant_polyline_vertices, is_valid_closed_polygon_ring
 from .geometry import (
     _bbox_from_points,
     _bboxes_intersect,
@@ -71,7 +75,6 @@ from .geometry import (
     _polygon_data_rect,
     _smallest_containing_polygon,
     _stable_object_color,
-    is_valid_closed_polygon_ring,
     is_valid_open_polyline_last_edge,
     resolve_conductor_hover_target_id,
 )
@@ -1288,12 +1291,19 @@ class PolygonEditorScene(QGraphicsScene):
         target_polygons = [self._polygons[target_id].clone() for target_id in delete_ids if target_id in self._polygons]
         if not target_polygons:
             return False
-        self.undo_stack.push(DeletePolygonsCommand(self, target_polygons))
+        before = self.get_polygons()
+        remaining = [polygon.clone() for polygon in before if polygon.id not in set(delete_ids)]
+        remaining = union_after_removing_polygon_ids(remaining, set(delete_ids))
+        self.undo_stack.push(ReplacePolygonSetCommand(self, before, remaining, "Delete polygon"))
         return True
 
     def _delete_polygon_ids_with_descendants(self, target_ids: list[int | None]) -> list[int]:
         delete_ids: set[int] = set()
-        pending = [target_id for target_id in target_ids if target_id in self._polygons]
+        pending = [
+            target_id
+            for target_id in target_ids
+            if target_id in self._polygons and not self._polygons[target_id].is_hole
+        ]
         while pending:
             current_id = pending.pop()
             if current_id is None or current_id in delete_ids or current_id not in self._polygons:
@@ -1304,6 +1314,9 @@ class PolygonEditorScene(QGraphicsScene):
                 for child_id in self._polygon_child_ids_by_parent.get(current_id, ())
                 if child_id not in delete_ids
             )
+        for target_id in target_ids:
+            if target_id in self._polygons and self._polygons[target_id].is_hole:
+                delete_ids.add(target_id)
         return sorted(delete_ids)
 
     def selected_polygons(self) -> list[PolygonData]:
@@ -1601,6 +1614,9 @@ class PolygonEditorScene(QGraphicsScene):
         insert_at = max(0, min(len(points), insert_index))
         trial = list(points)
         trial.insert(insert_at, new_point)
+        collapsed = collapse_redundant_polyline_vertices(trial, closed=True, min_vertices=3)
+        if len(collapsed) <= len(points):
+            return False
         if not is_valid_closed_polygon_ring(trial):
             self.warn_invalid_polygon_geometry()
             return False
@@ -1633,6 +1649,14 @@ class PolygonEditorScene(QGraphicsScene):
             return False
         self.undo_stack.push(DeleteVertexCommand(self, polygon_id, vertex_index, polygon.points[vertex_index]))
         after_delete = self.get_polygons()
+        collapsed_after = collapse_redundant_vertices_in_polygons(after_delete)
+        if [tuple(polygon.points) for polygon in after_delete] != [
+            tuple(polygon.points) for polygon in collapsed_after
+        ]:
+            self.undo_stack.push(
+                ReplacePolygonSetCommand(self, after_delete, collapsed_after, "Remove extra vertices")
+            )
+            after_delete = self.get_polygons()
         processed, accepted, changed = postprocess_changed_polygon_edit(
             after_delete,
             self._vector_geometry_settings,
@@ -1648,7 +1672,13 @@ class PolygonEditorScene(QGraphicsScene):
         return True
 
     def polygon_points(self, polygon_id: int) -> list[tuple[float, float]]:
-        return integer_points(self._polygons[polygon_id].points)
+        polygon = self._polygons.get(polygon_id)
+        if polygon is None:
+            return []
+        return integer_points(polygon.points)
+
+    def has_polygon(self, polygon_id: int | None) -> bool:
+        return polygon_id is not None and polygon_id in self._polygons
 
     def preview_vertex_move(self, polygon_id: int, vertex_index: int, point: QPointF) -> None:
         self._set_vertex_internal(polygon_id, vertex_index, integer_point((point.x(), point.y())), emit_signal=False)
@@ -1663,12 +1693,12 @@ class PolygonEditorScene(QGraphicsScene):
         self._update_pending_path()
 
     def append_brush_vertex(self, scene_pos: QPointF, brush_diameter: float) -> None:
+        del brush_diameter
         nx, ny = integer_point((scene_pos.x(), scene_pos.y()))
-        spacing = max(2.0, float(brush_diameter) * 0.48)
         # Screen-pixel spacing is enforced in the view; keep only exact duplicates here.
         if self._pending_points and hypot(nx - self._pending_points[-1][0], ny - self._pending_points[-1][1]) < 1e-6:
             return
-        self._pending_points = densify_chain_with_new_vertex(self._pending_points, (nx, ny), max_segment_length=spacing)
+        self._pending_points.append((nx, ny))
         self._update_pending_path()
 
     def replace_pending_points(self, points: list[tuple[float, float]]) -> None:
@@ -1684,10 +1714,15 @@ class PolygonEditorScene(QGraphicsScene):
         ):
             return
         trial = [*self._pending_points, point]
-        if not is_valid_open_polyline_last_edge(trial):
+        if not self._pending_polyline_for_brush and not is_valid_open_polyline_last_edge(trial):
             self.warn_invalid_polygon_geometry()
             return
         self._pending_points.append(point)
+        self._pending_points = collapse_redundant_polyline_vertices(
+            self._pending_points,
+            closed=False,
+            min_vertices=2,
+        )
         self._update_pending_path()
 
     def update_pending_cursor(self, scene_pos: QPointF) -> None:
@@ -1707,6 +1742,11 @@ class PolygonEditorScene(QGraphicsScene):
         if not self.can_add_polygon():
             self.cancel_pending_polygon()
             return False
+        self._pending_points = collapse_redundant_polyline_vertices(
+            self._pending_points,
+            closed=True,
+            min_vertices=3,
+        )
         acceptable, reason = polygon_commit_acceptability(self._pending_points)
         if not acceptable:
             if reason == POLYGON_COMMIT_TOO_FEW_VERTICES:
@@ -2140,31 +2180,61 @@ class PolygonEditorScene(QGraphicsScene):
         normalized = rect.normalized()
         if normalized.width() < 1.0 and normalized.height() < 1.0:
             return 0
-        # Area deletion applies to every touched polygon, not only the selected one.
-        candidate_ids = sorted(self._polygons)
+        min_ring_vertices = 3
+        remaining_by_id: dict[int, list[tuple[float, float]]] = {}
+        for polygon_id in sorted(self._polygons):
+            polygon = self._polygons[polygon_id]
+            remaining_points = [
+                (float(x_coord), float(y_coord))
+                for x_coord, y_coord in polygon.points
+                if not normalized.contains(QPointF(x_coord, y_coord))
+            ]
+            if len(remaining_points) == len(polygon.points):
+                continue
+            remaining_by_id[polygon_id] = collapse_redundant_polyline_vertices(
+                remaining_points,
+                closed=True,
+                min_vertices=0,
+            )
+
+        ids_to_delete: set[int] = set()
+        for polygon_id, remaining_points in remaining_by_id.items():
+            if len(remaining_points) >= min_ring_vertices:
+                continue
+            polygon = self._polygons[polygon_id]
+            if polygon.is_hole:
+                ids_to_delete.add(polygon_id)
+            else:
+                ids_to_delete.update(self._polygon_family_ids(polygon_id))
+
+        point_updates = [
+            (polygon_id, remaining_points)
+            for polygon_id, remaining_points in remaining_by_id.items()
+            if polygon_id not in ids_to_delete and len(remaining_points) >= min_ring_vertices
+        ]
+        if not point_updates and not ids_to_delete:
+            return 0
+
+        before = self.get_polygons()
+        remaining: list[PolygonData] = []
         deleted = 0
-        self.undo_stack.beginMacro("Delete vertices in area")
-        try:
-            for polygon_id in candidate_ids:
-                polygon = self._polygons.get(polygon_id)
-                if polygon is None:
-                    continue
-                matching_indices = [
-                    index
-                    for index, (x_coord, y_coord) in enumerate(polygon.points)
-                    if normalized.contains(QPointF(x_coord, y_coord))
-                ]
-                remaining = len(polygon.points)
-                for vertex_index in reversed(matching_indices):
-                    if remaining <= 3:
-                        break
-                    self.undo_stack.push(
-                        DeleteVertexCommand(self, polygon_id, vertex_index, polygon.points[vertex_index])
-                    )
-                    remaining -= 1
-                    deleted += 1
-        finally:
-            self.undo_stack.endMacro()
+        remaining_lookup = dict(point_updates)
+        for polygon in before:
+            if polygon.id in ids_to_delete:
+                deleted += len(polygon.points)
+                continue
+            clone = polygon.clone()
+            if clone.id in remaining_lookup:
+                updated_points = remaining_lookup[clone.id]
+                deleted += len(clone.points) - len(updated_points)
+                clone.points = updated_points
+                area, perimeter, bbox = compute_polygon_metrics(clone.points)
+                clone.area = float(area)
+                clone.perimeter = float(perimeter)
+                clone.bbox = bbox
+            remaining.append(clone)
+        remaining = union_after_removing_polygon_ids(remaining, ids_to_delete)
+        self.undo_stack.push(ReplacePolygonSetCommand(self, before, remaining, "Delete vertices in area"))
         return deleted
 
     def _add_or_merge_polygon(self, polygon: PolygonData, label: str = "Add polygon") -> None:
@@ -2309,6 +2379,8 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> tuple[list[PolygonData] | None, str | None]:
         try:
             brush_tool = tool_geometry(points, thickness, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+            if thickness is not None:
+                brush_tool = simplify_polygonal_geometry(brush_tool)
         except Exception as exc:
             return None, f"{type(exc).__name__}: {exc}"
         try:
@@ -2474,13 +2546,37 @@ class PolygonEditorScene(QGraphicsScene):
     def _tool_preview_path(self, points: list[tuple[float, float]], thickness: float) -> QPainterPath:
         path = QPainterPath()
         try:
-            polygons = shapely_to_polygon_data_list(
-                tool_geometry(points, float(thickness), quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+            geom = extract_polygonal_union(
+                make_valid(tool_geometry(points, float(thickness), quad_segs=QUAD_SEGS_BRUSH_DEFAULT))
             )
         except Exception:
             return path
-        for polygon in polygons:
-            path.addPath(_display_path_for_polygon(polygon, self._display_settings))
+        if geom.is_empty:
+            return path
+
+        def add_ring(coords: object) -> None:
+            ring_points = list(coords)
+            if len(ring_points) < 2:
+                return
+            ring = QPainterPath()
+            start_x, start_y = float(ring_points[0][0]), float(ring_points[0][1])
+            ring.moveTo(start_x, start_y)
+            for x_coord, y_coord in ring_points[1:]:
+                ring.lineTo(float(x_coord), float(y_coord))
+            ring.closeSubpath()
+            path.addPath(ring)
+
+        def add_polygon(poly: ShapelyPolygon) -> None:
+            add_ring(poly.exterior.coords)
+            for interior in poly.interiors:
+                add_ring(interior.coords)
+
+        geom_type = getattr(geom, "geom_type", "")
+        if geom_type == "Polygon":
+            add_polygon(geom)
+        elif geom_type == "MultiPolygon":
+            for part in geom.geoms:
+                add_polygon(part)
         path.setFillRule(Qt.FillRule.OddEvenFill)
         return path
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from ..domain import compute_polygon_metrics
 from ._imports import *  # noqa: F403
 
 
@@ -39,7 +40,13 @@ class WidgetDebugMixin:
         current_state = self._workspace.current_state
         candidates = list(current_state.debug_candidates) if current_state is not None else []
         is_via_like = (polygon.shape_hint or "") == "box" or (polygon.category or "") == "via"
-        title = self._tr("debug.via_title" if is_via_like else "debug.polygon_title")
+        if not is_via_like:
+            title = "Свойства контура" if self._ui_language == "ru" else "Contour properties"
+            message = "\n".join(self._conductor_property_lines(polygon))
+            self._append_log(message.replace("\n", " | "))
+            self._show_nonblocking_via_debug_message(title, message)
+            return
+        title = self._tr("debug.via_title")
         is_manual_via = bool(is_via_like and polygon.recognition_score is None)
         candidate = self._best_debug_candidate_for_polygon(polygon, candidates)
         if candidate is None and is_via_like:
@@ -101,6 +108,88 @@ class WidgetDebugMixin:
         message = "\n".join(lines)
         self._append_log(message.replace("\n", " | "))
         self._show_nonblocking_via_debug_message(title, message)
+
+    def _conductor_property_lines(self, polygon: PolygonData) -> list[str]:
+        points = [(float(x_coord), float(y_coord)) for x_coord, y_coord in polygon.points]
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        contour = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+        if len(points) >= 3:
+            (center_x, center_y), (rect_width, rect_height), raw_angle = cv2.minAreaRect(contour)
+            length = max(float(rect_width), float(rect_height))
+            width = min(float(rect_width), float(rect_height))
+            orientation = float(raw_angle) if rect_width >= rect_height else float(raw_angle) + 90.0
+            orientation %= 180.0
+            hull_area = abs(float(cv2.contourArea(cv2.convexHull(contour))))
+        else:
+            center_x = float(np.mean([point[0] for point in points])) if points else 0.0
+            center_y = float(np.mean([point[1] for point in points])) if points else 0.0
+            length = max(float(bbox[2]), float(bbox[3]))
+            width = min(float(bbox[2]), float(bbox[3]))
+            orientation = 0.0
+            hull_area = 0.0
+        aspect_ratio = length / width if width > 1e-9 else 0.0
+        circularity = 4.0 * float(np.pi) * area / (perimeter * perimeter) if perimeter > 1e-9 else 0.0
+        solidity = area / hull_area if hull_area > 1e-9 else 0.0
+        bbox_area = float(bbox[2] * bbox[3])
+        extent = area / bbox_area if bbox_area > 1e-9 else 0.0
+
+        def number(value: float, decimals: int = 2) -> str:
+            text = f"{float(value):.{decimals}f}"
+            return text.replace(".", ",") if self._ui_language == "ru" else text
+
+        if self._ui_language == "ru":
+            object_type = "внутреннее отверстие" if polygon.is_hole else "проводник"
+            parent = "нет" if polygon.parent_id is None else str(int(polygon.parent_id))
+            lines = [
+                f"ID: {int(polygon.id)}",
+                f"Тип: {object_type}",
+                f"Категория: {polygon.category or '-'}",
+                f"Количество точек: {len(points)}",
+                f"Площадь: {number(area)} px²",
+                f"Периметр: {number(perimeter)} px",
+                f"Длина: {number(length)} px",
+                f"Ширина: {number(width)} px",
+                f"Отношение длины к ширине: {number(aspect_ratio, 3)}",
+                f"Габариты: {int(bbox[2])} × {int(bbox[3])} px",
+                f"Позиция: x={int(bbox[0])}, y={int(bbox[1])}",
+                f"Центр: x={number(center_x)}, y={number(center_y)}",
+                f"Ориентация: {number(orientation)}°",
+                f"Округлость: {number(circularity, 3)}",
+                f"Выпуклость: {number(solidity, 3)}",
+                f"Заполнение габарита: {number(extent * 100.0, 1)}%",
+                f"Представление: {polygon.shape_hint or '-'}",
+                f"Родительский контур: {parent}",
+            ]
+        else:
+            object_type = "inner hole" if polygon.is_hole else "conductor"
+            parent = "none" if polygon.parent_id is None else str(int(polygon.parent_id))
+            lines = [
+                f"ID: {int(polygon.id)}",
+                f"Type: {object_type}",
+                f"Category: {polygon.category or '-'}",
+                f"Point count: {len(points)}",
+                f"Area: {number(area)} px²",
+                f"Perimeter: {number(perimeter)} px",
+                f"Length: {number(length)} px",
+                f"Width: {number(width)} px",
+                f"Length-to-width ratio: {number(aspect_ratio, 3)}",
+                f"Bounding box: {int(bbox[2])} × {int(bbox[3])} px",
+                f"Position: x={int(bbox[0])}, y={int(bbox[1])}",
+                f"Center: x={number(center_x)}, y={number(center_y)}",
+                f"Orientation: {number(orientation)}°",
+                f"Circularity: {number(circularity, 3)}",
+                f"Solidity: {number(solidity, 3)}",
+                f"Bounding-box extent: {number(extent * 100.0, 1)}%",
+                f"Shape representation: {polygon.shape_hint or '-'}",
+                f"Parent contour: {parent}",
+            ]
+        if polygon.recognition_score is not None:
+            score_label = "Оценка распознавания" if self._ui_language == "ru" else "Recognition score"
+            lines.append(f"{score_label}: {number(float(polygon.recognition_score), 1)}")
+        if str(polygon.reject_reason or "").strip():
+            reason_label = "Причина отклонения" if self._ui_language == "ru" else "Rejection reason"
+            lines.append(f"{reason_label}: {polygon.reject_reason}")
+        return lines
 
     def _manual_via_debug_candidate(self, polygon: PolygonData) -> ContourDebugCandidate | None:
         image = self._workspace.current_display_image()

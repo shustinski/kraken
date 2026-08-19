@@ -46,7 +46,27 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
 
     external_only = _normalize_hierarchy_mode(getattr(settings, "metal_hierarchy_mode", "full"))
     return MetalRecoveryConfig(
-        contrast_bias=max(-50.0, min(50.0, float(getattr(settings, "metal_contrast_bias", 0.0) or 0.0))),
+        min_contrast=max(
+            1.0,
+            min(
+                255.0,
+                float(
+                    getattr(
+                        settings,
+                        "metal_min_contrast",
+                        max(1.0, float(getattr(settings, "metal_contrast_bias", 50.0) or 50.0)),
+                    )
+                ),
+            ),
+        ),
+        min_hole_source_contrast=max(
+            0.0,
+            min(255.0, float(getattr(settings, "metal_min_hole_source_contrast", 8.0))),
+        ),
+        min_hole_source_contrast_fraction=max(
+            0.0,
+            min(1.0, float(getattr(settings, "metal_min_hole_source_contrast_fraction", 0.35))),
+        ),
         segmentation_strategy=normalize_metal_segmentation_strategy(
             getattr(settings, "metal_segmentation_strategy", "auto")
         ),
@@ -64,7 +84,7 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         min_polygon_angle_deg=max(0.0, float(getattr(settings, "min_polygon_angle", 0.0) or 0.0)),
         approximation_enabled=bool(getattr(settings, "metal_approximation_enabled", True)),
         retrieval_external_only=external_only,
-        retrieval_mode="RETR_EXTERNAL" if external_only else str(getattr(settings, "retrieval_mode", "RETR_TREE")),
+        retrieval_mode="RETR_EXTERNAL" if external_only else "RETR_TREE",
         approximation_mode=str(getattr(settings, "approximation_mode", "CHAIN_APPROX_SIMPLE")),
         border_mode=_normalize_border_mode(getattr(settings, "metal_border_handling", "mark")),
         min_inner_hole_area=max(0.0, float(getattr(settings, "min_inner_hole_area", 100.0) or 100.0)),

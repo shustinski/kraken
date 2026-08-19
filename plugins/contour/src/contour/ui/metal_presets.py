@@ -8,7 +8,9 @@ from typing import Any
 def _metal_keys() -> tuple[str, ...]:
     return (
         "metal_preset",
-        "metal_contrast_bias",
+        "metal_min_contrast",
+        "metal_min_hole_source_contrast",
+        "metal_min_hole_source_contrast_fraction",
         "metal_gap_bridge_px",
         "metal_speckle_removal_px",
         "metal_min_trace_width_px",
@@ -28,7 +30,9 @@ def _metal_keys() -> tuple[str, ...]:
 def standard_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "standard",
-        "metal_contrast_bias": 0.0,
+        "metal_min_contrast": 50.0,
+        "metal_min_hole_source_contrast": 8.0,
+        "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 0,
         "metal_speckle_removal_px": 3,
         "metal_min_trace_width_px": 4.0,
@@ -47,7 +51,9 @@ def standard_metal_preset_payload() -> dict[str, Any]:
 def noisy_sem_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "noisy_sem",
-        "metal_contrast_bias": -15.0,
+        "metal_min_contrast": 50.0,
+        "metal_min_hole_source_contrast": 8.0,
+        "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 4,
         "metal_speckle_removal_px": 2,
         "metal_min_trace_width_px": 10.0,
@@ -60,7 +66,9 @@ def noisy_sem_metal_preset_payload() -> dict[str, Any]:
 def thin_traces_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "thin_traces",
-        "metal_contrast_bias": 10.0,
+        "metal_min_contrast": 50.0,
+        "metal_min_hole_source_contrast": 8.0,
+        "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 2,
         "metal_speckle_removal_px": 1,
         "metal_min_trace_width_px": 4.0,
@@ -74,7 +82,9 @@ def thin_traces_metal_preset_payload() -> dict[str, Any]:
 def wide_fills_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "wide_fills",
-        "metal_contrast_bias": -5.0,
+        "metal_min_contrast": 50.0,
+        "metal_min_hole_source_contrast": 8.0,
+        "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 3,
         "metal_speckle_removal_px": 1,
         "metal_min_trace_width_px": 14.0,

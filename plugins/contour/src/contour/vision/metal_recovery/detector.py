@@ -27,7 +27,10 @@ def _normalize_metal_extraction_mode(value: Any) -> str:
 class MetalRecoveryConfig:
     """Segmentation + contour extraction parameters exposed in the UI."""
 
-    contrast_bias: float = 0.0
+    min_contrast: float = 50.0
+    contrast_bias: float = 0.0  # Deprecated compatibility field; ignored by segmentation.
+    min_hole_source_contrast: float = 8.0
+    min_hole_source_contrast_fraction: float = 0.35
     gap_bridge_px: int = 2
     speckle_removal_px: int = 0
     min_width_px: float = 8.0
@@ -96,7 +99,7 @@ def clear_metal_contour_cache() -> None:
 
 def _segmentation_config_from_recovery(config: MetalRecoveryConfig) -> MetalSegmentationConfig:
     return MetalSegmentationConfig(
-        contrast_bias=float(config.contrast_bias),
+        min_contrast=max(1.0, min(255.0, float(config.min_contrast))),
         gap_bridge_px=max(0, int(config.gap_bridge_px)),
         speckle_removal_px=max(0, int(config.speckle_removal_px)),
         min_component_area=max(0, int(config.min_component_area or config.min_area)),
@@ -239,7 +242,118 @@ def _renumber_polygons_preserving_parents(polygons: list[PolygonData]) -> None:
             poly.parent_id = old_to_new.get(int(poly.parent_id), poly.parent_id)
 
 
-def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> MetalDetectionResult:
+def _polygon_interior_median(
+    gray: np.ndarray,
+    polygon: PolygonData,
+    *,
+    excluded: list[PolygonData] | None = None,
+) -> float | None:
+    points = np.asarray(polygon.points, dtype=np.float32).reshape(-1, 2)
+    if points.shape[0] < 3:
+        return None
+    height, width = gray.shape[:2]
+    x_min = max(0, int(np.floor(points[:, 0].min())))
+    y_min = max(0, int(np.floor(points[:, 1].min())))
+    x_max = min(width - 1, int(np.ceil(points[:, 0].max())))
+    y_max = min(height - 1, int(np.ceil(points[:, 1].max())))
+    if x_max < x_min or y_max < y_min:
+        return None
+
+    mask = np.zeros((y_max - y_min + 1, x_max - x_min + 1), dtype=np.uint8)
+
+    def _local_points(item: PolygonData) -> np.ndarray:
+        item_points = np.asarray(item.points, dtype=np.float32).reshape(-1, 2)
+        item_points[:, 0] -= x_min
+        item_points[:, 1] -= y_min
+        return np.rint(item_points).astype(np.int32).reshape(-1, 1, 2)
+
+    cv2.fillPoly(mask, [_local_points(polygon)], 255)
+    for item in excluded or []:
+        if len(item.points) >= 3:
+            cv2.fillPoly(mask, [_local_points(item)], 0)
+    values = gray[y_min : y_max + 1, x_min : x_max + 1][mask > 0]
+    if values.size == 0:
+        return None
+    return float(np.median(values))
+
+
+def _filter_holes_by_source_contrast(
+    polygons: list[PolygonData],
+    source_image: np.ndarray | None,
+    *,
+    min_source_contrast: float,
+    min_source_contrast_fraction: float,
+) -> list[PolygonData]:
+    if source_image is None or not any(polygon.is_hole for polygon in polygons):
+        return polygons
+    if source_image.ndim == 3:
+        source_gray = cv2.cvtColor(ensure_uint8(source_image), cv2.COLOR_BGR2GRAY)
+    else:
+        source_gray = ensure_uint8(source_image)
+    if source_gray.size == 0:
+        return polygons
+
+    otsu_threshold, _binary = cv2.threshold(
+        source_gray,
+        0,
+        255,
+        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
+    )
+    lower_values = source_gray[source_gray <= otsu_threshold]
+    upper_values = source_gray[source_gray > otsu_threshold]
+    if lower_values.size == 0 or upper_values.size == 0:
+        return polygons
+    source_class_separation = float(np.median(upper_values) - np.median(lower_values))
+    if source_class_separation <= 0.0:
+        return polygons
+    min_contrast = max(
+        max(0.0, float(min_source_contrast)),
+        source_class_separation * max(0.0, min(1.0, float(min_source_contrast_fraction))),
+    )
+
+    polygons_by_id = {int(polygon.id): polygon for polygon in polygons}
+    holes_by_parent: dict[int, list[PolygonData]] = {}
+    for polygon in polygons:
+        if polygon.is_hole and polygon.parent_id is not None:
+            holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
+
+    parent_medians: dict[int, float | None] = {}
+    kept: list[PolygonData] = []
+    for polygon in polygons:
+        if not polygon.is_hole:
+            kept.append(polygon)
+            continue
+        if polygon.parent_id is None:
+            continue
+        parent_id = int(polygon.parent_id)
+        parent = polygons_by_id.get(parent_id)
+        if parent is None or parent.is_hole:
+            continue
+        if parent_id not in parent_medians:
+            parent_medians[parent_id] = _polygon_interior_median(
+                source_gray,
+                parent,
+                excluded=holes_by_parent.get(parent_id),
+            )
+        parent_median = parent_medians[parent_id]
+        hole_median = _polygon_interior_median(source_gray, polygon)
+        if parent_median is None or hole_median is None:
+            continue
+        if (
+            hole_median <= float(otsu_threshold)
+            and parent_median > float(otsu_threshold)
+            and parent_median - hole_median >= min_contrast
+        ):
+            kept.append(polygon)
+    return kept
+
+
+def detect_metalization(
+    image: np.ndarray,
+    config: MetalRecoveryConfig,
+    *,
+    source_image: np.ndarray | None = None,
+) -> MetalDetectionResult:
     """Recognition: Otsu mask → findContours (epsilon) → geometric filters."""
     if image.ndim == 3:
         gray = cv2.cvtColor(ensure_uint8(image), cv2.COLOR_BGR2GRAY)
@@ -252,7 +366,15 @@ def detect_metalization(image: np.ndarray, config: MetalRecoveryConfig) -> Metal
     raise_if_preview_cancelled()
 
     h, w = mask.shape[:2]
-    polygons = _extract_polygons_cached(mask, config)
+    hole_source = source_image
+    if hole_source is not None and hole_source.shape[:2] != gray.shape[:2]:
+        hole_source = None
+    polygons = _filter_holes_by_source_contrast(
+        _extract_polygons_cached(mask, config),
+        hole_source,
+        min_source_contrast=config.min_hole_source_contrast,
+        min_source_contrast_fraction=config.min_hole_source_contrast_fraction,
+    )
 
     accepted: list[PolygonData] = []
     border: list[MetalPolygonRecord] = []

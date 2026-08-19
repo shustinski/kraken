@@ -5,6 +5,7 @@ import unittest
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.domain.polygon_ring import (
     TOPOLOGY_CHECK_MAX_VERTICES,
+    collapse_redundant_polyline_vertices,
     is_valid_closed_polygon_vertex_move,
 )
 from contour.graphics.geometry import (
@@ -61,6 +62,30 @@ class GeometryTests(unittest.TestCase):
     def test_open_polyline_rejects_segment_crossing_prior_edge(self) -> None:
         pts = [(0.0, 0.0), (2.0, 0.0), (1.0, 0.5), (1.0, -0.5)]
         self.assertFalse(is_valid_open_polyline_last_edge(pts))
+
+    def test_collapse_drops_duplicate_neighbors(self) -> None:
+        points = [(0.0, 0.0), (0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        self.assertEqual(
+            collapse_redundant_polyline_vertices(points),
+            [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+        )
+
+    def test_collapse_drops_axis_aligned_middle_vertex(self) -> None:
+        points = [(0.0, 0.0), (5.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        self.assertEqual(
+            collapse_redundant_polyline_vertices(points),
+            [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+        )
+
+    def test_collapse_drops_vertical_middle_and_wrap_around(self) -> None:
+        points = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 5.0)]
+        collapsed = collapse_redundant_polyline_vertices(points)
+        self.assertNotIn((0.0, 5.0), collapsed)
+        self.assertEqual(len(collapsed), 4)
+
+    def test_collapse_keeps_diagonal_middle_vertex(self) -> None:
+        points = [(0.0, 0.0), (5.0, 4.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        self.assertEqual(collapse_redundant_polyline_vertices(points), points)
 
     def test_resolve_conductor_hover_outer_trace(self) -> None:
         outer = PolygonData(

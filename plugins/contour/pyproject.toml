@@ -7,7 +7,7 @@ name = "contour"
 description = "Standalone polygon extraction and editing widget."
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 authors = [{ name = "ViaLaNet" }]
 keywords = ["pyqt", "polygon", "contour", "image-processing", "opencv"]
 classifiers = [
@@ -18,7 +18,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Image Processing",
     "Topic :: Software Development :: User Interfaces",
 ]
@@ -88,7 +88,7 @@ contour = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py314"
 extend-exclude = [
     "build",
     "dist",
@@ -134,7 +134,7 @@ indent-style = "space"
 line-ending = "lf"
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = false
 warn_unused_ignores = true
 ignore_missing_imports = true

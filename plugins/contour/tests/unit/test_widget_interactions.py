@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QSlider,
     QSpinBox,
 )
 
@@ -596,6 +597,20 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertEqual(process_calls[-1], False)
 
+    def test_conductor_contrast_slider_and_hole_settings_feed_recognition_settings(self) -> None:
+        self.assertIsInstance(self.widget.metal_min_contrast_slider, QSlider)
+        self.assertEqual(self.widget.metal_min_contrast_slider.minimum(), 1)
+        self.assertEqual(self.widget.metal_min_contrast_slider.value(), 50)
+        self.widget.metal_min_contrast_slider.setValue(37)
+        self.widget.metal_min_hole_source_contrast_spin.setValue(12.5)
+        self.widget.metal_min_hole_source_contrast_fraction_spin.setValue(0.2)
+
+        settings = self.widget._current_contour_settings()
+
+        self.assertEqual(settings.metal_min_contrast, 37.0)
+        self.assertEqual(settings.metal_min_hole_source_contrast, 12.5)
+        self.assertEqual(settings.metal_min_hole_source_contrast_fraction, 0.2)
+
     def test_every_heuristic_expert_parameter_schedules_via_rerecognition(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
         self.widget.auto_apply_checkbox.setChecked(True)
@@ -947,6 +962,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(self.widget.thumbnail_grid.item(0).text(), "")
             self.assertEqual(self.widget.thumbnail_grid.item(0).toolTip(), "frame_001")
             self.widget._on_thumbnail_item_clicked(self.widget.thumbnail_grid.item(1))
+            QTest.qWait(300)
 
             self.assertEqual(self.widget._last_loaded_from_thumb, paths[1])
 
@@ -1275,6 +1291,12 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertIn("QToolButton:checked", stylesheet)
         self.assertIn("#16A34A", stylesheet)
+
+        tool_button = self.widget._tool_buttons[EditorTool.SELECT]
+        self.assertTrue(tool_button.isCheckable())
+        self.assertTrue(tool_button.isChecked())
+        self.assertIn("QToolButton:checked", tool_button.styleSheet())
+        self.assertIn("#16A34A", tool_button.styleSheet())
 
     def test_toolbar_icons_use_the_complete_button_area(self) -> None:
         buttons = [
@@ -1688,6 +1710,24 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertEqual(loaded, [(paths[2], True)])
         self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), paths[2])
+
+    def test_frame_matrix_navigation_uses_image_list_signal_and_starts_loading(self) -> None:
+        paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
+        self.widget._workspace._image_paths = paths
+        self.widget._set_image_list_paths(paths)
+        loaded: list[tuple[str, bool]] = []
+        self.widget.load_image = lambda path, **kwargs: loaded.append(  # type: ignore[method-assign]
+            (str(Path(path)), bool(kwargs.get("preserve_editor_view_position")))
+        )
+
+        self.widget.thumbnail_grid.frameNavigationRequested.emit(2)
+        QTest.qWait(300)
+
+        self.assertEqual(
+            str(Path(self.widget._image_list_path_from_proxy_index(self.widget.image_list.currentIndex()) or "")),
+            paths[2],
+        )
+        self.assertEqual(loaded, [(paths[2], False)])
 
     def test_frame_matrix_navigation_does_not_center_editor_scene(self) -> None:
         paths = [str(Path(rf"d:\frames\frame_{index:03d}.png")) for index in range(3)]
@@ -2573,6 +2613,10 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_middle_button_temporarily_hides_vectors_while_panning(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)
+        overlay = np.zeros((100, 100, 3), dtype=np.uint8)
+        overlay[..., 1] = 200
+        self.view.set_gradient_overlay(overlay, opacity=0.6)
+        overlay_item = self.view._editor_scene._gradient_overlay_item
         origin = self.view.mapFromScene(QPointF(50.0, 50.0))
         h_before = self.view.horizontalScrollBar().value()
 
@@ -2583,6 +2627,9 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
             origin,
         )
         self._app.processEvents()
+        self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
+        self.assertFalse(overlay_item.isVisible())
+        self.view.set_polygon_overlays_visible(True)
         self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
 
         QTest.mouseMove(self.view.viewport(), origin + QPoint(30, -12), delay=10)
@@ -2597,6 +2644,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self._app.processEvents()
 
         self.assertTrue(self.view._editor_scene.polygon_overlays_visible())
+        self.assertTrue(overlay_item.isVisible())
         self.assertEqual(len(self.view.get_polygons()), 1)
         self.assertEqual(self.view.current_tool, EditorTool.ADD_POLYGON)
         self.assertLessEqual(self.view.horizontalScrollBar().value(), h_before - 25)
@@ -2677,6 +2725,32 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertEqual(points, [(10.0, 10.0), (80.0, 10.0), (80.0, 70.0)])
         self.assertEqual(width, self.view._trace_width)
         self.assertFalse(erase)
+
+    def test_trace_pen_allows_self_intersecting_chain(self) -> None:
+        self.view.set_tool(EditorTool.TRACE_PEN)
+        for point in (
+            QPointF(10.0, 10.0),
+            QPointF(80.0, 80.0),
+            QPointF(80.0, 10.0),
+            QPointF(10.0, 80.0),
+        ):
+            QTest.mouseClick(
+                self.view.viewport(),
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+                self.view.mapFromScene(point),
+            )
+        self._app.processEvents()
+        self.assertEqual(
+            self.view._editor_scene.pending_points_snapshot(),
+            [(10.0, 10.0), (80.0, 80.0), (80.0, 10.0), (10.0, 80.0)],
+        )
+
+    def test_brush_and_trace_width_reject_one_pixel(self) -> None:
+        self.view.set_brush_thickness(1.0)
+        self.view.set_trace_width(1.0)
+        self.assertGreaterEqual(self.view._brush_thickness, 2.0)
+        self.assertGreaterEqual(self.view._trace_width, 2.0)
 
     def test_ctrl_wheel_keeps_scene_point_under_cursor_stable(self) -> None:
         self.view.fit_to_view()
@@ -3128,6 +3202,13 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         )
 
     def test_brush_editing_outer_ring_keeps_inner_object_if_not_touched(self) -> None:
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
         self.view.set_polygons([])
         ring_points = [
             (30.0, 30.0),
@@ -3167,6 +3248,48 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         polygons = {polygon.id: polygon for polygon in self.view.get_polygons()}
         self.assertEqual(len(polygons[2].points), 3)
         self.assertEqual(len(polygons[1].points), 4)
+
+    def test_delete_vertices_area_removes_vector_when_ring_cannot_survive(self) -> None:
+        triangle = _rectangle_polygon(10, 10, 40, 40)
+        triangle.points = [(10.0, 10.0), (40.0, 10.0), (25.0, 40.0)]
+        rectangle = _rectangle_polygon(60, 10, 90, 40)
+        rectangle.id = 2
+        self.view.set_polygons([triangle, rectangle])
+
+        deleted = self.view._editor_scene.delete_vertices_in_rect(QRectF(QPointF(5.0, 5.0), QPointF(45.0, 15.0)))
+
+        polygons = {polygon.id: polygon for polygon in self.view.get_polygons()}
+        self.assertGreaterEqual(deleted, 2)
+        self.assertNotIn(1, polygons)
+        self.assertIn(2, polygons)
+        self.assertEqual(len(polygons[2].points), 4)
+
+    def test_delete_vertices_area_deletes_polygon_when_all_vertices_are_inside(self) -> None:
+        first = _rectangle_polygon(10, 10, 40, 40)
+        second = _rectangle_polygon(60, 10, 90, 40)
+        second.id = 2
+        self.view.set_polygons([first, second])
+
+        deleted = self.view._editor_scene.delete_vertices_in_rect(QRectF(QPointF(5.0, 5.0), QPointF(45.0, 45.0)))
+
+        polygons = {polygon.id: polygon for polygon in self.view.get_polygons()}
+        self.assertEqual(deleted, 4)
+        self.assertNotIn(1, polygons)
+        self.assertEqual(len(polygons[2].points), 4)
+
+    def test_delete_vertices_area_collapses_axis_aligned_extra_points(self) -> None:
+        first = _rectangle_polygon(0, 0, 10, 10)
+        first.points = [(0.0, 0.0), (5.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        second = _rectangle_polygon(60, 10, 90, 40)
+        second.id = 2
+        self.view.set_polygons([first, second])
+
+        deleted = self.view._editor_scene.delete_vertices_in_rect(QRectF(QPointF(8.0, 8.0), QPointF(12.0, 12.0)))
+
+        polygons = {polygon.id: polygon for polygon in self.view.get_polygons()}
+        self.assertGreaterEqual(deleted, 1)
+        self.assertEqual(polygons[1].points, [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)])
+        self.assertEqual(len(polygons[2].points), 4)
 
     def test_delete_vertices_area_preview_highlights_all_touched_polygons(self) -> None:
         first = _rectangle_polygon(10, 10, 40, 40)
@@ -3431,7 +3554,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertAlmostEqual(after[0][1], 30.0, places=1)
         self.assertEqual(after[-1], after[0])
 
-    def test_move_vertex_uses_local_cleanup_without_global_merge(self) -> None:
+    def test_move_vertex_merges_overlapping_conductors(self) -> None:
         first = _rectangle_polygon(20, 20, 50, 50)
         second = _rectangle_polygon(55, 20, 85, 50)
         second.id = 2
@@ -3445,28 +3568,33 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
         press_pos = self.view.mapFromScene(QPointF(50.0, 20.0))
         release_pos = self.view.mapFromScene(QPointF(65.0, 20.0))
-        with patch("contour.application.vector_geometry_postprocess.merge_overlapping_root_families") as merge_mock:
-            QTest.mousePress(
-                self.view.viewport(),
-                Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier,
-                press_pos,
-            )
-            QTest.mouseMove(self.view.viewport(), release_pos)
-            QTest.mouseRelease(
-                self.view.viewport(),
-                Qt.MouseButton.LeftButton,
-                Qt.KeyboardModifier.NoModifier,
-                release_pos,
-            )
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            press_pos,
+        )
+        QTest.mouseMove(self.view.viewport(), release_pos)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            release_pos,
+        )
         self._app.processEvents()
 
         roots = [polygon for polygon in self.view.get_polygons() if polygon.parent_id is None and not polygon.is_hole]
-        self.assertEqual(len(roots), 2)
+        self.assertEqual(len(roots), 1)
         self.assertEqual(self.view.undo_stack.count(), before_undo_count + 1)
-        merge_mock.assert_not_called()
 
     def test_repeated_outer_edits_do_not_expand_untouched_inner_contour(self) -> None:
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
         self.view.set_polygons([])
         ring_points = [
             (30.0, 30.0),
@@ -3980,9 +4108,15 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
         self.widget._cycle_editor_tool_mode(EditorTool.DELETE_VERTEX)
         self._app.processEvents()
 
+        self.assertEqual(self.widget.polygon_mode_combo.currentData(), PolygonCreateMode.POINTS)
+        self.assertEqual(self.widget.brush_mode_combo.currentData(), BrushMode.FREEFORM)
+        self.assertEqual(self.widget.delete_vertex_mode_combo.currentData(), DeleteVertexMode.SINGLE)
+
+    def test_editor_tool_modes_default_to_rectangle_angled_and_area(self) -> None:
         self.assertEqual(self.widget.polygon_mode_combo.currentData(), PolygonCreateMode.RECTANGLE)
         self.assertEqual(self.widget.brush_mode_combo.currentData(), BrushMode.ANGLED)
         self.assertEqual(self.widget.delete_vertex_mode_combo.currentData(), DeleteVertexMode.AREA)
+        self.assertEqual(self.widget.polygon_editor.effective_polygon_create_mode(), PolygonCreateMode.RECTANGLE)
 
     def test_shift_key_cycles_active_tool_mode_and_updates_combo(self) -> None:
         self.widget.polygon_editor.set_tool(EditorTool.BRUSH)
@@ -3990,7 +4124,7 @@ class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):
         QTest.keyClick(self.widget.polygon_editor, Qt.Key.Key_Shift)
         self._app.processEvents()
 
-        self.assertEqual(self.widget.brush_mode_combo.currentData(), BrushMode.FREEFORM)
+        self.assertEqual(self.widget.brush_mode_combo.currentData(), BrushMode.ANGLED)
 
     def test_toolbar_hides_incompatible_tools_and_falls_back_to_select(self) -> None:
         via = _rectangle_polygon(10, 10, 20, 20)
@@ -4039,6 +4173,30 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
 
         self.assertGreater(first_height, 35.0)
         self.assertGreater(second_height, 35.0)
+
+    def test_append_brush_vertex_does_not_densify_long_jump(self) -> None:
+        scene = PolygonEditorScene()
+        scene.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
+        scene.start_pending_polygon(for_brush=True)
+        scene.append_brush_vertex(QPointF(10.0, 10.0), 40.0)
+        scene.append_brush_vertex(QPointF(310.0, 10.0), 40.0)
+
+        pending = scene.pending_points_snapshot()
+        self.assertEqual(pending, [(10, 10), (310, 10)])
+
+        changed = scene.add_brush_stroke(pending, thickness=20.0)
+        polygons = scene.get_polygons()
+        self.assertTrue(changed)
+        self.assertTrue(polygons)
+        bbox = polygons[0].bbox
+        self.assertLessEqual(bbox[0], 150)
+        self.assertGreaterEqual(bbox[0] + bbox[2], 150)
 
     def test_trace_pen_adds_fixed_width_conductor_polygon(self) -> None:
         scene = PolygonEditorScene()

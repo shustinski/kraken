@@ -7,6 +7,8 @@ Environment switches:
 
 The contact-placement profiler is normally toggled with the
 CONTACT_PLACEMENT_PROFILING_ENABLED code variable below.
+Area vertex deletion is toggled with DELETE_AREA_PROFILING_ENABLED or
+CONTOUR_PROFILE_DELETE_AREA=0/1.
 """
 
 from __future__ import annotations
@@ -21,11 +23,12 @@ DEFAULT_FRAME_SWITCH_ENABLED = False
 DEFAULT_PROCESSING_ENABLED = False
 DEFAULT_THUMBNAIL_ENABLED = False
 DEFAULT_VERTEX_MOVE_ENABLED = False
+DELETE_AREA_PROFILING_ENABLED = True
 # Change this value to True to profile one contact placement end-to-end.
 # CONTOUR_PROFILE_CONTACT_PLACEMENT=0/1 can still override it at runtime.
 CONTACT_PLACEMENT_PROFILING_ENABLED = False
 CONTACT_MULTI_SELECTION_PROFILING_ENABLED = False
-CONTACT_DELETION_PROFILING_ENABLED = False
+CONTACT_DELETION_PROFILING_ENABLED = True
 CONTACT_COPY_PROFILING_ENABLED = False
 CONTACT_PASTE_PROFILING_ENABLED = False
 CONTACT_UNDO_PROFILING_ENABLED = False
@@ -38,6 +41,7 @@ DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
 DEFAULT_THUMBNAIL_TOP_LINES = 25
 DEFAULT_VERTEX_MOVE_TOP_LINES = 40
+DEFAULT_DELETE_AREA_TOP_LINES = 40
 DEFAULT_CONTACT_PLACEMENT_TOP_LINES = 40
 DEFAULT_CONTACT_MULTI_SELECTION_TOP_LINES = 40
 DEFAULT_CONTACT_DELETION_TOP_LINES = 40
@@ -146,6 +150,13 @@ def vertex_move_profiling_enabled() -> bool:
     return profiling_enabled("vertex_move", default=DEFAULT_VERTEX_MOVE_ENABLED)
 
 
+def delete_area_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "delete_area",
+        default=DELETE_AREA_PROFILING_ENABLED,
+    )
+
+
 def contact_placement_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_placement",
@@ -230,6 +241,10 @@ def thumbnail_top_lines() -> int:
 
 def vertex_move_top_lines() -> int:
     return profiling_top_lines("vertex_move", DEFAULT_VERTEX_MOVE_TOP_LINES)
+
+
+def delete_area_top_lines() -> int:
+    return profiling_top_lines("delete_area", DEFAULT_DELETE_AREA_TOP_LINES)
 
 
 def contact_placement_top_lines() -> int:

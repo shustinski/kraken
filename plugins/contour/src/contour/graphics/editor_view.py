@@ -48,6 +48,8 @@ from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
     apply_polygon_points_to_clone,
     apply_vertex_position_to_clone,
+    collapse_redundant_vertices_in_polygons,
+    merge_overlapping_root_families,
     postprocess_changed_polygon_edit,
     resolve_focus_id_after_geometry_pass,
 )
@@ -57,6 +59,8 @@ from ..domain.polygon_ring import is_valid_closed_polygon_vertex_move
 from ..infrastructure.contact_placement_profiler import ContactDragProfile, SceneZoomProfile
 from ..infrastructure.profiling import (
     contact_drag_profiling_enabled,
+    delete_area_profiling_enabled,
+    delete_area_top_lines,
     scene_zoom_profiling_enabled,
     try_disable_profiler,
     try_enable_profiler,
@@ -78,7 +82,7 @@ from .tool_mode_logic import (
     is_via_polygon,
     normalize_editor_tool,
 )
-from .tools import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
+from .tools import BrushMode, DeleteVertexMode, EditorTool, MIN_MANUAL_STROKE_WIDTH_PX, PolygonCreateMode
 from .viewport_navigation import (
     DEFAULT_ZOOM_STEP_FACTOR,
     clamp_zoom_factor,
@@ -161,14 +165,14 @@ class PolygonEditorView(QGraphicsView):
         self._tool = EditorTool.SELECT
         self._available_tools = available_editor_tools(())
         self._contact_recognition_mode = False
-        self._polygon_create_mode = PolygonCreateMode.POINTS
-        self._brush_mode = BrushMode.FREEFORM
+        self._polygon_create_mode = PolygonCreateMode.RECTANGLE
+        self._brush_mode = BrushMode.ANGLED
         self._brush_thickness = 12.0
         self._trace_width = 12.0
         self._via_width = 12.0
         self._via_height = 12.0
         self._antialias_grade = 1
-        self._delete_vertex_mode = DeleteVertexMode.SINGLE
+        self._delete_vertex_mode = DeleteVertexMode.AREA
         self._select_press_polygon_id: int | None = None
         self._select_press_start: QPointF | None = None
         self._drag_kind: str | None = None
@@ -380,13 +384,13 @@ class PolygonEditorView(QGraphicsView):
         self._update_tool_cursors()
 
     def set_brush_thickness(self, thickness: float) -> None:
-        self._brush_thickness = max(1.0, float(thickness))
+        self._brush_thickness = max(MIN_MANUAL_STROKE_WIDTH_PX, float(thickness))
         if self._tool == EditorTool.BRUSH:
             self._editor_scene.set_pending_path_width(self._brush_thickness, cosmetic=False)
         self._update_tool_cursors()
 
     def set_trace_width(self, width: float) -> None:
-        self._trace_width = max(1.0, float(width))
+        self._trace_width = max(MIN_MANUAL_STROKE_WIDTH_PX, float(width))
         if self._tool == EditorTool.TRACE_PEN:
             self._editor_scene.set_pending_path_width(self._trace_width, cosmetic=False)
         self._update_tool_cursors()
@@ -1519,10 +1523,9 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.set_measurement(self._drag_start_scene_pos, target_pos, measurement_text)
                 self.rulerMeasurementChanged.emit(measurement_text)
             elif self._drag_kind == "delete_area" and self._drag_start_scene_pos is not None:
-                self._editor_scene.delete_vertices_in_rect(
-                    QRectF(self._drag_start_scene_pos, self.mapToScene(event.position().toPoint()))
-                )
-                self._editor_scene.clear_preview_rect()
+                release_pos = self.mapToScene(event.position().toPoint())
+                rect = QRectF(self._drag_start_scene_pos, release_pos)
+                self._commit_delete_vertices_in_area(rect)
             elif self._drag_kind == "select_area" and self._drag_start_scene_pos is not None:
                 release_pos = self.mapToScene(event.position().toPoint())
                 rect = QRectF(self._drag_start_scene_pos, release_pos).normalized()
@@ -1571,8 +1574,16 @@ class PolygonEditorView(QGraphicsView):
                     profiler_enabled = try_enable_profiler(profiler)
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
                 old_point = self._drag_origin_points[self._drag_vertex_index]
-                new_point = new_points[self._drag_vertex_index]
-                if _points_different(old_point, new_point):
+                new_point = (
+                    new_points[self._drag_vertex_index]
+                    if new_points and self._drag_vertex_index < len(new_points)
+                    else old_point
+                )
+                if (
+                    new_points
+                    and self._drag_vertex_index < len(new_points)
+                    and _points_different(old_point, new_point)
+                ):
                     phase_start = perf_counter()
                     if not is_valid_closed_polygon_vertex_move(new_points, self._drag_vertex_index):
                         profile_timings["validate"] = (perf_counter() - phase_start) * 1000.0
@@ -1597,6 +1608,10 @@ class PolygonEditorView(QGraphicsView):
                             polygon_id=self._drag_polygon_id,
                         )
                         profile_timings["postprocess"] = (perf_counter() - phase_start) * 1000.0
+                        if accepted:
+                            processed = collapse_redundant_vertices_in_polygons(processed)
+                            processed = merge_overlapping_root_families(processed)
+                            processed = collapse_redundant_vertices_in_polygons(processed)
                         if not accepted:
                             self._editor_scene.preview_vertex_move(
                                 self._drag_polygon_id,
@@ -1644,7 +1659,7 @@ class PolygonEditorView(QGraphicsView):
                 )
             ):
                 new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
-                if _polygon_points_different(self._drag_origin_points, new_points):
+                if new_points and _polygon_points_different(self._drag_origin_points, new_points):
                     if not is_valid_closed_polygon_ring(new_points):
                         contact_drag_status = "rejected"
                         self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
@@ -1671,6 +1686,10 @@ class PolygonEditorView(QGraphicsView):
                             self._vector_geometry_settings,
                             polygon_id=self._drag_polygon_id,
                         )
+                        if accepted:
+                            processed = collapse_redundant_vertices_in_polygons(processed)
+                            processed = merge_overlapping_root_families(processed)
+                            processed = collapse_redundant_vertices_in_polygons(processed)
                         if not accepted:
                             contact_drag_status = "rejected"
                             self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
@@ -2359,3 +2378,89 @@ class PolygonEditorView(QGraphicsView):
         print(f"[contour vertex profiling stats] top={top_lines}")
         print(report)
         self.logRequested.emit(f"[contour vertex profiling stats] top={top_lines}\n{report}")
+
+    def _commit_delete_vertices_in_area(self, rect: QRectF) -> None:
+        profiling_enabled = delete_area_profiling_enabled()
+        profile_timings: dict[str, float] = {}
+        profile_total_start = perf_counter()
+        profiler = cProfile.Profile() if profiling_enabled else None
+        profiler_enabled = False
+        if profiler is not None:
+            profiler_enabled = try_enable_profiler(profiler)
+        try:
+            polygon_hits = vertex_hits = vertex_total = 0
+            if profiling_enabled:
+                phase_start = perf_counter()
+                polygon_hits, vertex_hits, vertex_total = self._delete_area_profile_counts(rect)
+                profile_timings["count"] = (perf_counter() - phase_start) * 1000.0
+            phase_start = perf_counter()
+            deleted = self._editor_scene.delete_vertices_in_rect(rect)
+            if profiling_enabled:
+                profile_timings["delete"] = (perf_counter() - phase_start) * 1000.0
+            phase_start = perf_counter()
+            self._editor_scene.clear_preview_rect()
+            if profiling_enabled:
+                profile_timings["clear_preview"] = (perf_counter() - phase_start) * 1000.0
+                profile_timings["total_wall"] = (perf_counter() - profile_total_start) * 1000.0
+                self._emit_delete_area_profile(
+                    profile_timings,
+                    polygon_hits=polygon_hits,
+                    vertex_hits=vertex_hits,
+                    vertex_total=vertex_total,
+                    deleted=deleted,
+                    profiler=profiler if profiler_enabled else None,
+                )
+        finally:
+            if profiler_enabled and profiler is not None:
+                try_disable_profiler(profiler)
+
+    def _delete_area_profile_counts(self, rect: QRectF) -> tuple[int, int, int]:
+        normalized = rect.normalized()
+        polygon_hits = 0
+        vertex_hits = 0
+        vertex_total = 0
+        for polygon in self._editor_scene.get_polygons():
+            vertex_total += len(polygon.points)
+            matched = sum(
+                1
+                for x_coord, y_coord in polygon.points
+                if normalized.contains(QPointF(x_coord, y_coord))
+            )
+            if matched:
+                polygon_hits += 1
+                vertex_hits += matched
+        return polygon_hits, vertex_hits, vertex_total
+
+    def _emit_delete_area_profile(
+        self,
+        timings_ms: dict[str, float],
+        *,
+        polygon_hits: int,
+        vertex_hits: int,
+        vertex_total: int,
+        deleted: int,
+        profiler: cProfile.Profile | None,
+    ) -> None:
+        if not delete_area_profiling_enabled():
+            return
+        total_ms = timings_ms.get("total_wall", sum(timings_ms.values()))
+        detail = " ".join(
+            f"{name}={elapsed:.3f}ms" for name, elapsed in timings_ms.items() if name != "total_wall"
+        )
+        message = (
+            f"[contour delete-area profiling] total={total_ms:.3f}ms "
+            f"polygons_hit={polygon_hits} vertices_hit={vertex_hits} "
+            f"vertices_total={vertex_total} deleted={deleted} {detail}"
+        )
+        print(message, flush=True)
+        self.logRequested.emit(message)
+        if profiler is None:
+            return
+        stream = io.StringIO()
+        stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
+        top_lines = delete_area_top_lines()
+        stats.print_stats(top_lines)
+        report = stream.getvalue()
+        print(f"[contour delete-area profiling stats] top={top_lines}", flush=True)
+        print(report, flush=True)
+        self.logRequested.emit(f"[contour delete-area profiling stats] top={top_lines}\n{report}")

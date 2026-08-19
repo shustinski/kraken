@@ -125,12 +125,30 @@ class WidgetSettingsMixin:
             )
             self._restore_main_splitter_sizes(payload.get("main_splitter_sizes"))
             if hasattr(self, "vector_geom_clip_checkbox"):
-                self.vector_geom_clip_checkbox.setChecked(bool(payload.get("vector_geom_clip_on_sync", True)))
-                self.vector_geom_min_outer_spin.setValue(float(payload.get("vector_geom_min_outer_area", 9.0)))
-                self.vector_geom_min_hole_spin.setValue(float(payload.get("vector_geom_min_hole_area", 0.0)))
-                self.vector_geom_merge_checkbox.setChecked(bool(payload.get("vector_geom_merge_on_edit", True)))
-                self.vector_geom_spike_angle_spin.setValue(float(payload.get("vector_geom_spike_angle_deg", 30.0)))
-                self.vector_geom_drop_triangle_checkbox.setChecked(bool(payload.get("vector_geom_drop_triangles", True)))
+                vector_geom_defaults = VectorGeometrySettings()
+                self.vector_geom_clip_checkbox.setChecked(
+                    bool(payload.get("vector_geom_clip_on_sync", vector_geom_defaults.clip_to_frame_on_sync))
+                )
+                self.vector_geom_min_outer_spin.setValue(
+                    float(payload.get("vector_geom_min_outer_area", vector_geom_defaults.min_outer_area_px2))
+                )
+                self.vector_geom_min_hole_spin.setValue(
+                    float(payload.get("vector_geom_min_hole_area", vector_geom_defaults.min_hole_area_to_remove_px2))
+                )
+                self.vector_geom_merge_checkbox.setChecked(
+                    bool(payload.get("vector_geom_merge_on_edit", vector_geom_defaults.merge_overlapping_on_edit))
+                )
+                self.vector_geom_spike_angle_spin.setValue(
+                    float(payload.get("vector_geom_spike_angle_deg", vector_geom_defaults.min_spike_interior_angle_deg))
+                )
+                self.vector_geom_drop_triangle_checkbox.setChecked(
+                    bool(
+                        payload.get(
+                            "vector_geom_drop_triangles",
+                            vector_geom_defaults.drop_three_vertex_triangle_artifacts,
+                        )
+                    )
+                )
         finally:
             self._restoring_display_settings = False
             del blockers

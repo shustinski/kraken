@@ -43,7 +43,16 @@ class WidgetUiHelpersMixin:
         # The shared Kraken theme adds 5x10 px padding to every QToolButton.
         # Set this directly on editor buttons so the application stylesheet
         # cannot shrink their icons back to the platform small-icon size.
-        button.setStyleSheet("QToolButton { padding: 0; margin: 0; }")
+        # A widget-level stylesheet also replaces ancestor rules, so the
+        # selected-tool green fill must live here or it never shows.
+        if checkable:
+            button.setStyleSheet(
+                "QToolButton { padding: 0; margin: 0; border: 2px solid transparent; border-radius: 4px; }"
+                "QToolButton:checked { background-color: #16A34A; border: 2px solid #86EFAC; }"
+                "QToolButton:checked:hover { background-color: #15803D; }"
+            )
+        else:
+            button.setStyleSheet("QToolButton { padding: 0; margin: 0; }")
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         button.setToolTip(text)
         button.setStatusTip(text)

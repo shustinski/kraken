@@ -230,3 +230,17 @@ def test_contact_action_code_switches_are_independent(monkeypatch) -> None:
     assert profiling.contact_drag_profiling_enabled()
     assert not profiling.scene_zoom_profiling_enabled()
     assert profiling.image_recognition_profiling_enabled()
+
+
+def test_delete_area_profile_code_variable_is_the_default(monkeypatch) -> None:
+    for name in (
+        "CONTOUR_PROFILE",
+        "CONTOUR_PROFILING",
+        "CONTOUR_PROFILE_ALL",
+        "CONTOUR_PROFILE_DELETE_AREA",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(profiling, "DELETE_AREA_PROFILING_ENABLED", False)
+    assert not profiling.delete_area_profiling_enabled()
+    monkeypatch.setattr(profiling, "DELETE_AREA_PROFILING_ENABLED", True)
+    assert profiling.delete_area_profiling_enabled()

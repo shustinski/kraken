@@ -15,6 +15,7 @@ from contour.application.vector_geometry_postprocess import (
     postprocess_changed_polygon_only,
     postprocess_polygons_for_frame_navigation,
     remove_spikes_from_polygon_ring,
+    union_after_removing_polygon_ids,
 )
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.graphics.editor_scene import PolygonEditorScene
@@ -32,6 +33,15 @@ def _rect(left: float, top: float, right: float, bottom: float, pid: int) -> Pol
 
 
 class VectorGeometryPostprocessTests(unittest.TestCase):
+    def test_default_manual_tool_postprocess_settings(self) -> None:
+        settings = VectorGeometrySettings()
+        self.assertTrue(settings.clip_to_frame_on_sync)
+        self.assertEqual(settings.min_outer_area_px2, 60_000.0)
+        self.assertEqual(settings.min_hole_area_to_remove_px2, 100_000.0)
+        self.assertTrue(settings.merge_overlapping_on_edit)
+        self.assertEqual(settings.min_spike_interior_angle_deg, 30.0)
+        self.assertTrue(settings.drop_three_vertex_triangle_artifacts)
+
     def test_clip_intersecting_rectangle_trims_geometry(self) -> None:
         square = _rect(-10.0, -10.0, 50.0, 50.0, 1)
         out = clip_polygons_to_frame_raster([square], 40, 40)
@@ -158,6 +168,23 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         roots = [p for p in merged if not p.is_hole and p.parent_id is None]
         self.assertEqual(len(roots), 1)
 
+    def test_merge_overlapping_skips_vias(self) -> None:
+        conductor = _rect(0.0, 0.0, 70.0, 70.0, 101)
+        via = _rect(20.0, 20.0, 40.0, 40.0, 102)
+        via.category = "via"
+        via.shape_hint = "box"
+        merged = merge_overlapping_root_families([conductor, via])
+        self.assertEqual({polygon.id for polygon in merged}, {101, 102})
+        self.assertEqual(next(polygon.category for polygon in merged if polygon.id == 102), "via")
+
+    def test_union_after_removing_hole_merges_island(self) -> None:
+        outer = _rect(0.0, 0.0, 80.0, 80.0, 1)
+        island = _rect(30.0, 30.0, 50.0, 50.0, 3)
+        island.parent_id = 2
+        remaining = union_after_removing_polygon_ids([outer, island], {2})
+        filled = [polygon for polygon in remaining if not polygon.is_hole]
+        self.assertEqual(len(filled), 1)
+
     def test_set_polygons_clears_selection(self) -> None:
         scene = PolygonEditorScene()
         sq = _rect(0.0, 0.0, 40.0, 40.0, 77)
@@ -250,11 +277,11 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(len(roots), 1)
 
-    def test_postprocess_after_vertex_move_skips_merge_when_disabled(self) -> None:
+    def test_postprocess_after_vertex_move_merges_even_when_setting_disabled(self) -> None:
         left = _rect(0.0, 0.0, 40.0, 40.0, 1)
         right = _rect(50.0, 0.0, 90.0, 40.0, 2)
         moved = apply_vertex_position_to_clone([left, right], 1, 1, (60.0, 0.0))
-        processed, _changed = postprocess_after_vertex_move(
+        processed, changed = postprocess_after_vertex_move(
             moved,
             VectorGeometrySettings(
                 merge_overlapping_on_edit=False,
@@ -264,7 +291,8 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
             polygon_id=1,
         )
         roots = [p for p in processed if p.parent_id is None and not p.is_hole]
-        self.assertEqual(len(roots), 2)
+        self.assertTrue(changed)
+        self.assertEqual(len(roots), 1)
 
     def test_postprocess_changed_polygon_only_touches_target(self) -> None:
         large = _rect(0.0, 0.0, 100.0, 100.0, 1)

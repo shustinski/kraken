@@ -15,6 +15,7 @@ import numpy as np
 from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
 from ..domain.polygon_ring import (
     TOPOLOGY_CHECK_MAX_VERTICES,
+    collapse_redundant_polyline_vertices,
     is_valid_closed_polygon_ring,
     is_valid_closed_polygon_vertex_move,
 )
@@ -57,9 +58,9 @@ class VectorGeometrySettings:
 
     clip_to_frame_on_sync: bool = True
     #: Minimum oriented area (px²) for an outer ring; excludes vias (`category=="via"` or `shape_hint=="box"`).
-    min_outer_area_px2: float = 9.0
-    #: Holes smaller than this area are filled; ``0`` disables (default: do not auto-fill holes during edit).
-    min_hole_area_to_remove_px2: float = 0.0
+    min_outer_area_px2: float = 60_000.0
+    #: Holes smaller than this area are filled; ``0`` disables.
+    min_hole_area_to_remove_px2: float = 100_000.0
     #: Merge conductors whose filled regions intersect after edits (vertex / polygon moves).
     merge_overlapping_on_edit: bool = True
     #: Interior angle threshold in degrees; spikes with a smaller apex angle at a vertex are removed. ``0`` disables.
@@ -83,6 +84,18 @@ def _ring_has_usable_geometry(points: list[tuple[float, float]]) -> bool:
     from ..graphics.brush_vector import ring_is_valid_for_polygon
 
     return ring_is_valid_for_polygon(points)
+
+
+def collapse_redundant_vertices_in_polygons(polygons: list[PolygonData]) -> list[PolygonData]:
+    collapsed: list[PolygonData] = []
+    for polygon in polygons:
+        clone = polygon.clone()
+        new_points = collapse_redundant_polyline_vertices(clone.points, closed=True, min_vertices=3)
+        if len(new_points) >= 3:
+            clone.points = new_points
+            _refresh_metrics(clone)
+        collapsed.append(clone)
+    return collapsed
 
 
 def drop_polygons_invalid_points(polygons: list[PolygonData]) -> list[PolygonData]:
@@ -118,6 +131,41 @@ def dissolve_small_holes(polygons: list[PolygonData], min_area_px2: float) -> li
 def drop_orphan_holes(polygons: list[PolygonData]) -> list[PolygonData]:
     ids = {p.id for p in polygons}
     return [p for p in polygons if p.parent_id is None or p.parent_id in ids]
+
+
+def _is_via_like(polygon: PolygonData) -> bool:
+    return str(polygon.category) == "via" or str(polygon.shape_hint) == "box"
+
+
+def reparent_polygons_orphaned_by_ids(
+    polygons: list[PolygonData],
+    removed_ids: set[int],
+) -> list[PolygonData]:
+    """Keep islands that lived inside a deleted hole as independent filled roots."""
+
+    if not removed_ids:
+        return [polygon.clone() for polygon in polygons]
+    reparented: list[PolygonData] = []
+    for polygon in polygons:
+        clone = polygon.clone()
+        if clone.parent_id in removed_ids:
+            clone.parent_id = None
+            if not _is_via_like(clone):
+                clone.is_hole = False
+        reparented.append(clone)
+    return reparented
+
+
+def union_after_removing_polygon_ids(
+    remaining: list[PolygonData],
+    removed_ids: set[int],
+) -> list[PolygonData]:
+    """Reparent orphans, then dissolve conductor–conductor overlaps."""
+
+    work = reparent_polygons_orphaned_by_ids(remaining, removed_ids)
+    work = drop_orphan_holes(work)
+    work = merge_overlapping_root_families(work)
+    return collapse_redundant_vertices_in_polygons(work)
 
 
 def drop_small_outer_polygons(polygons: list[PolygonData], min_area_px2: float) -> list[PolygonData]:
@@ -371,7 +419,11 @@ def _families_mask_overlap_cached(
 
 def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[PolygonData]:
     _bbox_from_points, _polygons_from_mask, _render_polygon_collection_on_mask, _union_bbox = _mask_helpers()
-    roots = [p.id for p in polygons if p.parent_id is None]
+    roots = [
+        polygon.id
+        for polygon in polygons
+        if polygon.parent_id is None and not polygon.is_hole and not _is_via_like(polygon)
+    ]
     if len(roots) < 2:
         return polygons
     uf = _UnionFind(roots)
@@ -472,6 +524,7 @@ def postprocess_after_editor_mutation(
     before = _polygons_topo_signature(polygons)
     work = [p.clone() for p in polygons]
     work = drop_polygons_invalid_points(work)
+    work = collapse_redundant_vertices_in_polygons(work)
     work = filter_simple_valid_polygons(work)
     for p in work:
         _refresh_metrics(p)
@@ -482,6 +535,7 @@ def postprocess_after_editor_mutation(
 
     work = dissolve_small_holes(work, settings.min_hole_area_to_remove_px2)
     work = apply_spike_removal_all(work, settings.min_spike_interior_angle_deg)
+    work = collapse_redundant_vertices_in_polygons(work)
     work = filter_simple_valid_polygons(work)
 
     work = drop_small_outer_polygons(work, settings.min_outer_area_px2)
@@ -494,7 +548,7 @@ def postprocess_after_editor_mutation(
     work = drop_polygons_invalid_points(work)
     work = filter_simple_valid_polygons(work)
 
-    if include_merge and settings.merge_overlapping_on_edit:
+    if include_merge:
         work = merge_overlapping_root_families(work)
 
     work = drop_polygons_invalid_points(work)
@@ -615,8 +669,6 @@ def postprocess_after_vertex_move(
     work, accepted, changed = postprocess_changed_polygon_edit(polygons, settings, polygon_id=polygon_id)
     if not accepted:
         return [p.clone() for p in polygons], False
-    if not settings.merge_overlapping_on_edit:
-        return work, changed
     before_merge = _polygons_topo_signature(work)
     work = merge_overlapping_root_families(work)
     work = drop_polygons_invalid_points(work)
@@ -638,11 +690,13 @@ def postprocess_polygons_for_frame_navigation(
     before = _polygons_topo_signature(polygons)
     work = [p.clone() for p in polygons]
     work = drop_polygons_invalid_points(work)
+    work = collapse_redundant_vertices_in_polygons(work)
     work = filter_simple_valid_polygons(work)
     if settings.clip_to_frame_on_sync and frame_width > 1 and frame_height > 1:
         work = clip_polygons_to_frame_raster(work, frame_width, frame_height)
     work = dissolve_small_holes(work, settings.min_hole_area_to_remove_px2)
     work = apply_spike_removal_all(work, settings.min_spike_interior_angle_deg)
+    work = collapse_redundant_vertices_in_polygons(work)
     work = filter_simple_valid_polygons(work)
     work = drop_small_outer_polygons(work, settings.min_outer_area_px2)
     work = drop_triangle_outer_artifacts(

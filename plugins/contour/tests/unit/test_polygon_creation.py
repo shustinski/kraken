@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QPointF
 from PyQt6.QtWidgets import QApplication
 
+from contour.application.vector_geometry_postprocess import VectorGeometrySettings
 from contour.application.processing import ImageProcessingState
 from contour.application.services.workspace_session import WorkspaceSession
 from contour.domain import PolygonData, compute_polygon_metrics
@@ -93,6 +94,13 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.scene = PolygonEditorScene()
+        self.scene.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
 
     def tearDown(self) -> None:
         self.scene.deleteLater()
@@ -119,6 +127,12 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
 
         self.assertEqual(self.scene._recycled_polygon_items, [])
         self.assertFalse(self.scene._recycled_polygon_cleanup_timer.isActive())
+
+    def test_polygon_points_returns_empty_for_missing_id(self) -> None:
+        self._reset([_polygon(2, [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)])])
+        self.assertEqual(self.scene.polygon_points(1), [])
+        self.assertFalse(self.scene.has_polygon(1))
+        self.assertTrue(self.scene.has_polygon(2))
 
     def test_points_mode_finish_adds_polygon_selects_emits_polygon_changed(self) -> None:
         self._reset([])
@@ -192,6 +206,90 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertEqual(set(restored), {1, 2, 3})
         self.assertTrue(restored[2].is_hole)
         self.assertEqual(restored[2].parent_id, 1)
+
+    def test_delete_hole_merges_island_parented_to_hole(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (60.0, 20.0), (60.0, 60.0), (20.0, 60.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        island = _polygon(
+            3,
+            [(30.0, 30.0), (50.0, 30.0), (50.0, 50.0), (30.0, 50.0)],
+            parent_id=2,
+        )
+        self._reset([outer, hole, island])
+
+        self.assertTrue(self.scene.delete_polygon(2))
+
+        remaining = self.scene.get_polygons()
+        filled = [polygon for polygon in remaining if not polygon.is_hole]
+        self.assertEqual(len(filled), 1)
+        self.assertFalse(any(polygon.is_hole for polygon in remaining))
+
+    def test_delete_hole_merges_independent_island_inside_hole(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (60.0, 20.0), (60.0, 60.0), (20.0, 60.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        island = _polygon(3, [(30.0, 30.0), (50.0, 30.0), (50.0, 50.0), (30.0, 50.0)])
+        self._reset([outer, hole, island])
+
+        self.assertTrue(self.scene.delete_polygon(2))
+
+        remaining = self.scene.get_polygons()
+        filled = [polygon for polygon in remaining if not polygon.is_hole]
+        self.assertEqual(len(filled), 1)
+        self.assertFalse(any(polygon.is_hole for polygon in remaining))
+
+    def test_delete_hole_keeps_via_inside(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (60.0, 20.0), (60.0, 60.0), (20.0, 60.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        via = _polygon(
+            3,
+            [(30.0, 30.0), (50.0, 30.0), (50.0, 50.0), (30.0, 50.0)],
+            parent_id=2,
+        )
+        via.category = "via"
+        via.shape_hint = "box"
+        self._reset([outer, hole, via])
+
+        self.assertTrue(self.scene.delete_polygon(2))
+
+        remaining = self.scene.get_polygons()
+        vias = [polygon for polygon in remaining if polygon.category == "via"]
+        filled = [polygon for polygon in remaining if polygon.category != "via" and not polygon.is_hole]
+        self.assertEqual(len(vias), 1)
+        self.assertEqual(len(filled), 1)
+        self.assertFalse(any(polygon.is_hole for polygon in remaining))
+
+    def test_delete_outer_removes_hole_and_nested_island(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (60.0, 20.0), (60.0, 60.0), (20.0, 60.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        island = _polygon(
+            3,
+            [(30.0, 30.0), (50.0, 30.0), (50.0, 50.0), (30.0, 50.0)],
+            parent_id=2,
+        )
+        self._reset([outer, hole, island])
+
+        self.assertTrue(self.scene.delete_polygon(1))
+        self.assertEqual(self.scene.get_polygons(), [])
 
     def test_multi_delete_refreshes_and_emits_once_per_undo_operation(self) -> None:
         polygons = [
@@ -288,8 +386,8 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
     def test_invalid_polygon_not_committed_keeps_pending(self) -> None:
         self._reset([])
         self.scene.append_pending_point(QPointF(10.0, 10.0))
-        self.scene.append_pending_point(QPointF(20.0, 10.0))
-        self.scene.append_pending_point(QPointF(15.0, 10.0))
+        self.scene.append_pending_point(QPointF(20.0, 20.0))
+        self.scene.append_pending_point(QPointF(15.0, 15.0))
         ok = self.scene.finish_pending_polygon()
         self.assertFalse(ok)
         self.assertEqual(len(self.scene.get_polygons()), 0)
@@ -306,10 +404,17 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
     def test_points_mode_preview_fills_unfinishable_polygon_red(self) -> None:
         self._reset([])
         self.scene.append_pending_point(QPointF(10.0, 10.0))
-        self.scene.append_pending_point(QPointF(20.0, 10.0))
-        self.scene.append_pending_point(QPointF(15.0, 10.0))
+        self.scene.append_pending_point(QPointF(20.0, 20.0))
+        self.scene.append_pending_point(QPointF(15.0, 15.0))
 
         self.assertEqual(self.scene._pending_path_item.brush().color().name().lower(), "#ef4444")
+
+    def test_pending_polyline_drops_axis_aligned_extra_vertex(self) -> None:
+        self._reset([])
+        self.scene.append_pending_point(QPointF(10.0, 10.0))
+        self.scene.append_pending_point(QPointF(20.0, 10.0))
+        self.scene.append_pending_point(QPointF(30.0, 10.0))
+        self.assertEqual(self.scene.pending_points_snapshot(), [(10.0, 10.0), (30.0, 10.0)])
 
     def test_finish_with_under_three_vertices_clears_pending(self) -> None:
         self._reset([])
@@ -336,6 +441,29 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
 
         session.update_current_polygons(self.scene.get_polygons())
         self.assertTrue(session.image_has_changes(key))
+
+    def test_trace_polyline_may_cross_itself(self) -> None:
+        self._reset([])
+        self.scene.start_pending_polygon(for_brush=True)
+        self.scene.append_pending_point(QPointF(0.0, 0.0))
+        self.scene.append_pending_point(QPointF(20.0, 20.0))
+        self.scene.append_pending_point(QPointF(20.0, 0.0))
+        self.scene.append_pending_point(QPointF(0.0, 20.0))
+        self.assertEqual(
+            self.scene.pending_points_snapshot(),
+            [(0.0, 0.0), (20.0, 20.0), (20.0, 0.0), (0.0, 20.0)],
+        )
+
+    def test_closed_polygon_polyline_still_rejects_self_intersection(self) -> None:
+        self._reset([])
+        self.scene.append_pending_point(QPointF(0.0, 0.0))
+        self.scene.append_pending_point(QPointF(20.0, 20.0))
+        self.scene.append_pending_point(QPointF(20.0, 0.0))
+        self.scene.append_pending_point(QPointF(0.0, 20.0))
+        self.assertEqual(
+            self.scene.pending_points_snapshot(),
+            [(0.0, 0.0), (20.0, 20.0), (20.0, 0.0)],
+        )
 
     def test_vector_postprocess_preserves_primary_selection_when_id_survives(self) -> None:
         points = [(20.0, 20.0), (80.0, 20.0), (50.0, 70.0)]

@@ -10,6 +10,7 @@ from PyQt6.QtCore import QSettings
 
 from ..application.dto import PersistedPaths
 from ..application.processing import DisplaySettings
+from ..application.vector_geometry_postprocess import VectorGeometrySettings
 from ..i18n import active_language
 
 VIA_PRESETS_SETTINGS_KEY = "via_search/user_presets"
@@ -68,6 +69,7 @@ class WidgetDisplaySettingsStore:
     def load(self) -> dict[str, object]:
         settings = self._settings_factory()
         defaults = DisplaySettings()
+        vector_geom_defaults = VectorGeometrySettings()
         payload: dict[str, object] = {
             "external_color": settings.value("display/external_color", defaults.external_color, type=str),
             "hole_color": settings.value("display/hole_color", defaults.hole_color, type=str),
@@ -99,9 +101,17 @@ class WidgetDisplaySettingsStore:
             "neighbor_opacity": settings.value("display/neighbor_opacity", 0.35, type=float),
             "neighbor_overlap_pixels": settings.value("display/neighbor_overlap_pixels", 0, type=int),
             "autosave_on_frame_transition": settings.value("display/autosave_on_frame_transition", False, type=bool),
-            "vector_geom_clip_on_sync": settings.value("display/vector_geom_clip_on_sync", True, type=bool),
-            "vector_geom_min_outer_area": settings.value("display/vector_geom_min_outer_area", 9.0, type=float),
-            "vector_geom_min_hole_area": settings.value("display/vector_geom_min_hole_area", 0.0, type=float),
+            "vector_geom_clip_on_sync": settings.value("display/vector_geom_clip_on_sync", vector_geom_defaults.clip_to_frame_on_sync, type=bool),
+            "vector_geom_min_outer_area": settings.value(
+                "display/vector_geom_min_outer_area",
+                vector_geom_defaults.min_outer_area_px2,
+                type=float,
+            ),
+            "vector_geom_min_hole_area": settings.value(
+                "display/vector_geom_min_hole_area",
+                vector_geom_defaults.min_hole_area_to_remove_px2,
+                type=float,
+            ),
             "vector_geom_merge_on_edit": settings.value("display/vector_geom_merge_on_edit", True, type=bool),
             "vector_geom_spike_angle_deg": settings.value("display/vector_geom_spike_angle_deg", 30.0, type=float),
             "vector_geom_drop_triangles": settings.value("display/vector_geom_drop_triangles", True, type=bool),

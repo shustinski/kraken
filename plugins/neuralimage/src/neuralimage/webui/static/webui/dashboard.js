@@ -9,6 +9,7 @@
     const logContainer = document.getElementById('logs-container');
     const maxLogLines = 500;
     const textsNode = document.getElementById('webui-texts-data');
+    const semPresetValuesNode = document.getElementById('sem-preset-values-data');
     const endpointsNode = document.getElementById('webui-endpoints-data');
 
     let uiTexts = {};
@@ -25,6 +26,14 @@
             endpoints = JSON.parse(endpointsNode.textContent);
         } catch (_error) {
             endpoints = {};
+        }
+    }
+    let semPresetValues = {};
+    if (semPresetValuesNode && semPresetValuesNode.textContent) {
+        try {
+            semPresetValues = JSON.parse(semPresetValuesNode.textContent);
+        } catch (_error) {
+            semPresetValues = {};
         }
     }
 
@@ -137,6 +146,9 @@
     const weightDecayInput = document.querySelector('[name="settings-weight_decay"]');
     const presetButtons = document.querySelectorAll('.preset-btn');
     const lossPresetButtons = document.querySelectorAll('.loss-preset-btn');
+    const semPresetInput = document.querySelector('[name="settings-sem_preset"]');
+    const semApplyPresetBtn = document.getElementById('sem-apply-preset-btn');
+    const semConfigControls = document.querySelectorAll('.sem-config-section input, .sem-config-section select');
 
     const modeFields = {
         source: document.querySelector('[data-role="source"]'),
@@ -883,6 +895,17 @@
             item.classList.toggle('is-active', item.dataset.loss === lossFunctionInput.value);
         });
         applyDependentRules();
+        persistFormState();
+    }
+
+    function applySemPreset() {
+        if (!semPresetInput) return;
+        const presetName = semPresetInput.value || 'legacy_v1';
+        const values = semPresetValues[presetName];
+        if (!values) return;
+        Object.entries(values).forEach(([key, value]) => {
+            setFormControlValue(`settings-${key}`, value);
+        });
         persistFormState();
     }
 
@@ -1910,6 +1933,13 @@
     });
     lossPresetButtons.forEach((btn) => {
         btn.addEventListener('click', () => applyLossPreset(btn));
+    });
+    if (semApplyPresetBtn) semApplyPresetBtn.addEventListener('click', applySemPreset);
+    semConfigControls.forEach((control) => {
+        control.addEventListener('change', () => {
+            if (semPresetInput) semPresetInput.value = 'custom';
+            persistFormState();
+        });
     });
 
     if (optimizerInput) optimizerInput.addEventListener('change', markActivePreset);

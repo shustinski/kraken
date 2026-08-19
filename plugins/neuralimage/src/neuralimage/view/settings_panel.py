@@ -1,4 +1,3 @@
-import json
 from typing import Any, Iterable
 from collections.abc import Mapping
 from copy import deepcopy
@@ -20,7 +19,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QPlainTextEdit,
+    QLineEdit,
 )
 
 from neuralimage.UI import ClickableLabel
@@ -29,7 +28,6 @@ from neuralimage.lib.data_interfaces import (
     PCB_TOPOLOGY_FAMILIES,
     RANDOM_ARTIFACT_TYPES,
     SampleCutMode,
-    build_ic_defect_parameters,
     build_pcb_defect_parameters,
     build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
@@ -53,13 +51,22 @@ from neuralimage.view.settings_panel_policy import (
 )
 from neuralimage.view.settings_panel_widgets import (
     NoWheelComboBox,
-    SlidingPanel,
+    SlidingPanel,  # noqa: F401 - compatibility re-export from neuralimage.view
     create_double_spinbox,
     create_min_max_widget,
     create_slider,
     create_spinbox,
 )
-from neuralimage.configuration import build_sem_segmentation_config, get_sem_preset
+from neuralimage.configuration import (
+    SEM_UI_FIELDS,
+    SEM_UI_SECTIONS,
+    SemUiField,
+    build_sem_segmentation_config,
+    fields_for_section,
+    get_sem_preset,
+    sem_config_from_form_values,
+    sem_config_to_form_values,
+)
 
 FIELD_DESCRIPTION_ROW_SPACING = 8
 FORM_DEFAULT_MARGINS = (8, 6, 8, 8)
@@ -1407,14 +1414,39 @@ class SettingsPanel(QDockWidget):
         self.sem_segmentation_preset_combo = NoWheelComboBox()
         self.sem_segmentation_preset_combo.addItem('Legacy v1', 'legacy_v1')
         self.sem_segmentation_preset_combo.addItem('SEM topology experimental v1', 'sem_topology_experimental_v1')
+        self.sem_segmentation_preset_combo.addItem('Custom', 'custom')
         self.sem_segmentation_apply_preset_button = QPushButton('Apply preset')
-        self.sem_segmentation_validate_button = QPushButton('Validate configuration')
-        self.sem_segmentation_config_editor = QPlainTextEdit()
-        self.sem_segmentation_config_editor.setMinimumHeight(220)
+        self.sem_segmentation_validate_button = QPushButton('Validate settings')
         self.sem_segmentation_validation_label = QLabel('')
         self.sem_segmentation_validation_label.setWordWrap(True)
+        self.sem_segmentation_tabs = QTabWidget()
+        self.sem_segmentation_tabs.setTabPosition(QTabWidget.TabPosition.West)
+        self.sem_segmentation_tabs.setMinimumHeight(420)
+        self.sem_segmentation_tabs.setMaximumHeight(560)
+        self.sem_segmentation_controls: dict[str, QWidget] = {}
+        self.sem_segmentation_field_labels: dict[str, QLabel] = {}
+        self.sem_segmentation_section_indexes: dict[str, int] = {}
+        self._sem_segmentation_update_guard = True
+        for section_key, section_title in SEM_UI_SECTIONS:
+            section_widget = QWidget()
+            section_form = self._create_form_layout()
+            section_widget.setLayout(section_form)
+            for field in fields_for_section(section_key):
+                control = self._create_sem_segmentation_control(field)
+                label = QLabel(field.label_en)
+                label.setWordWrap(True)
+                section_form.addRow(label, control)
+                self.sem_segmentation_controls[field.key] = control
+                self.sem_segmentation_field_labels[field.key] = label
+            section_scroll = QScrollArea()
+            section_scroll.setWidgetResizable(True)
+            section_scroll.setWidget(section_widget)
+            self.sem_segmentation_section_indexes[section_key] = self.sem_segmentation_tabs.addTab(
+                section_scroll,
+                section_title,
+            )
         self.sem_segmentation_form.addRow(self.sem_segmentation_preset_combo, self.sem_segmentation_apply_preset_button)
-        self.sem_segmentation_form.addRow(self.sem_segmentation_config_editor)
+        self.sem_segmentation_form.addRow(self.sem_segmentation_tabs)
         self.sem_segmentation_form.addRow(self.sem_segmentation_validate_button)
         self.sem_segmentation_form.addRow(self.sem_segmentation_validation_label)
         self.set_sem_segmentation_config({})
@@ -1551,7 +1583,7 @@ class SettingsPanel(QDockWidget):
         self.hard_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
         self.hard_pixel_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
         self.sem_segmentation_apply_preset_button.clicked.connect(self._apply_sem_segmentation_preset)
-        self.sem_segmentation_validate_button.clicked.connect(self._validate_sem_segmentation_editor)
+        self.sem_segmentation_validate_button.clicked.connect(self._validate_sem_segmentation_settings)
         self.early_stopping_check_box.toggled.connect(self._sync_early_stopping_controls)
         self.rare_patch_oversampling_check_box.toggled.connect(self._sync_rare_patch_oversampling_controls)
         self.recognition_binarize_output_check_box.toggled.connect(self._sync_recognition_output_controls)
@@ -2721,36 +2753,156 @@ class SettingsPanel(QDockWidget):
             self._set_field_visible(field, is_visible)
             self._set_field_enabled(field, scheduler_enabled and is_visible)
 
-    def set_sem_segmentation_config(self, payload: Mapping[str, Any] | None) -> None:
-        value = dict(payload or {})
-        self.sem_segmentation_config_editor.setPlainText(
-            json.dumps(value, indent=2, ensure_ascii=False) if value else '{}'
-        )
-        if value:
-            self._validate_sem_segmentation_editor()
+    def _create_sem_segmentation_control(self, field: SemUiField) -> QWidget:
+        if field.kind == 'bool':
+            control: QWidget = QCheckBox('')
+            control.toggled.connect(self._on_sem_segmentation_control_changed)
+        elif field.kind == 'int':
+            control = create_spinbox(
+                (int(field.minimum), int(field.maximum)),
+                step=int(field.step or 1),
+                default_value=int(field.default),
+            )
+            control.valueChanged.connect(self._on_sem_segmentation_control_changed)
+        elif field.kind == 'float':
+            control = create_double_spinbox(
+                (float(field.minimum), float(field.maximum)),
+                step=float(field.step or 0.01),
+                default_value=float(field.default),
+                decimals=int(field.decimals),
+            )
+            control.valueChanged.connect(self._on_sem_segmentation_control_changed)
+        elif field.kind == 'choice':
+            combo = NoWheelComboBox()
+            for value, label in field.choices:
+                combo.addItem(label, value)
+            combo.currentIndexChanged.connect(self._on_sem_segmentation_control_changed)
+            control = combo
         else:
-            self.sem_segmentation_validation_label.clear()
+            line_edit = QLineEdit()
+            line_edit.textChanged.connect(self._on_sem_segmentation_control_changed)
+            control = line_edit
+        control.setProperty('semFieldKey', field.key)
+        return control
+
+    @staticmethod
+    def _sem_segmentation_control_value(field: SemUiField, control: QWidget) -> Any:
+        if field.kind == 'bool':
+            return bool(control.isChecked())
+        if field.kind in {'int', 'float'}:
+            return control.value()
+        if field.kind == 'choice':
+            return control.currentData()
+        return str(control.text()).strip()
+
+    @staticmethod
+    def _set_sem_segmentation_control_value(field: SemUiField, control: QWidget, value: Any) -> None:
+        if field.kind == 'bool':
+            control.setChecked(bool(value))
+        elif field.kind == 'int':
+            control.setValue(int(value))
+        elif field.kind == 'float':
+            control.setValue(float(value))
+        elif field.kind == 'choice':
+            index = control.findData(str(value))
+            control.setCurrentIndex(index if index >= 0 else 0)
+        else:
+            control.setText(str(value or ''))
+
+    def _on_sem_segmentation_control_changed(self, *_args: Any) -> None:
+        if self._sem_segmentation_update_guard:
+            return
+        custom_index = self.sem_segmentation_preset_combo.findData('custom')
+        if custom_index >= 0:
+            self.sem_segmentation_preset_combo.setCurrentIndex(custom_index)
+        self.sem_segmentation_validation_label.clear()
+        self._sync_sem_segmentation_controls()
+
+    def _sync_sem_segmentation_controls(self) -> None:
+        controls = self.sem_segmentation_controls
+        for target_name in (
+            'boundary', 'skeleton', 'sdf', 'distance_transform', 'thickness',
+            'vertex', 'corner', 'endpoint', 'junction', 'orientation', 'tangent',
+            'curvature', 'topology',
+        ):
+            enabled_control = controls.get(f'target_{target_name}')
+            weight_control = controls.get(f'weight_{target_name}')
+            if enabled_control is not None and weight_control is not None:
+                weight_control.setEnabled(bool(enabled_control.isChecked()))
+
+        sdf_control = controls.get('target_sdf')
+        distance_boundary_weight = controls.get('target_distance_boundary_weight')
+        if sdf_control is not None and distance_boundary_weight is not None:
+            distance_boundary_weight.setEnabled(bool(sdf_control.isChecked()))
+
+        dependency_groups = (
+            ('aug_enabled', tuple(key for key in controls if key.startswith('aug_') and key != 'aug_enabled')),
+            ('context_enabled', tuple(key for key in controls if key.startswith('context_') and key != 'context_enabled')),
+            ('uncertainty_enabled', tuple(key for key in controls if key.startswith('uncertainty_') and key != 'uncertainty_enabled')),
+            ('al_enabled', tuple(key for key in controls if key.startswith('al_') and key != 'al_enabled')),
+            ('validation_enabled', tuple(key for key in controls if key.startswith('validation_') and key != 'validation_enabled')),
+        )
+        for parent_key, child_keys in dependency_groups:
+            parent = controls.get(parent_key)
+            if parent is None:
+                continue
+            enabled = bool(parent.isChecked())
+            for child_key in child_keys:
+                controls[child_key].setEnabled(enabled)
+
+        hard_mode = controls.get('hard_mode')
+        if hard_mode is not None:
+            enabled = str(hard_mode.currentData()) != 'off'
+            for key, control in controls.items():
+                if key.startswith('hard_') and key != 'hard_mode':
+                    control.setEnabled(enabled)
+
+    def set_sem_segmentation_config(self, payload: Mapping[str, Any] | None) -> None:
+        canonical = build_sem_segmentation_config(payload)
+        values = sem_config_to_form_values(canonical.to_dict())
+        self._sem_segmentation_update_guard = True
+        try:
+            for field in SEM_UI_FIELDS:
+                self._set_sem_segmentation_control_value(
+                    field,
+                    self.sem_segmentation_controls[field.key],
+                    values[field.form_name],
+                )
+            preset_name = str(canonical.preset or 'custom')
+            index = self.sem_segmentation_preset_combo.findData(preset_name)
+            if index < 0:
+                index = self.sem_segmentation_preset_combo.findData('custom')
+            self.sem_segmentation_preset_combo.setCurrentIndex(max(0, index))
+        finally:
+            self._sem_segmentation_update_guard = False
+        self._sync_sem_segmentation_controls()
+        self.sem_segmentation_validation_label.clear()
 
     def get_sem_segmentation_config(self) -> dict[str, Any]:
-        text = self.sem_segmentation_config_editor.toPlainText().strip() or '{}'
-        payload = json.loads(text)
-        if not isinstance(payload, dict):
-            raise ValueError('SEM segmentation configuration must be a JSON object.')
-        if payload:
-            build_sem_segmentation_config(payload)
-        return payload
+        values = {
+            field.form_name: self._sem_segmentation_control_value(
+                field,
+                self.sem_segmentation_controls[field.key],
+            )
+            for field in SEM_UI_FIELDS
+        }
+        preset = str(self.sem_segmentation_preset_combo.currentData() or 'custom')
+        return sem_config_from_form_values(values, preset=preset)
 
     def _apply_sem_segmentation_preset(self) -> None:
         preset_name = str(self.sem_segmentation_preset_combo.currentData() or 'legacy_v1')
+        if preset_name == 'custom':
+            self._validate_sem_segmentation_settings()
+            return
         config = get_sem_preset(preset_name)
-        self.set_sem_segmentation_config({} if preset_name == 'legacy_v1' else config.to_dict())
-        self._validate_sem_segmentation_editor()
+        self.set_sem_segmentation_config(config.to_dict())
+        self._validate_sem_segmentation_settings()
 
-    def _validate_sem_segmentation_editor(self) -> None:
+    def _validate_sem_segmentation_settings(self) -> None:
         try:
             payload = self.get_sem_segmentation_config()
             config_hash = build_sem_segmentation_config(payload).stable_hash()
-        except (TypeError, ValueError, json.JSONDecodeError) as error:
+        except (TypeError, ValueError) as error:
             self.sem_segmentation_validation_label.setText(f'Invalid configuration: {error}')
             self.sem_segmentation_validation_label.setStyleSheet('color: #c62828;')
             return

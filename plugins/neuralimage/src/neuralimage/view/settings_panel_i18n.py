@@ -2,6 +2,15 @@
 
 from typing import Any
 
+from neuralimage.configuration import (
+    SEM_UI_FIELDS,
+    SEM_UI_SECTIONS,
+    sem_ui_choice_label,
+    sem_ui_field_label,
+    sem_ui_section_label,
+)
+from neuralimage.lib.ui_texts import get_ui_language
+
 TEXT_FIELD_LOG_UPDATE_FREQUENCY = 'log_update_frequency'
 TEXT_FIELD_RECOGNITION_JPEG_QUALITY = 'recognition_jpeg_quality'
 
@@ -1148,6 +1157,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.scheduler_groupbox.setTitle(str(t.get('scheduler_group', 'Scheduler')))
     panel.hard_mining_groupbox.setTitle(str(t.get('hard_mining_group', 'Hard mining')))
     if hasattr(panel, 'sem_segmentation_groupbox'):
+        language = get_ui_language()
         panel.sem_segmentation_groupbox.setTitle(
             str(t.get('sem_segmentation_group', 'SEM topology segmentation'))
         )
@@ -1155,8 +1165,34 @@ def apply_settings_panel_texts(panel: Any) -> None:
             str(t.get('sem_segmentation_apply_preset', 'Apply preset'))
         )
         panel.sem_segmentation_validate_button.setText(
-            str(t.get('sem_segmentation_validate', 'Validate configuration'))
+            str(t.get('sem_segmentation_validate', 'Validate settings'))
         )
+        if hasattr(panel, 'sem_segmentation_tabs'):
+            for section_key, english_label in SEM_UI_SECTIONS:
+                index = panel.sem_segmentation_section_indexes.get(section_key)
+                if index is not None:
+                    panel.sem_segmentation_tabs.setTabText(
+                        index,
+                        sem_ui_section_label(section_key, english_label, language),
+                    )
+            for field in SEM_UI_FIELDS:
+                label = panel.sem_segmentation_field_labels.get(field.key)
+                if label is not None:
+                    label.setText(sem_ui_field_label(field, language))
+                if field.kind == 'choice':
+                    control = panel.sem_segmentation_controls.get(field.key)
+                    if control is not None:
+                        for item_index, (value, english_label) in enumerate(field.choices):
+                            control.setItemText(
+                                item_index,
+                                sem_ui_choice_label(value, english_label, language),
+                            )
+            custom_index = panel.sem_segmentation_preset_combo.findData('custom')
+            if custom_index >= 0:
+                panel.sem_segmentation_preset_combo.setItemText(
+                    custom_index,
+                    'Пользовательский' if language == 'ru' else 'Custom',
+                )
     panel.early_stopping_groupbox.setTitle(str(t.get('early_stopping_group', 'Early stopping')))
     if hasattr(panel, 'settings_tabs'):
         training_index = panel._page_indexes.get('training')

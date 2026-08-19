@@ -6,6 +6,8 @@ from neuralimage.configuration import (
     available_sem_presets,
     build_sem_segmentation_config,
     get_sem_preset,
+    sem_config_from_form_values,
+    sem_config_to_form_values,
 )
 from neuralimage.main_code_version import _load_settings
 
@@ -25,6 +27,33 @@ def test_experimental_preset_round_trips_and_has_stable_hash():
     assert restored.stable_hash() == config.stable_hash()
     assert set(config.heads.enabled) == {'boundary', 'skeleton', 'sdf'}
     assert config.experiment.topology_first
+
+
+def test_typed_ui_values_round_trip_and_derive_matching_heads():
+    preset = get_sem_preset('sem_topology_experimental_v1').to_dict()
+    values = sem_config_to_form_values(preset)
+
+    restored = sem_config_from_form_values(values, preset='sem_topology_experimental_v1')
+
+    assert restored == preset
+    assert restored['heads']['enabled'] == ['boundary', 'skeleton', 'sdf']
+
+
+def test_typed_legacy_defaults_keep_compact_compatibility_payload():
+    values = sem_config_to_form_values({})
+
+    assert sem_config_from_form_values(values, preset='legacy_v1') == {}
+
+
+def test_typed_ui_clears_distance_boundary_weight_when_sdf_is_disabled():
+    values = sem_config_to_form_values(get_sem_preset('sem_topology_experimental_v1').to_dict())
+    values['sem__target_sdf'] = False
+
+    restored = sem_config_from_form_values(values, preset='custom')
+
+    assert restored['targets']['basic']['sdf'] is False
+    assert restored['targets']['distance_boundary_weight'] == 0.0
+    assert 'sdf' not in restored['heads']['enabled']
 
 
 def test_cross_field_validation_rejects_missing_sdf_head():

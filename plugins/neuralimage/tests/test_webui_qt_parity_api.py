@@ -337,6 +337,17 @@ class TestWebuiQtParityApis(TestCase):
         assert 'Epoch count' not in content
         assert 'Эпох обучения' in content
 
+    def test_dashboard_renders_typed_sem_controls_without_json_editor(self):
+        response = self.client.get(reverse('webui:dashboard'), data={'lang': 'ru'})
+        content = response.content.decode('utf-8')
+
+        assert response.status_code == 200
+        assert 'name="settings-sem_segmentation_config"' not in content
+        assert 'name="settings-sem__pre_percentile"' in content
+        assert 'name="settings-sem__target_skeleton"' in content
+        assert 'name="settings-sem__uncertainty_method"' in content
+        assert 'Предобработка' in content
+
     def test_sample_count_api_returns_zero_for_missing_folder(self):
         response = self.client.post(
             reverse('webui:sample_count_api'),

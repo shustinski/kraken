@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from django import forms
 from django.core.exceptions import ValidationError
 
 from neuralimage.application.dto import MainWindowState, SettingsState
-from neuralimage.configuration import build_sem_segmentation_config
+from neuralimage.configuration import (
+    SEM_UI_FIELDS,
+    SEM_UI_SECTIONS,
+    SemUiField,
+    build_sem_segmentation_config,
+    get_sem_preset,
+    sem_config_from_form_values,
+    sem_config_to_form_values,
+    sem_ui_choice_label,
+    sem_ui_field_label,
+    sem_ui_section_label,
+)
 from neuralimage.lib.data_interfaces import (
     build_synthetic_defect_generator_parameters,
     ConfidenceSaveMode,
@@ -396,12 +409,14 @@ class SettingsForm(forms.Form):
     hard_pixel_mining_ratio = forms.FloatField(
         label='Hard pixel keep ratio', min_value=0.01, max_value=1.0, required=False
     )
-    sem_segmentation_config = forms.JSONField(
-        label='SEM topology configuration',
+    sem_preset = forms.ChoiceField(
+        label='SEM topology preset',
+        choices=(
+            ('legacy_v1', 'Legacy v1'),
+            ('sem_topology_experimental_v1', 'SEM topology experimental v1'),
+            ('custom', 'Custom'),
+        ),
         required=False,
-        initial=dict,
-        widget=forms.Textarea(attrs={'rows': 18, 'spellcheck': 'false', 'class': 'code-editor'}),
-        help_text='Versioned preprocessing, targets, heads, losses, uncertainty and validation configuration.',
     )
     cutout_enabled = forms.BooleanField(label='Enable cutout', required=False)
     cutout_probability = forms.FloatField(label='Cutout probability', min_value=0.0, max_value=1.0, required=False)
@@ -458,7 +473,51 @@ class SettingsForm(forms.Form):
         ui_texts = kwargs.pop('ui_texts', None)
         self._texts = ui_texts if isinstance(ui_texts, dict) else get_ui_section('webui', language)
         self._settings_form_texts = _copy_dict(self._texts.get('settings_form', {}))
+        self._legacy_sem_config_error: str | None = None
+        data = args[0] if args else kwargs.get('data')
+        prefix = kwargs.get('prefix')
+        legacy_key = f'{prefix}-sem_segmentation_config' if prefix else 'sem_segmentation_config'
+        marker_key = f'{prefix}-sem_preset' if prefix else 'sem_preset'
+        if data is not None and legacy_key in data and marker_key not in data:
+            legacy_value = data.get(legacy_key)
+            try:
+                legacy_payload = json.loads(legacy_value) if isinstance(legacy_value, str) else legacy_value
+                flattened = sem_config_to_form_values(legacy_payload if isinstance(legacy_payload, dict) else {})
+            except (TypeError, ValueError) as error:
+                flattened = {}
+                self._legacy_sem_config_error = f'Invalid legacy SEM configuration: {error}'
+            normalized_data = data.copy()
+            for field_name, value in flattened.items():
+                key = f'{prefix}-{field_name}' if prefix else field_name
+                if isinstance(value, bool):
+                    if value:
+                        normalized_data[key] = 'on'
+                    continue
+                normalized_data[key] = str(value)
+            if args:
+                args = (normalized_data, *args[1:])
+            else:
+                kwargs['data'] = normalized_data
         super().__init__(*args, **kwargs)
+        resolved_language = str(language or 'ru').strip().lower()
+        self.fields['sem_preset'].label = (
+            'Пресет топологической сегментации SEM'
+            if resolved_language.startswith('ru')
+            else 'SEM topology preset'
+        )
+        self.fields['sem_preset'].choices = (
+            ('legacy_v1', 'Legacy v1'),
+            ('sem_topology_experimental_v1', 'Экспериментальный SEM topology v1' if resolved_language.startswith('ru') else 'SEM topology experimental v1'),
+            ('custom', 'Пользовательский' if resolved_language.startswith('ru') else 'Custom'),
+        )
+        for field_spec in SEM_UI_FIELDS:
+            form_field = self.fields[field_spec.form_name]
+            form_field.label = sem_ui_field_label(field_spec, resolved_language)
+            if field_spec.kind == 'choice':
+                form_field.choices = [
+                    (value, sem_ui_choice_label(value, label, resolved_language))
+                    for value, label in field_spec.choices
+                ]
         for field in self.fields.values():
             field.widget.attrs.update(_START_FORM_ATTRS)
 
@@ -527,6 +586,7 @@ class SettingsForm(forms.Form):
             'loss_function',
             'scheduler_name',
             'scheduler_one_cycle_anneal_strategy',
+            'sem_preset',
         ):
             self.fields[field_name].widget.attrs.update(_BASE_SELECT_ATTRS)
 
@@ -641,11 +701,20 @@ class SettingsForm(forms.Form):
         cleaned['validation_image_folder'] = validation_image_folder
         cleaned['validation_label_folder'] = validation_label_folder
 
-        sem_config = cleaned.get('sem_segmentation_config') or {}
-        try:
-            build_sem_segmentation_config(sem_config)
-        except (TypeError, ValueError) as error:
-            self.add_error('sem_segmentation_config', str(error))
+        if self._legacy_sem_config_error is not None:
+            self.add_error('sem_preset', self._legacy_sem_config_error)
+            sem_config = {}
+        else:
+            try:
+                sem_config = sem_config_from_form_values(
+                    cleaned,
+                    preset=str(cleaned.get('sem_preset') or 'legacy_v1'),
+                )
+                build_sem_segmentation_config(sem_config)
+            except (TypeError, ValueError) as error:
+                self.add_error('sem_preset', str(error))
+                sem_config = {}
+        cleaned['sem_segmentation_config'] = sem_config
 
         if cleaned.get('random_patch_size_enabled') and cleaned.get('sample_cut_mode') == SampleCutMode.online.value:
             ranges = (
@@ -933,7 +1002,7 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'scheduler_step_lr_step_size': getattr(state, 'scheduler_step_lr_step_size', 10),
         'scheduler_step_lr_gamma': getattr(state, 'scheduler_step_lr_gamma', 0.1),
         'hard_mining_enabled': state.hard_mining_enabled,
-        'sem_segmentation_config': getattr(state, 'sem_segmentation_config', {}),
+        **sem_config_to_form_values(getattr(state, 'sem_segmentation_config', {})),
         'hard_pixel_mining_enabled': getattr(state, 'hard_pixel_mining_enabled', False),
         'hard_pixel_mining_ratio': getattr(state, 'hard_pixel_mining_ratio', 0.25),
         'cutout_enabled': getattr(state, 'cutout_enabled', False),
@@ -976,5 +1045,70 @@ def defaults_from_settings_state(state: SettingsState) -> dict:
         'torch_compile_enabled': state.torch_compile_enabled,
         'show_batch_preview': state.show_batch_preview,
         'use_multi_gpu': state.use_multi_gpu,
+    }
+
+
+def _django_field_for_sem_spec(spec: SemUiField) -> forms.Field:
+    if spec.kind == 'bool':
+        return forms.BooleanField(label=spec.label_en, required=False, initial=bool(spec.default))
+    if spec.kind == 'int':
+        field = forms.IntegerField(
+            label=spec.label_en,
+            required=False,
+            initial=int(spec.default),
+            min_value=int(spec.minimum),
+            max_value=int(spec.maximum),
+        )
+        field.widget.attrs.update(_BASE_NUM_INPUT_ATTRS)
+        return field
+    if spec.kind == 'float':
+        field = forms.FloatField(
+            label=spec.label_en,
+            required=False,
+            initial=float(spec.default),
+            min_value=float(spec.minimum),
+            max_value=float(spec.maximum),
+        )
+        field.widget.attrs.update(_BASE_NUM_INPUT_ATTRS | {'step': str(spec.step or 'any')})
+        return field
+    if spec.kind == 'choice':
+        field = forms.ChoiceField(
+            label=spec.label_en,
+            required=False,
+            initial=str(spec.default),
+            choices=spec.choices,
+        )
+        field.widget.attrs.update(_BASE_SELECT_ATTRS)
+        return field
+    field = forms.CharField(label=spec.label_en, required=False, initial=str(spec.default))
+    field.widget.attrs.update(_BASE_TEXT_INPUT_ATTRS)
+    return field
+
+
+for _sem_field_spec in SEM_UI_FIELDS:
+    SettingsForm.base_fields[_sem_field_spec.form_name] = _django_field_for_sem_spec(_sem_field_spec)
+
+
+def sem_form_sections(form: SettingsForm, language: str) -> list[dict[str, object]]:
+    sections: list[dict[str, object]] = []
+    for section_key, english_label in SEM_UI_SECTIONS:
+        sections.append(
+            {
+                'key': section_key,
+                'label': sem_ui_section_label(section_key, english_label, language),
+                'fields': [
+                    form[field.form_name]
+                    for field in SEM_UI_FIELDS
+                    if field.section == section_key
+                ],
+            }
+        )
+    return sections
+
+
+def sem_preset_form_values() -> dict[str, dict[str, Any]]:
+    return {
+        preset_name: sem_config_to_form_values(get_sem_preset(preset_name).to_dict())
+        for preset_name in ('legacy_v1', 'sem_topology_experimental_v1')
     }
 

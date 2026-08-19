@@ -31,7 +31,7 @@ Available presets:
 - `sem_topology_experimental_v1`: basic heads, shared preprocessing, SEM v2 augmentation, topology validation and confidence infrastructure are enabled for ablation.
 - `sem_topology_recommended_v1`: unavailable until the acceptance gate passes on real data.
 
-Qt and Web settings expose the complete JSON configuration and strict validation. State round-trips through both interfaces. Model artifacts contain model/head kwargs plus the preprocessing config and hash; the run manifest contains the complete training configuration.
+Qt and Web expose the complete configuration as typed sections with checkboxes, numeric inputs, choices and path fields. JSON is not shown or edited in the user interface. The internal dictionary contract remains versioned so old workflow snapshots still load and round-trip. Model artifacts contain model/head kwargs plus the preprocessing config and hash; the run manifest contains the complete training configuration.
 
 CLI configurations now use `training_parameters` and `recognition_parameters`. Historical `tranining_parameters` and `recogniton_parameters` spellings remain accepted as read aliases.
 

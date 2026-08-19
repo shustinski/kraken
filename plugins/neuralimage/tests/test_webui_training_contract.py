@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -9,6 +10,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'neuralimage.webui_project.setti
 django.setup()
 
 from neuralimage.application.dto import SettingsState
+from neuralimage.configuration import get_sem_preset, sem_config_to_form_values
 from neuralimage.webui.forms import SettingsForm, defaults_from_settings_state
 
 
@@ -85,3 +87,41 @@ def test_web_synthetic_topology_maps_only_when_enabled():
     assert payload['topology_domain'] == 'ic'
     assert payload['epoch_size_factor'] == pytest.approx(0.5)
     assert payload['image_size_xy'] == [640, 384]
+
+
+def test_web_sem_configuration_uses_typed_fields_and_round_trips_preset():
+    assert 'sem_segmentation_config' not in SettingsForm.base_fields
+    assert 'sem__target_skeleton' in SettingsForm.base_fields
+    preset = get_sem_preset('sem_topology_experimental_v1').to_dict()
+    flattened = sem_config_to_form_values(preset)
+    posted = _valid_settings_data()
+    for name, value in flattened.items():
+        if isinstance(value, bool):
+            if value:
+                posted[name] = 'on'
+        else:
+            posted[name] = str(value)
+
+    form = SettingsForm(data=posted)
+
+    assert form.is_valid(), form.errors
+    assert form.to_state().sem_segmentation_config == preset
+
+
+def test_web_form_accepts_legacy_json_post_without_rendering_json_field():
+    preset = get_sem_preset('sem_topology_experimental_v1').to_dict()
+    form = SettingsForm(
+        data=_valid_settings_data(sem_segmentation_config=json.dumps(preset)),
+    )
+
+    assert form.is_valid(), form.errors
+    assert form.to_state().sem_segmentation_config == preset
+
+
+def test_web_form_reports_invalid_legacy_json_post():
+    form = SettingsForm(
+        data=_valid_settings_data(sem_segmentation_config='{invalid'),
+    )
+
+    assert not form.is_valid()
+    assert 'Invalid legacy SEM configuration' in str(form.errors['sem_preset'])

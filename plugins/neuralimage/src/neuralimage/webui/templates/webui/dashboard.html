@@ -873,11 +873,32 @@
                 <section class="section" id="settings-section-sem-topology">
                     <h3>{{ texts.sem_topology_section }}</h3>
                     <p class="field-help">{{ texts.sem_topology_help }}</p>
-                    <div class="field">
-                        <label>{{ settings_form.sem_segmentation_config.label }}</label>
-                        {{ settings_form.sem_segmentation_config }}
-                        {% if settings_form.sem_segmentation_config.errors %}<div class="field-error">{{ settings_form.sem_segmentation_config.errors|striptags }}</div>{% endif %}
+                    <div class="inline-2">
+                        <div class="field compact">
+                            <label>{{ settings_form.sem_preset.label }}</label>
+                            {{ settings_form.sem_preset }}
+                            {% if settings_form.sem_preset.errors %}<div class="field-error">{{ settings_form.sem_preset.errors|striptags }}</div>{% endif %}
+                        </div>
+                        <button type="button" class="ghost-btn" id="sem-apply-preset-btn">{{ settings_panel_texts.sem_segmentation_apply_preset }}</button>
                     </div>
+                    {% for section in sem_config_sections %}
+                    <details class="qt-details sem-config-section"{% if forloop.first %} open{% endif %}>
+                        <summary>{{ section.label }}</summary>
+                        <div class="settings-subsection-body">
+                            {% for field in section.fields %}
+                                {% if field.field.widget.input_type == "checkbox" %}
+                                <label class="check-row" title="{{ field.help_text }}">{{ field }} {{ field.label }}</label>
+                                {% else %}
+                                <div class="field compact">
+                                    <label>{{ field.label }}</label>
+                                    {{ field }}
+                                    {% if field.errors %}<div class="field-error">{{ field.errors|striptags }}</div>{% endif %}
+                                </div>
+                                {% endif %}
+                            {% endfor %}
+                        </div>
+                    </details>
+                    {% endfor %}
                 </section>
                 <div class="settings-footer">
                     <button type="button" class="btn-start" id="reset-defaults-btn" title="{{ js_texts.reset_defaults_tip }}">{{ js_texts.reset_defaults }}</button>
@@ -900,6 +921,7 @@
 </div>
 
 {{ js_texts|json_script:"webui-texts-data" }}
+{{ sem_preset_values|json_script:"sem-preset-values-data" }}
 <script id="webui-endpoints-data" type="application/json">{
   "workflowImportUrl": "{{ workflow_import_url|escapejs }}",
   "workflowPresetUrl": "{{ workflow_preset_url|escapejs }}",

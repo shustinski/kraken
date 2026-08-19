@@ -43,13 +43,59 @@ def _import_main_presenter_with_stubs():
 
 def test_settings_panel_round_trips_sem_topology_configuration(qapp):
     panel = SettingsPanel()
+    panel.sync_business_logic_controls('train_only')
+    panel.expert_groupbox.setChecked(True)
     payload = get_sem_preset('sem_topology_experimental_v1').to_dict()
 
     panel.set_sem_segmentation_config(payload)
 
+    assert not hasattr(panel, 'sem_segmentation_config_editor')
+    assert panel.sem_segmentation_tabs.count() >= 10
+    assert panel.sem_segmentation_controls['target_skeleton'].isChecked()
     assert panel.get_sem_segmentation_config() == payload
     panel.sem_segmentation_validate_button.click()
     assert 'SHA-256' in panel.sem_segmentation_validation_label.text()
+
+
+def test_settings_panel_sem_preset_populates_typed_controls(qapp):
+    panel = SettingsPanel()
+    panel.sync_business_logic_controls('train_only')
+    panel.expert_groupbox.setChecked(True)
+    experimental_index = panel.sem_segmentation_preset_combo.findData('sem_topology_experimental_v1')
+
+    panel.sem_segmentation_preset_combo.setCurrentIndex(experimental_index)
+    panel.sem_segmentation_apply_preset_button.click()
+
+    assert panel.sem_segmentation_controls['pre_percentile'].isChecked()
+    assert panel.sem_segmentation_controls['aug_enabled'].isChecked()
+    assert panel.sem_segmentation_controls['target_boundary'].isChecked()
+    assert panel.sem_segmentation_controls['uncertainty_enabled'].isChecked()
+
+
+def test_settings_panel_sem_target_toggle_marks_custom_and_syncs_head(qapp):
+    panel = SettingsPanel()
+    panel.sync_business_logic_controls('train_only')
+    panel.expert_groupbox.setChecked(True)
+
+    panel.sem_segmentation_controls['target_corner'].setChecked(True)
+    payload = panel.get_sem_segmentation_config()
+
+    assert panel.sem_segmentation_preset_combo.currentData() == 'custom'
+    assert payload['targets']['geometry']['corner'] is True
+    assert payload['heads']['enabled'] == ['corner']
+
+
+def test_settings_panel_disables_sdf_boundary_weight_without_sdf(qapp):
+    panel = SettingsPanel()
+    panel.sync_business_logic_controls('train_only')
+    panel.expert_groupbox.setChecked(True)
+    panel.set_sem_segmentation_config(get_sem_preset('sem_topology_experimental_v1').to_dict())
+
+    panel.sem_segmentation_controls['target_sdf'].setChecked(False)
+    payload = panel.get_sem_segmentation_config()
+
+    assert not panel.sem_segmentation_controls['target_distance_boundary_weight'].isEnabled()
+    assert payload['targets']['distance_boundary_weight'] == 0.0
 
 
 def test_settings_panel_emits_optimizer_settings_changed(qapp):

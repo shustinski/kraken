@@ -40,7 +40,14 @@ from neuralimage.lib.update_checker import (
     save_selected_update_channel,
 )
 from neuralimage.lib.version import APP_NAME, APP_VERSION, get_app_title
-from .forms import MainWindowForm, SettingsForm, defaults_from_main_state, defaults_from_settings_state
+from .forms import (
+    MainWindowForm,
+    SettingsForm,
+    defaults_from_main_state,
+    defaults_from_settings_state,
+    sem_form_sections,
+    sem_preset_form_values,
+)
 from .services.broadcast_notifications import get_broadcast_notification_store
 from .services.training_session import get_session_service
 from neuralimage.application.services.workflow_mapper import build_workflow_parameters
@@ -453,6 +460,8 @@ def _build_dashboard_context(
     return {
         'main_form': main_form,
         'settings_form': settings_form,
+        'sem_config_sections': sem_form_sections(settings_form, language),
+        'sem_preset_values': sem_preset_form_values(),
         'model_choices': _load_model_choices(),
         'status': status,
         'status_display': _status_display(status, texts),

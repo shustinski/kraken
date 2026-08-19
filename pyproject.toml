@@ -7,7 +7,7 @@ name = "kraken"
 version = "0.1.0"
 description = "Kraken project manager, server, agent and shared plugin runtime."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = []
 
 [project.optional-dependencies]
@@ -104,4 +104,4 @@ addopts = "-ra"
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py314"

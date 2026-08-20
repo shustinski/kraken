@@ -551,6 +551,8 @@ class WidgetUiHelpersMixin:
         if widget is None or not qt_object_is_valid(widget):
             return
         widget.installEventFilter(self)
+        for child in widget.findChildren(QWidget):
+            child.installEventFilter(self)
         line_edit = getattr(widget, "lineEdit", None)
         if callable(line_edit):
             editor = line_edit()
@@ -565,37 +567,32 @@ class WidgetUiHelpersMixin:
         except RuntimeError:
             return False
 
-    def _combo_popup_is_open(self, watched) -> bool:
-        combo = watched if isinstance(watched, QComboBox) else None
-        if combo is None:
-            parent = watched.parentWidget() if hasattr(watched, "parentWidget") else None
-            if isinstance(parent, QComboBox):
-                combo = parent
-        if combo is None:
+    def _enclosing_value_control(self, watched):
+        node = watched
+        while node is not None:
+            if isinstance(node, (QComboBox, QAbstractSpinBox)):
+                return node
+            if node is self:
+                break
+            node = node.parentWidget() if hasattr(node, "parentWidget") else None
+        return None
+
+    def _combo_popup_is_open(self, control) -> bool:
+        if not isinstance(control, QComboBox):
             return False
-        view = combo.view()
+        view = control.view()
         return view is not None and view.isVisible()
 
-    def _is_wheel_sensitive_value_control(self, watched) -> bool:
-        if isinstance(watched, (QComboBox, QAbstractSpinBox)):
-            return True
-        parent = watched.parentWidget() if hasattr(watched, "parentWidget") else None
-        return isinstance(watched, QLineEdit) and isinstance(parent, (QAbstractSpinBox, QComboBox))
-
-    def _forward_wheel_to_scroll_parent(self, watched, event) -> None:
-        node = watched.parentWidget() if hasattr(watched, "parentWidget") else None
-        while node is not None:
-            if isinstance(node, QScrollArea):
-                viewport = node.viewport()
-                if viewport is not None and viewport is not watched:
-                    QApplication.sendEvent(viewport, event)
-                return
-            node = node.parentWidget()
-
     def eventFilter(self, watched, event) -> bool:
-        if event.type() == QEvent.Type.Wheel and self._is_wheel_sensitive_value_control(watched):
-            if self._owns_descendant_widget(watched) and not self._combo_popup_is_open(watched):
-                self._forward_wheel_to_scroll_parent(watched, event)
+        if event.type() == QEvent.Type.Wheel:
+            control = self._enclosing_value_control(watched)
+            if (
+                control is not None
+                and self._owns_descendant_widget(control)
+                and not self._combo_popup_is_open(control)
+            ):
+                # Do not re-dispatch the same QWheelEvent: a scroll viewport would
+                # deliver it back to the widget under the cursor and change the value.
                 return True
         if hasattr(self, "_handle_frame_matrix_arrow_key_event") and not getattr(self, "_closing", False):
             arrow_key_targets: set[object] = set()

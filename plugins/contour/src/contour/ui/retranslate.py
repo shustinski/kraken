@@ -254,7 +254,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.recognition_mode_combo.setItemText(2, "Контакты" if self._ui_language == "ru" else "Contacts")
     if hasattr(self, "recognition_mode_label"):
         self.recognition_mode_label.setText("Распознавание" if self._ui_language == "ru" else "Recognition")
-    if hasattr(self, "metal_segmentation_strategy_combo") and self.metal_segmentation_strategy_combo.count() >= 5:
+    if hasattr(self, "metal_segmentation_strategy_combo") and self.metal_segmentation_strategy_combo.count() >= 6:
         self.metal_segmentation_strategy_combo.setItemText(
             0, "Порог Otsu" if self._ui_language == "ru" else "Otsu threshold"
         )
@@ -262,6 +262,9 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_segmentation_strategy_combo.setItemText(2, "Random Walker")
         self.metal_segmentation_strategy_combo.setItemText(3, "Graph Cut")
         self.metal_segmentation_strategy_combo.setItemText(4, "Reconstruction")
+        self.metal_segmentation_strategy_combo.setItemText(
+            5, "Замкнутые границы" if self._ui_language == "ru" else "Closed boundary"
+        )
     if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
         self.metal_segmentation_strategy_label_widget.setText(
             "Алгоритм распознавания" if self._ui_language == "ru" else "Recognition algorithm"
@@ -308,6 +311,14 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_recon_erode_label_widget.setText(
             "Эрозия ядер, px" if self._ui_language == "ru" else "Core erosion, px"
         )
+    if getattr(self, "metal_boundary_relief_label_widget", None) is not None:
+        self.metal_boundary_relief_label_widget.setText(
+            "Высота рельефа границы" if self._ui_language == "ru" else "Edge relief height"
+        )
+    if getattr(self, "metal_boundary_background_label_widget", None) is not None:
+        self.metal_boundary_background_label_widget.setText(
+            "Масштаб фона, σ" if self._ui_language == "ru" else "Background scale, σ"
+        )
     if getattr(self, "metal_advanced_group", None) is not None:
         self.metal_advanced_group.setTitle("Дополнительно" if self._ui_language == "ru" else "Advanced")
     if getattr(self, "metal_filter_group", None) is not None:
@@ -326,6 +337,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_graph_cut_group.setTitle("Graph Cut")
     if getattr(self, "metal_reconstruction_group", None) is not None:
         self.metal_reconstruction_group.setTitle("Reconstruction")
+    if getattr(self, "metal_closed_boundary_group", None) is not None:
+        self.metal_closed_boundary_group.setTitle(
+            "Замкнутые границы" if self._ui_language == "ru" else "Closed boundary"
+        )
     if getattr(self, "metal_gradient_3d_button", None) is not None:
         self.metal_gradient_3d_button.setText("3D поле" if self._ui_language == "ru" else "3D field")
     if getattr(self, "metal_debug_visual_label_widget", None) is not None:

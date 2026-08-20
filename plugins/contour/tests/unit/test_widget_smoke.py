@@ -195,6 +195,10 @@ class WidgetSmokeTests(unittest.TestCase):
                 before = spin.value()
                 _send_wheel(spin, -120)
                 _send_wheel(spin, 120)
+                editor = spin.lineEdit() if hasattr(spin, "lineEdit") else None
+                if editor is not None:
+                    _send_wheel(editor, -120)
+                    _send_wheel(editor, 120)
                 self.assertEqual(spin.value(), before, spin.objectName() or spin.__class__.__name__)
         finally:
             widget.close()

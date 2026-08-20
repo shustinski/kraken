@@ -697,11 +697,17 @@ class WidgetExtractionControlsMixin:
                     "Алгоритм сегментации проводников.\n"
                     "«Порог Otsu» — классическая бинаризация по яркости.\n"
                     "Watershed, Random Walker, Graph Cut и Reconstruction растят ядра металла "
-                    "до затравок в зазорах и лучше держат бледную заливку SEM с яркими кромками.",
+                    "до затравок в зазорах и лучше держат бледную заливку SEM с яркими кромками.\n"
+                    "«Замкнутые границы» вообще не опирается на яркость заливки: он замыкает края "
+                    "в стенки и заливает охваченные ими области. Это единственный вариант, когда "
+                    "проводник по яркости неотличим от подложки и виден только его контур.",
                     "Conductor segmentation algorithm.\n"
                     "Otsu threshold is classical intensity binarization.\n"
                     "Watershed, Random Walker, Graph Cut and Reconstruction grow metal cores "
-                    "until they meet gap seeds and recover pale SEM fills outlined by bright rims.",
+                    "until they meet gap seeds and recover pale SEM fills outlined by bright rims.\n"
+                    "Closed boundary ignores the fill brightness altogether: it seals edges into "
+                    "walls and fills whatever they enclose. It is the only option when a conductor "
+                    "is indistinguishable from the substrate and only its outline is visible.",
                 )
             )
             if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
@@ -873,6 +879,36 @@ class WidgetExtractionControlsMixin:
             )
             if getattr(self, "metal_recon_erode_label_widget", None) is not None:
                 self.metal_recon_erode_label_widget.setToolTip(self.metal_recon_erode_spin.toolTip())
+        if getattr(self, "metal_boundary_relief_spin", None) is not None:
+            self.metal_boundary_relief_spin.setToolTip(
+                tt(
+                    "На сколько серых уровней край должен выступать над локальным фоном, чтобы считаться границей проводника. Алгоритм «Замкнутые границы» ищет пару «светлый гребень со стороны металла — тёмная канавка со стороны подложки» и заливает то, что этими стенками охвачено, поэтому работает там, где заливка не отличается по яркости от подложки.\n"
+                    "Увеличение: остаются только явные края, посторонние стенки исчезают; слабые границы рвутся, и области перетекают друг в друга.\n"
+                    "Уменьшение: ловятся бледные края, но шум даёт лишние стенки и дробит крупные заливки.",
+                    "How many grey levels an edge must rise above the local background to count as a conductor boundary. The closed-boundary algorithm looks for the pair \"bright ridge on the metal side, dark trench on the substrate side\" and fills whatever those walls enclose, so it works where the fill has the same brightness as the substrate.\n"
+                    "Increase: only distinct edges remain and spurious walls disappear, but weak boundaries break and regions leak into each other.\n"
+                    "Decrease: faint edges are caught, but noise adds walls and shatters large pours.",
+                )
+            )
+            if getattr(self, "metal_boundary_relief_label_widget", None) is not None:
+                self.metal_boundary_relief_label_widget.setToolTip(
+                    self.metal_boundary_relief_spin.toolTip()
+                )
+        if getattr(self, "metal_boundary_background_spin", None) is not None:
+            self.metal_boundary_background_spin.setToolTip(
+                tt(
+                    "Размытие, задающее локальный фон, относительно которого меряется рельеф края. Оно определяет самую широкую структуру, которую алгоритм ещё считает границей, а не заливкой.\n"
+                    "Увеличение: границы широких проводников распознаются увереннее, но у соседних тонких трасс края начинают сливаться.\n"
+                    "Уменьшение: лучше разделяются плотные тонкие трассы; у широких заливок край может распасться на два отдельных вала.",
+                    "The blur that defines the local background against which the edge relief is measured. It sets the widest structure the algorithm still treats as a boundary rather than as fill.\n"
+                    "Increase: boundaries of wide conductors are found more reliably, but edges of neighbouring thin traces start to merge.\n"
+                    "Decrease: dense thin traces separate better, while the edge of a wide pour may split into two separate walls.",
+                )
+            )
+            if getattr(self, "metal_boundary_background_label_widget", None) is not None:
+                self.metal_boundary_background_label_widget.setToolTip(
+                    self.metal_boundary_background_spin.toolTip()
+                )
         if getattr(self, "metal_show_conductors_checkbox", None) is not None:
             self.metal_show_conductors_checkbox.setToolTip(
                 tt("Показывать принятые полигоны проводников на сцене редактора.", "Show accepted conductor polygons.")

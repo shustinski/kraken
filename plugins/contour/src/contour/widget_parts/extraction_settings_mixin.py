@@ -217,6 +217,8 @@ class WidgetExtractionSettingsMixin:
             "metal_rw_iterations_spin",
             "metal_gc_iterations_spin",
             "metal_recon_erode_spin",
+            "metal_boundary_relief_spin",
+            "metal_boundary_background_spin",
             "metal_approximation_checkbox",
             "metal_hierarchy_combo",
             "metal_border_handling_combo",
@@ -579,6 +581,14 @@ class WidgetExtractionSettingsMixin:
                     self.metal_recon_erode_spin.setValue(
                         int(getattr(settings, "metal_reconstruction_erode_px", 0) or 0)
                     )
+                if hasattr(self, "metal_boundary_relief_spin"):
+                    self.metal_boundary_relief_spin.setValue(
+                        float(getattr(settings, "metal_boundary_relief", 16.0) or 16.0)
+                    )
+                if hasattr(self, "metal_boundary_background_spin"):
+                    self.metal_boundary_background_spin.setValue(
+                        float(getattr(settings, "metal_boundary_background_sigma", 12.0) or 12.0)
+                    )
                 _hm = self.metal_hierarchy_combo.findData(
                     str(getattr(settings, "metal_hierarchy_mode", "full") or "full")
                 )
@@ -924,6 +934,12 @@ class WidgetExtractionSettingsMixin:
             metal_reconstruction_erode_px=int(self.metal_recon_erode_spin.value())
             if hasattr(self, "metal_recon_erode_spin")
             else 0,
+            metal_boundary_relief=float(self.metal_boundary_relief_spin.value())
+            if hasattr(self, "metal_boundary_relief_spin")
+            else 16.0,
+            metal_boundary_background_sigma=float(self.metal_boundary_background_spin.value())
+            if hasattr(self, "metal_boundary_background_spin")
+            else 12.0,
             metal_morph_close_radius=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
             else (int(self.metal_morph_close_spin.value()) if hasattr(self, "metal_morph_close_spin") else 1),
@@ -1166,6 +1182,12 @@ class WidgetExtractionSettingsMixin:
             self.metal_gc_iterations_spin.setValue(int(defaults.metal_graph_cut_iterations))
         if hasattr(self, "metal_recon_erode_spin"):
             self.metal_recon_erode_spin.setValue(int(defaults.metal_reconstruction_erode_px))
+        if hasattr(self, "metal_boundary_relief_spin"):
+            self.metal_boundary_relief_spin.setValue(float(defaults.metal_boundary_relief))
+        if hasattr(self, "metal_boundary_background_spin"):
+            self.metal_boundary_background_spin.setValue(
+                float(defaults.metal_boundary_background_sigma)
+            )
         if hasattr(self, "metal_hierarchy_combo"):
             ix = self.metal_hierarchy_combo.findData(defaults.metal_hierarchy_mode)
             if ix >= 0:

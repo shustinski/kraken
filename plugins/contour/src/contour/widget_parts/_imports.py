@@ -27,10 +27,8 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QColorDialog,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -46,13 +44,18 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QTabWidget,
     QTextEdit,
     QToolButton,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+)
+
+from ..ui.no_wheel_controls import (
+    NoWheelComboBox as QComboBox,
+    NoWheelDoubleSpinBox as QDoubleSpinBox,
+    NoWheelSpinBox as QSpinBox,
 )
 
 from ..adapters.qt.image_conversion import cv_to_qimage

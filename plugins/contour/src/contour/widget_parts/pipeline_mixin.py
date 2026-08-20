@@ -950,6 +950,8 @@ class WidgetPipelineMixin:
             "metal_random_walker_iterations",
             "metal_graph_cut_iterations",
             "metal_reconstruction_erode_px",
+            "metal_boundary_relief",
+            "metal_boundary_background_sigma",
             "metal_allowed_angles",
             "metal_angle_tolerance_deg",
             "epsilon",

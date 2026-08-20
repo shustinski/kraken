@@ -70,6 +70,8 @@ class MetalRecoveryConfig:
     random_walker_iterations: int = 160
     graph_cut_iterations: int = 5
     reconstruction_erode_px: int = 0
+    boundary_relief: float = 16.0
+    boundary_background_sigma: float = 12.0
 
     def to_snapshot(self) -> dict[str, Any]:
         return {
@@ -138,6 +140,8 @@ def _segmentation_config_from_recovery(config: MetalRecoveryConfig) -> MetalSegm
         random_walker_iterations=watershed.random_walker_iterations,
         graph_cut_iterations=watershed.graph_cut_iterations,
         reconstruction_erode_px=watershed.reconstruction_erode_px,
+        boundary_relief=watershed.boundary_relief,
+        boundary_background_sigma=watershed.boundary_background_sigma,
     )
 
 

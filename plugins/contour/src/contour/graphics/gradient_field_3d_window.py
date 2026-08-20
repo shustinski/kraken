@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from PyQt6.QtCore import QEvent, QPoint, Qt, QTimer
 from PyQt6.QtGui import QMouseEvent, QPixmap, QResizeEvent, QWheelEvent
-from PyQt6.QtWidgets import QComboBox, QDialog, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+
+from ..ui.no_wheel_controls import NoWheelComboBox as QComboBox
 
 from ..adapters.qt.image_conversion import cv_to_qimage
 from .gradient_field_3d import (

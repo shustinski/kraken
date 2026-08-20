@@ -31,6 +31,8 @@ class GradientWatershedConfig:
     random_walker_iterations: int = 160
     graph_cut_iterations: int = 5
     reconstruction_erode_px: int = 0
+    boundary_relief: float = 16.0
+    boundary_background_sigma: float = 12.0
 
 
 def clamped_gradient_watershed_config(
@@ -46,6 +48,8 @@ def clamped_gradient_watershed_config(
     random_walker_iterations: int = 160,
     graph_cut_iterations: int = 5,
     reconstruction_erode_px: int = 0,
+    boundary_relief: float = 16.0,
+    boundary_background_sigma: float = 12.0,
 ) -> GradientWatershedConfig:
     return GradientWatershedConfig(
         smoothing_sigma=max(0.1, min(8.0, float(smoothing_sigma))),
@@ -59,6 +63,8 @@ def clamped_gradient_watershed_config(
         random_walker_iterations=max(8, min(400, int(random_walker_iterations))),
         graph_cut_iterations=max(1, min(16, int(graph_cut_iterations))),
         reconstruction_erode_px=max(0, min(16, int(reconstruction_erode_px))),
+        boundary_relief=max(1.0, min(80.0, float(boundary_relief))),
+        boundary_background_sigma=max(2.0, min(60.0, float(boundary_background_sigma))),
     )
 
 
@@ -75,6 +81,8 @@ def gradient_watershed_config_from_object(source: object) -> GradientWatershedCo
         random_walker_iterations=int(getattr(source, "random_walker_iterations", 160) or 160),
         graph_cut_iterations=int(getattr(source, "graph_cut_iterations", 5) or 5),
         reconstruction_erode_px=int(getattr(source, "reconstruction_erode_px", 0) or 0),
+        boundary_relief=float(getattr(source, "boundary_relief", 16.0) or 16.0),
+        boundary_background_sigma=float(getattr(source, "boundary_background_sigma", 12.0) or 12.0),
     )
 
 
@@ -111,27 +119,24 @@ def keep_rim_lined_seeds(
     rim_level: float,
     probe_px: int,
 ) -> np.ndarray:
-    """Drop dark seeds that sit inside metal instead of in a gap between conductors.
+    """Keep enclosed substrate seeds only when a true bright rim lines them.
 
-    A real gap is lined with the bright rims of its two neighbours, so the ring
-    around the seed is bright.  Dark surface texture inside a wide pour is
-    surrounded by fill and would otherwise shred that pour into fragments.
+    Component area and a mean ring intensity are unreliable: a large dark
+    conductor centre can satisfy both.  The upper-class rim level makes the
+    marker conditional on actual boundary evidence.  Components reaching the
+    field-of-view boundary remain valid background seeds.
     """
-    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(seeds, connectivity=8)
+    count, labels, _stats, _centroids = cv2.connectedComponentsWithStats(seeds, connectivity=8)
     if count <= 1:
         return seeds
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * probe_px + 1, 2 * probe_px + 1))
-    grown = cv2.dilate(labels.astype(np.float32), kernel).astype(np.int32)
-    ring = (grown > 0) & (labels == 0)
-    if not np.any(ring):
+    grown_near = cv2.dilate(labels.astype(np.float32), kernel).astype(np.int32)
+    near_ring = (grown_near > 0) & (labels == 0)
+    if not np.any(near_ring):
         return seeds
-    ring_labels = grown[ring]
-    ring_values = smoothed[ring].astype(np.float64)
-    sums = np.bincount(ring_labels, weights=ring_values, minlength=count)
-    counts = np.bincount(ring_labels, minlength=count).astype(np.float64)
-    ring_means = np.divide(sums, np.maximum(counts, 1.0))
-    keep = ring_means >= rim_level
-    keep |= stats[:, cv2.CC_STAT_AREA] >= 400
+    near_maxima = np.zeros(count, dtype=np.uint8)
+    np.maximum.at(near_maxima, grown_near[near_ring], smoothed[near_ring])
+    keep = near_maxima >= float(rim_level)
     border_labels = np.unique(
         np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1]))
     )
@@ -146,6 +151,7 @@ def keep_sandwiched_valley_seeds(
     *,
     span_px: int,
     flank_delta: float,
+    support_level: float | None = None,
 ) -> np.ndarray:
     """Keep valleys that have brighter metal on two opposite sides.
 
@@ -164,6 +170,18 @@ def keep_sandwiched_valley_seeds(
     delta = np.int16(max(1.0, float(flank_delta)))
     horizontal = (left >= center + delta) & (right >= center + delta)
     vertical = (up >= center + delta) & (down >= center + delta)
+    if support_level is not None:
+        outer_left = np.roll(center, 2 * span, axis=1)
+        outer_right = np.roll(center, -2 * span, axis=1)
+        outer_up = np.roll(center, 2 * span, axis=0)
+        outer_down = np.roll(center, -2 * span, axis=0)
+        support = np.int16(max(0.0, float(support_level)))
+        horizontal &= (outer_left >= support) & (outer_right >= support)
+        vertical &= (outer_up >= support) & (outer_down >= support)
+        horizontal[:, : 2 * span] = False
+        horizontal[:, -2 * span :] = False
+        vertical[: 2 * span, :] = False
+        vertical[-2 * span :, :] = False
     horizontal[:, :span] = False
     horizontal[:, -span:] = False
     vertical[:span, :] = False
@@ -187,18 +205,110 @@ def keep_thin_valley_components(seams: np.ndarray, max_radius: float) -> np.ndar
     return np.where(keep[labels], 255, 0).astype(np.uint8)
 
 
-def _cores_covering_fill(
+def _estimate_noise_sigma(smoothed: np.ndarray) -> float:
+    source = smoothed.astype(np.float32)
+    residual = np.abs(source - cv2.GaussianBlur(source, (0, 0), 1.0))
+    return 1.4826 * float(np.median(residual))
+
+
+def _isolated_weak_core_seeds(
     smoothed: np.ndarray,
     *,
-    strong_cores: np.ndarray,
-    groove_seeds: np.ndarray,
     weak_level: float,
-    speckle: int,
+    min_contrast: float,
+    max_standard_deviation: float,
+    probe_px: int,
 ) -> np.ndarray:
-    """Seed bright rims and the mid-grey fill that is not already a gap."""
-    fill = ((smoothed >= weak_level) & (groove_seeds == 0)).astype(np.uint8) * 255
-    cores = cv2.bitwise_or(fill, strong_cores)
-    return _open_seeds(cv2.subtract(cores, groove_seeds), speckle)
+    """Recover bounded uniform traces that have no high-intensity rim seed."""
+    weak = (smoothed >= float(weak_level)).astype(np.uint8)
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(weak, connectivity=8)
+    if count <= 1:
+        return np.zeros(smoothed.shape, dtype=np.uint8)
+    areas = stats[:, cv2.CC_STAT_AREA].astype(np.float64)
+    sums = np.bincount(
+        labels.ravel(),
+        weights=smoothed.ravel().astype(np.float64),
+        minlength=count,
+    )
+    inner_means = np.divide(sums, np.maximum(areas, 1.0))
+    squared_sums = np.bincount(
+        labels.ravel(),
+        weights=np.square(smoothed.ravel().astype(np.float64)),
+        minlength=count,
+    )
+    variances = np.maximum(0.0, np.divide(squared_sums, np.maximum(areas, 1.0)) - inner_means**2)
+    standard_deviations = np.sqrt(variances)
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (2 * probe_px + 1, 2 * probe_px + 1),
+    )
+    grown = cv2.dilate(labels.astype(np.float32), kernel).astype(np.int32)
+    ring = (grown > 0) & (labels == 0)
+    ring_labels = grown[ring]
+    ring_counts = np.bincount(ring_labels, minlength=count).astype(np.float64)
+    ring_sums = np.bincount(
+        ring_labels,
+        weights=smoothed[ring].astype(np.float64),
+        minlength=count,
+    )
+    ring_means = np.divide(ring_sums, np.maximum(ring_counts, 1.0))
+    keep = (
+        (areas >= float((2 * probe_px) ** 2))
+        & (areas <= 0.25 * float(smoothed.size))
+        & (stats[:, cv2.CC_STAT_WIDTH] >= 2 * probe_px)
+        & (stats[:, cv2.CC_STAT_HEIGHT] >= 2 * probe_px)
+        & (ring_counts > 0)
+        & (inner_means >= ring_means + float(min_contrast))
+        & (standard_deviations <= float(max_standard_deviation))
+    )
+    keep[0] = False
+    return np.where(keep[labels], 255, 0).astype(np.uint8)
+
+
+def _local_metal_core_seeds(
+    smoothed: np.ndarray,
+    *,
+    substrate_limit: float,
+    metal_limit: float,
+    rim_level: float,
+    config: GradientWatershedConfig,
+) -> np.ndarray:
+    """Fuse high-confidence rim, local-contrast, and bounded weak-region evidence."""
+    source = smoothed.astype(np.float32)
+    noise_sigma = _estimate_noise_sigma(smoothed)
+    evidence_threshold = max(2.0 * float(config.core_margin), 5.0 * noise_sigma)
+
+    probe = max(1, int(config.rim_probe_px))
+    local_contrast = np.zeros(smoothed.shape, dtype=np.float32)
+    for scale in sorted({probe, 2 * probe, 4 * probe}):
+        local_background = cv2.GaussianBlur(source, (0, 0), float(scale))
+        local_contrast = np.maximum(local_contrast, source - local_background)
+
+    weak_level = float(substrate_limit) + float(config.groove_margin)
+    broad = np.where(
+        (smoothed >= float(metal_limit)) & (local_contrast >= evidence_threshold),
+        255,
+        0,
+    ).astype(np.uint8)
+    broad = _open_seeds(
+        broad,
+        max(int(config.seed_speckle_px), probe // 2),
+    )
+
+    isolated = _isolated_weak_core_seeds(
+        smoothed,
+        weak_level=weak_level,
+        min_contrast=max(float(config.core_margin), 3.0 * noise_sigma),
+        max_standard_deviation=max(float(config.core_margin), 2.0 * noise_sigma),
+        probe_px=probe,
+    )
+    isolated = _open_seeds(isolated, int(config.seed_speckle_px))
+
+    bright = _open_seeds(
+        np.where(smoothed >= max(float(metal_limit), float(rim_level)), 255, 0).astype(np.uint8),
+        int(config.seed_speckle_px),
+    )
+    return cv2.bitwise_or(bright, cv2.bitwise_or(broad, isolated))
 
 
 def narrow_valley_seeds(
@@ -247,16 +357,19 @@ def build_conductor_seeds(gray: np.ndarray, config: GradientWatershedConfig) -> 
 
     smoothed = cv2.GaussianBlur(source, (0, 0), max(0.1, float(config.smoothing_sigma)))
     substrate_limit, metal_limit = intensity_class_limits(smoothed)
-    core_level = metal_limit - float(config.core_margin)
-    groove_level = min(substrate_limit + float(config.groove_margin), metal_limit - 4.0)
+    upper_values = smoothed[smoothed > metal_limit]
+    rim_level = _otsu_level(upper_values) if upper_values.size else metal_limit
+    groove_level = min(
+        substrate_limit + 0.5 * float(config.groove_margin),
+        metal_limit - 4.0,
+    )
 
     speckle = max(0, int(config.seed_speckle_px))
-    strong_cores = _open_seeds((smoothed >= core_level).astype(np.uint8) * 255, speckle)
     groove_seeds = _open_seeds((smoothed <= groove_level).astype(np.uint8) * 255, speckle)
     groove_seeds = keep_rim_lined_seeds(
         groove_seeds,
         smoothed,
-        rim_level=core_level,
+        rim_level=rim_level,
         probe_px=max(1, int(config.rim_probe_px)),
     )
     span_px = int(config.valley_span_px)
@@ -266,26 +379,23 @@ def build_conductor_seeds(gray: np.ndarray, config: GradientWatershedConfig) -> 
         depth=float(config.valley_depth),
     )
     if np.any(seams):
-        # Pale fill between a single trace's rims is also a morphological valley.
-        # Restrict seams to the bright class so that only channels inside metal
-        # (grey gaps between neighbouring rims) can split, not the fill itself.
-        seams = np.where((seams > 0) & (smoothed >= core_level), 255, 0).astype(np.uint8)
         seams = keep_sandwiched_valley_seeds(
             seams,
             smoothed,
             span_px=span_px,
             flank_delta=max(12.0, float(config.valley_depth) * 0.25),
+            support_level=substrate_limit + 0.5 * float(config.groove_margin),
         )
         seams = keep_thin_valley_components(seams, max_radius=max(1.0, float(span_px) - 0.25))
         groove_seeds = cv2.bitwise_or(groove_seeds, seams)
-    weak_level = min(float(core_level), float(substrate_limit) + 8.0)
-    core_seeds = _cores_covering_fill(
+    core_seeds = _local_metal_core_seeds(
         smoothed,
-        strong_cores=strong_cores,
-        groove_seeds=groove_seeds,
-        weak_level=weak_level,
-        speckle=speckle,
+        substrate_limit=substrate_limit,
+        metal_limit=metal_limit,
+        rim_level=rim_level,
+        config=config,
     )
+    core_seeds = cv2.bitwise_and(core_seeds, cv2.bitwise_not(groove_seeds))
     return ConductorSeeds(
         smoothed=smoothed,
         core_seeds=core_seeds,
@@ -307,8 +417,10 @@ def gradient_watershed_mask(gray: np.ndarray, config: GradientWatershedConfig) -
         return seeds.fallback_mask()
 
     markers = np.zeros(source.shape, dtype=np.int32)
-    _count, core_labels = cv2.connectedComponents((seeds.core_seeds > 0).astype(np.uint8), connectivity=8)
-    markers[seeds.core_seeds > 0] = core_labels[seeds.core_seeds > 0] + 1
+    # This is a binary semantic segmentation.  Independent metal seed islands
+    # therefore share one label; assigning each island a watershed label creates
+    # artificial one-pixel cuts where two seeds of the same conductor meet.
+    markers[seeds.core_seeds > 0] = 2
     markers[seeds.groove_seeds > 0] = 1
     cv2.watershed(cv2.cvtColor(source, cv2.COLOR_GRAY2BGR), markers)
-    return ensure_binary_mask((markers > 1).astype(np.uint8) * 255)
+    return ensure_binary_mask((markers == 2).astype(np.uint8) * 255)

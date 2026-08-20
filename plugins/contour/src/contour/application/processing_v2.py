@@ -22,6 +22,7 @@ MetalSegmentationStrategyV2 = Literal[
     "random_walker",
     "graph_cut",
     "reconstruction",
+    "closed_boundary",
 ]
 
 
@@ -68,6 +69,8 @@ class MetalRecoverySettings:
     random_walker_iterations: int = 160
     graph_cut_iterations: int = 5
     reconstruction_erode_px: int = 0
+    boundary_relief: float = 16.0
+    boundary_background_sigma: float = 12.0
 
     def __post_init__(self) -> None:
         self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
@@ -219,6 +222,8 @@ class ProcessingRequestV2:
                 metal_random_walker_iterations=metal_mode.random_walker_iterations,
                 metal_graph_cut_iterations=metal_mode.graph_cut_iterations,
                 metal_reconstruction_erode_px=metal_mode.reconstruction_erode_px,
+                metal_boundary_relief=metal_mode.boundary_relief,
+                metal_boundary_background_sigma=metal_mode.boundary_background_sigma,
             )
         else:
             via_mode = self.recognition
@@ -321,6 +326,8 @@ class ProcessingRequestV2:
                 random_walker_iterations=legacy.metal_random_walker_iterations,
                 graph_cut_iterations=legacy.metal_graph_cut_iterations,
                 reconstruction_erode_px=legacy.metal_reconstruction_erode_px,
+                boundary_relief=legacy.metal_boundary_relief,
+                boundary_background_sigma=legacy.metal_boundary_background_sigma,
             )
         return (
             cls(

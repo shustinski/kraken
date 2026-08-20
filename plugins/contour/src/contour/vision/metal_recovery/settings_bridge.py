@@ -57,6 +57,10 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         random_walker_iterations=int(getattr(settings, "metal_random_walker_iterations", 160) or 160),
         graph_cut_iterations=int(getattr(settings, "metal_graph_cut_iterations", 5) or 5),
         reconstruction_erode_px=int(getattr(settings, "metal_reconstruction_erode_px", 0) or 0),
+        boundary_relief=float(getattr(settings, "metal_boundary_relief", 16.0) or 16.0),
+        boundary_background_sigma=float(
+            getattr(settings, "metal_boundary_background_sigma", 12.0) or 12.0
+        ),
     )
     external_only = _normalize_hierarchy_mode(getattr(settings, "metal_hierarchy_mode", "full"))
     return MetalRecoveryConfig(
@@ -120,4 +124,6 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         random_walker_iterations=watershed.random_walker_iterations,
         graph_cut_iterations=watershed.graph_cut_iterations,
         reconstruction_erode_px=watershed.reconstruction_erode_px,
+        boundary_relief=watershed.boundary_relief,
+        boundary_background_sigma=watershed.boundary_background_sigma,
     )

@@ -37,7 +37,9 @@ class _SegmentationStageCache:
     image_sig: str = ""
     polarity: SemPolarity | None = None
     requested_strategy: str | None = None
-    watershed_key: tuple[float, float, float, int, int, int, float, float, int, int, int] | None = None
+    watershed_key: (
+        tuple[float, float, float, int, int, int, float, float, int, int, int, float, float] | None
+    ) = None
     strategy: str | None = None
     gray: np.ndarray | None = None
     raw_segmentation: np.ndarray | None = None
@@ -188,7 +190,7 @@ def _segmentation_quality(gray: np.ndarray, mask: np.ndarray) -> float:
 
 def _watershed_cache_key(
     config: GradientWatershedConfig,
-) -> tuple[float, float, float, int, int, int, float, float, int, int, int]:
+) -> tuple[float, float, float, int, int, int, float, float, int, int, int, float, float]:
     return (
         float(config.smoothing_sigma),
         float(config.core_margin),
@@ -201,6 +203,8 @@ def _watershed_cache_key(
         int(config.random_walker_iterations),
         int(config.graph_cut_iterations),
         int(config.reconstruction_erode_px),
+        float(config.boundary_relief),
+        float(config.boundary_background_sigma),
     )
 
 

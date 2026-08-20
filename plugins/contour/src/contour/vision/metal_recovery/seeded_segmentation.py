@@ -1,4 +1,4 @@
-"""Seeded conductor segmentation: watershed, random walker, graph cut, reconstruction."""
+"""Conductor segmentation: watershed, random walker, graph cut, reconstruction, closed boundary."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from ...utils import ensure_binary_mask, ensure_uint8
+from .closed_boundary import closed_boundary_mask
 from .gradient_watershed import (
     ConductorSeeds,
     GradientWatershedConfig,
@@ -29,6 +30,18 @@ def _resize_mask(mask: np.ndarray, width: int, height: int) -> np.ndarray:
     return cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
 
 
+def _downsample_marker(mask: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Conservatively retain every full-resolution hard marker."""
+    if mask.shape == (height, width):
+        return ensure_binary_mask(mask)
+    coverage = cv2.resize(
+        (mask > 0).astype(np.float32),
+        (width, height),
+        interpolation=cv2.INTER_AREA,
+    )
+    return np.where(coverage > 0.0, 255, 0).astype(np.uint8)
+
+
 def _prepare_working_image(
     gray: np.ndarray,
     seeds: ConductorSeeds,
@@ -42,13 +55,13 @@ def _prepare_working_image(
         working = gray
     else:
         scale = _SEEDED_MAX_SIDE / float(longest)
-        new_width = max(1, int(round(width * scale)))
-        new_height = max(1, int(round(height * scale)))
+        new_width = max(1, round(width * scale))
+        new_height = max(1, round(height * scale))
         working = cv2.resize(gray, (new_width, new_height), interpolation=cv2.INTER_AREA)
-        core = _resize_mask(core, new_width, new_height)
-        groove = _resize_mask(groove, new_width, new_height)
-    foreground = core > 0
-    background = (groove > 0) & ~foreground
+        core = _downsample_marker(core, new_width, new_height)
+        groove = _downsample_marker(groove, new_width, new_height)
+    background = groove > 0
+    foreground = (core > 0) & ~background
     return working, (foreground.astype(np.uint8) * 255), (background.astype(np.uint8) * 255)
 
 
@@ -213,6 +226,8 @@ def seeded_segmentation_mask(
         return _empty_mask(source)
     if strategy == "gradient_watershed":
         return gradient_watershed_mask(source, config)
+    if strategy == "closed_boundary":
+        return closed_boundary_mask(source, config)
 
     seeds = build_conductor_seeds(source, config)
     if seeds is None:
@@ -245,4 +260,12 @@ def seeded_segmentation_mask(
             groove,
             erode_px=int(config.reconstruction_erode_px),
         )
-    return ensure_binary_mask(_resize_mask(mask, int(source.shape[1]), int(source.shape[0])))
+    restored = ensure_binary_mask(
+        _resize_mask(mask, int(source.shape[1]), int(source.shape[0]))
+    )
+    # The iterative solve may be coarse, but its full-resolution hard evidence
+    # is authoritative.  Reapply it after interpolation so a confirmed 1–2 px
+    # separating groove or narrow conductor cannot disappear permanently.
+    restored[seeds.core_seeds > 0] = 255
+    restored[seeds.groove_seeds > 0] = 0
+    return ensure_binary_mask(restored)

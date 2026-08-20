@@ -17,6 +17,7 @@ SEEDED_SEGMENTATION_STRATEGIES = frozenset(
         "random_walker",
         "graph_cut",
         "reconstruction",
+        "closed_boundary",
     }
 )
 
@@ -65,6 +66,14 @@ def normalize_metal_segmentation_strategy(value: Any) -> str:
         "реконструкция",
     }:
         return "reconstruction"
+    if text in {
+        "closed_boundary",
+        "closedboundary",
+        "boundary",
+        "замкнутые_границы",
+        "по_замкнутым_границам",
+    }:
+        return "closed_boundary"
     if text in {"local_adaptive", "adaptive", "адаптивная", "адаптивный"}:
         return "local_adaptive"
     if text in {"global_otsu", "legacy_otsu", "otsu", "порог_otsu"}:
@@ -145,6 +154,8 @@ class MetalSegmentationConfig:
     random_walker_iterations: int = 160
     graph_cut_iterations: int = 5
     reconstruction_erode_px: int = 0
+    boundary_relief: float = 16.0
+    boundary_background_sigma: float = 12.0
 
 
 @dataclass(slots=True)
@@ -189,13 +200,14 @@ def _fill_small_holes(mask: np.ndarray, *, max_area: int) -> np.ndarray:
 def apply_topology_repair(raw_mask: np.ndarray, config: MetalSegmentationConfig) -> np.ndarray:
     """Gap bridge (close) → fill small holes → speckle removal (open).
 
-    Gap bridging repairs thresholding artefacts, so it is skipped for seeded
-    strategies: there the border already sits on the intensity edge and closing
-    would weld back the thin seams that keep neighbouring traces apart.
+    Gap bridging repairs thresholding artefacts, so it is skipped for the
+    edge-accurate strategies: there the border already sits on the intensity
+    edge and closing would weld back the thin seams that keep neighbouring
+    traces apart.
     """
     m = ensure_uint8(raw_mask)
-    watershed_borders_are_final = is_seeded_segmentation_strategy(config.segmentation_strategy)
-    close_r = 0 if watershed_borders_are_final else max(0, int(config.gap_bridge_px))
+    borders_are_final = is_seeded_segmentation_strategy(config.segmentation_strategy)
+    close_r = 0 if borders_are_final else max(0, int(config.gap_bridge_px))
     if close_r > 0:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * close_r + 1, 2 * close_r + 1))
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=1)

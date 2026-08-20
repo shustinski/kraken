@@ -15,8 +15,6 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QCheckBox,
-    QComboBox,
-    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -31,7 +29,6 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
-    QSpinBox,
     QSplitter,
     QStackedWidget,
     QStyle,
@@ -42,6 +39,10 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from .no_wheel_controls import NoWheelComboBox as QComboBox
+from .no_wheel_controls import NoWheelDoubleSpinBox as QDoubleSpinBox
+from .no_wheel_controls import NoWheelSpinBox as QSpinBox
 
 from ..application.processing import (
     VIA_DISPLAY_MODE_CIRCLE,
@@ -78,13 +79,6 @@ class _DockWidthComboBox(QComboBox):
         self.setMinimumWidth(0)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.view().setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-    def wheelEvent(self, event) -> None:  # type: ignore[override]
-        view = self.view()
-        if view is not None and view.isVisible():
-            super().wheelEvent(event)
-            return
-        event.ignore()
 
     def minimumSizeHint(self) -> QSize:
         hint = super().minimumSizeHint()
@@ -1692,6 +1686,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_segmentation_strategy_combo.addItem("Random Walker", "random_walker")
     self.metal_segmentation_strategy_combo.addItem("Graph Cut", "graph_cut")
     self.metal_segmentation_strategy_combo.addItem("Reconstruction", "reconstruction")
+    self.metal_segmentation_strategy_combo.addItem("Замкнутые границы", "closed_boundary")
     self.metal_segmentation_strategy_combo.setCurrentIndex(0)
     _metal_basic_form.addRow("Алгоритм распознавания", self.metal_segmentation_strategy_combo)
     self.metal_segmentation_strategy_label_widget = _metal_basic_form.labelForField(
@@ -1831,6 +1826,16 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_recon_erode_spin = QSpinBox()
     self.metal_recon_erode_spin.setRange(0, 16)
     self.metal_recon_erode_spin.setValue(0)
+    self.metal_boundary_relief_spin = QDoubleSpinBox()
+    self.metal_boundary_relief_spin.setRange(1.0, 80.0)
+    self.metal_boundary_relief_spin.setDecimals(1)
+    self.metal_boundary_relief_spin.setSingleStep(1.0)
+    self.metal_boundary_relief_spin.setValue(16.0)
+    self.metal_boundary_background_spin = QDoubleSpinBox()
+    self.metal_boundary_background_spin.setRange(2.0, 60.0)
+    self.metal_boundary_background_spin.setDecimals(1)
+    self.metal_boundary_background_spin.setSingleStep(1.0)
+    self.metal_boundary_background_spin.setValue(12.0)
     self.metal_hierarchy_combo = QComboBox()
     self.metal_hierarchy_combo.addItem("Полная иерархия", "full")
     self.metal_hierarchy_combo.addItem("Только внешние контуры", "external")
@@ -1904,6 +1909,18 @@ def build_extraction_tab(self) -> QWidget:
     _metal_recon_form.addRow("Эрозия ядер, px", self.metal_recon_erode_spin)
     self.metal_recon_erode_label_widget = _metal_recon_form.labelForField(self.metal_recon_erode_spin)
 
+    self.metal_closed_boundary_group = QGroupBox("Замкнутые границы")
+    _metal_cb_form = QFormLayout(self.metal_closed_boundary_group)
+    self._configure_compact_form(_metal_cb_form)
+    _metal_cb_form.addRow("Высота рельефа границы", self.metal_boundary_relief_spin)
+    self.metal_boundary_relief_label_widget = _metal_cb_form.labelForField(
+        self.metal_boundary_relief_spin
+    )
+    _metal_cb_form.addRow("Масштаб фона, σ", self.metal_boundary_background_spin)
+    self.metal_boundary_background_label_widget = _metal_cb_form.labelForField(
+        self.metal_boundary_background_spin
+    )
+
     _metal_adv_wrap = QWidget()
     _adv_box_l = QVBoxLayout(_metal_adv_wrap)
     _adv_box_l.setContentsMargins(8, 4, 8, 4)
@@ -1914,6 +1931,7 @@ def build_extraction_tab(self) -> QWidget:
     _adv_box_l.addWidget(self.metal_random_walker_group)
     _adv_box_l.addWidget(self.metal_graph_cut_group)
     _adv_box_l.addWidget(self.metal_reconstruction_group)
+    _adv_box_l.addWidget(self.metal_closed_boundary_group)
     _adv_outer = QVBoxLayout(self.metal_advanced_group)
     _adv_outer.setContentsMargins(0, 0, 0, 0)
     _adv_outer.addWidget(_metal_adv_wrap)
@@ -1976,6 +1994,8 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_rw_iterations_spin,
         self.metal_gc_iterations_spin,
         self.metal_recon_erode_spin,
+        self.metal_boundary_relief_spin,
+        self.metal_boundary_background_spin,
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)

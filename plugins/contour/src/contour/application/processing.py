@@ -433,6 +433,8 @@ class ContourExtractionSettings:
     metal_random_walker_iterations: int = 160
     metal_graph_cut_iterations: int = 5
     metal_reconstruction_erode_px: int = 0
+    metal_boundary_relief: float = 16.0
+    metal_boundary_background_sigma: float = 12.0
     metal_edge_close_cap_px: int = 9
     metal_edge_watershed_split: bool = True
     metal_edge_watershed_dist_peak_frac: float = 0.38
@@ -633,6 +635,8 @@ class ContourExtractionSettings:
             "metal_random_walker_iterations": self.metal_random_walker_iterations,
             "metal_graph_cut_iterations": self.metal_graph_cut_iterations,
             "metal_reconstruction_erode_px": self.metal_reconstruction_erode_px,
+            "metal_boundary_relief": self.metal_boundary_relief,
+            "metal_boundary_background_sigma": self.metal_boundary_background_sigma,
             "metal_edge_close_cap_px": int(self.metal_edge_close_cap_px),
             "metal_edge_watershed_split": bool(self.metal_edge_watershed_split),
             "metal_edge_watershed_dist_peak_frac": float(self.metal_edge_watershed_dist_peak_frac),
@@ -1001,6 +1005,13 @@ class ContourExtractionSettings:
             ),
             metal_reconstruction_erode_px=max(
                 0, min(16, int(payload.get("metal_reconstruction_erode_px", 0) or 0))
+            ),
+            metal_boundary_relief=max(
+                1.0, min(80.0, float(payload.get("metal_boundary_relief", 16.0) or 16.0))
+            ),
+            metal_boundary_background_sigma=max(
+                2.0,
+                min(60.0, float(payload.get("metal_boundary_background_sigma", 12.0) or 12.0)),
             ),
             metal_edge_close_cap_px=max(5, min(21, int(payload.get("metal_edge_close_cap_px", 9) or 9) | 1)),
             metal_edge_watershed_split=bool(payload.get("metal_edge_watershed_split", True)),

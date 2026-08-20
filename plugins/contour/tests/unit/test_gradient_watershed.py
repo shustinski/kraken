@@ -4,14 +4,18 @@ import cv2
 import numpy as np
 import pytest
 
+import contour.vision.metal_recovery.seeded_segmentation as seeded_module
 from contour.vision.metal_recovery.gradient_watershed import (
+    ConductorSeeds,
     GradientWatershedConfig,
+    build_conductor_seeds,
     gradient_watershed_mask,
     intensity_class_limits,
     keep_rim_lined_seeds,
     narrow_valley_seeds,
 )
 from contour.vision.metal_recovery.seeded_segmentation import (
+    _prepare_working_image,
     random_walker_from_seeds,
     seeded_segmentation_mask,
 )
@@ -45,6 +49,7 @@ def test_strategy_token_is_recognised() -> None:
     assert normalize_metal_segmentation_strategy("Random Walker") == "random_walker"
     assert normalize_metal_segmentation_strategy("графовый разрез") == "graph_cut"
     assert normalize_metal_segmentation_strategy("Реконструкция") == "reconstruction"
+    assert normalize_metal_segmentation_strategy("Замкнутые границы") == "closed_boundary"
 
 
 def test_legacy_watershed_flag_resolves_when_strategy_is_not_seeded() -> None:
@@ -115,6 +120,25 @@ def test_dark_texture_inside_a_pour_does_not_split_it() -> None:
     mask = gradient_watershed_mask(image, GradientWatershedConfig())
 
     assert _component_count(mask) == 1, "a dark speck inside metal must not fragment the pour"
+
+
+def test_wide_dark_conductor_center_is_not_a_background_seed() -> None:
+    image = np.full((180, 280), SUBSTRATE, np.uint8)
+    image[15:165, 25:255] = 100
+    image[15:165, 25:30] = RIM
+    image[15:165, 250:255] = RIM
+    image[15:20, 25:255] = RIM
+    image[160:165, 25:255] = RIM
+    image[42:138, 64:216] = 49
+    image = cv2.GaussianBlur(image, (0, 0), 1.0)
+
+    seeds = build_conductor_seeds(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+
+    assert seeds is not None
+    assert seeds.groove_seeds[90, 140] == 0
+    assert mask[90, 140] > 0
+    assert _component_count(mask) == 1
 
 
 def test_rim_filter_drops_seeds_surrounded_by_metal() -> None:
@@ -198,6 +222,26 @@ def test_seeded_algorithms_fill_pale_traces_and_keep_them_apart(strategy: str) -
     assert _component_count(mask) == 2, f"{strategy}: neighbouring conductors must not merge"
 
 
+@pytest.mark.parametrize("width_px", [1, 2, 3])
+def test_downsampling_preserves_thin_full_resolution_gap_markers(width_px: int) -> None:
+    image = np.full((64, 2000), 128, np.uint8)
+    cores = np.full_like(image, 255)
+    grooves = np.zeros_like(image)
+    grooves[:, 1001 : 1001 + width_px] = 255
+    cores[grooves > 0] = 0
+    seeds = ConductorSeeds(
+        smoothed=image,
+        core_seeds=cores,
+        groove_seeds=grooves,
+        metal_limit=128.0,
+    )
+
+    _working, working_cores, working_grooves = _prepare_working_image(image, seeds)
+
+    assert np.any(working_grooves), f"{width_px}px groove vanished at solver resolution"
+    assert not np.any((working_cores > 0) & (working_grooves > 0))
+
+
 def test_random_walker_beta_and_iterations_change_the_mask() -> None:
     image = np.full((80, 220), 40, dtype=np.uint8)
     image[:, :110] = 200
@@ -224,20 +268,36 @@ def test_random_walker_beta_and_iterations_change_the_mask() -> None:
     assert not np.array_equal(few, many), "iteration count must change an unfinished solve"
 
 
-def test_random_walker_config_reaches_the_solver_on_partitioned_seeds() -> None:
+def test_random_walker_config_reaches_the_solver_on_partitioned_seeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     image = np.full((140, 300), SUBSTRATE, np.uint8)
     _rim_lit_trace(image, 30, 110)
     _rim_lit_trace(image, 170, 260)
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    soft = seeded_segmentation_mask(
+    observed_beta: list[float] = []
+
+    def _recording_solver(
+        _gray: np.ndarray,
+        core_seeds: np.ndarray,
+        _groove_seeds: np.ndarray,
+        *,
+        beta: float,
+        max_iterations: int,
+    ) -> np.ndarray:
+        observed_beta.append(beta)
+        assert max_iterations == 160
+        return core_seeds
+
+    monkeypatch.setattr(seeded_module, "random_walker_from_seeds", _recording_solver)
+
+    seeded_segmentation_mask(
         image, "random_walker", GradientWatershedConfig(random_walker_beta=1.0)
     )
-    hard = seeded_segmentation_mask(
+    seeded_segmentation_mask(
         image, "random_walker", GradientWatershedConfig(random_walker_beta=400.0)
     )
 
-    assert not np.array_equal(soft, hard), "config β must still matter when seeds cover the frame"
-    assert soft[70, 70] > 0 and hard[70, 70] > 0
-    assert soft[70, 140] == 0 and hard[70, 140] == 0
+    assert observed_beta == [1.0, 400.0]
 

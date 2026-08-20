@@ -6,7 +6,6 @@ from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -16,11 +15,13 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
+
+from ...ui.no_wheel_controls import NoWheelComboBox as QComboBox
+from ...ui.no_wheel_controls import NoWheelSpinBox as QSpinBox
 
 from ..avatar import PetAvatarWidget
 from ..config import DEFAULT_GAMIFICATION_BALANCE, GamificationBalance

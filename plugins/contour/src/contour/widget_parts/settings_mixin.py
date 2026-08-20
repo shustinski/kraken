@@ -249,6 +249,8 @@ class WidgetSettingsMixin:
             self.recognition_mode_combo.setCurrentIndex(idx)
         self._active_extraction_profile = "conductors"
         self._sync_recognition_stack_visibility()
+        if hasattr(self, "_sync_recognition_scene_frame"):
+            self._sync_recognition_scene_frame()
         if hasattr(self, "_set_recognition_status"):
             self._set_recognition_status("disabled")
 

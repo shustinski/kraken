@@ -84,6 +84,7 @@ class WorkspaceSession:
         self._current_state: ImageProcessingState | None = None
         self._state_cache: dict[str, ImageProcessingState] = {}
         self._cif_paths_by_stem: dict[str, str] = {}
+        self._cleared_vector_paths: set[str] = set()
 
     @property
     def image_paths(self) -> tuple[str, ...]:
@@ -112,14 +113,15 @@ class WorkspaceSession:
         clear_state_cache: bool = True,
     ) -> list[str]:
         self._image_paths = normalize_image_selection(paths, is_supported_image=is_supported_image)
+        retained = set(self._image_paths)
         if clear_state_cache:
             self._state_cache.clear()
             self._current_state = None
         else:
-            retained = set(self._image_paths)
             for key in list(self._state_cache):
                 if key not in retained:
                     self._state_cache.pop(key, None)
+        self._cleared_vector_paths = {path for path in self._cleared_vector_paths if path in retained}
         if not self._image_paths:
             self.clear_current_selection()
         elif self._current_image_path not in self._image_paths:
@@ -135,6 +137,29 @@ class WorkspaceSession:
         self.clear_current_selection()
         self._state_cache.clear()
         self._cif_paths_by_stem.clear()
+        self._cleared_vector_paths.clear()
+
+    def vectors_are_cleared(self, image_path: str | Path) -> bool:
+        return _norm_path_key(image_path) in self._cleared_vector_paths
+
+    def forget_cleared_vectors(self, image_paths: Iterable[str | Path]) -> None:
+        for image_path in image_paths:
+            self._cleared_vector_paths.discard(_norm_path_key(image_path))
+
+    def mark_vectors_cleared(self, image_path: str | Path) -> None:
+        key = _norm_path_key(image_path)
+        self._cleared_vector_paths.add(key)
+        state = self._state_cache.get(key)
+        if state is None and self._current_image_path == key:
+            state = self._current_state
+        if state is None:
+            return
+        state.polygons = []
+        state.polygons_dirty = True
+        state.loaded_cif_path = None
+        self._state_cache[key] = state
+        if self._current_image_path == key:
+            self._current_state = state
 
     def set_cif_index(self, indexed_paths: Mapping[str, str]) -> None:
         """Update stem → vector path map; clear overlays but keep loaded source pixels."""

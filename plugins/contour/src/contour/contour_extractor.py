@@ -25,12 +25,10 @@ APPROXIMATION_MODE_MAP = {
     "CHAIN_APPROX_NONE": cv2.CHAIN_APPROX_NONE,
 }
 
-# Per-centile on the high-clearance "medial core" of the shape (not the whole fill).
-# A raw low %-tile over *all* interior pixels is dominated by layers near the boundary,
-# so a uniform 8 px-wide bar measures ~2 px (same bug as 15th of local width near long edges).
+# Per-centile over the medial axis of the shape, so a thinner section pulls the estimate down.
+# Aggregating over interior pixels instead of the medial axis halves the result on every shape:
+# most of a fill lies near its boundary, where twice the clearance is far below the true thickness.
 POLYGON_WIDTH_METRIC_PERCENTILE = 20.0
-# Only pixels with dist at least this fraction of max(dist) in the fill count as "core" samples.
-_MEDIAL_CORE_FRACTION = 0.45
 # is_valid_closed_polygon_ring is for simplified rings; dense CHAIN_APPROX_NONE borders can false-fail on a grid.
 _TOPOLOGY_CHECK_MAX_VERTICES = 192
 
@@ -41,7 +39,12 @@ def estimate_effective_polygon_width_px(
     *,
     percentile: float = POLYGON_WIDTH_METRIC_PERCENTILE,
 ) -> tuple[float, str]:
-    """Local thickness estimate: 2*L2 distance transform; robust aggregate on the medial core (not the whole fill)."""
+    """Local thickness estimate: twice the L2 clearance, sampled on the shape's medial axis.
+
+    A pixel on the medial axis is the centre of the largest circle that fits the
+    shape there, so twice its clearance is the local thickness; a percentile over
+    those samples reports the thickness of the shape's narrower sections.
+    """
     if contour is None or len(contour) < 3:
         return 0.0, "invalid"
     height, width = binary_mask.shape[:2]
@@ -68,19 +71,18 @@ def estimate_effective_polygon_width_px(
         rw, rh = float(rect[1][0]), float(rect[1][1])
         return (min(rw, rh) if rw > 0 and rh > 0 else 0.0), "minAreaRect_fallback"
 
-    # Maximum inscribed "radius" in the fill: 2*max(dist) = true narrowest full width for a long uniform strip.
+    # Largest circle that fits anywhere in the shape; also the ceiling for the estimate.
     full_width = 2.0 * dmax
     if dmax <= 0.6:
         return full_width, "dt_dmax"
-    # Ignore boundary-adjacent pixels (large area with small 2*dist) when taking a low % tile.
-    tau = _MEDIAL_CORE_FRACTION * dmax
-    core = fg & (dist >= tau) & (dist > 0.25)
-    values = dist[core].astype(np.float64, copy=False) * 2.0
+    neighbourhood_max = cv2.dilate(dist, np.ones((3, 3), dtype=np.uint8))
+    medial_axis = fg & (dist >= neighbourhood_max - 1e-3) & (dist > 0.5)
+    values = dist[medial_axis].astype(np.float64, copy=False) * 2.0
     values = values[np.isfinite(values)]
-    if int(values.size) < 3:
+    if int(values.size) < 1:
         return full_width, "dt_dmax"
     w_est = float(np.percentile(values, percentile))
-    return min(w_est, full_width), "dt_core_percentile"
+    return min(w_est, full_width), "dt_medial_percentile"
 
 
 @dataclass(slots=True)

@@ -106,6 +106,30 @@ class WidgetExtractionSettingsMixin:
         if hasattr(self, "_redraw_recognized_contacts_with_diameter"):
             self._redraw_recognized_contacts_with_diameter(int(value))
 
+    def _metal_strategy_from_combo(self) -> str:
+        from ..vision.metal_recovery.segmentation import normalize_metal_segmentation_strategy
+
+        if not hasattr(self, "metal_segmentation_strategy_combo"):
+            return "legacy_otsu"
+        return normalize_metal_segmentation_strategy(
+            self.metal_segmentation_strategy_combo.currentData() or "legacy_otsu"
+        )
+
+    def _apply_metal_strategy_to_combo(self, settings: object) -> None:
+        from ..vision.metal_recovery.segmentation import resolve_metal_segmentation_strategy
+
+        if not hasattr(self, "metal_segmentation_strategy_combo"):
+            return
+        strategy = resolve_metal_segmentation_strategy(
+            getattr(settings, "metal_segmentation_strategy", "legacy_otsu"),
+            use_wide_conductor_gradient=bool(getattr(settings, "metal_use_wide_conductor_gradient", False)),
+        )
+        index = self.metal_segmentation_strategy_combo.findData(strategy)
+        if index < 0:
+            index = self.metal_segmentation_strategy_combo.findData("legacy_otsu")
+        if index >= 0:
+            self.metal_segmentation_strategy_combo.setCurrentIndex(index)
+
     def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
         blockers = [
             QSignalBlocker(self.retrieval_mode_combo),
@@ -171,6 +195,7 @@ class WidgetExtractionSettingsMixin:
             "metal_show_border_checkbox",
             "metal_show_mask_checkbox",
             "metal_debug_visual_combo",
+            "metal_segmentation_strategy_combo",
             "metal_overlay_opacity_spin",
             "metal_min_area_spin",
             "metal_max_area_spin",
@@ -181,6 +206,17 @@ class WidgetExtractionSettingsMixin:
             "metal_min_angle_spin",
             "metal_min_hole_source_contrast_spin",
             "metal_min_hole_source_contrast_fraction_spin",
+            "metal_ws_smoothing_spin",
+            "metal_ws_core_margin_spin",
+            "metal_ws_groove_margin_spin",
+            "metal_ws_rim_probe_spin",
+            "metal_ws_seed_speckle_spin",
+            "metal_ws_valley_span_spin",
+            "metal_ws_valley_depth_spin",
+            "metal_rw_beta_spin",
+            "metal_rw_iterations_spin",
+            "metal_gc_iterations_spin",
+            "metal_recon_erode_spin",
             "metal_approximation_checkbox",
             "metal_hierarchy_combo",
             "metal_border_handling_combo",
@@ -471,9 +507,9 @@ class WidgetExtractionSettingsMixin:
                         int(round(float(getattr(settings, "metal_min_contrast", 50.0))))
                     )
                 if hasattr(self, "metal_gap_bridge_spin"):
-                    self.metal_gap_bridge_spin.setValue(int(getattr(settings, "metal_gap_bridge_px", 2) or 2))
+                    self.metal_gap_bridge_spin.setValue(int(getattr(settings, "metal_gap_bridge_px", 1)))
                 if hasattr(self, "metal_speckle_removal_spin"):
-                    self.metal_speckle_removal_spin.setValue(int(getattr(settings, "metal_speckle_removal_px", 0) or 0))
+                    self.metal_speckle_removal_spin.setValue(int(getattr(settings, "metal_speckle_removal_px", 1)))
                 if hasattr(self, "metal_epsilon_spin"):
                     self.metal_epsilon_spin.setValue(float(settings.epsilon))
                 self.metal_min_width_spin.setValue(float(getattr(settings, "metal_min_trace_width_px", 8.0) or 8.0))
@@ -497,6 +533,52 @@ class WidgetExtractionSettingsMixin:
                 self.metal_approximation_checkbox.setChecked(
                     bool(getattr(settings, "metal_approximation_enabled", True))
                 )
+                if hasattr(self, "metal_segmentation_strategy_combo"):
+                    self._apply_metal_strategy_to_combo(settings)
+                if hasattr(self, "metal_ws_smoothing_spin"):
+                    self.metal_ws_smoothing_spin.setValue(
+                        float(getattr(settings, "metal_watershed_smoothing_sigma", 1.0) or 1.0)
+                    )
+                if hasattr(self, "metal_ws_core_margin_spin"):
+                    self.metal_ws_core_margin_spin.setValue(
+                        float(getattr(settings, "metal_watershed_core_margin", 8.0) or 0.0)
+                    )
+                if hasattr(self, "metal_ws_groove_margin_spin"):
+                    self.metal_ws_groove_margin_spin.setValue(
+                        float(getattr(settings, "metal_watershed_groove_margin", 16.0) or 0.0)
+                    )
+                if hasattr(self, "metal_ws_rim_probe_spin"):
+                    self.metal_ws_rim_probe_spin.setValue(
+                        int(getattr(settings, "metal_watershed_rim_probe_px", 6) or 1)
+                    )
+                if hasattr(self, "metal_ws_seed_speckle_spin"):
+                    self.metal_ws_seed_speckle_spin.setValue(
+                        int(getattr(settings, "metal_watershed_seed_speckle_px", 1) or 0)
+                    )
+                if hasattr(self, "metal_ws_valley_span_spin"):
+                    self.metal_ws_valley_span_spin.setValue(
+                        int(getattr(settings, "metal_watershed_valley_span_px", 5) or 0)
+                    )
+                if hasattr(self, "metal_ws_valley_depth_spin"):
+                    self.metal_ws_valley_depth_spin.setValue(
+                        float(getattr(settings, "metal_watershed_valley_depth", 45.0) or 0.0)
+                    )
+                if hasattr(self, "metal_rw_beta_spin"):
+                    self.metal_rw_beta_spin.setValue(
+                        float(getattr(settings, "metal_random_walker_beta", 90.0) or 90.0)
+                    )
+                if hasattr(self, "metal_rw_iterations_spin"):
+                    self.metal_rw_iterations_spin.setValue(
+                        int(getattr(settings, "metal_random_walker_iterations", 160) or 160)
+                    )
+                if hasattr(self, "metal_gc_iterations_spin"):
+                    self.metal_gc_iterations_spin.setValue(
+                        int(getattr(settings, "metal_graph_cut_iterations", 5) or 5)
+                    )
+                if hasattr(self, "metal_recon_erode_spin"):
+                    self.metal_recon_erode_spin.setValue(
+                        int(getattr(settings, "metal_reconstruction_erode_px", 0) or 0)
+                    )
                 _hm = self.metal_hierarchy_combo.findData(
                     str(getattr(settings, "metal_hierarchy_mode", "full") or "full")
                 )
@@ -518,7 +600,7 @@ class WidgetExtractionSettingsMixin:
                 self.metal_show_border_checkbox.setChecked(
                     bool(getattr(settings, "metal_display_show_border_highlight", True))
                 )
-                self.metal_show_mask_checkbox.setChecked(bool(getattr(settings, "metal_display_show_mask", True)))
+                self.metal_show_mask_checkbox.setChecked(bool(getattr(settings, "metal_display_show_mask", False)))
                 _dv = str(getattr(settings, "metal_debug_visual", "overlay") or "overlay")
                 _dvi = self.metal_debug_visual_combo.findData(_dv)
                 if _dvi >= 0:
@@ -772,13 +854,13 @@ class WidgetExtractionSettingsMixin:
             )
             if hasattr(self, "metal_min_hole_source_contrast_fraction_spin")
             else 0.35,
-            metal_segmentation_strategy="legacy_otsu",
+            metal_segmentation_strategy=self._metal_strategy_from_combo(),
             metal_gap_bridge_px=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
-            else 2,
+            else 1,
             metal_speckle_removal_px=int(self.metal_speckle_removal_spin.value())
             if hasattr(self, "metal_speckle_removal_spin")
-            else 0,
+            else 1,
             metal_min_object_area=self.metal_min_area_spin.value() if hasattr(self, "metal_min_area_spin") else 60.0,
             metal_min_trace_width_px=float(self.metal_min_width_spin.value())
             if hasattr(self, "metal_min_width_spin")
@@ -808,18 +890,52 @@ class WidgetExtractionSettingsMixin:
             metal_approximation_enabled=self.metal_approximation_checkbox.isChecked()
             if hasattr(self, "metal_approximation_checkbox")
             else True,
+            metal_use_wide_conductor_gradient=self._metal_strategy_from_combo() == "gradient_watershed",
+            metal_watershed_smoothing_sigma=float(self.metal_ws_smoothing_spin.value())
+            if hasattr(self, "metal_ws_smoothing_spin")
+            else 1.0,
+            metal_watershed_core_margin=float(self.metal_ws_core_margin_spin.value())
+            if hasattr(self, "metal_ws_core_margin_spin")
+            else 8.0,
+            metal_watershed_groove_margin=float(self.metal_ws_groove_margin_spin.value())
+            if hasattr(self, "metal_ws_groove_margin_spin")
+            else 16.0,
+            metal_watershed_rim_probe_px=int(self.metal_ws_rim_probe_spin.value())
+            if hasattr(self, "metal_ws_rim_probe_spin")
+            else 6,
+            metal_watershed_seed_speckle_px=int(self.metal_ws_seed_speckle_spin.value())
+            if hasattr(self, "metal_ws_seed_speckle_spin")
+            else 1,
+            metal_watershed_valley_span_px=int(self.metal_ws_valley_span_spin.value())
+            if hasattr(self, "metal_ws_valley_span_spin")
+            else 5,
+            metal_watershed_valley_depth=float(self.metal_ws_valley_depth_spin.value())
+            if hasattr(self, "metal_ws_valley_depth_spin")
+            else 45.0,
+            metal_random_walker_beta=float(self.metal_rw_beta_spin.value())
+            if hasattr(self, "metal_rw_beta_spin")
+            else 90.0,
+            metal_random_walker_iterations=int(self.metal_rw_iterations_spin.value())
+            if hasattr(self, "metal_rw_iterations_spin")
+            else 160,
+            metal_graph_cut_iterations=int(self.metal_gc_iterations_spin.value())
+            if hasattr(self, "metal_gc_iterations_spin")
+            else 5,
+            metal_reconstruction_erode_px=int(self.metal_recon_erode_spin.value())
+            if hasattr(self, "metal_recon_erode_spin")
+            else 0,
             metal_morph_close_radius=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
-            else (int(self.metal_morph_close_spin.value()) if hasattr(self, "metal_morph_close_spin") else 2),
+            else (int(self.metal_morph_close_spin.value()) if hasattr(self, "metal_morph_close_spin") else 1),
             metal_morph_open_radius=int(self.metal_speckle_removal_spin.value())
             if hasattr(self, "metal_speckle_removal_spin")
-            else (int(self.metal_morph_open_spin.value()) if hasattr(self, "metal_morph_open_spin") else 0),
+            else (int(self.metal_morph_open_spin.value()) if hasattr(self, "metal_morph_open_spin") else 1),
             metal_display_show_conductors=self.metal_show_conductors_checkbox.isChecked()
             if hasattr(self, "metal_show_conductors_checkbox")
             else True,
             metal_display_show_mask=self.metal_show_mask_checkbox.isChecked()
             if hasattr(self, "metal_show_mask_checkbox")
-            else True,
+            else False,
             metal_display_show_contours=self.metal_show_conductors_checkbox.isChecked()
             if hasattr(self, "metal_show_conductors_checkbox")
             else True,
@@ -867,7 +983,7 @@ class WidgetExtractionSettingsMixin:
             self.recognition_stack.setVisible(False)
             self._set_extraction_settings(self._contour_settings_profiles["vias"])
         if hasattr(self, "via_group"):
-            self.via_group.setVisible(self._active_extraction_profile == "vias" and data == "disabled")
+            self.via_group.setVisible(False)
         if hasattr(self, "polygon_editor"):
             # "No extraction" disables recognition only; existing imported or
             # manually edited vectors remain part of the editor overlay.
@@ -876,7 +992,50 @@ class WidgetExtractionSettingsMixin:
         self.polygon_editor.set_debug_candidates([])
         if hasattr(self, "_update_extraction_profile_controls_state"):
             self._update_extraction_profile_controls_state()
+        self._sync_recognition_scene_frame()
+        if data == "disabled":
+            self._restore_cif_overlay_after_recognition()
+        if hasattr(self, "_apply_conductor_display_visibility"):
+            self._apply_conductor_display_visibility(self._workspace.current_state)
+        if hasattr(self, "_refresh_gradient_overlay"):
+            self._refresh_gradient_overlay()
         self._on_extraction_settings_changed()
+
+    def _sync_recognition_scene_frame(self) -> None:
+        if not hasattr(self, "editor_scene_frame"):
+            return
+        enabled = False
+        if hasattr(self, "recognition_mode_combo"):
+            enabled = str(self.recognition_mode_combo.currentData() or "") != "disabled"
+        self.editor_scene_frame.setStyleSheet(RECOGNITION_SCENE_FRAME_STYLE if enabled else "")
+
+    def _restore_cif_overlay_after_recognition(self) -> None:
+        current = self._workspace.current_image_path
+        if not current or not hasattr(self, "polygon_editor"):
+            return
+        if not self._find_matching_cif_path(current):
+            return
+        self._workspace.forget_cleared_vectors([str(Path(current))])
+        polygons = self._load_cif_overlay_polygons(current)
+        if Path(current).stem.lower() in self._cif_load_failure_stems:
+            return
+        clones = [polygon.clone() for polygon in polygons]
+        state = self._workspace.current_state
+        if state is not None and state.image_path == current:
+            state.reference_polygons = [polygon.clone() for polygon in clones]
+            self._workspace.update_current_polygons(clones)
+            state.polygons_dirty = False
+        self._updating_views = True
+        try:
+            self.polygon_editor.set_polygons([polygon.clone() for polygon in clones], emit_signal=False)
+            if hasattr(self, "_polygons_editor_signature"):
+                self._editor_polygons_signature = self._polygons_editor_signature(current, clones)
+        finally:
+            self._updating_views = False
+        if hasattr(self, "_update_frame_item_status"):
+            self._update_frame_item_status(current)
+        if hasattr(self, "_update_vector_edit_status_label"):
+            self._update_vector_edit_status_label()
 
     def _on_via_brightness_range_changed(self, *_args) -> None:
         if (
@@ -912,14 +1071,7 @@ class WidgetExtractionSettingsMixin:
         self._on_metal_display_changed()
 
     def _on_metal_display_changed(self, *_args) -> None:
-        state = self._workspace.current_state
-        if state is not None and hasattr(self, "_apply_editor_vectors_for_frame"):
-            self._apply_editor_vectors_for_frame(
-                state.image_path,
-                state,
-                list(state.polygons or []),
-                defer_heavy_overlays=False,
-            )
+        self._apply_conductor_display_visibility(self._workspace.current_state)
         if hasattr(self, "_refresh_gradient_overlay"):
             self._refresh_gradient_overlay()
 
@@ -990,6 +1142,30 @@ class WidgetExtractionSettingsMixin:
             )
         if hasattr(self, "metal_approximation_checkbox"):
             self.metal_approximation_checkbox.setChecked(bool(defaults.metal_approximation_enabled))
+        if hasattr(self, "metal_segmentation_strategy_combo"):
+            self._apply_metal_strategy_to_combo(defaults)
+        if hasattr(self, "metal_ws_smoothing_spin"):
+            self.metal_ws_smoothing_spin.setValue(float(defaults.metal_watershed_smoothing_sigma))
+        if hasattr(self, "metal_ws_core_margin_spin"):
+            self.metal_ws_core_margin_spin.setValue(float(defaults.metal_watershed_core_margin))
+        if hasattr(self, "metal_ws_groove_margin_spin"):
+            self.metal_ws_groove_margin_spin.setValue(float(defaults.metal_watershed_groove_margin))
+        if hasattr(self, "metal_ws_rim_probe_spin"):
+            self.metal_ws_rim_probe_spin.setValue(int(defaults.metal_watershed_rim_probe_px))
+        if hasattr(self, "metal_ws_seed_speckle_spin"):
+            self.metal_ws_seed_speckle_spin.setValue(int(defaults.metal_watershed_seed_speckle_px))
+        if hasattr(self, "metal_ws_valley_span_spin"):
+            self.metal_ws_valley_span_spin.setValue(int(defaults.metal_watershed_valley_span_px))
+        if hasattr(self, "metal_ws_valley_depth_spin"):
+            self.metal_ws_valley_depth_spin.setValue(float(defaults.metal_watershed_valley_depth))
+        if hasattr(self, "metal_rw_beta_spin"):
+            self.metal_rw_beta_spin.setValue(float(defaults.metal_random_walker_beta))
+        if hasattr(self, "metal_rw_iterations_spin"):
+            self.metal_rw_iterations_spin.setValue(int(defaults.metal_random_walker_iterations))
+        if hasattr(self, "metal_gc_iterations_spin"):
+            self.metal_gc_iterations_spin.setValue(int(defaults.metal_graph_cut_iterations))
+        if hasattr(self, "metal_recon_erode_spin"):
+            self.metal_recon_erode_spin.setValue(int(defaults.metal_reconstruction_erode_px))
         if hasattr(self, "metal_hierarchy_combo"):
             ix = self.metal_hierarchy_combo.findData(defaults.metal_hierarchy_mode)
             if ix >= 0:

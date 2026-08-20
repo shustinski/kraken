@@ -11,6 +11,15 @@ import numpy as np
 from ...utils import ensure_binary_mask, ensure_uint8
 from ..schemas import SemPolarity
 
+SEEDED_SEGMENTATION_STRATEGIES = frozenset(
+    {
+        "gradient_watershed",
+        "random_walker",
+        "graph_cut",
+        "reconstruction",
+    }
+)
+
 
 def normalize_metal_segmentation_strategy(value: Any) -> str:
     """Normalize persisted and localized values to one supported strategy."""
@@ -27,13 +36,60 @@ def normalize_metal_segmentation_strategy(value: Any) -> str:
         return "edges"
     if text in {"auto", "hybrid", "adaptive_auto", "гибрид", "гибридная"}:
         return "auto"
+    if text in {
+        "gradient_watershed",
+        "watershed",
+        "водораздел",
+        "водораздел_по_градиенту",
+    }:
+        return "gradient_watershed"
+    if text in {
+        "random_walker",
+        "randomwalker",
+        "случайный_ход",
+        "случайное_блуждание",
+    }:
+        return "random_walker"
+    if text in {
+        "graph_cut",
+        "graphcut",
+        "grabcut",
+        "grab_cut",
+        "графовый_разрез",
+        "графовый_срез",
+    }:
+        return "graph_cut"
+    if text in {
+        "reconstruction",
+        "morphological_reconstruction",
+        "реконструкция",
+    }:
+        return "reconstruction"
     if text in {"local_adaptive", "adaptive", "адаптивная", "адаптивный"}:
         return "local_adaptive"
-    if text in {"global_otsu", "legacy_otsu", "otsu"}:
+    if text in {"global_otsu", "legacy_otsu", "otsu", "порог_otsu"}:
         return "legacy_otsu"
     if text == "sauvola":
         return "sauvola"
     return "auto"
+
+
+def is_seeded_segmentation_strategy(value: Any) -> bool:
+    return normalize_metal_segmentation_strategy(value) in SEEDED_SEGMENTATION_STRATEGIES
+
+
+def resolve_metal_segmentation_strategy(
+    value: Any,
+    *,
+    use_wide_conductor_gradient: bool = False,
+) -> str:
+    """Prefer an explicit seeded algorithm; the legacy watershed flag is the fallback."""
+    normalized = normalize_metal_segmentation_strategy(value)
+    if normalized in SEEDED_SEGMENTATION_STRATEGIES:
+        return normalized
+    if use_wide_conductor_gradient:
+        return "gradient_watershed"
+    return normalized
 
 
 def migrate_legacy_metal_settings(payload: dict[str, Any]) -> dict[str, Any]:
@@ -53,7 +109,9 @@ def migrate_legacy_metal_settings(payload: dict[str, Any]) -> dict[str, Any]:
     if "metal_speckle_removal_px" not in payload and "metal_morph_open_radius" in payload:
         out["metal_speckle_removal_px"] = int(payload.get("metal_morph_open_radius", 0) or 0)
     if "metal_segmentation_strategy" in payload:
-        out["metal_segmentation_strategy"] = normalize_metal_segmentation_strategy(payload["metal_segmentation_strategy"])
+        out["metal_segmentation_strategy"] = normalize_metal_segmentation_strategy(
+            payload["metal_segmentation_strategy"]
+        )
     else:
         # Old sensitivity/method combinations had no stable semantic match;
         # the v2-compatible migration selects the automatic strategy.
@@ -76,6 +134,17 @@ class MetalSegmentationConfig:
     noise_suppression: int = 0
     segmentation_strategy: str = "legacy_otsu"
     min_width_px: float = 8.0
+    watershed_smoothing_sigma: float = 1.0
+    watershed_core_margin: float = 8.0
+    watershed_groove_margin: float = 16.0
+    watershed_rim_probe_px: int = 6
+    watershed_seed_speckle_px: int = 1
+    watershed_valley_span_px: int = 5
+    watershed_valley_depth: float = 45.0
+    random_walker_beta: float = 90.0
+    random_walker_iterations: int = 160
+    graph_cut_iterations: int = 5
+    reconstruction_erode_px: int = 0
 
 
 @dataclass(slots=True)
@@ -118,9 +187,15 @@ def _fill_small_holes(mask: np.ndarray, *, max_area: int) -> np.ndarray:
 
 
 def apply_topology_repair(raw_mask: np.ndarray, config: MetalSegmentationConfig) -> np.ndarray:
-    """Gap bridge (close) → fill small holes → speckle removal (open)."""
+    """Gap bridge (close) → fill small holes → speckle removal (open).
+
+    Gap bridging repairs thresholding artefacts, so it is skipped for seeded
+    strategies: there the border already sits on the intensity edge and closing
+    would weld back the thin seams that keep neighbouring traces apart.
+    """
     m = ensure_uint8(raw_mask)
-    close_r = max(0, int(config.gap_bridge_px))
+    watershed_borders_are_final = is_seeded_segmentation_strategy(config.segmentation_strategy)
+    close_r = 0 if watershed_borders_are_final else max(0, int(config.gap_bridge_px))
     if close_r > 0:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * close_r + 1, 2 * close_r + 1))
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k, iterations=1)

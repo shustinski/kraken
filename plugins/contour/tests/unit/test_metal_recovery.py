@@ -31,6 +31,39 @@ def test_detect_metalization_finds_bright_bar() -> None:
     assert result.debug_images.get("metal_binary_mask") is not None
 
 
+def test_detect_metalization_includes_axis_gradient_debug_images() -> None:
+    img = np.zeros((48, 64), dtype=np.uint8)
+    img[:, 24:40] = 240
+    result = detect_metalization(
+        img,
+        MetalRecoveryConfig(
+            min_width_px=3.0,
+            min_length_px=10.0,
+            min_area=20.0,
+            min_perimeter=10.0,
+            segmentation_strategy="legacy_otsu",
+        ),
+    )
+    gradient_x = result.debug_images["metal_gradient_x"]
+    gradient_y = result.debug_images["metal_gradient_y"]
+    gradient_field = result.debug_images["metal_gradient_field"]
+    gradient_x_f32 = result.debug_images["metal_gradient_x_f32"]
+    gradient_y_f32 = result.debug_images["metal_gradient_y_f32"]
+    assert gradient_x.shape == img.shape
+    assert gradient_y.shape == img.shape
+    assert gradient_x.dtype == np.uint8
+    assert gradient_y.dtype == np.uint8
+    assert gradient_x_f32.shape == img.shape
+    assert gradient_y_f32.shape == img.shape
+    assert gradient_x_f32.dtype == np.float32
+    assert gradient_y_f32.dtype == np.float32
+    assert int(gradient_x.max()) > int(gradient_y.max())
+    assert gradient_field.shape == (img.shape[0], img.shape[1], 3)
+    assert gradient_field.dtype == np.uint8
+    assert int(gradient_field.max()) > 0
+    assert not np.all(gradient_field > 250, axis=2).any()
+
+
 def test_hierarchy_mode_full_preserves_holes() -> None:
     img = np.zeros((120, 120), dtype=np.uint8)
     img[20:100, 20:100] = 240
@@ -382,3 +415,45 @@ def test_conductor_minimum_contrast_defaults_to_fifty_and_rejects_zero() -> None
     assert noisy_sem_metal_preset_payload()["metal_min_contrast"] == pytest.approx(50.0)
     assert restored.metal_min_contrast == pytest.approx(1.0)
     assert metal_recovery_config_from_settings(restored).min_contrast == pytest.approx(1.0)
+
+
+def test_watershed_settings_roundtrip_into_recovery_config() -> None:
+    settings = ContourExtractionSettings.from_dict(
+        {
+            "metal_watershed_smoothing_sigma": 2.5,
+            "metal_watershed_core_margin": 12.0,
+            "metal_watershed_groove_margin": 20.0,
+            "metal_watershed_rim_probe_px": 9,
+            "metal_watershed_seed_speckle_px": 0,
+        }
+    )
+    config = metal_recovery_config_from_settings(settings)
+
+    assert settings.metal_watershed_smoothing_sigma == pytest.approx(2.5)
+    assert config.watershed_smoothing_sigma == pytest.approx(2.5)
+    assert config.watershed_core_margin == pytest.approx(12.0)
+    assert config.watershed_groove_margin == pytest.approx(20.0)
+    assert config.watershed_rim_probe_px == 9
+    assert config.watershed_seed_speckle_px == 0
+
+
+def test_watershed_parameter_change_invalidates_raw_segmentation_cache() -> None:
+    from contour.vision.metal_recovery.pipeline_stages import (
+        _SEGMENTATION_CACHE,
+        clear_metal_segmentation_cache,
+    )
+
+    clear_metal_segmentation_cache()
+    img = _noisy_sem_synthetic()
+    build_metal_extraction_mask(
+        img,
+        MetalRecoveryConfig(use_wide_conductor_gradient=True, watershed_core_margin=8.0),
+    )
+    sig = next(iter(_SEGMENTATION_CACHE))
+    entry = _SEGMENTATION_CACHE[sig]
+    build_metal_extraction_mask(
+        img,
+        MetalRecoveryConfig(use_wide_conductor_gradient=True, watershed_core_margin=16.0),
+    )
+    assert entry.watershed_key is not None
+    assert entry.watershed_key[1] == 16.0

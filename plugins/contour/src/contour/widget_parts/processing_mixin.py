@@ -1070,23 +1070,47 @@ class WidgetProcessingMixin:
             self.polygon_editor.set_polygon_category_visible(
                 "via", self.via_show_detected_checkbox.isChecked()
             )
-        if hasattr(self, "polygon_editor") and hasattr(self, "metal_show_rejected_checkbox"):
-            layers = getattr(state, "metal_overlay_polygons", None) or {}
-            self.polygon_editor.set_metal_overlays(
-                layers,
-                {
+        self._apply_conductor_display_visibility(state)
+
+    def _conductor_display_filters_enabled(self: Any) -> bool:
+        return (
+            hasattr(self, "recognition_mode_combo")
+            and str(self.recognition_mode_combo.currentData() or "") == "conductors"
+        )
+
+    def _apply_conductor_display_visibility(self: Any, state=None) -> None:
+        if not hasattr(self, "polygon_editor"):
+            return
+        filters_on = self._conductor_display_filters_enabled()
+        if hasattr(self, "metal_show_rejected_checkbox"):
+            layers = {}
+            if state is not None:
+                layers = getattr(state, "metal_overlay_polygons", None) or {}
+            elif self._workspace.current_state is not None:
+                layers = getattr(self._workspace.current_state, "metal_overlay_polygons", None) or {}
+            if filters_on:
+                visibility = {
                     "rejected": self.metal_show_rejected_checkbox.isChecked(),
                     "suspicious": self.metal_show_suspicious_checkbox.isChecked(),
                     "border": self.metal_show_border_checkbox.isChecked(),
                     "wide_pairs_suspicious": self.metal_show_suspicious_checkbox.isChecked(),
                     "wide_pairs_rejected": self.metal_show_rejected_checkbox.isChecked(),
-                },
-            )
-        if hasattr(self, "metal_show_conductors_checkbox"):
-            show_c = self.metal_show_conductors_checkbox.isChecked()
-            self.polygon_editor.set_polygon_category_visible("conductor", show_c)
-            self.polygon_editor.set_polygon_category_visible("metal_border", show_c)
-            self.polygon_editor.set_polygon_category_visible("metal_wide_gradient", show_c)
+                }
+            else:
+                visibility = {
+                    "rejected": False,
+                    "suspicious": False,
+                    "border": False,
+                    "wide_pairs_suspicious": False,
+                    "wide_pairs_rejected": False,
+                }
+            self.polygon_editor.set_metal_overlays(layers, visibility)
+        show_conductors = True
+        if filters_on and hasattr(self, "metal_show_conductors_checkbox"):
+            show_conductors = self.metal_show_conductors_checkbox.isChecked()
+        self.polygon_editor.set_polygon_category_visible("conductor", show_conductors)
+        self.polygon_editor.set_polygon_category_visible("metal_border", show_conductors)
+        self.polygon_editor.set_polygon_category_visible("metal_wide_gradient", show_conductors)
 
     def _flush_pending_editor_frame_apply(self: Any, image_path: str) -> None:
         pending = getattr(self, "_pending_editor_frame_apply", None)
@@ -2349,6 +2373,8 @@ class WidgetProcessingMixin:
         )
 
     def _antialias_opened_cif_files(self: Any) -> None:
+        if hasattr(self, "polygon_editor") and self.polygon_editor.vector_edits_locked():
+            return
         grade = int(self.antialias_grade_spin.value()) if hasattr(self, "antialias_grade_spin") else 1
         current_path = self._workspace.current_image_path
         if current_path is not None:
@@ -2707,6 +2733,57 @@ class WidgetProcessingMixin:
             clear_state_cache=False,
         )
 
+    def remove_images(self: Any, paths: list[str]) -> None:
+        to_remove = {str(Path(path)) for path in paths}
+        existing_paths = [str(Path(path)) for path in self._workspace.image_paths]
+        remaining = [path for path in existing_paths if path not in to_remove]
+        if remaining == existing_paths:
+            return
+        from ..infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
+
+        current = self._workspace.current_image_path
+        current_normalized = str(Path(current)) if current else None
+        current_removed = current_normalized is not None and current_normalized in to_remove
+        if current_removed:
+            self._directory_scanner.invalidate_pending_results()
+            self._stop_work_simulation()
+            self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        elif self._workspace.current_state is not None and not self._try_leave_current_frame():
+            return
+        else:
+            self._directory_scanner.invalidate_pending_results()
+            self._stop_work_simulation()
+        self._set_image_list_mode(IMAGE_LIST_MODE_EXPLICIT)
+        neighbor: str | None = None
+        if current_removed:
+            removed_index = existing_paths.index(current_normalized) if current_normalized in existing_paths else 0
+            if remaining:
+                neighbor = remaining[min(removed_index, len(remaining) - 1)]
+        select_path = current_normalized if not current_removed else neighbor
+        self._apply_image_paths_to_workspace(
+            remaining,
+            clear_extra_layers=False,
+            select_path=select_path,
+            fallback_to_first=select_path is None,
+            clear_state_cache=False,
+        )
+        self._save_persisted_session_paths()
+
+    def clear_frame_vectors(self: Any, image_path: str) -> None:
+        normalized = str(Path(image_path))
+        if normalized not in {str(Path(path)) for path in self._workspace.image_paths}:
+            return
+        self._workspace.mark_vectors_cleared(normalized)
+        current = self._workspace.current_image_path
+        if current is not None and str(Path(current)) == normalized:
+            if hasattr(self, "polygon_editor"):
+                self.polygon_editor.set_polygons([])
+            self._sync_editor_polygons_to_current_workspace()
+        self._refresh_image_list_item_states()
+        self._refresh_vector_rows_for_workspace()
+        if hasattr(self, "_refresh_image_list_item_states"):
+            self._image_list_model.invalidate_path(normalized)
+
     def reset_project(self: Any) -> None:
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
@@ -2825,6 +2902,8 @@ class WidgetProcessingMixin:
         self._flush_pending_thumbnail_grid_rebuild()
 
     def _load_cif_overlay_polygons(self: Any, image_path: str) -> list[PolygonData]:
+        if self._workspace.vectors_are_cleared(image_path):
+            return []
         stem_key = Path(image_path).stem.lower()
         cif_path = self._find_matching_cif_path(image_path)
         if not cif_path:

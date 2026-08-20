@@ -79,6 +79,13 @@ class _DockWidthComboBox(QComboBox):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self.view().setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        view = self.view()
+        if view is not None and view.isVisible():
+            super().wheelEvent(event)
+            return
+        event.ignore()
+
     def minimumSizeHint(self) -> QSize:
         hint = super().minimumSizeHint()
         return QSize(0, hint.height())
@@ -286,7 +293,8 @@ def build_paths_tab(self) -> QWidget:
     tab = QWidget()
     layout = QVBoxLayout(tab)
     self.path_panel = self._build_path_panel()
-    layout.addWidget(self.path_panel)
+    self.path_panel.setParent(tab)
+    self.path_panel.hide()
 
     self.vector_geom_group = QGroupBox("Постобработка ручных инструментов")
     self.vector_geom_group.setToolTip(
@@ -408,15 +416,25 @@ def build_files_tab(self) -> QWidget:
     attach_status_row_delegate(self.image_list)
     self.image_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     self.image_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    self.image_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    self.image_list.customContextMenuRequested.connect(self._on_image_list_context_menu)
 
     self.image_vector_list = QListWidget()
     attach_status_row_delegate(self.image_vector_list)
     self.image_vector_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     self.image_vector_list.itemClicked.connect(self._on_asset_image_item_clicked)
+    self.image_vector_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    self.image_vector_list.customContextMenuRequested.connect(
+        lambda pos, list_widget=self.image_vector_list: self._on_asset_image_list_context_menu(list_widget, pos)
+    )
     self.image_only_list = QListWidget()
     attach_status_row_delegate(self.image_only_list)
     self.image_only_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
     self.image_only_list.itemClicked.connect(self._on_asset_image_item_clicked)
+    self.image_only_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    self.image_only_list.customContextMenuRequested.connect(
+        lambda pos, list_widget=self.image_only_list: self._on_asset_image_list_context_menu(list_widget, pos)
+    )
     self.vector_only_list = QListWidget()
     attach_status_row_delegate(self.vector_only_list)
     self.vector_only_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -448,6 +466,7 @@ def build_files_tab(self) -> QWidget:
     self.thumbnail_grid.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     self.thumbnail_grid.frameNavigationRequested.connect(self._on_frame_navigation_requested)
+    self.thumbnail_grid.frameContextMenuRequested.connect(self._on_frame_matrix_context_menu)
     self.thumbnail_grid.installEventFilter(self)
     self.thumbnail_grid.viewport().installEventFilter(self)
     self.thumbnail_grid_scroll_area = self.thumbnail_grid
@@ -1634,10 +1653,10 @@ def build_extraction_tab(self) -> QWidget:
 
     self.metal_gap_bridge_spin = QSpinBox()
     self.metal_gap_bridge_spin.setRange(0, 25)
-    self.metal_gap_bridge_spin.setValue(2)
+    self.metal_gap_bridge_spin.setValue(1)
     self.metal_speckle_removal_spin = QSpinBox()
     self.metal_speckle_removal_spin.setRange(0, 25)
-    self.metal_speckle_removal_spin.setValue(0)
+    self.metal_speckle_removal_spin.setValue(1)
 
     self.metal_min_width_spin = QDoubleSpinBox()
     self.metal_min_width_spin.setRange(0.5, 200.0)
@@ -1661,12 +1680,23 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_epsilon_spin.setDecimals(2)
     self.metal_epsilon_spin.setValue(2.0)
 
-    _metal_basic_form.addRow("Пресет", self.metal_preset_widget)
+    self.metal_preset_widget.setVisible(False)
     _metal_basic_form.addRow("Мин. контраст проводника", self.metal_min_contrast_widget)
     _metal_basic_form.addRow("Сшивка разрывов, px", self.metal_gap_bridge_spin)
     _metal_basic_form.addRow("Удаление шума (opening), px", self.metal_speckle_removal_spin)
     _metal_basic_form.addRow("Ширина проводника, px", self.metal_width_row)
     _metal_basic_form.addRow("Epsilon (approxPolyDP)", self.metal_epsilon_spin)
+    self.metal_segmentation_strategy_combo = QComboBox()
+    self.metal_segmentation_strategy_combo.addItem("Порог Otsu", "legacy_otsu")
+    self.metal_segmentation_strategy_combo.addItem("Watershed", "gradient_watershed")
+    self.metal_segmentation_strategy_combo.addItem("Random Walker", "random_walker")
+    self.metal_segmentation_strategy_combo.addItem("Graph Cut", "graph_cut")
+    self.metal_segmentation_strategy_combo.addItem("Reconstruction", "reconstruction")
+    self.metal_segmentation_strategy_combo.setCurrentIndex(0)
+    _metal_basic_form.addRow("Алгоритм распознавания", self.metal_segmentation_strategy_combo)
+    self.metal_segmentation_strategy_label_widget = _metal_basic_form.labelForField(
+        self.metal_segmentation_strategy_combo
+    )
 
     self.metal_display_group = QGroupBox("Отображение")
     _metal_disp_form = QFormLayout(self.metal_display_group)
@@ -1679,11 +1709,14 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_show_border_checkbox = QCheckBox("Подсветка у границы кадра")
     self.metal_show_border_checkbox.setChecked(False)
     self.metal_show_mask_checkbox = QCheckBox("Наложение маски (градиент)")
-    self.metal_show_mask_checkbox.setChecked(True)
+    self.metal_show_mask_checkbox.setChecked(False)
     self.metal_debug_visual_combo = QComboBox()
     for _l, _d in (
         ("Итоговое наложение", "overlay"),
         ("Исходное (серое)", "metal_source_gray"),
+        ("Градиент по X", "metal_gradient_x"),
+        ("Градиент по Y", "metal_gradient_y"),
+        ("Градиентное поле", "metal_gradient_field"),
         ("После подготовки", "metal_preprocessed"),
         ("Сегментация (сырая)", "metal_raw_segmentation"),
         ("После топологии", "metal_after_topology"),
@@ -1694,6 +1727,13 @@ def build_extraction_tab(self) -> QWidget:
         ("Проверка ширины", "metal_width_check"),
     ):
         self.metal_debug_visual_combo.addItem(_l, _d)
+    self.metal_gradient_3d_button = QPushButton("3D поле")
+    _metal_debug_row = QWidget()
+    _metal_debug_layout = QHBoxLayout(_metal_debug_row)
+    _metal_debug_layout.setContentsMargins(0, 0, 0, 0)
+    _metal_debug_layout.setSpacing(8)
+    _metal_debug_layout.addWidget(self.metal_debug_visual_combo, 1)
+    _metal_debug_layout.addWidget(self.metal_gradient_3d_button, 0)
     self.metal_overlay_opacity_spin = QDoubleSpinBox()
     self.metal_overlay_opacity_spin.setRange(0.05, 1.0)
     self.metal_overlay_opacity_spin.setSingleStep(0.05)
@@ -1702,14 +1742,13 @@ def build_extraction_tab(self) -> QWidget:
     _metal_disp_form.addRow(self.metal_show_rejected_checkbox)
     _metal_disp_form.addRow(self.metal_show_suspicious_checkbox)
     _metal_disp_form.addRow(self.metal_show_mask_checkbox)
-    _metal_disp_form.addRow("Режим отладочного изображения", self.metal_debug_visual_combo)
+    _metal_disp_form.addRow("Режим отладочного изображения", _metal_debug_row)
+    self.metal_debug_visual_label_widget = _metal_disp_form.labelForField(_metal_debug_row)
     _metal_disp_form.addRow("Прозрачность наложения", self.metal_overlay_opacity_spin)
 
     self.metal_advanced_group = QGroupBox("Дополнительно")
     self.metal_advanced_group.setCheckable(True)
     self.metal_advanced_group.setChecked(False)
-    _metal_adv_wrap = QWidget()
-    _metal_adv_form = QFormLayout(_metal_adv_wrap)
     self.metal_min_area_spin = QDoubleSpinBox()
     self.metal_min_area_spin.setRange(0.0, 1_000_000.0)
     self.metal_min_area_spin.setDecimals(1)
@@ -1749,6 +1788,49 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_min_hole_source_contrast_fraction_spin.setValue(0.35)
     self.metal_approximation_checkbox = QCheckBox("Режим аппроксимации контуров")
     self.metal_approximation_checkbox.setChecked(True)
+    self.metal_ws_smoothing_spin = QDoubleSpinBox()
+    self.metal_ws_smoothing_spin.setRange(0.1, 8.0)
+    self.metal_ws_smoothing_spin.setDecimals(1)
+    self.metal_ws_smoothing_spin.setSingleStep(0.1)
+    self.metal_ws_smoothing_spin.setValue(1.0)
+    self.metal_ws_core_margin_spin = QDoubleSpinBox()
+    self.metal_ws_core_margin_spin.setRange(0.0, 40.0)
+    self.metal_ws_core_margin_spin.setDecimals(1)
+    self.metal_ws_core_margin_spin.setSingleStep(1.0)
+    self.metal_ws_core_margin_spin.setValue(8.0)
+    self.metal_ws_groove_margin_spin = QDoubleSpinBox()
+    self.metal_ws_groove_margin_spin.setRange(0.0, 40.0)
+    self.metal_ws_groove_margin_spin.setDecimals(1)
+    self.metal_ws_groove_margin_spin.setSingleStep(1.0)
+    self.metal_ws_groove_margin_spin.setValue(16.0)
+    self.metal_ws_rim_probe_spin = QSpinBox()
+    self.metal_ws_rim_probe_spin.setRange(1, 32)
+    self.metal_ws_rim_probe_spin.setValue(6)
+    self.metal_ws_seed_speckle_spin = QSpinBox()
+    self.metal_ws_seed_speckle_spin.setRange(0, 8)
+    self.metal_ws_seed_speckle_spin.setValue(1)
+    self.metal_ws_valley_span_spin = QSpinBox()
+    self.metal_ws_valley_span_spin.setRange(0, 16)
+    self.metal_ws_valley_span_spin.setValue(5)
+    self.metal_ws_valley_depth_spin = QDoubleSpinBox()
+    self.metal_ws_valley_depth_spin.setRange(0.0, 160.0)
+    self.metal_ws_valley_depth_spin.setDecimals(1)
+    self.metal_ws_valley_depth_spin.setSingleStep(5.0)
+    self.metal_ws_valley_depth_spin.setValue(45.0)
+    self.metal_rw_beta_spin = QDoubleSpinBox()
+    self.metal_rw_beta_spin.setRange(1.0, 400.0)
+    self.metal_rw_beta_spin.setDecimals(0)
+    self.metal_rw_beta_spin.setSingleStep(10.0)
+    self.metal_rw_beta_spin.setValue(90.0)
+    self.metal_rw_iterations_spin = QSpinBox()
+    self.metal_rw_iterations_spin.setRange(8, 400)
+    self.metal_rw_iterations_spin.setValue(160)
+    self.metal_gc_iterations_spin = QSpinBox()
+    self.metal_gc_iterations_spin.setRange(1, 16)
+    self.metal_gc_iterations_spin.setValue(5)
+    self.metal_recon_erode_spin = QSpinBox()
+    self.metal_recon_erode_spin.setRange(0, 16)
+    self.metal_recon_erode_spin.setValue(0)
     self.metal_hierarchy_combo = QComboBox()
     self.metal_hierarchy_combo.addItem("Полная иерархия", "full")
     self.metal_hierarchy_combo.addItem("Только внешние контуры", "external")
@@ -1758,34 +1840,90 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_border_handling_combo.addItem("Принимать как обычно", "accept")
     self.metal_border_handling_combo.addItem("Отдельно помечать", "mark")
     self.metal_border_handling_combo.setCurrentIndex(2)
-    _metal_adv_form.addRow("Мин. площадь", self.metal_min_area_spin)
-    _metal_adv_form.addRow("Макс. площадь (0 = нет)", self.metal_max_area_spin)
-    _metal_adv_form.addRow("Мин. периметр", self.metal_min_perimeter_spin)
-    _metal_adv_form.addRow("Макс. периметр (0 = нет)", self.metal_max_perimeter_spin)
-    _metal_adv_form.addRow("Мин. длина проводника, px", self.metal_min_length_spin)
-    _metal_adv_form.addRow("Мин. число точек", self.metal_min_points_spin)
-    _metal_adv_form.addRow("Мин. угол полигона, °", self.metal_min_angle_spin)
-    _metal_adv_form.addRow(self.metal_approximation_checkbox)
-    _metal_adv_form.addRow("Режим иерархии", self.metal_hierarchy_combo)
-    _metal_adv_form.addRow("Мин. площадь отверстия для заливки, px²", self.min_inner_hole_area_spin)
-    self.min_inner_hole_area_label_widget = _metal_adv_form.labelForField(self.min_inner_hole_area_spin)
-    _metal_adv_form.addRow("Мин. контраст отверстия", self.metal_min_hole_source_contrast_spin)
-    _metal_adv_form.addRow(
+
+    self.metal_filter_group = QGroupBox("Фильтрация распознанных")
+    _metal_filter_form = QFormLayout(self.metal_filter_group)
+    self._configure_compact_form(_metal_filter_form)
+    _metal_filter_form.addRow("Мин. площадь", self.metal_min_area_spin)
+    _metal_filter_form.addRow("Макс. площадь (0 = нет)", self.metal_max_area_spin)
+    _metal_filter_form.addRow("Мин. периметр", self.metal_min_perimeter_spin)
+    _metal_filter_form.addRow("Макс. периметр (0 = нет)", self.metal_max_perimeter_spin)
+    _metal_filter_form.addRow("Мин. длина проводника, px", self.metal_min_length_spin)
+    _metal_filter_form.addRow("Мин. число точек", self.metal_min_points_spin)
+    _metal_filter_form.addRow("Мин. угол полигона, °", self.metal_min_angle_spin)
+    _metal_filter_form.addRow("Обработка объектов на границе", self.metal_border_handling_combo)
+
+    self.metal_recognition_params_group = QGroupBox("Параметры распознавания")
+    _metal_recog_form = QFormLayout(self.metal_recognition_params_group)
+    self._configure_compact_form(_metal_recog_form)
+    _metal_recog_form.addRow(self.metal_approximation_checkbox)
+    _metal_recog_form.addRow("Режим иерархии", self.metal_hierarchy_combo)
+    _metal_recog_form.addRow("Мин. площадь отверстия для заливки, px²", self.min_inner_hole_area_spin)
+    self.min_inner_hole_area_label_widget = _metal_recog_form.labelForField(self.min_inner_hole_area_spin)
+    _metal_recog_form.addRow("Мин. контраст отверстия", self.metal_min_hole_source_contrast_spin)
+    _metal_recog_form.addRow(
         "Доля контраста классов для отверстия",
         self.metal_min_hole_source_contrast_fraction_spin,
     )
-    _metal_adv_form.addRow("Обработка объектов на границе", self.metal_border_handling_combo)
-    _adv_box_l = QVBoxLayout()
+
+    self.metal_watershed_group = QGroupBox("Watershed")
+    _metal_ws_form = QFormLayout(self.metal_watershed_group)
+    self._configure_compact_form(_metal_ws_form)
+    _metal_ws_form.addRow("Сглаживание, σ", self.metal_ws_smoothing_spin)
+    self.metal_ws_smoothing_label_widget = _metal_ws_form.labelForField(self.metal_ws_smoothing_spin)
+    _metal_ws_form.addRow("Отступ ядер металла", self.metal_ws_core_margin_spin)
+    self.metal_ws_core_margin_label_widget = _metal_ws_form.labelForField(self.metal_ws_core_margin_spin)
+    _metal_ws_form.addRow("Отступ затравок зазора", self.metal_ws_groove_margin_spin)
+    self.metal_ws_groove_margin_label_widget = _metal_ws_form.labelForField(self.metal_ws_groove_margin_spin)
+    _metal_ws_form.addRow("Радиус кольца кромки, px", self.metal_ws_rim_probe_spin)
+    self.metal_ws_rim_probe_label_widget = _metal_ws_form.labelForField(self.metal_ws_rim_probe_spin)
+    _metal_ws_form.addRow("Очистка затравок, px", self.metal_ws_seed_speckle_spin)
+    self.metal_ws_seed_speckle_label_widget = _metal_ws_form.labelForField(self.metal_ws_seed_speckle_spin)
+    _metal_ws_form.addRow("Ширина узкого зазора, px", self.metal_ws_valley_span_spin)
+    self.metal_ws_valley_span_label_widget = _metal_ws_form.labelForField(self.metal_ws_valley_span_spin)
+    _metal_ws_form.addRow("Глубина узкого зазора", self.metal_ws_valley_depth_spin)
+    self.metal_ws_valley_depth_label_widget = _metal_ws_form.labelForField(self.metal_ws_valley_depth_spin)
+
+    self.metal_random_walker_group = QGroupBox("Random Walker")
+    _metal_rw_form = QFormLayout(self.metal_random_walker_group)
+    self._configure_compact_form(_metal_rw_form)
+    _metal_rw_form.addRow("Жёсткость границ, β", self.metal_rw_beta_spin)
+    self.metal_rw_beta_label_widget = _metal_rw_form.labelForField(self.metal_rw_beta_spin)
+    _metal_rw_form.addRow("Итерации", self.metal_rw_iterations_spin)
+    self.metal_rw_iterations_label_widget = _metal_rw_form.labelForField(self.metal_rw_iterations_spin)
+
+    self.metal_graph_cut_group = QGroupBox("Graph Cut")
+    _metal_gc_form = QFormLayout(self.metal_graph_cut_group)
+    self._configure_compact_form(_metal_gc_form)
+    _metal_gc_form.addRow("Итерации GrabCut", self.metal_gc_iterations_spin)
+    self.metal_gc_iterations_label_widget = _metal_gc_form.labelForField(self.metal_gc_iterations_spin)
+
+    self.metal_reconstruction_group = QGroupBox("Reconstruction")
+    _metal_recon_form = QFormLayout(self.metal_reconstruction_group)
+    self._configure_compact_form(_metal_recon_form)
+    _metal_recon_form.addRow("Эрозия ядер, px", self.metal_recon_erode_spin)
+    self.metal_recon_erode_label_widget = _metal_recon_form.labelForField(self.metal_recon_erode_spin)
+
+    _metal_adv_wrap = QWidget()
+    _adv_box_l = QVBoxLayout(_metal_adv_wrap)
     _adv_box_l.setContentsMargins(8, 4, 8, 4)
-    _adv_box_l.addWidget(_metal_adv_wrap)
-    self.metal_advanced_group.setLayout(_adv_box_l)
+    _adv_box_l.setSpacing(8)
+    _adv_box_l.addWidget(self.metal_filter_group)
+    _adv_box_l.addWidget(self.metal_recognition_params_group)
+    _adv_box_l.addWidget(self.metal_watershed_group)
+    _adv_box_l.addWidget(self.metal_random_walker_group)
+    _adv_box_l.addWidget(self.metal_graph_cut_group)
+    _adv_box_l.addWidget(self.metal_reconstruction_group)
+    _adv_outer = QVBoxLayout(self.metal_advanced_group)
+    _adv_outer.setContentsMargins(0, 0, 0, 0)
+    _adv_outer.addWidget(_metal_adv_wrap)
     self.metal_advanced_group.toggled.connect(_metal_adv_wrap.setVisible)
     _metal_adv_wrap.setVisible(self.metal_advanced_group.isChecked())
 
     _metal_actions = QHBoxLayout()
     self.metal_preview_mask_button = QPushButton("Предпросмотр маски")
+    self.metal_preview_mask_button.setVisible(False)
     self.metal_reset_params_button = QPushButton("Сбросить параметры")
-    _metal_actions.addWidget(self.metal_preview_mask_button)
     _metal_actions.addWidget(self.metal_reset_params_button)
 
     _cond_l.addWidget(self.metal_basic_group, 0)
@@ -1815,6 +1953,7 @@ def build_extraction_tab(self) -> QWidget:
     ):
         _w.stateChanged.connect(self._on_metal_display_changed)
     self.metal_debug_visual_combo.currentIndexChanged.connect(self._on_metal_display_changed)
+    self.metal_gradient_3d_button.clicked.connect(self._open_metal_gradient_field_3d)
     self.metal_overlay_opacity_spin.valueChanged.connect(self._on_metal_overlay_opacity_changed)
     for _w in (
         self.metal_min_area_spin,
@@ -1826,9 +1965,21 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_min_angle_spin,
         self.metal_min_hole_source_contrast_spin,
         self.metal_min_hole_source_contrast_fraction_spin,
+        self.metal_ws_smoothing_spin,
+        self.metal_ws_core_margin_spin,
+        self.metal_ws_groove_margin_spin,
+        self.metal_ws_rim_probe_spin,
+        self.metal_ws_seed_speckle_spin,
+        self.metal_ws_valley_span_spin,
+        self.metal_ws_valley_depth_spin,
+        self.metal_rw_beta_spin,
+        self.metal_rw_iterations_spin,
+        self.metal_gc_iterations_spin,
+        self.metal_recon_erode_spin,
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+    self.metal_segmentation_strategy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_hierarchy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_border_handling_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_preview_mask_button.clicked.connect(self._preview_metal_mask)
@@ -1871,7 +2022,8 @@ def build_extraction_tab(self) -> QWidget:
     layout.addLayout(_rm_row)
     layout.addWidget(self.recognition_stack, 0)
     layout.addWidget(self.bright_via_group, 0)
-    layout.addWidget(self.contour_group)
+    self.contour_group.setParent(tab)
+    self.contour_group.hide()
     layout.addStretch(1)
 
     self.save_group = QGroupBox("Save options")
@@ -2112,7 +2264,14 @@ def build_visual_panel(self) -> QWidget:
     self.editor_toolbar_scroll.setMinimumHeight(toolbar_height)
     self.editor_toolbar_scroll.setMaximumHeight(toolbar_height)
     editor_layout.addWidget(self.editor_toolbar_scroll)
-    editor_layout.addWidget(self.polygon_editor, 1)
+    self.editor_scene_frame = QFrame()
+    self.editor_scene_frame.setObjectName("editorSceneFrame")
+    self.editor_scene_frame.setFrameShape(QFrame.Shape.NoFrame)
+    scene_frame_layout = QVBoxLayout(self.editor_scene_frame)
+    scene_frame_layout.setContentsMargins(0, 0, 0, 0)
+    scene_frame_layout.setSpacing(0)
+    scene_frame_layout.addWidget(self.polygon_editor)
+    editor_layout.addWidget(self.editor_scene_frame, 1)
 
     return panel
 

@@ -14,6 +14,16 @@ from typing import Any, Literal, cast
 from ..domain import PolygonData
 from .processing import ContourExtractionSettings, DisplaySettings, PipelineStepConfig
 
+MetalSegmentationStrategyV2 = Literal[
+    "auto",
+    "global_otsu",
+    "local_adaptive",
+    "gradient_watershed",
+    "random_walker",
+    "graph_cut",
+    "reconstruction",
+]
+
 
 @dataclass(slots=True)
 class CommonContourSettings:
@@ -32,7 +42,7 @@ class CommonContourSettings:
 @dataclass(slots=True)
 class MetalRecoverySettings:
     kind: Literal["metal"] = "metal"
-    segmentation_strategy: Literal["auto", "global_otsu", "local_adaptive"] = "auto"
+    segmentation_strategy: MetalSegmentationStrategyV2 = "auto"
     min_contrast: float = 50.0
     # Deprecated schema-v2 field retained for compatibility with saved requests.
     contrast_bias: float = 0.0
@@ -46,6 +56,18 @@ class MetalRecoverySettings:
     min_object_area: float = 60.0
     hierarchy_mode: Literal["full", "external"] = "full"
     border_handling: Literal["mark", "ignore", "accept"] = "mark"
+    use_wide_conductor_gradient: bool = False
+    watershed_smoothing_sigma: float = 1.0
+    watershed_core_margin: float = 8.0
+    watershed_groove_margin: float = 16.0
+    watershed_rim_probe_px: int = 6
+    watershed_seed_speckle_px: int = 1
+    watershed_valley_span_px: int = 5
+    watershed_valley_depth: float = 45.0
+    random_walker_beta: float = 90.0
+    random_walker_iterations: int = 160
+    graph_cut_iterations: int = 5
+    reconstruction_erode_px: int = 0
 
     def __post_init__(self) -> None:
         self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
@@ -89,14 +111,23 @@ class SettingsMigrationReport:
 
 def _normalized_v2_metal_strategy(
     value: Any,
-) -> Literal["auto", "global_otsu", "local_adaptive"]:
-    from ..vision.metal_recovery.segmentation import normalize_metal_segmentation_strategy
+    *,
+    use_wide_conductor_gradient: bool = False,
+) -> MetalSegmentationStrategyV2:
+    from ..vision.metal_recovery.segmentation import (
+        SEEDED_SEGMENTATION_STRATEGIES,
+        resolve_metal_segmentation_strategy,
+    )
 
-    normalized = normalize_metal_segmentation_strategy(value)
+    normalized = resolve_metal_segmentation_strategy(
+        value,
+        use_wide_conductor_gradient=use_wide_conductor_gradient,
+    )
     result = "global_otsu" if normalized == "legacy_otsu" else normalized
-    if result not in {"auto", "global_otsu", "local_adaptive"}:
+    allowed: set[str] = {"auto", "global_otsu", "local_adaptive"} | set(SEEDED_SEGMENTATION_STRATEGIES)
+    if result not in allowed:
         result = "auto"
-    return cast(Literal["auto", "global_otsu", "local_adaptive"], result)
+    return cast(MetalSegmentationStrategyV2, result)
 
 
 @dataclass(slots=True)
@@ -133,7 +164,8 @@ class ProcessingRequestV2:
                     float(recognition_payload.get("contrast_bias", 0.0)),
                 )
             recognition_payload["segmentation_strategy"] = _normalized_v2_metal_strategy(
-                recognition_payload.get("segmentation_strategy", "auto")
+                recognition_payload.get("segmentation_strategy", "auto"),
+                use_wide_conductor_gradient=bool(recognition_payload.get("use_wide_conductor_gradient", False)),
             )
             recognition: RecognitionSettingsV2 = MetalRecoverySettings(**recognition_payload)
         elif kind == "via":
@@ -175,6 +207,18 @@ class ProcessingRequestV2:
                 metal_min_object_area=metal_mode.min_object_area,
                 metal_hierarchy_mode=metal_mode.hierarchy_mode,
                 metal_border_handling=metal_mode.border_handling,
+                metal_use_wide_conductor_gradient=metal_mode.use_wide_conductor_gradient,
+                metal_watershed_smoothing_sigma=metal_mode.watershed_smoothing_sigma,
+                metal_watershed_core_margin=metal_mode.watershed_core_margin,
+                metal_watershed_groove_margin=metal_mode.watershed_groove_margin,
+                metal_watershed_rim_probe_px=metal_mode.watershed_rim_probe_px,
+                metal_watershed_seed_speckle_px=metal_mode.watershed_seed_speckle_px,
+                metal_watershed_valley_span_px=metal_mode.watershed_valley_span_px,
+                metal_watershed_valley_depth=metal_mode.watershed_valley_depth,
+                metal_random_walker_beta=metal_mode.random_walker_beta,
+                metal_random_walker_iterations=metal_mode.random_walker_iterations,
+                metal_graph_cut_iterations=metal_mode.graph_cut_iterations,
+                metal_reconstruction_erode_px=metal_mode.reconstruction_erode_px,
             )
         else:
             via_mode = self.recognition
@@ -265,6 +309,18 @@ class ProcessingRequestV2:
                 min_object_area=legacy.metal_min_object_area,
                 hierarchy_mode=legacy.metal_hierarchy_mode,
                 border_handling=legacy.metal_border_handling,
+                use_wide_conductor_gradient=legacy.metal_use_wide_conductor_gradient,
+                watershed_smoothing_sigma=legacy.metal_watershed_smoothing_sigma,
+                watershed_core_margin=legacy.metal_watershed_core_margin,
+                watershed_groove_margin=legacy.metal_watershed_groove_margin,
+                watershed_rim_probe_px=legacy.metal_watershed_rim_probe_px,
+                watershed_seed_speckle_px=legacy.metal_watershed_seed_speckle_px,
+                watershed_valley_span_px=legacy.metal_watershed_valley_span_px,
+                watershed_valley_depth=legacy.metal_watershed_valley_depth,
+                random_walker_beta=legacy.metal_random_walker_beta,
+                random_walker_iterations=legacy.metal_random_walker_iterations,
+                graph_cut_iterations=legacy.metal_graph_cut_iterations,
+                reconstruction_erode_px=legacy.metal_reconstruction_erode_px,
             )
         return (
             cls(

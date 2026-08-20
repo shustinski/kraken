@@ -10,9 +10,11 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, pyqtBoundSignal
-from PyQt6.QtWidgets import QApplication, QListWidgetItem, QWidget
+from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtBoundSignal
+from PyQt6.QtGui import QWheelEvent
+from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QListWidgetItem, QWidget
 
+from contour.graphics_view import EditorTool
 from contour.widget import PolygonExtractionWidget
 
 GOLDEN_PATH = Path(__file__).resolve().parent.parent / "golden" / "widget_public_api.txt"
@@ -52,6 +54,21 @@ def _parse_golden(text: str) -> tuple[list[str], list[str]]:
         if current in sections:
             sections[current].append(line)
     return sorted(sections["signals"]), sorted(sections["methods"])
+
+
+def _send_wheel(target: QWidget, delta: int = -120) -> None:
+    center = target.rect().center()
+    event = QWheelEvent(
+        QPointF(center),
+        target.mapToGlobal(QPointF(center)),
+        QPoint(0, 0),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(target, event)
 
 
 class WidgetSmokeTests(unittest.TestCase):
@@ -107,20 +124,125 @@ class WidgetSmokeTests(unittest.TestCase):
     def test_conductor_display_defaults(self) -> None:
         widget = PolygonExtractionWidget()
         try:
+            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("conductors"))
             self.assertTrue(widget.metal_show_rejected_checkbox.isChecked())
             self.assertFalse(widget.metal_show_border_checkbox.isChecked())
+            self.assertFalse(widget.metal_show_mask_checkbox.isChecked())
+            self.assertEqual(widget.metal_segmentation_strategy_combo.currentData(), "legacy_otsu")
+            self.assertFalse(widget._current_contour_settings().metal_use_wide_conductor_gradient)
+            widget.metal_segmentation_strategy_combo.setCurrentIndex(
+                widget.metal_segmentation_strategy_combo.findData("gradient_watershed")
+            )
+            self.assertTrue(widget._current_contour_settings().metal_use_wide_conductor_gradient)
+            self.assertEqual(
+                widget._current_contour_settings().metal_segmentation_strategy,
+                "gradient_watershed",
+            )
+            widget.metal_segmentation_strategy_combo.setCurrentIndex(
+                widget.metal_segmentation_strategy_combo.findData("random_walker")
+            )
+            self.assertEqual(
+                widget._current_contour_settings().metal_segmentation_strategy,
+                "random_walker",
+            )
+            self.assertFalse(widget._current_contour_settings().metal_use_wide_conductor_gradient)
+            self.assertEqual(widget.metal_gap_bridge_spin.value(), 1)
+            self.assertEqual(widget.metal_speckle_removal_spin.value(), 1)
+            self.assertEqual(widget.metal_ws_smoothing_spin.value(), 1.0)
+            self.assertEqual(widget.metal_ws_core_margin_spin.value(), 8.0)
+            self.assertEqual(widget.metal_ws_groove_margin_spin.value(), 16.0)
+            self.assertEqual(widget.metal_ws_rim_probe_spin.value(), 6)
+            self.assertEqual(widget.metal_ws_seed_speckle_spin.value(), 1)
+            self.assertEqual(widget.metal_ws_valley_span_spin.value(), 5)
+            self.assertEqual(widget.metal_ws_valley_depth_spin.value(), 45.0)
+            self.assertEqual(widget.metal_rw_beta_spin.value(), 90.0)
+            self.assertEqual(widget.metal_rw_iterations_spin.value(), 160)
+            self.assertEqual(widget.metal_gc_iterations_spin.value(), 5)
+            self.assertEqual(widget.metal_recon_erode_spin.value(), 0)
+            self.assertEqual(widget.metal_filter_group.title(), "Фильтрация распознанных")
+            self.assertEqual(widget.metal_recognition_params_group.title(), "Параметры распознавания")
+            self.assertEqual(widget.metal_watershed_group.title(), "Watershed")
+            self.assertEqual(widget.metal_random_walker_group.title(), "Random Walker")
+            self.assertEqual(widget.metal_graph_cut_group.title(), "Graph Cut")
+            self.assertEqual(widget.metal_reconstruction_group.title(), "Reconstruction")
+            widget.metal_rw_beta_spin.setValue(120.0)
+            self.assertEqual(widget._current_contour_settings().metal_random_walker_beta, 120.0)
+            widget.metal_ws_core_margin_spin.setValue(12.0)
+            self.assertEqual(widget._current_contour_settings().metal_watershed_core_margin, 12.0)
+            self.assertFalse(widget.metal_preset_widget.isVisible())
+            self.assertFalse(widget.metal_preview_mask_button.isVisible())
+            self.assertFalse(widget.contour_group.isVisible())
+            self.assertGreaterEqual(widget.metal_debug_visual_combo.findData("metal_gradient_x"), 0)
+            self.assertGreaterEqual(widget.metal_debug_visual_combo.findData("metal_gradient_y"), 0)
+            self.assertGreaterEqual(widget.metal_debug_visual_combo.findData("metal_gradient_field"), 0)
+            self.assertTrue(hasattr(widget, "metal_gradient_3d_button"))
             self.assertTrue(widget.metal_hierarchy_combo.currentData() == "full")
         finally:
             widget.close()
             widget.deleteLater()
 
-    def test_via_mode_hides_contour_extraction_group(self) -> None:
+    def test_combo_and_spin_ignore_mouse_wheel(self) -> None:
         widget = PolygonExtractionWidget()
         try:
-            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
+            for combo in widget.findChildren(QComboBox):
+                if combo.count() < 2:
+                    continue
+                before = combo.currentIndex()
+                _send_wheel(combo, -120)
+                _send_wheel(combo, 120)
+                self.assertEqual(combo.currentIndex(), before, combo.objectName() or combo.__class__.__name__)
+            for spin in widget.findChildren(QAbstractSpinBox):
+                before = spin.value()
+                _send_wheel(spin, -120)
+                _send_wheel(spin, 120)
+                self.assertEqual(spin.value(), before, spin.objectName() or spin.__class__.__name__)
+        finally:
+            widget.close()
+            widget.deleteLater()
 
-            self.assertFalse(widget.contour_group.isVisible())
-            self.assertFalse(widget.advanced_extraction_checkbox.isVisible())
+    def test_conductor_recognition_locks_vector_edit_tools(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("conductors"))
+
+            self.assertTrue(widget.polygon_editor.vector_edits_locked())
+            self.assertFalse(widget._tool_buttons[EditorTool.SELECT].isHidden())
+            self.assertFalse(widget._tool_buttons[EditorTool.PAN].isHidden())
+            self.assertFalse(widget._tool_buttons[EditorTool.RULER].isHidden())
+            for tool in (
+                EditorTool.ADD_POLYGON,
+                EditorTool.BRUSH,
+                EditorTool.TRACE_PEN,
+                EditorTool.ADD_VIA,
+                EditorTool.ADD_VERTEX,
+                EditorTool.DELETE_VERTEX,
+                EditorTool.MOVE_VERTEX,
+                EditorTool.ANTIALIAS,
+            ):
+                self.assertTrue(widget._tool_buttons[tool].isHidden())
+            self.assertFalse(widget.undo_button.isEnabled())
+            self.assertFalse(widget.redo_button.isEnabled())
+            self.assertFalse(widget.antialias_opened_cif_button.isEnabled())
+
+            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("disabled"))
+            self.assertFalse(widget.polygon_editor.vector_edits_locked())
+            self.assertFalse(widget._tool_buttons[EditorTool.ADD_POLYGON].isHidden())
+            self.assertTrue(widget.undo_button.isEnabled())
+            self.assertTrue(widget.antialias_opened_cif_button.isEnabled())
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_contour_extraction_group_is_never_shown(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            for mode in ("disabled", "conductors", "via"):
+                widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData(mode))
+                self.assertTrue(widget.contour_group.isHidden())
+                parent_layout = widget.contour_group.parentWidget().layout() if widget.contour_group.parentWidget() else None
+                self.assertTrue(parent_layout is None or parent_layout.indexOf(widget.contour_group) < 0)
+                self.assertTrue(widget.advanced_extraction_checkbox.isHidden())
+            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
             self.assertFalse(widget.bright_via_group.isHidden())
         finally:
             widget.close()

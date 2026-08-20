@@ -53,4 +53,10 @@ COMPACT_UI_STYLE = """
 }
 """
 
-__all__ = ["COMPACT_UI_STYLE"]
+RECOGNITION_SCENE_FRAME_STYLE = """
+#editorSceneFrame {
+    border: 3px solid #DC2626;
+}
+"""
+
+__all__ = ["COMPACT_UI_STYLE", "RECOGNITION_SCENE_FRAME_STYLE"]

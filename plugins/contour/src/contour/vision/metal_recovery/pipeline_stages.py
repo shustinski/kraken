@@ -11,11 +11,17 @@ import numpy as np
 from ...application.preview_cancellation import raise_if_preview_cancelled
 from ...utils import ensure_binary_mask, ensure_uint8
 from ..schemas import SemPolarity
+from .gradient_watershed import (
+    GradientWatershedConfig,
+    gradient_watershed_config_from_object,
+)
+from .seeded_segmentation import seeded_segmentation_mask
 from .segmentation import (
     MetalSegmentationConfig,
     MetalSegmentationResult,
     apply_topology_repair,
     filter_mask_components,
+    is_seeded_segmentation_strategy,
     normalize_metal_segmentation_strategy,
     otsu_segmentation_mask,
 )
@@ -31,6 +37,7 @@ class _SegmentationStageCache:
     image_sig: str = ""
     polarity: SemPolarity | None = None
     requested_strategy: str | None = None
+    watershed_key: tuple[float, float, float, int, int, int, float, float, int, int, int] | None = None
     strategy: str | None = None
     gray: np.ndarray | None = None
     raw_segmentation: np.ndarray | None = None
@@ -116,6 +123,50 @@ def _adaptive_segmentation_mask(
     )
 
 
+def render_gradient_field_bgr(gradient_x: np.ndarray, gradient_y: np.ndarray) -> np.ndarray:
+    """Encode Sobel direction as hue and magnitude as brightness (no baked arrows)."""
+    height, width = int(gradient_x.shape[0]), int(gradient_x.shape[1])
+    if height <= 0 or width <= 0:
+        return np.zeros((0, 0, 3), dtype=np.uint8)
+    magnitude = cv2.magnitude(gradient_x, gradient_y)
+    angle = cv2.phase(gradient_x, gradient_y, angleInDegrees=True)
+    hsv = np.empty((height, width, 3), dtype=np.uint8)
+    hsv[:, :, 0] = np.clip(angle * 0.5, 0, 179).astype(np.uint8)
+    hsv[:, :, 1] = 255
+    peak = float(np.max(magnitude)) if magnitude.size else 0.0
+    if peak <= 1e-6:
+        hsv[:, :, 2] = 0
+        return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    hsv[:, :, 2] = np.clip(magnitude * (255.0 / peak), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+def axis_gradient_debug_images(gray: np.ndarray) -> dict[str, np.ndarray]:
+    """Sobel ∂I/∂x, ∂I/∂y and vector-field preview for debug overlay."""
+    source = ensure_uint8(gray)
+    if source.ndim != 2 or source.size == 0:
+        height, width = (source.shape[:2] if source.ndim >= 2 else (0, 0))
+        empty = np.zeros((height, width), dtype=np.uint8)
+        empty_f32 = np.zeros((height, width), dtype=np.float32)
+        empty_field = np.zeros((height, width, 3), dtype=np.uint8)
+        return {
+            "metal_gradient_x": empty,
+            "metal_gradient_y": empty,
+            "metal_gradient_x_f32": empty_f32,
+            "metal_gradient_y_f32": empty_f32,
+            "metal_gradient_field": empty_field,
+        }
+    gradient_x = cv2.Sobel(source, cv2.CV_32F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(source, cv2.CV_32F, 0, 1, ksize=3)
+    return {
+        "metal_gradient_x": cv2.convertScaleAbs(gradient_x),
+        "metal_gradient_y": cv2.convertScaleAbs(gradient_y),
+        "metal_gradient_x_f32": gradient_x,
+        "metal_gradient_y_f32": gradient_y,
+        "metal_gradient_field": render_gradient_field_bgr(gradient_x, gradient_y),
+    }
+
+
 def _segmentation_quality(gray: np.ndarray, mask: np.ndarray) -> float:
     """Prefer connected, edge-aligned masks without near-empty/full flooding."""
     binary = (mask > 0).astype(np.uint8)
@@ -135,11 +186,37 @@ def _segmentation_quality(gray: np.ndarray, mask: np.ndarray) -> float:
     return edge_agreement + 0.35 * largest_share - 0.55 * tiny_fraction - fill_penalty
 
 
+def _watershed_cache_key(
+    config: GradientWatershedConfig,
+) -> tuple[float, float, float, int, int, int, float, float, int, int, int]:
+    return (
+        float(config.smoothing_sigma),
+        float(config.core_margin),
+        float(config.groove_margin),
+        int(config.rim_probe_px),
+        int(config.seed_speckle_px),
+        int(config.valley_span_px),
+        float(config.valley_depth),
+        float(config.random_walker_beta),
+        int(config.random_walker_iterations),
+        int(config.graph_cut_iterations),
+        int(config.reconstruction_erode_px),
+    )
+
+
 def _segment(
     gray: np.ndarray,
     *,
     strategy: str,
+    watershed_config: GradientWatershedConfig | None = None,
 ) -> tuple[np.ndarray, SemPolarity, str]:
+    if is_seeded_segmentation_strategy(strategy):
+        mask = seeded_segmentation_mask(
+            gray,
+            strategy,
+            watershed_config or GradientWatershedConfig(),
+        )
+        return mask, SemPolarity.BRIGHT_FOREGROUND, strategy
     strategies = ("legacy_otsu", "local_adaptive") if strategy == "auto" else (strategy,)
     candidates: list[tuple[float, np.ndarray, SemPolarity, str]] = []
     for candidate_strategy in strategies:
@@ -245,17 +322,22 @@ def build_metal_segmentation_mask_staged(
         entry.gray = g0.copy()
 
     requested_strategy = normalize_metal_segmentation_strategy(config.segmentation_strategy)
+    watershed_config = gradient_watershed_config_from_object(config)
+    watershed_key = _watershed_cache_key(watershed_config)
     if (
         entry.raw_segmentation is None
         or entry.requested_strategy != requested_strategy
+        or entry.watershed_key != watershed_key
     ):
         raise_if_preview_cancelled()
         raw, polarity, selected_strategy = _segment(
             g0,
             strategy=requested_strategy,
+            watershed_config=watershed_config,
         )
         entry.polarity = polarity
         entry.requested_strategy = requested_strategy
+        entry.watershed_key = watershed_key
         entry.strategy = selected_strategy
         entry.raw_segmentation = raw
         _invalidate_contrast(entry)
@@ -264,12 +346,17 @@ def build_metal_segmentation_mask_staged(
     min_contrast = max(1.0, min(255.0, float(config.min_contrast)))
     if entry.contrast_filtered is None or entry.min_contrast != min_contrast:
         raise_if_preview_cancelled()
-        entry.contrast_filtered = _apply_minimum_contrast(
-            g0,
-            entry.raw_segmentation,
-            polarity=entry.polarity,
-            min_contrast=min_contrast,
-        )
+        if is_seeded_segmentation_strategy(requested_strategy):
+            # Seeded algorithms already decided metal vs substrate per region; a
+            # global contrast cut would discard the mid-grey fill they recovered.
+            entry.contrast_filtered = ensure_binary_mask(entry.raw_segmentation)
+        else:
+            entry.contrast_filtered = _apply_minimum_contrast(
+                g0,
+                entry.raw_segmentation,
+                polarity=entry.polarity,
+                min_contrast=min_contrast,
+            )
         entry.min_contrast = min_contrast
         _invalidate_topology(entry)
 
@@ -310,6 +397,7 @@ def build_metal_segmentation_mask_staged(
         "metal_raw_segmentation": ensure_binary_mask(entry.raw_segmentation),
         "metal_after_topology": ensure_binary_mask(entry.after_topology),
         "metal_threshold_mask": ensure_binary_mask(entry.contrast_filtered),
+        **axis_gradient_debug_images(entry.gray),
     }
     return MetalSegmentationResult(
         mask=ensure_binary_mask(entry.mask),

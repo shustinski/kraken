@@ -1285,6 +1285,53 @@ class WidgetNavigationMixin:
             return
         self._activate_frame_path_from_matrix(path)
 
+    def _on_image_list_context_menu(self: Any, position: QPoint) -> None:
+        index = self.image_list.indexAt(position)
+        path = self._image_list_path_from_proxy_index(index)
+        if not path:
+            return
+        global_pos = self.image_list.viewport().mapToGlobal(position)
+        self._show_frame_context_menu(path, global_pos)
+
+    def _on_asset_image_list_context_menu(self: Any, list_widget: QListWidget, position: QPoint) -> None:
+        item = list_widget.itemAt(position)
+        if item is None:
+            return
+        path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not path:
+            return
+        global_pos = list_widget.viewport().mapToGlobal(position)
+        self._show_frame_context_menu(path, global_pos)
+
+    def _on_frame_matrix_context_menu(self: Any, frame_id: object, global_pos: QPoint) -> None:
+        try:
+            index = int(frame_id)
+        except (TypeError, ValueError):
+            return
+        image_paths = [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
+        if index < 0 or index >= len(image_paths):
+            return
+        self._show_frame_context_menu(image_paths[index], global_pos)
+
+    def _show_frame_context_menu(self: Any, image_path: str, global_pos: QPoint) -> None:
+        menu = QMenu(self)
+        delete_action = menu.addAction(self._tr("delete_frame_action"))
+        clear_action = menu.addAction(self._tr("clear_frame_action"))
+        chosen = menu.exec(global_pos)
+        if chosen is delete_action:
+            self.remove_images([image_path])
+        elif chosen is clear_action:
+            self.clear_frame_vectors(image_path)
+
+    def _ingest_dropped_paths(self: Any, paths: list[str]) -> None:
+        payload = classify_dropped_paths(paths)
+        if payload.is_empty():
+            return
+        if payload.image_paths:
+            self.append_images(list(payload.image_paths), select_first_new=True)
+        if payload.vector_paths:
+            self._merge_cif_file_paths(list(payload.vector_paths))
+
     def _activate_frame_path_from_matrix(self: Any, path: str) -> None:
         normalized_path = str(Path(path))
         self._suppress_thumbnail_grid_scroll_path = normalized_path
@@ -1389,10 +1436,16 @@ class WidgetNavigationMixin:
         )
         if not paths:
             return
+        self._merge_cif_file_paths([str(Path(path)) for path in paths])
+
+    def _merge_cif_file_paths(self: Any, paths: list[str]) -> None:
         additions = index_cif_file_paths(paths)
         if not additions:
             return
         self._workspace.merge_cif_paths(additions)
+        self._workspace.forget_cleared_vectors(
+            [path for path in self._workspace.image_paths if Path(path).stem.lower() in additions]
+        )
         self.cif_dir_edit.setText(str(Path(paths[0]).parent))
         self._save_persisted_paths()
         self._append_log(self._tr("cif_indexed_log", count=len(self._workspace.cif_paths_by_stem)))
@@ -1445,6 +1498,7 @@ class WidgetNavigationMixin:
                 if cif_path:
                     cif_paths.append(cif_path)
         if paths:
+            self._workspace.forget_cleared_vectors(paths)
             self._workspace.invalidate_image_states(paths)
             if hasattr(self, "_neighbor_vector_cache"):
                 for path in paths:

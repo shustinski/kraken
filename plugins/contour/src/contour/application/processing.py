@@ -391,8 +391,8 @@ class ContourExtractionSettings:
     metal_min_hole_source_contrast: float = 8.0
     metal_min_hole_source_contrast_fraction: float = 0.35
     metal_segmentation_strategy: str = "legacy_otsu"
-    metal_gap_bridge_px: int = 2
-    metal_speckle_removal_px: int = 0
+    metal_gap_bridge_px: int = 1
+    metal_speckle_removal_px: int = 1
     metal_contour_smooth_px: float = 0.0
     metal_contour_close_px: int = 0
     metal_min_object_area: float = 30.0
@@ -412,9 +412,9 @@ class ContourExtractionSettings:
     metal_max_perimeter: float | None = None
     metal_approximation_enabled: bool = True
     metal_morph_close_radius: int = 1
-    metal_morph_open_radius: int = 0
+    metal_morph_open_radius: int = 1
     metal_display_show_conductors: bool = True
-    metal_display_show_mask: bool = True
+    metal_display_show_mask: bool = False
     metal_display_show_contours: bool = True
     metal_display_show_rejected: bool = True
     metal_display_show_suspicious: bool = True
@@ -422,12 +422,17 @@ class ContourExtractionSettings:
     metal_debug_visual: str = "overlay"
     metal_overlay_opacity: float = 0.45
     metal_use_wide_conductor_gradient: bool = False
-    metal_wide_gradient_profile_radius_px: int = 8
-    metal_wide_gradient_min_direction_confidence: float = 0.15
-    metal_wide_gradient_min_pair_length_px: float = 24.0
-    metal_wide_gradient_parallel_tolerance_deg: float = 10.0
-    metal_wide_gradient_max_edge_gap_px: int = 5
-    metal_wide_gradient_min_overlap_ratio: float = 0.5
+    metal_watershed_smoothing_sigma: float = 1.0
+    metal_watershed_core_margin: float = 8.0
+    metal_watershed_groove_margin: float = 16.0
+    metal_watershed_rim_probe_px: int = 6
+    metal_watershed_seed_speckle_px: int = 1
+    metal_watershed_valley_span_px: int = 5
+    metal_watershed_valley_depth: float = 45.0
+    metal_random_walker_beta: float = 90.0
+    metal_random_walker_iterations: int = 160
+    metal_graph_cut_iterations: int = 5
+    metal_reconstruction_erode_px: int = 0
     metal_edge_close_cap_px: int = 9
     metal_edge_watershed_split: bool = True
     metal_edge_watershed_dist_peak_frac: float = 0.38
@@ -617,12 +622,17 @@ class ContourExtractionSettings:
             "metal_debug_visual": self.metal_debug_visual,
             "metal_overlay_opacity": self.metal_overlay_opacity,
             "metal_use_wide_conductor_gradient": self.metal_use_wide_conductor_gradient,
-            "metal_wide_gradient_profile_radius_px": self.metal_wide_gradient_profile_radius_px,
-            "metal_wide_gradient_min_direction_confidence": self.metal_wide_gradient_min_direction_confidence,
-            "metal_wide_gradient_min_pair_length_px": self.metal_wide_gradient_min_pair_length_px,
-            "metal_wide_gradient_parallel_tolerance_deg": self.metal_wide_gradient_parallel_tolerance_deg,
-            "metal_wide_gradient_max_edge_gap_px": self.metal_wide_gradient_max_edge_gap_px,
-            "metal_wide_gradient_min_overlap_ratio": self.metal_wide_gradient_min_overlap_ratio,
+            "metal_watershed_smoothing_sigma": self.metal_watershed_smoothing_sigma,
+            "metal_watershed_core_margin": self.metal_watershed_core_margin,
+            "metal_watershed_groove_margin": self.metal_watershed_groove_margin,
+            "metal_watershed_rim_probe_px": self.metal_watershed_rim_probe_px,
+            "metal_watershed_seed_speckle_px": self.metal_watershed_seed_speckle_px,
+            "metal_watershed_valley_span_px": self.metal_watershed_valley_span_px,
+            "metal_watershed_valley_depth": self.metal_watershed_valley_depth,
+            "metal_random_walker_beta": self.metal_random_walker_beta,
+            "metal_random_walker_iterations": self.metal_random_walker_iterations,
+            "metal_graph_cut_iterations": self.metal_graph_cut_iterations,
+            "metal_reconstruction_erode_px": self.metal_reconstruction_erode_px,
             "metal_edge_close_cap_px": int(self.metal_edge_close_cap_px),
             "metal_edge_watershed_split": bool(self.metal_edge_watershed_split),
             "metal_edge_watershed_dist_peak_frac": float(self.metal_edge_watershed_dist_peak_frac),
@@ -631,7 +641,10 @@ class ContourExtractionSettings:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> ContourExtractionSettings:
-        from ..vision.metal_recovery.segmentation import migrate_legacy_metal_settings
+        from ..vision.metal_recovery.segmentation import (
+            migrate_legacy_metal_settings,
+            resolve_metal_segmentation_strategy,
+        )
 
         legacy_method_only = "metal_segmentation_method" in payload and "metal_segmentation_strategy" not in payload
         payload = migrate_legacy_metal_settings(dict(payload))
@@ -909,14 +922,15 @@ class ContourExtractionSettings:
                 0.0,
                 min(1.0, float(payload.get("metal_min_hole_source_contrast_fraction", 0.35))),
             ),
-            metal_segmentation_strategy=normalize_metal_segmentation_strategy(
-                payload.get("metal_segmentation_strategy", "legacy_otsu")
+            metal_segmentation_strategy=resolve_metal_segmentation_strategy(
+                payload.get("metal_segmentation_strategy", "legacy_otsu"),
+                use_wide_conductor_gradient=bool(payload.get("metal_use_wide_conductor_gradient", False)),
             ),
             metal_gap_bridge_px=max(
-                0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 2)) or 0)
+                0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 1)) or 0)
             ),
             metal_speckle_removal_px=max(
-                0, int(payload.get("metal_speckle_removal_px", payload.get("metal_morph_open_radius", 0)) or 0)
+                0, int(payload.get("metal_speckle_removal_px", payload.get("metal_morph_open_radius", 1)) or 0)
             ),
             metal_contour_smooth_px=max(0.0, float(payload.get("metal_contour_smooth_px", 0.0) or 0.0)),
             metal_contour_close_px=max(0, int(payload.get("metal_contour_close_px", 0) or 0)),
@@ -947,9 +961,9 @@ class ContourExtractionSettings:
             metal_max_perimeter=None if metal_max_perimeter in (None, "", 0, 0.0) else float(metal_max_perimeter),
             metal_approximation_enabled=bool(payload.get("metal_approximation_enabled", True)),
             metal_morph_close_radius=max(1, int(payload.get("metal_morph_close_radius", 1) or 1)),
-            metal_morph_open_radius=max(0, int(payload.get("metal_morph_open_radius", 0) or 0)),
+            metal_morph_open_radius=max(0, int(payload.get("metal_morph_open_radius", 1) or 0)),
             metal_display_show_conductors=bool(payload.get("metal_display_show_conductors", True)),
-            metal_display_show_mask=bool(payload.get("metal_display_show_mask", True)),
+            metal_display_show_mask=bool(payload.get("metal_display_show_mask", False)),
             metal_display_show_contours=bool(payload.get("metal_display_show_contours", True)),
             metal_display_show_rejected=bool(payload.get("metal_display_show_rejected", True)),
             metal_display_show_suspicious=bool(payload.get("metal_display_show_suspicious", True)),
@@ -957,27 +971,36 @@ class ContourExtractionSettings:
             metal_debug_visual=str(payload.get("metal_debug_visual", "overlay") or "overlay"),
             metal_overlay_opacity=max(0.05, min(1.0, float(payload.get("metal_overlay_opacity", 0.45) or 0.45))),
             metal_use_wide_conductor_gradient=bool(payload.get("metal_use_wide_conductor_gradient", False)),
-            metal_wide_gradient_profile_radius_px=max(
-                1, int(payload.get("metal_wide_gradient_profile_radius_px", 8) or 8)
+            metal_watershed_smoothing_sigma=max(
+                0.1, min(8.0, float(payload.get("metal_watershed_smoothing_sigma", 1.0) or 1.0))
             ),
-            metal_wide_gradient_min_direction_confidence=max(
-                0.0,
-                min(
-                    1.0,
-                    float(payload.get("metal_wide_gradient_min_direction_confidence", 0.15) or 0.15),
-                ),
+            metal_watershed_core_margin=max(
+                0.0, min(40.0, float(payload.get("metal_watershed_core_margin", 8.0) or 0.0))
             ),
-            metal_wide_gradient_min_pair_length_px=max(
-                4.0, float(payload.get("metal_wide_gradient_min_pair_length_px", 24.0) or 24.0)
+            metal_watershed_groove_margin=max(
+                0.0, min(40.0, float(payload.get("metal_watershed_groove_margin", 16.0) or 0.0))
             ),
-            metal_wide_gradient_parallel_tolerance_deg=max(
-                0.5,
-                float(payload.get("metal_wide_gradient_parallel_tolerance_deg", 10.0) or 10.0),
+            metal_watershed_rim_probe_px=max(1, min(32, int(payload.get("metal_watershed_rim_probe_px", 6) or 1))),
+            metal_watershed_seed_speckle_px=max(
+                0, min(8, int(payload.get("metal_watershed_seed_speckle_px", 1) or 0))
             ),
-            metal_wide_gradient_max_edge_gap_px=max(0, int(payload.get("metal_wide_gradient_max_edge_gap_px", 5) or 5)),
-            metal_wide_gradient_min_overlap_ratio=max(
-                0.05,
-                min(1.0, float(payload.get("metal_wide_gradient_min_overlap_ratio", 0.5) or 0.5)),
+            metal_watershed_valley_span_px=max(
+                0, min(16, int(payload.get("metal_watershed_valley_span_px", 5) or 0))
+            ),
+            metal_watershed_valley_depth=max(
+                0.0, min(160.0, float(payload.get("metal_watershed_valley_depth", 45.0) or 0.0))
+            ),
+            metal_random_walker_beta=max(
+                1.0, min(400.0, float(payload.get("metal_random_walker_beta", 90.0) or 90.0))
+            ),
+            metal_random_walker_iterations=max(
+                8, min(400, int(payload.get("metal_random_walker_iterations", 160) or 160))
+            ),
+            metal_graph_cut_iterations=max(
+                1, min(16, int(payload.get("metal_graph_cut_iterations", 5) or 5))
+            ),
+            metal_reconstruction_erode_px=max(
+                0, min(16, int(payload.get("metal_reconstruction_erode_px", 0) or 0))
             ),
             metal_edge_close_cap_px=max(5, min(21, int(payload.get("metal_edge_close_cap_px", 9) or 9) | 1)),
             metal_edge_watershed_split=bool(payload.get("metal_edge_watershed_split", True)),

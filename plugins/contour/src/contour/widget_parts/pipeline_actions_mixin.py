@@ -505,6 +505,7 @@ class WidgetPipelineActionsMixin:
         self.cif_dir_edit.setText(directory_state.directory)
         self._save_persisted_paths()
         self._workspace.set_cif_index(directory_state.indexed_paths)
+        self._workspace.forget_cleared_vectors(self._workspace.image_paths)
         pending_vector_paths = list(getattr(self, "_pending_restore_vector_paths", []) or [])
         if pending_vector_paths:
             self._workspace.merge_cif_paths(index_cif_file_paths(pending_vector_paths))

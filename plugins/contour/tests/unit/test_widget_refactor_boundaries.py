@@ -16,6 +16,9 @@ def test_default_extraction_profiles_keep_expected_modes() -> None:
     assert sorted(profiles) == ["conductors", "vias"]
     assert profiles["conductors"].object_type == "conductor"
     assert profiles["conductors"].output_mode == "polygon"
+    assert profiles["conductors"].metal_gap_bridge_px == 1
+    assert profiles["conductors"].metal_speckle_removal_px == 1
+    assert profiles["conductors"].metal_display_show_mask is False
     assert profiles["vias"].object_type == "via"
     assert profiles["vias"].output_mode == "box"
 

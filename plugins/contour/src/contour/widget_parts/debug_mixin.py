@@ -16,11 +16,13 @@ class WidgetDebugMixin:
         control_tabs: QTabWidget
         gradient_overlay_mode_combo: QComboBox
         metal_debug_visual_combo: QComboBox
+        metal_gradient_3d_button: QPushButton
         metal_overlay_opacity_spin: QDoubleSpinBox
         metal_show_mask_checkbox: QCheckBox
         pipeline_tab: QWidget
         polygon_editor: Any
         recognition_mode_combo: QComboBox
+        _ui_language: str
 
         def _append_log(self, message: str) -> None: ...
         def _refresh_current_display_image_only(self, *, preserve_view: bool = True) -> None: ...
@@ -531,9 +533,16 @@ class WidgetDebugMixin:
                 self.polygon_editor.clear_gradient_overlay()
                 return
             image = np.asarray(arr)
+            if image.dtype != np.uint8:
+                image = cv2.convertScaleAbs(image)
             if image.ndim == 2:
                 image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
             self.polygon_editor.set_gradient_overlay(image, min(1.0, max(0.05, op)))
+            if mode == "metal_gradient_field":
+                gx = maps.get("metal_gradient_x_f32")
+                gy = maps.get("metal_gradient_y_f32")
+                if gx is not None and gy is not None:
+                    self.polygon_editor.set_gradient_field_maps(gx, gy)
         except Exception:  # pragma: no cover
             self.polygon_editor.clear_gradient_overlay()
 
@@ -799,5 +808,52 @@ class WidgetDebugMixin:
             if source.startswith(prefix):
                 return self._tr(key)
         return self._tr("debug.accepted.default")
+
+    def _open_metal_gradient_field_3d(self) -> None:
+        gradient_x, gradient_y, intensity = self._gradient_field_3d_sources()
+        if gradient_x is None or gradient_y is None:
+            QMessageBox.information(
+                self._debug_parent_widget(),
+                "Градиентное поле — 3D" if self._ui_language == "ru" else "Gradient field — 3D",
+                "Нет карт Sobel. Сначала выполните распознавание проводников."
+                if self._ui_language == "ru"
+                else "Sobel maps are missing. Run conductor recognition first.",
+            )
+            return
+        from ..graphics.gradient_field_3d_window import GradientField3DWindow
+
+        window = getattr(self, "_gradient_field_3d_window", None)
+        if window is None:
+            window = GradientField3DWindow(self._debug_parent_widget())
+            self._gradient_field_3d_window = window
+        window.set_field(
+            gradient_x,
+            gradient_y,
+            intensity=intensity,
+            language=str(self._ui_language),
+        )
+
+    def _gradient_field_3d_sources(self) -> tuple[object | None, object | None, object | None]:
+        current_state = self._workspace.current_state
+        maps: dict = getattr(current_state, "debug_gradient_maps", None) or {} if current_state is not None else {}
+        gradient_x = maps.get("metal_gradient_x_f32")
+        gradient_y = maps.get("metal_gradient_y_f32")
+        intensity = maps.get("metal_source_gray")
+        if gradient_x is not None and gradient_y is not None:
+            return gradient_x, gradient_y, intensity
+        source = intensity
+        if source is None and current_state is not None:
+            source = current_state.preprocessed_image
+            if source is None:
+                source = current_state.source_image
+        if source is None:
+            return None, None, None
+        gray = np.asarray(source)
+        if gray.ndim == 3:
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+        from ..vision.metal_recovery.pipeline_stages import axis_gradient_debug_images
+
+        debug = axis_gradient_debug_images(gray)
+        return debug.get("metal_gradient_x_f32"), debug.get("metal_gradient_y_f32"), gray
 
 

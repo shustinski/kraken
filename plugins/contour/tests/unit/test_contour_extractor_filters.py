@@ -9,6 +9,7 @@ from contour.application.processing import ContourExtractionSettings
 from contour.contour_extractor import (
     _compress_axis_aligned_vertex_runs,
     _finalize_closed_polygon_points,
+    estimate_effective_polygon_width_px,
     extract_polygons,
 )
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
@@ -115,6 +116,29 @@ class ContourExtractorFilterTests(unittest.TestCase):
 
         self.assertEqual(len(baseline), 1)
         self.assertEqual(filtered, [])
+
+    def test_width_estimate_matches_the_real_thickness(self) -> None:
+        for thickness in (4, 8, 16, 30):
+            with self.subTest(thickness=thickness):
+                mask = np.zeros((200, thickness + 40), dtype=np.uint8)
+                mask[20:180, 20 : 20 + thickness] = 255
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                estimate, _metric = estimate_effective_polygon_width_px(mask, contours[0])
+
+                self.assertAlmostEqual(estimate, float(thickness), delta=1.0)
+
+    def test_keeps_trace_wider_than_the_width_limit(self) -> None:
+        # Regression: the estimate used to report about half the real width, so a
+        # 13 px trace was discarded by a 8 px limit.
+        mask = np.zeros((200, 60), dtype=np.uint8)
+        mask[20:180, 20:33] = 255
+
+        polygons = extract_polygons(
+            mask, ContourExtractionSettings(min_area=1.0, min_perimeter=1.0, min_polygon_width_px=8.0)
+        )
+
+        self.assertEqual(len(polygons), 1)
 
     def test_keeps_8px_strip_when_min_polygon_width_2_5(self) -> None:
         # Regression: 15% tile over the whole fill once measured ~2 px for an 8 px-wide bar (edge dilution).

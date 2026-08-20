@@ -76,7 +76,10 @@ from .geometry import (
     _snap_to_45,
     is_valid_closed_polygon_ring,
 )
+from .minimap_geometry import MINIMAP_VIEWPORT_MARGIN_PX
+from .minimap_widget import MinimapWidget
 from .tool_mode_logic import (
+    apply_conductor_recognition_tool_lock,
     available_editor_tools,
     effective_polygon_create_mode,
     is_via_polygon,
@@ -161,10 +164,13 @@ class PolygonEditorView(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.horizontalScrollBar().valueChanged.connect(self._schedule_pyramid_visible_update)
         self.verticalScrollBar().valueChanged.connect(self._schedule_pyramid_visible_update)
+        self.horizontalScrollBar().valueChanged.connect(self._schedule_gradient_field_arrows_update)
+        self.verticalScrollBar().valueChanged.connect(self._schedule_gradient_field_arrows_update)
 
         self._tool = EditorTool.SELECT
         self._available_tools = available_editor_tools(())
         self._contact_recognition_mode = False
+        self._conductor_recognition_mode = False
         self._polygon_create_mode = PolygonCreateMode.RECTANGLE
         self._brush_mode = BrushMode.ANGLED
         self._brush_thickness = 12.0
@@ -234,6 +240,14 @@ class PolygonEditorView(QGraphicsView):
         self._pyramid_visible_timer.setSingleShot(True)
         self._pyramid_visible_timer.setInterval(_PYRAMID_VISIBLE_UPDATE_MS)
         self._pyramid_visible_timer.timeout.connect(self._refresh_pyramid_visible_frames)
+        self._gradient_field_x = None
+        self._gradient_field_y = None
+        self._gradient_field_peak = 0.0
+        self._gradient_arrows_timer = QTimer(self)
+        self._gradient_arrows_timer.setSingleShot(True)
+        self._gradient_arrows_timer.setInterval(_PYRAMID_VISIBLE_UPDATE_MS)
+        self._gradient_arrows_timer.timeout.connect(self._refresh_gradient_field_arrows)
+        self.zoomChanged.connect(self._schedule_gradient_field_arrows_update)
         self._pyramid_selection_item = QGraphicsRectItem()
         selection_pen = QPen(QColor("#22D3EE"), 2.0)
         selection_pen.setCosmetic(True)
@@ -266,7 +280,16 @@ class PolygonEditorView(QGraphicsView):
             shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(lambda t=tool: self._activate_tool_shortcut(t))
 
+        self._minimap = MinimapWidget(self)
+        self._minimap.scenePointRequested.connect(self._on_minimap_scene_point)
+        self._minimap.sceneDeltaRequested.connect(self._on_minimap_scene_delta)
+        self._minimap.raise_()
+        self.horizontalScrollBar().valueChanged.connect(self._update_minimap_overlay)
+        self.verticalScrollBar().valueChanged.connect(self._update_minimap_overlay)
+
     def _activate_tool_shortcut(self, tool: EditorTool) -> None:
+        if tool not in self._available_tools:
+            return
         if tool == EditorTool.ADD_VIA:
             self.contactPlacementHotkeyPressed.emit()
         self.set_tool(tool)
@@ -348,15 +371,41 @@ class PolygonEditorView(QGraphicsView):
         return self._available_tools
 
     def _refresh_available_tools_from_scene(self) -> None:
-        available = self._editor_scene.available_editor_tools()
+        available = apply_conductor_recognition_tool_lock(
+            self._editor_scene.available_editor_tools(),
+            enabled=self._conductor_recognition_mode,
+        )
         changed = available != self._available_tools
         self._available_tools = available
         if self._tool not in available:
             self.set_tool(EditorTool.SELECT)
-        if self._paste_mode and not self._editor_scene.can_add_polygon_set(self._clipboard_polygons):
+        if self._paste_mode and (
+            self._conductor_recognition_mode
+            or not self._editor_scene.can_add_polygon_set(self._clipboard_polygons)
+        ):
             self._exit_paste_mode()
         if changed:
             self.availableToolsChanged.emit(available)
+
+    def vector_edits_locked(self) -> bool:
+        return bool(self._conductor_recognition_mode)
+
+    def set_conductor_recognition_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._conductor_recognition_mode:
+            self._refresh_available_tools_from_scene()
+            self.availableToolsChanged.emit(self._available_tools)
+            return
+        self._conductor_recognition_mode = enabled
+        if enabled:
+            self._exit_paste_mode()
+            self._editor_scene.cancel_pending_polygon()
+            self._editor_scene.clear_preview_rect()
+            self._select_press_polygon_id = None
+            self._select_press_start = None
+            self._drag_kind = None
+        self._refresh_available_tools_from_scene()
+        self.availableToolsChanged.emit(self._available_tools)
 
     def set_contact_recognition_mode(self, enabled: bool) -> None:
         self._contact_recognition_mode = bool(enabled)
@@ -458,6 +507,7 @@ class PolygonEditorView(QGraphicsView):
             self.fit_to_view()
         elif view_anchor is not None:
             self._restore_viewport_view_anchor(*view_anchor)
+        self._refresh_minimap_thumbnail()
         self._update_navigation_scene_rect()
         if view_anchor is not None:
             self._restore_viewport_view_anchor(*view_anchor)
@@ -471,6 +521,7 @@ class PolygonEditorView(QGraphicsView):
             self.fit_to_view()
         elif view_anchor is not None:
             self._restore_viewport_view_anchor(*view_anchor)
+        self._refresh_minimap_thumbnail()
         self._update_navigation_scene_rect()
         if view_anchor is not None:
             self._restore_viewport_view_anchor(*view_anchor)
@@ -645,6 +696,39 @@ class PolygonEditorView(QGraphicsView):
         polygon = self.mapToScene(viewport)
         return polygon.boundingRect()
 
+    def _clear_gradient_field_maps(self) -> None:
+        self._gradient_arrows_timer.stop()
+        self._gradient_field_x = None
+        self._gradient_field_y = None
+        self._gradient_field_peak = 0.0
+        self._editor_scene.clear_gradient_field_arrows()
+
+    def _schedule_gradient_field_arrows_update(self, *_args) -> None:
+        if self._gradient_field_x is None or self._gradient_field_y is None:
+            return
+        self._gradient_arrows_timer.stop()
+        self._gradient_arrows_timer.start()
+
+    def _refresh_gradient_field_arrows(self) -> None:
+        gradient_x = self._gradient_field_x
+        gradient_y = self._gradient_field_y
+        if gradient_x is None or gradient_y is None:
+            self._editor_scene.clear_gradient_field_arrows()
+            return
+        from .gradient_field_arrows import sample_gradient_field_arrows
+
+        visible = self._pyramid_viewport_scene_rect()
+        zoom = self.zoom_factor()
+        scene_units_per_view_px = 1.0 / max(zoom, 1e-12)
+        arrows = sample_gradient_field_arrows(
+            gradient_x,
+            gradient_y,
+            (visible.left(), visible.top(), visible.right(), visible.bottom()),
+            scene_units_per_view_px,
+            peak_magnitude=self._gradient_field_peak,
+        )
+        self._editor_scene.set_gradient_field_arrows(arrows)
+
     def _schedule_pyramid_visible_update(self) -> None:
         if not self.pyramid_mode_enabled():
             return
@@ -786,10 +870,22 @@ class PolygonEditorView(QGraphicsView):
         self._editor_scene.set_extra_layers(layers)
 
     def set_gradient_overlay(self, image, opacity: float = 0.45) -> None:
+        self._clear_gradient_field_maps()
         self._editor_scene.set_gradient_overlay(image, opacity)
 
     def clear_gradient_overlay(self) -> None:
+        self._clear_gradient_field_maps()
         self._editor_scene.clear_gradient_overlay()
+
+    def set_gradient_field_maps(self, gradient_x, gradient_y) -> None:
+        self._gradient_field_x = gradient_x
+        self._gradient_field_y = gradient_y
+        self._gradient_field_peak = 0.0
+        if gradient_x is not None and gradient_y is not None:
+            from .gradient_field_arrows import peak_gradient_magnitude
+
+            self._gradient_field_peak = peak_gradient_magnitude(gradient_x, gradient_y)
+        self._refresh_gradient_field_arrows()
 
     def set_gradient_overlay_opacity(self, opacity: float) -> None:
         self._editor_scene.set_gradient_overlay_opacity(opacity)
@@ -887,6 +983,8 @@ class PolygonEditorView(QGraphicsView):
         self._start_zoom_animation(self._zoom_focus_viewport_pixel(), 1.0 / DEFAULT_ZOOM_STEP_FACTOR)
 
     def undo(self) -> None:
+        if self.vector_edits_locked():
+            return
         can_undo = self.undo_stack.canUndo()
         contacts_before = self._editor_scene.contact_count()
         self.contactUndoStarted.emit()
@@ -895,6 +993,8 @@ class PolygonEditorView(QGraphicsView):
         self.contactUndoFinished.emit(can_undo, contacts_changed)
 
     def redo(self) -> None:
+        if self.vector_edits_locked():
+            return
         can_redo = self.undo_stack.canRedo()
         contacts_before = self._editor_scene.contact_count()
         self.contactRedoStarted.emit()
@@ -913,6 +1013,8 @@ class PolygonEditorView(QGraphicsView):
         self.contactCopyFinished.emit(len(polygons))
 
     def cut_selected(self) -> None:
+        if self.vector_edits_locked():
+            return
         polygons = self._editor_scene.selected_deletable_polygons()
         if polygons:
             contacts = [polygon for polygon in polygons if is_via_polygon(polygon)]
@@ -925,6 +1027,9 @@ class PolygonEditorView(QGraphicsView):
                 self.contactDeletionFinished.emit(len(contacts) if deleted else 0)
 
     def start_paste_mode(self) -> None:
+        if self.vector_edits_locked():
+            self.contactPasteFinished.emit(0)
+            return
         self.contactPasteStarted.emit(len(self._clipboard_polygons))
         if not self._clipboard_polygons or not self._editor_scene.can_add_polygon_set(self._clipboard_polygons):
             self.contactPasteFinished.emit(0)
@@ -1017,6 +1122,7 @@ class PolygonEditorView(QGraphicsView):
         self._pending_wheel_zoom_factor = 1.0
         self._pending_wheel_zoom_viewport_pixel = None
         self._stop_zoom_animation()
+        self._gradient_arrows_timer.stop()
         if event is not None:
             super().closeEvent(event)
 
@@ -1046,6 +1152,10 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if self._paste_mode and event.button() == Qt.MouseButton.LeftButton:
+            if self.vector_edits_locked():
+                self._exit_paste_mode()
+                event.accept()
+                return
             pasted_ids = self._editor_scene.add_cloned_polygons_at(
                 self._clipboard_polygons,
                 self._clipboard_anchor,
@@ -1374,6 +1484,7 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.clear_vertex_preview()
         if (
             self._tool == EditorTool.SELECT
+            and not self.vector_edits_locked()
             and self._select_press_polygon_id is not None
             and self._drag_kind is None
             and self._select_press_start is not None
@@ -1774,7 +1885,7 @@ class PolygonEditorView(QGraphicsView):
         if polygon is None or (polygon.category != "via" and polygon.shape_hint != "box"):
             event.ignore()
             return
-        if not self._editor_scene.polygon_is_deletable(polygon):
+        if self.vector_edits_locked() or not self._editor_scene.polygon_is_deletable(polygon):
             event.accept()
             return
         language = getattr(self._editor_scene, "_ui_language", "en")
@@ -1897,6 +2008,9 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Delete:
+            if self.vector_edits_locked():
+                event.accept()
+                return
             deleted = self._editor_scene.selected_deletable_polygons()
             contacts = [polygon for polygon in deleted if is_via_polygon(polygon)]
             if contacts:
@@ -2068,6 +2182,7 @@ class PolygonEditorView(QGraphicsView):
         self._leave_zoom_render_mode()
         self._update_navigation_scene_rect()
         self._schedule_pyramid_visible_update()
+        self._refresh_gradient_field_arrows()
         self._update_tool_cursors()
         self._require_viewport().update()
         if frame_started_at is not None and self._scene_zoom_profile is not None:
@@ -2166,6 +2281,7 @@ class PolygonEditorView(QGraphicsView):
         super().resizeEvent(event)
         self._update_navigation_scene_rect()
         self._schedule_pyramid_visible_update()
+        self._schedule_gradient_field_arrows_update()
 
     def leaveEvent(self, event: QEvent | None) -> None:
         if event is None:
@@ -2189,12 +2305,55 @@ class PolygonEditorView(QGraphicsView):
             base_rect = QRectF(self._editor_scene.navigation_base_rect())
         if base_rect.width() <= 0.0 or base_rect.height() <= 0.0:
             self.setSceneRect(base_rect)
+            self._update_minimap_overlay()
             return
         zoom = self.zoom_factor() if zoom is None else max(1e-6, float(zoom))
         viewport_rect = self._require_viewport().rect()
         margin_x = float(viewport_rect.width()) / max(zoom, 1e-6) + 2.0
         margin_y = float(viewport_rect.height()) / max(zoom, 1e-6) + 2.0
         self.setSceneRect(base_rect.adjusted(-margin_x, -margin_y, margin_x, margin_y))
+        self._update_minimap_overlay()
+
+    def _refresh_minimap_thumbnail(self) -> None:
+        pixmap = self._editor_scene.main_image_pixmap()
+        image_rect = self._editor_scene.main_image_rect()
+        self._minimap.set_image(pixmap, image_rect)
+        self._update_minimap_overlay()
+
+    def _position_minimap(self) -> None:
+        viewport = self.viewport()
+        if viewport is None:
+            return
+        viewport_geom = viewport.geometry()
+        margin = int(MINIMAP_VIEWPORT_MARGIN_PX)
+        x = viewport_geom.right() - self._minimap.width() - margin
+        y = viewport_geom.bottom() - self._minimap.height() - margin
+        self._minimap.move(max(viewport_geom.left() + margin, x), max(viewport_geom.top() + margin, y))
+
+    def _update_minimap_overlay(self) -> None:
+        if not self._minimap.has_image():
+            self._minimap.hide()
+            return
+        self._minimap.show()
+        self._minimap.raise_()
+        self._position_minimap()
+        viewport = self.viewport()
+        if viewport is None:
+            return
+        viewport_scene = self.mapToScene(viewport.rect()).boundingRect()
+        self._minimap.set_viewport_scene_rect(viewport_scene)
+
+    def _on_minimap_scene_point(self, scene_pos: QPointF) -> None:
+        self.centerOn(scene_pos)
+        self._update_navigation_scene_rect()
+
+    def _on_minimap_scene_delta(self, delta: QPointF) -> None:
+        viewport = self.viewport()
+        if viewport is None:
+            return
+        center = self.mapToScene(viewport.rect().center())
+        self.centerOn(QPointF(center.x() + delta.x(), center.y() + delta.y()))
+        self._update_navigation_scene_rect()
 
     def _append_brush_point(self, scene_pos: QPointF) -> None:
         target = scene_pos

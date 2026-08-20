@@ -13,9 +13,13 @@ from ...application.processing import ContourExtractionSettings
 from ...contour_extractor import extract_polygons
 from ...domain import PolygonData
 from ...utils import ensure_binary_mask, ensure_uint8
-
-from .pipeline_stages import build_metal_segmentation_mask_staged, image_signature
-from .segmentation import MetalSegmentationConfig, normalize_metal_segmentation_strategy
+from .gradient_watershed import gradient_watershed_config_from_object
+from .pipeline_stages import axis_gradient_debug_images, build_metal_segmentation_mask_staged, image_signature
+from .segmentation import (
+    MetalSegmentationConfig,
+    normalize_metal_segmentation_strategy,
+    resolve_metal_segmentation_strategy,
+)
 
 
 def _normalize_metal_extraction_mode(value: Any) -> str:
@@ -54,6 +58,18 @@ class MetalRecoveryConfig:
     # Legacy / ignored at runtime (filters tab handles preprocessing).
     noise_suppression: int = 0
     segmentation_strategy: str = "legacy_otsu"
+    use_wide_conductor_gradient: bool = False
+    watershed_smoothing_sigma: float = 1.0
+    watershed_core_margin: float = 8.0
+    watershed_groove_margin: float = 16.0
+    watershed_rim_probe_px: int = 6
+    watershed_seed_speckle_px: int = 1
+    watershed_valley_span_px: int = 5
+    watershed_valley_depth: float = 45.0
+    random_walker_beta: float = 90.0
+    random_walker_iterations: int = 160
+    graph_cut_iterations: int = 5
+    reconstruction_erode_px: int = 0
 
     def to_snapshot(self) -> dict[str, Any]:
         return {
@@ -79,7 +95,6 @@ class MetalDetectionResult:
     border: list[MetalPolygonRecord] = field(default_factory=list)
     debug_images: dict[str, np.ndarray] = field(default_factory=dict)
     params_snapshot: dict[str, Any] = field(default_factory=dict)
-    wide_gradient_overlays: dict[str, list[PolygonData]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -97,12 +112,32 @@ def clear_metal_contour_cache() -> None:
     _CONTOUR_CACHE.clear()
 
 
+def _requested_segmentation_strategy(config: MetalRecoveryConfig) -> str:
+    return resolve_metal_segmentation_strategy(
+        config.segmentation_strategy,
+        use_wide_conductor_gradient=bool(config.use_wide_conductor_gradient),
+    )
+
+
 def _segmentation_config_from_recovery(config: MetalRecoveryConfig) -> MetalSegmentationConfig:
+    watershed = gradient_watershed_config_from_object(config)
     return MetalSegmentationConfig(
         min_contrast=max(1.0, min(255.0, float(config.min_contrast))),
         gap_bridge_px=max(0, int(config.gap_bridge_px)),
         speckle_removal_px=max(0, int(config.speckle_removal_px)),
         min_component_area=max(0, int(config.min_component_area or config.min_area)),
+        segmentation_strategy=_requested_segmentation_strategy(config),
+        watershed_smoothing_sigma=watershed.smoothing_sigma,
+        watershed_core_margin=watershed.core_margin,
+        watershed_groove_margin=watershed.groove_margin,
+        watershed_rim_probe_px=watershed.rim_probe_px,
+        watershed_seed_speckle_px=watershed.seed_speckle_px,
+        watershed_valley_span_px=watershed.valley_span_px,
+        watershed_valley_depth=watershed.valley_depth,
+        random_walker_beta=watershed.random_walker_beta,
+        random_walker_iterations=watershed.random_walker_iterations,
+        graph_cut_iterations=watershed.graph_cut_iterations,
+        reconstruction_erode_px=watershed.reconstruction_erode_px,
     )
 
 
@@ -433,6 +468,7 @@ def detect_metalization(
     for key, value in pre_dbg.items():
         if isinstance(value, np.ndarray):
             dbg[key] = value
+    dbg.update(axis_gradient_debug_images(gray))
     vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     if raw_contours:
         cv2.drawContours(vis, raw_contours, -1, (0, 255, 0), 1)

@@ -74,6 +74,15 @@ class WidgetUiHelpersMixin:
         if hasattr(self, "_tool_buttons"):
             for tool, button in self._tool_buttons.items():
                 button.setVisible(tool in available)
+        edits_locked = bool(
+            hasattr(self, "polygon_editor") and self.polygon_editor.vector_edits_locked()
+        )
+        if hasattr(self, "undo_button"):
+            self.undo_button.setEnabled(not edits_locked)
+        if hasattr(self, "redo_button"):
+            self.redo_button.setEnabled(not edits_locked)
+        if hasattr(self, "antialias_opened_cif_button"):
+            self.antialias_opened_cif_button.setEnabled(not edits_locked)
         if hasattr(self, "_tool_parameter_blocks"):
             self._place_active_tool_parameters_near_tool_button(self.polygon_editor.current_tool)
 
@@ -517,16 +526,77 @@ class WidgetUiHelpersMixin:
         form.setHorizontalSpacing(6)
 
     def _disable_spinbox_wheel_changes(self) -> None:
-        for spinbox in self.findChildren(QAbstractSpinBox):
-            spinbox.installEventFilter(self)
+        self._disable_wheel_value_changes()
+
+    def _disable_wheel_value_changes(self) -> None:
+        app = QApplication.instance()
+        if app is not None and not getattr(self, "_wheel_value_app_filter_installed", False):
+            app.installEventFilter(self)
+            self._wheel_value_app_filter_installed = True
+        for widget in (*self.findChildren(QAbstractSpinBox), *self.findChildren(QComboBox)):
+            self._register_no_wheel_value_widget(widget)
+
+    def _remove_wheel_value_app_filter(self) -> None:
+        if not getattr(self, "_wheel_value_app_filter_installed", False):
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._wheel_value_app_filter_installed = False
 
     def _register_spinbox(self, spinbox: QAbstractSpinBox) -> None:
-        spinbox.installEventFilter(self)
+        self._register_no_wheel_value_widget(spinbox)
+
+    def _register_no_wheel_value_widget(self, widget) -> None:
+        if widget is None or not qt_object_is_valid(widget):
+            return
+        widget.installEventFilter(self)
+        line_edit = getattr(widget, "lineEdit", None)
+        if callable(line_edit):
+            editor = line_edit()
+            if editor is not None:
+                editor.installEventFilter(self)
+
+    def _owns_descendant_widget(self, watched) -> bool:
+        if watched is None or not qt_object_is_valid(watched):
+            return False
+        try:
+            return watched is self or self.isAncestorOf(watched)
+        except RuntimeError:
+            return False
+
+    def _combo_popup_is_open(self, watched) -> bool:
+        combo = watched if isinstance(watched, QComboBox) else None
+        if combo is None:
+            parent = watched.parentWidget() if hasattr(watched, "parentWidget") else None
+            if isinstance(parent, QComboBox):
+                combo = parent
+        if combo is None:
+            return False
+        view = combo.view()
+        return view is not None and view.isVisible()
+
+    def _is_wheel_sensitive_value_control(self, watched) -> bool:
+        if isinstance(watched, (QComboBox, QAbstractSpinBox)):
+            return True
+        parent = watched.parentWidget() if hasattr(watched, "parentWidget") else None
+        return isinstance(watched, QLineEdit) and isinstance(parent, (QAbstractSpinBox, QComboBox))
+
+    def _forward_wheel_to_scroll_parent(self, watched, event) -> None:
+        node = watched.parentWidget() if hasattr(watched, "parentWidget") else None
+        while node is not None:
+            if isinstance(node, QScrollArea):
+                viewport = node.viewport()
+                if viewport is not None and viewport is not watched:
+                    QApplication.sendEvent(viewport, event)
+                return
+            node = node.parentWidget()
 
     def eventFilter(self, watched, event) -> bool:
-        if isinstance(watched, QAbstractSpinBox) and event.type() == QEvent.Type.Wheel:
-            event.ignore()
-            return True
+        if event.type() == QEvent.Type.Wheel and self._is_wheel_sensitive_value_control(watched):
+            if self._owns_descendant_widget(watched) and not self._combo_popup_is_open(watched):
+                self._forward_wheel_to_scroll_parent(watched, event)
+                return True
         if hasattr(self, "_handle_frame_matrix_arrow_key_event") and not getattr(self, "_closing", False):
             arrow_key_targets: set[object] = set()
             for attr_name in ("polygon_editor", "thumbnail_grid"):

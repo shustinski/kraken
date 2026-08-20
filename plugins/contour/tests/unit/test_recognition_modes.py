@@ -57,6 +57,10 @@ def test_normalize_via_search_mode(raw: object, expected: str) -> None:
         ("otsu", "legacy_otsu"),
         ("auto", "auto"),
         ("sauvola", "sauvola"),
+        ("Random Walker", "random_walker"),
+        ("графовый разрез", "graph_cut"),
+        ("Реконструкция", "reconstruction"),
+        ("Watershed", "gradient_watershed"),
     ],
 )
 def test_russian_metal_segmentation_values_normalize(raw: str, expected: str) -> None:
@@ -72,6 +76,12 @@ def test_legacy_metal_settings_migration() -> None:
     assert migrated["metal_segmentation_strategy"] == "auto"
     settings = ContourExtractionSettings.from_dict(migrated)
     assert settings.metal_segmentation_strategy == "auto"
+
+
+def test_saved_watershed_checkbox_migrates_to_watershed_strategy() -> None:
+    settings = ContourExtractionSettings.from_dict({"metal_use_wide_conductor_gradient": True})
+    assert settings.metal_segmentation_strategy == "gradient_watershed"
+    assert settings.metal_use_wide_conductor_gradient
 
 
 def test_mode_switching_hides_irrelevant_ui_settings() -> None:

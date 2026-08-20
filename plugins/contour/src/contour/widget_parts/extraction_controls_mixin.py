@@ -694,11 +694,20 @@ class WidgetExtractionControlsMixin:
         if getattr(self, "metal_segmentation_strategy_combo", None) is not None:
             self.metal_segmentation_strategy_combo.setToolTip(
                 tt(
-                    "Стратегия бинаризации: «Авто» выбирает лучший локальный метод по качеству контура.\n"
-                    "Sauvola рекомендуется для шумного SEM.",
-                    "Segmentation strategy for metal mask.",
+                    "Алгоритм сегментации проводников.\n"
+                    "«Порог Otsu» — классическая бинаризация по яркости.\n"
+                    "Watershed, Random Walker, Graph Cut и Reconstruction растят ядра металла "
+                    "до затравок в зазорах и лучше держат бледную заливку SEM с яркими кромками.",
+                    "Conductor segmentation algorithm.\n"
+                    "Otsu threshold is classical intensity binarization.\n"
+                    "Watershed, Random Walker, Graph Cut and Reconstruction grow metal cores "
+                    "until they meet gap seeds and recover pale SEM fills outlined by bright rims.",
                 )
             )
+            if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
+                self.metal_segmentation_strategy_label_widget.setToolTip(
+                    self.metal_segmentation_strategy_combo.toolTip()
+                )
         if getattr(self, "metal_gap_bridge_spin", None) is not None:
             self.metal_gap_bridge_spin.setToolTip(
                 tt(
@@ -748,60 +757,122 @@ class WidgetExtractionControlsMixin:
                     "Minimum trace length.",
                 )
             )
-        if getattr(self, "metal_use_wide_gradient_checkbox", None) is not None:
-            self.metal_use_wide_gradient_checkbox.setToolTip(
+        if getattr(self, "metal_ws_smoothing_spin", None) is not None:
+            self.metal_ws_smoothing_spin.setToolTip(
                 tt(
-                    "Включает дополнительное восстановление широких проводников по ярким краям. Полезно для SEM, где ярко видны только границы проводника, "
-                    "а центр похож на фон. Может находить широкие дорожки, которые пропускает обычная бинаризация, но при слишком шумном изображении "
-                    "может добавить ложные срабатывания.",
-                    "Wide conductor recovery from bright edges (SEM).",
+                    "Сглаживание кадра перед выбором затравок водораздела. Убирает зерно SEM, чтобы ядра и зазоры не прыгали по шуму.\n"
+                    "Увеличение: границы спокойнее, меньше ложных затравок; узкие щели могут заплыть, соседние проводники — слиться.\n"
+                    "Уменьшение: тонкие зазоры и мелкие детали сохраняются лучше, но шум чаще даёт рваные контуры и лишние полигоны.",
+                    "Gaussian smoothing before watershed seeds.\n"
+                    "Increase: calmer borders, fewer noisy seeds; narrow gaps may close and neighbouring traces may merge.\n"
+                    "Decrease: keeps thin gaps and fine detail, but noise more often splits polygons.",
                 )
             )
-        if getattr(self, "metal_wide_grad_radius_spin", None) is not None:
-            self.metal_wide_grad_radius_spin.setToolTip(
+        if getattr(self, "metal_ws_core_margin_spin", None) is not None:
+            self.metal_ws_core_margin_spin.setToolTip(
                 tt(
-                    "Сколько пикселей по обе стороны от яркого края используется для анализа профиля яркости. Увеличение помогает для широких и размытых "
-                    "проводников, но может захватывать соседние объекты.",
-                    "Gradient profile half-width in pixels.",
+                    "На сколько единиц яркости ниже порога металла начинать ядро. Ядро — внутренняя затравка, от которой растёт полигон.\n"
+                    "Увеличение: ядра крупнее, бледная середина широких заливок заполняется надёжнее; слишком большое значение может перепрыгнуть узкий зазор и слить трассы.\n"
+                    "Уменьшение: ядра остаются только на самых ярких кромках, полигоны реже сливаются; бледная заливка может не заполниться или развалиться на фрагменты.",
+                    "How far below the metal Otsu limit a pixel still counts as a metal core seed.\n"
+                    "Increase: cores grow, pale fills recover better; too high and cores jump the gap and merge traces.\n"
+                    "Decrease: cores stay on the brightest rims, fewer merges; pale interiors may stay empty or fragment.",
                 )
             )
-        if getattr(self, "metal_wide_grad_conf_spin", None) is not None:
-            self.metal_wide_grad_conf_spin.setToolTip(
+        if getattr(self, "metal_ws_groove_margin_spin", None) is not None:
+            self.metal_ws_groove_margin_spin.setToolTip(
                 tt(
-                    "Насколько явно одна сторона края похожа на фон, а другая — на внутреннюю часть проводника. Увеличение делает режим строже и уменьшает "
-                    "ложные пары краёв, но может пропустить слабые проводники.",
-                    "Minimum direction confidence.",
+                    "На сколько единиц яркости выше порога подложки считать тёмную точку затравкой зазора. Затравка зазора останавливает рост металла.\n"
+                    "Увеличение: серые канавки между трассами находятся увереннее; тёмная текстура внутри заливки чаще принимается за зазор и крошит широкий полигон.\n"
+                    "Уменьшение: затравками остаются только самые тёмные канавки, широкие заливки целее; узкие или светлые зазоры могут не разделить соседние проводники.",
+                    "How far above the substrate Otsu limit a pixel still counts as a gap seed that stops metal growth.\n"
+                    "Increase: grey channels between traces are found more reliably; texture inside a pour is more likely to split it.\n"
+                    "Decrease: only the darkest grooves remain seeds, pours stay whole; faint gaps may fail to separate neighbours.",
                 )
             )
-        if getattr(self, "metal_wide_grad_pair_len_spin", None) is not None:
-            self.metal_wide_grad_pair_len_spin.setToolTip(
+        if getattr(self, "metal_ws_rim_probe_spin", None) is not None:
+            self.metal_ws_rim_probe_spin.setToolTip(
                 tt(
-                    "Минимальная длина двух параллельных границ, чтобы они считались сторонами широкого проводника. Увеличение отсекает короткие шумовые линии, "
-                    "уменьшение помогает находить короткие проводники.",
-                    "Minimum parallel edge length for pairing.",
+                    "Радиус кольца вокруг тёмной затравки. Если кольцо яркое (кромки соседей), это настоящий зазор; если вокруг заливка — пятно текстуры внутри металла, затравку отбрасываем.\n"
+                    "Увеличение: лучше отсекает тёмные пятна внутри широких заливок; слишком большое кольцо может «увидеть» далёкий металл и оставить ложную затравку.\n"
+                    "Уменьшение: требует, чтобы яркая кромка была вплотную к канавке — узкие зазоры сохраняются, но пятна внутри заливки чаще проходят как зазоры.",
+                    "How far around a dark seed we look for a bright rim. A real gap is lined with metal edges; a speck inside a pour is not.\n"
+                    "Increase: drops more texture specks inside wide fills; too large and a distant rim may keep a false gap seed.\n"
+                    "Decrease: only tightly rim-lined grooves survive, so narrow gaps stay; interior specks more often split a pour.",
                 )
             )
-        if getattr(self, "metal_wide_grad_parallel_spin", None) is not None:
-            self.metal_wide_grad_parallel_spin.setToolTip(
+        if getattr(self, "metal_ws_seed_speckle_spin", None) is not None:
+            self.metal_ws_seed_speckle_spin.setToolTip(
                 tt(
-                    "Максимальное отличие углов двух границ. Меньшее значение требует почти параллельных краёв, большее допускает искажённые SEM-границы.",
-                    "Parallelism tolerance in degrees.",
+                    "Морфологическое opening затравок ядер и зазоров: выкидывает одиночные пиксели до водораздела.\n"
+                    "Увеличение: меньше шумных затравок, контуры спокойнее; тонкие проводники и узкие канавки могут потерять затравку и пропасть либо слиться.\n"
+                    "Уменьшение (0 — выкл.): сохраняет мелкие ядра и щели, но шум даёт лишние полигоны и рваные края.",
+                    "Morphological opening of core and gap seeds before the watershed.\n"
+                    "Increase: fewer noisy seeds and calmer outlines; thin traces or narrow grooves may lose their seed and vanish or merge.\n"
+                    "Decrease (0 = off): keeps tiny cores and slits, but noise more often creates extra polygons.",
                 )
             )
-        if getattr(self, "metal_wide_grad_gap_spin", None) is not None:
-            self.metal_wide_grad_gap_spin.setToolTip(
+        if getattr(self, "metal_ws_valley_span_spin", None) is not None:
+            self.metal_ws_valley_span_spin.setToolTip(
                 tt(
-                    "Позволяет соединять прерывистые яркие края. Увеличение помогает на шумных изображениях, но может ошибочно соединять разные объекты.",
-                    "Max gap for Hough line linking.",
+                    "Полуширина узкого шва между близкими проводниками. Такой шов не доходит до яркости подложки, поэтому обычная затравка зазора его пропускает и трассы слипаются.\n"
+                    "Увеличение: разделяются и более широкие промежутки; слишком большое значение начинает резать сами проводники по внутренней текстуре.\n"
+                    "Уменьшение (0 — выкл.): ищутся только самые тонкие швы; близко идущие трассы чаще остаются одним полигоном.",
+                    "Half-width of the thin seam between closely spaced conductors. Such a seam never reaches substrate brightness, so the ordinary gap seed misses it and traces fuse.\n"
+                    "Increase: wider separations are split too; too large and the detector starts cutting conductors along their own texture.\n"
+                    "Decrease (0 = off): only the thinnest seams are found; adjacent traces more often stay one polygon.",
                 )
             )
-        if getattr(self, "metal_wide_grad_overlap_spin", None) is not None:
-            self.metal_wide_grad_overlap_spin.setToolTip(
+        if getattr(self, "metal_ws_valley_depth_spin", None) is not None:
+            self.metal_ws_valley_depth_spin.setToolTip(
                 tt(
-                    "Минимальная доля перекрытия двух границ по длине. Увеличение делает поиск пар строже, уменьшение допускает частично видимые края.",
-                    "Minimum overlap ratio of paired edges.",
+                    "Насколько шов должен быть темнее окружающего металла, чтобы считаться разделителем. Это и отличает настоящий зазор от тёмной текстуры внутри заливки.\n"
+                    "Увеличение: разделителями считаются только явно тёмные швы, широкие заливки целее; слабые светлые швы не разделят соседние трассы.\n"
+                    "Уменьшение: находятся и бледные швы; тёмная текстура внутри проводника может ошибочно разрезать полигон.",
+                    "How much darker than the surrounding metal a seam must be to count as a separator. This is what distinguishes a real gap from dark texture inside a fill.\n"
+                    "Increase: only clearly dark seams separate, pours stay whole; faint seams no longer split neighbours.\n"
+                    "Decrease: pale seams are found too, but texture inside a conductor may wrongly cut the polygon.",
                 )
             )
+        if getattr(self, "metal_rw_beta_spin", None) is not None:
+            self.metal_rw_beta_spin.setToolTip(
+                tt(
+                    "Насколько Random Walker держится перепада яркости (шкала ~32 серых уровня). Больше β — граница садится на кромку и не перетекает через слабый зазор; слишком большое значение оставляет дыры в бледной заливке.\n"
+                    "Уменьшение: заливка восстанавливается смелее, но близкие проводники чаще сливаются.",
+                    "Random Walker boundary stiffness β, scaled so a ~32 grey-level edge is a barrier at the default value.\n"
+                    "Increase: the cut sits on the rim and leaks less through a faint gap; too high and pale fills stay hollow.\n"
+                    "Decrease: fills recover more readily, but neighbouring traces merge more often.",
+                )
+            )
+            if getattr(self, "metal_rw_beta_label_widget", None) is not None:
+                self.metal_rw_beta_label_widget.setToolTip(self.metal_rw_beta_spin.toolTip())
+        if getattr(self, "metal_rw_iterations_spin", None) is not None:
+            self.metal_rw_iterations_spin.setToolTip(
+                tt(
+                    "Число итераций Якоби. Больше — границы стабильнее на широких кадрах; меньше — быстрее, но маска может не дойти до равновесия.",
+                    "Jacobi iterations for Random Walker. More iterations stabilize wide frames; fewer run faster but may stop short of equilibrium.",
+                )
+            )
+            if getattr(self, "metal_rw_iterations_label_widget", None) is not None:
+                self.metal_rw_iterations_label_widget.setToolTip(self.metal_rw_iterations_spin.toolTip())
+        if getattr(self, "metal_gc_iterations_spin", None) is not None:
+            self.metal_gc_iterations_spin.setToolTip(
+                tt(
+                    "Итерации OpenCV GrabCut. Обычно хватает 3–5; больше почти не меняет контур, но замедляет предпросмотр.",
+                    "OpenCV GrabCut iterations. 3–5 is typical; more rarely changes the contour and only slows the preview.",
+                )
+            )
+            if getattr(self, "metal_gc_iterations_label_widget", None) is not None:
+                self.metal_gc_iterations_label_widget.setToolTip(self.metal_gc_iterations_spin.toolTip())
+        if getattr(self, "metal_recon_erode_spin", None) is not None:
+            self.metal_recon_erode_spin.setToolTip(
+                tt(
+                    "Сжать ядра металла перед геодезической реконструкцией. 0 оставляет ядра как есть; увеличение уводит затравку от кромки и реже перепрыгивает узкий зазор.",
+                    "Erode metal cores before geodesic reconstruction. 0 keeps cores as-is; increasing pulls the seed off the rim and is less likely to jump a narrow gap.",
+                )
+            )
+            if getattr(self, "metal_recon_erode_label_widget", None) is not None:
+                self.metal_recon_erode_label_widget.setToolTip(self.metal_recon_erode_spin.toolTip())
         if getattr(self, "metal_show_conductors_checkbox", None) is not None:
             self.metal_show_conductors_checkbox.setToolTip(
                 tt("Показывать принятые полигоны проводников на сцене редактора.", "Show accepted conductor polygons.")
@@ -837,8 +908,15 @@ class WidgetExtractionControlsMixin:
         if getattr(self, "metal_debug_visual_combo", None) is not None:
             self.metal_debug_visual_combo.setToolTip(
                 tt(
-                    "Что именно рисуется в оверлее: итоговая смесь, сырая маска, контуры или этапы фильтрации.",
-                    "Which debug channel is shown in the overlay.",
+                    "Что именно рисуется в оверлее: итоговая смесь, градиенты по X/Y, градиентное поле, сырая маска, контуры или этапы фильтрации.",
+                    "Which debug channel is shown in the overlay, including X/Y gradients and the gradient field.",
+                )
+            )
+        if getattr(self, "metal_gradient_3d_button", None) is not None:
+            self.metal_gradient_3d_button.setToolTip(
+                tt(
+                    "Открыть отдельное окно с 3D-поверхностью модуля градиента и линиями тока по направлению Sobel.",
+                    "Open a separate window with a 3D magnitude surface and Sobel streamlines.",
                 )
             )
         if getattr(self, "metal_overlay_opacity_spin", None) is not None:
@@ -1110,24 +1188,18 @@ class WidgetExtractionControlsMixin:
         )
         if hasattr(self, "polygon_editor"):
             self.polygon_editor.set_contact_recognition_mode(rec == "via")
+            self.polygon_editor.set_conductor_recognition_mode(rec == "conductors")
         is_via_profile = self._active_extraction_profile == "vias"
         advanced = self._advanced_extraction_enabled()
-        show_manual_via_filters = is_via_profile and rec == "disabled"
-        conductors_recognition = rec == "conductors"
         if hasattr(self, "advanced_extraction_checkbox"):
-            self.advanced_extraction_checkbox.setVisible(rec not in ("via", "conductors"))
-        if conductors_recognition:
-            self.basic_filters_group.setVisible(False)
-            self.geometry_filters_group.setVisible(False)
-            self.topology_group.setVisible(False)
-        else:
-            self.basic_filters_group.setVisible(advanced)
-            self.geometry_filters_group.setVisible(advanced)
-            self.topology_group.setVisible(advanced and (not is_via_profile or rec == "conductors"))
+            self.advanced_extraction_checkbox.hide()
+        self.basic_filters_group.hide()
+        self.geometry_filters_group.hide()
+        self.topology_group.hide()
         self.conductor_group.setEnabled(False)
-        self.conductor_group.setVisible(False)
-        self.via_group.setEnabled(show_manual_via_filters)
-        self.via_group.setVisible(show_manual_via_filters)
+        self.conductor_group.hide()
+        self.via_group.setEnabled(False)
+        self.via_group.hide()
         advanced_via_widgets = [
             (self.via_range_checkboxes_label_widget, self.via_range_checkboxes_widget),
             (self.via_min_score_label_widget, self.via_min_score_spin),
@@ -1138,17 +1210,15 @@ class WidgetExtractionControlsMixin:
         ]
         in_via_extraction = rec in ("via", "disabled")
         if hasattr(self, "contour_group"):
-            self.contour_group.setVisible(rec != "via")
-            if rec != "via":
-                self.contour_group.setTitle(self._tr("contour_extraction_group"))
-                self.contour_group.setFlat(False)
-                self.contour_group.setStyleSheet("")
+            self.contour_group.hide()
         for label_widget, field_widget in advanced_via_widgets:
             if label_widget is not None:
                 label_widget.setVisible(advanced and is_via_profile and in_via_extraction and rec == "disabled")
             field_widget.setVisible(advanced and is_via_profile and in_via_extraction and rec == "disabled")
         if hasattr(self, "bright_via_group"):
             self.bright_via_group.setVisible(is_via_profile and rec == "via")
+        if hasattr(self, "metal_display_group"):
+            self.metal_display_group.setEnabled(rec == "conductors")
         self._sync_recognition_stack_visibility()
         self._update_via_threshold_controls_state()
         self._update_via_brightness_range_controls_state()

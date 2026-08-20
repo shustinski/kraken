@@ -1534,7 +1534,7 @@ def _metal_preview_batch_result(
     show_contours = bool(getattr(contour_settings, "metal_display_show_contours", True))
     polygons: list[PolygonData] = extract_polygons(mask, metal_settings) if show_contours else []
     debug_gradient_maps: dict[str, np.ndarray] = {}
-    if bool(getattr(contour_settings, "metal_display_show_mask", True)) and include_images_in_result:
+    if bool(getattr(contour_settings, "metal_display_show_mask", False)) and include_images_in_result:
         debug_gradient_maps["metal_mask"] = mask
     saved_files: dict[str, str] = {}
     if output_directory:
@@ -1597,7 +1597,7 @@ def _run_structural_metal_recovery(
     mask = ensure_binary_mask(mask)
 
     debug_maps: dict[str, np.ndarray] = dict(mr.debug_images)
-    if bool(getattr(contour_settings, "metal_display_show_mask", True)):
+    if bool(getattr(contour_settings, "metal_display_show_mask", False)):
         debug_maps["metal_mask"] = mr.debug_images["metal_binary_mask"]
 
     polygons = list(mr.accepted)
@@ -1626,11 +1626,6 @@ def _run_structural_metal_recovery(
             )
         p.reject_reason = br
         overlays["border"].append(p)
-    for layer_key, polys in (mr.wide_gradient_overlays or {}).items():
-        if not polys:
-            continue
-        overlays.setdefault(layer_key, []).extend(p.clone() for p in polys)
-
     return polygons, mask, debug_maps, overlays
 
 

@@ -5,6 +5,9 @@ from __future__ import annotations
 from contour.domain import PolygonData
 from contour.graphics.tool_mode_logic import (
     EditorContentKind,
+    NAVIGATION_TOOLS,
+    POLYGON_TOOLS,
+    apply_conductor_recognition_tool_lock,
     available_editor_tools,
     editor_content_kind,
     effective_polygon_create_mode,
@@ -91,3 +94,14 @@ def test_available_tools_follow_current_content_kind() -> None:
         EditorTool.PAN,
         EditorTool.RULER,
     }
+
+
+def test_conductor_recognition_lock_keeps_only_navigation_tools() -> None:
+    locked = apply_conductor_recognition_tool_lock(
+        NAVIGATION_TOOLS | POLYGON_TOOLS | {EditorTool.ADD_VIA},
+        enabled=True,
+    )
+    assert locked == NAVIGATION_TOOLS
+    assert apply_conductor_recognition_tool_lock(NAVIGATION_TOOLS | POLYGON_TOOLS, enabled=False) == (
+        NAVIGATION_TOOLS | POLYGON_TOOLS
+    )

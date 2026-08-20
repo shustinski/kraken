@@ -476,6 +476,64 @@ def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[Polygon
     return merged_all
 
 
+def _rebuild_family_from_filled_mask(family: list[PolygonData]) -> list[PolygonData]:
+    _bbox_from_points, _polygons_from_mask, _render_polygon_collection_on_mask, _union_bbox = _mask_helpers()
+    del _union_bbox
+    points = [(x_coord, y_coord) for polygon in family for x_coord, y_coord in polygon.points]
+    if not points:
+        return []
+    origin_x, origin_y, width, height = _bbox_from_points(points, padding=4)
+    mask = np.zeros((max(1, height), max(1, width)), dtype=np.uint8)
+    _render_polygon_collection_on_mask(mask, [polygon.clone() for polygon in family], (origin_x, origin_y))
+    extracted = _polygons_from_mask(mask, (origin_x, origin_y))
+    _stamp_visual_metadata(family, extracted)
+    for polygon in extracted:
+        _refresh_metrics(polygon)
+    return extracted
+
+
+def _polygon_ring_needs_dissolve(polygon: PolygonData) -> bool:
+    if _is_via_like(polygon):
+        return False
+    if len(polygon.points) < 3:
+        return False
+    return not is_valid_closed_polygon_ring(polygon.points)
+
+
+def dissolve_self_intersecting_polygons(polygons: list[PolygonData]) -> list[PolygonData]:
+    """Rebuild rings whose new edges cross existing ones into a simple filled union."""
+
+    if not any(_polygon_ring_needs_dissolve(polygon) for polygon in polygons):
+        return polygons
+
+    from ..graphics.brush_vector import region_geometry, shapely_to_polygon_data_list
+
+    roots = [polygon.id for polygon in polygons if polygon.parent_id is None]
+    consumed_ids: set[int] = set()
+    rebuilt: list[PolygonData] = []
+    for root_id in roots:
+        family = _collect_family(polygons, root_id)
+        if not any(_polygon_ring_needs_dissolve(polygon) for polygon in family):
+            continue
+        by_id = {polygon.id: polygon for polygon in family}
+        geom = region_geometry(by_id, [polygon.id for polygon in family])
+        extracted = shapely_to_polygon_data_list(geom)
+        if not extracted:
+            extracted = _rebuild_family_from_filled_mask(family)
+        if not extracted:
+            continue
+        _stamp_visual_metadata(family, extracted)
+        for polygon in extracted:
+            _refresh_metrics(polygon)
+        rebuilt.extend(extracted)
+        consumed_ids.update(polygon.id for polygon in family)
+
+    if not consumed_ids:
+        return polygons
+    leftovers = [polygon.clone() for polygon in polygons if polygon.id not in consumed_ids]
+    return drop_orphan_holes(leftovers + rebuilt)
+
+
 def _polygon_topo_points_key(points: list[tuple[float, float]]) -> object:
     n = len(points)
     if n <= TOPOLOGY_CHECK_MAX_VERTICES:
@@ -734,6 +792,24 @@ def apply_vertex_position_to_clone(
     target.points = pts
     if not is_valid_closed_polygon_vertex_move(target.points, vertex_index):
         return [p.clone() for p in polygons]
+    _refresh_metrics(target)
+    return work
+
+
+def apply_vertex_delete_to_clone(
+    polygons: list[PolygonData],
+    polygon_id: int,
+    vertex_index: int,
+) -> list[PolygonData]:
+    work = [polygon.clone() for polygon in polygons]
+    target = next((polygon for polygon in work if polygon.id == polygon_id), None)
+    if target is None or vertex_index < 0 or vertex_index >= len(target.points):
+        return work
+    if len(target.points) <= 3:
+        return work
+    points = [(float(x_coord), float(y_coord)) for x_coord, y_coord in target.points]
+    points.pop(vertex_index)
+    target.points = integer_points(points)
     _refresh_metrics(target)
     return work
 

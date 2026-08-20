@@ -13,13 +13,31 @@ def test_v2_request_round_trip_keeps_discriminated_settings() -> None:
     request = ProcessingRequestV2(
         input_id="frame.png",
         input_version="sha256:123",
-        recognition=MetalRecoverySettings(segmentation_strategy="local_adaptive"),
+        recognition=MetalRecoverySettings(
+            segmentation_strategy="local_adaptive",
+            watershed_core_margin=11.0,
+        ),
     )
 
     restored = ProcessingRequestV2.from_dict(request.to_dict())
 
     assert restored.to_dict() == request.to_dict()
     assert isinstance(restored.recognition, MetalRecoverySettings)
+    assert restored.recognition.watershed_core_margin == 11.0
+
+
+def test_v2_keeps_seeded_conductor_algorithms() -> None:
+    request = ProcessingRequestV2(
+        input_id="frame.png",
+        input_version="sha256:123",
+        recognition=MetalRecoverySettings(segmentation_strategy="random_walker"),
+    )
+
+    restored = ProcessingRequestV2.from_dict(request.to_dict())
+
+    assert isinstance(restored.recognition, MetalRecoverySettings)
+    assert restored.recognition.segmentation_strategy == "random_walker"
+    assert restored.to_legacy_settings().metal_segmentation_strategy == "random_walker"
 
 
 def test_metal_minimum_contrast_defaults_to_fifty_and_clamps_zero() -> None:

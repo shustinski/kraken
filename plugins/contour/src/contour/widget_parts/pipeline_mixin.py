@@ -108,6 +108,7 @@ class WidgetPipelineMixin:
                 )
             elif spec.kind == "choice":
                 widget = QComboBox()
+                self._register_no_wheel_value_widget(widget)
                 for option in spec.options:
                     widget.addItem(get_choice_display_label(spec.name, str(option), self._ui_language), option)
                 selected_index = widget.findData(value)
@@ -938,6 +939,17 @@ class WidgetPipelineMixin:
             "metal_min_area",
             "metal_min_perimeter",
             "metal_use_wide_conductor_gradient",
+            "metal_watershed_smoothing_sigma",
+            "metal_watershed_core_margin",
+            "metal_watershed_groove_margin",
+            "metal_watershed_rim_probe_px",
+            "metal_watershed_seed_speckle_px",
+            "metal_watershed_valley_span_px",
+            "metal_watershed_valley_depth",
+            "metal_random_walker_beta",
+            "metal_random_walker_iterations",
+            "metal_graph_cut_iterations",
+            "metal_reconstruction_erode_px",
             "metal_allowed_angles",
             "metal_angle_tolerance_deg",
             "epsilon",

@@ -16,6 +16,7 @@ from contour.application.vector_geometry_postprocess import VectorGeometrySettin
 from contour.application.processing import ImageProcessingState
 from contour.application.services.workspace_session import WorkspaceSession
 from contour.domain import PolygonData, compute_polygon_metrics
+from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 from contour.graphics.editor_scene import PolygonEditorScene
 from contour.graphics.polygon_creation import (
     POLYGON_COMMIT_INVALID_RING,
@@ -184,6 +185,29 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(self.scene.get_polygons()[0].points, [(5, 6), (35, 6), (35, 28), (5, 28)])
+
+    def test_delete_vertex_merges_when_new_edge_crosses_existing(self) -> None:
+        slot = _polygon(
+            1,
+            [
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (30.0, 20.0),
+                (30.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 60.0),
+                (0.0, 60.0),
+            ],
+        )
+        self._reset([slot])
+
+        self.assertTrue(self.scene.delete_vertex_at(QPointF(0.0, 0.0), 2.0))
+        remaining = self.scene.get_polygons()
+        self.assertTrue(remaining)
+        self.assertTrue(all(is_valid_closed_polygon_ring(polygon.points) for polygon in remaining))
+        filled_area = sum(abs(float(polygon.area)) for polygon in remaining if not polygon.is_hole)
+        self.assertGreater(filled_area, 1000.0)
 
     def test_delete_parent_polygon_removes_internal_contours(self) -> None:
         outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])

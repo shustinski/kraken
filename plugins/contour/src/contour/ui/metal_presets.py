@@ -24,6 +24,18 @@ def _metal_keys() -> tuple[str, ...]:
         "min_points",
         "metal_approximation_enabled",
         "metal_border_handling",
+        "metal_segmentation_strategy",
+        "metal_watershed_smoothing_sigma",
+        "metal_watershed_core_margin",
+        "metal_watershed_groove_margin",
+        "metal_watershed_rim_probe_px",
+        "metal_watershed_seed_speckle_px",
+        "metal_watershed_valley_span_px",
+        "metal_watershed_valley_depth",
+        "metal_random_walker_beta",
+        "metal_random_walker_iterations",
+        "metal_graph_cut_iterations",
+        "metal_reconstruction_erode_px",
     )
 
 

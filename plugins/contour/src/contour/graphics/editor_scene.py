@@ -33,8 +33,10 @@ from ..application.processing import DisplaySettings, normalize_via_display_mode
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
     collapse_redundant_vertices_in_polygons,
+    dissolve_self_intersecting_polygons,
     postprocess_after_editor_mutation,
     postprocess_changed_polygon_edit,
+    resolve_focus_id_after_geometry_pass,
     union_after_removing_polygon_ids,
 )
 from ..commands import (
@@ -42,7 +44,6 @@ from ..commands import (
     AddPolygonsCommand,
     AddVertexCommand,
     DeletePolygonCommand,
-    DeleteVertexCommand,
     ReplacePolygonSetCommand,
 )
 from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
@@ -104,6 +105,29 @@ _ZOOM_QUANTIZED_CHANNELS = tuple(
     min(255, max(0, round(channel / _ZOOM_COLOR_QUANTIZATION_STEP) * _ZOOM_COLOR_QUANTIZATION_STEP))
     for channel in range(256)
 )
+
+
+def _gradient_arrows_path(arrows: list[tuple[float, float, float, float]]) -> QPainterPath:
+    path = QPainterPath()
+    for origin_x, origin_y, delta_x, delta_y in arrows:
+        length = hypot(delta_x, delta_y)
+        if length <= 1e-9:
+            continue
+        ux, uy = delta_x / length, delta_y / length
+        nx, ny = -uy, ux
+        tip_length = 0.32 * length
+        tip_half = 0.18 * length
+        end_x = origin_x + delta_x
+        end_y = origin_y + delta_y
+        shaft_x = end_x - ux * tip_length
+        shaft_y = end_y - uy * tip_length
+        path.moveTo(origin_x, origin_y)
+        path.lineTo(shaft_x, shaft_y)
+        path.moveTo(end_x, end_y)
+        path.lineTo(end_x - ux * tip_length + nx * tip_half, end_y - uy * tip_length + ny * tip_half)
+        path.lineTo(end_x - ux * tip_length - nx * tip_half, end_y - uy * tip_length - ny * tip_half)
+        path.closeSubpath()
+    return path
 
 
 def _zoom_quantized_rgba(rgba: int) -> int:
@@ -228,6 +252,18 @@ class PolygonEditorScene(QGraphicsScene):
         self._gradient_overlay_item.setOpacity(0.45)
         self.addItem(self._gradient_overlay_item)
         self._gradient_overlay_item.hide()
+        self._gradient_arrows_item = QGraphicsPathItem()
+        self._gradient_arrows_item.setZValue(0.95)
+        self._gradient_arrows_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        arrows_pen = QPen(QColor("#F8FAFC"), 1.0)
+        arrows_pen.setCosmetic(True)
+        arrows_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        arrows_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        self._gradient_arrows_item.setPen(arrows_pen)
+        self._gradient_arrows_item.setBrush(QBrush(QColor("#F8FAFC")))
+        self.addItem(self._gradient_arrows_item)
+        self._gradient_arrows_item.hide()
+        self._gradient_arrows_has_content = False
         self._random_object_colors_enabled = False
         self._object_colors: dict[int, str] = {}
         self._hover_conductor_polygon_id: int | None = None
@@ -362,6 +398,9 @@ class PolygonEditorScene(QGraphicsScene):
 
     def main_image_rect(self) -> QRectF:
         return QRectF(self._image_rect)
+
+    def main_image_pixmap(self) -> QPixmap:
+        return self._image_item.pixmap()
 
     def navigation_base_rect(self) -> QRectF:
         rect = QRectF(self._image_rect)
@@ -613,6 +652,7 @@ class PolygonEditorScene(QGraphicsScene):
         return None
 
     def set_gradient_overlay(self, image, opacity: float = 0.45) -> None:
+        self.clear_gradient_field_arrows()
         if image is None:
             self._gradient_overlay_item.setPixmap(QPixmap())
             self._gradient_overlay_item.hide()
@@ -630,6 +670,19 @@ class PolygonEditorScene(QGraphicsScene):
     def clear_gradient_overlay(self) -> None:
         self._gradient_overlay_item.setPixmap(QPixmap())
         self._gradient_overlay_item.hide()
+        self.clear_gradient_field_arrows()
+
+    def set_gradient_field_arrows(self, arrows: list[tuple[float, float, float, float]]) -> None:
+        path = _gradient_arrows_path(arrows)
+        self._gradient_arrows_item.setPath(path)
+        self._gradient_arrows_has_content = bool(arrows) and not path.isEmpty()
+        self._sync_gradient_overlay_visibility()
+
+    def clear_gradient_field_arrows(self) -> None:
+        if self._gradient_arrows_has_content or not self._gradient_arrows_item.path().isEmpty():
+            self._gradient_arrows_item.setPath(QPainterPath())
+        self._gradient_arrows_has_content = False
+        self._gradient_arrows_item.hide()
 
     def set_gradient_overlay_opacity(self, opacity: float) -> None:
         self._gradient_overlay_item.setOpacity(max(0.0, min(1.0, float(opacity))))
@@ -644,6 +697,7 @@ class PolygonEditorScene(QGraphicsScene):
     def _sync_gradient_overlay_visibility(self) -> None:
         has_content = not self._gradient_overlay_item.pixmap().isNull()
         self._gradient_overlay_item.setVisible(self._gradient_overlay_user_visible and has_content)
+        self._gradient_arrows_item.setVisible(self._gradient_overlay_user_visible and self._gradient_arrows_has_content)
 
     def _update_main_frame(self) -> None:
         path = QPainterPath()
@@ -1647,28 +1701,24 @@ class PolygonEditorScene(QGraphicsScene):
         if len(polygon.points) <= 3:
             self.logRequested.emit(tr("polygon_min_vertices_log", language=self._ui_language))
             return False
-        self.undo_stack.push(DeleteVertexCommand(self, polygon_id, vertex_index, polygon.points[vertex_index]))
-        after_delete = self.get_polygons()
-        collapsed_after = collapse_redundant_vertices_in_polygons(after_delete)
-        if [tuple(polygon.points) for polygon in after_delete] != [
-            tuple(polygon.points) for polygon in collapsed_after
-        ]:
-            self.undo_stack.push(
-                ReplacePolygonSetCommand(self, after_delete, collapsed_after, "Remove extra vertices")
-            )
-            after_delete = self.get_polygons()
-        processed, accepted, changed = postprocess_changed_polygon_edit(
-            after_delete,
-            self._vector_geometry_settings,
-            polygon_id=polygon_id,
-        )
-        if not accepted:
-            self.undo_stack.undo()
-            self.warn_invalid_polygon_geometry()
+        before = self.get_polygons()
+        after_delete = [item.clone() for item in before]
+        target = next((item for item in after_delete if item.id == polygon_id), None)
+        if target is None or vertex_index < 0 or vertex_index >= len(target.points):
             return False
-        if changed:
-            self.undo_stack.push(ReplacePolygonSetCommand(self, after_delete, processed, "Vector geometry cleanup"))
-        self.select_polygon(polygon_id)
+        points = list(target.points)
+        points.pop(vertex_index)
+        target.points = integer_points(points)
+        area, perimeter, bbox = compute_polygon_metrics(target.points)
+        target.area = float(area)
+        target.perimeter = float(perimeter)
+        target.bbox = bbox
+        after_delete = collapse_redundant_vertices_in_polygons(after_delete)
+        after_delete = dissolve_self_intersecting_polygons(after_delete)
+        after_delete = collapse_redundant_vertices_in_polygons(after_delete)
+        self.undo_stack.push(ReplacePolygonSetCommand(self, before, after_delete, "Delete vertex"))
+        focus_id = resolve_focus_id_after_geometry_pass(before, polygon_id, after_delete)
+        self.select_polygon(focus_id)
         return True
 
     def polygon_points(self, polygon_id: int) -> list[tuple[float, float]]:
@@ -2233,6 +2283,7 @@ class PolygonEditorScene(QGraphicsScene):
                 clone.perimeter = float(perimeter)
                 clone.bbox = bbox
             remaining.append(clone)
+        remaining = dissolve_self_intersecting_polygons(remaining)
         remaining = union_after_removing_polygon_ids(remaining, ids_to_delete)
         self.undo_stack.push(ReplacePolygonSetCommand(self, before, remaining, "Delete vertices in area"))
         return deleted

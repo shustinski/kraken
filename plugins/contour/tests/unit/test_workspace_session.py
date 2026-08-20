@@ -228,6 +228,35 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertIsNone(session.current_state)
         self.assertIs(session._state_cache[str(Path("old.png"))], result.state)
 
+    def test_mark_vectors_cleared_empties_cache_and_records_path(self) -> None:
+        session = WorkspaceSession()
+        polygon = _triangle_polygon()
+        session.replace_image_selection(["image.png"], is_supported_image=lambda _path: True)
+        session.load_image(
+            "image.png",
+            load_source_image=lambda path: f"src:{path}",
+            load_cif_overlay=lambda _path: [polygon],
+        )
+
+        session.mark_vectors_cleared("image.png")
+
+        self.assertTrue(session.vectors_are_cleared("image.png"))
+        assert session.current_state is not None
+        self.assertEqual(session.current_state.polygons, [])
+        self.assertTrue(session.image_has_changes("image.png"))
+
+        session.forget_cleared_vectors(["image.png"])
+        self.assertFalse(session.vectors_are_cleared("image.png"))
+
+    def test_replace_image_selection_prunes_cleared_vector_flags(self) -> None:
+        session = WorkspaceSession()
+        session.replace_image_selection(["keep.png", "drop.png"], is_supported_image=lambda _path: True)
+        session.mark_vectors_cleared("drop.png")
+        session.replace_image_selection(["keep.png"], is_supported_image=lambda _path: True, clear_state_cache=False)
+
+        self.assertFalse(session.vectors_are_cleared("drop.png"))
+        self.assertFalse(session.vectors_are_cleared("keep.png"))
+
 
 if __name__ == "__main__":
     unittest.main()

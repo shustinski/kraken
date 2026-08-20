@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .detector import MetalRecoveryConfig
-from .segmentation import normalize_metal_segmentation_strategy
+from .gradient_watershed import clamped_gradient_watershed_config
+from .segmentation import resolve_metal_segmentation_strategy
 
 
 def _normalize_border_mode(value: Any) -> str:
@@ -44,6 +45,19 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
     if speckle_raw is None:
         speckle_raw = getattr(settings, "metal_morph_open_radius", 0)
 
+    watershed = clamped_gradient_watershed_config(
+        smoothing_sigma=float(getattr(settings, "metal_watershed_smoothing_sigma", 1.0) or 1.0),
+        core_margin=float(getattr(settings, "metal_watershed_core_margin", 8.0) or 0.0),
+        groove_margin=float(getattr(settings, "metal_watershed_groove_margin", 16.0) or 0.0),
+        rim_probe_px=int(getattr(settings, "metal_watershed_rim_probe_px", 6) or 1),
+        seed_speckle_px=int(getattr(settings, "metal_watershed_seed_speckle_px", 1) or 0),
+        valley_span_px=int(getattr(settings, "metal_watershed_valley_span_px", 5) or 0),
+        valley_depth=float(getattr(settings, "metal_watershed_valley_depth", 45.0) or 0.0),
+        random_walker_beta=float(getattr(settings, "metal_random_walker_beta", 90.0) or 90.0),
+        random_walker_iterations=int(getattr(settings, "metal_random_walker_iterations", 160) or 160),
+        graph_cut_iterations=int(getattr(settings, "metal_graph_cut_iterations", 5) or 5),
+        reconstruction_erode_px=int(getattr(settings, "metal_reconstruction_erode_px", 0) or 0),
+    )
     external_only = _normalize_hierarchy_mode(getattr(settings, "metal_hierarchy_mode", "full"))
     return MetalRecoveryConfig(
         min_contrast=max(
@@ -67,8 +81,9 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
             0.0,
             min(1.0, float(getattr(settings, "metal_min_hole_source_contrast_fraction", 0.35))),
         ),
-        segmentation_strategy=normalize_metal_segmentation_strategy(
-            getattr(settings, "metal_segmentation_strategy", "auto")
+        segmentation_strategy=resolve_metal_segmentation_strategy(
+            getattr(settings, "metal_segmentation_strategy", "auto"),
+            use_wide_conductor_gradient=bool(getattr(settings, "metal_use_wide_conductor_gradient", False)),
         ),
         gap_bridge_px=_non_negative_int(gap_raw, default=2),
         speckle_removal_px=_non_negative_int(speckle_raw, default=0),
@@ -93,4 +108,16 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
             float(getattr(settings, "metal_min_object_area", getattr(settings, "metal_min_area", 60)) or 60),
         ),
         preset_name=str(getattr(settings, "metal_preset", "standard") or "standard"),
+        use_wide_conductor_gradient=bool(getattr(settings, "metal_use_wide_conductor_gradient", False)),
+        watershed_smoothing_sigma=watershed.smoothing_sigma,
+        watershed_core_margin=watershed.core_margin,
+        watershed_groove_margin=watershed.groove_margin,
+        watershed_rim_probe_px=watershed.rim_probe_px,
+        watershed_seed_speckle_px=watershed.seed_speckle_px,
+        watershed_valley_span_px=watershed.valley_span_px,
+        watershed_valley_depth=watershed.valley_depth,
+        random_walker_beta=watershed.random_walker_beta,
+        random_walker_iterations=watershed.random_walker_iterations,
+        graph_cut_iterations=watershed.graph_cut_iterations,
+        reconstruction_erode_px=watershed.reconstruction_erode_px,
     )

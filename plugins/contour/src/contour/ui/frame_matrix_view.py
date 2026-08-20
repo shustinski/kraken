@@ -61,6 +61,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
     itemClicked = pyqtSignal(QListWidgetItem)
     thumbnailLodChanged = pyqtSignal(int, int)
     frameNavigationRequested = pyqtSignal(object)
+    frameContextMenuRequested = pyqtSignal(object, QPoint)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         self._scene = QGraphicsScene()
@@ -476,12 +477,28 @@ class FrameMatrixGraphicsView(QGraphicsView):
                 self.setCurrentRow(self._items.index(item))
             except ValueError:
                 pass
+            if event.button() == Qt.MouseButton.RightButton:
+                event.accept()
+                return
             if not self._signals_blocked:
                 self.itemClicked.emit(item)
                 self.frameNavigationRequested.emit(self._frame_id_for_item(item))
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:
+        viewport_pos = self.viewport().mapFrom(self, event.pos())
+        item = self._item_at_viewport_pos(viewport_pos)
+        if item is None:
+            event.ignore()
+            return
+        try:
+            self.setCurrentRow(self._items.index(item))
+        except ValueError:
+            pass
+        self.frameContextMenuRequested.emit(self._frame_id_for_item(item), event.globalPos())
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:
         if self._middle_pan_active:

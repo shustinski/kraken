@@ -4,8 +4,10 @@ import unittest
 
 from contour.application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    apply_vertex_delete_to_clone,
     apply_vertex_position_to_clone,
     clip_polygons_to_frame_raster,
+    dissolve_self_intersecting_polygons,
     dissolve_small_holes,
     drop_triangle_outer_artifacts,
     merge_overlapping_root_families,
@@ -18,6 +20,7 @@ from contour.application.vector_geometry_postprocess import (
     union_after_removing_polygon_ids,
 )
 from contour.domain import PolygonData, compute_polygon_metrics
+from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 from contour.graphics.editor_scene import PolygonEditorScene
 
 
@@ -184,6 +187,32 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         remaining = union_after_removing_polygon_ids([outer, island], {2})
         filled = [polygon for polygon in remaining if not polygon.is_hole]
         self.assertEqual(len(filled), 1)
+
+    def test_dissolve_self_crossing_after_vertex_delete(self) -> None:
+        slot = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (30.0, 20.0),
+                (30.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 60.0),
+                (0.0, 60.0),
+            ],
+        )
+        area, perimeter, bbox = compute_polygon_metrics(slot.points)
+        slot.area = area
+        slot.perimeter = perimeter
+        slot.bbox = bbox
+        after_delete = apply_vertex_delete_to_clone([slot], 1, 0)
+        self.assertFalse(is_valid_closed_polygon_ring(after_delete[0].points))
+        healed = dissolve_self_intersecting_polygons(after_delete)
+        self.assertTrue(healed)
+        self.assertTrue(all(is_valid_closed_polygon_ring(polygon.points) for polygon in healed))
+        filled_area = sum(abs(float(polygon.area)) for polygon in healed if not polygon.is_hole)
+        self.assertGreater(filled_area, 1000.0)
 
     def test_set_polygons_clears_selection(self) -> None:
         scene = PolygonEditorScene()

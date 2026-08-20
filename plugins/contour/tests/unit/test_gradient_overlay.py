@@ -126,6 +126,43 @@ class GradientOverlaySceneTests(unittest.TestCase):
         view.clear_gradient_overlay()
         self.assertFalse(scene_item.isVisible())
 
+    def test_gradient_field_arrows_follow_overlay_visibility(self) -> None:
+        view = PolygonEditorView()
+        view.resize(240, 240)
+        view.show()
+        image = np.zeros((80, 80), dtype=np.uint8)
+        image[:, 30:50] = 220
+        view.set_image(image)
+        view.fit_to_view()
+        self._app.processEvents()
+        overlay = np.zeros((80, 80, 3), dtype=np.uint8)
+        overlay[..., 1] = 120
+        view.set_gradient_overlay(overlay, opacity=0.5)
+        gx = np.full((80, 80), 10.0, dtype=np.float32)
+        gy = np.zeros((80, 80), dtype=np.float32)
+        view.set_gradient_field_maps(gx, gy)
+
+        arrows_item = view._editor_scene._gradient_arrows_item
+        self.assertTrue(arrows_item.isVisible())
+        self.assertFalse(arrows_item.path().isEmpty())
+        self.assertTrue(arrows_item.pen().isCosmetic())
+
+        view._editor_scene.set_gradient_overlay_visible(False)
+        self.assertFalse(arrows_item.isVisible())
+        view._editor_scene.set_gradient_overlay_visible(True)
+        self.assertTrue(arrows_item.isVisible())
+
+        view.set_gradient_overlay(overlay, opacity=0.5)
+        self.assertTrue(arrows_item.path().isEmpty())
+
+        view.set_gradient_field_maps(gx, gy)
+        view.clear_gradient_overlay()
+        self.assertTrue(arrows_item.path().isEmpty())
+        self.assertFalse(arrows_item.isVisible())
+        view.close()
+        view.deleteLater()
+        self._app.processEvents()
+
 
 class GradientOverlayWidgetTests(unittest.TestCase):
     @classmethod
@@ -294,6 +331,66 @@ class GradientOverlayWidgetTests(unittest.TestCase):
         inside = image.pixelColor(20, 20)
         self.assertLess(outside.green(), 20)
         self.assertGreater(inside.green(), 80)
+
+    def test_metal_gradient_field_shows_vector_arrows(self) -> None:
+        source = np.zeros((40, 50), dtype=np.uint8)
+        field = np.zeros((40, 50, 3), dtype=np.uint8)
+        field[..., 2] = 80
+        gx = np.full((40, 50), 12.0, dtype=np.float32)
+        gy = np.zeros((40, 50), dtype=np.float32)
+        self.widget._workspace._current_state = ImageProcessingState(
+            image_path="sample.png",
+            source_image=source,
+            debug_gradient_maps={
+                "metal_binary_mask": np.ones((40, 50), dtype=np.uint8) * 255,
+                "metal_gradient_field": field,
+                "metal_gradient_x_f32": gx,
+                "metal_gradient_y_f32": gy,
+            },
+        )
+        self.widget.polygon_editor.set_image(source)
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("conductors")
+        )
+        self.widget.metal_show_mask_checkbox.setChecked(True)
+        self.widget.metal_debug_visual_combo.setCurrentIndex(
+            self.widget.metal_debug_visual_combo.findData("metal_gradient_field")
+        )
+        self._app.processEvents()
+        self.widget._apply_metal_visual_overlay()
+
+        arrows_item = self.widget.polygon_editor._editor_scene._gradient_arrows_item
+        self.assertTrue(arrows_item.isVisible())
+        self.assertFalse(arrows_item.path().isEmpty())
+
+        self.widget.metal_debug_visual_combo.setCurrentIndex(
+            self.widget.metal_debug_visual_combo.findData("overlay")
+        )
+        self._app.processEvents()
+        self.widget._apply_metal_visual_overlay()
+        self.assertTrue(arrows_item.path().isEmpty())
+
+    def test_metal_gradient_field_3d_opens_window(self) -> None:
+        source = np.zeros((32, 40), dtype=np.uint8)
+        source[:, 12:28] = 210
+        gx = np.full((32, 40), 9.0, dtype=np.float32)
+        gy = np.zeros((32, 40), dtype=np.float32)
+        self.widget._workspace._current_state = ImageProcessingState(
+            image_path="sample.png",
+            source_image=source,
+            debug_gradient_maps={
+                "metal_gradient_x_f32": gx,
+                "metal_gradient_y_f32": gy,
+                "metal_source_gray": source,
+            },
+        )
+        self.widget._open_metal_gradient_field_3d()
+        window = self.widget._gradient_field_3d_window
+        self.assertIsNotNone(window)
+        self.assertTrue(window.isVisible())
+        self.assertFalse(window._view.pixmap().isNull())
+        window.close()
+        self._app.processEvents()
 
 
 if __name__ == "__main__":

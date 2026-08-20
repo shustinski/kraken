@@ -507,4 +507,6 @@ class PolygonExtractionWidget(
             self._scene_source_image_cache.clear()
             self._scene_source_image_cache_bytes = 0
         self._persist_session_state()
+        if hasattr(self, "_remove_wheel_value_app_filter"):
+            self._remove_wheel_value_app_filter()
         super().closeEvent(event)

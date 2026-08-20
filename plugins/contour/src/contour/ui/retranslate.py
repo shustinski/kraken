@@ -254,6 +254,89 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.recognition_mode_combo.setItemText(2, "Контакты" if self._ui_language == "ru" else "Contacts")
     if hasattr(self, "recognition_mode_label"):
         self.recognition_mode_label.setText("Распознавание" if self._ui_language == "ru" else "Recognition")
+    if hasattr(self, "metal_segmentation_strategy_combo") and self.metal_segmentation_strategy_combo.count() >= 5:
+        self.metal_segmentation_strategy_combo.setItemText(
+            0, "Порог Otsu" if self._ui_language == "ru" else "Otsu threshold"
+        )
+        self.metal_segmentation_strategy_combo.setItemText(1, "Watershed")
+        self.metal_segmentation_strategy_combo.setItemText(2, "Random Walker")
+        self.metal_segmentation_strategy_combo.setItemText(3, "Graph Cut")
+        self.metal_segmentation_strategy_combo.setItemText(4, "Reconstruction")
+    if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
+        self.metal_segmentation_strategy_label_widget.setText(
+            "Алгоритм распознавания" if self._ui_language == "ru" else "Recognition algorithm"
+        )
+    if getattr(self, "metal_ws_smoothing_label_widget", None) is not None:
+        self.metal_ws_smoothing_label_widget.setText(
+            "Сглаживание водораздела, σ" if self._ui_language == "ru" else "Watershed smoothing, σ"
+        )
+    if getattr(self, "metal_ws_core_margin_label_widget", None) is not None:
+        self.metal_ws_core_margin_label_widget.setText(
+            "Отступ ядер металла" if self._ui_language == "ru" else "Metal core margin"
+        )
+    if getattr(self, "metal_ws_groove_margin_label_widget", None) is not None:
+        self.metal_ws_groove_margin_label_widget.setText(
+            "Отступ затравок зазора" if self._ui_language == "ru" else "Gap seed margin"
+        )
+    if getattr(self, "metal_ws_rim_probe_label_widget", None) is not None:
+        self.metal_ws_rim_probe_label_widget.setText(
+            "Радиус кольца кромки, px" if self._ui_language == "ru" else "Rim ring radius, px"
+        )
+    if getattr(self, "metal_ws_seed_speckle_label_widget", None) is not None:
+        self.metal_ws_seed_speckle_label_widget.setText(
+            "Очистка затравок, px" if self._ui_language == "ru" else "Seed speckle cleanup, px"
+        )
+    if getattr(self, "metal_ws_valley_span_label_widget", None) is not None:
+        self.metal_ws_valley_span_label_widget.setText(
+            "Ширина узкого зазора, px" if self._ui_language == "ru" else "Narrow gap width, px"
+        )
+    if getattr(self, "metal_ws_valley_depth_label_widget", None) is not None:
+        self.metal_ws_valley_depth_label_widget.setText(
+            "Глубина узкого зазора" if self._ui_language == "ru" else "Narrow gap depth"
+        )
+    if getattr(self, "metal_rw_beta_label_widget", None) is not None:
+        self.metal_rw_beta_label_widget.setText(
+            "Жёсткость границ, β" if self._ui_language == "ru" else "Boundary stiffness, β"
+        )
+    if getattr(self, "metal_rw_iterations_label_widget", None) is not None:
+        self.metal_rw_iterations_label_widget.setText("Итерации" if self._ui_language == "ru" else "Iterations")
+    if getattr(self, "metal_gc_iterations_label_widget", None) is not None:
+        self.metal_gc_iterations_label_widget.setText(
+            "Итерации GrabCut" if self._ui_language == "ru" else "GrabCut iterations"
+        )
+    if getattr(self, "metal_recon_erode_label_widget", None) is not None:
+        self.metal_recon_erode_label_widget.setText(
+            "Эрозия ядер, px" if self._ui_language == "ru" else "Core erosion, px"
+        )
+    if getattr(self, "metal_advanced_group", None) is not None:
+        self.metal_advanced_group.setTitle("Дополнительно" if self._ui_language == "ru" else "Advanced")
+    if getattr(self, "metal_filter_group", None) is not None:
+        self.metal_filter_group.setTitle(
+            "Фильтрация распознанных" if self._ui_language == "ru" else "Recognized-object filters"
+        )
+    if getattr(self, "metal_recognition_params_group", None) is not None:
+        self.metal_recognition_params_group.setTitle(
+            "Параметры распознавания" if self._ui_language == "ru" else "Recognition parameters"
+        )
+    if getattr(self, "metal_watershed_group", None) is not None:
+        self.metal_watershed_group.setTitle("Watershed")
+    if getattr(self, "metal_random_walker_group", None) is not None:
+        self.metal_random_walker_group.setTitle("Random Walker")
+    if getattr(self, "metal_graph_cut_group", None) is not None:
+        self.metal_graph_cut_group.setTitle("Graph Cut")
+    if getattr(self, "metal_reconstruction_group", None) is not None:
+        self.metal_reconstruction_group.setTitle("Reconstruction")
+    if getattr(self, "metal_gradient_3d_button", None) is not None:
+        self.metal_gradient_3d_button.setText("3D поле" if self._ui_language == "ru" else "3D field")
+    if getattr(self, "metal_debug_visual_label_widget", None) is not None:
+        self.metal_debug_visual_label_widget.setText(
+            "Режим отладочного изображения" if self._ui_language == "ru" else "Debug image mode"
+        )
+    if getattr(self, "_gradient_field_3d_window", None) is not None:
+        try:
+            self._gradient_field_3d_window.set_ui_language(self._ui_language)
+        except RuntimeError:
+            self._gradient_field_3d_window = None
     if self.retrieval_mode_label_widget is not None:
         self.retrieval_mode_label_widget.setText(self._tr("retrieval_mode_label"))
     if self.approximation_mode_label_widget is not None:
@@ -479,6 +562,9 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         "metal_mask": ("Маска металла", "Metal mask"),
         "metal_binary_mask": ("Бинарная маска металла", "Metal binary mask"),
         "metal_filtered_mask": ("Отфильтрованная маска металла", "Filtered metal mask"),
+        "metal_gradient_x": ("Градиент по X", "Gradient X"),
+        "metal_gradient_y": ("Градиент по Y", "Gradient Y"),
+        "metal_gradient_field": ("Градиентное поле", "Gradient field"),
         "tophat_mask": ("Маска Top-hat", "Top-hat mask"),
         "dog_mask": ("Маска DoG", "DoG mask"),
         "spot_response": ("Отклик светлых пятен", "Bright-spot response"),

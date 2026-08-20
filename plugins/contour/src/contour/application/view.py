@@ -5,7 +5,7 @@ from typing import Any
 
 from kraken_core.theme import apply_app_theme, normalize_theme
 from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QIcon
+from PyQt6.QtGui import QAction, QActionGroup, QCloseEvent, QDragEnterEvent, QDropEvent, QIcon
 from PyQt6.QtWidgets import (
     QDockWidget,
     QLabel,
@@ -96,6 +96,7 @@ class ContourMainView(QMainWindow):
         self._widget = PolygonExtractionWidget(self)
         self._widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCentralWidget(self._widget)
+        self.setAcceptDrops(True)
         self._selection_status_label = QLabel("")
         _status_bar(self).addPermanentWidget(self._selection_status_label)
         self._widget.selectionStatusChanged.connect(self.set_selection_status)
@@ -105,6 +106,33 @@ class ContourMainView(QMainWindow):
         self._file_menu = _add_menu(menu_bar, "")
         self._new_project_action = _add_action(self._file_menu, "")
         self._new_project_action.triggered.connect(lambda _checked=False: self._widget.reset_project())
+        self._file_menu.addSeparator()
+        self._load_images_folder_action = _add_action(self._file_menu, "")
+        self._load_images_folder_action.setObjectName("loadImagesFolderAction")
+        self._load_images_folder_action.triggered.connect(lambda _checked=False: self._widget._select_input_directory())
+        self._load_image_files_action = _add_action(self._file_menu, "")
+        self._load_image_files_action.setObjectName("loadImageFilesAction")
+        self._load_image_files_action.triggered.connect(lambda _checked=False: self._widget._select_input_image_files())
+        self._load_vectors_folder_action = _add_action(self._file_menu, "")
+        self._load_vectors_folder_action.setObjectName("loadVectorsFolderAction")
+        self._load_vectors_folder_action.triggered.connect(lambda _checked=False: self._widget._select_cif_directory())
+        self._load_vector_files_action = _add_action(self._file_menu, "")
+        self._load_vector_files_action.setObjectName("loadVectorFilesAction")
+        self._load_vector_files_action.triggered.connect(lambda _checked=False: self._widget._merge_cif_files_dialog())
+        self._refresh_files_action = _add_action(self._file_menu, "")
+        self._refresh_files_action.setObjectName("refreshFilesAction")
+        self._refresh_files_action.triggered.connect(lambda _checked=False: self._widget.refresh_image_list())
+        self._file_menu.addSeparator()
+        self._select_output_directory_action = _add_action(self._file_menu, "")
+        self._select_output_directory_action.setObjectName("selectOutputDirectoryAction")
+        self._select_output_directory_action.triggered.connect(
+            lambda _checked=False: self._widget._select_output_directory()
+        )
+        self._select_dataset_directory_action = _add_action(self._file_menu, "")
+        self._select_dataset_directory_action.setObjectName("selectDatasetDirectoryAction")
+        self._select_dataset_directory_action.triggered.connect(
+            lambda _checked=False: self._widget._select_dataset_directory()
+        )
         self._refresh_file_menu()
         self._view_menu = _add_menu(menu_bar, "")
         self._files_dock = self._create_panel_dock("filesDock", self._widget._take_files_panel())
@@ -390,7 +418,28 @@ class ContourMainView(QMainWindow):
     def _refresh_file_menu(self) -> None:
         language = getattr(self._widget, "_ui_language", "ru")
         self._file_menu.setTitle("Файл" if language == "ru" else "File")
-        self._new_project_action.setText("Новый проект" if language == "ru" else "New project")
+        self._new_project_action.setText(self._widget._tr("menu_new_project", "Новый проект" if language == "ru" else "New project"))
+        self._load_images_folder_action.setText(
+            self._widget._tr("menu_load_images_folder", "Загрузить кадры из папки…" if language == "ru" else "Load frames from folder…")
+        )
+        self._load_image_files_action.setText(
+            self._widget._tr("menu_load_image_files", "Загрузить кадры…" if language == "ru" else "Load frame files…")
+        )
+        self._load_vectors_folder_action.setText(
+            self._widget._tr("menu_load_vectors_folder", "Загрузить векторы из папки…" if language == "ru" else "Load vectors from folder…")
+        )
+        self._load_vector_files_action.setText(
+            self._widget._tr("menu_load_vector_files", "Загрузить векторные файлы…" if language == "ru" else "Load vector files…")
+        )
+        self._refresh_files_action.setText(
+            self._widget._tr("menu_refresh_files", "Обновить список" if language == "ru" else "Refresh files")
+        )
+        self._select_output_directory_action.setText(
+            self._widget._tr("menu_select_output_directory", "Папка результата…" if language == "ru" else "Output directory…")
+        )
+        self._select_dataset_directory_action.setText(
+            self._widget._tr("menu_select_dataset_directory", "Папка выборки…" if language == "ru" else "Dataset directory…")
+        )
 
     def _refresh_view_and_tools_menus(self) -> None:
         language = getattr(self._widget, "_ui_language", "ru")
@@ -456,6 +505,23 @@ class ContourMainView(QMainWindow):
 
     def set_selection_status(self, message: str) -> None:
         self._selection_status_label.setText(str(message))
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        mime = event.mimeData()
+        if mime is not None and mime.hasUrls():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        mime = event.mimeData()
+        urls = mime.urls() if mime is not None else []
+        paths = [url.toLocalFile() for url in urls if url.isLocalFile() and url.toLocalFile()]
+        if paths:
+            self._widget._ingest_dropped_paths(paths)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if hasattr(self._widget, "confirm_ok_to_leave_current_vectors") and not self._widget.confirm_ok_to_leave_current_vectors():

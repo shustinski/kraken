@@ -528,6 +528,61 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertTrue(self.widget.polygon_editor.polygon_overlays_visible())
         self.assertTrue(all(item.isVisible() for item in items))
 
+    def test_conductor_display_filters_apply_only_during_recognition(self) -> None:
+        self.widget.auto_apply_checkbox.setChecked(False)
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
+        polygon = _rectangle_polygon(4, 4, 20, 20)
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([polygon])
+        self.widget.metal_show_conductors_checkbox.setChecked(False)
+        self.widget.metal_show_mask_checkbox.setChecked(True)
+        items = list(self.widget.polygon_editor._editor_scene._polygon_items.values())
+        self.assertTrue(items)
+        self.assertFalse(any(item.isVisible() for item in items))
+        self.assertTrue(self.widget.metal_display_group.isEnabled())
+
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
+        self._app.processEvents()
+
+        items = list(self.widget.polygon_editor._editor_scene._polygon_items.values())
+        self.assertTrue(items)
+        self.assertTrue(all(item.isVisible() for item in items))
+        self.assertFalse(self.widget.metal_display_group.isEnabled())
+        self.assertFalse(self.widget._conductor_display_filters_enabled())
+
+    def test_recognition_mode_shows_red_frame_around_editor_scene(self) -> None:
+        self.assertNotIn("#DC2626", self.widget.editor_scene_frame.styleSheet())
+
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
+        self._app.processEvents()
+        self.assertIn("#DC2626", self.widget.editor_scene_frame.styleSheet())
+
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))
+        self._app.processEvents()
+        self.assertIn("#DC2626", self.widget.editor_scene_frame.styleSheet())
+
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
+        self._app.processEvents()
+        self.assertNotIn("#DC2626", self.widget.editor_scene_frame.styleSheet())
+
+    def test_leaving_recognition_reloads_cif_for_current_image(self) -> None:
+        self.widget.auto_apply_checkbox.setChecked(False)
+        cif_polygon = _rectangle_polygon(1, 1, 8, 8)
+        cif_polygon.id = 2
+        self.widget._workspace.merge_cif_paths({"sample": "sample.cif"})
+        self.widget._load_cif_overlay_polygons = lambda _path: [cif_polygon.clone()]  # type: ignore[method-assign]
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
+        self.widget.polygon_editor.set_polygons([_rectangle_polygon(4, 4, 20, 20)])
+        self._app.processEvents()
+
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
+        self._app.processEvents()
+
+        restored = self.widget.polygon_editor.get_polygons()
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0].points, cif_polygon.points)
+        self.assertEqual(self.widget._workspace.current_state.polygons[0].points, cif_polygon.points)
+
     def test_preview_result_does_not_resync_neighbors_or_recenter_view(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
         self.widget.polygon_editor.resize(320, 240)
@@ -980,6 +1035,55 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertEqual(self.widget.image_list.count(), 2)
             self.assertEqual([self.widget.image_list.item(i).text() for i in range(2)], ["frame_001", "frame_002"])
             self.assertEqual(self.widget._workspace.current_image_path, str(Path(second)))
+
+    def test_remove_images_drops_frame_from_project_but_keeps_file_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = os.path.join(directory, "frame_001.png")
+            second = os.path.join(directory, "frame_002.png")
+            for path in (first, second):
+                cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
+
+            self.widget.load_images([first, second])
+            self.widget.remove_images([first])
+
+            self.assertTrue(os.path.isfile(first))
+            self.assertEqual(self.widget.image_list.count(), 1)
+            self.assertEqual(self.widget.image_list.item(0).text(), "frame_002")
+            self.assertEqual(self.widget._workspace.current_image_path, str(Path(second)))
+
+    def test_clear_frame_vectors_marks_overlay_cleared_without_deleting_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = os.path.join(directory, "frame_001.png")
+            cif_path = os.path.join(directory, "frame_001.cif")
+            cv2.imwrite(image_path, np.zeros((8, 8), dtype=np.uint8))
+            Path(cif_path).write_text("CIF", encoding="utf-8")
+
+            self.widget.load_images([image_path])
+            self.widget._workspace.merge_cif_paths({"frame_001": cif_path})
+            self.widget.clear_frame_vectors(image_path)
+
+            self.assertTrue(os.path.isfile(cif_path))
+            self.assertTrue(self.widget._workspace.vectors_are_cleared(str(Path(image_path))))
+            self.assertEqual(self.widget._load_cif_overlay_polygons(image_path), [])
+
+    def test_ingest_dropped_paths_appends_images_and_vectors_without_replacing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = os.path.join(directory, "frame_001.png")
+            second = os.path.join(directory, "frame_002.png")
+            cif_path = os.path.join(directory, "frame_002.cif")
+            cv2.imwrite(first, np.zeros((8, 8), dtype=np.uint8))
+            cv2.imwrite(second, np.zeros((8, 8), dtype=np.uint8))
+            Path(cif_path).write_text("CIF", encoding="utf-8")
+
+            self.widget.load_images([first])
+            self.widget._ingest_dropped_paths([second, cif_path])
+
+            self.assertEqual(self.widget.image_list.count(), 2)
+            self.assertEqual(
+                [self.widget.image_list.item(i).text() for i in range(2)],
+                ["frame_001", "frame_002"],
+            )
+            self.assertIn("frame_002", self.widget._workspace.cif_paths_by_stem)
 
     def test_select_input_directory_replaces_instead_of_appending(self) -> None:
         with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
@@ -2333,6 +2437,22 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertEqual(len(vector_items), 1)
         self.assertEqual(scene.neighbor_frame_path_at(QPointF(20, 20)), None)
         self.assertEqual(scene.neighbor_frame_path_at(QPointF(120, 20)), "neighbor.jpg")
+
+    def test_conductor_recognition_mode_blocks_vector_edit_tools(self) -> None:
+        self.view.set_tool(EditorTool.BRUSH)
+        self.assertEqual(self.view.current_tool, EditorTool.BRUSH)
+
+        self.view.set_conductor_recognition_mode(True)
+        self.assertTrue(self.view.vector_edits_locked())
+        self.assertEqual(self.view.current_tool, EditorTool.SELECT)
+        self.assertNotIn(EditorTool.BRUSH, self.view.available_tools())
+        self.assertNotIn(EditorTool.ADD_POLYGON, self.view.available_tools())
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+        self.assertEqual(self.view.current_tool, EditorTool.SELECT)
+
+        self.view.set_conductor_recognition_mode(False)
+        self.assertFalse(self.view.vector_edits_locked())
+        self.assertIn(EditorTool.BRUSH, self.view.available_tools())
 
     def test_neighbor_frame_path_at_overlap_prefers_neighbor_without_main_vectors(self) -> None:
         neighbor = QImage(100, 100, QImage.Format.Format_RGB32)

@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -67,6 +68,7 @@ from ..application.frame_asset_sync import (
     classify_vector_side_status,
     index_cif_file_paths,
 )
+from ..application.frame_drop import classify_dropped_paths
 from ..application.frame_layers import (
     build_additional_layer_frame_map,
     build_base_frame_number_map,
@@ -200,7 +202,7 @@ from ..ui.i18n_content import (
 )
 from ..ui.pipeline_presets import built_in_pipeline_presets
 from ..ui.retranslate import retranslate_ui
-from ..ui.styles import COMPACT_UI_STYLE
+from ..ui.styles import COMPACT_UI_STYLE, RECOGNITION_SCENE_FRAME_STYLE
 from ..ui.metal_presets import built_in_metal_presets, metal_preset_table
 from ..ui.via_presets import (
     blurred_via_preset_payload,

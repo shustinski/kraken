@@ -73,6 +73,17 @@ def available_editor_tools(polygons: Iterable[PolygonData]) -> frozenset[EditorT
     return NAVIGATION_TOOLS
 
 
+def apply_conductor_recognition_tool_lock(
+    tools: frozenset[EditorTool],
+    *,
+    enabled: bool,
+) -> frozenset[EditorTool]:
+    """Keep only inspect/navigate tools while conductor recognition is active."""
+    if not enabled:
+        return tools
+    return frozenset(tools) & NAVIGATION_TOOLS
+
+
 def can_add_polygon(polygons: Iterable[PolygonData]) -> bool:
     return editor_content_kind(polygons) in {EditorContentKind.EMPTY, EditorContentKind.POLYGONS}
 

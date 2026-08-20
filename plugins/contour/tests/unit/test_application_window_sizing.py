@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QApplication, QDockWidget, QGroupBox, QTabBar, QToolBar
 
 from contour.application.model import ContourApplicationModel
@@ -126,6 +127,11 @@ def test_main_view_exposes_file_menu_new_project_action() -> None:
         assert file_menu is not None
         assert file_menu.title() in {"Файл", "File"}
         assert any(action.text() in {"Новый проект", "New project"} for action in file_menu.actions())
+        load_labels = {action.text() for action in file_menu.actions()}
+        assert "Загрузить кадры из папки…" in load_labels or "Load frames from folder…" in load_labels
+        assert "Загрузить кадры…" in load_labels or "Load frame files…" in load_labels
+        assert "Загрузить векторы из папки…" in load_labels or "Load vectors from folder…" in load_labels
+        assert view.findChild(QAction, "loadImagesFolderAction") is not None
     finally:
         view.close()
         view.deleteLater()
@@ -177,6 +183,8 @@ def test_main_view_uses_flat_dock_roots_and_full_width_editor_toolbar() -> None:
         assert not isinstance(widget.editor_group, QGroupBox)
 
         assert not isinstance(widget.path_group, QGroupBox)
+        assert not widget.path_panel.isVisible()
+        assert widget.paths_tab.isAncestorOf(widget.extra_layers_group)
         assert not isinstance(widget.run_group, QGroupBox)
         assert view._run_dock.isAncestorOf(widget.save_group)
         assert not widget.extraction_tab.isAncestorOf(widget.save_group)

@@ -29,9 +29,6 @@ build = [
 [tool.uv.sources]
 kraken = { workspace = true }
 
-[tool.uv.sources]
-kraken = { workspace = true }
-
 [project.scripts]
 karakal = "karakal.__main__:main"
 

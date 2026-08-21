@@ -656,7 +656,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertIsInstance(self.widget.metal_min_contrast_slider, QSlider)
         self.assertEqual(self.widget.metal_min_contrast_slider.minimum(), 1)
         self.assertEqual(self.widget.metal_min_contrast_slider.value(), 50)
+        self.assertEqual(self.widget.metal_auto_contrast_step_spin.value(), 10.0)
         self.widget.metal_min_contrast_slider.setValue(37)
+        self.widget.metal_auto_contrast_step_spin.setValue(7.0)
         self.widget.metal_min_object_source_contrast_spin.setValue(16.0)
         self.widget.metal_min_hole_source_contrast_spin.setValue(12.5)
         self.widget.metal_min_hole_source_contrast_fraction_spin.setValue(0.2)
@@ -664,6 +666,7 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         settings = self.widget._current_contour_settings()
 
         self.assertEqual(settings.metal_min_contrast, 37.0)
+        self.assertEqual(settings.metal_auto_contrast_step, 7.0)
         self.assertEqual(settings.metal_min_object_source_contrast, 16.0)
         self.assertEqual(settings.metal_min_hole_source_contrast, 12.5)
         self.assertEqual(settings.metal_min_hole_source_contrast_fraction, 0.2)

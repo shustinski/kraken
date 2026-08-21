@@ -278,6 +278,14 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_segmentation_strategy_label_widget.setText(
             "Алгоритм распознавания" if self._ui_language == "ru" else "Recognition algorithm"
         )
+    if getattr(self, "metal_auto_contrast_step_label_widget", None) is not None:
+        self.metal_auto_contrast_step_label_widget.setText(
+            "Шаг контраста Auto" if self._ui_language == "ru" else "Auto contrast step"
+        )
+    if getattr(self, "metal_auto_contrast_step_spin", None) is not None:
+        self.metal_auto_contrast_step_spin.setSpecialValueText(
+            "Выкл." if self._ui_language == "ru" else "Off"
+        )
     if getattr(self, "metal_ws_smoothing_label_widget", None) is not None:
         self.metal_ws_smoothing_label_widget.setText(
             "Сглаживание водораздела, σ" if self._ui_language == "ru" else "Watershed smoothing, σ"

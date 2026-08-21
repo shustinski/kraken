@@ -725,6 +725,21 @@ class WidgetExtractionControlsMixin:
                 self.metal_segmentation_strategy_label_widget.setToolTip(
                     self.metal_segmentation_strategy_combo.toolTip()
                 )
+        if getattr(self, "metal_auto_contrast_step_spin", None) is not None:
+            self.metal_auto_contrast_step_spin.setToolTip(
+                tt(
+                    "Дополнительное увеличение минимального контраста, которое режим Auto проверяет при признаках слияния проводников. "
+                    "Уточнённый результат принимается только при стабильном числе объектов и лучшем согласии с Watershed. "
+                    "Значение 0 отключает эту проверку.",
+                    "Additional minimum-contrast increase tested by Auto when conductor merges are suspected. "
+                    "The refined result is accepted only when object count stays stable and agreement with Watershed improves. "
+                    "Set to 0 to disable this check.",
+                )
+            )
+            if getattr(self, "metal_auto_contrast_step_label_widget", None) is not None:
+                self.metal_auto_contrast_step_label_widget.setToolTip(
+                    self.metal_auto_contrast_step_spin.toolTip()
+                )
         if getattr(self, "metal_gap_bridge_spin", None) is not None:
             self.metal_gap_bridge_spin.setToolTip(
                 tt(

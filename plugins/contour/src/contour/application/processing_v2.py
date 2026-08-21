@@ -45,6 +45,7 @@ class MetalRecoverySettings:
     kind: Literal["metal"] = "metal"
     segmentation_strategy: MetalSegmentationStrategyV2 = "auto"
     min_contrast: float = 50.0
+    auto_contrast_step: float = 10.0
     min_object_source_contrast: float = 12.0
     # Deprecated schema-v2 field retained for compatibility with saved requests.
     contrast_bias: float = 0.0
@@ -75,6 +76,7 @@ class MetalRecoverySettings:
 
     def __post_init__(self) -> None:
         self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
+        self.auto_contrast_step = max(0.0, min(255.0, float(self.auto_contrast_step)))
         self.min_object_source_contrast = max(
             0.0,
             min(255.0, float(self.min_object_source_contrast)),
@@ -204,6 +206,7 @@ class ProcessingRequestV2:
                     else metal_mode.segmentation_strategy
                 ),
                 metal_min_contrast=metal_mode.min_contrast,
+                metal_auto_contrast_step=metal_mode.auto_contrast_step,
                 metal_min_object_source_contrast=metal_mode.min_object_source_contrast,
                 metal_contrast_bias=metal_mode.contrast_bias,
                 metal_min_hole_source_contrast=metal_mode.min_hole_source_contrast,
@@ -309,6 +312,7 @@ class ProcessingRequestV2:
             recognition = MetalRecoverySettings(
                 segmentation_strategy=_normalized_v2_metal_strategy(legacy.metal_segmentation_strategy),
                 min_contrast=legacy.metal_min_contrast,
+                auto_contrast_step=legacy.metal_auto_contrast_step,
                 min_object_source_contrast=legacy.metal_min_object_source_contrast,
                 contrast_bias=legacy.metal_contrast_bias,
                 min_hole_source_contrast=legacy.metal_min_hole_source_contrast,

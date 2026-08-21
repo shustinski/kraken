@@ -392,6 +392,7 @@ class ContourExtractionSettings:
     metal_min_hole_source_contrast: float = 8.0
     metal_min_hole_source_contrast_fraction: float = 0.35
     metal_segmentation_strategy: str = "auto"
+    metal_auto_contrast_step: float = 10.0
     metal_gap_bridge_px: int = 1
     metal_speckle_removal_px: int = 1
     metal_contour_smooth_px: float = 0.0
@@ -600,6 +601,7 @@ class ContourExtractionSettings:
             "metal_min_hole_source_contrast": self.metal_min_hole_source_contrast,
             "metal_min_hole_source_contrast_fraction": self.metal_min_hole_source_contrast_fraction,
             "metal_segmentation_strategy": normalize_metal_segmentation_strategy(self.metal_segmentation_strategy),
+            "metal_auto_contrast_step": self.metal_auto_contrast_step,
             "metal_gap_bridge_px": self.metal_gap_bridge_px,
             "metal_speckle_removal_px": self.metal_speckle_removal_px,
             "metal_contour_smooth_px": self.metal_contour_smooth_px,
@@ -944,6 +946,10 @@ class ContourExtractionSettings:
             metal_segmentation_strategy=resolve_metal_segmentation_strategy(
                 payload.get("metal_segmentation_strategy", "legacy_otsu"),
                 use_wide_conductor_gradient=bool(payload.get("metal_use_wide_conductor_gradient", False)),
+            ),
+            metal_auto_contrast_step=max(
+                0.0,
+                min(255.0, float(payload.get("metal_auto_contrast_step", 10.0))),
             ),
             metal_gap_bridge_px=max(
                 0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 1)) or 0)

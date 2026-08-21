@@ -63,6 +63,7 @@ class MetalRecoveryConfig:
     # Legacy / ignored at runtime (filters tab handles preprocessing).
     noise_suppression: int = 0
     segmentation_strategy: str = "legacy_otsu"
+    auto_contrast_step: float = 10.0
     use_wide_conductor_gradient: bool = False
     watershed_smoothing_sigma: float = 1.0
     watershed_core_margin: float = 8.0
@@ -382,11 +383,7 @@ def _filter_holes_by_source_contrast(
         hole_median = _polygon_interior_median(source_gray, polygon)
         if parent_median is None or hole_median is None:
             continue
-        if (
-            hole_median <= float(otsu_threshold)
-            and parent_median > float(otsu_threshold)
-            and parent_median - hole_median >= min_contrast
-        ):
+        if hole_median <= float(otsu_threshold) and parent_median - hole_median >= min_contrast:
             kept.append(polygon)
     return kept
 
@@ -459,6 +456,49 @@ def _filter_conductors_by_source_contrast(
     ]
 
 
+def _rasterize_accepted_conductors(
+    polygons: list[PolygonData],
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Build a filled mask while preserving holes and nested conductors."""
+    holes_by_parent: dict[int, list[PolygonData]] = {}
+    conductors: list[tuple[float, PolygonData]] = []
+    for polygon in polygons:
+        if polygon.is_hole:
+            if polygon.parent_id is not None:
+                holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
+            continue
+        conductors.append((abs(float(polygon.area)), polygon))
+
+    mask = np.zeros(shape, dtype=np.uint8)
+    for _area, conductor in sorted(conductors, key=lambda item: item[0], reverse=True):
+        points = np.asarray(conductor.points, dtype=np.int32).reshape(-1, 2)
+        if points.shape[0] < 3:
+            continue
+        x_min = max(0, int(points[:, 0].min()))
+        x_max = min(shape[1] - 1, int(points[:, 0].max()))
+        y_min = max(0, int(points[:, 1].min()))
+        y_max = min(shape[0] - 1, int(points[:, 1].max()))
+        if x_max < x_min or y_max < y_min:
+            continue
+        region = np.zeros((y_max - y_min + 1, x_max - x_min + 1), dtype=np.uint8)
+        local_points = points.copy()
+        local_points[:, 0] -= x_min
+        local_points[:, 1] -= y_min
+        cv2.fillPoly(region, [local_points.reshape(-1, 1, 2)], 255)
+        for hole in holes_by_parent.get(int(conductor.id), ()):
+            hole_points = np.asarray(hole.points, dtype=np.int32).reshape(-1, 2)
+            if hole_points.shape[0] < 3:
+                continue
+            local_hole_points = hole_points.copy()
+            local_hole_points[:, 0] -= x_min
+            local_hole_points[:, 1] -= y_min
+            cv2.fillPoly(region, [local_hole_points.reshape(-1, 1, 2)], 0)
+        target = mask[y_min : y_max + 1, x_min : x_max + 1]
+        target[region > 0] = 255
+    return mask
+
+
 def _detect_metalization_explicit(
     image: np.ndarray,
     config: MetalRecoveryConfig,
@@ -497,9 +537,6 @@ def _detect_metalization_explicit(
     )
 
     accepted: list[PolygonData] = []
-    border: list[MetalPolygonRecord] = []
-    accepted_mask = np.zeros_like(mask)
-    next_id = 1
     border_mode = str(config.border_mode or "mark").strip().lower()
 
     for polygon in polygons:
@@ -508,8 +545,6 @@ def _detect_metalization_explicit(
 
         poly = polygon.clone()
         if polygon.is_hole:
-            poly.id = next_id
-            next_id += 1
             poly.category = "conductor"
             accepted.append(poly)
             continue
@@ -518,26 +553,31 @@ def _detect_metalization_explicit(
         if border_mode == "ignore" and touches_border:
             continue
 
-        poly.id = next_id
-        next_id += 1
         poly.category = "conductor"
         if border_mode == "mark" and touches_border:
-            border.append(
-                MetalPolygonRecord(
-                    polygon=poly.clone(),
-                    area=float(poly.area),
-                    perimeter=float(poly.perimeter),
-                    border_touch=True,
-                )
-            )
             poly.category = "metal_border"
 
         accepted.append(poly)
-        pts = np.array(poly.points, dtype=np.int32).reshape(-1, 1, 2)
-        if pts.shape[0] >= 3:
-            cv2.fillPoly(accepted_mask, [pts], 255)
 
+    accepted_conductor_ids = {int(polygon.id) for polygon in accepted if not polygon.is_hole}
+    accepted = [
+        polygon
+        for polygon in accepted
+        if not polygon.is_hole
+        or (polygon.parent_id is not None and int(polygon.parent_id) in accepted_conductor_ids)
+    ]
     _renumber_polygons_preserving_parents(accepted)
+    border = [
+        MetalPolygonRecord(
+            polygon=polygon.clone(),
+            area=float(polygon.area),
+            perimeter=float(polygon.perimeter),
+            border_touch=True,
+        )
+        for polygon in accepted
+        if polygon.category == "metal_border"
+    ]
+    accepted_mask = _rasterize_accepted_conductors(accepted, mask.shape[:2])
 
     raw_contours, _hierarchy = cv2.findContours(
         ensure_binary_mask(mask),
@@ -572,6 +612,44 @@ def _detect_metalization_explicit(
 
 def _non_hole_count(result: MetalDetectionResult) -> int:
     return sum(not polygon.is_hole for polygon in result.accepted)
+
+
+def _mask_iou(first: np.ndarray | None, second: np.ndarray | None) -> float:
+    if first is None or second is None or first.shape[:2] != second.shape[:2]:
+        return 0.0
+    first_active = ensure_binary_mask(first) > 0
+    second_active = ensure_binary_mask(second) > 0
+    union = int(np.logical_or(first_active, second_active).sum())
+    if union <= 0:
+        return 0.0
+    return float(np.logical_and(first_active, second_active).sum() / union)
+
+
+def _prefer_contrast_refined_legacy(
+    *,
+    legacy: MetalDetectionResult,
+    refined: MetalDetectionResult,
+    watershed: MetalDetectionResult,
+) -> bool:
+    """Accept a stricter Otsu mask only when it removes stable low-contrast bridges."""
+    legacy_count = _non_hole_count(legacy)
+    refined_count = _non_hole_count(refined)
+    watershed_count = _non_hole_count(watershed)
+    if legacy_count <= 0 or watershed_count < 1.15 * legacy_count:
+        return False
+    if refined_count < legacy_count or refined_count > 1.05 * legacy_count:
+        return False
+
+    watershed_mask = watershed.debug_images.get("metal_filtered_mask")
+    legacy_agreement = _mask_iou(
+        legacy.debug_images.get("metal_filtered_mask"),
+        watershed_mask,
+    )
+    refined_agreement = _mask_iou(
+        refined.debug_images.get("metal_filtered_mask"),
+        watershed_mask,
+    )
+    return refined_agreement > legacy_agreement
 
 
 def _extended_separator_mask(gray: np.ndarray, config: MetalRecoveryConfig) -> np.ndarray | None:
@@ -639,6 +717,8 @@ def detect_metalization(
 
     selected = legacy
     selected_strategy = "legacy_otsu"
+    selected_min_contrast = float(config.min_contrast)
+    contrast_refined_count: int | None = None
     if not presence.has_metal:
         selected = watershed
         selected_strategy = "gradient_watershed"
@@ -681,10 +761,34 @@ def detect_metalization(
                         selected = hybrid
                         selected_strategy = "legacy_otsu_extended_separators"
 
+    if selected is legacy and watershed_count >= 1.15 * legacy_count:
+        refined_min_contrast = min(
+            255.0,
+            float(config.min_contrast) + max(0.0, float(config.auto_contrast_step)),
+        )
+        if refined_min_contrast > float(config.min_contrast):
+            refined_config = replace(legacy_config, min_contrast=refined_min_contrast)
+            refined = _detect_metalization_explicit(
+                gray,
+                refined_config,
+                source_image=source_image,
+            )
+            contrast_refined_count = _non_hole_count(refined)
+            if _prefer_contrast_refined_legacy(
+                legacy=legacy,
+                refined=refined,
+                watershed=watershed,
+            ):
+                selected = refined
+                selected_strategy = "legacy_otsu_contrast_refined"
+                selected_min_contrast = refined_min_contrast
+
     selected.params_snapshot = {
         **config.to_snapshot(),
         "auto_selected_strategy": selected_strategy,
+        "auto_selected_min_contrast": selected_min_contrast,
         "auto_legacy_objects": legacy_count,
         "auto_watershed_objects": watershed_count,
+        "auto_contrast_refined_objects": contrast_refined_count,
     }
     return selected

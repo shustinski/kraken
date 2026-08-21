@@ -1697,6 +1697,16 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_segmentation_strategy_label_widget = _metal_basic_form.labelForField(
         self.metal_segmentation_strategy_combo
     )
+    self.metal_auto_contrast_step_spin = QDoubleSpinBox()
+    self.metal_auto_contrast_step_spin.setRange(0.0, 255.0)
+    self.metal_auto_contrast_step_spin.setDecimals(1)
+    self.metal_auto_contrast_step_spin.setSingleStep(1.0)
+    self.metal_auto_contrast_step_spin.setSpecialValueText("Off")
+    self.metal_auto_contrast_step_spin.setValue(10.0)
+    _metal_basic_form.addRow("Auto contrast step", self.metal_auto_contrast_step_spin)
+    self.metal_auto_contrast_step_label_widget = _metal_basic_form.labelForField(
+        self.metal_auto_contrast_step_spin
+    )
 
     self.metal_display_group = QGroupBox("Отображение")
     _metal_disp_form = QFormLayout(self.metal_display_group)
@@ -2021,6 +2031,7 @@ def build_extraction_tab(self) -> QWidget:
         lambda value: self.metal_min_contrast_value_label.setText(str(value))
     )
     self.metal_min_contrast_slider.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_auto_contrast_step_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_gap_bridge_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_speckle_removal_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -2075,6 +2086,11 @@ def build_extraction_tab(self) -> QWidget:
     )
     self.metal_preprocess_denoise_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
+    self.metal_segmentation_strategy_combo.currentIndexChanged.connect(
+        lambda: self.metal_auto_contrast_step_spin.setEnabled(
+            self.metal_segmentation_strategy_combo.currentData() == "auto"
+        )
+    )
     self.metal_hierarchy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_border_handling_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_preview_mask_button.clicked.connect(self._preview_metal_mask)

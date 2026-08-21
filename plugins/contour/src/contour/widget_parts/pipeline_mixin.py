@@ -930,6 +930,7 @@ class WidgetPipelineMixin:
             "metal_min_hole_source_contrast",
             "metal_min_hole_source_contrast_fraction",
             "metal_segmentation_strategy",
+            "metal_auto_contrast_step",
             "metal_gap_bridge_px",
             "metal_speckle_removal_px",
             "metal_contour_smooth_px",

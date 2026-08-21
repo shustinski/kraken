@@ -93,6 +93,10 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
             getattr(settings, "metal_segmentation_strategy", "auto"),
             use_wide_conductor_gradient=bool(getattr(settings, "metal_use_wide_conductor_gradient", False)),
         ),
+        auto_contrast_step=max(
+            0.0,
+            min(255.0, float(getattr(settings, "metal_auto_contrast_step", 10.0))),
+        ),
         gap_bridge_px=_non_negative_int(gap_raw, default=2),
         speckle_removal_px=_non_negative_int(speckle_raw, default=0),
         min_width_px=max(0.5, float(getattr(settings, "metal_min_trace_width_px", 8) or 8)),

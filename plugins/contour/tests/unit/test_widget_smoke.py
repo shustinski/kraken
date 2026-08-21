@@ -130,10 +130,13 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertFalse(widget.metal_show_border_checkbox.isChecked())
             self.assertFalse(widget.metal_show_mask_checkbox.isChecked())
             self.assertEqual(widget.metal_segmentation_strategy_combo.currentData(), "auto")
+            self.assertTrue(widget.metal_auto_contrast_step_spin.isEnabled())
+            self.assertEqual(widget.metal_auto_contrast_step_spin.value(), 10.0)
             self.assertFalse(widget._current_contour_settings().metal_use_wide_conductor_gradient)
             widget.metal_segmentation_strategy_combo.setCurrentIndex(
                 widget.metal_segmentation_strategy_combo.findData("gradient_watershed")
             )
+            self.assertFalse(widget.metal_auto_contrast_step_spin.isEnabled())
             self.assertTrue(widget._current_contour_settings().metal_use_wide_conductor_gradient)
             self.assertEqual(
                 widget._current_contour_settings().metal_segmentation_strategy,

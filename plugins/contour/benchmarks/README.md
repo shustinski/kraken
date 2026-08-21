@@ -81,21 +81,31 @@ conductors inside another conductor's hole instead of clearing them globally.
 
 | metric | current |
 |---|---:|
-| Macro IoU | 0.856 |
-| Median IoU | 0.882 |
-| Precision | 0.927 |
-| Recall | 0.925 |
-| Boundary F1 | 0.927 |
+| Macro IoU | 0.884 |
+| Median IoU | 0.919 |
+| Precision | 0.958 |
+| Recall | 0.922 |
+| Boundary F1 | 0.949 |
 | Component precision | 0.986 |
 | Component recall | 0.968 |
 | Component F1 | 0.973 |
-| False-positive objects | 46 |
+| False-positive objects | 45 |
 | Missed expected objects | 53 |
-| Component count absolute error | 101 |
-| False merges | 68 |
-| False splits | 54 |
+| Component count absolute error | 104 |
+| False merges | 62 |
+| False splits | 55 |
 | Empty false-metal fraction, mean | 0.0000 |
-| Total runtime, mean ms/frame | 4542.1 |
+| Total runtime, mean ms/frame | 6260.4 |
+
+Automatic Otsu selection now tests one stricter minimum-contrast candidate
+(`configured value + 10`) only when Watershed indicates missing separators,
+the candidate changes the object count by at most 5%, and its mask agrees more
+closely with Watershed. On `1514` this selects contrast 60, raises IoU from
+0.736 to 0.842, and removes all five false merges without misses or splits.
+Its 11 unmatched components all touch the outer image boundary and have strong
+source contrast; the CIF omits them. Globally ignoring border objects is not a
+valid correction because it also removes 115 annotated `1514` conductors, so
+they remain explicitly marked as border objects.
 
 The remaining error is concentrated in topology-heavy frames: `3242` has 32
 missed expected objects and eight splits, while `5101` has 25 splits. These

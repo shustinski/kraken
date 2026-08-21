@@ -129,6 +129,8 @@ class WidgetExtractionSettingsMixin:
             index = self.metal_segmentation_strategy_combo.findData("legacy_otsu")
         if index >= 0:
             self.metal_segmentation_strategy_combo.setCurrentIndex(index)
+        if hasattr(self, "metal_auto_contrast_step_spin"):
+            self.metal_auto_contrast_step_spin.setEnabled(strategy == "auto")
 
     def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
         blockers = [
@@ -184,6 +186,7 @@ class WidgetExtractionSettingsMixin:
         for _mw in (
             "metal_preset_combo",
             "metal_min_contrast_slider",
+            "metal_auto_contrast_step_spin",
             "metal_gap_bridge_spin",
             "metal_speckle_removal_spin",
             "metal_epsilon_spin",
@@ -517,6 +520,10 @@ class WidgetExtractionSettingsMixin:
                 if hasattr(self, "metal_min_object_source_contrast_spin"):
                     self.metal_min_object_source_contrast_spin.setValue(
                         float(getattr(settings, "metal_min_object_source_contrast", 12.0))
+                    )
+                if hasattr(self, "metal_auto_contrast_step_spin"):
+                    self.metal_auto_contrast_step_spin.setValue(
+                        float(getattr(settings, "metal_auto_contrast_step", 10.0))
                     )
                 if hasattr(self, "metal_gap_bridge_spin"):
                     self.metal_gap_bridge_spin.setValue(int(getattr(settings, "metal_gap_bridge_px", 1)))
@@ -905,6 +912,9 @@ class WidgetExtractionSettingsMixin:
             if hasattr(self, "metal_min_hole_source_contrast_fraction_spin")
             else 0.35,
             metal_segmentation_strategy=self._metal_strategy_from_combo(),
+            metal_auto_contrast_step=float(self.metal_auto_contrast_step_spin.value())
+            if hasattr(self, "metal_auto_contrast_step_spin")
+            else 10.0,
             metal_gap_bridge_px=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
             else 1,
@@ -1192,6 +1202,8 @@ class WidgetExtractionSettingsMixin:
             self.metal_min_object_source_contrast_spin.setValue(
                 float(defaults.metal_min_object_source_contrast)
             )
+        if hasattr(self, "metal_auto_contrast_step_spin"):
+            self.metal_auto_contrast_step_spin.setValue(float(defaults.metal_auto_contrast_step))
         if hasattr(self, "metal_gap_bridge_spin"):
             self.metal_gap_bridge_spin.setValue(int(defaults.metal_gap_bridge_px))
         if hasattr(self, "metal_speckle_removal_spin"):

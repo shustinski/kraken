@@ -5,10 +5,13 @@ import pytest
 
 from contour.application.processing import ContourExtractionSettings
 from contour.contour_extractor import extract_polygons
+from contour.domain import PolygonData
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 from contour.ui.metal_presets import noisy_sem_metal_preset_payload, standard_metal_preset_payload
 from contour.vision.metal_recovery import MetalRecoveryConfig, detect_metalization
 from contour.vision.metal_recovery.detector import (
+    MetalDetectionResult,
+    _prefer_contrast_refined_legacy,
     build_metal_extraction_mask,
     contour_extraction_settings_from_metal,
 )
@@ -154,6 +157,62 @@ def test_hole_source_contrast_settings_change_accepted_holes() -> None:
 
     assert sum(polygon.is_hole for polygon in strict.accepted) == 0
     assert sum(polygon.is_hole for polygon in permissive.accepted) == 1
+    assert permissive.debug_images["metal_filtered_mask"][70, 70] == 0
+
+
+def test_hole_filter_uses_local_contrast_when_wide_parent_is_below_otsu() -> None:
+    segmentation = np.zeros((180, 300), dtype=np.uint8)
+    segmentation[20:150, 20:190] = 240
+    segmentation[50:120, 60:150] = 0
+    source = np.full_like(segmentation, 20)
+    source[20:150, 20:190] = 80
+    source[50:120, 60:150] = 20
+    source[30:140, 230:290] = 220
+    config = MetalRecoveryConfig(
+        segmentation_strategy="legacy_otsu",
+        min_width_px=2.0,
+        min_area=20.0,
+        min_perimeter=10.0,
+        gap_bridge_px=0,
+        min_polygon_angle_deg=0.0,
+        min_inner_hole_area=20.0,
+        min_object_source_contrast=0.0,
+        min_hole_source_contrast=8.0,
+        min_hole_source_contrast_fraction=0.2,
+    )
+
+    result = detect_metalization(segmentation, config, source_image=source)
+
+    assert sum(polygon.is_hole for polygon in result.accepted) == 1
+
+
+def test_object_filtering_preserves_hole_parent_and_mask_cutout() -> None:
+    segmentation = np.zeros((200, 300), dtype=np.uint8)
+    source = np.full_like(segmentation, 20)
+    segmentation[130:180, 230:280] = 240
+    source[130:180, 230:280] = 28
+    segmentation[20:120, 20:180] = 240
+    segmentation[45:95, 65:135] = 0
+    source[20:120, 20:180] = 180
+    source[45:95, 65:135] = 20
+    config = MetalRecoveryConfig(
+        segmentation_strategy="legacy_otsu",
+        min_width_px=2.0,
+        min_area=20.0,
+        min_perimeter=10.0,
+        gap_bridge_px=0,
+        min_polygon_angle_deg=0.0,
+        min_inner_hole_area=20.0,
+        min_object_source_contrast=12.0,
+        min_hole_source_contrast_fraction=0.2,
+    )
+
+    result = detect_metalization(segmentation, config, source_image=source)
+
+    conductor = next(polygon for polygon in result.accepted if not polygon.is_hole)
+    hole = next(polygon for polygon in result.accepted if polygon.is_hole)
+    assert hole.parent_id == conductor.id
+    assert result.debug_images["metal_filtered_mask"][70, 100] == 0
 
 
 def test_hole_source_contrast_settings_reach_recovery_config() -> None:
@@ -428,6 +487,7 @@ def test_noisy_sem_preset_finds_trace_on_synthetic() -> None:
     assert result.accepted
     assert result.params_snapshot["auto_selected_strategy"] in {
         "legacy_otsu",
+        "legacy_otsu_contrast_refined",
         "gradient_watershed",
         "legacy_otsu_extended_separators",
     }
@@ -435,6 +495,40 @@ def test_noisy_sem_preset_finds_trace_on_synthetic() -> None:
 
 def test_standard_preset_uses_automatic_topology_control() -> None:
     assert standard_metal_preset_payload()["metal_segmentation_strategy"] == "auto"
+    assert standard_metal_preset_payload()["metal_auto_contrast_step"] == pytest.approx(10.0)
+
+
+def test_auto_contrast_refinement_requires_stable_count_and_better_watershed_agreement() -> None:
+    legacy_mask = np.zeros((40, 60), dtype=np.uint8)
+    legacy_mask[8:32, 5:55] = 255
+    refined_mask = legacy_mask.copy()
+    refined_mask[8:32, 29:31] = 0
+    watershed_mask = refined_mask.copy()
+
+    def _result(mask: np.ndarray, count: int) -> MetalDetectionResult:
+        polygons = [
+            PolygonData(id=index, points=[(1, 1), (5, 1), (5, 5), (1, 5)])
+            for index in range(1, count + 1)
+        ]
+        return MetalDetectionResult(
+            accepted=polygons,
+            debug_images={"metal_filtered_mask": mask},
+        )
+
+    legacy = _result(legacy_mask, 20)
+    refined = _result(refined_mask, 21)
+    watershed = _result(watershed_mask, 24)
+
+    assert _prefer_contrast_refined_legacy(
+        legacy=legacy,
+        refined=refined,
+        watershed=watershed,
+    )
+    assert not _prefer_contrast_refined_legacy(
+        legacy=legacy,
+        refined=_result(refined_mask, 22),
+        watershed=watershed,
+    )
 
 
 def test_legacy_settings_migration_in_contour_settings() -> None:
@@ -456,13 +550,18 @@ def test_legacy_positive_contrast_bias_migrates_to_minimum_contrast() -> None:
 
 def test_conductor_minimum_contrast_defaults_to_fifty_and_rejects_zero() -> None:
     defaults = ContourExtractionSettings()
-    restored = ContourExtractionSettings.from_dict({"metal_min_contrast": 0.0})
+    restored = ContourExtractionSettings.from_dict(
+        {"metal_min_contrast": 0.0, "metal_auto_contrast_step": -1.0}
+    )
 
     assert defaults.metal_min_contrast == pytest.approx(50.0)
+    assert defaults.metal_auto_contrast_step == pytest.approx(10.0)
     assert standard_metal_preset_payload()["metal_min_contrast"] == pytest.approx(50.0)
     assert noisy_sem_metal_preset_payload()["metal_min_contrast"] == pytest.approx(50.0)
     assert restored.metal_min_contrast == pytest.approx(1.0)
+    assert restored.metal_auto_contrast_step == pytest.approx(0.0)
     assert metal_recovery_config_from_settings(restored).min_contrast == pytest.approx(1.0)
+    assert metal_recovery_config_from_settings(restored).auto_contrast_step == pytest.approx(0.0)
 
 
 def test_watershed_settings_roundtrip_into_recovery_config() -> None:

@@ -386,11 +386,12 @@ class ContourExtractionSettings:
     metal_preset: str = "standard"
     metal_noise_suppression: int = 20
     metal_min_contrast: float = 50.0
+    metal_min_object_source_contrast: float = 12.0
     # Deprecated persisted setting; retained only for backward-compatible loading.
     metal_contrast_bias: float = 0.0
     metal_min_hole_source_contrast: float = 8.0
     metal_min_hole_source_contrast_fraction: float = 0.35
-    metal_segmentation_strategy: str = "legacy_otsu"
+    metal_segmentation_strategy: str = "auto"
     metal_gap_bridge_px: int = 1
     metal_speckle_removal_px: int = 1
     metal_contour_smooth_px: float = 0.0
@@ -421,12 +422,17 @@ class ContourExtractionSettings:
     metal_display_show_border_highlight: bool = False
     metal_debug_visual: str = "overlay"
     metal_overlay_opacity: float = 0.45
+    metal_preprocess_subtract_background: bool = True
+    metal_preprocess_background_sigma_fraction: float = 0.05
+    metal_preprocess_clahe_clip: float = 2.0
+    metal_preprocess_clahe_grid: int = 8
+    metal_preprocess_denoise: str = "low"
     metal_use_wide_conductor_gradient: bool = False
     metal_watershed_smoothing_sigma: float = 1.0
     metal_watershed_core_margin: float = 8.0
     metal_watershed_groove_margin: float = 16.0
     metal_watershed_rim_probe_px: int = 6
-    metal_watershed_seed_speckle_px: int = 1
+    metal_watershed_seed_speckle_px: int = 4
     metal_watershed_valley_span_px: int = 5
     metal_watershed_valley_depth: float = 45.0
     metal_random_walker_beta: float = 90.0
@@ -589,6 +595,7 @@ class ContourExtractionSettings:
             "metal_preset": self.metal_preset,
             "metal_noise_suppression": self.metal_noise_suppression,
             "metal_min_contrast": self.metal_min_contrast,
+            "metal_min_object_source_contrast": self.metal_min_object_source_contrast,
             "metal_contrast_bias": self.metal_contrast_bias,
             "metal_min_hole_source_contrast": self.metal_min_hole_source_contrast,
             "metal_min_hole_source_contrast_fraction": self.metal_min_hole_source_contrast_fraction,
@@ -623,6 +630,11 @@ class ContourExtractionSettings:
             "metal_display_show_border_highlight": self.metal_display_show_border_highlight,
             "metal_debug_visual": self.metal_debug_visual,
             "metal_overlay_opacity": self.metal_overlay_opacity,
+            "metal_preprocess_subtract_background": self.metal_preprocess_subtract_background,
+            "metal_preprocess_background_sigma_fraction": self.metal_preprocess_background_sigma_fraction,
+            "metal_preprocess_clahe_clip": self.metal_preprocess_clahe_clip,
+            "metal_preprocess_clahe_grid": self.metal_preprocess_clahe_grid,
+            "metal_preprocess_denoise": self.metal_preprocess_denoise,
             "metal_use_wide_conductor_gradient": self.metal_use_wide_conductor_gradient,
             "metal_watershed_smoothing_sigma": self.metal_watershed_smoothing_sigma,
             "metal_watershed_core_margin": self.metal_watershed_core_margin,
@@ -667,6 +679,9 @@ class ContourExtractionSettings:
         metal_max_trace_width = payload.get("metal_max_trace_width_px")
         metal_max_area = payload.get("metal_max_area")
         metal_max_perimeter = payload.get("metal_max_perimeter")
+        metal_preprocess_denoise = str(payload.get("metal_preprocess_denoise", "low") or "low")
+        if metal_preprocess_denoise not in {"low", "medium", "high"}:
+            metal_preprocess_denoise = "low"
         white_range_enabled = payload.get("via_white_range_enabled", payload.get("via_white_threshold_enabled", True))
         white_range_min = payload.get("via_white_range_min", payload.get("via_white_threshold", 200))
         white_range_max = payload.get("via_white_range_max", 255)
@@ -986,7 +1001,7 @@ class ContourExtractionSettings:
             ),
             metal_watershed_rim_probe_px=max(1, min(32, int(payload.get("metal_watershed_rim_probe_px", 6) or 1))),
             metal_watershed_seed_speckle_px=max(
-                0, min(8, int(payload.get("metal_watershed_seed_speckle_px", 1) or 0))
+                0, min(8, int(payload.get("metal_watershed_seed_speckle_px", 4) or 0))
             ),
             metal_watershed_valley_span_px=max(
                 0, min(16, int(payload.get("metal_watershed_valley_span_px", 5) or 0))
@@ -1013,6 +1028,29 @@ class ContourExtractionSettings:
                 2.0,
                 min(60.0, float(payload.get("metal_boundary_background_sigma", 12.0) or 12.0)),
             ),
+            metal_preprocess_subtract_background=bool(
+                payload.get("metal_preprocess_subtract_background", True)
+            ),
+            metal_preprocess_background_sigma_fraction=max(
+                0.005,
+                min(
+                    0.25,
+                    float(payload.get("metal_preprocess_background_sigma_fraction", 0.05) or 0.05),
+                ),
+            ),
+            metal_min_object_source_contrast=max(
+                0.0,
+                min(255.0, float(payload.get("metal_min_object_source_contrast", 12.0))),
+            ),
+            metal_preprocess_clahe_clip=max(
+                0.1,
+                min(20.0, float(payload.get("metal_preprocess_clahe_clip", 2.0) or 2.0)),
+            ),
+            metal_preprocess_clahe_grid=max(
+                2,
+                min(64, int(payload.get("metal_preprocess_clahe_grid", 8) or 8)),
+            ),
+            metal_preprocess_denoise=metal_preprocess_denoise,
             metal_edge_close_cap_px=max(5, min(21, int(payload.get("metal_edge_close_cap_px", 9) or 9) | 1)),
             metal_edge_watershed_split=bool(payload.get("metal_edge_watershed_split", True)),
             metal_edge_watershed_dist_peak_frac=max(

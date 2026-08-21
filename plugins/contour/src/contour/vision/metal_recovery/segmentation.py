@@ -147,7 +147,7 @@ class MetalSegmentationConfig:
     watershed_core_margin: float = 8.0
     watershed_groove_margin: float = 16.0
     watershed_rim_probe_px: int = 6
-    watershed_seed_speckle_px: int = 1
+    watershed_seed_speckle_px: int = 4
     watershed_valley_span_px: int = 5
     watershed_valley_depth: float = 45.0
     random_walker_beta: float = 90.0

@@ -512,9 +512,12 @@ def build_files_tab(self) -> QWidget:
     self.process_current_button = QPushButton()
     self.process_current_button.clicked.connect(self._process_current_image_and_save)
     self.batch_button = QPushButton()
-    self.batch_button.clicked.connect(self.start_batch_processing)
+    self.batch_button.clicked.connect(self._confirm_and_start_batch_processing)
     self.stop_batch_button = QPushButton()
     self.stop_batch_button.clicked.connect(self.stop_batch_processing)
+    self.antialias_opened_cif_button = QPushButton()
+    self.antialias_opened_cif_button.setIcon(self._create_editor_action_icon("antialias_all"))
+    self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
     self._configure_icon_only_button(
         self.process_current_button,
         self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
@@ -550,9 +553,10 @@ def build_files_tab(self) -> QWidget:
     run_layout.addWidget(self.save_current_button, 1, 0, 1, 2)
     run_layout.addWidget(self.export_dataset_button, 2, 0, 1, 2)
     run_layout.addWidget(self.dataset_mode_checkbox, 3, 0, 1, 2)
-    run_layout.addWidget(self.batch_progress_bar, 4, 0, 1, 2)
-    run_layout.addWidget(self.save_group, 5, 0, 1, 2)
-    run_layout.setRowStretch(6, 1)
+    run_layout.addWidget(self.antialias_opened_cif_button, 4, 0, 1, 2)
+    run_layout.addWidget(self.batch_progress_bar, 5, 0, 1, 2)
+    run_layout.addWidget(self.save_group, 6, 0, 1, 2)
+    run_layout.setRowStretch(7, 1)
     layout.addWidget(self.run_group)
     return tab
 
@@ -1681,6 +1685,7 @@ def build_extraction_tab(self) -> QWidget:
     _metal_basic_form.addRow("Ширина проводника, px", self.metal_width_row)
     _metal_basic_form.addRow("Epsilon (approxPolyDP)", self.metal_epsilon_spin)
     self.metal_segmentation_strategy_combo = QComboBox()
+    self.metal_segmentation_strategy_combo.addItem("Авто (контроль связности)", "auto")
     self.metal_segmentation_strategy_combo.addItem("Порог Otsu", "legacy_otsu")
     self.metal_segmentation_strategy_combo.addItem("Watershed", "gradient_watershed")
     self.metal_segmentation_strategy_combo.addItem("Random Walker", "random_walker")
@@ -1772,6 +1777,10 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_min_angle_spin = QDoubleSpinBox()
     self.metal_min_angle_spin.setRange(0.0, 180.0)
     self.metal_min_angle_spin.setValue(30.0)
+    self.metal_min_object_source_contrast_spin = QDoubleSpinBox()
+    self.metal_min_object_source_contrast_spin.setRange(0.0, 255.0)
+    self.metal_min_object_source_contrast_spin.setDecimals(1)
+    self.metal_min_object_source_contrast_spin.setValue(12.0)
     self.metal_min_hole_source_contrast_spin = QDoubleSpinBox()
     self.metal_min_hole_source_contrast_spin.setRange(0.0, 255.0)
     self.metal_min_hole_source_contrast_spin.setDecimals(1)
@@ -1783,6 +1792,35 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_min_hole_source_contrast_fraction_spin.setValue(0.35)
     self.metal_approximation_checkbox = QCheckBox("Режим аппроксимации контуров")
     self.metal_approximation_checkbox.setChecked(True)
+    self.metal_preprocess_subtract_background_checkbox = QCheckBox("Subtract background")
+    self.metal_preprocess_subtract_background_checkbox.setChecked(True)
+    self.metal_preprocess_background_sigma_spin = QDoubleSpinBox()
+    self.metal_preprocess_background_sigma_spin.setRange(0.005, 0.25)
+    self.metal_preprocess_background_sigma_spin.setDecimals(3)
+    self.metal_preprocess_background_sigma_spin.setSingleStep(0.005)
+    self.metal_preprocess_background_sigma_spin.setValue(0.05)
+    self.metal_preprocess_clahe_clip_spin = QDoubleSpinBox()
+    self.metal_preprocess_clahe_clip_spin.setRange(0.1, 20.0)
+    self.metal_preprocess_clahe_clip_spin.setDecimals(1)
+    self.metal_preprocess_clahe_clip_spin.setSingleStep(0.1)
+    self.metal_preprocess_clahe_clip_spin.setValue(2.0)
+    self.metal_preprocess_clahe_grid_spin = QSpinBox()
+    self.metal_preprocess_clahe_grid_spin.setRange(2, 64)
+    self.metal_preprocess_clahe_grid_spin.setValue(8)
+    self.metal_preprocess_denoise_combo = QComboBox()
+    self.metal_preprocess_denoise_combo.addItem("Low", "low")
+    self.metal_preprocess_denoise_combo.addItem("Medium", "medium")
+    self.metal_preprocess_denoise_combo.addItem("High", "high")
+    self.metal_preprocess_subtract_background_checkbox.setToolTip(
+        "\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u0435\u0442 \u043c\u0435\u0434\u043b\u0435\u043d\u043d\u043e \u043c\u0435\u043d\u044f\u044e\u0449\u0443\u044e\u0441\u044f \u044f\u0440\u043a\u043e\u0441\u0442\u044c SEM-\u043a\u0430\u0434\u0440\u0430 \u043f\u0435\u0440\u0435\u0434 \u0440\u0430\u0441\u043f\u043e\u0437\u043d\u0430\u0432\u0430\u043d\u0438\u0435\u043c."
+        if self._ui_language == "ru"
+        else "Flattens slowly varying SEM illumination before recognition."
+    )
+    self.metal_preprocess_background_sigma_spin.setToolTip(
+        "\u0414\u043e\u043b\u044f \u043c\u0435\u043d\u044c\u0448\u0435\u0439 \u0441\u0442\u043e\u0440\u043e\u043d\u044b \u043a\u0430\u0434\u0440\u0430, \u0437\u0430\u0434\u0430\u044e\u0449\u0430\u044f \u043c\u0430\u0441\u0448\u0442\u0430\u0431 \u043f\u043b\u0430\u0432\u043d\u043e\u0433\u043e \u0444\u043e\u043d\u0430; \u0432 \u0431\u0435\u043d\u0447\u043c\u0430\u0440\u043a\u0435 0,05."
+        if self._ui_language == "ru"
+        else "Fraction of the shorter image side used for the smooth background scale; benchmark: 0.05."
+    )
     self.metal_ws_smoothing_spin = QDoubleSpinBox()
     self.metal_ws_smoothing_spin.setRange(0.1, 8.0)
     self.metal_ws_smoothing_spin.setDecimals(1)
@@ -1803,7 +1841,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_ws_rim_probe_spin.setValue(6)
     self.metal_ws_seed_speckle_spin = QSpinBox()
     self.metal_ws_seed_speckle_spin.setRange(0, 8)
-    self.metal_ws_seed_speckle_spin.setValue(1)
+    self.metal_ws_seed_speckle_spin.setValue(4)
     self.metal_ws_valley_span_spin = QSpinBox()
     self.metal_ws_valley_span_spin.setRange(0, 16)
     self.metal_ws_valley_span_spin.setValue(5)
@@ -1849,6 +1887,10 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_filter_group = QGroupBox("Фильтрация распознанных")
     _metal_filter_form = QFormLayout(self.metal_filter_group)
     self._configure_compact_form(_metal_filter_form)
+    _metal_filter_form.addRow(
+        "Мин. контраст объекта к фону",
+        self.metal_min_object_source_contrast_spin,
+    )
     _metal_filter_form.addRow("Мин. площадь", self.metal_min_area_spin)
     _metal_filter_form.addRow("Макс. площадь (0 = нет)", self.metal_max_area_spin)
     _metal_filter_form.addRow("Мин. периметр", self.metal_min_perimeter_spin)
@@ -1869,6 +1911,27 @@ def build_extraction_tab(self) -> QWidget:
     _metal_recog_form.addRow(
         "Доля контраста классов для отверстия",
         self.metal_min_hole_source_contrast_fraction_spin,
+    )
+
+    self.metal_preprocessing_group = QGroupBox("SEM preprocessing")
+    _metal_preprocess_form = QFormLayout(self.metal_preprocessing_group)
+    self._configure_compact_form(_metal_preprocess_form)
+    _metal_preprocess_form.addRow(self.metal_preprocess_subtract_background_checkbox)
+    _metal_preprocess_form.addRow("Background scale, image fraction", self.metal_preprocess_background_sigma_spin)
+    self.metal_preprocess_background_sigma_label_widget = _metal_preprocess_form.labelForField(
+        self.metal_preprocess_background_sigma_spin
+    )
+    _metal_preprocess_form.addRow("CLAHE clip limit", self.metal_preprocess_clahe_clip_spin)
+    self.metal_preprocess_clahe_clip_label_widget = _metal_preprocess_form.labelForField(
+        self.metal_preprocess_clahe_clip_spin
+    )
+    _metal_preprocess_form.addRow("CLAHE grid", self.metal_preprocess_clahe_grid_spin)
+    self.metal_preprocess_clahe_grid_label_widget = _metal_preprocess_form.labelForField(
+        self.metal_preprocess_clahe_grid_spin
+    )
+    _metal_preprocess_form.addRow("Denoising", self.metal_preprocess_denoise_combo)
+    self.metal_preprocess_denoise_label_widget = _metal_preprocess_form.labelForField(
+        self.metal_preprocess_denoise_combo
     )
 
     self.metal_watershed_group = QGroupBox("Watershed")
@@ -1927,6 +1990,7 @@ def build_extraction_tab(self) -> QWidget:
     _adv_box_l.setSpacing(8)
     _adv_box_l.addWidget(self.metal_filter_group)
     _adv_box_l.addWidget(self.metal_recognition_params_group)
+    _adv_box_l.addWidget(self.metal_preprocessing_group)
     _adv_box_l.addWidget(self.metal_watershed_group)
     _adv_box_l.addWidget(self.metal_random_walker_group)
     _adv_box_l.addWidget(self.metal_graph_cut_group)
@@ -1981,8 +2045,12 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_min_length_spin,
         self.metal_min_points_spin,
         self.metal_min_angle_spin,
+        self.metal_min_object_source_contrast_spin,
         self.metal_min_hole_source_contrast_spin,
         self.metal_min_hole_source_contrast_fraction_spin,
+        self.metal_preprocess_background_sigma_spin,
+        self.metal_preprocess_clahe_clip_spin,
+        self.metal_preprocess_clahe_grid_spin,
         self.metal_ws_smoothing_spin,
         self.metal_ws_core_margin_spin,
         self.metal_ws_groove_margin_spin,
@@ -1999,6 +2067,13 @@ def build_extraction_tab(self) -> QWidget:
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
+    self.metal_preprocess_subtract_background_checkbox.stateChanged.connect(
+        self._on_extraction_settings_changed
+    )
+    self.metal_preprocess_subtract_background_checkbox.toggled.connect(
+        self.metal_preprocess_background_sigma_spin.setEnabled
+    )
+    self.metal_preprocess_denoise_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_hierarchy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_border_handling_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
@@ -2469,13 +2544,6 @@ def build_editor_toolbar(self) -> QWidget:
     self.fit_button = QToolButton()
     self._configure_toolbar_button(self.fit_button, self._create_editor_action_icon("fit"), "Fit")
     self.fit_button.clicked.connect(self.polygon_editor.fit_to_view)
-    self.antialias_opened_cif_button = QToolButton()
-    self._configure_toolbar_button(
-        self.antialias_opened_cif_button,
-        self._create_editor_action_icon("antialias_all"),
-        self._tr("antialias_opened_cif_button", "Antialias all opened CIF files"),
-    )
-    self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
 
     for button in [
         self.undo_button,
@@ -2485,7 +2553,6 @@ def build_editor_toolbar(self) -> QWidget:
         self.fit_button,
     ]:
         layout.addWidget(button)
-    layout.addWidget(self.antialias_opened_cif_button)
 
     self.vector_edit_status_label = QLabel("")
     self.vector_edit_status_label.setMinimumWidth(88)
@@ -2525,7 +2592,6 @@ def build_editor_toolbar(self) -> QWidget:
         self.ruler_status_label,
         self.antialias_grade_label,
         self.antialias_grade_spin,
-        self.antialias_opened_cif_button,
     ):
         _apply_size_hint_geometry(widget, width=True, height=True)
         widget.setMinimumHeight(max(30, widget.minimumHeight()))

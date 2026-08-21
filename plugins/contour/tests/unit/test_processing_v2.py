@@ -43,6 +43,8 @@ def test_v2_keeps_seeded_conductor_algorithms() -> None:
 def test_metal_minimum_contrast_defaults_to_fifty_and_clamps_zero() -> None:
     assert MetalRecoverySettings().min_contrast == 50.0
     assert MetalRecoverySettings(min_contrast=0.0).min_contrast == 1.0
+    assert MetalRecoverySettings().min_object_source_contrast == 12.0
+    assert MetalRecoverySettings(min_object_source_contrast=-1.0).min_object_source_contrast == 0.0
 
 
 def test_legacy_migrator_reports_unknown_fields() -> None:

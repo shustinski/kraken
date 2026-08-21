@@ -116,11 +116,11 @@ class BatchControllerTests(unittest.TestCase):
         self.assertFalse(controller.start(request))
         self.assertEqual(processor.start_calls, 1)
 
-    def test_progress_disabled_without_save_cif(self) -> None:
+    def test_progress_enabled_without_save_cif(self) -> None:
         processor = _FakeProcessor()
         controller = BatchController(processor)
         self.assertTrue(controller.start(_batch_request(["a.png"], output_directory="out", save_cif=False)))
-        self.assertFalse(controller.progress_enabled)
+        self.assertTrue(controller.progress_enabled)
 
     def test_stop_forwards(self) -> None:
         processor = _FakeProcessor()

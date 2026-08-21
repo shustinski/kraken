@@ -158,6 +158,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     ):
         button.setText("")
         button.setAccessibleName(accessible_name)
+    self.antialias_opened_cif_button.setText(self._tr("antialias_opened_cif_button"))
+    self.antialias_opened_cif_button.setAccessibleName(self._tr("antialias_opened_cif_button"))
     self.save_current_button.setText(self._tr("save_current_button"))
     self.export_dataset_button.setText(self._tr("export_dataset_button"))
     self.dataset_mode_checkbox.setText(self._tr("dataset_mode_checkbox"))
@@ -167,6 +169,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.process_current_button, "process_current"),
         (self.batch_button, "start_batch"),
         (self.stop_batch_button, "stop_batch"),
+        (self.antialias_opened_cif_button, "antialias_all_vectors"),
         (self.save_current_button, "save_current"),
         (self.export_dataset_button, "export_dataset"),
         (self.dataset_mode_checkbox, "dataset_mode"),
@@ -254,16 +257,22 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.recognition_mode_combo.setItemText(2, "Контакты" if self._ui_language == "ru" else "Contacts")
     if hasattr(self, "recognition_mode_label"):
         self.recognition_mode_label.setText("Распознавание" if self._ui_language == "ru" else "Recognition")
-    if hasattr(self, "metal_segmentation_strategy_combo") and self.metal_segmentation_strategy_combo.count() >= 6:
+    if hasattr(self, "metal_segmentation_strategy_combo") and self.metal_segmentation_strategy_combo.count() >= 7:
         self.metal_segmentation_strategy_combo.setItemText(
-            0, "Порог Otsu" if self._ui_language == "ru" else "Otsu threshold"
+            0,
+            "Авто (контроль связности)"
+            if self._ui_language == "ru"
+            else "Auto (topology control)",
         )
-        self.metal_segmentation_strategy_combo.setItemText(1, "Watershed")
-        self.metal_segmentation_strategy_combo.setItemText(2, "Random Walker")
-        self.metal_segmentation_strategy_combo.setItemText(3, "Graph Cut")
-        self.metal_segmentation_strategy_combo.setItemText(4, "Reconstruction")
         self.metal_segmentation_strategy_combo.setItemText(
-            5, "Замкнутые границы" if self._ui_language == "ru" else "Closed boundary"
+            1, "Порог Otsu" if self._ui_language == "ru" else "Otsu threshold"
+        )
+        self.metal_segmentation_strategy_combo.setItemText(2, "Watershed")
+        self.metal_segmentation_strategy_combo.setItemText(3, "Random Walker")
+        self.metal_segmentation_strategy_combo.setItemText(4, "Graph Cut")
+        self.metal_segmentation_strategy_combo.setItemText(5, "Reconstruction")
+        self.metal_segmentation_strategy_combo.setItemText(
+            6, "Замкнутые границы" if self._ui_language == "ru" else "Closed boundary"
         )
     if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
         self.metal_segmentation_strategy_label_widget.setText(
@@ -273,6 +282,50 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_ws_smoothing_label_widget.setText(
             "Сглаживание водораздела, σ" if self._ui_language == "ru" else "Watershed smoothing, σ"
         )
+    if getattr(self, "metal_preprocessing_group", None) is not None:
+        self.metal_preprocessing_group.setTitle(
+            "\u041f\u0440\u0435\u0434\u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430 SEM"
+            if self._ui_language == "ru"
+            else "SEM preprocessing"
+        )
+    if getattr(self, "metal_preprocess_subtract_background_checkbox", None) is not None:
+        self.metal_preprocess_subtract_background_checkbox.setText(
+            "\u0412\u044b\u0447\u0438\u0442\u0430\u043d\u0438\u0435 \u0444\u043e\u043d\u0430"
+            if self._ui_language == "ru"
+            else "Subtract background"
+        )
+    if getattr(self, "metal_preprocess_background_sigma_label_widget", None) is not None:
+        self.metal_preprocess_background_sigma_label_widget.setText(
+            "\u041c\u0430\u0441\u0448\u0442\u0430\u0431 \u0444\u043e\u043d\u0430, \u0434\u043e\u043b\u044f \u043a\u0430\u0434\u0440\u0430"
+            if self._ui_language == "ru"
+            else "Background scale, image fraction"
+        )
+    if getattr(self, "metal_preprocess_clahe_clip_label_widget", None) is not None:
+        self.metal_preprocess_clahe_clip_label_widget.setText(
+            "\u041e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0435 \u043a\u043e\u043d\u0442\u0440\u0430\u0441\u0442\u0430 CLAHE"
+            if self._ui_language == "ru"
+            else "CLAHE clip limit"
+        )
+    if getattr(self, "metal_preprocess_clahe_grid_label_widget", None) is not None:
+        self.metal_preprocess_clahe_grid_label_widget.setText(
+            "\u0421\u0435\u0442\u043a\u0430 CLAHE"
+            if self._ui_language == "ru"
+            else "CLAHE grid"
+        )
+    if getattr(self, "metal_preprocess_denoise_label_widget", None) is not None:
+        self.metal_preprocess_denoise_label_widget.setText(
+            "\u0428\u0443\u043c\u043e\u043f\u043e\u0434\u0430\u0432\u043b\u0435\u043d\u0438\u0435"
+            if self._ui_language == "ru"
+            else "Denoising"
+        )
+    if getattr(self, "metal_preprocess_denoise_combo", None) is not None:
+        noise_labels = (
+            ("\u041d\u0438\u0437\u043a\u043e\u0435", "\u0421\u0440\u0435\u0434\u043d\u0435\u0435", "\u0412\u044b\u0441\u043e\u043a\u043e\u0435")
+            if self._ui_language == "ru"
+            else ("Low", "Medium", "High")
+        )
+        for index, label in enumerate(noise_labels):
+            self.metal_preprocess_denoise_combo.setItemText(index, label)
     if getattr(self, "metal_ws_core_margin_label_widget", None) is not None:
         self.metal_ws_core_margin_label_widget.setText(
             "Отступ ядер металла" if self._ui_language == "ru" else "Metal core margin"

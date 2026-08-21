@@ -168,6 +168,45 @@ def test_hole_source_contrast_settings_reach_recovery_config() -> None:
     assert config.min_hole_source_contrast_fraction == pytest.approx(0.2)
 
 
+def test_object_source_contrast_rejects_dark_shadow_island() -> None:
+    segmentation = np.zeros((100, 180), dtype=np.uint8)
+    segmentation[25:75, 20:70] = 240
+    segmentation[25:75, 110:160] = 240
+    source = np.full_like(segmentation, 40)
+    source[25:75, 20:70] = 220
+    source[25:75, 110:160] = 48
+    base = dict(
+        segmentation_strategy="legacy_otsu",
+        min_width_px=2.0,
+        min_area=20.0,
+        min_perimeter=20.0,
+        gap_bridge_px=0,
+        min_polygon_angle_deg=0.0,
+    )
+
+    filtered = detect_metalization(
+        segmentation,
+        MetalRecoveryConfig(**base, min_object_source_contrast=12.0),
+        source_image=source,
+    )
+    unfiltered = detect_metalization(
+        segmentation,
+        MetalRecoveryConfig(**base, min_object_source_contrast=0.0),
+        source_image=source,
+    )
+
+    assert sum(not polygon.is_hole for polygon in filtered.accepted) == 1
+    assert sum(not polygon.is_hole for polygon in unfiltered.accepted) == 2
+
+
+def test_object_source_contrast_setting_reaches_recovery_config() -> None:
+    config = metal_recovery_config_from_settings(
+        ContourExtractionSettings(metal_min_object_source_contrast=17.5)
+    )
+
+    assert config.min_object_source_contrast == pytest.approx(17.5)
+
+
 def test_metal_recovery_config_preserves_zero_gap_bridge() -> None:
     settings = ContourExtractionSettings(metal_gap_bridge_px=0, metal_speckle_removal_px=3)
     cfg = metal_recovery_config_from_settings(settings)
@@ -387,6 +426,15 @@ def test_noisy_sem_preset_finds_trace_on_synthetic() -> None:
     )
     result = detect_metalization(_noisy_sem_synthetic(), cfg)
     assert result.accepted
+    assert result.params_snapshot["auto_selected_strategy"] in {
+        "legacy_otsu",
+        "gradient_watershed",
+        "legacy_otsu_extended_separators",
+    }
+
+
+def test_standard_preset_uses_automatic_topology_control() -> None:
+    assert standard_metal_preset_payload()["metal_segmentation_strategy"] == "auto"
 
 
 def test_legacy_settings_migration_in_contour_settings() -> None:

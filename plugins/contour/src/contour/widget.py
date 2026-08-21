@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .adapters.qt.antialias_cif import AntialiasCifSignals
 from .adapters.qt.image_conversion import cv_to_qimage
 from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from .adapters.qt.thumbnails import ThumbnailLoadRunnable
@@ -261,6 +262,16 @@ class PolygonExtractionWidget(
         self._parameter_widgets: dict[str, QWidget] = {}
         self._updating_views = False
         self._batch_progress_enabled = False
+        self._antialias_running = False
+        self._antialias_run_id = 0
+        self._antialias_cancel: threading.Event | None = None
+        self._antialias_thread_pool = QThreadPool(self)
+        self._antialias_thread_pool.setMaxThreadCount(1)
+        self._antialias_thread_pool.setExpiryTimeout(-1)
+        self._antialias_signals = AntialiasCifSignals(self)
+        self._antialias_signals.progress.connect(self._on_antialias_progress)
+        self._antialias_signals.item_finished.connect(self._on_antialias_item_finished)
+        self._antialias_signals.finished.connect(self._on_antialias_finished)
         self._progress_status_key = "idle_status"
         self._progress_status_kwargs: dict[str, object] = {}
         self._preview_thread_pool = QThreadPool(self)
@@ -489,11 +500,14 @@ class PolygonExtractionWidget(
             self._cancel_thumbnail_loading()
         if hasattr(self, "thumbnail_grid") and hasattr(self.thumbnail_grid, "shutdownPyramidLoading"):
             self.thumbnail_grid.shutdownPyramidLoading()
+        if hasattr(self, "_cancel_antialias_job"):
+            self._cancel_antialias_job()
         for pool_name in (
             "_frame_load_thread_pool",
             "_thumbnail_thread_pool",
             "_neighbor_thread_pool",
             "_editor_display_thread_pool",
+            "_antialias_thread_pool",
         ):
             pool = getattr(self, pool_name, None)
             if pool is None:

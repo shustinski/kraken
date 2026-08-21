@@ -204,8 +204,14 @@ class WidgetExtractionSettingsMixin:
             "metal_min_length_spin",
             "metal_min_points_spin",
             "metal_min_angle_spin",
+            "metal_min_object_source_contrast_spin",
             "metal_min_hole_source_contrast_spin",
             "metal_min_hole_source_contrast_fraction_spin",
+            "metal_preprocess_subtract_background_checkbox",
+            "metal_preprocess_background_sigma_spin",
+            "metal_preprocess_clahe_clip_spin",
+            "metal_preprocess_clahe_grid_spin",
+            "metal_preprocess_denoise_combo",
             "metal_ws_smoothing_spin",
             "metal_ws_core_margin_spin",
             "metal_ws_groove_margin_spin",
@@ -508,6 +514,10 @@ class WidgetExtractionSettingsMixin:
                     self.metal_min_contrast_slider.setValue(
                         int(round(float(getattr(settings, "metal_min_contrast", 50.0))))
                     )
+                if hasattr(self, "metal_min_object_source_contrast_spin"):
+                    self.metal_min_object_source_contrast_spin.setValue(
+                        float(getattr(settings, "metal_min_object_source_contrast", 12.0))
+                    )
                 if hasattr(self, "metal_gap_bridge_spin"):
                     self.metal_gap_bridge_spin.setValue(int(getattr(settings, "metal_gap_bridge_px", 1)))
                 if hasattr(self, "metal_speckle_removal_spin"):
@@ -535,6 +545,31 @@ class WidgetExtractionSettingsMixin:
                 self.metal_approximation_checkbox.setChecked(
                     bool(getattr(settings, "metal_approximation_enabled", True))
                 )
+                if hasattr(self, "metal_preprocess_subtract_background_checkbox"):
+                    self.metal_preprocess_subtract_background_checkbox.setChecked(
+                        bool(getattr(settings, "metal_preprocess_subtract_background", True))
+                    )
+                if hasattr(self, "metal_preprocess_background_sigma_spin"):
+                    self.metal_preprocess_background_sigma_spin.setValue(
+                        float(getattr(settings, "metal_preprocess_background_sigma_fraction", 0.05))
+                    )
+                    self.metal_preprocess_background_sigma_spin.setEnabled(
+                        bool(getattr(settings, "metal_preprocess_subtract_background", True))
+                    )
+                if hasattr(self, "metal_preprocess_clahe_clip_spin"):
+                    self.metal_preprocess_clahe_clip_spin.setValue(
+                        float(getattr(settings, "metal_preprocess_clahe_clip", 2.0))
+                    )
+                if hasattr(self, "metal_preprocess_clahe_grid_spin"):
+                    self.metal_preprocess_clahe_grid_spin.setValue(
+                        int(getattr(settings, "metal_preprocess_clahe_grid", 8))
+                    )
+                if hasattr(self, "metal_preprocess_denoise_combo"):
+                    denoise_index = self.metal_preprocess_denoise_combo.findData(
+                        str(getattr(settings, "metal_preprocess_denoise", "low") or "low")
+                    )
+                    if denoise_index >= 0:
+                        self.metal_preprocess_denoise_combo.setCurrentIndex(denoise_index)
                 if hasattr(self, "metal_segmentation_strategy_combo"):
                     self._apply_metal_strategy_to_combo(settings)
                 if hasattr(self, "metal_ws_smoothing_spin"):
@@ -555,7 +590,7 @@ class WidgetExtractionSettingsMixin:
                     )
                 if hasattr(self, "metal_ws_seed_speckle_spin"):
                     self.metal_ws_seed_speckle_spin.setValue(
-                        int(getattr(settings, "metal_watershed_seed_speckle_px", 1) or 0)
+                        int(getattr(settings, "metal_watershed_seed_speckle_px", 4) or 0)
                     )
                 if hasattr(self, "metal_ws_valley_span_spin"):
                     self.metal_ws_valley_span_spin.setValue(
@@ -856,6 +891,11 @@ class WidgetExtractionSettingsMixin:
             metal_min_contrast=float(self.metal_min_contrast_slider.value())
             if hasattr(self, "metal_min_contrast_slider")
             else 0.0,
+            metal_min_object_source_contrast=float(
+                self.metal_min_object_source_contrast_spin.value()
+            )
+            if hasattr(self, "metal_min_object_source_contrast_spin")
+            else 12.0,
             metal_min_hole_source_contrast=float(self.metal_min_hole_source_contrast_spin.value())
             if hasattr(self, "metal_min_hole_source_contrast_spin")
             else 8.0,
@@ -900,6 +940,31 @@ class WidgetExtractionSettingsMixin:
             metal_approximation_enabled=self.metal_approximation_checkbox.isChecked()
             if hasattr(self, "metal_approximation_checkbox")
             else True,
+            metal_preprocess_subtract_background=(
+                self.metal_preprocess_subtract_background_checkbox.isChecked()
+                if hasattr(self, "metal_preprocess_subtract_background_checkbox")
+                else True
+            ),
+            metal_preprocess_background_sigma_fraction=(
+                float(self.metal_preprocess_background_sigma_spin.value())
+                if hasattr(self, "metal_preprocess_background_sigma_spin")
+                else 0.05
+            ),
+            metal_preprocess_clahe_clip=(
+                float(self.metal_preprocess_clahe_clip_spin.value())
+                if hasattr(self, "metal_preprocess_clahe_clip_spin")
+                else 2.0
+            ),
+            metal_preprocess_clahe_grid=(
+                int(self.metal_preprocess_clahe_grid_spin.value())
+                if hasattr(self, "metal_preprocess_clahe_grid_spin")
+                else 8
+            ),
+            metal_preprocess_denoise=(
+                str(self.metal_preprocess_denoise_combo.currentData() or "low")
+                if hasattr(self, "metal_preprocess_denoise_combo")
+                else "low"
+            ),
             metal_use_wide_conductor_gradient=self._metal_strategy_from_combo() == "gradient_watershed",
             metal_watershed_smoothing_sigma=float(self.metal_ws_smoothing_spin.value())
             if hasattr(self, "metal_ws_smoothing_spin")
@@ -1123,6 +1188,10 @@ class WidgetExtractionSettingsMixin:
                 self.metal_preset_combo.setCurrentIndex(ix)
         if hasattr(self, "metal_min_contrast_slider"):
             self.metal_min_contrast_slider.setValue(int(round(defaults.metal_min_contrast)))
+        if hasattr(self, "metal_min_object_source_contrast_spin"):
+            self.metal_min_object_source_contrast_spin.setValue(
+                float(defaults.metal_min_object_source_contrast)
+            )
         if hasattr(self, "metal_gap_bridge_spin"):
             self.metal_gap_bridge_spin.setValue(int(defaults.metal_gap_bridge_px))
         if hasattr(self, "metal_speckle_removal_spin"):
@@ -1158,6 +1227,22 @@ class WidgetExtractionSettingsMixin:
             )
         if hasattr(self, "metal_approximation_checkbox"):
             self.metal_approximation_checkbox.setChecked(bool(defaults.metal_approximation_enabled))
+        if hasattr(self, "metal_preprocess_subtract_background_checkbox"):
+            self.metal_preprocess_subtract_background_checkbox.setChecked(
+                bool(defaults.metal_preprocess_subtract_background)
+            )
+        if hasattr(self, "metal_preprocess_background_sigma_spin"):
+            self.metal_preprocess_background_sigma_spin.setValue(
+                float(defaults.metal_preprocess_background_sigma_fraction)
+            )
+        if hasattr(self, "metal_preprocess_clahe_clip_spin"):
+            self.metal_preprocess_clahe_clip_spin.setValue(float(defaults.metal_preprocess_clahe_clip))
+        if hasattr(self, "metal_preprocess_clahe_grid_spin"):
+            self.metal_preprocess_clahe_grid_spin.setValue(int(defaults.metal_preprocess_clahe_grid))
+        if hasattr(self, "metal_preprocess_denoise_combo"):
+            ix = self.metal_preprocess_denoise_combo.findData(defaults.metal_preprocess_denoise)
+            if ix >= 0:
+                self.metal_preprocess_denoise_combo.setCurrentIndex(ix)
         if hasattr(self, "metal_segmentation_strategy_combo"):
             self._apply_metal_strategy_to_combo(defaults)
         if hasattr(self, "metal_ws_smoothing_spin"):

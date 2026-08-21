@@ -64,7 +64,22 @@ def configure_worker_runtime() -> None:
         pass
 
 
-def process_batch_chunk(request: BatchChunkRequest, cancel_event: Any | None = None) -> BatchChunkResult:
+def _increment_batch_progress(progress_counter: Any, progress_lock: Any) -> None:
+    if progress_counter is None:
+        return
+    if progress_lock is None:
+        progress_counter.value += 1
+        return
+    with progress_lock:
+        progress_counter.value += 1
+
+
+def process_batch_chunk(
+    request: BatchChunkRequest,
+    cancel_event: Any | None = None,
+    progress_counter: Any | None = None,
+    progress_lock: Any | None = None,
+) -> BatchChunkResult:
     configure_worker_runtime()
     worker_pid = os.getpid()
     wall_started = perf_counter()
@@ -114,6 +129,7 @@ def process_batch_chunk(request: BatchChunkRequest, cancel_event: Any | None = N
             )
         finally:
             busy_ms += (perf_counter() - frame_started) * 1000.0
+            _increment_batch_progress(progress_counter, progress_lock)
 
     gc.collect()
     wall_ms = (perf_counter() - wall_started) * 1000.0

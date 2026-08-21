@@ -677,6 +677,15 @@ class WidgetExtractionControlsMixin:
                     "so mask area grows even though the contour count can decrease.",
                 )
             )
+        if getattr(self, "metal_min_object_source_contrast_spin", None) is not None:
+            self.metal_min_object_source_contrast_spin.setToolTip(
+                tt(
+                    "Минимальная разница медианной яркости объекта и локального фона. "
+                    "Повышайте, если распознаются тёмные тени рядом с проводниками.",
+                    "Minimum median brightness difference between an object and its local background. "
+                    "Increase it when dark shadows beside conductors are detected.",
+                )
+            )
         if getattr(self, "metal_min_hole_source_contrast_spin", None) is not None:
             self.metal_min_hole_source_contrast_spin.setToolTip(
                 tt(
@@ -695,6 +704,7 @@ class WidgetExtractionControlsMixin:
             self.metal_segmentation_strategy_combo.setToolTip(
                 tt(
                     "Алгоритм сегментации проводников.\n"
+                    "«Авто» сравнивает Otsu и Watershed по количеству, плотности и связности объектов.\n"
                     "«Порог Otsu» — классическая бинаризация по яркости.\n"
                     "Watershed, Random Walker, Graph Cut и Reconstruction растят ядра металла "
                     "до затравок в зазорах и лучше держат бледную заливку SEM с яркими кромками.\n"
@@ -702,6 +712,7 @@ class WidgetExtractionControlsMixin:
                     "в стенки и заливает охваченные ими области. Это единственный вариант, когда "
                     "проводник по яркости неотличим от подложки и виден только его контур.",
                     "Conductor segmentation algorithm.\n"
+                    "Auto compares Otsu and Watershed using object count, density, and topology.\n"
                     "Otsu threshold is classical intensity binarization.\n"
                     "Watershed, Random Walker, Graph Cut and Reconstruction grow metal cores "
                     "until they meet gap seeds and recover pale SEM fills outlined by bright rims.\n"

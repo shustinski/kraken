@@ -951,6 +951,10 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Запустить обработку всех изображений из списка.",
         "Start processing all images in the list.",
     ),
+    "antialias_all_vectors": (
+        "Сгладить все векторные файлы CIF в проекте.",
+        "Antialias every CIF vector file in the project.",
+    ),
     "stop_batch": (
         "Остановить пакетную обработку после текущих выполняемых задач.",
         "Stop batch processing after the currently running tasks finish.",

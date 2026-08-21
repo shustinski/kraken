@@ -82,7 +82,9 @@ class WidgetUiHelpersMixin:
         if hasattr(self, "redo_button"):
             self.redo_button.setEnabled(not edits_locked)
         if hasattr(self, "antialias_opened_cif_button"):
-            self.antialias_opened_cif_button.setEnabled(not edits_locked)
+            self.antialias_opened_cif_button.setEnabled(
+                not edits_locked and not bool(getattr(self, "_antialias_running", False))
+            )
         if hasattr(self, "_tool_parameter_blocks"):
             self._place_active_tool_parameters_near_tool_button(self.polygon_editor.current_tool)
 
@@ -288,9 +290,6 @@ class WidgetUiHelpersMixin:
             (self.fit_button, self._tr("fit_button", "Подогнать" if self._ui_language == "ru" else "Fit")),
         ]:
             button.setAccessibleName(label)
-        if hasattr(self, "antialias_opened_cif_button"):
-            antialias_all_label = self._tr("antialias_opened_cif_button")
-            self.antialias_opened_cif_button.setAccessibleName(antialias_all_label)
         shortcuts_map = {
             self.undo_button: undo_key,
             self.redo_button: redo_key,
@@ -310,10 +309,6 @@ class WidgetUiHelpersMixin:
             full_tip = append_shortcut_to_tooltip(tooltip, shortcut) if shortcut else tooltip
             button.setToolTip(full_tip)
             button.setStatusTip(full_tip)
-        if hasattr(self, "antialias_opened_cif_button"):
-            antialias_all_tip = self._tr("antialias_opened_cif_button")
-            self.antialias_opened_cif_button.setToolTip(antialias_all_tip)
-            self.antialias_opened_cif_button.setStatusTip(antialias_all_tip)
 
     def _on_editor_tool_changed(self, tool) -> None:
         if hasattr(self, "_tool_buttons"):

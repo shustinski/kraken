@@ -2001,17 +2001,66 @@ class WidgetProcessingMixin:
             self._finish_image_recognition_profile("cancelled")
 
     def _show_batch_progress(self: Any, total: int) -> None:
-        if not self._batch_progress_enabled:
-            self._hide_batch_progress()
-            return
-        self.batch_progress_bar.setRange(0, max(1, total))
-        self.batch_progress_bar.setValue(0)
-        self.batch_progress_bar.setVisible(True)
+        self._batch_progress_enabled = True
+        self._apply_batch_progress_bar(0, total)
 
     def _hide_batch_progress(self: Any) -> None:
         self.batch_progress_bar.setVisible(False)
         self.batch_progress_bar.setRange(0, 100)
         self.batch_progress_bar.setValue(0)
+
+    def _shared_progress_job_active(self: Any) -> bool:
+        return bool(
+            self._batch_controller.is_running or getattr(self, "_antialias_running", False)
+        )
+
+    def _finish_shared_progress_if_idle(self: Any) -> None:
+        if self._shared_progress_job_active():
+            return
+        self._batch_progress_enabled = False
+        self._hide_batch_progress()
+
+    def _apply_batch_progress_bar(
+        self: Any,
+        current: int,
+        total: int,
+        *,
+        pump_events: bool = False,
+    ) -> None:
+        bar = self.batch_progress_bar
+        maximum = max(1, int(total))
+        value = max(0, min(int(current), maximum))
+        bar.setRange(0, maximum)
+        bar.setValue(value)
+        bar.setVisible(True)
+        bar.repaint()
+        if pump_events:
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def _confirm_processing_question(self: Any, question: str) -> bool:
+        answer = QMessageBox.question(
+            self,
+            self._tr(
+                "processing_confirm_title",
+                "Обработка" if self._ui_language == "ru" else "Processing",
+            ),
+            question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _confirm_and_start_batch_processing(self: Any) -> None:
+        if not self._confirm_processing_question(
+            self._tr(
+                "batch_all_frames_confirm",
+                "Запустить распознавание всех кадров?"
+                if self._ui_language == "ru"
+                else "Start recognition of all frames?",
+            )
+        ):
+            return
+        self.start_batch_processing()
 
     def _on_polygons_edited(self: Any) -> None:
         if self._updating_views:
@@ -2375,65 +2424,183 @@ class WidgetProcessingMixin:
     def _antialias_opened_cif_files(self: Any) -> None:
         if hasattr(self, "polygon_editor") and self.polygon_editor.vector_edits_locked():
             return
+        if self._batch_controller.is_running:
+            self._append_log(self._tr("batch_already_running_log"))
+            return
+        if getattr(self, "_antialias_running", False):
+            self._append_log(
+                self._tr(
+                    "antialias_already_running_log",
+                    "Сглаживание векторов уже выполняется."
+                    if self._ui_language == "ru"
+                    else "Vector antialiasing is already running.",
+                )
+            )
+            return
+        if not self._confirm_processing_question(
+            self._tr(
+                "antialias_all_vectors_confirm",
+                "Запустить сглаживание всех векторов?"
+                if self._ui_language == "ru"
+                else "Start antialiasing of all vectors?",
+            )
+        ):
+            return
+        cif_entries = list(self._workspace.cif_paths_by_stem.items())
+        if not cif_entries:
+            self._append_log(
+                self._tr(
+                    "antialias_all_vectors_none_log",
+                    "В проекте нет CIF для сглаживания."
+                    if self._ui_language == "ru"
+                    else "The project has no CIF files to antialias.",
+                )
+            )
+            return
         grade = int(self.antialias_grade_spin.value()) if hasattr(self, "antialias_grade_spin") else 1
         current_path = self._workspace.current_image_path
         if current_path is not None:
             self._workspace.update_current_polygons(self.get_polygons())
+        cached_by_path = {
+            str(Path(image_path)): state for image_path, state in self._workspace.cached_states()
+        }
+        work_items: list[AntialiasCifWorkItem] = []
+        for stem, cif_path in cif_entries:
+            image_path = self._image_path_for_cif_stem(stem)
+            image_key = str(Path(image_path)) if image_path else None
+            state = cached_by_path.get(image_key) if image_key else None
+            snapshot_polygons: tuple[PolygonData, ...] | None = None
+            image_size: tuple[int, int] | None = None
+            if state is not None and state.polygons:
+                snapshot_polygons = tuple(polygon.clone() for polygon in state.polygons)
+                if state.source_image is not None:
+                    image_size = (
+                        int(state.source_image.shape[1]),
+                        int(state.source_image.shape[0]),
+                    )
+            work_items.append(
+                AntialiasCifWorkItem(
+                    stem=stem,
+                    cif_path=str(cif_path),
+                    image_path=image_path,
+                    polygons=snapshot_polygons,
+                    image_size=image_size,
+                )
+            )
+        self._antialias_run_id = int(getattr(self, "_antialias_run_id", 0)) + 1
+        cancel_event = threading.Event()
+        self._antialias_cancel = cancel_event
+        self._antialias_running = True
+        self._sync_antialias_button_enabled()
+        self._show_batch_progress(len(work_items))
+        self._set_progress_status("antialias_started_status")
+        self._antialias_thread_pool.start(
+            AntialiasCifRunnable(
+                items=tuple(work_items),
+                grade=grade,
+                signals=self._antialias_signals,
+                cancel_event=cancel_event,
+                run_id=self._antialias_run_id,
+            )
+        )
 
-        changed_count = 0
-        saved_count = 0
-        failed: list[str] = []
-        for image_path, state in self._workspace.cached_states():
-            if str(Path(image_path)) not in self._viewed_image_paths and image_path != current_path:
-                continue
-            if not state.loaded_cif_path or state.source_image is None:
-                continue
-            antialiased, changed = antialias_polygons(state.polygons, grade)
-            if not changed:
-                continue
-            changed_count += 1
-            image_size = (int(state.source_image.shape[1]), int(state.source_image.shape[0]))
-            try:
-                save_polygons_vector(state.loaded_cif_path, image_path, antialiased, image_size=image_size)
-            except Exception as exc:
-                failed.append(f"{Path(state.loaded_cif_path).name}: {exc}")
-                continue
-            state.polygons = [polygon.clone() for polygon in antialiased]
-            state.reference_polygons = [polygon.clone() for polygon in antialiased]
-            state.polygons_dirty = False
-            self._persisted_highlight_paths.add(str(Path(image_path)))
-            saved_count += 1
-            if image_path == current_path:
-                self._updating_views = True
-                try:
-                    self.polygon_editor.set_polygons(antialiased)
-                finally:
-                    self._updating_views = False
-                self._update_vector_edit_status_label()
+    def _sync_antialias_button_enabled(self: Any) -> None:
+        if not hasattr(self, "antialias_opened_cif_button"):
+            return
+        edits_locked = bool(
+            hasattr(self, "polygon_editor") and self.polygon_editor.vector_edits_locked()
+        )
+        self.antialias_opened_cif_button.setEnabled(
+            not edits_locked and not bool(getattr(self, "_antialias_running", False))
+        )
+
+    def _cancel_antialias_job(self: Any) -> None:
+        cancel_event = getattr(self, "_antialias_cancel", None)
+        if cancel_event is not None:
+            cancel_event.set()
+
+    def _on_antialias_progress(self: Any, run_id: int, current: int, total: int) -> None:
+        if run_id != getattr(self, "_antialias_run_id", 0):
+            return
+        if self._batch_progress_enabled:
+            self._apply_batch_progress_bar(current, total)
+        self._set_progress_status("batch_progress_status", current=current, total=total)
+
+    def _on_antialias_item_finished(self: Any, result: AntialiasCifItemResult) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if int(result.run_id) != getattr(self, "_antialias_run_id", 0):
+            return
+        if result.error or not result.changed:
+            return
+        image_path = result.image_path
+        image_key = str(Path(image_path)) if image_path else None
+        current_path = self._workspace.current_image_path
+        current_key = str(Path(current_path)) if current_path else None
+        antialiased = [polygon.clone() for polygon in result.polygons]
+        if image_key:
+            for cached_path, state in self._workspace.cached_states():
+                if str(Path(cached_path)) != image_key:
+                    continue
+                state.polygons = [polygon.clone() for polygon in antialiased]
+                state.reference_polygons = [polygon.clone() for polygon in antialiased]
+                state.polygons_dirty = False
+                state.loaded_cif_path = str(result.cif_path)
+                break
+            self._persisted_highlight_paths.add(image_key)
             self._update_frame_item_status(image_path)
+            neighbor_cache = getattr(self, "_neighbor_vector_cache", None)
+            if isinstance(neighbor_cache, dict):
+                neighbor_cache.pop(image_key, None)
+        if image_key is not None and image_key == current_key and hasattr(self, "polygon_editor"):
+            self._updating_views = True
+            try:
+                self.polygon_editor.set_polygons(antialiased)
+            finally:
+                self._updating_views = False
+            self._update_vector_edit_status_label()
 
+    def _on_antialias_finished(self: Any, summary: AntialiasCifJobSummary) -> None:
+        if int(summary.run_id) != getattr(self, "_antialias_run_id", 0):
+            return
+        self._antialias_running = False
+        self._antialias_cancel = None
+        self._sync_antialias_button_enabled()
+        self._finish_shared_progress_if_idle()
         self._refresh_image_list_item_states()
-        if failed:
+        if summary.cancelled:
+            self._set_progress_status("antialias_stopped_status")
+            self._append_log(
+                self._tr(
+                    "antialias_stopped_log",
+                    "Сглаживание векторов остановлено."
+                    if self._ui_language == "ru"
+                    else "Vector antialiasing stopped.",
+                )
+            )
+            return
+        self._set_progress_status("antialias_finished_status")
+        if summary.failed:
             self._append_log(
                 self._tr(
                     "antialias_opened_failed_log",
                     "Сглаживание CIF: сохранено {saved}/{changed}, ошибки: {errors}"
                     if self._ui_language == "ru"
                     else "CIF antialiasing: saved {saved}/{changed}, errors: {errors}",
-                    saved=saved_count,
-                    changed=changed_count,
-                    errors="; ".join(failed[:4]),
+                    saved=summary.saved_count,
+                    changed=summary.changed_count,
+                    errors="; ".join(summary.failed[:4]),
                 )
             )
             return
         self._append_log(
             self._tr(
                 "antialias_opened_done_log",
-                "Сглаживание применено и сохранено для {count} открытых CIF, grade={grade}."
+                "Сглаживание применено и сохранено для {count} CIF, grade={grade}."
                 if self._ui_language == "ru"
-                else "Antialiasing applied and saved for {count} opened CIF files, grade={grade}.",
-                count=saved_count,
-                grade=grade,
+                else "Antialiasing applied and saved for {count} CIF files, grade={grade}.",
+                count=summary.saved_count,
+                grade=summary.grade,
             )
         )
 
@@ -2452,14 +2619,12 @@ class WidgetProcessingMixin:
 
     def _on_batch_progress(self: Any, current: int, total: int) -> None:
         if self._batch_progress_enabled:
-            self.batch_progress_bar.setRange(0, max(1, total))
-            self.batch_progress_bar.setValue(current)
+            self._apply_batch_progress_bar(current, total)
         self._set_progress_status("batch_progress_status", current=current, total=total)
         self.batchProgress.emit(current, total)
 
     def _on_batch_finished(self: Any) -> None:
-        self._batch_progress_enabled = False
-        self._hide_batch_progress()
+        self._finish_shared_progress_if_idle()
         self._set_progress_status("batch_finished_status")
         self.batchFinished.emit()
 
@@ -4012,6 +4177,16 @@ class WidgetProcessingMixin:
         if self._batch_controller.is_running:
             self._append_log(self._tr("batch_already_running_log"))
             return
+        if getattr(self, "_antialias_running", False):
+            self._append_log(
+                self._tr(
+                    "antialias_already_running_log",
+                    "Сглаживание векторов уже выполняется."
+                    if self._ui_language == "ru"
+                    else "Vector antialiasing is already running.",
+                )
+            )
+            return
         paths = image_paths or list(self._workspace.image_paths)
         if not paths:
             self._append_log(self._tr("batch_no_images_log"))
@@ -4032,12 +4207,12 @@ class WidgetProcessingMixin:
             )
         if not started:
             return
-        self._batch_progress_enabled = self._batch_controller.progress_enabled
         self._show_batch_progress(len(paths))
         self._set_progress_status("batch_started_status")
 
     def stop_batch_processing(self: Any) -> None:
         self._batch_controller.stop()
+        self._cancel_antialias_job()
 
     def _handle_gamification_after_save(
         self: Any,

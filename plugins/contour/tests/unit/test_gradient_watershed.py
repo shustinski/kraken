@@ -8,6 +8,7 @@ import contour.vision.metal_recovery.seeded_segmentation as seeded_module
 from contour.vision.metal_recovery.gradient_watershed import (
     ConductorSeeds,
     GradientWatershedConfig,
+    analyze_metal_presence,
     build_conductor_seeds,
     gradient_watershed_mask,
     intensity_class_limits,
@@ -56,9 +57,7 @@ def test_legacy_watershed_flag_resolves_when_strategy_is_not_seeded() -> None:
     assert resolve_metal_segmentation_strategy("legacy_otsu", use_wide_conductor_gradient=True) == (
         "gradient_watershed"
     )
-    assert resolve_metal_segmentation_strategy("random_walker", use_wide_conductor_gradient=True) == (
-        "random_walker"
-    )
+    assert resolve_metal_segmentation_strategy("random_walker", use_wide_conductor_gradient=True) == ("random_walker")
 
 
 def test_uniform_traces_without_rims_are_recovered_beside_rim_lit() -> None:
@@ -181,6 +180,47 @@ def test_grey_seam_between_close_traces_separates_them() -> None:
     assert _component_count(mask) == 2, "a seam darker than the metal must part the neighbours"
 
 
+@pytest.mark.parametrize("gap_width", [1, 2, 3, 4])
+def test_selective_recovery_preserves_resolved_close_conductor_gaps(gap_width: int) -> None:
+    image = np.full((160, 260), SUBSTRATE, np.uint8)
+    split = 130
+    image[10:150, 25:split] = RIM
+    image[10:150, split + gap_width : 235] = RIM
+    image[10:150, split : split + gap_width] = 105
+
+    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+
+    assert not np.any(mask[20:140, split : split + gap_width])
+    assert _component_count(mask) == 2
+
+
+def test_selective_recovery_does_not_bridge_a_weak_bright_gap() -> None:
+    image = np.full((180, 300), SUBSTRATE, np.uint8)
+    image[10:170, 20:140] = RIM
+    image[10:170, 145:280] = RIM
+    image[10:170, 140:145] = 125
+
+    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+
+    assert not np.any(mask[20:160, 140:145])
+    assert _component_count(mask) == 2
+
+
+def test_selective_recovery_keeps_wide_dark_conductor_touching_two_borders() -> None:
+    image = np.full((180, 320), SUBSTRATE, np.uint8)
+    image[:, 70:250] = 95
+    image[:, 70:75] = RIM
+    image[:, 245:250] = RIM
+    image[:, 105:215] = 48
+    image = cv2.GaussianBlur(image, (0, 0), 1.0)
+
+    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+
+    assert mask[90, 160] > 0
+    assert mask[90, 40] == 0
+    assert mask[90, 280] == 0
+
+
 def test_seam_separation_can_be_switched_off() -> None:
     image = _pair_split_by_a_grey_seam()
 
@@ -204,7 +244,41 @@ def test_uniform_image_yields_empty_mask_instead_of_failing() -> None:
     mask = gradient_watershed_mask(np.full((40, 40), 128, np.uint8), GradientWatershedConfig())
 
     assert mask.shape == (40, 40)
-    assert int(np.count_nonzero(mask)) in (0, mask.size)
+    assert int(np.count_nonzero(mask)) == 0
+
+
+def test_texture_only_frame_is_rejected_before_watershed() -> None:
+    rng = np.random.default_rng(1234)
+    texture = rng.normal(128.0, 5.0, size=(320, 320)).astype(np.float32)
+    texture = cv2.GaussianBlur(texture, (0, 0), 1.2)
+    image = np.clip(texture, 0.0, 255.0).astype(np.uint8)
+
+    presence = analyze_metal_presence(image)
+    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+
+    assert not presence.has_metal
+    assert not np.any(mask)
+
+
+def test_low_area_rim_lit_trace_is_not_rejected_as_empty() -> None:
+    rng = np.random.default_rng(4321)
+    image = np.clip(
+        rng.normal(120.0, 4.0, size=(400, 400)),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
+    image[180:220, 190:210] = 175
+    image[180:183, 190:210] = 235
+    image[217:220, 190:210] = 235
+    image[180:220, 190:193] = 235
+    image[180:220, 207:210] = 235
+    image = cv2.GaussianBlur(image, (0, 0), 1.0)
+
+    presence = analyze_metal_presence(image)
+    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+
+    assert presence.has_metal
+    assert np.any(mask[180:220, 190:210])
 
 
 @pytest.mark.parametrize("strategy", ["random_walker", "graph_cut", "reconstruction"])
@@ -292,12 +366,7 @@ def test_random_walker_config_reaches_the_solver_on_partitioned_seeds(
 
     monkeypatch.setattr(seeded_module, "random_walker_from_seeds", _recording_solver)
 
-    seeded_segmentation_mask(
-        image, "random_walker", GradientWatershedConfig(random_walker_beta=1.0)
-    )
-    seeded_segmentation_mask(
-        image, "random_walker", GradientWatershedConfig(random_walker_beta=400.0)
-    )
+    seeded_segmentation_mask(image, "random_walker", GradientWatershedConfig(random_walker_beta=1.0))
+    seeded_segmentation_mask(image, "random_walker", GradientWatershedConfig(random_walker_beta=400.0))
 
     assert observed_beta == [1.0, 400.0]
-

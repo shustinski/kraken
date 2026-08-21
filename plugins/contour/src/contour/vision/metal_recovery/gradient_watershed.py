@@ -15,6 +15,15 @@ import numpy as np
 
 from ...utils import ensure_binary_mask, ensure_uint8
 
+_PRESENCE_ROBUST_SPAN = 96.0
+_PRESENCE_MIN_COHERENT_FRACTION = 0.002
+_PRESENCE_LOCAL_CONTRAST_SPAN_FRACTION = 0.18
+_PRESENCE_MIN_LOCAL_CONTRAST = 8.0
+_REFINEMENT_MIN_REGION_FRACTION = 0.01
+_REFINEMENT_MAX_REGION_FRACTION = 0.40
+_REFINEMENT_MIN_RIDGE_TO_TRENCH_RATIO = 1.05
+_REFINEMENT_MIN_CONFIRMED_PIXELS = 5
+
 
 @dataclass(frozen=True, slots=True)
 class GradientWatershedConfig:
@@ -24,7 +33,7 @@ class GradientWatershedConfig:
     core_margin: float = 8.0
     groove_margin: float = 16.0
     rim_probe_px: int = 6
-    seed_speckle_px: int = 1
+    seed_speckle_px: int = 4
     valley_span_px: int = 5
     valley_depth: float = 45.0
     random_walker_beta: float = 90.0
@@ -35,13 +44,72 @@ class GradientWatershedConfig:
     boundary_background_sigma: float = 12.0
 
 
+@dataclass(frozen=True, slots=True)
+class MetalPresenceAnalysis:
+    """Interpretable evidence used to reject frames without metallization."""
+
+    has_metal: bool
+    robust_intensity_span: float
+    coherent_contrast_fraction: float
+    largest_coherent_contrast_fraction: float
+    local_contrast_limit: float
+
+
+def analyze_metal_presence(
+    gray: np.ndarray,
+    *,
+    smoothing_sigma: float = 1.0,
+) -> MetalPresenceAnalysis:
+    """Detect whether a frame has histogram or spatially persistent metal evidence.
+
+    A broad robust histogram alone is sufficient evidence because weak and
+    low-area conductors can still occupy very few pixels.  When the histogram
+    span is small, coherent local-contrast structures provide an independent
+    route to a positive decision.  Empty SEM texture has neither property.
+    """
+    source = ensure_uint8(gray)
+    if source.ndim != 2 or source.size == 0:
+        return MetalPresenceAnalysis(False, 0.0, 0.0, 0.0, 0.0)
+
+    smoothed = cv2.GaussianBlur(source, (0, 0), max(0.1, float(smoothing_sigma)))
+    percentile_1, percentile_99 = np.percentile(smoothed, (1.0, 99.0))
+    robust_span = float(percentile_99 - percentile_1)
+    local_background = cv2.GaussianBlur(smoothed, (0, 0), 12.0)
+    local_contrast = cv2.absdiff(smoothed, local_background)
+    contrast_limit = max(
+        _PRESENCE_MIN_LOCAL_CONTRAST,
+        _PRESENCE_LOCAL_CONTRAST_SPAN_FRACTION * robust_span,
+    )
+    coherent = cv2.morphologyEx(
+        (local_contrast >= contrast_limit).astype(np.uint8),
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    component_count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        coherent,
+        connectivity=8,
+    )
+    largest_area = int(np.max(stats[1:, cv2.CC_STAT_AREA])) if component_count > 1 else 0
+    coherent_fraction = float(np.mean(coherent > 0))
+    largest_fraction = largest_area / float(source.size)
+    has_histogram_evidence = robust_span >= _PRESENCE_ROBUST_SPAN
+    has_coherent_evidence = largest_fraction >= _PRESENCE_MIN_COHERENT_FRACTION
+    return MetalPresenceAnalysis(
+        has_metal=has_histogram_evidence or has_coherent_evidence,
+        robust_intensity_span=robust_span,
+        coherent_contrast_fraction=coherent_fraction,
+        largest_coherent_contrast_fraction=largest_fraction,
+        local_contrast_limit=float(contrast_limit),
+    )
+
+
 def clamped_gradient_watershed_config(
     *,
     smoothing_sigma: float = 1.0,
     core_margin: float = 8.0,
     groove_margin: float = 16.0,
     rim_probe_px: int = 6,
-    seed_speckle_px: int = 1,
+    seed_speckle_px: int = 4,
     valley_span_px: int = 5,
     valley_depth: float = 45.0,
     random_walker_beta: float = 90.0,
@@ -74,7 +142,7 @@ def gradient_watershed_config_from_object(source: object) -> GradientWatershedCo
         core_margin=float(getattr(source, "watershed_core_margin", 8.0) or 0.0),
         groove_margin=float(getattr(source, "watershed_groove_margin", 16.0) or 0.0),
         rim_probe_px=int(getattr(source, "watershed_rim_probe_px", 6) or 1),
-        seed_speckle_px=int(getattr(source, "watershed_seed_speckle_px", 1) or 0),
+        seed_speckle_px=int(getattr(source, "watershed_seed_speckle_px", 4) or 0),
         valley_span_px=int(getattr(source, "watershed_valley_span_px", 5) or 0),
         valley_depth=float(getattr(source, "watershed_valley_depth", 45.0) or 0.0),
         random_walker_beta=float(getattr(source, "random_walker_beta", 90.0) or 90.0),
@@ -123,8 +191,9 @@ def keep_rim_lined_seeds(
 
     Component area and a mean ring intensity are unreliable: a large dark
     conductor centre can satisfy both.  The upper-class rim level makes the
-    marker conditional on actual boundary evidence.  Components reaching the
-    field-of-view boundary remain valid background seeds.
+    marker conditional on actual boundary evidence.  At the FOV boundary only
+    thin dark regions remain seeds; a broad dark component may be the centre of
+    a conductor that continues beyond the frame.
     """
     count, labels, _stats, _centroids = cv2.connectedComponentsWithStats(seeds, connectivity=8)
     if count <= 1:
@@ -137,10 +206,11 @@ def keep_rim_lined_seeds(
     near_maxima = np.zeros(count, dtype=np.uint8)
     np.maximum.at(near_maxima, grown_near[near_ring], smoothed[near_ring])
     keep = near_maxima >= float(rim_level)
-    border_labels = np.unique(
-        np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1]))
-    )
-    keep[border_labels] = True
+    distance = cv2.distanceTransform((seeds > 0).astype(np.uint8), cv2.DIST_L2, 3)
+    max_radius = np.zeros(count, dtype=np.float32)
+    np.maximum.at(max_radius, labels.ravel(), distance.ravel())
+    border_labels = np.unique(np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1])))
+    keep[border_labels] |= max_radius[border_labels] <= 3.0 * float(probe_px)
     keep[0] = False
     return np.where(keep[labels], 255, 0).astype(np.uint8)
 
@@ -265,6 +335,22 @@ def _isolated_weak_core_seeds(
     return np.where(keep[labels], 255, 0).astype(np.uint8)
 
 
+def _coherent_axis_lines(binary: np.ndarray, *, length_px: int) -> np.ndarray:
+    """Retain persistent horizontal/vertical evidence while rejecting texture."""
+    length = max(3, int(length_px) | 1)
+    horizontal = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (length, 3)),
+    )
+    vertical = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (3, length)),
+    )
+    return cv2.bitwise_or(horizontal, vertical)
+
+
 def _local_metal_core_seeds(
     smoothed: np.ndarray,
     *,
@@ -304,9 +390,17 @@ def _local_metal_core_seeds(
     )
     isolated = _open_seeds(isolated, int(config.seed_speckle_px))
 
-    bright = _open_seeds(
-        np.where(smoothed >= max(float(metal_limit), float(rim_level)), 255, 0).astype(np.uint8),
-        int(config.seed_speckle_px),
+    bright_candidates = np.where(
+        smoothed >= max(float(metal_limit), float(rim_level)),
+        255,
+        0,
+    ).astype(np.uint8)
+    bright = cv2.bitwise_or(
+        _open_seeds(bright_candidates, int(config.seed_speckle_px)),
+        _coherent_axis_lines(
+            bright_candidates,
+            length_px=2 * int(config.seed_speckle_px) + 1,
+        ),
     )
     return cv2.bitwise_or(bright, cv2.bitwise_or(broad, isolated))
 
@@ -349,11 +443,112 @@ class ConductorSeeds:
         return ensure_binary_mask((self.smoothed >= self.metal_limit).astype(np.uint8) * 255)
 
 
-def build_conductor_seeds(gray: np.ndarray, config: GradientWatershedConfig) -> ConductorSeeds | None:
+def selective_conductor_recovery(
+    confirmed_mask: np.ndarray,
+    seeds: ConductorSeeds,
+    config: GradientWatershedConfig,
+) -> np.ndarray:
+    """Fill only suspicious regions supported by coherent conductor boundaries.
+
+    Wide, low-texture conductor interiors can be unlabeled by both seed classes
+    and then assigned to the substrate by watershed.  Long ridge/trench pairs
+    partition those uncertain pixels into local regions.  A region is recovered
+    only when it already contains confirmed metal and its boundary is lined more
+    strongly by the metal-side bright ridge than by the substrate-side trench.
+    Trusted groove seeds remain hard barriers after recovery.
+    """
+    confirmed = ensure_binary_mask(confirmed_mask)
+    probe = max(1, int(config.rim_probe_px))
+    relief_background = cv2.GaussianBlur(
+        seeds.smoothed,
+        (0, 0),
+        max(2.0, float(config.boundary_background_sigma)),
+    )
+    relief = seeds.smoothed.astype(np.float32) - relief_background.astype(np.float32)
+    relief_limit = max(1.0, float(config.boundary_relief))
+    line_length = 4 * probe + 7
+    ridge = _coherent_axis_lines(
+        np.where(relief >= relief_limit, 255, 0).astype(np.uint8),
+        length_px=line_length,
+    )
+    trench = _coherent_axis_lines(
+        np.where(relief <= -relief_limit, 255, 0).astype(np.uint8),
+        length_px=line_length,
+    )
+    if not np.any(ridge) or not np.any(trench):
+        return confirmed
+
+    wall = cv2.bitwise_or(ridge, trench)
+    seal_radius = max(2, probe // 2)
+    wall = cv2.morphologyEx(
+        wall,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (2 * seal_radius + 1, 2 * seal_radius + 1),
+        ),
+    )
+    uncertain = wall == 0
+    region_count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        uncertain.astype(np.uint8),
+        connectivity=4,
+    )
+    if region_count <= 1:
+        return confirmed
+
+    contact_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (2 * max(2, probe - 2) + 1, 2 * max(2, probe - 2) + 1),
+    )
+    ridge_contact = np.bincount(
+        labels[(cv2.dilate(ridge, contact_kernel) > 0) & uncertain],
+        minlength=region_count,
+    )
+    trench_contact = np.bincount(
+        labels[(cv2.dilate(trench, contact_kernel) > 0) & uncertain],
+        minlength=region_count,
+    )
+    confirmed_hits = np.bincount(
+        labels.ravel(),
+        weights=(confirmed > 0).ravel(),
+        minlength=region_count,
+    )
+    min_region_area = max(
+        60,
+        (2 * probe) ** 2,
+        round(_REFINEMENT_MIN_REGION_FRACTION * confirmed.size),
+    )
+    max_local_region_area = _REFINEMENT_MAX_REGION_FRACTION * float(confirmed.size)
+    keep = (
+        (stats[:, cv2.CC_STAT_AREA] >= min_region_area)
+        & (stats[:, cv2.CC_STAT_AREA] <= max_local_region_area)
+        & (ridge_contact > _REFINEMENT_MIN_RIDGE_TO_TRENCH_RATIO * trench_contact)
+        & (confirmed_hits >= _REFINEMENT_MIN_CONFIRMED_PIXELS)
+    )
+    keep[0] = False
+    recovered = np.where((confirmed > 0) | keep[labels], 255, 0).astype(np.uint8)
+    recovered[seeds.groove_seeds > 0] = 0
+    return ensure_binary_mask(recovered)
+
+
+def build_conductor_seeds(
+    gray: np.ndarray,
+    config: GradientWatershedConfig,
+    *,
+    check_presence: bool = True,
+) -> ConductorSeeds | None:
     """Build rim-lit metal cores and gap seeds, or None for an empty frame."""
     source = ensure_uint8(gray)
     if source.ndim != 2 or source.size == 0:
         return None
+
+    if check_presence:
+        presence = analyze_metal_presence(
+            source,
+            smoothing_sigma=float(config.smoothing_sigma),
+        )
+        if not presence.has_metal:
+            return None
 
     smoothed = cv2.GaussianBlur(source, (0, 0), max(0.1, float(config.smoothing_sigma)))
     substrate_limit, metal_limit = intensity_class_limits(smoothed)
@@ -404,14 +599,37 @@ def build_conductor_seeds(gray: np.ndarray, config: GradientWatershedConfig) -> 
     )
 
 
-def gradient_watershed_mask(gray: np.ndarray, config: GradientWatershedConfig) -> np.ndarray:
+def gradient_watershed_mask(
+    gray: np.ndarray,
+    config: GradientWatershedConfig,
+    *,
+    check_presence: bool = True,
+    refine: bool = True,
+) -> np.ndarray:
     """Grow bright metal cores until they meet gap seeds; return the metal mask."""
     source = ensure_uint8(gray)
     if source.ndim != 2 or source.size == 0:
         return np.zeros(source.shape[:2], dtype=np.uint8)
 
-    seeds = build_conductor_seeds(source, config)
+    seeds = build_conductor_seeds(source, config, check_presence=check_presence)
     if seeds is None:
+        return np.zeros(source.shape[:2], dtype=np.uint8)
+    if not seeds.has_both_classes:
+        return seeds.fallback_mask()
+
+    confirmed = gradient_watershed_mask_from_seeds(source, seeds)
+    if not refine:
+        return confirmed
+    return selective_conductor_recovery(confirmed, seeds, config)
+
+
+def gradient_watershed_mask_from_seeds(
+    gray: np.ndarray,
+    seeds: ConductorSeeds,
+) -> np.ndarray:
+    """Run the baseline watershed with already-built hard seed classes."""
+    source = ensure_uint8(gray)
+    if source.ndim != 2 or source.size == 0:
         return np.zeros(source.shape[:2], dtype=np.uint8)
     if not seeds.has_both_classes:
         return seeds.fallback_mask()

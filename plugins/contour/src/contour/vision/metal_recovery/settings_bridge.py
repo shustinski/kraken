@@ -50,7 +50,7 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         core_margin=float(getattr(settings, "metal_watershed_core_margin", 8.0) or 0.0),
         groove_margin=float(getattr(settings, "metal_watershed_groove_margin", 16.0) or 0.0),
         rim_probe_px=int(getattr(settings, "metal_watershed_rim_probe_px", 6) or 1),
-        seed_speckle_px=int(getattr(settings, "metal_watershed_seed_speckle_px", 1) or 0),
+        seed_speckle_px=int(getattr(settings, "metal_watershed_seed_speckle_px", 4) or 0),
         valley_span_px=int(getattr(settings, "metal_watershed_valley_span_px", 5) or 0),
         valley_depth=float(getattr(settings, "metal_watershed_valley_depth", 45.0) or 0.0),
         random_walker_beta=float(getattr(settings, "metal_random_walker_beta", 90.0) or 90.0),
@@ -76,6 +76,10 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
                     )
                 ),
             ),
+        ),
+        min_object_source_contrast=max(
+            0.0,
+            min(255.0, float(getattr(settings, "metal_min_object_source_contrast", 12.0))),
         ),
         min_hole_source_contrast=max(
             0.0,

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtBoundSignal
 from PyQt6.QtGui import QWheelEvent
-from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QListWidgetItem, QWidget
+from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QListWidgetItem, QMessageBox, QWidget
 
 from contour.graphics_view import EditorTool
 from contour.widget import PolygonExtractionWidget
@@ -128,7 +129,7 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertTrue(widget.metal_show_rejected_checkbox.isChecked())
             self.assertFalse(widget.metal_show_border_checkbox.isChecked())
             self.assertFalse(widget.metal_show_mask_checkbox.isChecked())
-            self.assertEqual(widget.metal_segmentation_strategy_combo.currentData(), "legacy_otsu")
+            self.assertEqual(widget.metal_segmentation_strategy_combo.currentData(), "auto")
             self.assertFalse(widget._current_contour_settings().metal_use_wide_conductor_gradient)
             widget.metal_segmentation_strategy_combo.setCurrentIndex(
                 widget.metal_segmentation_strategy_combo.findData("gradient_watershed")
@@ -152,13 +153,26 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertEqual(widget.metal_ws_core_margin_spin.value(), 8.0)
             self.assertEqual(widget.metal_ws_groove_margin_spin.value(), 16.0)
             self.assertEqual(widget.metal_ws_rim_probe_spin.value(), 6)
-            self.assertEqual(widget.metal_ws_seed_speckle_spin.value(), 1)
+            self.assertEqual(widget.metal_ws_seed_speckle_spin.value(), 4)
             self.assertEqual(widget.metal_ws_valley_span_spin.value(), 5)
             self.assertEqual(widget.metal_ws_valley_depth_spin.value(), 45.0)
             self.assertEqual(widget.metal_rw_beta_spin.value(), 90.0)
             self.assertEqual(widget.metal_rw_iterations_spin.value(), 160)
             self.assertEqual(widget.metal_gc_iterations_spin.value(), 5)
             self.assertEqual(widget.metal_recon_erode_spin.value(), 0)
+            self.assertTrue(widget.metal_preprocess_subtract_background_checkbox.isChecked())
+            self.assertEqual(widget.metal_preprocess_background_sigma_spin.value(), 0.05)
+            self.assertEqual(widget.metal_preprocess_clahe_clip_spin.value(), 2.0)
+            self.assertEqual(widget.metal_preprocess_clahe_grid_spin.value(), 8)
+            self.assertEqual(widget.metal_preprocess_denoise_combo.currentData(), "low")
+            preprocess_settings = widget._current_contour_settings()
+            self.assertTrue(preprocess_settings.metal_preprocess_subtract_background)
+            self.assertEqual(preprocess_settings.metal_preprocess_background_sigma_fraction, 0.05)
+            self.assertEqual(preprocess_settings.metal_preprocess_clahe_clip, 2.0)
+            self.assertEqual(preprocess_settings.metal_preprocess_clahe_grid, 8)
+            self.assertEqual(preprocess_settings.metal_preprocess_denoise, "low")
+            self.assertEqual(widget.metal_preprocessing_group.title(), "Предобработка SEM")
+            self.assertEqual(widget.metal_preprocess_subtract_background_checkbox.text(), "Вычитание фона")
             self.assertEqual(widget.metal_filter_group.title(), "Фильтрация распознанных")
             self.assertEqual(widget.metal_recognition_params_group.title(), "Параметры распознавания")
             self.assertEqual(widget.metal_watershed_group.title(), "Watershed")
@@ -234,6 +248,26 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertTrue(widget.undo_button.isEnabled())
             self.assertTrue(widget.antialias_opened_cif_button.isEnabled())
         finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_antialias_all_vectors_runs_in_background_thread_pool(self) -> None:
+        widget = PolygonExtractionWidget()
+        started: list[object] = []
+        try:
+            widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("disabled"))
+            widget._workspace.set_cif_index({"frame": r"d:\vectors\frame.cif"})
+            widget._antialias_thread_pool.start = started.append  # type: ignore[method-assign]
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                widget._antialias_opened_cif_files()
+
+            self.assertEqual(len(started), 1)
+            self.assertTrue(widget._antialias_running)
+            self.assertTrue(widget._batch_progress_enabled)
+            self.assertFalse(widget.batch_progress_bar.isHidden())
+            self.assertFalse(widget.antialias_opened_cif_button.isEnabled())
+        finally:
+            widget._antialias_running = False
             widget.close()
             widget.deleteLater()
 

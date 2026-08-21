@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import cv2
@@ -13,7 +13,11 @@ from ...application.processing import ContourExtractionSettings
 from ...contour_extractor import extract_polygons
 from ...domain import PolygonData
 from ...utils import ensure_binary_mask, ensure_uint8
-from .gradient_watershed import gradient_watershed_config_from_object
+from .gradient_watershed import (
+    analyze_metal_presence,
+    build_conductor_seeds,
+    gradient_watershed_config_from_object,
+)
 from .pipeline_stages import axis_gradient_debug_images, build_metal_segmentation_mask_staged, image_signature
 from .segmentation import (
     MetalSegmentationConfig,
@@ -32,6 +36,7 @@ class MetalRecoveryConfig:
     """Segmentation + contour extraction parameters exposed in the UI."""
 
     min_contrast: float = 50.0
+    min_object_source_contrast: float = 12.0
     contrast_bias: float = 0.0  # Deprecated compatibility field; ignored by segmentation.
     min_hole_source_contrast: float = 8.0
     min_hole_source_contrast_fraction: float = 0.35
@@ -63,7 +68,7 @@ class MetalRecoveryConfig:
     watershed_core_margin: float = 8.0
     watershed_groove_margin: float = 16.0
     watershed_rim_probe_px: int = 6
-    watershed_seed_speckle_px: int = 1
+    watershed_seed_speckle_px: int = 4
     watershed_valley_span_px: int = 5
     watershed_valley_depth: float = 45.0
     random_walker_beta: float = 90.0
@@ -242,10 +247,9 @@ def _passes_trace_geometry(polygon: PolygonData, config: MetalRecoveryConfig) ->
         return True
     if config.min_length_px > 0.0 and _trace_length_px(polygon) < float(config.min_length_px):
         return False
-    if config.max_width_px is not None and config.max_width_px > 0.0:
-        if _trace_width_px(polygon) > float(config.max_width_px):
-            return False
-    return True
+    if config.max_width_px is None or config.max_width_px <= 0.0:
+        return True
+    return _trace_width_px(polygon) <= float(config.max_width_px)
 
 
 def _extract_polygons_cached(mask: np.ndarray, config: MetalRecoveryConfig) -> list[PolygonData]:
@@ -387,13 +391,81 @@ def _filter_holes_by_source_contrast(
     return kept
 
 
-def detect_metalization(
+def _filter_conductors_by_source_contrast(
+    polygons: list[PolygonData],
+    source_image: np.ndarray | None,
+    *,
+    min_contrast: float,
+) -> list[PolygonData]:
+    """Reject dark shadow islands that watershed can grow beside a conductor."""
+    if source_image is None or min_contrast <= 0.0 or not polygons:
+        return polygons
+    if source_image.ndim == 3:
+        source_gray = cv2.cvtColor(ensure_uint8(source_image), cv2.COLOR_BGR2GRAY)
+    else:
+        source_gray = ensure_uint8(source_image)
+
+    by_parent: dict[int, list[PolygonData]] = {}
+    for polygon in polygons:
+        if polygon.is_hole and polygon.parent_id is not None:
+            by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
+
+    kept_parent_ids: set[int] = set()
+    ring_radius = 10
+    ring_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (2 * ring_radius + 1, 2 * ring_radius + 1),
+    )
+    for polygon in polygons:
+        if polygon.is_hole:
+            continue
+        points = np.asarray(polygon.points, dtype=np.int32).reshape(-1, 2)
+        x_min = max(0, int(points[:, 0].min()) - ring_radius)
+        x_max = min(source_gray.shape[1] - 1, int(points[:, 0].max()) + ring_radius)
+        y_min = max(0, int(points[:, 1].min()) - ring_radius)
+        y_max = min(source_gray.shape[0] - 1, int(points[:, 1].max()) + ring_radius)
+        local_source = source_gray[y_min : y_max + 1, x_min : x_max + 1]
+
+        filled = np.zeros(local_source.shape, dtype=np.uint8)
+        local_polygon_points = points.copy()
+        local_polygon_points[:, 0] -= x_min
+        local_polygon_points[:, 1] -= y_min
+        cv2.fillPoly(filled, [local_polygon_points.reshape(-1, 1, 2)], 255)
+        interior = filled.copy()
+        for hole in by_parent.get(int(polygon.id), ()):
+            local_hole_points = np.asarray(hole.points, dtype=np.int32).reshape(-1, 2).copy()
+            local_hole_points[:, 0] -= x_min
+            local_hole_points[:, 1] -= y_min
+            cv2.fillPoly(interior, [local_hole_points.reshape(-1, 1, 2)], 0)
+        inside_values = local_source[interior > 0]
+        ring = (cv2.dilate(filled, ring_kernel) > 0) & (filled == 0)
+        outside_values = local_source[ring]
+        if inside_values.size == 0 or outside_values.size == 0:
+            kept_parent_ids.add(int(polygon.id))
+            continue
+        inside_median = float(np.median(inside_values))
+        outside_median = float(np.median(outside_values))
+        if inside_median - outside_median >= float(min_contrast):
+            kept_parent_ids.add(int(polygon.id))
+
+    return [
+        polygon
+        for polygon in polygons
+        if (
+            int(polygon.parent_id) in kept_parent_ids
+            if polygon.is_hole and polygon.parent_id is not None
+            else not polygon.is_hole and int(polygon.id) in kept_parent_ids
+        )
+    ]
+
+
+def _detect_metalization_explicit(
     image: np.ndarray,
     config: MetalRecoveryConfig,
     *,
     source_image: np.ndarray | None = None,
+    mask_override: np.ndarray | None = None,
 ) -> MetalDetectionResult:
-    """Recognition: Otsu mask → findContours (epsilon) → geometric filters."""
     if image.ndim == 3:
         gray = cv2.cvtColor(ensure_uint8(image), cv2.COLOR_BGR2GRAY)
     else:
@@ -401,7 +473,11 @@ def detect_metalization(
     if gray.size == 0:
         return MetalDetectionResult(params_snapshot=config.to_snapshot())
 
-    mask, pre_dbg = build_metal_extraction_mask(gray, config)
+    if mask_override is None:
+        mask, pre_dbg = build_metal_extraction_mask(gray, config)
+    else:
+        mask = ensure_binary_mask(mask_override)
+        pre_dbg = {}
     raise_if_preview_cancelled()
 
     h, w = mask.shape[:2]
@@ -413,6 +489,11 @@ def detect_metalization(
         hole_source,
         min_source_contrast=config.min_hole_source_contrast,
         min_source_contrast_fraction=config.min_hole_source_contrast_fraction,
+    )
+    polygons = _filter_conductors_by_source_contrast(
+        polygons,
+        hole_source,
+        min_contrast=config.min_object_source_contrast,
     )
 
     accepted: list[PolygonData] = []
@@ -487,3 +568,123 @@ def detect_metalization(
         debug_images=dbg,
         params_snapshot=config.to_snapshot(),
     )
+
+
+def _non_hole_count(result: MetalDetectionResult) -> int:
+    return sum(not polygon.is_hole for polygon in result.accepted)
+
+
+def _extended_separator_mask(gray: np.ndarray, config: MetalRecoveryConfig) -> np.ndarray | None:
+    watershed = gradient_watershed_config_from_object(config)
+    seeds = build_conductor_seeds(gray, watershed)
+    if seeds is None or not np.any(seeds.groove_seeds):
+        return None
+    extension = max(5, 4 * int(watershed.valley_span_px) - 3) | 1
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (extension, 3))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, extension))
+    horizontal_lines = cv2.morphologyEx(
+        seeds.groove_seeds,
+        cv2.MORPH_OPEN,
+        horizontal_kernel,
+    )
+    vertical_lines = cv2.morphologyEx(
+        seeds.groove_seeds,
+        cv2.MORPH_OPEN,
+        vertical_kernel,
+    )
+    kernel = (
+        horizontal_kernel
+        if cv2.countNonZero(horizontal_lines) >= cv2.countNonZero(vertical_lines)
+        else vertical_kernel
+    )
+    return cv2.morphologyEx(seeds.groove_seeds, cv2.MORPH_CLOSE, kernel)
+
+
+def detect_metalization(
+    image: np.ndarray,
+    config: MetalRecoveryConfig,
+    *,
+    source_image: np.ndarray | None = None,
+) -> MetalDetectionResult:
+    """Recognize conductors and preserve topology with an automatic dual-path mode."""
+    if _requested_segmentation_strategy(config) != "auto":
+        return _detect_metalization_explicit(image, config, source_image=source_image)
+
+    if image.ndim == 3:
+        gray = cv2.cvtColor(ensure_uint8(image), cv2.COLOR_BGR2GRAY)
+    else:
+        gray = ensure_uint8(image)
+    if gray.size == 0:
+        return MetalDetectionResult(params_snapshot=config.to_snapshot())
+
+    legacy_config = replace(
+        config,
+        segmentation_strategy="legacy_otsu",
+        use_wide_conductor_gradient=False,
+    )
+    watershed_config = replace(
+        config,
+        segmentation_strategy="gradient_watershed",
+        use_wide_conductor_gradient=True,
+    )
+    legacy = _detect_metalization_explicit(gray, legacy_config, source_image=source_image)
+    watershed = _detect_metalization_explicit(gray, watershed_config, source_image=source_image)
+    legacy_count = _non_hole_count(legacy)
+    watershed_count = _non_hole_count(watershed)
+    presence = analyze_metal_presence(
+        gray,
+        smoothing_sigma=float(config.watershed_smoothing_sigma),
+    )
+    coherence = presence.coherent_contrast_fraction
+
+    selected = legacy
+    selected_strategy = "legacy_otsu"
+    if not presence.has_metal:
+        selected = watershed
+        selected_strategy = "gradient_watershed"
+    elif watershed_count == 0:
+        selected = legacy
+        selected_strategy = "legacy_otsu"
+    elif (
+        coherence < 0.30
+        or legacy_count == 0
+        or watershed_count <= 0.80 * legacy_count
+    ):
+        selected = watershed
+        selected_strategy = "gradient_watershed"
+    else:
+        pixels_per_legacy_object = gray.size / max(1, legacy_count)
+        counts_are_close = abs(watershed_count - legacy_count) <= 0.05 * max(
+            legacy_count,
+            watershed_count,
+        )
+        if pixels_per_legacy_object < 10_000 and counts_are_close:
+            selected = watershed
+            selected_strategy = "gradient_watershed"
+        elif legacy_count <= 0.90 * watershed_count and pixels_per_legacy_object < 10_000:
+            separators = _extended_separator_mask(gray, config)
+            if separators is not None:
+                legacy_mask = legacy.debug_images.get("metal_binary_mask")
+                if legacy_mask is not None:
+                    hybrid_mask = cv2.bitwise_and(
+                        legacy_mask,
+                        cv2.bitwise_not(separators),
+                    )
+                    hybrid = _detect_metalization_explicit(
+                        gray,
+                        legacy_config,
+                        source_image=source_image,
+                        mask_override=hybrid_mask,
+                    )
+                    hybrid_count = _non_hole_count(hybrid)
+                    if legacy_count < hybrid_count <= round(1.05 * watershed_count):
+                        selected = hybrid
+                        selected_strategy = "legacy_otsu_extended_separators"
+
+    selected.params_snapshot = {
+        **config.to_snapshot(),
+        "auto_selected_strategy": selected_strategy,
+        "auto_legacy_objects": legacy_count,
+        "auto_watershed_objects": watershed_count,
+    }
+    return selected

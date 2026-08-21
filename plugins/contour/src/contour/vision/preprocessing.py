@@ -28,13 +28,33 @@ class NoiseLevel(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class PreprocessConfig:
-    """User-facing only via presets; these fields are set internally."""
+    """SEM preprocessing parameters shared by presets and typed UI settings."""
 
     clahe_clip: float = 2.0
     clahe_grid: int = 8
     subtract_background: bool = True
     background_sigma_fraction: float = 0.04
     denoise: NoiseLevel = NoiseLevel.MEDIUM
+
+
+def metal_preprocess_config_from_settings(settings: Any) -> PreprocessConfig:
+    """Build the conductor-recognition preprocessing used by the real benchmark."""
+
+    raw_noise = str(getattr(settings, "metal_preprocess_denoise", "low") or "low")
+    noise = NoiseLevel(raw_noise) if raw_noise in {level.value for level in NoiseLevel} else NoiseLevel.LOW
+    return PreprocessConfig(
+        clahe_clip=max(0.1, min(20.0, float(getattr(settings, "metal_preprocess_clahe_clip", 2.0) or 2.0))),
+        clahe_grid=max(2, min(64, int(getattr(settings, "metal_preprocess_clahe_grid", 8) or 8))),
+        subtract_background=bool(getattr(settings, "metal_preprocess_subtract_background", True)),
+        background_sigma_fraction=max(
+            0.005,
+            min(
+                0.25,
+                float(getattr(settings, "metal_preprocess_background_sigma_fraction", 0.05) or 0.05),
+            ),
+        ),
+        denoise=noise,
+    )
 
 
 def _auto_odd_kernel(gray: np.ndarray, sigma_fraction: float) -> int:

@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from PyQt6.QtCore import (
     QEvent,
+    QEventLoop,
     QModelIndex,
     QPoint,
     QPointF,
@@ -58,6 +59,12 @@ from ..ui.no_wheel_controls import (
     NoWheelSpinBox as QSpinBox,
 )
 
+from ..adapters.qt.antialias_cif import (
+    AntialiasCifItemResult,
+    AntialiasCifJobSummary,
+    AntialiasCifRunnable,
+    AntialiasCifWorkItem,
+)
 from ..adapters.qt.image_conversion import cv_to_qimage
 from ..adapters.qt.editor_display import EditorDisplayRunnable
 from ..adapters.qt.frame_load import FrameLoadPayload, FrameLoadRunnable

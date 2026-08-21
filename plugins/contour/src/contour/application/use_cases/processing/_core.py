@@ -1584,8 +1584,10 @@ def _run_structural_metal_recovery(
     contour_settings: ContourExtractionSettings,
 ) -> tuple[list[PolygonData], np.ndarray, dict[str, np.ndarray], dict[str, list[PolygonData]]]:
     from ....vision.metal_recovery import detect_metalization, metal_recovery_config_from_settings
+    from ....vision.preprocessing import metal_preprocess_config_from_settings, preprocess_for_sem
 
     gray = ensure_uint8(_via_grayscale(preprocessed))
+    gray = preprocess_for_sem(gray, metal_preprocess_config_from_settings(contour_settings))
     source_gray = ensure_uint8(_via_grayscale(source))
     cfg = metal_recovery_config_from_settings(contour_settings)
     mr = detect_metalization(gray, cfg, source_image=source_gray)
@@ -1597,6 +1599,7 @@ def _run_structural_metal_recovery(
     mask = ensure_binary_mask(mask)
 
     debug_maps: dict[str, np.ndarray] = dict(mr.debug_images)
+    debug_maps["metal_preprocessed"] = gray
     if bool(getattr(contour_settings, "metal_display_show_mask", False)):
         debug_maps["metal_mask"] = mr.debug_images["metal_binary_mask"]
 

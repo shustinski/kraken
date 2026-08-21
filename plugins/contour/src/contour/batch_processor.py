@@ -116,7 +116,7 @@ class BatchQueueRunnable(QRunnable):
         max_workers: int,
         ui_language: str,
         chunk_size: int = 16,
-        progress_interval_seconds: float = 0.5,
+        progress_interval_seconds: float = 0.05,
     ) -> None:
         super().__init__()
         self.image_paths = list(image_paths)
@@ -128,7 +128,7 @@ class BatchQueueRunnable(QRunnable):
         self.max_workers = max(1, int(max_workers))
         self.chunk_size = max(1, int(chunk_size))
         self.ui_language = active_language(ui_language)
-        self.progress_interval_seconds = max(0.1, float(progress_interval_seconds))
+        self.progress_interval_seconds = max(0.05, float(progress_interval_seconds))
         self.signals = BatchQueueSignals()
         self._cancel_event: Any | None = None
         self._stop_requested = False
@@ -144,6 +144,7 @@ class BatchQueueRunnable(QRunnable):
         total = len(self.image_paths)
         started_at = perf_counter()
         last_progress_emit = 0.0
+        last_emitted_completed = -1
         chunk_results: list[BatchChunkResult] = []
         futures: dict[Any, int] = {}
         chunks = self._build_chunk_requests()
@@ -153,6 +154,8 @@ class BatchQueueRunnable(QRunnable):
             context = mp.get_context("spawn")
             manager = context.Manager()
             self._cancel_event = manager.Event()
+            progress_counter = manager.Value("i", 0)
+            progress_lock = manager.Lock()
             if self._stop_requested:
                 self._cancel_event.set()
             worker_count = min(self.max_workers, max(1, len(chunks)))
@@ -165,6 +168,8 @@ class BatchQueueRunnable(QRunnable):
                     total=total,
                 )
             )
+            self.signals.progress.emit(0, total)
+            last_emitted_completed = 0
             with ProcessPoolExecutor(
                 max_workers=worker_count,
                 mp_context=context,
@@ -173,23 +178,34 @@ class BatchQueueRunnable(QRunnable):
                 pending_chunks = list(chunks)
                 while pending_chunks and len(futures) < worker_count:
                     request = pending_chunks.pop(0)
-                    future = executor.submit(process_batch_chunk, request, self._cancel_event)
+                    future = executor.submit(
+                        process_batch_chunk,
+                        request,
+                        self._cancel_event,
+                        progress_counter,
+                        progress_lock,
+                    )
                     futures[future] = request.chunk_id
 
                 while futures:
-                    done, _pending = wait(tuple(futures), timeout=0.2, return_when=FIRST_COMPLETED)
+                    done, _pending = wait(tuple(futures), timeout=0.05, return_when=FIRST_COMPLETED)
+                    live_completed = max(completed, int(progress_counter.value))
+                    if live_completed != last_emitted_completed:
+                        self.signals.progress.emit(live_completed, total)
+                        last_emitted_completed = live_completed
+                        last_progress_emit = perf_counter()
                     if not done:
                         now = perf_counter()
                         if now - last_progress_emit >= self.progress_interval_seconds:
-                            self.signals.progress.emit(completed, total)
+                            self.signals.progress.emit(live_completed, total)
                             self.signals.diagnostics.emit(
                                 {
                                     "type": "runtime",
-                                    "completed": completed,
+                                    "completed": live_completed,
                                     "total": total,
                                     "active_chunks": len(futures),
                                     "queued_chunks": len(pending_chunks),
-                                    "throughput_fps": completed / max(1e-6, now - started_at),
+                                    "throughput_fps": live_completed / max(1e-6, now - started_at),
                                 }
                             )
                             last_progress_emit = now
@@ -213,16 +229,23 @@ class BatchQueueRunnable(QRunnable):
                                 self.signals.error.emit(item.image_path, item.error)
                             else:
                                 self.signals.result.emit(item)
+                            live_completed = max(completed, int(progress_counter.value))
+                            if live_completed != last_emitted_completed:
+                                self.signals.progress.emit(live_completed, total)
+                                last_emitted_completed = live_completed
+                                last_progress_emit = perf_counter()
                         if chunk_result.diagnostics is not None:
                             self.signals.diagnostics.emit(chunk_result.diagnostics)
                             self.signals.log.emit(_format_chunk_diagnostics(chunk_result.diagnostics))
-                        now = perf_counter()
-                        if now - last_progress_emit >= self.progress_interval_seconds or completed >= total:
-                            self.signals.progress.emit(completed, total)
-                            last_progress_emit = now
                         if not self._cancel_event.is_set() and pending_chunks:
                             request = pending_chunks.pop(0)
-                            next_future = executor.submit(process_batch_chunk, request, self._cancel_event)
+                            next_future = executor.submit(
+                                process_batch_chunk,
+                                request,
+                                self._cancel_event,
+                                progress_counter,
+                                progress_lock,
+                            )
                             futures[next_future] = request.chunk_id
 
                 executor.shutdown(wait=True, cancel_futures=True)

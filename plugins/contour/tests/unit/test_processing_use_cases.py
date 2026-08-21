@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
 from contour.application.processing import ContourExtractionSettings
-from contour.application.use_cases.processing import build_detection_debug_maps, process_image_path
 from contour.application.use_cases.processing import _core as processing_core
+from contour.application.use_cases.processing import build_detection_debug_maps, process_image_path
 
 
 class ProcessingUseCasesTests(unittest.TestCase):
@@ -51,6 +52,58 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertEqual(loaded.via_min_roundness, 55.0)
         self.assertEqual(loaded.via_output_diameter, 17)
         self.assertEqual(loaded.via_template_images, [[[1, 2], [3, 4]]])
+
+    def test_contour_settings_round_trip_metal_preprocessing(self) -> None:
+        settings = ContourExtractionSettings(
+            metal_preprocess_subtract_background=False,
+            metal_preprocess_background_sigma_fraction=0.075,
+            metal_preprocess_clahe_clip=3.5,
+            metal_preprocess_clahe_grid=12,
+            metal_preprocess_denoise="high",
+        )
+
+        loaded = ContourExtractionSettings.from_dict(settings.to_dict())
+
+        self.assertFalse(loaded.metal_preprocess_subtract_background)
+        self.assertEqual(loaded.metal_preprocess_background_sigma_fraction, 0.075)
+        self.assertEqual(loaded.metal_preprocess_clahe_clip, 3.5)
+        self.assertEqual(loaded.metal_preprocess_clahe_grid, 12)
+        self.assertEqual(loaded.metal_preprocess_denoise, "high")
+
+    def test_structural_metal_recognition_applies_typed_preprocessing(self) -> None:
+        source_image = np.full((32, 40), 90, dtype=np.uint8)
+        settings = ContourExtractionSettings(
+            recognition_mode="conductors",
+            extraction_profile="conductors",
+            object_type="conductor",
+            output_mode="polygon",
+            algorithm_backend="legacy",
+            metal_structural_pipeline=True,
+            metal_preprocess_subtract_background=False,
+            metal_preprocess_background_sigma_fraction=0.075,
+            metal_preprocess_clahe_clip=3.5,
+            metal_preprocess_clahe_grid=12,
+            metal_preprocess_denoise="high",
+        )
+
+        from contour.vision import preprocessing
+
+        with patch.object(preprocessing, "preprocess_for_sem", wraps=preprocessing.preprocess_for_sem) as apply:
+            result = process_image_path(
+                image_path="sample.png",
+                pipeline_config={"steps": []},
+                contour_settings=settings,
+                source_image=source_image,
+            )
+
+        apply.assert_called_once()
+        config = apply.call_args.args[1]
+        self.assertFalse(config.subtract_background)
+        self.assertEqual(config.background_sigma_fraction, 0.075)
+        self.assertEqual(config.clahe_clip, 3.5)
+        self.assertEqual(config.clahe_grid, 12)
+        self.assertEqual(config.denoise.value, "high")
+        self.assertIn("metal_preprocessed", result.debug_gradient_maps)
 
     def test_contour_settings_from_dict_ignores_legacy_via_detector_keys(self) -> None:
         legacy_payload = {

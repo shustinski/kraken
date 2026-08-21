@@ -13,7 +13,7 @@ from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 from contour.serializers import load_polygons_cif
 from contour.ui.metal_presets import standard_metal_preset_payload
 from contour.vision.metal_recovery import detect_metalization, metal_recovery_config_from_settings
-from contour.vision.preprocessing import NoiseLevel, PreprocessConfig, preprocess_for_sem
+from contour.vision.preprocessing import metal_preprocess_config_from_settings, preprocess_for_sem
 
 _TEST_METAL_ROOT = Path(__file__).resolve().parent.parent / "test_metal"
 
@@ -72,26 +72,12 @@ def _conductor_settings() -> ContourExtractionSettings:
     )
 
 
-def _preprocessed_for_recognition(gray: np.ndarray) -> np.ndarray:
-    """Simulate filter-tab grayscale prep (CLAHE + background + denoise)."""
-    return preprocess_for_sem(
-        gray,
-        PreprocessConfig(
-            clahe_clip=2.0,
-            clahe_grid=8,
-            subtract_background=True,
-            background_sigma_fraction=0.05,
-            denoise=NoiseLevel.LOW,
-        ),
-    )
-
-
 def _detect_conductors(image_path: Path):
     image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     if image is None:
         pytest.skip(f"SEM frame missing: {image_path}")
     settings = _conductor_settings()
-    preprocessed = _preprocessed_for_recognition(image)
+    preprocessed = preprocess_for_sem(image, metal_preprocess_config_from_settings(settings))
     result = detect_metalization(preprocessed, metal_recovery_config_from_settings(settings))
     return image, result
 

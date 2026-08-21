@@ -657,12 +657,14 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(self.widget.metal_min_contrast_slider.minimum(), 1)
         self.assertEqual(self.widget.metal_min_contrast_slider.value(), 50)
         self.widget.metal_min_contrast_slider.setValue(37)
+        self.widget.metal_min_object_source_contrast_spin.setValue(16.0)
         self.widget.metal_min_hole_source_contrast_spin.setValue(12.5)
         self.widget.metal_min_hole_source_contrast_fraction_spin.setValue(0.2)
 
         settings = self.widget._current_contour_settings()
 
         self.assertEqual(settings.metal_min_contrast, 37.0)
+        self.assertEqual(settings.metal_min_object_source_contrast, 16.0)
         self.assertEqual(settings.metal_min_hole_source_contrast, 12.5)
         self.assertEqual(settings.metal_min_hole_source_contrast_fraction, 0.2)
 
@@ -1410,7 +1412,6 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.widget.zoom_in_button,
             self.widget.zoom_out_button,
             self.widget.fit_button,
-            self.widget.antialias_opened_cif_button,
         ]
 
         for button in buttons:

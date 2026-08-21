@@ -9,6 +9,7 @@ def _metal_keys() -> tuple[str, ...]:
     return (
         "metal_preset",
         "metal_min_contrast",
+        "metal_min_object_source_contrast",
         "metal_min_hole_source_contrast",
         "metal_min_hole_source_contrast_fraction",
         "metal_gap_bridge_px",
@@ -25,6 +26,11 @@ def _metal_keys() -> tuple[str, ...]:
         "metal_approximation_enabled",
         "metal_border_handling",
         "metal_segmentation_strategy",
+        "metal_preprocess_subtract_background",
+        "metal_preprocess_background_sigma_fraction",
+        "metal_preprocess_clahe_clip",
+        "metal_preprocess_clahe_grid",
+        "metal_preprocess_denoise",
         "metal_watershed_smoothing_sigma",
         "metal_watershed_core_margin",
         "metal_watershed_groove_margin",
@@ -45,6 +51,7 @@ def standard_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "standard",
         "metal_min_contrast": 50.0,
+        "metal_min_object_source_contrast": 12.0,
         "metal_min_hole_source_contrast": 8.0,
         "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 0,
@@ -59,6 +66,13 @@ def standard_metal_preset_payload() -> dict[str, Any]:
         "min_points": 3,
         "metal_approximation_enabled": True,
         "metal_border_handling": "mark",
+        "metal_segmentation_strategy": "auto",
+        "metal_preprocess_subtract_background": True,
+        "metal_preprocess_background_sigma_fraction": 0.05,
+        "metal_preprocess_clahe_clip": 2.0,
+        "metal_preprocess_clahe_grid": 8,
+        "metal_preprocess_denoise": "low",
+        "metal_watershed_seed_speckle_px": 4,
     }
 
 
@@ -66,6 +80,7 @@ def noisy_sem_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "noisy_sem",
         "metal_min_contrast": 50.0,
+        "metal_min_object_source_contrast": 12.0,
         "metal_min_hole_source_contrast": 8.0,
         "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 4,
@@ -81,6 +96,7 @@ def thin_traces_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "thin_traces",
         "metal_min_contrast": 50.0,
+        "metal_min_object_source_contrast": 12.0,
         "metal_min_hole_source_contrast": 8.0,
         "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 2,
@@ -97,6 +113,7 @@ def wide_fills_metal_preset_payload() -> dict[str, Any]:
     return {
         "metal_preset": "wide_fills",
         "metal_min_contrast": 50.0,
+        "metal_min_object_source_contrast": 12.0,
         "metal_min_hole_source_contrast": 8.0,
         "metal_min_hole_source_contrast_fraction": 0.35,
         "metal_gap_bridge_px": 3,

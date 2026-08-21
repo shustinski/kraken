@@ -57,13 +57,7 @@ class BatchController:
             return False
         if not request.image_paths:
             return False
-        self._progress_enabled = bool(
-            request.output_directory
-            and (
-                bool(getattr(request.save_options, "save_cif", False))
-                or bool(getattr(request.save_options, "save_cv", False))
-            )
-        )
+        self._progress_enabled = True
         self._processor.start(
             image_paths=list(request.image_paths),
             pipeline_config=request.pipeline_config,

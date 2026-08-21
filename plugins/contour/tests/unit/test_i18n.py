@@ -112,7 +112,7 @@ def test_editor_toolbar_retranslates_to_russian() -> None:
         widget.set_ui_language("ru")
 
         assert widget.trace_width_label.text() == "Ширина"
-        assert widget.antialias_opened_cif_button.toolTip() == "Сгладить все открытые CIF"
+        assert widget.antialias_opened_cif_button.text() == "Сгладить все векторы"
     finally:
         widget.close()
         widget.deleteLater()

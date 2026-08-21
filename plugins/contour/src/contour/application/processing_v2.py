@@ -45,6 +45,7 @@ class MetalRecoverySettings:
     kind: Literal["metal"] = "metal"
     segmentation_strategy: MetalSegmentationStrategyV2 = "auto"
     min_contrast: float = 50.0
+    min_object_source_contrast: float = 12.0
     # Deprecated schema-v2 field retained for compatibility with saved requests.
     contrast_bias: float = 0.0
     min_hole_source_contrast: float = 8.0
@@ -62,7 +63,7 @@ class MetalRecoverySettings:
     watershed_core_margin: float = 8.0
     watershed_groove_margin: float = 16.0
     watershed_rim_probe_px: int = 6
-    watershed_seed_speckle_px: int = 1
+    watershed_seed_speckle_px: int = 4
     watershed_valley_span_px: int = 5
     watershed_valley_depth: float = 45.0
     random_walker_beta: float = 90.0
@@ -74,6 +75,10 @@ class MetalRecoverySettings:
 
     def __post_init__(self) -> None:
         self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
+        self.min_object_source_contrast = max(
+            0.0,
+            min(255.0, float(self.min_object_source_contrast)),
+        )
 
 
 @dataclass(slots=True)
@@ -199,6 +204,7 @@ class ProcessingRequestV2:
                     else metal_mode.segmentation_strategy
                 ),
                 metal_min_contrast=metal_mode.min_contrast,
+                metal_min_object_source_contrast=metal_mode.min_object_source_contrast,
                 metal_contrast_bias=metal_mode.contrast_bias,
                 metal_min_hole_source_contrast=metal_mode.min_hole_source_contrast,
                 metal_min_hole_source_contrast_fraction=metal_mode.min_hole_source_contrast_fraction,
@@ -303,6 +309,7 @@ class ProcessingRequestV2:
             recognition = MetalRecoverySettings(
                 segmentation_strategy=_normalized_v2_metal_strategy(legacy.metal_segmentation_strategy),
                 min_contrast=legacy.metal_min_contrast,
+                min_object_source_contrast=legacy.metal_min_object_source_contrast,
                 contrast_bias=legacy.metal_contrast_bias,
                 min_hole_source_contrast=legacy.metal_min_hole_source_contrast,
                 min_hole_source_contrast_fraction=legacy.metal_min_hole_source_contrast_fraction,

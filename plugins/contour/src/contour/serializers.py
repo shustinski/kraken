@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import shutil
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -17,6 +18,7 @@ from .i18n import tr
 from .utils import draw_polygon_overlay, ensure_directory, imwrite_unicode_safe
 
 _CIF_PARSE_CACHE: dict[tuple[str, int, int], tuple[str | None, tuple[int, int] | None, list[PolygonData]]] = {}
+_CIF_PARSE_CACHE_LOCK = threading.Lock()
 _CIF_PARSE_CACHE_MAX_ENTRIES = 64
 
 
@@ -25,16 +27,18 @@ def _path_cache_identity(path: str | Path) -> str:
 
 
 def clear_cif_parse_cache() -> None:
-    _CIF_PARSE_CACHE.clear()
+    with _CIF_PARSE_CACHE_LOCK:
+        _CIF_PARSE_CACHE.clear()
 
 
 def invalidate_cif_parse_cache(paths: Iterable[str | Path]) -> None:
     identities = {_path_cache_identity(path) for path in paths}
     if not identities:
         return
-    for key in list(_CIF_PARSE_CACHE.keys()):
-        if key[0] in identities:
-            _CIF_PARSE_CACHE.pop(key, None)
+    with _CIF_PARSE_CACHE_LOCK:
+        for key in list(_CIF_PARSE_CACHE.keys()):
+            if key[0] in identities:
+                _CIF_PARSE_CACHE.pop(key, None)
 
 
 def _cif_parse_cache_key(path: Path) -> tuple[str, int, int] | None:
@@ -51,13 +55,14 @@ def _cache_cif_parse_result(
     image_size: tuple[int, int] | None,
     polygons: list[PolygonData],
 ) -> None:
-    if len(_CIF_PARSE_CACHE) >= _CIF_PARSE_CACHE_MAX_ENTRIES:
-        _CIF_PARSE_CACHE.pop(next(iter(_CIF_PARSE_CACHE)))
-    _CIF_PARSE_CACHE[cache_key] = (
-        image_name,
-        image_size,
-        [polygon.clone() for polygon in polygons],
-    )
+    with _CIF_PARSE_CACHE_LOCK:
+        if len(_CIF_PARSE_CACHE) >= _CIF_PARSE_CACHE_MAX_ENTRIES:
+            _CIF_PARSE_CACHE.pop(next(iter(_CIF_PARSE_CACHE)))
+        _CIF_PARSE_CACHE[cache_key] = (
+            image_name,
+            image_size,
+            [polygon.clone() for polygon in polygons],
+        )
 
 
 def save_polygons_json(
@@ -485,7 +490,8 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
     cif_path = Path(path)
     cache_key = _cif_parse_cache_key(cif_path)
     if cache_key is not None:
-        cached = _CIF_PARSE_CACHE.get(cache_key)
+        with _CIF_PARSE_CACHE_LOCK:
+            cached = _CIF_PARSE_CACHE.get(cache_key)
         if cached is not None:
             image_name, image_size, polygons = cached
             return image_name, image_size, [polygon.clone() for polygon in polygons]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from math import ceil
 from typing import Any
 
 import cv2
@@ -37,6 +38,8 @@ class MetalRecoveryConfig:
 
     min_contrast: float = 50.0
     min_object_source_contrast: float = 12.0
+    min_object_rim_contrast: float = 36.0
+    min_object_rim_area_fraction: float = 0.001
     contrast_bias: float = 0.0  # Deprecated compatibility field; ignored by segmentation.
     min_hole_source_contrast: float = 8.0
     min_hole_source_contrast_fraction: float = 0.35
@@ -64,6 +67,9 @@ class MetalRecoveryConfig:
     noise_suppression: int = 0
     segmentation_strategy: str = "legacy_otsu"
     auto_contrast_step: float = 10.0
+    auto_source_contrast_step: float = 4.0
+    auto_directional_gap_bridge_px: int = 3
+    auto_directional_gap_min_source_intensity: float = 45.0
     use_wide_conductor_gradient: bool = False
     watershed_smoothing_sigma: float = 1.0
     watershed_core_margin: float = 8.0
@@ -393,6 +399,8 @@ def _filter_conductors_by_source_contrast(
     source_image: np.ndarray | None,
     *,
     min_contrast: float,
+    min_rim_contrast: float,
+    min_rim_area_fraction: float,
 ) -> list[PolygonData]:
     """Reject dark shadow islands that watershed can grow beside a conductor."""
     if source_image is None or min_contrast <= 0.0 or not polygons:
@@ -409,6 +417,9 @@ def _filter_conductors_by_source_contrast(
 
     kept_parent_ids: set[int] = set()
     ring_radius = 10
+    min_rim_backed_area_fraction = max(0.000001, min(1.0, float(min_rim_area_fraction)))
+    required_rim_contrast = max(0.0, float(min_rim_contrast))
+    rim_percentile = 90.0
     ring_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
         (2 * ring_radius + 1, 2 * ring_radius + 1),
@@ -442,7 +453,42 @@ def _filter_conductors_by_source_contrast(
             continue
         inside_median = float(np.median(inside_values))
         outside_median = float(np.median(outside_values))
-        if inside_median - outside_median >= float(min_contrast):
+        interior_contrast = inside_median - outside_median
+        area_fraction = float(inside_values.size / max(1, source_gray.size))
+        inner_edge = (interior > 0) & (
+            cv2.erode(interior, np.ones((3, 3), dtype=np.uint8)) == 0
+        )
+        near_ring = (cv2.dilate(filled, np.ones((3, 3), dtype=np.uint8)) > 0) & (
+            filled == 0
+        )
+        edge_values = local_source[inner_edge]
+        near_values = local_source[near_ring]
+        rim_contrast = (
+            float(np.percentile(edge_values, rim_percentile) - np.median(near_values))
+            if edge_values.size > 0 and near_values.size > 0
+            else 0.0
+        )
+
+        if interior_contrast >= float(min_contrast):
+            is_sizeable_component = area_fraction >= min_rim_backed_area_fraction
+            has_strong_interior = interior_contrast >= 2.0 * float(min_contrast)
+            has_strong_rim = rim_contrast >= required_rim_contrast
+            if is_sizeable_component or has_strong_interior or has_strong_rim:
+                kept_parent_ids.add(int(polygon.id))
+            continue
+
+        # Wide SEM conductors can have a substrate-like interior while their
+        # bright material rim remains unambiguous.  Use that evidence only for
+        # dominant candidates so textured background islands are not promoted.
+        is_large_rim_candidate = (
+            area_fraction >= 6.0 * min_rim_backed_area_fraction
+            and interior_contrast >= 0.75 * float(min_contrast)
+            and rim_contrast >= 0.75 * required_rim_contrast
+        )
+        is_dominant_component = area_fraction >= 50.0 * min_rim_backed_area_fraction
+        if is_large_rim_candidate or (
+            rim_contrast >= (2.0 / 3.0) * required_rim_contrast and is_dominant_component
+        ):
             kept_parent_ids.add(int(polygon.id))
 
     return [
@@ -505,6 +551,7 @@ def _detect_metalization_explicit(
     *,
     source_image: np.ndarray | None = None,
     mask_override: np.ndarray | None = None,
+    include_axis_debug: bool = True,
 ) -> MetalDetectionResult:
     if image.ndim == 3:
         gray = cv2.cvtColor(ensure_uint8(image), cv2.COLOR_BGR2GRAY)
@@ -534,6 +581,8 @@ def _detect_metalization_explicit(
         polygons,
         hole_source,
         min_contrast=config.min_object_source_contrast,
+        min_rim_contrast=config.min_object_rim_contrast,
+        min_rim_area_fraction=config.min_object_rim_area_fraction,
     )
 
     accepted: list[PolygonData] = []
@@ -593,7 +642,8 @@ def _detect_metalization_explicit(
     for key, value in pre_dbg.items():
         if isinstance(value, np.ndarray):
             dbg[key] = value
-    dbg.update(axis_gradient_debug_images(gray))
+    if include_axis_debug:
+        dbg.update(axis_gradient_debug_images(gray))
     vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     if raw_contours:
         cv2.drawContours(vis, raw_contours, -1, (0, 255, 0), 1)
@@ -676,6 +726,164 @@ def _extended_separator_mask(gray: np.ndarray, config: MetalRecoveryConfig) -> n
         else vertical_kernel
     )
     return cv2.morphologyEx(seeds.groove_seeds, cv2.MORPH_CLOSE, kernel)
+
+
+def _stable_local_refinement(
+    gray: np.ndarray,
+    config: MetalRecoveryConfig,
+    *,
+    source_image: np.ndarray | None,
+    reference: MetalDetectionResult,
+) -> tuple[MetalDetectionResult | None, float | None, list[int]]:
+    """Find a source-filter-stable local mask that still agrees with Auto."""
+    reference_count = _non_hole_count(reference)
+    step = max(0.0, float(config.auto_source_contrast_step))
+    if reference_count < 100 or step <= 0.0:
+        return None, None, []
+    if gray.size / max(1, reference_count) >= 50_000:
+        return None, None, []
+
+    local_config = replace(
+        config,
+        segmentation_strategy="local_adaptive",
+        use_wide_conductor_gradient=False,
+    )
+    variants: list[tuple[float, MetalDetectionResult, int]] = []
+    for step_index in range(6):
+        source_contrast = min(
+            255.0,
+            float(config.min_object_source_contrast) + step_index * step,
+        )
+        candidate = _detect_metalization_explicit(
+            gray,
+            replace(local_config, min_object_source_contrast=source_contrast),
+            source_image=source_image,
+            include_axis_debug=False,
+        )
+        candidate_count = _non_hole_count(candidate)
+        variants.append((source_contrast, candidate, candidate_count))
+        if len(variants) < 3:
+            continue
+        previous = variants[-2]
+        if abs(previous[2] - candidate_count) > max(
+            1,
+            round(0.01 * max(previous[2], candidate_count)),
+        ):
+            continue
+
+        base_count = variants[0][2]
+        required_drop = max(1, ceil(0.01 * max(1, base_count)))
+        if base_count - previous[2] < required_drop:
+            return None, None, [item[2] for item in variants]
+        if abs(previous[2] - reference_count) > 0.10 * max(previous[2], reference_count):
+            return None, None, [item[2] for item in variants]
+        agreement = _mask_iou(
+            previous[1].debug_images.get("metal_filtered_mask"),
+            reference.debug_images.get("metal_filtered_mask"),
+        )
+        moderate_agreement_with_more_objects = (
+            agreement >= 0.80
+            and previous[2] > reference_count
+            and previous[2] <= 1.05 * reference_count
+        )
+        if agreement < 0.90 and not moderate_agreement_with_more_objects:
+            return None, None, [item[2] for item in variants]
+        return previous[1], previous[0], [item[2] for item in variants]
+    return None, None, [item[2] for item in variants]
+
+
+def _directionally_bridge_mask(
+    mask: np.ndarray,
+    source_gray: np.ndarray,
+    *,
+    bridge_px: int,
+    min_source_intensity: float,
+) -> np.ndarray:
+    """Bridge horizontal gaps only when the missing source pixels remain bright."""
+    radius = max(0, int(bridge_px))
+    if radius <= 0 or mask.size == 0:
+        return mask.copy()
+    selected = ensure_uint8(mask).copy()
+    _base_count, base_labels = cv2.connectedComponents(selected, connectivity=8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * radius + 1, 1))
+    closed_all = cv2.morphologyEx(selected, cv2.MORPH_CLOSE, kernel)
+    _closed_count, closed_labels = cv2.connectedComponents(closed_all, connectivity=8)
+    required_source = max(0.0, float(min_source_intensity))
+    for closed_id in np.unique(closed_labels[closed_labels > 0]):
+        region = closed_labels == closed_id
+        base_ids = np.unique(base_labels[region & (base_labels > 0)])
+        if base_ids.size <= 1:
+            continue
+        added = region & (selected == 0)
+        bridge_added = np.zeros_like(added)
+        for row in np.flatnonzero(np.any(added, axis=1)):
+            occupied_columns = np.flatnonzero(region[row] & (selected[row] > 0))
+            if occupied_columns.size < 2:
+                continue
+            left = int(occupied_columns.min())
+            right = int(occupied_columns.max()) + 1
+            bridge_added[row, left:right] = added[row, left:right]
+        if bridge_added.any() and float(np.median(source_gray[bridge_added])) >= required_source:
+            selected[bridge_added] = 255
+    return selected
+
+
+def _refine_local_candidate(
+    gray: np.ndarray,
+    config: MetalRecoveryConfig,
+    *,
+    source_image: np.ndarray | None,
+    candidate: MetalDetectionResult,
+    reference: MetalDetectionResult,
+) -> MetalDetectionResult:
+    candidate_count = _non_hole_count(candidate)
+    if source_image is None or candidate_count <= 0:
+        return candidate
+    pixels_per_object = gray.size / candidate_count
+    if pixels_per_object < 10_000:
+        return candidate
+    candidate_mask = candidate.debug_images.get("metal_filtered_mask")
+    reference_mask = reference.debug_images.get("metal_filtered_mask")
+    if candidate_mask is None or reference_mask is None:
+        return candidate
+    if source_image.ndim == 3:
+        source_gray = cv2.cvtColor(ensure_uint8(source_image), cv2.COLOR_BGR2GRAY)
+    else:
+        source_gray = ensure_uint8(source_image)
+
+    refined_mask = candidate_mask.copy()
+    gradient_x = np.abs(cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3))
+    gradient_y = np.abs(cv2.Sobel(gray.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3))
+    x_energy = float(np.mean(np.minimum(gradient_x, 255.0)))
+    y_energy = float(np.mean(np.minimum(gradient_y, 255.0)))
+    if y_energy >= 1.5 * max(0.1, x_energy):
+        refined_mask = _directionally_bridge_mask(
+            refined_mask,
+            source_gray,
+            bridge_px=config.auto_directional_gap_bridge_px,
+            min_source_intensity=config.auto_directional_gap_min_source_intensity,
+        )
+
+    _candidate_components, candidate_labels = cv2.connectedComponents(
+        refined_mask,
+        connectivity=8,
+    )
+    _reference_components, reference_labels = cv2.connectedComponents(
+        ensure_uint8(reference_mask),
+        connectivity=8,
+    )
+    for reference_id in np.unique(reference_labels[reference_labels > 0]):
+        reference_region = reference_labels == reference_id
+        if float(np.mean(candidate_labels[reference_region] > 0)) < 0.10:
+            refined_mask[reference_region] = 255
+
+    return _detect_metalization_explicit(
+        gray,
+        config,
+        source_image=source_image,
+        mask_override=refined_mask,
+        include_axis_debug=False,
+    )
 
 
 def detect_metalization(
@@ -783,6 +991,31 @@ def detect_metalization(
                 selected_strategy = "legacy_otsu_contrast_refined"
                 selected_min_contrast = refined_min_contrast
 
+    local_refined, local_source_contrast, local_counts = _stable_local_refinement(
+        gray,
+        config,
+        source_image=source_image,
+        reference=selected,
+    )
+    if local_refined is not None:
+        assert local_source_contrast is not None
+        local_config = replace(
+            config,
+            segmentation_strategy="local_adaptive",
+            use_wide_conductor_gradient=False,
+            min_object_source_contrast=float(local_source_contrast),
+        )
+        local_refined = _refine_local_candidate(
+            gray,
+            local_config,
+            source_image=source_image,
+            candidate=local_refined,
+            reference=selected,
+        )
+        selected = local_refined
+        selected_strategy = "local_adaptive_source_refined"
+        selected.debug_images.update(axis_gradient_debug_images(gray))
+
     selected.params_snapshot = {
         **config.to_snapshot(),
         "auto_selected_strategy": selected_strategy,
@@ -790,5 +1023,7 @@ def detect_metalization(
         "auto_legacy_objects": legacy_count,
         "auto_watershed_objects": watershed_count,
         "auto_contrast_refined_objects": contrast_refined_count,
+        "auto_local_source_contrast": local_source_contrast,
+        "auto_local_objects": local_counts,
     }
     return selected

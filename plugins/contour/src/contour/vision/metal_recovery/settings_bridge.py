@@ -81,6 +81,14 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
             0.0,
             min(255.0, float(getattr(settings, "metal_min_object_source_contrast", 12.0))),
         ),
+        min_object_rim_contrast=max(
+            0.0,
+            min(255.0, float(getattr(settings, "metal_min_object_rim_contrast", 36.0))),
+        ),
+        min_object_rim_area_fraction=max(
+            0.000001,
+            min(1.0, float(getattr(settings, "metal_min_object_rim_area_fraction", 0.001))),
+        ),
         min_hole_source_contrast=max(
             0.0,
             min(255.0, float(getattr(settings, "metal_min_hole_source_contrast", 8.0))),
@@ -96,6 +104,27 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         auto_contrast_step=max(
             0.0,
             min(255.0, float(getattr(settings, "metal_auto_contrast_step", 10.0))),
+        ),
+        auto_source_contrast_step=max(
+            0.0,
+            min(255.0, float(getattr(settings, "metal_auto_source_contrast_step", 4.0))),
+        ),
+        auto_directional_gap_bridge_px=max(
+            0,
+            min(64, int(getattr(settings, "metal_auto_directional_gap_bridge_px", 3))),
+        ),
+        auto_directional_gap_min_source_intensity=max(
+            0.0,
+            min(
+                255.0,
+                float(
+                    getattr(
+                        settings,
+                        "metal_auto_directional_gap_min_source_intensity",
+                        45.0,
+                    )
+                ),
+            ),
         ),
         gap_bridge_px=_non_negative_int(gap_raw, default=2),
         speckle_removal_px=_non_negative_int(speckle_raw, default=0),

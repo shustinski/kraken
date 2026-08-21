@@ -1707,6 +1707,42 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_auto_contrast_step_label_widget = _metal_basic_form.labelForField(
         self.metal_auto_contrast_step_spin
     )
+    self.metal_auto_source_contrast_step_spin = QDoubleSpinBox()
+    self.metal_auto_source_contrast_step_spin.setRange(0.0, 255.0)
+    self.metal_auto_source_contrast_step_spin.setDecimals(1)
+    self.metal_auto_source_contrast_step_spin.setSingleStep(1.0)
+    self.metal_auto_source_contrast_step_spin.setSpecialValueText("Off")
+    self.metal_auto_source_contrast_step_spin.setValue(4.0)
+    _metal_basic_form.addRow(
+        "Auto object-filter step",
+        self.metal_auto_source_contrast_step_spin,
+    )
+    self.metal_auto_source_contrast_step_label_widget = _metal_basic_form.labelForField(
+        self.metal_auto_source_contrast_step_spin
+    )
+    self.metal_auto_directional_gap_bridge_spin = QSpinBox()
+    self.metal_auto_directional_gap_bridge_spin.setRange(0, 64)
+    self.metal_auto_directional_gap_bridge_spin.setSpecialValueText("Off")
+    self.metal_auto_directional_gap_bridge_spin.setValue(3)
+    _metal_basic_form.addRow(
+        "Auto directional gap",
+        self.metal_auto_directional_gap_bridge_spin,
+    )
+    self.metal_auto_directional_gap_bridge_label_widget = _metal_basic_form.labelForField(
+        self.metal_auto_directional_gap_bridge_spin
+    )
+    self.metal_auto_directional_gap_min_source_spin = QDoubleSpinBox()
+    self.metal_auto_directional_gap_min_source_spin.setRange(0.0, 255.0)
+    self.metal_auto_directional_gap_min_source_spin.setDecimals(1)
+    self.metal_auto_directional_gap_min_source_spin.setSingleStep(1.0)
+    self.metal_auto_directional_gap_min_source_spin.setValue(45.0)
+    _metal_basic_form.addRow(
+        "Directional gap source minimum",
+        self.metal_auto_directional_gap_min_source_spin,
+    )
+    self.metal_auto_directional_gap_min_source_label_widget = _metal_basic_form.labelForField(
+        self.metal_auto_directional_gap_min_source_spin
+    )
 
     self.metal_display_group = QGroupBox("Отображение")
     _metal_disp_form = QFormLayout(self.metal_display_group)
@@ -1791,6 +1827,15 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_min_object_source_contrast_spin.setRange(0.0, 255.0)
     self.metal_min_object_source_contrast_spin.setDecimals(1)
     self.metal_min_object_source_contrast_spin.setValue(12.0)
+    self.metal_min_object_rim_contrast_spin = QDoubleSpinBox()
+    self.metal_min_object_rim_contrast_spin.setRange(0.0, 255.0)
+    self.metal_min_object_rim_contrast_spin.setDecimals(1)
+    self.metal_min_object_rim_contrast_spin.setValue(36.0)
+    self.metal_min_object_rim_area_fraction_spin = QDoubleSpinBox()
+    self.metal_min_object_rim_area_fraction_spin.setRange(0.000001, 1.0)
+    self.metal_min_object_rim_area_fraction_spin.setDecimals(6)
+    self.metal_min_object_rim_area_fraction_spin.setSingleStep(0.0005)
+    self.metal_min_object_rim_area_fraction_spin.setValue(0.001)
     self.metal_min_hole_source_contrast_spin = QDoubleSpinBox()
     self.metal_min_hole_source_contrast_spin.setRange(0.0, 255.0)
     self.metal_min_hole_source_contrast_spin.setDecimals(1)
@@ -1900,6 +1945,17 @@ def build_extraction_tab(self) -> QWidget:
     _metal_filter_form.addRow(
         "Мин. контраст объекта к фону",
         self.metal_min_object_source_contrast_spin,
+    )
+    _metal_filter_form.addRow("Bright rim minimum contrast", self.metal_min_object_rim_contrast_spin)
+    self.metal_min_object_rim_contrast_label_widget = _metal_filter_form.labelForField(
+        self.metal_min_object_rim_contrast_spin
+    )
+    _metal_filter_form.addRow(
+        "Rim-filter minimum area fraction",
+        self.metal_min_object_rim_area_fraction_spin,
+    )
+    self.metal_min_object_rim_area_fraction_label_widget = _metal_filter_form.labelForField(
+        self.metal_min_object_rim_area_fraction_spin
     )
     _metal_filter_form.addRow("Мин. площадь", self.metal_min_area_spin)
     _metal_filter_form.addRow("Макс. площадь (0 = нет)", self.metal_max_area_spin)
@@ -2032,6 +2088,15 @@ def build_extraction_tab(self) -> QWidget:
     )
     self.metal_min_contrast_slider.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_auto_contrast_step_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_auto_source_contrast_step_spin.valueChanged.connect(
+        self._on_extraction_settings_changed
+    )
+    self.metal_auto_directional_gap_bridge_spin.valueChanged.connect(
+        self._on_extraction_settings_changed
+    )
+    self.metal_auto_directional_gap_min_source_spin.valueChanged.connect(
+        self._on_extraction_settings_changed
+    )
     self.metal_gap_bridge_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_speckle_removal_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -2057,6 +2122,8 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_min_points_spin,
         self.metal_min_angle_spin,
         self.metal_min_object_source_contrast_spin,
+        self.metal_min_object_rim_contrast_spin,
+        self.metal_min_object_rim_area_fraction_spin,
         self.metal_min_hole_source_contrast_spin,
         self.metal_min_hole_source_contrast_fraction_spin,
         self.metal_preprocess_background_sigma_spin,
@@ -2088,6 +2155,21 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(
         lambda: self.metal_auto_contrast_step_spin.setEnabled(
+            self.metal_segmentation_strategy_combo.currentData() == "auto"
+        )
+    )
+    self.metal_segmentation_strategy_combo.currentIndexChanged.connect(
+        lambda: self.metal_auto_source_contrast_step_spin.setEnabled(
+            self.metal_segmentation_strategy_combo.currentData() == "auto"
+        )
+    )
+    self.metal_segmentation_strategy_combo.currentIndexChanged.connect(
+        lambda: self.metal_auto_directional_gap_bridge_spin.setEnabled(
+            self.metal_segmentation_strategy_combo.currentData() == "auto"
+        )
+    )
+    self.metal_segmentation_strategy_combo.currentIndexChanged.connect(
+        lambda: self.metal_auto_directional_gap_min_source_spin.setEnabled(
             self.metal_segmentation_strategy_combo.currentData() == "auto"
         )
     )

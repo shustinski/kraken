@@ -46,7 +46,12 @@ class MetalRecoverySettings:
     segmentation_strategy: MetalSegmentationStrategyV2 = "auto"
     min_contrast: float = 50.0
     auto_contrast_step: float = 10.0
+    auto_source_contrast_step: float = 4.0
+    auto_directional_gap_bridge_px: int = 3
+    auto_directional_gap_min_source_intensity: float = 45.0
     min_object_source_contrast: float = 12.0
+    min_object_rim_contrast: float = 36.0
+    min_object_rim_area_fraction: float = 0.001
     # Deprecated schema-v2 field retained for compatibility with saved requests.
     contrast_bias: float = 0.0
     min_hole_source_contrast: float = 8.0
@@ -77,9 +82,29 @@ class MetalRecoverySettings:
     def __post_init__(self) -> None:
         self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
         self.auto_contrast_step = max(0.0, min(255.0, float(self.auto_contrast_step)))
+        self.auto_source_contrast_step = max(
+            0.0,
+            min(255.0, float(self.auto_source_contrast_step)),
+        )
+        self.auto_directional_gap_bridge_px = max(
+            0,
+            min(64, int(self.auto_directional_gap_bridge_px)),
+        )
+        self.auto_directional_gap_min_source_intensity = max(
+            0.0,
+            min(255.0, float(self.auto_directional_gap_min_source_intensity)),
+        )
         self.min_object_source_contrast = max(
             0.0,
             min(255.0, float(self.min_object_source_contrast)),
+        )
+        self.min_object_rim_contrast = max(
+            0.0,
+            min(255.0, float(self.min_object_rim_contrast)),
+        )
+        self.min_object_rim_area_fraction = max(
+            0.000001,
+            min(1.0, float(self.min_object_rim_area_fraction)),
         )
 
 
@@ -207,7 +232,14 @@ class ProcessingRequestV2:
                 ),
                 metal_min_contrast=metal_mode.min_contrast,
                 metal_auto_contrast_step=metal_mode.auto_contrast_step,
+                metal_auto_source_contrast_step=metal_mode.auto_source_contrast_step,
+                metal_auto_directional_gap_bridge_px=metal_mode.auto_directional_gap_bridge_px,
+                metal_auto_directional_gap_min_source_intensity=(
+                    metal_mode.auto_directional_gap_min_source_intensity
+                ),
                 metal_min_object_source_contrast=metal_mode.min_object_source_contrast,
+                metal_min_object_rim_contrast=metal_mode.min_object_rim_contrast,
+                metal_min_object_rim_area_fraction=metal_mode.min_object_rim_area_fraction,
                 metal_contrast_bias=metal_mode.contrast_bias,
                 metal_min_hole_source_contrast=metal_mode.min_hole_source_contrast,
                 metal_min_hole_source_contrast_fraction=metal_mode.min_hole_source_contrast_fraction,
@@ -313,7 +345,14 @@ class ProcessingRequestV2:
                 segmentation_strategy=_normalized_v2_metal_strategy(legacy.metal_segmentation_strategy),
                 min_contrast=legacy.metal_min_contrast,
                 auto_contrast_step=legacy.metal_auto_contrast_step,
+                auto_source_contrast_step=legacy.metal_auto_source_contrast_step,
+                auto_directional_gap_bridge_px=legacy.metal_auto_directional_gap_bridge_px,
+                auto_directional_gap_min_source_intensity=(
+                    legacy.metal_auto_directional_gap_min_source_intensity
+                ),
                 min_object_source_contrast=legacy.metal_min_object_source_contrast,
+                min_object_rim_contrast=legacy.metal_min_object_rim_contrast,
+                min_object_rim_area_fraction=legacy.metal_min_object_rim_area_fraction,
                 contrast_bias=legacy.metal_contrast_bias,
                 min_hole_source_contrast=legacy.metal_min_hole_source_contrast,
                 min_hole_source_contrast_fraction=legacy.metal_min_hole_source_contrast_fraction,

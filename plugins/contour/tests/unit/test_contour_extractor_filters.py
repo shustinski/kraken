@@ -60,6 +60,25 @@ class ContourExtractorFilterTests(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertTrue(is_valid_closed_polygon_ring(out))
 
+    def test_diagonal_pinch_is_repaired_without_dropping_connected_conductor(self) -> None:
+        mask = np.zeros((48, 48), dtype=np.uint8)
+        cv2.rectangle(mask, (4, 4), (22, 22), 255, thickness=-1)
+        cv2.rectangle(mask, (23, 23), (42, 42), 255, thickness=-1)
+
+        polygons = extract_polygons(
+            mask,
+            ContourExtractionSettings(
+                object_type="conductor",
+                output_mode="polygon",
+                min_area=1.0,
+                min_perimeter=1.0,
+                min_polygon_width_px=0.0,
+            ),
+        )
+
+        self.assertEqual(len(polygons), 1)
+        self.assertTrue(is_valid_closed_polygon_ring(polygons[0].points))
+
     def test_excludes_border_touching_contours(self) -> None:
         mask = np.zeros((64, 64), dtype=np.uint8)
         cv2.rectangle(mask, (0, 10), (20, 30), 255, thickness=-1)

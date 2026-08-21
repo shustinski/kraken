@@ -387,12 +387,17 @@ class ContourExtractionSettings:
     metal_noise_suppression: int = 20
     metal_min_contrast: float = 50.0
     metal_min_object_source_contrast: float = 12.0
+    metal_min_object_rim_contrast: float = 36.0
+    metal_min_object_rim_area_fraction: float = 0.001
     # Deprecated persisted setting; retained only for backward-compatible loading.
     metal_contrast_bias: float = 0.0
     metal_min_hole_source_contrast: float = 8.0
     metal_min_hole_source_contrast_fraction: float = 0.35
     metal_segmentation_strategy: str = "auto"
     metal_auto_contrast_step: float = 10.0
+    metal_auto_source_contrast_step: float = 4.0
+    metal_auto_directional_gap_bridge_px: int = 3
+    metal_auto_directional_gap_min_source_intensity: float = 45.0
     metal_gap_bridge_px: int = 1
     metal_speckle_removal_px: int = 1
     metal_contour_smooth_px: float = 0.0
@@ -597,11 +602,18 @@ class ContourExtractionSettings:
             "metal_noise_suppression": self.metal_noise_suppression,
             "metal_min_contrast": self.metal_min_contrast,
             "metal_min_object_source_contrast": self.metal_min_object_source_contrast,
+            "metal_min_object_rim_contrast": self.metal_min_object_rim_contrast,
+            "metal_min_object_rim_area_fraction": self.metal_min_object_rim_area_fraction,
             "metal_contrast_bias": self.metal_contrast_bias,
             "metal_min_hole_source_contrast": self.metal_min_hole_source_contrast,
             "metal_min_hole_source_contrast_fraction": self.metal_min_hole_source_contrast_fraction,
             "metal_segmentation_strategy": normalize_metal_segmentation_strategy(self.metal_segmentation_strategy),
             "metal_auto_contrast_step": self.metal_auto_contrast_step,
+            "metal_auto_source_contrast_step": self.metal_auto_source_contrast_step,
+            "metal_auto_directional_gap_bridge_px": self.metal_auto_directional_gap_bridge_px,
+            "metal_auto_directional_gap_min_source_intensity": (
+                self.metal_auto_directional_gap_min_source_intensity
+            ),
             "metal_gap_bridge_px": self.metal_gap_bridge_px,
             "metal_speckle_removal_px": self.metal_speckle_removal_px,
             "metal_contour_smooth_px": self.metal_contour_smooth_px,
@@ -951,6 +963,21 @@ class ContourExtractionSettings:
                 0.0,
                 min(255.0, float(payload.get("metal_auto_contrast_step", 10.0))),
             ),
+            metal_auto_source_contrast_step=max(
+                0.0,
+                min(255.0, float(payload.get("metal_auto_source_contrast_step", 4.0))),
+            ),
+            metal_auto_directional_gap_bridge_px=max(
+                0,
+                min(64, int(payload.get("metal_auto_directional_gap_bridge_px", 3))),
+            ),
+            metal_auto_directional_gap_min_source_intensity=max(
+                0.0,
+                min(
+                    255.0,
+                    float(payload.get("metal_auto_directional_gap_min_source_intensity", 45.0)),
+                ),
+            ),
             metal_gap_bridge_px=max(
                 0, int(payload.get("metal_gap_bridge_px", payload.get("metal_morph_close_radius", 1)) or 0)
             ),
@@ -1047,6 +1074,14 @@ class ContourExtractionSettings:
             metal_min_object_source_contrast=max(
                 0.0,
                 min(255.0, float(payload.get("metal_min_object_source_contrast", 12.0))),
+            ),
+            metal_min_object_rim_contrast=max(
+                0.0,
+                min(255.0, float(payload.get("metal_min_object_rim_contrast", 36.0))),
+            ),
+            metal_min_object_rim_area_fraction=max(
+                0.000001,
+                min(1.0, float(payload.get("metal_min_object_rim_area_fraction", 0.001))),
             ),
             metal_preprocess_clahe_clip=max(
                 0.1,

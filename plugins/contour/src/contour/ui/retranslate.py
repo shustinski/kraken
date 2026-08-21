@@ -286,6 +286,44 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_auto_contrast_step_spin.setSpecialValueText(
             "Выкл." if self._ui_language == "ru" else "Off"
         )
+    if getattr(self, "metal_auto_source_contrast_step_label_widget", None) is not None:
+        self.metal_auto_source_contrast_step_label_widget.setText(
+            "Шаг фильтра объектов Auto"
+            if self._ui_language == "ru"
+            else "Auto object-filter step"
+        )
+    if getattr(self, "metal_auto_source_contrast_step_spin", None) is not None:
+        self.metal_auto_source_contrast_step_spin.setSpecialValueText(
+            "Выкл." if self._ui_language == "ru" else "Off"
+        )
+    if getattr(self, "metal_auto_directional_gap_bridge_label_widget", None) is not None:
+        self.metal_auto_directional_gap_bridge_label_widget.setText(
+            "Направленная сшивка Auto, пикс."
+            if self._ui_language == "ru"
+            else "Auto directional gap, px"
+        )
+    if getattr(self, "metal_auto_directional_gap_bridge_spin", None) is not None:
+        self.metal_auto_directional_gap_bridge_spin.setSpecialValueText(
+            "Выкл." if self._ui_language == "ru" else "Off"
+        )
+    if getattr(self, "metal_auto_directional_gap_min_source_label_widget", None) is not None:
+        self.metal_auto_directional_gap_min_source_label_widget.setText(
+            "Мин. яркость направленной сшивки"
+            if self._ui_language == "ru"
+            else "Directional gap source minimum"
+        )
+    if getattr(self, "metal_min_object_rim_contrast_label_widget", None) is not None:
+        self.metal_min_object_rim_contrast_label_widget.setText(
+            "\u041c\u0438\u043d. \u043a\u043e\u043d\u0442\u0440\u0430\u0441\u0442 \u044f\u0440\u043a\u043e\u0439 \u043a\u0440\u043e\u043c\u043a\u0438"
+            if self._ui_language == "ru"
+            else "Bright rim minimum contrast"
+        )
+    if getattr(self, "metal_min_object_rim_area_fraction_label_widget", None) is not None:
+        self.metal_min_object_rim_area_fraction_label_widget.setText(
+            "\u041c\u0438\u043d. \u0434\u043e\u043b\u044f \u043f\u043b\u043e\u0449\u0430\u0434\u0438 \u0434\u043b\u044f \u043a\u0440\u043e\u043c\u043e\u0447\u043d\u043e\u0433\u043e \u0444\u0438\u043b\u044c\u0442\u0440\u0430"
+            if self._ui_language == "ru"
+            else "Rim-filter minimum area fraction"
+        )
     if getattr(self, "metal_ws_smoothing_label_widget", None) is not None:
         self.metal_ws_smoothing_label_widget.setText(
             "Сглаживание водораздела, σ" if self._ui_language == "ru" else "Watershed smoothing, σ"

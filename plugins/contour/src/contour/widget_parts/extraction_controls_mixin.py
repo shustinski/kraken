@@ -686,6 +686,20 @@ class WidgetExtractionControlsMixin:
                     "Increase it when dark shadows beside conductors are detected.",
                 )
             )
+        if getattr(self, "metal_min_object_rim_contrast_spin", None) is not None:
+            self.metal_min_object_rim_contrast_spin.setToolTip(
+                tt(
+                    "\u041c\u0438\u043d\u0438\u043c\u0430\u043b\u044c\u043d\u044b\u0439 \u043a\u043e\u043d\u0442\u0440\u0430\u0441\u0442 \u044f\u0440\u043a\u043e\u0439 \u043a\u0440\u043e\u043c\u043a\u0438, \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u044e\u0449\u0435\u0439 \u0441\u043b\u0430\u0431\u043e\u043a\u043e\u043d\u0442\u0440\u0430\u0441\u0442\u043d\u044b\u0439 \u043f\u0440\u043e\u0432\u043e\u0434\u043d\u0438\u043a.",
+                    "Minimum bright-rim contrast used to confirm a low-contrast conductor.",
+                )
+            )
+        if getattr(self, "metal_min_object_rim_area_fraction_spin", None) is not None:
+            self.metal_min_object_rim_area_fraction_spin.setToolTip(
+                tt(
+                    "\u041c\u0438\u043d\u0438\u043c\u0430\u043b\u044c\u043d\u0430\u044f \u0434\u043e\u043b\u044f \u043a\u0430\u0434\u0440\u0430, \u043f\u0440\u0438 \u043a\u043e\u0442\u043e\u0440\u043e\u0439 \u043e\u0431\u044a\u0435\u043a\u0442 \u0441\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044f \u0434\u043e\u0441\u0442\u0430\u0442\u043e\u0447\u043d\u043e \u043a\u0440\u0443\u043f\u043d\u044b\u043c \u0434\u043b\u044f \u043a\u0440\u043e\u043c\u043e\u0447\u043d\u043e\u0439 \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438.",
+                    "Minimum image-area fraction for rim-backed object filtering.",
+                )
+            )
         if getattr(self, "metal_min_hole_source_contrast_spin", None) is not None:
             self.metal_min_hole_source_contrast_spin.setToolTip(
                 tt(
@@ -739,6 +753,49 @@ class WidgetExtractionControlsMixin:
             if getattr(self, "metal_auto_contrast_step_label_widget", None) is not None:
                 self.metal_auto_contrast_step_label_widget.setToolTip(
                     self.metal_auto_contrast_step_spin.toolTip()
+                )
+        if getattr(self, "metal_auto_source_contrast_step_spin", None) is not None:
+            self.metal_auto_source_contrast_step_spin.setToolTip(
+                tt(
+                    "Шаг повышения порога контраста объектов для дополнительной проверки локальной сегментации в режиме Auto. "
+                    "Результат принимается только после стабилизации числа объектов и при близкой маске. "
+                    "Значение 0 отключает проверку.",
+                    "Source-contrast increment used to validate a local-segmentation candidate in Auto mode. "
+                    "The result is accepted only after object count stabilizes and the mask remains close. "
+                    "Set to 0 to disable this check.",
+                )
+            )
+            if getattr(self, "metal_auto_source_contrast_step_label_widget", None) is not None:
+                self.metal_auto_source_contrast_step_label_widget.setToolTip(
+                    self.metal_auto_source_contrast_step_spin.toolTip()
+                )
+        if getattr(self, "metal_auto_directional_gap_bridge_spin", None) is not None:
+            self.metal_auto_directional_gap_bridge_spin.setToolTip(
+                tt(
+                    "Радиус направленной сшивки горизонтальных разрывов в режиме Auto. "
+                    "Сшивка применяется только при горизонтальной структуре кадра и подтверждении исходной яркостью. "
+                    "Значение 0 отключает сшивку.",
+                    "Maximum directional bridge radius for horizontal gaps in Auto mode. "
+                    "It is applied only to horizontally structured frames and requires source-intensity evidence. "
+                    "Set to 0 to disable bridging.",
+                )
+            )
+            if getattr(self, "metal_auto_directional_gap_bridge_label_widget", None) is not None:
+                self.metal_auto_directional_gap_bridge_label_widget.setToolTip(
+                    self.metal_auto_directional_gap_bridge_spin.toolTip()
+                )
+        if getattr(self, "metal_auto_directional_gap_min_source_spin", None) is not None:
+            self.metal_auto_directional_gap_min_source_spin.setToolTip(
+                tt(
+                    "Минимальная медианная яркость исходных пикселей внутри добавляемого мостика. "
+                    "Повышение значения уменьшает риск слияния соседних проводников.",
+                    "Minimum median source intensity inside an added bridge. "
+                    "Increase it to reduce the risk of merging neighboring conductors.",
+                )
+            )
+            if getattr(self, "metal_auto_directional_gap_min_source_label_widget", None) is not None:
+                self.metal_auto_directional_gap_min_source_label_widget.setToolTip(
+                    self.metal_auto_directional_gap_min_source_spin.toolTip()
                 )
         if getattr(self, "metal_gap_bridge_spin", None) is not None:
             self.metal_gap_bridge_spin.setToolTip(

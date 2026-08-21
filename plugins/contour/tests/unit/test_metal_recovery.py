@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 import pytest
 
@@ -11,7 +12,9 @@ from contour.ui.metal_presets import noisy_sem_metal_preset_payload, standard_me
 from contour.vision.metal_recovery import MetalRecoveryConfig, detect_metalization
 from contour.vision.metal_recovery.detector import (
     MetalDetectionResult,
+    _directionally_bridge_mask,
     _prefer_contrast_refined_legacy,
+    _stable_local_refinement,
     build_metal_extraction_mask,
     contour_extraction_settings_from_metal,
 )
@@ -258,12 +261,45 @@ def test_object_source_contrast_rejects_dark_shadow_island() -> None:
     assert sum(not polygon.is_hole for polygon in unfiltered.accepted) == 2
 
 
+def test_object_source_contrast_keeps_large_conductor_with_bright_rim() -> None:
+    segmentation = np.zeros((400, 400), dtype=np.uint8)
+    segmentation[80:320, 50:350] = 240
+    source = np.full_like(segmentation, 40)
+    source[80:320, 50:350] = 45
+    cv2.rectangle(source, (50, 80), (349, 319), 120, thickness=2)
+    config = MetalRecoveryConfig(
+        segmentation_strategy="legacy_otsu",
+        min_width_px=2.0,
+        min_area=20.0,
+        min_perimeter=20.0,
+        gap_bridge_px=0,
+        min_polygon_angle_deg=0.0,
+        min_object_source_contrast=12.0,
+    )
+
+    result = detect_metalization(segmentation, config, source_image=source)
+
+    assert sum(not polygon.is_hole for polygon in result.accepted) == 1
+
+
 def test_object_source_contrast_setting_reaches_recovery_config() -> None:
     config = metal_recovery_config_from_settings(
-        ContourExtractionSettings(metal_min_object_source_contrast=17.5)
+        ContourExtractionSettings(
+            metal_min_object_source_contrast=17.5,
+            metal_min_object_rim_contrast=41.0,
+            metal_min_object_rim_area_fraction=0.002,
+            metal_auto_source_contrast_step=6.0,
+            metal_auto_directional_gap_bridge_px=4,
+            metal_auto_directional_gap_min_source_intensity=52.0,
+        )
     )
 
     assert config.min_object_source_contrast == pytest.approx(17.5)
+    assert config.min_object_rim_contrast == pytest.approx(41.0)
+    assert config.min_object_rim_area_fraction == pytest.approx(0.002)
+    assert config.auto_source_contrast_step == pytest.approx(6.0)
+    assert config.auto_directional_gap_bridge_px == 4
+    assert config.auto_directional_gap_min_source_intensity == pytest.approx(52.0)
 
 
 def test_metal_recovery_config_preserves_zero_gap_bridge() -> None:
@@ -292,7 +328,6 @@ def test_bowtie_ring_repaired_in_extract_polygons() -> None:
     import cv2
 
     raw = np.array([[[0, 0]], [[20, 0]], [[20, 20]], [[0, 20]]], dtype=np.int32)
-    bad_ring = [(0.0, 0.0), (20.0, 20.0), (0.0, 20.0), (20.0, 0.0)]
     mask = np.zeros((22, 22), dtype=np.uint8)
     cv2.drawContours(mask, [raw], -1, 255, thickness=-1)
     polygons = extract_polygons(
@@ -496,6 +531,13 @@ def test_noisy_sem_preset_finds_trace_on_synthetic() -> None:
 def test_standard_preset_uses_automatic_topology_control() -> None:
     assert standard_metal_preset_payload()["metal_segmentation_strategy"] == "auto"
     assert standard_metal_preset_payload()["metal_auto_contrast_step"] == pytest.approx(10.0)
+    assert standard_metal_preset_payload()["metal_auto_source_contrast_step"] == pytest.approx(4.0)
+    assert standard_metal_preset_payload()["metal_auto_directional_gap_bridge_px"] == 3
+    assert standard_metal_preset_payload()[
+        "metal_auto_directional_gap_min_source_intensity"
+    ] == pytest.approx(45.0)
+    assert standard_metal_preset_payload()["metal_min_object_rim_contrast"] == pytest.approx(36.0)
+    assert standard_metal_preset_payload()["metal_min_object_rim_area_fraction"] == pytest.approx(0.001)
 
 
 def test_auto_contrast_refinement_requires_stable_count_and_better_watershed_agreement() -> None:
@@ -531,6 +573,67 @@ def test_auto_contrast_refinement_requires_stable_count_and_better_watershed_agr
     )
 
 
+def test_auto_local_refinement_uses_stable_source_filtered_candidate(monkeypatch) -> None:
+    mask = np.full((100, 100), 255, dtype=np.uint8)
+
+    def _result(count: int) -> MetalDetectionResult:
+        return MetalDetectionResult(
+            accepted=[
+                PolygonData(id=index, points=[(1, 1), (5, 1), (5, 5), (1, 5)])
+                for index in range(1, count + 1)
+            ],
+            debug_images={"metal_filtered_mask": mask},
+        )
+
+    by_contrast = {12.0: 120, 16.0: 110, 20.0: 105, 24.0: 104}
+
+    def _detect(_gray, candidate_config, **_kwargs):
+        return _result(by_contrast[float(candidate_config.min_object_source_contrast)])
+
+    monkeypatch.setattr(
+        "contour.vision.metal_recovery.detector._detect_metalization_explicit",
+        _detect,
+    )
+    refined, threshold, counts = _stable_local_refinement(
+        np.zeros((100, 100), dtype=np.uint8),
+        MetalRecoveryConfig(
+            min_object_source_contrast=12.0,
+            auto_source_contrast_step=4.0,
+        ),
+        source_image=None,
+        reference=_result(100),
+    )
+
+    assert refined is not None
+    assert threshold == pytest.approx(20.0)
+    assert counts == [120, 110, 105, 104]
+
+
+def test_directional_gap_bridge_requires_source_intensity_evidence() -> None:
+    mask = np.zeros((15, 30), dtype=np.uint8)
+    mask[6:9, 3:12] = 255
+    mask[6:9, 15:25] = 255
+    bright_source = np.zeros_like(mask)
+    bright_source[6:9, 12:15] = 80
+    dark_source = np.zeros_like(mask)
+
+    bridged = _directionally_bridge_mask(
+        mask,
+        bright_source,
+        bridge_px=3,
+        min_source_intensity=45.0,
+    )
+    rejected = _directionally_bridge_mask(
+        mask,
+        dark_source,
+        bridge_px=3,
+        min_source_intensity=45.0,
+    )
+
+    assert np.all(bridged[6:9, 12:15] == 255)
+    assert np.all(rejected[6:9, 12:15] == 0)
+
+
 def test_legacy_settings_migration_in_contour_settings() -> None:
     settings = ContourExtractionSettings.from_dict(
         {"metal_sensitivity_0_100": 78, "metal_sensitivity": "low", "metal_segmentation_method": "otsu"}
@@ -556,6 +659,9 @@ def test_conductor_minimum_contrast_defaults_to_fifty_and_rejects_zero() -> None
 
     assert defaults.metal_min_contrast == pytest.approx(50.0)
     assert defaults.metal_auto_contrast_step == pytest.approx(10.0)
+    assert defaults.metal_auto_source_contrast_step == pytest.approx(4.0)
+    assert defaults.metal_auto_directional_gap_bridge_px == 3
+    assert defaults.metal_auto_directional_gap_min_source_intensity == pytest.approx(45.0)
     assert standard_metal_preset_payload()["metal_min_contrast"] == pytest.approx(50.0)
     assert noisy_sem_metal_preset_payload()["metal_min_contrast"] == pytest.approx(50.0)
     assert restored.metal_min_contrast == pytest.approx(1.0)

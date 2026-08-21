@@ -45,8 +45,22 @@ def test_metal_minimum_contrast_defaults_to_fifty_and_clamps_zero() -> None:
     assert MetalRecoverySettings(min_contrast=0.0).min_contrast == 1.0
     assert MetalRecoverySettings().auto_contrast_step == 10.0
     assert MetalRecoverySettings(auto_contrast_step=-1.0).auto_contrast_step == 0.0
+    assert MetalRecoverySettings().auto_source_contrast_step == 4.0
+    assert MetalRecoverySettings(auto_source_contrast_step=300.0).auto_source_contrast_step == 255.0
+    assert MetalRecoverySettings().auto_directional_gap_bridge_px == 3
+    assert MetalRecoverySettings(auto_directional_gap_bridge_px=-1).auto_directional_gap_bridge_px == 0
+    assert MetalRecoverySettings().auto_directional_gap_min_source_intensity == 45.0
+    assert (
+        MetalRecoverySettings(auto_directional_gap_min_source_intensity=300.0)
+        .auto_directional_gap_min_source_intensity
+        == 255.0
+    )
     assert MetalRecoverySettings().min_object_source_contrast == 12.0
     assert MetalRecoverySettings(min_object_source_contrast=-1.0).min_object_source_contrast == 0.0
+    assert MetalRecoverySettings().min_object_rim_contrast == 36.0
+    assert MetalRecoverySettings(min_object_rim_contrast=300.0).min_object_rim_contrast == 255.0
+    assert MetalRecoverySettings().min_object_rim_area_fraction == 0.001
+    assert MetalRecoverySettings(min_object_rim_area_fraction=0.0).min_object_rim_area_fraction == 0.000001
 
 
 def test_legacy_migrator_reports_unknown_fields() -> None:

@@ -132,11 +132,22 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertEqual(widget.metal_segmentation_strategy_combo.currentData(), "auto")
             self.assertTrue(widget.metal_auto_contrast_step_spin.isEnabled())
             self.assertEqual(widget.metal_auto_contrast_step_spin.value(), 10.0)
+            self.assertTrue(widget.metal_auto_source_contrast_step_spin.isEnabled())
+            self.assertEqual(widget.metal_auto_source_contrast_step_spin.value(), 4.0)
+            self.assertTrue(widget.metal_auto_directional_gap_bridge_spin.isEnabled())
+            self.assertEqual(widget.metal_auto_directional_gap_bridge_spin.value(), 3)
+            self.assertTrue(widget.metal_auto_directional_gap_min_source_spin.isEnabled())
+            self.assertEqual(widget.metal_auto_directional_gap_min_source_spin.value(), 45.0)
+            self.assertEqual(widget.metal_min_object_rim_contrast_spin.value(), 36.0)
+            self.assertEqual(widget.metal_min_object_rim_area_fraction_spin.value(), 0.001)
             self.assertFalse(widget._current_contour_settings().metal_use_wide_conductor_gradient)
             widget.metal_segmentation_strategy_combo.setCurrentIndex(
                 widget.metal_segmentation_strategy_combo.findData("gradient_watershed")
             )
             self.assertFalse(widget.metal_auto_contrast_step_spin.isEnabled())
+            self.assertFalse(widget.metal_auto_source_contrast_step_spin.isEnabled())
+            self.assertFalse(widget.metal_auto_directional_gap_bridge_spin.isEnabled())
+            self.assertFalse(widget.metal_auto_directional_gap_min_source_spin.isEnabled())
             self.assertTrue(widget._current_contour_settings().metal_use_wide_conductor_gradient)
             self.assertEqual(
                 widget._current_contour_settings().metal_segmentation_strategy,

@@ -108,14 +108,16 @@ def _candidate_from_contour(contour: np.ndarray) -> list[tuple[float, float]] | 
 
 
 def _repair_ring_candidates_from_mask(mask: np.ndarray) -> list[tuple[float, float]] | None:
-    for chain_mode in (cv2.CHAIN_APPROX_NONE, cv2.CHAIN_APPROX_SIMPLE):
-        contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, chain_mode)
-        if not contours:
-            continue
-        contour = max(contours, key=lambda item: abs(float(cv2.contourArea(item))))
-        candidate = _candidate_from_contour(contour)
-        if candidate is not None:
-            return candidate
+    masks = (mask, cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))))
+    for candidate_mask in masks:
+        for chain_mode in (cv2.CHAIN_APPROX_NONE, cv2.CHAIN_APPROX_SIMPLE):
+            contours, _hierarchy = cv2.findContours(candidate_mask, cv2.RETR_EXTERNAL, chain_mode)
+            if not contours:
+                continue
+            contour = max(contours, key=lambda item: abs(float(cv2.contourArea(item))))
+            candidate = _candidate_from_contour(contour)
+            if candidate is not None and is_valid_closed_polygon_ring(candidate):
+                return candidate
     return None
 
 
@@ -166,7 +168,10 @@ def repair_ring_from_filled_region(
 
     if require_fill_iou and source_contour is None:
         ref = reference_points if reference_points is not None else points
-        if ref is not None and len(ref) >= 3:
-            if _filled_points_iou(ref, candidate, shape_hw) < _TOPOLOGY_REPAIR_MIN_FILL_IOU:
-                return None
+        if (
+            ref is not None
+            and len(ref) >= 3
+            and _filled_points_iou(ref, candidate, shape_hw) < _TOPOLOGY_REPAIR_MIN_FILL_IOU
+        ):
+            return None
     return candidate

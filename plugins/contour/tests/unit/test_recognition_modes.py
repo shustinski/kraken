@@ -61,6 +61,7 @@ def test_normalize_via_search_mode(raw: object, expected: str) -> None:
         ("графовый разрез", "graph_cut"),
         ("Реконструкция", "reconstruction"),
         ("Watershed", "gradient_watershed"),
+        ("Структурный водораздел", "structural_watershed"),
     ],
 )
 def test_russian_metal_segmentation_values_normalize(raw: str, expected: str) -> None:

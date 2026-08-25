@@ -447,6 +447,10 @@ class ContourExtractionSettings:
     metal_reconstruction_erode_px: int = 0
     metal_boundary_relief: float = 16.0
     metal_boundary_background_sigma: float = 12.0
+    metal_structural_variant: str = "s2"
+    metal_adaptive_block_size: int = 0
+    metal_adaptive_c: float = 0.0
+    metal_adaptive_method: str = "gaussian"
     metal_edge_close_cap_px: int = 9
     metal_edge_watershed_split: bool = True
     metal_edge_watershed_dist_peak_frac: float = 0.38
@@ -663,6 +667,10 @@ class ContourExtractionSettings:
             "metal_reconstruction_erode_px": self.metal_reconstruction_erode_px,
             "metal_boundary_relief": self.metal_boundary_relief,
             "metal_boundary_background_sigma": self.metal_boundary_background_sigma,
+            "metal_structural_variant": self.metal_structural_variant,
+            "metal_adaptive_block_size": self.metal_adaptive_block_size,
+            "metal_adaptive_c": self.metal_adaptive_c,
+            "metal_adaptive_method": self.metal_adaptive_method,
             "metal_edge_close_cap_px": int(self.metal_edge_close_cap_px),
             "metal_edge_watershed_split": bool(self.metal_edge_watershed_split),
             "metal_edge_watershed_dist_peak_frac": float(self.metal_edge_watershed_dist_peak_frac),
@@ -673,6 +681,7 @@ class ContourExtractionSettings:
     def from_dict(cls, payload: dict[str, Any]) -> ContourExtractionSettings:
         from ..vision.metal_recovery.segmentation import (
             migrate_legacy_metal_settings,
+            normalize_metal_adaptive_method,
             resolve_metal_segmentation_strategy,
         )
 
@@ -1060,6 +1069,16 @@ class ContourExtractionSettings:
             metal_boundary_background_sigma=max(
                 2.0,
                 min(60.0, float(payload.get("metal_boundary_background_sigma", 12.0) or 12.0)),
+            ),
+            metal_structural_variant=str(payload.get("metal_structural_variant", "s2") or "s2"),
+            metal_adaptive_block_size=max(
+                0, min(255, int(payload.get("metal_adaptive_block_size", 0) or 0))
+            ),
+            metal_adaptive_c=max(
+                -64.0, min(64.0, float(payload.get("metal_adaptive_c", 0.0) or 0.0))
+            ),
+            metal_adaptive_method=normalize_metal_adaptive_method(
+                payload.get("metal_adaptive_method", "gaussian")
             ),
             metal_preprocess_subtract_background=bool(
                 payload.get("metal_preprocess_subtract_background", True)

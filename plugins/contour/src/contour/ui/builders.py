@@ -40,18 +40,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .no_wheel_controls import NoWheelComboBox as QComboBox
-from .no_wheel_controls import NoWheelDoubleSpinBox as QDoubleSpinBox
-from .no_wheel_controls import NoWheelSpinBox as QSpinBox
-
 from ..application.processing import (
     VIA_DISPLAY_MODE_CIRCLE,
     VIA_DISPLAY_MODE_RECTANGLE,
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_HYBRID,
     VIA_SEARCH_MODE_TEMPLATE,
-    VIA_SIZE_MODE_FIXED,
-    VIA_SIZE_MODE_RANGE,
 )
 from ..application.vector_geometry_postprocess import VectorGeometrySettings
 from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
@@ -60,6 +54,9 @@ from ..graphics.tools import MIN_MANUAL_STROKE_WIDTH_PX
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
 from .frame_matrix_view import FrameMatrixGraphicsView
 from .frame_path_list_model import FramePathListView
+from .no_wheel_controls import NoWheelComboBox as QComboBox
+from .no_wheel_controls import NoWheelDoubleSpinBox as QDoubleSpinBox
+from .no_wheel_controls import NoWheelSpinBox as QSpinBox
 from .pipeline_list import PipelineListWidget
 from .status_list_delegate import attach_status_row_delegate
 
@@ -1687,11 +1684,13 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_segmentation_strategy_combo = QComboBox()
     self.metal_segmentation_strategy_combo.addItem("Авто (контроль связности)", "auto")
     self.metal_segmentation_strategy_combo.addItem("Порог Otsu", "legacy_otsu")
+    self.metal_segmentation_strategy_combo.addItem("Адаптивный порог", "local_adaptive")
     self.metal_segmentation_strategy_combo.addItem("Watershed", "gradient_watershed")
     self.metal_segmentation_strategy_combo.addItem("Random Walker", "random_walker")
     self.metal_segmentation_strategy_combo.addItem("Graph Cut", "graph_cut")
     self.metal_segmentation_strategy_combo.addItem("Reconstruction", "reconstruction")
     self.metal_segmentation_strategy_combo.addItem("Замкнутые границы", "closed_boundary")
+    self.metal_segmentation_strategy_combo.addItem("Структурный водораздел", "structural_watershed")
     self.metal_segmentation_strategy_combo.setCurrentIndex(0)
     _metal_basic_form.addRow("Алгоритм распознавания", self.metal_segmentation_strategy_combo)
     self.metal_segmentation_strategy_label_widget = _metal_basic_form.labelForField(
@@ -1771,6 +1770,34 @@ def build_extraction_tab(self) -> QWidget:
         ("Контуры (сырые)", "metal_contours_raw"),
         ("После фильтрации", "metal_filtered_mask"),
         ("Проверка ширины", "metal_width_check"),
+        ("Структура: денойз", "metal_structural_denoised"),
+        ("Структура: Gx", "metal_structural_gx"),
+        ("Структура: Gy", "metal_structural_gy"),
+        ("Структура: |G|", "metal_structural_gradient_magnitude"),
+        ("Структура: ориентация", "metal_structural_orientation"),
+        ("Структура: когерентность", "metal_structural_coherence"),
+        ("Структура: ridge response", "metal_structural_ridge_response"),
+        ("Структура: ridge markers", "metal_structural_ridge_markers"),
+        ("Структура: ridge fragments", "metal_structural_ridge_fragments"),
+        ("Структура: ridge links", "metal_structural_ridge_links_accepted"),
+        ("Структура: rejected links", "metal_structural_ridge_links_rejected"),
+        ("Структура: boundary veto", "metal_structural_ridge_links_boundary_veto"),
+        ("Структура: logical ridge", "metal_structural_logical_ridge"),
+        ("Структура: wide interior", "metal_structural_wide_interior_markers"),
+        ("Структура: wide fragments", "metal_structural_wide_fragments"),
+        ("Структура: logical wide", "metal_structural_logical_wide"),
+        ("Структура: logical markers", "metal_structural_logical_markers"),
+        ("Структура: conductor bands", "metal_structural_conductor_bands"),
+        ("Структура: transverse samples", "metal_structural_transverse_samples"),
+        ("Структура: accepted band groups", "metal_structural_band_groups_accepted"),
+        ("Структура: rejected band groups", "metal_structural_band_groups_rejected"),
+        ("Структура: foreground markers", "metal_structural_foreground_markers"),
+        ("Структура: background markers", "metal_structural_background_markers"),
+        ("Структура: boundary cost", "metal_structural_boundary_cost"),
+        ("Структура: watershed labels", "metal_structural_watershed_labels"),
+        ("Структура: instance labels", "metal_structural_instance_labels"),
+        ("Структура: label boundary", "metal_structural_label_boundary"),
+        ("Структура: final mask", "metal_structural_final_mask"),
     ):
         self.metal_debug_visual_combo.addItem(_l, _d)
     self.metal_gradient_3d_button = QPushButton("3D поле")
@@ -1929,6 +1956,19 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_boundary_background_spin.setDecimals(1)
     self.metal_boundary_background_spin.setSingleStep(1.0)
     self.metal_boundary_background_spin.setValue(12.0)
+    self.metal_adaptive_block_spin = QSpinBox()
+    self.metal_adaptive_block_spin.setRange(0, 255)
+    self.metal_adaptive_block_spin.setSingleStep(2)
+    self.metal_adaptive_block_spin.setSpecialValueText("Авто")
+    self.metal_adaptive_block_spin.setValue(0)
+    self.metal_adaptive_c_spin = QDoubleSpinBox()
+    self.metal_adaptive_c_spin.setRange(-64.0, 64.0)
+    self.metal_adaptive_c_spin.setDecimals(1)
+    self.metal_adaptive_c_spin.setSingleStep(1.0)
+    self.metal_adaptive_c_spin.setValue(0.0)
+    self.metal_adaptive_method_combo = QComboBox()
+    self.metal_adaptive_method_combo.addItem("Гаусс", "gaussian")
+    self.metal_adaptive_method_combo.addItem("Среднее", "mean")
     self.metal_hierarchy_combo = QComboBox()
     self.metal_hierarchy_combo.addItem("Полная иерархия", "full")
     self.metal_hierarchy_combo.addItem("Только внешние контуры", "external")
@@ -2050,6 +2090,18 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_boundary_background_spin
     )
 
+    self.metal_adaptive_group = QGroupBox("Адаптивный порог")
+    _metal_ad_form = QFormLayout(self.metal_adaptive_group)
+    self._configure_compact_form(_metal_ad_form)
+    _metal_ad_form.addRow("Размер окна, px", self.metal_adaptive_block_spin)
+    self.metal_adaptive_block_label_widget = _metal_ad_form.labelForField(self.metal_adaptive_block_spin)
+    _metal_ad_form.addRow("Смещение порога C", self.metal_adaptive_c_spin)
+    self.metal_adaptive_c_label_widget = _metal_ad_form.labelForField(self.metal_adaptive_c_spin)
+    _metal_ad_form.addRow("Метод", self.metal_adaptive_method_combo)
+    self.metal_adaptive_method_label_widget = _metal_ad_form.labelForField(
+        self.metal_adaptive_method_combo
+    )
+
     _metal_adv_wrap = QWidget()
     _adv_box_l = QVBoxLayout(_metal_adv_wrap)
     _adv_box_l.setContentsMargins(8, 4, 8, 4)
@@ -2057,6 +2109,7 @@ def build_extraction_tab(self) -> QWidget:
     _adv_box_l.addWidget(self.metal_filter_group)
     _adv_box_l.addWidget(self.metal_recognition_params_group)
     _adv_box_l.addWidget(self.metal_preprocessing_group)
+    _adv_box_l.addWidget(self.metal_adaptive_group)
     _adv_box_l.addWidget(self.metal_watershed_group)
     _adv_box_l.addWidget(self.metal_random_walker_group)
     _adv_box_l.addWidget(self.metal_graph_cut_group)
@@ -2142,6 +2195,8 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_recon_erode_spin,
         self.metal_boundary_relief_spin,
         self.metal_boundary_background_spin,
+        self.metal_adaptive_block_spin,
+        self.metal_adaptive_c_spin,
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
@@ -2152,6 +2207,7 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_preprocess_background_sigma_spin.setEnabled
     )
     self.metal_preprocess_denoise_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
+    self.metal_adaptive_method_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(
         lambda: self.metal_auto_contrast_step_spin.setEnabled(

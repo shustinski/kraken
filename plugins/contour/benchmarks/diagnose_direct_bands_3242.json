@@ -1,0 +1,4457 @@
+{
+  "frame": "3242",
+  "evaluation_border_crop_px": 50,
+  "inference": {
+    "sample_sites": 6000,
+    "candidate_bands": 840,
+    "used_ridge_cc_ids": false,
+    "used_marker_ids": false,
+    "used_gt": false
+  },
+  "current_s10_markers": {
+    "gt_count": 711,
+    "gt_with_0": 2,
+    "gt_with_exactly_1": 130,
+    "gt_with_more_than_1": 579,
+    "median_per_gt": 2.0
+  },
+  "direct_bands": {
+    "gt_count": 711,
+    "gt_with_0_candidate_bands": 88,
+    "gt_with_exactly_1_candidate_band": 391,
+    "gt_with_more_than_1_candidate_band": 232,
+    "bands_overlapping_0_gt": 0,
+    "bands_overlapping_exactly_1_gt": 686,
+    "bands_overlapping_more_than_1_gt": 154,
+    "mean_bands_per_gt": 1.60196905766526,
+    "median_bands_per_gt": 1.0,
+    "p90_bands_per_gt": 3.0
+  },
+  "current_multi_marker_gt": {
+    "count": 579,
+    "direct_bands_on_those_gt": {
+      "with_0": 49,
+      "with_1": 307,
+      "with_more_than_1": 223
+    },
+    "median_direct_bands": 1.0,
+    "rows": [
+      {
+        "gt_id": 1,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 4,
+        "current_markers": 10,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 6,
+        "current_markers": 7,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 9,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 11,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 12,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 14,
+        "current_markers": 48,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 15,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 16,
+        "current_markers": 4,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 18,
+        "current_markers": 6,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 20,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 21,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 22,
+        "current_markers": 5,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 23,
+        "current_markers": 24,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 25,
+        "current_markers": 33,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 26,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 27,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 28,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 29,
+        "current_markers": 68,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 30,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 32,
+        "current_markers": 36,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 33,
+        "current_markers": 23,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 34,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 35,
+        "current_markers": 25,
+        "direct_bands": 16
+      },
+      {
+        "gt_id": 36,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 37,
+        "current_markers": 31,
+        "direct_bands": 19
+      },
+      {
+        "gt_id": 38,
+        "current_markers": 4,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 39,
+        "current_markers": 65,
+        "direct_bands": 23
+      },
+      {
+        "gt_id": 40,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 42,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 43,
+        "current_markers": 53,
+        "direct_bands": 10
+      },
+      {
+        "gt_id": 45,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 46,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 48,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 49,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 50,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 51,
+        "current_markers": 11,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 53,
+        "current_markers": 8,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 54,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 55,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 57,
+        "current_markers": 38,
+        "direct_bands": 11
+      },
+      {
+        "gt_id": 58,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 59,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 60,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 61,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 62,
+        "current_markers": 3,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 63,
+        "current_markers": 4,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 64,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 65,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 66,
+        "current_markers": 12,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 67,
+        "current_markers": 8,
+        "direct_bands": 7
+      },
+      {
+        "gt_id": 68,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 70,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 72,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 73,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 74,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 75,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 76,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 77,
+        "current_markers": 11,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 78,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 79,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 80,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 81,
+        "current_markers": 6,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 82,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 83,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 84,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 85,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 86,
+        "current_markers": 12,
+        "direct_bands": 7
+      },
+      {
+        "gt_id": 87,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 88,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 91,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 93,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 94,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 97,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 98,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 100,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 101,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 103,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 104,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 105,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 106,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 107,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 108,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 109,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 110,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 111,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 112,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 113,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 115,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 116,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 117,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 119,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 120,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 122,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 123,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 124,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 125,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 126,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 129,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 130,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 131,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 132,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 133,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 134,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 135,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 136,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 137,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 139,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 140,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 142,
+        "current_markers": 4,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 143,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 144,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 145,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 146,
+        "current_markers": 3,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 148,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 149,
+        "current_markers": 6,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 150,
+        "current_markers": 6,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 151,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 152,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 153,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 155,
+        "current_markers": 12,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 157,
+        "current_markers": 6,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 158,
+        "current_markers": 3,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 159,
+        "current_markers": 8,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 160,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 161,
+        "current_markers": 4,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 162,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 163,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 164,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 165,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 166,
+        "current_markers": 8,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 167,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 168,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 169,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 170,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 171,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 172,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 173,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 174,
+        "current_markers": 5,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 175,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 176,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 177,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 179,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 180,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 181,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 182,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 184,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 185,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 186,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 187,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 188,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 189,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 190,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 191,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 192,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 193,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 194,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 195,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 196,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 198,
+        "current_markers": 6,
+        "direct_bands": 7
+      },
+      {
+        "gt_id": 199,
+        "current_markers": 8,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 200,
+        "current_markers": 6,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 201,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 202,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 203,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 204,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 205,
+        "current_markers": 3,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 206,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 207,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 208,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 209,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 210,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 211,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 212,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 215,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 216,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 218,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 219,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 220,
+        "current_markers": 5,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 221,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 222,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 223,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 224,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 225,
+        "current_markers": 8,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 226,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 227,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 229,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 230,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 232,
+        "current_markers": 4,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 233,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 234,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 235,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 238,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 239,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 242,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 243,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 244,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 245,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 246,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 247,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 248,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 249,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 250,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 251,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 252,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 253,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 254,
+        "current_markers": 5,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 256,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 257,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 258,
+        "current_markers": 6,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 260,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 261,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 262,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 263,
+        "current_markers": 5,
+        "direct_bands": 7
+      },
+      {
+        "gt_id": 264,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 265,
+        "current_markers": 6,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 266,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 267,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 268,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 269,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 270,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 271,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 272,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 273,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 274,
+        "current_markers": 3,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 275,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 276,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 277,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 278,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 280,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 282,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 283,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 284,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 285,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 286,
+        "current_markers": 3,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 287,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 288,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 289,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 290,
+        "current_markers": 10,
+        "direct_bands": 8
+      },
+      {
+        "gt_id": 291,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 292,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 293,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 294,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 296,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 297,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 298,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 300,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 301,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 303,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 304,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 305,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 306,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 307,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 309,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 311,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 312,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 313,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 314,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 315,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 318,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 319,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 320,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 321,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 322,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 323,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 326,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 327,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 328,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 331,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 332,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 333,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 335,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 336,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 337,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 338,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 339,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 341,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 342,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 343,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 345,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 346,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 347,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 348,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 350,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 351,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 352,
+        "current_markers": 14,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 353,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 354,
+        "current_markers": 10,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 355,
+        "current_markers": 9,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 356,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 357,
+        "current_markers": 5,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 359,
+        "current_markers": 5,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 360,
+        "current_markers": 6,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 361,
+        "current_markers": 2,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 362,
+        "current_markers": 4,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 363,
+        "current_markers": 7,
+        "direct_bands": 8
+      },
+      {
+        "gt_id": 364,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 365,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 366,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 368,
+        "current_markers": 5,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 369,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 370,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 371,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 372,
+        "current_markers": 6,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 373,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 374,
+        "current_markers": 5,
+        "direct_bands": 9
+      },
+      {
+        "gt_id": 375,
+        "current_markers": 9,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 376,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 378,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 381,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 384,
+        "current_markers": 5,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 385,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 386,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 387,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 388,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 389,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 390,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 391,
+        "current_markers": 3,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 392,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 393,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 394,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 395,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 396,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 401,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 404,
+        "current_markers": 5,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 405,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 407,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 409,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 410,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 412,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 413,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 415,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 416,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 418,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 419,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 420,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 421,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 422,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 423,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 424,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 425,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 427,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 428,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 429,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 431,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 432,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 434,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 435,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 437,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 438,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 439,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 440,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 442,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 443,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 444,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 445,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 446,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 447,
+        "current_markers": 2,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 448,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 450,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 451,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 452,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 454,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 455,
+        "current_markers": 4,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 456,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 457,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 458,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 459,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 460,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 462,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 463,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 464,
+        "current_markers": 5,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 465,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 466,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 467,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 468,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 469,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 470,
+        "current_markers": 6,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 471,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 472,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 473,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 474,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 475,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 476,
+        "current_markers": 13,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 477,
+        "current_markers": 6,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 479,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 481,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 482,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 483,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 484,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 485,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 486,
+        "current_markers": 8,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 487,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 488,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 489,
+        "current_markers": 9,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 490,
+        "current_markers": 7,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 491,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 492,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 493,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 494,
+        "current_markers": 13,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 495,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 496,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 498,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 499,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 500,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 501,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 502,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 505,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 506,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 507,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 509,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 510,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 511,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 512,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 513,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 514,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 515,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 516,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 517,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 518,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 519,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 520,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 521,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 522,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 523,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 524,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 525,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 526,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 527,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 528,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 531,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 532,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 533,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 534,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 535,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 536,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 537,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 538,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 539,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 541,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 542,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 543,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 544,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 545,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 546,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 547,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 548,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 549,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 550,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 551,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 553,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 554,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 555,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 556,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 558,
+        "current_markers": 11,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 559,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 560,
+        "current_markers": 6,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 561,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 562,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 563,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 564,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 565,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 566,
+        "current_markers": 5,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 567,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 568,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 569,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 570,
+        "current_markers": 4,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 572,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 573,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 574,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 575,
+        "current_markers": 6,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 576,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 577,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 578,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 579,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 580,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 581,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 582,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 583,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 584,
+        "current_markers": 5,
+        "direct_bands": 5
+      },
+      {
+        "gt_id": 585,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 586,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 587,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 589,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 590,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 593,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 594,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 595,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 596,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 597,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 598,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 599,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 600,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 601,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 602,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 603,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 604,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 605,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 606,
+        "current_markers": 4,
+        "direct_bands": 7
+      },
+      {
+        "gt_id": 607,
+        "current_markers": 7,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 608,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 609,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 610,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 611,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 613,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 614,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 615,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 617,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 618,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 619,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 622,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 623,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 625,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 626,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 627,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 629,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 630,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 631,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 632,
+        "current_markers": 5,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 633,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 634,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 637,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 638,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 639,
+        "current_markers": 5,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 640,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 641,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 642,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 643,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 645,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 646,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 649,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 650,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 651,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 653,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 654,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 655,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 657,
+        "current_markers": 3,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 659,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 660,
+        "current_markers": 5,
+        "direct_bands": 6
+      },
+      {
+        "gt_id": 661,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 664,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 665,
+        "current_markers": 3,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 666,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 667,
+        "current_markers": 4,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 668,
+        "current_markers": 4,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 669,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 670,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 672,
+        "current_markers": 2,
+        "direct_bands": 3
+      },
+      {
+        "gt_id": 673,
+        "current_markers": 4,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 675,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 676,
+        "current_markers": 2,
+        "direct_bands": 4
+      },
+      {
+        "gt_id": 677,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 678,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 679,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 681,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 682,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 683,
+        "current_markers": 2,
+        "direct_bands": 0
+      },
+      {
+        "gt_id": 684,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 685,
+        "current_markers": 4,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 687,
+        "current_markers": 4,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 688,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 690,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 691,
+        "current_markers": 2,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 692,
+        "current_markers": 3,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 693,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 694,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 695,
+        "current_markers": 5,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 696,
+        "current_markers": 5,
+        "direct_bands": 2
+      },
+      {
+        "gt_id": 697,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 698,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 699,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 700,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 701,
+        "current_markers": 3,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 702,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 703,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 704,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 707,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 708,
+        "current_markers": 2,
+        "direct_bands": 1
+      },
+      {
+        "gt_id": 709,
+        "current_markers": 2,
+        "direct_bands": 1
+      }
+    ]
+  },
+  "gate": {
+    "continue_band_native": false,
+    "median_bands_per_gt": 1.0,
+    "gt_with_more_than_1": 232,
+    "cross_gt_bands": 154,
+    "reason": "direct detector still over-segments or cross-links GTs; close band-native"
+  },
+  "rois": [
+    {
+      "file_prefix": "001_gt_one_82",
+      "kind": "gt_one",
+      "id": 82,
+      "bbox_full": [
+        125,
+        75,
+        205,
+        157
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "002_gt_one_311",
+      "kind": "gt_one",
+      "id": 311,
+      "bbox_full": [
+        968,
+        744,
+        1048,
+        825
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "003_gt_one_532",
+      "kind": "gt_one",
+      "id": 532,
+      "bbox_full": [
+        880,
+        1387,
+        960,
+        1475
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "004_gt_one_223",
+      "kind": "gt_one",
+      "id": 223,
+      "bbox_full": [
+        1181,
+        453,
+        1261,
+        587
+      ],
+      "pair_width": 28.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "005_gt_one_571",
+      "kind": "gt_one",
+      "id": 571,
+      "bbox_full": [
+        1892,
+        1485,
+        1972,
+        1568
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "006_gt_one_243",
+      "kind": "gt_one",
+      "id": 243,
+      "bbox_full": [
+        125,
+        520,
+        205,
+        602
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "007_gt_one_524",
+      "kind": "gt_one",
+      "id": 524,
+      "bbox_full": [
+        307,
+        1370,
+        387,
+        1477
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "008_gt_one_505",
+      "kind": "gt_one",
+      "id": 505,
+      "bbox_full": [
+        807,
+        1324,
+        887,
+        1404
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "009_gt_one_670",
+      "kind": "gt_one",
+      "id": 670,
+      "bbox_full": [
+        1556,
+        1779,
+        1636,
+        1870
+      ],
+      "pair_width": 20.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "010_gt_one_88",
+      "kind": "gt_one",
+      "id": 88,
+      "bbox_full": [
+        308,
+        113,
+        388,
+        193
+      ],
+      "pair_width": 9.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "011_gt_one_516",
+      "kind": "gt_one",
+      "id": 516,
+      "bbox_full": [
+        1077,
+        1353,
+        1157,
+        1654
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "012_gt_one_403",
+      "kind": "gt_one",
+      "id": 403,
+      "bbox_full": [
+        1228,
+        996,
+        1308,
+        1076
+      ],
+      "pair_width": 9.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "013_gt_one_244",
+      "kind": "gt_one",
+      "id": 244,
+      "bbox_full": [
+        1739,
+        521,
+        1819,
+        603
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "014_gt_one_119",
+      "kind": "gt_one",
+      "id": 119,
+      "bbox_full": [
+        322,
+        188,
+        402,
+        335
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "015_gt_one_217",
+      "kind": "gt_one",
+      "id": 217,
+      "bbox_full": [
+        1557,
+        444,
+        1637,
+        524
+      ],
+      "pair_width": 10.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "016_gt_one_27",
+      "kind": "gt_one",
+      "id": 27,
+      "bbox_full": [
+        788,
+        22,
+        868,
+        337
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "017_gt_one_382",
+      "kind": "gt_one",
+      "id": 382,
+      "bbox_full": [
+        1665,
+        930,
+        1745,
+        1037
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "018_gt_one_704",
+      "kind": "gt_one",
+      "id": 704,
+      "bbox_full": [
+        1042,
+        1884,
+        1122,
+        1965
+      ],
+      "pair_width": 9.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "019_gt_one_58",
+      "kind": "gt_one",
+      "id": 58,
+      "bbox_full": [
+        1892,
+        15,
+        1972,
+        95
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "020_gt_one_628",
+      "kind": "gt_one",
+      "id": 628,
+      "bbox_full": [
+        1739,
+        1630,
+        1819,
+        1710
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "021_gt_one_659",
+      "kind": "gt_one",
+      "id": 659,
+      "bbox_full": [
+        125,
+        1742,
+        205,
+        1822
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "022_gt_one_162",
+      "kind": "gt_one",
+      "id": 162,
+      "bbox_full": [
+        1286,
+        301,
+        1366,
+        387
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "023_gt_one_636",
+      "kind": "gt_one",
+      "id": 636,
+      "bbox_full": [
+        589,
+        1653,
+        669,
+        1733
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "024_gt_one_272",
+      "kind": "gt_one",
+      "id": 272,
+      "bbox_full": [
+        1739,
+        628,
+        1819,
+        710
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "025_gt_one_564",
+      "kind": "gt_one",
+      "id": 564,
+      "bbox_full": [
+        1557,
+        1482,
+        1637,
+        1573
+      ],
+      "pair_width": 20.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "026_gt_one_415",
+      "kind": "gt_one",
+      "id": 415,
+      "bbox_full": [
+        1557,
+        1037,
+        1637,
+        1117
+      ],
+      "pair_width": 9.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "027_gt_one_269",
+      "kind": "gt_one",
+      "id": 269,
+      "bbox_full": [
+        588,
+        600,
+        668,
+        684
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "028_gt_one_315",
+      "kind": "gt_one",
+      "id": 315,
+      "bbox_full": [
+        807,
+        769,
+        887,
+        913
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "029_gt_one_116",
+      "kind": "gt_one",
+      "id": 116,
+      "bbox_full": [
+        739,
+        184,
+        819,
+        267
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "030_gt_one_247",
+      "kind": "gt_one",
+      "id": 247,
+      "bbox_full": [
+        308,
+        545,
+        388,
+        636
+      ],
+      "pair_width": 33.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "031_gt_multi_229",
+      "kind": "gt_multi",
+      "id": 229,
+      "bbox_full": [
+        690,
+        470,
+        770,
+        677
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "032_gt_multi_109",
+      "kind": "gt_multi",
+      "id": 109,
+      "bbox_full": [
+        1892,
+        168,
+        1972,
+        293
+      ],
+      "pair_width": 32.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "033_gt_multi_195",
+      "kind": "gt_multi",
+      "id": 195,
+      "bbox_full": [
+        1286,
+        377,
+        1366,
+        483
+      ],
+      "pair_width": 8.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "034_gt_multi_446",
+      "kind": "gt_multi",
+      "id": 446,
+      "bbox_full": [
+        1556,
+        1138,
+        1636,
+        1228
+      ],
+      "pair_width": 25.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": true
+    },
+    {
+      "file_prefix": "035_gt_multi_45",
+      "kind": "gt_multi",
+      "id": 45,
+      "bbox_full": [
+        1523,
+        22,
+        1603,
+        340
+      ],
+      "pair_width": 12.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "036_gt_multi_209",
+      "kind": "gt_multi",
+      "id": 209,
+      "bbox_full": [
+        1043,
+        415,
+        1123,
+        613
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "037_gt_multi_456",
+      "kind": "gt_multi",
+      "id": 456,
+      "bbox_full": [
+        1578,
+        1185,
+        1658,
+        1345
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "038_gt_multi_43",
+      "kind": "gt_multi",
+      "id": 43,
+      "bbox_full": [
+        1463,
+        22,
+        1543,
+        1978
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "039_gt_multi_215",
+      "kind": "gt_multi",
+      "id": 215,
+      "bbox_full": [
+        279,
+        444,
+        359,
+        595
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "040_gt_multi_270",
+      "kind": "gt_multi",
+      "id": 270,
+      "bbox_full": [
+        808,
+        614,
+        888,
+        740
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "041_gt_multi_475",
+      "kind": "gt_multi",
+      "id": 475,
+      "bbox_full": [
+        1585,
+        1227,
+        1665,
+        1379
+      ],
+      "pair_width": 20.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "042_gt_multi_363",
+      "kind": "gt_multi",
+      "id": 363,
+      "bbox_full": [
+        1522,
+        890,
+        1602,
+        1525
+      ],
+      "pair_width": 25.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": true
+    },
+    {
+      "file_prefix": "043_gt_multi_37",
+      "kind": "gt_multi",
+      "id": 37,
+      "bbox_full": [
+        1217,
+        22,
+        1342,
+        1978
+      ],
+      "pair_width": 9.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "044_gt_multi_68",
+      "kind": "gt_multi",
+      "id": 68,
+      "bbox_full": [
+        1585,
+        42,
+        1665,
+        194
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "045_gt_multi_688",
+      "kind": "gt_multi",
+      "id": 688,
+      "bbox_full": [
+        589,
+        1825,
+        669,
+        1978
+      ],
+      "pair_width": 4.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "046_gt_multi_157",
+      "kind": "gt_multi",
+      "id": 157,
+      "bbox_full": [
+        1295,
+        299,
+        1375,
+        931
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "047_gt_multi_206",
+      "kind": "gt_multi",
+      "id": 206,
+      "bbox_full": [
+        1203,
+        411,
+        1283,
+        552
+      ],
+      "pair_width": 34.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "048_gt_multi_550",
+      "kind": "gt_multi",
+      "id": 550,
+      "bbox_full": [
+        1217,
+        1480,
+        1297,
+        1674
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "049_gt_multi_198",
+      "kind": "gt_multi",
+      "id": 198,
+      "bbox_full": [
+        524,
+        389,
+        604,
+        910
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "050_gt_multi_170",
+      "kind": "gt_multi",
+      "id": 170,
+      "bbox_full": [
+        1108,
+        313,
+        1188,
+        408
+      ],
+      "pair_width": 4.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "051_gt_multi_193",
+      "kind": "gt_multi",
+      "id": 193,
+      "bbox_full": [
+        589,
+        376,
+        669,
+        513
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "052_gt_multi_675",
+      "kind": "gt_multi",
+      "id": 675,
+      "bbox_full": [
+        322,
+        1783,
+        402,
+        1930
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "053_gt_multi_352",
+      "kind": "gt_multi",
+      "id": 352,
+      "bbox_full": [
+        547,
+        890,
+        627,
+        1525
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "054_gt_multi_110",
+      "kind": "gt_multi",
+      "id": 110,
+      "bbox_full": [
+        808,
+        173,
+        888,
+        328
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "055_gt_multi_527",
+      "kind": "gt_multi",
+      "id": 527,
+      "bbox_full": [
+        322,
+        1374,
+        402,
+        1520
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "056_gt_multi_105",
+      "kind": "gt_multi",
+      "id": 105,
+      "bbox_full": [
+        1286,
+        154,
+        1366,
+        260
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "057_gt_multi_268",
+      "kind": "gt_multi",
+      "id": 268,
+      "bbox_full": [
+        1542,
+        599,
+        1622,
+        745
+      ],
+      "pair_width": 20.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "058_gt_multi_222",
+      "kind": "gt_multi",
+      "id": 222,
+      "bbox_full": [
+        970,
+        449,
+        1050,
+        611
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "059_gt_multi_474",
+      "kind": "gt_multi",
+      "id": 474,
+      "bbox_full": [
+        279,
+        1227,
+        359,
+        1378
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "060_gt_multi_49",
+      "kind": "gt_multi",
+      "id": 49,
+      "bbox_full": [
+        1608,
+        22,
+        1688,
+        340
+      ],
+      "pair_width": 8.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "061_gt_zero_547",
+      "kind": "gt_zero",
+      "id": 547,
+      "bbox_full": [
+        1146,
+        1446,
+        1226,
+        1526
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "062_gt_zero_132",
+      "kind": "gt_zero",
+      "id": 132,
+      "bbox_full": [
+        1202,
+        242,
+        1282,
+        322
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "063_gt_zero_566",
+      "kind": "gt_zero",
+      "id": 566,
+      "bbox_full": [
+        1636,
+        1483,
+        1716,
+        1978
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "064_gt_zero_411",
+      "kind": "gt_zero",
+      "id": 411,
+      "bbox_full": [
+        452,
+        1020,
+        534,
+        1100
+      ],
+      "pair_width": 18.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "065_gt_zero_142",
+      "kind": "gt_zero",
+      "id": 142,
+      "bbox_full": [
+        229,
+        297,
+        309,
+        932
+      ],
+      "pair_width": 7.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "066_gt_zero_541",
+      "kind": "gt_zero",
+      "id": 541,
+      "bbox_full": [
+        1202,
+        1428,
+        1282,
+        1508
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "067_gt_zero_565",
+      "kind": "gt_zero",
+      "id": 565,
+      "bbox_full": [
+        1607,
+        1483,
+        1687,
+        1978
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "068_gt_zero_213",
+      "kind": "gt_zero",
+      "id": 213,
+      "bbox_full": [
+        451,
+        427,
+        533,
+        507
+      ],
+      "pair_width": null,
+      "ridge_peaks_in_pair": null,
+      "separator": null
+    },
+    {
+      "file_prefix": "069_cross_gt_2",
+      "kind": "cross_gt",
+      "id": 2,
+      "bbox_full": [
+        872,
+        22,
+        952,
+        341
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "070_cross_gt_4",
+      "kind": "cross_gt",
+      "id": 4,
+      "bbox_full": [
+        977,
+        22,
+        1069,
+        187
+      ],
+      "pair_width": 16.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": true
+    },
+    {
+      "file_prefix": "071_cross_gt_9",
+      "kind": "cross_gt",
+      "id": 9,
+      "bbox_full": [
+        1550,
+        22,
+        1639,
+        104
+      ],
+      "pair_width": 30.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "072_cross_gt_26",
+      "kind": "cross_gt",
+      "id": 26,
+      "bbox_full": [
+        1550,
+        46,
+        1630,
+        126
+      ],
+      "pair_width": 4.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "073_cross_gt_31",
+      "kind": "cross_gt",
+      "id": 31,
+      "bbox_full": [
+        1223,
+        69,
+        1304,
+        156
+      ],
+      "pair_width": 14.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": true
+    },
+    {
+      "file_prefix": "074_cross_gt_40",
+      "kind": "cross_gt",
+      "id": 40,
+      "bbox_full": [
+        1368,
+        79,
+        1448,
+        172
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "075_cross_gt_42",
+      "kind": "cross_gt",
+      "id": 42,
+      "bbox_full": [
+        1887,
+        83,
+        1978,
+        176
+      ],
+      "pair_width": 32.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "076_cross_gt_44",
+      "kind": "cross_gt",
+      "id": 44,
+      "bbox_full": [
+        1188,
+        84,
+        1274,
+        164
+      ],
+      "pair_width": 27.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "077_cross_gt_47",
+      "kind": "cross_gt",
+      "id": 47,
+      "bbox_full": [
+        682,
+        96,
+        772,
+        182
+      ],
+      "pair_width": 16.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": true
+    },
+    {
+      "file_prefix": "078_cross_gt_62",
+      "kind": "cross_gt",
+      "id": 62,
+      "bbox_full": [
+        525,
+        122,
+        613,
+        202
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "079_cross_gt_70",
+      "kind": "cross_gt",
+      "id": 70,
+      "bbox_full": [
+        1196,
+        149,
+        1315,
+        285
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "080_cross_gt_77",
+      "kind": "cross_gt",
+      "id": 77,
+      "bbox_full": [
+        1088,
+        154,
+        1168,
+        241
+      ],
+      "pair_width": 9.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "081_cross_gt_82",
+      "kind": "cross_gt",
+      "id": 82,
+      "bbox_full": [
+        1368,
+        165,
+        1448,
+        252
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "082_cross_gt_85",
+      "kind": "cross_gt",
+      "id": 85,
+      "bbox_full": [
+        1899,
+        169,
+        1979,
+        256
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "083_cross_gt_88",
+      "kind": "cross_gt",
+      "id": 88,
+      "bbox_full": [
+        1292,
+        178,
+        1386,
+        288
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "084_cross_gt_92",
+      "kind": "cross_gt",
+      "id": 92,
+      "bbox_full": [
+        1550,
+        184,
+        1671,
+        296
+      ],
+      "pair_width": 28.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "085_cross_gt_94",
+      "kind": "cross_gt",
+      "id": 94,
+      "bbox_full": [
+        286,
+        188,
+        366,
+        268
+      ],
+      "pair_width": 20.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "086_cross_gt_104",
+      "kind": "cross_gt",
+      "id": 104,
+      "bbox_full": [
+        1869,
+        212,
+        1978,
+        314
+      ],
+      "pair_width": 32.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "087_cross_gt_113",
+      "kind": "cross_gt",
+      "id": 113,
+      "bbox_full": [
+        1224,
+        230,
+        1315,
+        310
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "088_cross_gt_123",
+      "kind": "cross_gt",
+      "id": 123,
+      "bbox_full": [
+        1550,
+        252,
+        1642,
+        334
+      ],
+      "pair_width": 33.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "089_cross_gt_133",
+      "kind": "cross_gt",
+      "id": 133,
+      "bbox_full": [
+        841,
+        297,
+        965,
+        930
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "090_cross_gt_137",
+      "kind": "cross_gt",
+      "id": 137,
+      "bbox_full": [
+        1293,
+        300,
+        1386,
+        398
+      ],
+      "pair_width": 25.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": true
+    },
+    {
+      "file_prefix": "091_cross_gt_140",
+      "kind": "cross_gt",
+      "id": 140,
+      "bbox_full": [
+        1550,
+        304,
+        1630,
+        384
+      ],
+      "pair_width": 20.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "092_cross_gt_144",
+      "kind": "cross_gt",
+      "id": 144,
+      "bbox_full": [
+        1338,
+        313,
+        1421,
+        393
+      ],
+      "pair_width": 22.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": true
+    },
+    {
+      "file_prefix": "093_cross_gt_147",
+      "kind": "cross_gt",
+      "id": 147,
+      "bbox_full": [
+        1224,
+        329,
+        1315,
+        409
+      ],
+      "pair_width": 32.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "094_cross_gt_153",
+      "kind": "cross_gt",
+      "id": 153,
+      "bbox_full": [
+        1569,
+        340,
+        1658,
+        454
+      ],
+      "pair_width": 20.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "095_cross_gt_155",
+      "kind": "cross_gt",
+      "id": 155,
+      "bbox_full": [
+        315,
+        342,
+        395,
+        422
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "096_cross_gt_157",
+      "kind": "cross_gt",
+      "id": 157,
+      "bbox_full": [
+        1550,
+        344,
+        1630,
+        424
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "097_cross_gt_175",
+      "kind": "cross_gt",
+      "id": 175,
+      "bbox_full": [
+        1223,
+        382,
+        1315,
+        463
+      ],
+      "pair_width": 27.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": true
+    },
+    {
+      "file_prefix": "098_cross_gt_176",
+      "kind": "cross_gt",
+      "id": 176,
+      "bbox_full": [
+        1368,
+        385,
+        1448,
+        563
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "099_cross_gt_184",
+      "kind": "cross_gt",
+      "id": 184,
+      "bbox_full": [
+        1174,
+        398,
+        1261,
+        478
+      ],
+      "pair_width": 28.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "100_cross_gt_192",
+      "kind": "cross_gt",
+      "id": 192,
+      "bbox_full": [
+        977,
+        415,
+        1070,
+        498
+      ],
+      "pair_width": 33.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": false
+    },
+    {
+      "file_prefix": "101_cross_gt_193",
+      "kind": "cross_gt",
+      "id": 193,
+      "bbox_full": [
+        1210,
+        414,
+        1315,
+        504
+      ],
+      "pair_width": 30.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "102_cross_gt_202",
+      "kind": "cross_gt",
+      "id": 202,
+      "bbox_full": [
+        525,
+        433,
+        605,
+        513
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "103_cross_gt_206",
+      "kind": "cross_gt",
+      "id": 206,
+      "bbox_full": [
+        1569,
+        445,
+        1659,
+        594
+      ],
+      "pair_width": 5.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "104_cross_gt_211",
+      "kind": "cross_gt",
+      "id": 211,
+      "bbox_full": [
+        1049,
+        450,
+        1143,
+        609
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "105_cross_gt_213",
+      "kind": "cross_gt",
+      "id": 213,
+      "bbox_full": [
+        977,
+        452,
+        1069,
+        563
+      ],
+      "pair_width": 27.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": true
+    },
+    {
+      "file_prefix": "106_cross_gt_215",
+      "kind": "cross_gt",
+      "id": 215,
+      "bbox_full": [
+        1167,
+        455,
+        1289,
+        551
+      ],
+      "pair_width": 28.0,
+      "ridge_peaks_in_pair": 2,
+      "separator": false
+    },
+    {
+      "file_prefix": "107_cross_gt_226",
+      "kind": "cross_gt",
+      "id": 226,
+      "bbox_full": [
+        1223,
+        479,
+        1315,
+        566
+      ],
+      "pair_width": 6.0,
+      "ridge_peaks_in_pair": 1,
+      "separator": false
+    },
+    {
+      "file_prefix": "108_cross_gt_230",
+      "kind": "cross_gt",
+      "id": 230,
+      "bbox_full": [
+        274,
+        484,
+        394,
+        622
+      ],
+      "pair_width": 19.0,
+      "ridge_peaks_in_pair": 3,
+      "separator": true
+    }
+  ]
+}

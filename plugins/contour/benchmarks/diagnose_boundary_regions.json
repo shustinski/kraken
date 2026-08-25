@@ -1,0 +1,272 @@
+{
+  "evaluation": {
+    "full_frame": "2000x2000",
+    "crop_px": 50,
+    "roi": "1900x1900",
+    "gt_during_inference": false
+  },
+  "frames": {
+    "3242": {
+      "planar_region_count_full": 386,
+      "planar_region_count_eval": 344,
+      "barrier_pixels_eval": 281664,
+      "boundary_quality": {
+        "recall_1px": 0.8560027918562836,
+        "precision_1px": 0.9455059929561463,
+        "recall_2px": 0.9460963150304958,
+        "precision_2px": 0.9827347477845945,
+        "recall_3px": 0.9614274568636142,
+        "precision_3px": 0.9940887014314929
+      },
+      "region_purity": {
+        "regions_overlapping_0_gt": 39,
+        "regions_overlapping_1_gt": 297,
+        "regions_overlapping_more_than_1_gt": 8,
+        "unique_gts_inside_multi_gt_regions": 634,
+        "multi_gt_regions": [
+          {
+            "region_id": 14,
+            "gt_count": 203,
+            "area": 741133
+          },
+          {
+            "region_id": 1,
+            "gt_count": 155,
+            "area": 629822
+          },
+          {
+            "region_id": 11,
+            "gt_count": 76,
+            "area": 403490
+          },
+          {
+            "region_id": 7,
+            "gt_count": 73,
+            "area": 505056
+          },
+          {
+            "region_id": 13,
+            "gt_count": 55,
+            "area": 312911
+          },
+          {
+            "region_id": 4,
+            "gt_count": 54,
+            "area": 388879
+          },
+          {
+            "region_id": 10,
+            "gt_count": 22,
+            "area": 71175
+          },
+          {
+            "region_id": 63,
+            "gt_count": 2,
+            "area": 987
+          }
+        ],
+        "multi_gt_region_ids_sample": [
+          1,
+          4,
+          7,
+          10,
+          11,
+          13,
+          14,
+          63
+        ]
+      },
+      "single_gt_containment": {
+        "count": 297,
+        "median": 0.9703504043126685,
+        "p10": 0.8930148389431777,
+        "p90": 1.0
+      },
+      "gt_fragmentation": {
+        "median": 1.0,
+        "p90": 2.0,
+        "mean": 1.3178621659634318,
+        "gt_count": 711,
+        "gt_with_1_region": 509,
+        "gt_with_gt1_regions": 202
+      },
+      "adjacent_gt_pairs": {
+        "adjacent_pair_count": 420,
+        "adjacency_gap_px": 8,
+        "disjoint_predicted_regions": 60,
+        "shared_predicted_region": 360,
+        "distinct_majority_region": 199,
+        "separator_coverage_median": 0.8948822332073277,
+        "separator_coverage_mean": 0.7280242466146605,
+        "max_gap_median": 3.0,
+        "max_gap_p90": 23.0,
+        "old_merge_cases_shared_region": 360
+      },
+      "classification": {
+        "correctly_metal_regions": 258,
+        "incorrectly_metal_regions": 12,
+        "correctly_background_regions": 0,
+        "incorrectly_background_regions": 0,
+        "unknown_regions": 74,
+        "metal_region_area": 3323642,
+        "background_region_area": 0,
+        "unknown_region_area": 4694
+      },
+      "unknown_area_fraction": 0.0013002770083102493,
+      "mask": {
+        "iou": 0.4269718391136246,
+        "precision": 0.44523417383701375,
+        "recall": 0.9123540266480554
+      }
+    },
+    "0175": {
+      "planar_region_count_full": 747,
+      "planar_region_count_eval": 662,
+      "barrier_pixels_eval": 328640,
+      "boundary_quality": {
+        "recall_1px": 0.7990080987680376,
+        "precision_1px": 0.05801484907497566,
+        "recall_2px": 0.9748595246260585,
+        "precision_2px": 0.058942916260954235,
+        "recall_3px": 0.986229456300947,
+        "precision_3px": 0.06009919668938656
+      },
+      "region_purity": {
+        "regions_overlapping_0_gt": 298,
+        "regions_overlapping_1_gt": 363,
+        "regions_overlapping_more_than_1_gt": 1,
+        "unique_gts_inside_multi_gt_regions": 18,
+        "multi_gt_regions": [
+          {
+            "region_id": 3,
+            "gt_count": 18,
+            "area": 1037214
+          }
+        ],
+        "multi_gt_region_ids_sample": [
+          3
+        ]
+      },
+      "single_gt_containment": {
+        "count": 363,
+        "median": 1.0,
+        "p10": 1.0,
+        "p90": 1.0
+      },
+      "gt_fragmentation": {
+        "median": 3.0,
+        "p90": 8.900000000000002,
+        "mean": 17.318181818181817,
+        "gt_count": 22,
+        "gt_with_1_region": 4,
+        "gt_with_gt1_regions": 18
+      },
+      "adjacent_gt_pairs": {
+        "adjacent_pair_count": 2,
+        "adjacency_gap_px": 8,
+        "disjoint_predicted_regions": 1,
+        "shared_predicted_region": 1,
+        "distinct_majority_region": 2,
+        "separator_coverage_median": 0.5,
+        "separator_coverage_mean": 0.5,
+        "max_gap_median": 0.0,
+        "max_gap_p90": 0.0,
+        "old_merge_cases_shared_region": 1
+      },
+      "classification": {
+        "correctly_metal_regions": 52,
+        "incorrectly_metal_regions": 2,
+        "correctly_background_regions": 4,
+        "incorrectly_background_regions": 2,
+        "unknown_regions": 602,
+        "metal_region_area": 2995769,
+        "background_region_area": 13578,
+        "unknown_region_area": 272013
+      },
+      "unknown_area_fraction": 0.07534986149584487,
+      "mask": {
+        "iou": 0.5096202287079771,
+        "precision": 0.540609773316968,
+        "recall": 0.8988906107080377
+      },
+      "wide_plate": {
+        "present": true,
+        "gt_plate_pixels": 1583830,
+        "predicted_region_count_on_plate": 299,
+        "plate_regions_over_1000px": 2,
+        "primary_region": {
+          "region_id": 7,
+          "plate_pixels": 1426818,
+          "label": "METAL"
+        },
+        "label_set": [
+          "BACKGROUND",
+          "METAL",
+          "UNKNOWN"
+        ],
+        "regions": [
+          {
+            "region_id": 7,
+            "plate_pixels": 1426818,
+            "label": "METAL"
+          },
+          {
+            "region_id": 2,
+            "plate_pixels": 1492,
+            "label": "UNKNOWN"
+          },
+          {
+            "region_id": 11,
+            "plate_pixels": 772,
+            "label": "METAL"
+          },
+          {
+            "region_id": 510,
+            "plate_pixels": 579,
+            "label": "METAL"
+          },
+          {
+            "region_id": 255,
+            "plate_pixels": 53,
+            "label": "BACKGROUND"
+          },
+          {
+            "region_id": 256,
+            "plate_pixels": 37,
+            "label": "BACKGROUND"
+          },
+          {
+            "region_id": 364,
+            "plate_pixels": 33,
+            "label": "BACKGROUND"
+          },
+          {
+            "region_id": 722,
+            "plate_pixels": 33,
+            "label": "UNKNOWN"
+          },
+          {
+            "region_id": 365,
+            "plate_pixels": 29,
+            "label": "BACKGROUND"
+          },
+          {
+            "region_id": 86,
+            "plate_pixels": 22,
+            "label": "UNKNOWN"
+          },
+          {
+            "region_id": 464,
+            "plate_pixels": 19,
+            "label": "UNKNOWN"
+          },
+          {
+            "region_id": 402,
+            "plate_pixels": 16,
+            "label": "METAL"
+          }
+        ]
+      }
+    }
+  }
+}

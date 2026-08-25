@@ -13,6 +13,7 @@ from .gradient_watershed import (
     build_conductor_seeds,
     gradient_watershed_mask,
 )
+from .structural_watershed import structural_watershed_mask, structural_watershed_config_from_object
 
 _SEEDED_MAX_SIDE = 640
 _RANDOM_WALKER_BETA = 90.0
@@ -226,6 +227,12 @@ def seeded_segmentation_mask(
         return _empty_mask(source)
     if strategy == "gradient_watershed":
         return gradient_watershed_mask(source, config)
+    if strategy == "structural_watershed":
+        return structural_watershed_mask(
+            source,
+            config,
+            structural_watershed_config_from_object(config),
+        )
     if strategy == "closed_boundary":
         return closed_boundary_mask(source, config)
 

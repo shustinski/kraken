@@ -23,6 +23,7 @@ def test_component_metrics_penalize_detached_background_response() -> None:
     assert metrics.component_precision == 0.5
     assert metrics.component_recall == 1.0
     assert metrics.component_f1 == 2.0 / 3.0
+    assert metrics.topology_exact_match is False
 
 
 def test_component_metrics_penalize_a_missed_conductor() -> None:
@@ -37,6 +38,7 @@ def test_component_metrics_penalize_a_missed_conductor() -> None:
     assert metrics.matched_expected_components == 1
     assert metrics.missed_expected_components == 1
     assert metrics.component_recall == 0.5
+    assert metrics.topology_exact_match is False
 
 
 def test_component_metrics_penalize_a_false_merge() -> None:
@@ -51,6 +53,7 @@ def test_component_metrics_penalize_a_false_merge() -> None:
     assert metrics.predicted_components == 1
     assert metrics.false_merges == 1
     assert metrics.false_positive_components == 0
+    assert metrics.topology_exact_match is False
 
 
 def test_component_metrics_count_small_objects_inside_one_large_merge() -> None:
@@ -84,6 +87,7 @@ def test_component_metrics_preserve_polygon_identity_across_a_hole_cut() -> None
     assert metrics.predicted_components == 1
     assert metrics.false_splits == 0
     assert metrics.component_f1 == 1.0
+    assert metrics.topology_exact_match is True
 
 
 def test_rasterization_preserves_independent_conductor_inside_parent_hole() -> None:

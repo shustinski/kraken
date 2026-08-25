@@ -22,6 +22,7 @@ from .segmentation import (
     apply_topology_repair,
     filter_mask_components,
     is_seeded_segmentation_strategy,
+    normalize_metal_adaptive_method,
     normalize_metal_segmentation_strategy,
     otsu_segmentation_mask,
 )
@@ -37,9 +38,13 @@ class _SegmentationStageCache:
     image_sig: str = ""
     polarity: SemPolarity | None = None
     requested_strategy: str | None = None
+    structural_variant: str | None = None
+    extra_debug: dict[str, np.ndarray] | None = None
+    instance_labels: np.ndarray | None = None
     watershed_key: (
         tuple[float, float, float, int, int, int, float, float, int, int, int, float, float] | None
     ) = None
+    adaptive_key: tuple[int, float, str] | None = None
     strategy: str | None = None
     gray: np.ndarray | None = None
     raw_segmentation: np.ndarray | None = None
@@ -103,24 +108,40 @@ def _invalidate_contrast(entry: _SegmentationStageCache) -> None:
     _invalidate_topology(entry)
 
 
+def _adaptive_block_size(gray: np.ndarray, requested: int) -> int:
+    shortest = max(3, min(gray.shape[:2]))
+    if requested <= 0:
+        block_size = min(63, max(15, (shortest // 16) | 1))
+    else:
+        block_size = max(3, int(requested) | 1)
+    if block_size >= shortest:
+        block_size = max(3, (shortest - 1) | 1)
+    return int(block_size)
+
+
 def _adaptive_segmentation_mask(
     gray: np.ndarray,
     *,
     dark_foreground: bool,
+    block_size: int = 0,
+    c: float = 0.0,
+    method: str = "gaussian",
 ) -> np.ndarray:
-    shortest = max(3, min(gray.shape[:2]))
-    block_size = min(63, max(15, (shortest // 16) | 1))
-    if block_size >= shortest:
-        block_size = max(3, (shortest - 1) | 1)
+    window = _adaptive_block_size(gray, block_size)
     mode = cv2.THRESH_BINARY_INV if dark_foreground else cv2.THRESH_BINARY
+    adaptive_method = (
+        cv2.ADAPTIVE_THRESH_MEAN_C
+        if normalize_metal_adaptive_method(method) == "mean"
+        else cv2.ADAPTIVE_THRESH_GAUSSIAN_C
+    )
     return ensure_binary_mask(
         cv2.adaptiveThreshold(
             gray,
             255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            adaptive_method,
             mode,
-            block_size,
-            0.0,
+            window,
+            float(c),
         )
     )
 
@@ -141,6 +162,24 @@ def render_gradient_field_bgr(gradient_x: np.ndarray, gradient_y: np.ndarray) ->
         return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
     hsv[:, :, 2] = np.clip(magnitude * (255.0 / peak), 0, 255).astype(np.uint8)
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+def _filter_instance_labels_by_area(
+    labels: np.ndarray,
+    min_area: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Drop small instance IDs without merging neighbouring labels."""
+
+    if labels.size == 0 or not np.any(labels > 0):
+        empty = np.zeros(labels.shape, dtype=np.uint8)
+        return labels.astype(np.int32, copy=False), empty
+    max_id = int(labels.max())
+    areas = np.bincount(np.clip(labels, 0, None).ravel(), minlength=max_id + 1)
+    keep = areas >= max(1, int(min_area))
+    keep[0] = False
+    filtered = np.where(keep[np.clip(labels, 0, None)], labels, 0).astype(np.int32)
+    mask = np.where(filtered > 0, 255, 0).astype(np.uint8)
+    return filtered, mask
 
 
 def axis_gradient_debug_images(gray: np.ndarray) -> dict[str, np.ndarray]:
@@ -213,6 +252,9 @@ def _segment(
     *,
     strategy: str,
     watershed_config: GradientWatershedConfig | None = None,
+    adaptive_block_size: int = 0,
+    adaptive_c: float = 0.0,
+    adaptive_method: str = "gaussian",
 ) -> tuple[np.ndarray, SemPolarity, str]:
     if is_seeded_segmentation_strategy(strategy):
         mask = seeded_segmentation_mask(
@@ -237,6 +279,9 @@ def _segment(
                 mask = _adaptive_segmentation_mask(
                     gray,
                     dark_foreground=dark_foreground,
+                    block_size=adaptive_block_size,
+                    c=adaptive_c,
+                    method=adaptive_method,
                 )
             else:
                 mask = otsu_segmentation_mask(
@@ -328,22 +373,56 @@ def build_metal_segmentation_mask_staged(
     requested_strategy = normalize_metal_segmentation_strategy(config.segmentation_strategy)
     watershed_config = gradient_watershed_config_from_object(config)
     watershed_key = _watershed_cache_key(watershed_config)
+    structural_variant = str(getattr(config, "structural_variant", "s2") or "s2")
+    adaptive_key = (
+        max(0, min(255, int(config.adaptive_block_size))),
+        float(config.adaptive_c),
+        normalize_metal_adaptive_method(config.adaptive_method),
+    )
     if (
         entry.raw_segmentation is None
         or entry.requested_strategy != requested_strategy
+        or entry.structural_variant != structural_variant
         or entry.watershed_key != watershed_key
+        or entry.adaptive_key != adaptive_key
     ):
         raise_if_preview_cancelled()
-        raw, polarity, selected_strategy = _segment(
-            g0,
-            strategy=requested_strategy,
-            watershed_config=watershed_config,
-        )
+        extra_debug: dict[str, np.ndarray] = {}
+        if requested_strategy == "structural_watershed":
+            from .structural_watershed import (
+                run_structural_watershed,
+                structural_watershed_config_from_object,
+            )
+
+            structural_result = run_structural_watershed(
+                g0,
+                watershed_config,
+                structural_watershed_config_from_object(config),
+            )
+            raw = structural_result.mask
+            polarity = SemPolarity.BRIGHT_FOREGROUND
+            selected_strategy = "structural_watershed"
+            extra_debug = dict(structural_result.debug_images)
+            instance_labels = structural_result.instance_labels
+        else:
+            raw, polarity, selected_strategy = _segment(
+                g0,
+                strategy=requested_strategy,
+                watershed_config=watershed_config,
+                adaptive_block_size=adaptive_key[0],
+                adaptive_c=adaptive_key[1],
+                adaptive_method=adaptive_key[2],
+            )
+            instance_labels = None
         entry.polarity = polarity
         entry.requested_strategy = requested_strategy
+        entry.structural_variant = structural_variant
         entry.watershed_key = watershed_key
+        entry.adaptive_key = adaptive_key
         entry.strategy = selected_strategy
         entry.raw_segmentation = raw
+        entry.extra_debug = extra_debug
+        entry.instance_labels = instance_labels
         _invalidate_contrast(entry)
 
     assert entry.polarity is not None
@@ -376,12 +455,26 @@ def build_metal_segmentation_mask_staged(
         or entry.min_component_area != topo_key[2]
     ):
         raise_if_preview_cancelled()
-        after_topo = apply_topology_repair(entry.contrast_filtered, config)
-        after_topo = _retain_seeded_contrast_components(
-            after_topo,
-            entry.raw_segmentation,
-        )
-        mask = filter_mask_components(after_topo, int(config.min_component_area))
+        from .structural_watershed import INSTANCE_IDENTITY_VARIANTS
+
+        if (
+            requested_strategy == "structural_watershed"
+            and structural_variant in INSTANCE_IDENTITY_VARIANTS
+            and entry.instance_labels is not None
+        ):
+            filtered_labels, after_topo = _filter_instance_labels_by_area(
+                entry.instance_labels,
+                int(config.min_component_area),
+            )
+            entry.instance_labels = filtered_labels
+            mask = after_topo
+        else:
+            after_topo = apply_topology_repair(entry.contrast_filtered, config)
+            after_topo = _retain_seeded_contrast_components(
+                after_topo,
+                entry.raw_segmentation,
+            )
+            mask = filter_mask_components(after_topo, int(config.min_component_area))
         entry.gap_bridge_px = topo_key[0]
         entry.speckle_removal_px = topo_key[1]
         entry.min_component_area = topo_key[2]
@@ -402,6 +495,7 @@ def build_metal_segmentation_mask_staged(
         "metal_after_topology": ensure_binary_mask(entry.after_topology),
         "metal_threshold_mask": ensure_binary_mask(entry.contrast_filtered),
         **axis_gradient_debug_images(entry.gray),
+        **(entry.extra_debug or {}),
     }
     return MetalSegmentationResult(
         mask=ensure_binary_mask(entry.mask),
@@ -411,4 +505,5 @@ def build_metal_segmentation_mask_staged(
         strategy=entry.strategy or requested_strategy,
         polarity=entry.polarity,
         debug_images=debug,
+        instance_labels=entry.instance_labels,
     )

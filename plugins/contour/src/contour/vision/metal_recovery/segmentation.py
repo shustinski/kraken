@@ -18,6 +18,7 @@ SEEDED_SEGMENTATION_STRATEGIES = frozenset(
         "graph_cut",
         "reconstruction",
         "closed_boundary",
+        "structural_watershed",
     }
 )
 
@@ -74,6 +75,14 @@ def normalize_metal_segmentation_strategy(value: Any) -> str:
         "по_замкнутым_границам",
     }:
         return "closed_boundary"
+    if text in {
+        "structural_watershed",
+        "structural",
+        "structure_watershed",
+        "структурный_водораздел",
+        "структурная",
+    }:
+        return "structural_watershed"
     if text in {"local_adaptive", "adaptive", "адаптивная", "адаптивный"}:
         return "local_adaptive"
     if text in {"global_otsu", "legacy_otsu", "otsu", "порог_otsu"}:
@@ -81,6 +90,13 @@ def normalize_metal_segmentation_strategy(value: Any) -> str:
     if text == "sauvola":
         return "sauvola"
     return "auto"
+
+
+def normalize_metal_adaptive_method(value: Any) -> str:
+    text = str(value or "gaussian").strip().lower().replace("-", "_")
+    if text in {"mean", "average", "среднее"}:
+        return "mean"
+    return "gaussian"
 
 
 def is_seeded_segmentation_strategy(value: Any) -> bool:
@@ -156,6 +172,10 @@ class MetalSegmentationConfig:
     reconstruction_erode_px: int = 0
     boundary_relief: float = 16.0
     boundary_background_sigma: float = 12.0
+    structural_variant: str = "s2"
+    adaptive_block_size: int = 0
+    adaptive_c: float = 0.0
+    adaptive_method: str = "gaussian"
 
 
 @dataclass(slots=True)
@@ -167,6 +187,7 @@ class MetalSegmentationResult:
     strategy: str
     polarity: SemPolarity
     debug_images: dict[str, np.ndarray] = field(default_factory=dict)
+    instance_labels: np.ndarray | None = None
 
 
 def otsu_segmentation_mask(gray: np.ndarray, *, otsu_offset: float, dark_foreground: bool) -> np.ndarray:

@@ -51,6 +51,8 @@ def test_strategy_token_is_recognised() -> None:
     assert normalize_metal_segmentation_strategy("графовый разрез") == "graph_cut"
     assert normalize_metal_segmentation_strategy("Реконструкция") == "reconstruction"
     assert normalize_metal_segmentation_strategy("Замкнутые границы") == "closed_boundary"
+    assert normalize_metal_segmentation_strategy("structural_watershed") == "structural_watershed"
+    assert normalize_metal_segmentation_strategy("Структурный водораздел") == "structural_watershed"
 
 
 def test_legacy_watershed_flag_resolves_when_strategy_is_not_seeded() -> None:

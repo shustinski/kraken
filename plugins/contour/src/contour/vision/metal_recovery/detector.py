@@ -22,6 +22,7 @@ from .gradient_watershed import (
 from .pipeline_stages import axis_gradient_debug_images, build_metal_segmentation_mask_staged, image_signature
 from .segmentation import (
     MetalSegmentationConfig,
+    normalize_metal_adaptive_method,
     normalize_metal_segmentation_strategy,
     resolve_metal_segmentation_strategy,
 )
@@ -78,12 +79,16 @@ class MetalRecoveryConfig:
     watershed_seed_speckle_px: int = 4
     watershed_valley_span_px: int = 5
     watershed_valley_depth: float = 45.0
+    adaptive_block_size: int = 0
+    adaptive_c: float = 0.0
+    adaptive_method: str = "gaussian"
     random_walker_beta: float = 90.0
     random_walker_iterations: int = 160
     graph_cut_iterations: int = 5
     reconstruction_erode_px: int = 0
     boundary_relief: float = 16.0
     boundary_background_sigma: float = 12.0
+    structural_variant: str = "s2"
 
     def to_snapshot(self) -> dict[str, Any]:
         return {
@@ -154,6 +159,10 @@ def _segmentation_config_from_recovery(config: MetalRecoveryConfig) -> MetalSegm
         reconstruction_erode_px=watershed.reconstruction_erode_px,
         boundary_relief=watershed.boundary_relief,
         boundary_background_sigma=watershed.boundary_background_sigma,
+        structural_variant=str(getattr(config, "structural_variant", "s2") or "s2"),
+        adaptive_block_size=max(0, min(255, int(config.adaptive_block_size))),
+        adaptive_c=max(-64.0, min(64.0, float(config.adaptive_c))),
+        adaptive_method=normalize_metal_adaptive_method(config.adaptive_method),
     )
 
 
@@ -257,6 +266,22 @@ def _passes_trace_geometry(polygon: PolygonData, config: MetalRecoveryConfig) ->
     if config.max_width_px is None or config.max_width_px <= 0.0:
         return True
     return _trace_width_px(polygon) <= float(config.max_width_px)
+
+
+def _extract_polygons_per_instance(
+    labels: np.ndarray,
+    config: MetalRecoveryConfig,
+) -> list[PolygonData]:
+    """Extract contours for each instance ID without unioning neighbouring labels."""
+
+    extraction_settings = contour_extraction_settings_from_metal(config)
+    polygons: list[PolygonData] = []
+    for label_id in np.unique(labels):
+        if int(label_id) <= 0:
+            continue
+        instance_mask = np.where(labels == label_id, 255, 0).astype(np.uint8)
+        polygons.extend(extract_polygons(instance_mask, extraction_settings))
+    return polygons
 
 
 def _extract_polygons_cached(mask: np.ndarray, config: MetalRecoveryConfig) -> list[PolygonData]:
@@ -561,18 +586,35 @@ def _detect_metalization_explicit(
         return MetalDetectionResult(params_snapshot=config.to_snapshot())
 
     if mask_override is None:
-        mask, pre_dbg = build_metal_extraction_mask(gray, config)
+        segmentation = build_metal_segmentation_mask_staged(
+            gray,
+            _segmentation_config_from_recovery(config),
+        )
+        mask = ensure_binary_mask(segmentation.mask)
+        pre_dbg = dict(segmentation.debug_images)
+        instance_labels = segmentation.instance_labels
     else:
         mask = ensure_binary_mask(mask_override)
         pre_dbg = {}
+        instance_labels = None
     raise_if_preview_cancelled()
 
     h, w = mask.shape[:2]
     hole_source = source_image
     if hole_source is not None and hole_source.shape[:2] != gray.shape[:2]:
         hole_source = None
+    from .structural_watershed import INSTANCE_IDENTITY_VARIANTS
+
+    if (
+        instance_labels is not None
+        and str(getattr(config, "structural_variant", "s2") or "s2") in INSTANCE_IDENTITY_VARIANTS
+        and np.any(instance_labels > 0)
+    ):
+        polygons = _extract_polygons_per_instance(instance_labels, config)
+    else:
+        polygons = _extract_polygons_cached(mask, config)
     polygons = _filter_holes_by_source_contrast(
-        _extract_polygons_cached(mask, config),
+        polygons,
         hole_source,
         min_source_contrast=config.min_hole_source_contrast,
         min_source_contrast_fraction=config.min_hole_source_contrast_fraction,

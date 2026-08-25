@@ -239,6 +239,9 @@ class WidgetExtractionSettingsMixin:
             "metal_recon_erode_spin",
             "metal_boundary_relief_spin",
             "metal_boundary_background_spin",
+            "metal_adaptive_block_spin",
+            "metal_adaptive_c_spin",
+            "metal_adaptive_method_combo",
             "metal_approximation_checkbox",
             "metal_hierarchy_combo",
             "metal_border_handling_combo",
@@ -668,6 +671,20 @@ class WidgetExtractionSettingsMixin:
                     self.metal_boundary_background_spin.setValue(
                         float(getattr(settings, "metal_boundary_background_sigma", 12.0) or 12.0)
                     )
+                if hasattr(self, "metal_adaptive_block_spin"):
+                    self.metal_adaptive_block_spin.setValue(
+                        int(getattr(settings, "metal_adaptive_block_size", 0) or 0)
+                    )
+                if hasattr(self, "metal_adaptive_c_spin"):
+                    self.metal_adaptive_c_spin.setValue(
+                        float(getattr(settings, "metal_adaptive_c", 0.0) or 0.0)
+                    )
+                if hasattr(self, "metal_adaptive_method_combo"):
+                    method_index = self.metal_adaptive_method_combo.findData(
+                        str(getattr(settings, "metal_adaptive_method", "gaussian") or "gaussian")
+                    )
+                    if method_index >= 0:
+                        self.metal_adaptive_method_combo.setCurrentIndex(method_index)
                 _hm = self.metal_hierarchy_combo.findData(
                     str(getattr(settings, "metal_hierarchy_mode", "full") or "full")
                 )
@@ -1075,6 +1092,16 @@ class WidgetExtractionSettingsMixin:
             metal_boundary_background_sigma=float(self.metal_boundary_background_spin.value())
             if hasattr(self, "metal_boundary_background_spin")
             else 12.0,
+            metal_structural_variant="s2",
+            metal_adaptive_block_size=int(self.metal_adaptive_block_spin.value())
+            if hasattr(self, "metal_adaptive_block_spin")
+            else 0,
+            metal_adaptive_c=float(self.metal_adaptive_c_spin.value())
+            if hasattr(self, "metal_adaptive_c_spin")
+            else 0.0,
+            metal_adaptive_method=str(self.metal_adaptive_method_combo.currentData() or "gaussian")
+            if hasattr(self, "metal_adaptive_method_combo")
+            else "gaussian",
             metal_morph_close_radius=int(self.metal_gap_bridge_spin.value())
             if hasattr(self, "metal_gap_bridge_spin")
             else (int(self.metal_morph_close_spin.value()) if hasattr(self, "metal_morph_close_spin") else 1),
@@ -1365,6 +1392,14 @@ class WidgetExtractionSettingsMixin:
             self.metal_boundary_background_spin.setValue(
                 float(defaults.metal_boundary_background_sigma)
             )
+        if hasattr(self, "metal_adaptive_block_spin"):
+            self.metal_adaptive_block_spin.setValue(int(defaults.metal_adaptive_block_size))
+        if hasattr(self, "metal_adaptive_c_spin"):
+            self.metal_adaptive_c_spin.setValue(float(defaults.metal_adaptive_c))
+        if hasattr(self, "metal_adaptive_method_combo"):
+            ix = self.metal_adaptive_method_combo.findData(defaults.metal_adaptive_method)
+            if ix >= 0:
+                self.metal_adaptive_method_combo.setCurrentIndex(ix)
         if hasattr(self, "metal_hierarchy_combo"):
             ix = self.metal_hierarchy_combo.findData(defaults.metal_hierarchy_mode)
             if ix >= 0:

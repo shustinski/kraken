@@ -1,0 +1,2090 @@
+{
+  "frame": "0401",
+  "crop_px": 50,
+  "verdict": "B_evaluation_binary_cc_changed_polygon_identity",
+  "full_frame": {
+    "gt_components": 164,
+    "pred_components": 164,
+    "false_components": 0,
+    "misses": 0,
+    "merges": 0,
+    "splits": 0,
+    "topology_exact_match": true
+  },
+  "counts": {
+    "gt_polygon_ids_removed_by_crop": 35,
+    "pred_polygon_ids_removed_by_crop": 35,
+    "gt_polygon_ids_remaining": 129,
+    "pred_polygon_ids_remaining": 129,
+    "gt_binary_cc_after_crop": 129,
+    "pred_binary_cc_after_crop": 164,
+    "pred_per_id_fragments_after_crop": 164,
+    "gt_per_id_fragments_after_crop": 129,
+    "pred_ids_split_by_cc": [
+      {
+        "id": 8,
+        "fragments_after_crop": 36
+      }
+    ],
+    "gt_ids_split_by_cc": []
+  },
+  "if_crop_keeps_polygon_ids": {
+    "expected_components": 129,
+    "predicted_components": 129,
+    "false_components": 0,
+    "misses": 0,
+    "merges": 0,
+    "splits": 0,
+    "topology_exact_match": true
+  },
+  "current_binary_cc_crop": {
+    "expected_components": 129,
+    "predicted_components": 164,
+    "false_components": 35,
+    "misses": 0,
+    "merges": 0,
+    "splits": 0,
+    "topology_exact_match": false
+  },
+  "summary": {
+    "false_crop_components": 35,
+    "false_blobs_with_zero_gt_in_roi": 35,
+    "removed_gt_with_pred_leak_into_roi": 0,
+    "false_parents_split_by_crop": 35,
+    "false_parents_already_disconnected_full_frame": 0
+  },
+  "false_components": [
+    {
+      "crop_pred_id": 1,
+      "crop_bbox_xyxy": [
+        1,
+        0,
+        9,
+        3
+      ],
+      "crop_area": 14,
+      "pred_pixels_in_roi": 14,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 2,
+      "crop_bbox_xyxy": [
+        11,
+        0,
+        17,
+        2
+      ],
+      "crop_area": 8,
+      "pred_pixels_in_roi": 8,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 3,
+      "crop_bbox_xyxy": [
+        19,
+        0,
+        39,
+        4
+      ],
+      "crop_area": 38,
+      "pred_pixels_in_roi": 38,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 5,
+      "crop_bbox_xyxy": [
+        1293,
+        0,
+        1298,
+        2
+      ],
+      "crop_area": 7,
+      "pred_pixels_in_roi": 7,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 6,
+      "crop_bbox_xyxy": [
+        1303,
+        0,
+        1308,
+        2
+      ],
+      "crop_area": 6,
+      "pred_pixels_in_roi": 6,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 7,
+      "crop_bbox_xyxy": [
+        1326,
+        0,
+        1329,
+        1
+      ],
+      "crop_area": 3,
+      "pred_pixels_in_roi": 3,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 8,
+      "crop_bbox_xyxy": [
+        1346,
+        0,
+        1359,
+        2
+      ],
+      "crop_area": 24,
+      "pred_pixels_in_roi": 24,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 9,
+      "crop_bbox_xyxy": [
+        1375,
+        0,
+        1377,
+        1
+      ],
+      "crop_area": 2,
+      "pred_pixels_in_roi": 2,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 10,
+      "crop_bbox_xyxy": [
+        1389,
+        0,
+        1393,
+        2
+      ],
+      "crop_area": 5,
+      "pred_pixels_in_roi": 5,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 11,
+      "crop_bbox_xyxy": [
+        1398,
+        0,
+        1404,
+        2
+      ],
+      "crop_area": 8,
+      "pred_pixels_in_roi": 8,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 12,
+      "crop_bbox_xyxy": [
+        1412,
+        0,
+        1420,
+        2
+      ],
+      "crop_area": 11,
+      "pred_pixels_in_roi": 11,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 13,
+      "crop_bbox_xyxy": [
+        1422,
+        0,
+        1430,
+        3
+      ],
+      "crop_area": 14,
+      "pred_pixels_in_roi": 14,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 14,
+      "crop_bbox_xyxy": [
+        1437,
+        0,
+        1445,
+        3
+      ],
+      "crop_area": 14,
+      "pred_pixels_in_roi": 14,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 15,
+      "crop_bbox_xyxy": [
+        1462,
+        0,
+        1470,
+        2
+      ],
+      "crop_area": 12,
+      "pred_pixels_in_roi": 12,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 16,
+      "crop_bbox_xyxy": [
+        1476,
+        0,
+        1481,
+        1
+      ],
+      "crop_area": 5,
+      "pred_pixels_in_roi": 5,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 17,
+      "crop_bbox_xyxy": [
+        1485,
+        0,
+        1491,
+        2
+      ],
+      "crop_area": 8,
+      "pred_pixels_in_roi": 8,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 18,
+      "crop_bbox_xyxy": [
+        1498,
+        0,
+        1507,
+        3
+      ],
+      "crop_area": 17,
+      "pred_pixels_in_roi": 17,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 19,
+      "crop_bbox_xyxy": [
+        1515,
+        0,
+        1523,
+        2
+      ],
+      "crop_area": 10,
+      "pred_pixels_in_roi": 10,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 20,
+      "crop_bbox_xyxy": [
+        1541,
+        0,
+        1552,
+        2
+      ],
+      "crop_area": 18,
+      "pred_pixels_in_roi": 18,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 21,
+      "crop_bbox_xyxy": [
+        1557,
+        0,
+        1564,
+        3
+      ],
+      "crop_area": 12,
+      "pred_pixels_in_roi": 12,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 22,
+      "crop_bbox_xyxy": [
+        1568,
+        0,
+        1571,
+        1
+      ],
+      "crop_area": 3,
+      "pred_pixels_in_roi": 3,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 23,
+      "crop_bbox_xyxy": [
+        1579,
+        0,
+        1584,
+        2
+      ],
+      "crop_area": 7,
+      "pred_pixels_in_roi": 7,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 24,
+      "crop_bbox_xyxy": [
+        1594,
+        0,
+        1601,
+        3
+      ],
+      "crop_area": 12,
+      "pred_pixels_in_roi": 12,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 25,
+      "crop_bbox_xyxy": [
+        1617,
+        0,
+        1632,
+        4
+      ],
+      "crop_area": 41,
+      "pred_pixels_in_roi": 41,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 26,
+      "crop_bbox_xyxy": [
+        1634,
+        0,
+        1644,
+        3
+      ],
+      "crop_area": 18,
+      "pred_pixels_in_roi": 18,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 27,
+      "crop_bbox_xyxy": [
+        1651,
+        0,
+        1658,
+        1
+      ],
+      "crop_area": 7,
+      "pred_pixels_in_roi": 7,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 28,
+      "crop_bbox_xyxy": [
+        1671,
+        0,
+        1684,
+        2
+      ],
+      "crop_area": 22,
+      "pred_pixels_in_roi": 22,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 29,
+      "crop_bbox_xyxy": [
+        1688,
+        0,
+        1698,
+        2
+      ],
+      "crop_area": 14,
+      "pred_pixels_in_roi": 14,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 30,
+      "crop_bbox_xyxy": [
+        1729,
+        0,
+        1746,
+        4
+      ],
+      "crop_area": 40,
+      "pred_pixels_in_roi": 40,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 31,
+      "crop_bbox_xyxy": [
+        1759,
+        0,
+        1771,
+        2
+      ],
+      "crop_area": 17,
+      "pred_pixels_in_roi": 17,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 32,
+      "crop_bbox_xyxy": [
+        1784,
+        0,
+        1786,
+        1
+      ],
+      "crop_area": 2,
+      "pred_pixels_in_roi": 2,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 33,
+      "crop_bbox_xyxy": [
+        1802,
+        0,
+        1803,
+        1
+      ],
+      "crop_area": 1,
+      "pred_pixels_in_roi": 1,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 34,
+      "crop_bbox_xyxy": [
+        1826,
+        0,
+        1844,
+        4
+      ],
+      "crop_area": 50,
+      "pred_pixels_in_roi": 50,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 35,
+      "crop_bbox_xyxy": [
+        1851,
+        0,
+        1856,
+        2
+      ],
+      "crop_area": 6,
+      "pred_pixels_in_roi": 6,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    },
+    {
+      "crop_pred_id": 36,
+      "crop_bbox_xyxy": [
+        1864,
+        0,
+        1900,
+        4
+      ],
+      "crop_area": 80,
+      "pred_pixels_in_roi": 80,
+      "gt_pixels_in_roi_under_this_blob": 0,
+      "source_full_frame_pred_ids": [
+        8
+      ],
+      "source_full_frame_gt_ids": [],
+      "parents": [
+        {
+          "full_frame_pred_id": 8,
+          "full_frame_pred_bbox": [
+            0,
+            0,
+            2000,
+            70
+          ],
+          "full_frame_pred_area": 135621,
+          "pred_area_in_roi": 34532,
+          "pred_area_in_border": 101089,
+          "full_frame_fragment_count": 1,
+          "roi_fragment_count": 36,
+          "crop_created_split": true,
+          "already_disconnected_full_frame": false,
+          "overlapping_gt_ids": [
+            19
+          ],
+          "gt_area_in_roi": 22800,
+          "gt_area_in_border": 1176,
+          "gt_fully_removed_by_crop": false,
+          "spatial_overlap_in_roi": true
+        }
+      ]
+    }
+  ],
+  "removed_gt_components": [
+    {
+      "gt_id": 36,
+      "full_frame_gt_bbox": [
+        24,
+        797,
+        41,
+        1339
+      ],
+      "gt_area_full": 7790,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        50
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 46,
+      "full_frame_gt_bbox": [
+        24,
+        1383,
+        41,
+        1924
+      ],
+      "gt_area_full": 7751,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        69
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 91,
+      "full_frame_gt_bbox": [
+        24,
+        568,
+        41,
+        740
+      ],
+      "gt_area_full": 2628,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        99
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 108,
+      "full_frame_gt_bbox": [
+        1993,
+        798,
+        1999,
+        1337
+      ],
+      "gt_area_full": 2520,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        93
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 109,
+      "full_frame_gt_bbox": [
+        1993,
+        1384,
+        1999,
+        1923
+      ],
+      "gt_area_full": 2516,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        109
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 110,
+      "full_frame_gt_bbox": [
+        1993,
+        569,
+        1999,
+        739
+      ],
+      "gt_area_full": 859,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        110
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 129,
+      "full_frame_gt_bbox": [
+        23,
+        1350,
+        42,
+        1374
+      ],
+      "gt_area_full": 378,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        135
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 137,
+      "full_frame_gt_bbox": [
+        1260,
+        1981,
+        1277,
+        1999
+      ],
+      "gt_area_full": 274,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        137
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 138,
+      "full_frame_gt_bbox": [
+        1363,
+        1981,
+        1380,
+        1999
+      ],
+      "gt_area_full": 271,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        139
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 139,
+      "full_frame_gt_bbox": [
+        310,
+        1981,
+        327,
+        1999
+      ],
+      "gt_area_full": 272,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        141
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 140,
+      "full_frame_gt_bbox": [
+        1700,
+        1981,
+        1717,
+        1999
+      ],
+      "gt_area_full": 271,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        138
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 141,
+      "full_frame_gt_bbox": [
+        1597,
+        1981,
+        1614,
+        1999
+      ],
+      "gt_area_full": 271,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        144
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 142,
+      "full_frame_gt_bbox": [
+        1890,
+        1981,
+        1907,
+        1999
+      ],
+      "gt_area_full": 271,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        150
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 143,
+      "full_frame_gt_bbox": [
+        413,
+        1981,
+        430,
+        1999
+      ],
+      "gt_area_full": 270,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        145
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 144,
+      "full_frame_gt_bbox": [
+        1312,
+        1981,
+        1329,
+        1999
+      ],
+      "gt_area_full": 270,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        156
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 145,
+      "full_frame_gt_bbox": [
+        76,
+        1981,
+        93,
+        1999
+      ],
+      "gt_area_full": 270,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        157
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 146,
+      "full_frame_gt_bbox": [
+        1019,
+        1981,
+        1036,
+        1999
+      ],
+      "gt_area_full": 269,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        161
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 147,
+      "full_frame_gt_bbox": [
+        682,
+        1981,
+        699,
+        1999
+      ],
+      "gt_area_full": 266,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        159
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 148,
+      "full_frame_gt_bbox": [
+        734,
+        1981,
+        751,
+        1999
+      ],
+      "gt_area_full": 267,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        162
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 149,
+      "full_frame_gt_bbox": [
+        362,
+        1981,
+        379,
+        1999
+      ],
+      "gt_area_full": 267,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        142
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 150,
+      "full_frame_gt_bbox": [
+        967,
+        1982,
+        984,
+        1999
+      ],
+      "gt_area_full": 267,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        149
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 151,
+      "full_frame_gt_bbox": [
+        785,
+        1981,
+        802,
+        1999
+      ],
+      "gt_area_full": 267,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        155
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 152,
+      "full_frame_gt_bbox": [
+        24,
+        1981,
+        41,
+        1999
+      ],
+      "gt_area_full": 267,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        160
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 153,
+      "full_frame_gt_bbox": [
+        1122,
+        1981,
+        1139,
+        1999
+      ],
+      "gt_area_full": 266,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        158
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 154,
+      "full_frame_gt_bbox": [
+        1070,
+        1981,
+        1087,
+        1999
+      ],
+      "gt_area_full": 263,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        153
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 155,
+      "full_frame_gt_bbox": [
+        1942,
+        1981,
+        1958,
+        1999
+      ],
+      "gt_area_full": 263,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        148
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 156,
+      "full_frame_gt_bbox": [
+        1648,
+        1981,
+        1665,
+        1999
+      ],
+      "gt_area_full": 264,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        147
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 157,
+      "full_frame_gt_bbox": [
+        1839,
+        1981,
+        1855,
+        1999
+      ],
+      "gt_area_full": 263,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        140
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 158,
+      "full_frame_gt_bbox": [
+        127,
+        1982,
+        144,
+        1999
+      ],
+      "gt_area_full": 260,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        151
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 159,
+      "full_frame_gt_bbox": [
+        836,
+        1982,
+        853,
+        1999
+      ],
+      "gt_area_full": 258,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        154
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 160,
+      "full_frame_gt_bbox": [
+        258,
+        1982,
+        275,
+        1999
+      ],
+      "gt_area_full": 257,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        143
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 161,
+      "full_frame_gt_bbox": [
+        1415,
+        1981,
+        1431,
+        1999
+      ],
+      "gt_area_full": 257,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        152
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 162,
+      "full_frame_gt_bbox": [
+        1546,
+        1981,
+        1562,
+        1999
+      ],
+      "gt_area_full": 258,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        146
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 163,
+      "full_frame_gt_bbox": [
+        1992,
+        1351,
+        1999,
+        1373
+      ],
+      "gt_area_full": 127,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        163
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    },
+    {
+      "gt_id": 164,
+      "full_frame_gt_bbox": [
+        1993,
+        1983,
+        1999,
+        1999
+      ],
+      "gt_area_full": 89,
+      "gt_area_in_roi": 0,
+      "pred_ids": [
+        164
+      ],
+      "pred_area_in_roi": 0,
+      "pred_continues_into_roi": false,
+      "spatial_overlap_in_roi": false
+    }
+  ]
+}

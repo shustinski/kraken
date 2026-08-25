@@ -690,6 +690,27 @@ def test_watershed_settings_roundtrip_into_recovery_config() -> None:
     assert config.watershed_seed_speckle_px == 0
 
 
+def test_adaptive_threshold_settings_roundtrip_into_recovery_config() -> None:
+    settings = ContourExtractionSettings.from_dict(
+        {
+            "metal_segmentation_strategy": "local_adaptive",
+            "metal_adaptive_block_size": 31,
+            "metal_adaptive_c": 2.5,
+            "metal_adaptive_method": "mean",
+        }
+    )
+    config = metal_recovery_config_from_settings(settings)
+
+    assert settings.metal_segmentation_strategy == "local_adaptive"
+    assert settings.metal_adaptive_block_size == 31
+    assert settings.metal_adaptive_c == pytest.approx(2.5)
+    assert settings.metal_adaptive_method == "mean"
+    assert config.segmentation_strategy == "local_adaptive"
+    assert config.adaptive_block_size == 31
+    assert config.adaptive_c == pytest.approx(2.5)
+    assert config.adaptive_method == "mean"
+
+
 def test_watershed_parameter_change_invalidates_raw_segmentation_cache() -> None:
     from contour.vision.metal_recovery.pipeline_stages import (
         _SEGMENTATION_CACHE,

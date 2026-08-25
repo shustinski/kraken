@@ -161,6 +161,30 @@ class WidgetSmokeTests(unittest.TestCase):
                 "random_walker",
             )
             self.assertFalse(widget._current_contour_settings().metal_use_wide_conductor_gradient)
+            self.assertGreaterEqual(
+                widget.metal_segmentation_strategy_combo.findData("local_adaptive"),
+                0,
+            )
+            widget.metal_segmentation_strategy_combo.setCurrentIndex(
+                widget.metal_segmentation_strategy_combo.findData("local_adaptive")
+            )
+            self.assertEqual(
+                widget._current_contour_settings().metal_segmentation_strategy,
+                "local_adaptive",
+            )
+            self.assertEqual(widget.metal_adaptive_group.title(), "Адаптивный порог")
+            self.assertEqual(widget.metal_adaptive_block_spin.value(), 0)
+            self.assertEqual(widget.metal_adaptive_c_spin.value(), 0.0)
+            self.assertEqual(widget.metal_adaptive_method_combo.currentData(), "gaussian")
+            widget.metal_adaptive_block_spin.setValue(31)
+            widget.metal_adaptive_c_spin.setValue(2.0)
+            widget.metal_adaptive_method_combo.setCurrentIndex(
+                widget.metal_adaptive_method_combo.findData("mean")
+            )
+            adaptive_settings = widget._current_contour_settings()
+            self.assertEqual(adaptive_settings.metal_adaptive_block_size, 31)
+            self.assertEqual(adaptive_settings.metal_adaptive_c, 2.0)
+            self.assertEqual(adaptive_settings.metal_adaptive_method, "mean")
             self.assertEqual(widget.metal_gap_bridge_spin.value(), 1)
             self.assertEqual(widget.metal_speckle_removal_spin.value(), 1)
             self.assertEqual(widget.metal_ws_smoothing_spin.value(), 1.0)

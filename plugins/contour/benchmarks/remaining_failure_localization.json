@@ -1,0 +1,654 @@
+{
+  "2497": {
+    "baseline": {
+      "iou": 0.9325877411623086,
+      "precision": 0.9767880524342705,
+      "recall": 0.9537237778809392,
+      "boundary_f1": 0.9903419870120158,
+      "false_components": 0,
+      "misses": 1,
+      "merges": 0,
+      "splits": 0,
+      "count_error": 1,
+      "predicted_component_count": 645,
+      "gt_component_count": 646,
+      "exact_topology": false,
+      "auto_selected_strategy": null
+    },
+    "failures": {
+      "false": [],
+      "misses": [
+        {
+          "id": 118,
+          "area": 1472,
+          "bbox": [
+            414,
+            318,
+            520,
+            336
+          ]
+        }
+      ],
+      "splits": [],
+      "merges": []
+    }
+  },
+  "0175": {
+    "baseline": {
+      "iou": 0.98464318125658,
+      "precision": 0.9915038764845079,
+      "recall": 0.993021637198398,
+      "boundary_f1": 0.9385636520972597,
+      "false_components": 0,
+      "misses": 0,
+      "merges": 2,
+      "splits": 0,
+      "count_error": 2,
+      "predicted_component_count": 20,
+      "gt_component_count": 22,
+      "exact_topology": false,
+      "auto_selected_strategy": null
+    },
+    "failures": {
+      "false": [],
+      "misses": [],
+      "splits": [],
+      "merges": [
+        {
+          "id": 2,
+          "area": 1594013,
+          "gt_objects": 3
+        }
+      ]
+    }
+  },
+  "0580": {
+    "baseline": {
+      "iou": 0.932179492622001,
+      "precision": 0.9653168864233489,
+      "recall": 0.9644824318590886,
+      "boundary_f1": 0.9901491173726634,
+      "false_components": 0,
+      "misses": 0,
+      "merges": 0,
+      "splits": 1,
+      "count_error": 1,
+      "predicted_component_count": 108,
+      "gt_component_count": 107,
+      "exact_topology": false,
+      "auto_selected_strategy": null
+    },
+    "failures": {
+      "false": [],
+      "misses": [],
+      "splits": [
+        {
+          "id": 43,
+          "area": 1221,
+          "parts": 2
+        }
+      ],
+      "merges": []
+    }
+  },
+  "1514": {
+    "baseline": {
+      "iou": 0.8856467598197724,
+      "precision": 0.9568111823764615,
+      "recall": 0.922526199951375,
+      "boundary_f1": 0.999124047681188,
+      "false_components": 3,
+      "misses": 0,
+      "merges": 0,
+      "splits": 0,
+      "count_error": 3,
+      "predicted_component_count": 198,
+      "gt_component_count": 195,
+      "exact_topology": false,
+      "auto_selected_strategy": null
+    },
+    "failures": {
+      "false": [
+        {
+          "id": 160,
+          "area": 4,
+          "bbox": [
+            0,
+            1557,
+            1,
+            1561
+          ]
+        },
+        {
+          "id": 194,
+          "area": 9,
+          "bbox": [
+            479,
+            1899,
+            488,
+            1900
+          ]
+        },
+        {
+          "id": 198,
+          "area": 12,
+          "bbox": [
+            1644,
+            1899,
+            1656,
+            1900
+          ]
+        }
+      ],
+      "misses": [],
+      "splits": [],
+      "merges": []
+    }
+  },
+  "3312": {
+    "baseline": {
+      "iou": 0.9009626479021463,
+      "precision": 0.9066464394315028,
+      "recall": 0.9930899375052495,
+      "boundary_f1": 0.9722666740124669,
+      "false_components": 0,
+      "misses": 1,
+      "merges": 4,
+      "splits": 0,
+      "count_error": 5,
+      "predicted_component_count": 81,
+      "gt_component_count": 86,
+      "exact_topology": false,
+      "auto_selected_strategy": null
+    },
+    "failures": {
+      "false": [],
+      "misses": [
+        {
+          "id": 86,
+          "area": 52,
+          "bbox": [
+            745,
+            1888,
+            751,
+            1900
+          ]
+        }
+      ],
+      "splits": [],
+      "merges": [
+        {
+          "id": 72,
+          "area": 1576,
+          "gt_objects": 5
+        }
+      ]
+    }
+  },
+  "5101": {
+    "baseline": {
+      "iou": 0.8697107471921772,
+      "precision": 0.9698487323496406,
+      "recall": 0.8938795656465943,
+      "boundary_f1": 0.994874839707035,
+      "false_components": 5,
+      "misses": 1,
+      "merges": 0,
+      "splits": 0,
+      "count_error": 9,
+      "predicted_component_count": 215,
+      "gt_component_count": 206,
+      "exact_topology": false,
+      "auto_selected_strategy": null
+    },
+    "failures": {
+      "false": [
+        {
+          "id": 79,
+          "area": 212,
+          "bbox": [
+            0,
+            574,
+            18,
+            597
+          ]
+        },
+        {
+          "id": 144,
+          "area": 777,
+          "bbox": [
+            477,
+            1139,
+            524,
+            1169
+          ]
+        },
+        {
+          "id": 158,
+          "area": 207,
+          "bbox": [
+            180,
+            1271,
+            206,
+            1286
+          ]
+        },
+        {
+          "id": 202,
+          "area": 245,
+          "bbox": [
+            1018,
+            1671,
+            1039,
+            1692
+          ]
+        },
+        {
+          "id": 212,
+          "area": 150,
+          "bbox": [
+            849,
+            1820,
+            873,
+            1831
+          ]
+        }
+      ],
+      "misses": [
+        {
+          "id": 171,
+          "area": 89115,
+          "bbox": [
+            0,
+            1419,
+            186,
+            1900
+          ]
+        }
+      ],
+      "splits": [],
+      "merges": []
+    }
+  },
+  "3242": {
+    "baseline": {
+      "iou": 0.8713288899030777,
+      "precision": 0.9143768320212204,
+      "recall": 0.9487384684057593,
+      "boundary_f1": 0.9684429532655694,
+      "false_components": 1,
+      "misses": 1,
+      "merges": 122,
+      "splits": 0,
+      "count_error": 122,
+      "predicted_component_count": 589,
+      "gt_component_count": 711,
+      "exact_topology": false,
+      "auto_selected_strategy": null
+    },
+    "failures": {
+      "false": [
+        {
+          "id": 26,
+          "area": 4,
+          "bbox": [
+            728,
+            0,
+            732,
+            1
+          ]
+        }
+      ],
+      "misses": [
+        {
+          "id": 662,
+          "area": 427,
+          "bbox": [
+            954,
+            1741,
+            965,
+            1792
+          ]
+        }
+      ],
+      "splits": [],
+      "merges": [
+        {
+          "id": 9,
+          "area": 1893,
+          "gt_objects": 2
+        },
+        {
+          "id": 11,
+          "area": 1277,
+          "gt_objects": 2
+        },
+        {
+          "id": 38,
+          "area": 55468,
+          "gt_objects": 2
+        },
+        {
+          "id": 41,
+          "area": 3286,
+          "gt_objects": 3
+        },
+        {
+          "id": 42,
+          "area": 4444,
+          "gt_objects": 3
+        },
+        {
+          "id": 60,
+          "area": 1704,
+          "gt_objects": 2
+        },
+        {
+          "id": 61,
+          "area": 2752,
+          "gt_objects": 2
+        },
+        {
+          "id": 65,
+          "area": 8655,
+          "gt_objects": 3
+        },
+        {
+          "id": 66,
+          "area": 20966,
+          "gt_objects": 20
+        },
+        {
+          "id": 75,
+          "area": 7983,
+          "gt_objects": 3
+        },
+        {
+          "id": 92,
+          "area": 2079,
+          "gt_objects": 2
+        },
+        {
+          "id": 106,
+          "area": 1308,
+          "gt_objects": 2
+        },
+        {
+          "id": 108,
+          "area": 1261,
+          "gt_objects": 2
+        },
+        {
+          "id": 120,
+          "area": 2073,
+          "gt_objects": 2
+        },
+        {
+          "id": 121,
+          "area": 2077,
+          "gt_objects": 2
+        },
+        {
+          "id": 124,
+          "area": 1298,
+          "gt_objects": 2
+        },
+        {
+          "id": 125,
+          "area": 13011,
+          "gt_objects": 3
+        },
+        {
+          "id": 126,
+          "area": 5193,
+          "gt_objects": 2
+        },
+        {
+          "id": 127,
+          "area": 1261,
+          "gt_objects": 2
+        },
+        {
+          "id": 144,
+          "area": 4745,
+          "gt_objects": 3
+        },
+        {
+          "id": 152,
+          "area": 446,
+          "gt_objects": 2
+        },
+        {
+          "id": 160,
+          "area": 14600,
+          "gt_objects": 7
+        },
+        {
+          "id": 175,
+          "area": 2257,
+          "gt_objects": 2
+        },
+        {
+          "id": 179,
+          "area": 2046,
+          "gt_objects": 2
+        },
+        {
+          "id": 180,
+          "area": 1906,
+          "gt_objects": 2
+        },
+        {
+          "id": 194,
+          "area": 1327,
+          "gt_objects": 2
+        },
+        {
+          "id": 209,
+          "area": 2148,
+          "gt_objects": 2
+        },
+        {
+          "id": 210,
+          "area": 1240,
+          "gt_objects": 2
+        },
+        {
+          "id": 211,
+          "area": 1222,
+          "gt_objects": 2
+        },
+        {
+          "id": 251,
+          "area": 2195,
+          "gt_objects": 2
+        },
+        {
+          "id": 265,
+          "area": 1775,
+          "gt_objects": 3
+        },
+        {
+          "id": 271,
+          "area": 1345,
+          "gt_objects": 2
+        },
+        {
+          "id": 286,
+          "area": 1281,
+          "gt_objects": 2
+        },
+        {
+          "id": 288,
+          "area": 5564,
+          "gt_objects": 2
+        },
+        {
+          "id": 302,
+          "area": 1238,
+          "gt_objects": 2
+        },
+        {
+          "id": 311,
+          "area": 3365,
+          "gt_objects": 2
+        },
+        {
+          "id": 351,
+          "area": 2244,
+          "gt_objects": 2
+        },
+        {
+          "id": 352,
+          "area": 2080,
+          "gt_objects": 2
+        },
+        {
+          "id": 365,
+          "area": 1318,
+          "gt_objects": 2
+        },
+        {
+          "id": 367,
+          "area": 1306,
+          "gt_objects": 2
+        },
+        {
+          "id": 379,
+          "area": 3808,
+          "gt_objects": 3
+        },
+        {
+          "id": 385,
+          "area": 4776,
+          "gt_objects": 3
+        },
+        {
+          "id": 387,
+          "area": 1259,
+          "gt_objects": 2
+        },
+        {
+          "id": 390,
+          "area": 1171,
+          "gt_objects": 2
+        },
+        {
+          "id": 397,
+          "area": 1914,
+          "gt_objects": 2
+        },
+        {
+          "id": 398,
+          "area": 21031,
+          "gt_objects": 19
+        },
+        {
+          "id": 403,
+          "area": 8562,
+          "gt_objects": 3
+        },
+        {
+          "id": 409,
+          "area": 1117,
+          "gt_objects": 2
+        },
+        {
+          "id": 412,
+          "area": 7948,
+          "gt_objects": 3
+        },
+        {
+          "id": 440,
+          "area": 1761,
+          "gt_objects": 3
+        },
+        {
+          "id": 445,
+          "area": 1281,
+          "gt_objects": 2
+        },
+        {
+          "id": 457,
+          "area": 2169,
+          "gt_objects": 2
+        },
+        {
+          "id": 458,
+          "area": 1285,
+          "gt_objects": 2
+        },
+        {
+          "id": 469,
+          "area": 1306,
+          "gt_objects": 2
+        },
+        {
+          "id": 481,
+          "area": 4748,
+          "gt_objects": 3
+        },
+        {
+          "id": 483,
+          "area": 2814,
+          "gt_objects": 2
+        },
+        {
+          "id": 500,
+          "area": 4169,
+          "gt_objects": 3
+        },
+        {
+          "id": 516,
+          "area": 2160,
+          "gt_objects": 2
+        },
+        {
+          "id": 520,
+          "area": 1898,
+          "gt_objects": 2
+        },
+        {
+          "id": 535,
+          "area": 1313,
+          "gt_objects": 2
+        },
+        {
+          "id": 536,
+          "area": 1215,
+          "gt_objects": 2
+        },
+        {
+          "id": 549,
+          "area": 2390,
+          "gt_objects": 2
+        },
+        {
+          "id": 550,
+          "area": 1801,
+          "gt_objects": 3
+        },
+        {
+          "id": 551,
+          "area": 2392,
+          "gt_objects": 2
+        },
+        {
+          "id": 552,
+          "area": 3114,
+          "gt_objects": 2
+        },
+        {
+          "id": 555,
+          "area": 1201,
+          "gt_objects": 2
+        },
+        {
+          "id": 571,
+          "area": 1017,
+          "gt_objects": 2
+        }
+      ]
+    }
+  }
+}

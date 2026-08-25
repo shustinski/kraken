@@ -720,6 +720,8 @@ class WidgetExtractionControlsMixin:
                     "Алгоритм сегментации проводников.\n"
                     "«Авто» сравнивает Otsu и Watershed по количеству, плотности и связности объектов.\n"
                     "«Порог Otsu» — классическая бинаризация по яркости.\n"
+                    "«Адаптивный порог» считает локальный порог в окрестности каждого пикселя "
+                    "и лучше держит неравномерную засветку SEM.\n"
                     "Watershed, Random Walker, Graph Cut и Reconstruction растят ядра металла "
                     "до затравок в зазорах и лучше держат бледную заливку SEM с яркими кромками.\n"
                     "«Замкнутые границы» вообще не опирается на яркость заливки: он замыкает края "
@@ -728,6 +730,8 @@ class WidgetExtractionControlsMixin:
                     "Conductor segmentation algorithm.\n"
                     "Auto compares Otsu and Watershed using object count, density, and topology.\n"
                     "Otsu threshold is classical intensity binarization.\n"
+                    "Adaptive threshold uses a local neighbourhood of each pixel "
+                    "and holds uneven SEM illumination better.\n"
                     "Watershed, Random Walker, Graph Cut and Reconstruction grow metal cores "
                     "until they meet gap seeds and recover pale SEM fills outlined by bright rims.\n"
                     "Closed boundary ignores the fill brightness altogether: it seals edges into "
@@ -844,6 +848,33 @@ class WidgetExtractionControlsMixin:
                     "Увеличение сильнее чистит шум; уменьшение сохраняет короткие, но реальные сегменты (перемычки, стабы).\n"
                     "Рабочий диапазон обычно 18–40 px.",
                     "Minimum trace length.",
+                )
+            )
+        if getattr(self, "metal_adaptive_block_spin", None) is not None:
+            self.metal_adaptive_block_spin.setToolTip(
+                tt(
+                    "Размер окна локального порога. 0 — автоматически от размера кадра (как раньше: нечётное окно около 15–63 px).\n"
+                    "Увеличение сглаживает неравномерную засветку, но может залить узкие зазоры.\n"
+                    "Уменьшение лучше держит тонкие щели, но сильнее реагирует на зерно SEM.",
+                    "Local-threshold window size. 0 = automatic from the frame size (odd 15–63 px).\n"
+                    "Larger windows flatten uneven illumination but may fill narrow gaps.\n"
+                    "Smaller windows keep thin seams but follow SEM grain more.",
+                )
+            )
+        if getattr(self, "metal_adaptive_c_spin", None) is not None:
+            self.metal_adaptive_c_spin.setToolTip(
+                tt(
+                    "Смещение C в формуле адаптивного порога. Положительное значение делает маску строже (меньше металла).\n"
+                    "Отрицательное — мягче, больше заливки и риск слияний.",
+                    "Offset C in the adaptive-threshold formula. Positive values make the mask stricter.\n"
+                    "Negative values recover more fill and increase merge risk.",
+                )
+            )
+        if getattr(self, "metal_adaptive_method_combo", None) is not None:
+            self.metal_adaptive_method_combo.setToolTip(
+                tt(
+                    "Как считается локальный фон: взвешенное гауссово среднее или простое среднее по окну.",
+                    "How the local background is estimated: Gaussian-weighted mean or plain window mean.",
                 )
             )
         if getattr(self, "metal_ws_smoothing_spin", None) is not None:

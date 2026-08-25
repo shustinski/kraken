@@ -257,23 +257,34 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.recognition_mode_combo.setItemText(2, "Контакты" if self._ui_language == "ru" else "Contacts")
     if hasattr(self, "recognition_mode_label"):
         self.recognition_mode_label.setText("Распознавание" if self._ui_language == "ru" else "Recognition")
-    if hasattr(self, "metal_segmentation_strategy_combo") and self.metal_segmentation_strategy_combo.count() >= 7:
-        self.metal_segmentation_strategy_combo.setItemText(
-            0,
-            "Авто (контроль связности)"
-            if self._ui_language == "ru"
-            else "Auto (topology control)",
-        )
-        self.metal_segmentation_strategy_combo.setItemText(
-            1, "Порог Otsu" if self._ui_language == "ru" else "Otsu threshold"
-        )
-        self.metal_segmentation_strategy_combo.setItemText(2, "Watershed")
-        self.metal_segmentation_strategy_combo.setItemText(3, "Random Walker")
-        self.metal_segmentation_strategy_combo.setItemText(4, "Graph Cut")
-        self.metal_segmentation_strategy_combo.setItemText(5, "Reconstruction")
-        self.metal_segmentation_strategy_combo.setItemText(
-            6, "Замкнутые границы" if self._ui_language == "ru" else "Closed boundary"
-        )
+    if hasattr(self, "metal_segmentation_strategy_combo"):
+        _strategy_labels = {
+            "auto": (
+                "Авто (контроль связности)",
+                "Auto (topology control)",
+            ),
+            "legacy_otsu": ("Порог Otsu", "Otsu threshold"),
+            "local_adaptive": ("Адаптивный порог", "Adaptive threshold"),
+            "gradient_watershed": ("Watershed", "Watershed"),
+            "random_walker": ("Random Walker", "Random Walker"),
+            "graph_cut": ("Graph Cut", "Graph Cut"),
+            "reconstruction": ("Reconstruction", "Reconstruction"),
+            "closed_boundary": (
+                "Замкнутые границы",
+                "Closed boundary",
+            ),
+            "structural_watershed": (
+                "Структурный водораздел",
+                "Structural watershed",
+            ),
+        }
+        combo = self.metal_segmentation_strategy_combo
+        lang_index = 0 if self._ui_language == "ru" else 1
+        for index in range(combo.count()):
+            data = str(combo.itemData(index) or "")
+            labels = _strategy_labels.get(data)
+            if labels is not None:
+                combo.setItemText(index, labels[lang_index])
     if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
         self.metal_segmentation_strategy_label_widget.setText(
             "Алгоритм распознавания" if self._ui_language == "ru" else "Recognition algorithm"
@@ -439,6 +450,33 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if getattr(self, "metal_closed_boundary_group", None) is not None:
         self.metal_closed_boundary_group.setTitle(
             "Замкнутые границы" if self._ui_language == "ru" else "Closed boundary"
+        )
+    if getattr(self, "metal_adaptive_group", None) is not None:
+        self.metal_adaptive_group.setTitle(
+            "Адаптивный порог" if self._ui_language == "ru" else "Adaptive threshold"
+        )
+    if getattr(self, "metal_adaptive_block_label_widget", None) is not None:
+        self.metal_adaptive_block_label_widget.setText(
+            "Размер окна, px" if self._ui_language == "ru" else "Window size, px"
+        )
+    if getattr(self, "metal_adaptive_block_spin", None) is not None:
+        self.metal_adaptive_block_spin.setSpecialValueText(
+            "Авто" if self._ui_language == "ru" else "Auto"
+        )
+    if getattr(self, "metal_adaptive_c_label_widget", None) is not None:
+        self.metal_adaptive_c_label_widget.setText(
+            "Смещение порога C" if self._ui_language == "ru" else "Threshold offset C"
+        )
+    if getattr(self, "metal_adaptive_method_label_widget", None) is not None:
+        self.metal_adaptive_method_label_widget.setText(
+            "Метод" if self._ui_language == "ru" else "Method"
+        )
+    if getattr(self, "metal_adaptive_method_combo", None) is not None:
+        self.metal_adaptive_method_combo.setItemText(
+            0, "Гаусс" if self._ui_language == "ru" else "Gaussian"
+        )
+        self.metal_adaptive_method_combo.setItemText(
+            1, "Среднее" if self._ui_language == "ru" else "Mean"
         )
     if getattr(self, "metal_gradient_3d_button", None) is not None:
         self.metal_gradient_3d_button.setText("3D поле" if self._ui_language == "ru" else "3D field")

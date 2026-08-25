@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any, Literal, cast
 
 from ..domain import PolygonData
+from ..vision.metal_recovery.segmentation import normalize_metal_adaptive_method
 from .processing import ContourExtractionSettings, DisplaySettings, PipelineStepConfig
 
 MetalSegmentationStrategyV2 = Literal[
@@ -23,6 +24,7 @@ MetalSegmentationStrategyV2 = Literal[
     "graph_cut",
     "reconstruction",
     "closed_boundary",
+    "structural_watershed",
 ]
 
 
@@ -78,6 +80,10 @@ class MetalRecoverySettings:
     reconstruction_erode_px: int = 0
     boundary_relief: float = 16.0
     boundary_background_sigma: float = 12.0
+    structural_variant: str = "s2"
+    adaptive_block_size: int = 0
+    adaptive_c: float = 0.0
+    adaptive_method: str = "gaussian"
 
     def __post_init__(self) -> None:
         self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
@@ -106,6 +112,9 @@ class MetalRecoverySettings:
             0.000001,
             min(1.0, float(self.min_object_rim_area_fraction)),
         )
+        self.adaptive_block_size = max(0, min(255, int(self.adaptive_block_size)))
+        self.adaptive_c = max(-64.0, min(64.0, float(self.adaptive_c)))
+        self.adaptive_method = normalize_metal_adaptive_method(self.adaptive_method)
 
 
 @dataclass(slots=True)
@@ -265,6 +274,10 @@ class ProcessingRequestV2:
                 metal_reconstruction_erode_px=metal_mode.reconstruction_erode_px,
                 metal_boundary_relief=metal_mode.boundary_relief,
                 metal_boundary_background_sigma=metal_mode.boundary_background_sigma,
+                metal_structural_variant=str(getattr(metal_mode, "structural_variant", "s2") or "s2"),
+                metal_adaptive_block_size=metal_mode.adaptive_block_size,
+                metal_adaptive_c=metal_mode.adaptive_c,
+                metal_adaptive_method=metal_mode.adaptive_method,
             )
         else:
             via_mode = self.recognition
@@ -378,6 +391,10 @@ class ProcessingRequestV2:
                 reconstruction_erode_px=legacy.metal_reconstruction_erode_px,
                 boundary_relief=legacy.metal_boundary_relief,
                 boundary_background_sigma=legacy.metal_boundary_background_sigma,
+                structural_variant=str(getattr(legacy, "metal_structural_variant", "s2") or "s2"),
+                adaptive_block_size=legacy.metal_adaptive_block_size,
+                adaptive_c=legacy.metal_adaptive_c,
+                adaptive_method=legacy.metal_adaptive_method,
             )
         return (
             cls(

@@ -1,0 +1,749 @@
+{
+  "crop_px": 50,
+  "frames": {
+    "0175": {
+      "gt_count": 22,
+      "logical_marker_count": 816,
+      "gt_with_more_than_one_marker": 20,
+      "gt_with_exactly_one_marker": 1,
+      "gt_without_marker": 1,
+      "cross_gt_markers": 0,
+      "mean_markers_per_gt": 27.363636363636363,
+      "median_markers_per_gt": 9.0,
+      "multi_gt_count": 20,
+      "multi_gt_with_detected_pair": 18,
+      "multi_gt_enclosed_in_one_pair": 2,
+      "median_same_gt_markers_in_pair": 2.0,
+      "mean_same_gt_markers_in_pair": 2.1666666666666665,
+      "pairs_covering_multiple_gt": 0,
+      "rois": [
+        {
+          "label": "multi_2m_20",
+          "kind": "multi_2m",
+          "gt_ids": [
+            20
+          ],
+          "bbox_full": [
+            1211,
+            150,
+            1304,
+            246
+          ],
+          "pair_found": true,
+          "pair_width": 34.0,
+          "pair_confidence": 0.9595062434673309,
+          "markers_in_pair": 2,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_29",
+          "kind": "multi_2m",
+          "gt_ids": [
+            29
+          ],
+          "bbox_full": [
+            485,
+            833,
+            565,
+            913
+          ],
+          "pair_found": true,
+          "pair_width": 17.0,
+          "pair_confidence": 0.8832908272743225,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_5m_19",
+          "kind": "multi_5m",
+          "gt_ids": [
+            19
+          ],
+          "bbox_full": [
+            1200,
+            0,
+            1280,
+            80
+          ],
+          "pair_found": true,
+          "pair_width": 17.0,
+          "pair_confidence": 0.9434824585914612,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_6m_11",
+          "kind": "multi_6m",
+          "gt_ids": [
+            11
+          ],
+          "bbox_full": [
+            1740,
+            534,
+            1838,
+            774
+          ],
+          "pair_found": true,
+          "pair_width": 28.0,
+          "pair_confidence": 0.43111027777194977,
+          "markers_in_pair": 1,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_6m_17",
+          "kind": "multi_6m",
+          "gt_ids": [
+            17
+          ],
+          "bbox_full": [
+            1788,
+            386,
+            1928,
+            482
+          ],
+          "pair_found": true,
+          "pair_width": 24.0,
+          "pair_confidence": 0.3889083117246628,
+          "markers_in_pair": 3,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_7m_15",
+          "kind": "multi_7m",
+          "gt_ids": [
+            15
+          ],
+          "bbox_full": [
+            1507,
+            15,
+            1604,
+            199
+          ],
+          "pair_found": true,
+          "pair_width": 29.0,
+          "pair_confidence": 0.5985066294670105,
+          "markers_in_pair": 2,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "single_28",
+          "kind": "single",
+          "gt_ids": [
+            28
+          ],
+          "bbox_full": [
+            205,
+            834,
+            285,
+            914
+          ],
+          "pair_found": true,
+          "pair_width": 17.0,
+          "pair_confidence": 0.8479874134063721,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "wide_1583830_1",
+          "kind": "wide_1583830",
+          "gt_ids": [
+            1
+          ],
+          "bbox_full": [
+            0,
+            0,
+            1221,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 8.0,
+          "pair_confidence": 0.4613264948129654,
+          "markers_in_pair": 2,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "wide_56458_2",
+          "kind": "wide_56458",
+          "gt_ids": [
+            2
+          ],
+          "bbox_full": [
+            1491,
+            149,
+            1928,
+            593
+          ],
+          "pair_found": true,
+          "pair_width": 29.0,
+          "pair_confidence": 0.586582750082016,
+          "markers_in_pair": 5,
+          "separator_absence": 0.0
+        }
+      ],
+      "consolidation": {
+        "raw_ridge_count": 542,
+        "logical_ridge_count": 521,
+        "combined_logical_count": 921,
+        "logical_wide_count": 428
+      }
+    },
+    "0580": {
+      "gt_count": 107,
+      "logical_marker_count": 2008,
+      "gt_with_more_than_one_marker": 102,
+      "gt_with_exactly_one_marker": 4,
+      "gt_without_marker": 1,
+      "cross_gt_markers": 2,
+      "mean_markers_per_gt": 16.523364485981308,
+      "median_markers_per_gt": 13.0,
+      "multi_gt_count": 102,
+      "multi_gt_with_detected_pair": 98,
+      "multi_gt_enclosed_in_one_pair": 5,
+      "median_same_gt_markers_in_pair": 1.0,
+      "mean_same_gt_markers_in_pair": 1.0204081632653061,
+      "pairs_covering_multiple_gt": 0,
+      "rois": [
+        {
+          "label": "multi_2m_66",
+          "kind": "multi_2m",
+          "gt_ids": [
+            66
+          ],
+          "bbox_full": [
+            1417,
+            1537,
+            1506,
+            1784
+          ],
+          "pair_found": true,
+          "pair_width": 30.0,
+          "pair_confidence": 0.9722000658512115,
+          "markers_in_pair": 2,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_77",
+          "kind": "multi_2m",
+          "gt_ids": [
+            77
+          ],
+          "bbox_full": [
+            1420,
+            1026,
+            1603,
+            1113
+          ],
+          "pair_found": true,
+          "pair_width": 29.0,
+          "pair_confidence": 0.9483389556407928,
+          "markers_in_pair": 2,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_79",
+          "kind": "multi_2m",
+          "gt_ids": [
+            79
+          ],
+          "bbox_full": [
+            773,
+            1725,
+            864,
+            1877
+          ],
+          "pair_found": true,
+          "pair_width": 32.0,
+          "pair_confidence": 0.9105096161365509,
+          "markers_in_pair": 2,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_95",
+          "kind": "multi_2m",
+          "gt_ids": [
+            95
+          ],
+          "bbox_full": [
+            517,
+            1322,
+            597,
+            1469
+          ],
+          "pair_found": true,
+          "pair_width": 15.0,
+          "pair_confidence": 0.7773517370223999,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_97",
+          "kind": "multi_2m",
+          "gt_ids": [
+            97
+          ],
+          "bbox_full": [
+            1768,
+            201,
+            1848,
+            348
+          ],
+          "pair_found": true,
+          "pair_width": 14.0,
+          "pair_confidence": 0.8354677259922028,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_3m_42",
+          "kind": "multi_3m",
+          "gt_ids": [
+            42
+          ],
+          "bbox_full": [
+            1352,
+            707,
+            1442,
+            1125
+          ],
+          "pair_found": true,
+          "pair_width": 31.0,
+          "pair_confidence": 0.8914349675178528,
+          "markers_in_pair": 3,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "single_98",
+          "kind": "single",
+          "gt_ids": [
+            98
+          ],
+          "bbox_full": [
+            725,
+            763,
+            805,
+            909
+          ],
+          "pair_found": true,
+          "pair_width": 14.0,
+          "pair_confidence": 0.7810303270816803,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "single_108",
+          "kind": "single",
+          "gt_ids": [
+            108
+          ],
+          "bbox_full": [
+            1746,
+            1831,
+            1826,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 11.0,
+          "pair_confidence": 0.7391951084136963,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "single_110",
+          "kind": "single",
+          "gt_ids": [
+            110
+          ],
+          "bbox_full": [
+            725,
+            1858,
+            805,
+            1938
+          ],
+          "pair_found": true,
+          "pair_width": 14.0,
+          "pair_confidence": 0.8192565143108368,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "wide_30448_1",
+          "kind": "wide_30448",
+          "gt_ids": [
+            1
+          ],
+          "bbox_full": [
+            392,
+            0,
+            493,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 14.0,
+          "pair_confidence": 0.8918922543525696,
+          "markers_in_pair": 49,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "wide_29274_2",
+          "kind": "wide_29274",
+          "gt_ids": [
+            2
+          ],
+          "bbox_full": [
+            1246,
+            0,
+            1326,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 14.0,
+          "pair_confidence": 0.8091897964477539,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "between_72_109_22",
+          "kind": "between",
+          "gt_ids": [
+            72,
+            109
+          ],
+          "bbox_full": [
+            1770,
+            312,
+            1864,
+            724
+          ],
+          "pair_found": true,
+          "pair_width": 11.0,
+          "pair_confidence": 0.8769178986549377,
+          "markers_in_pair": 7,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "between_54_105_25",
+          "kind": "between",
+          "gt_ids": [
+            54,
+            105
+          ],
+          "bbox_full": [
+            1354,
+            0,
+            1472,
+            553
+          ],
+          "pair_found": true,
+          "pair_width": 13.0,
+          "pair_confidence": 0.7126446068286896,
+          "markers_in_pair": 8,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "between_8_10_29",
+          "kind": "between",
+          "gt_ids": [
+            8,
+            10
+          ],
+          "bbox_full": [
+            957,
+            0,
+            1053,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 12.0,
+          "pair_confidence": 0.7716920673847198,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        }
+      ],
+      "consolidation": {
+        "raw_ridge_count": 2336,
+        "logical_ridge_count": 2069,
+        "combined_logical_count": 2208,
+        "logical_wide_count": 224
+      }
+    },
+    "3242": {
+      "gt_count": 711,
+      "logical_marker_count": 2399,
+      "gt_with_more_than_one_marker": 579,
+      "gt_with_exactly_one_marker": 130,
+      "gt_without_marker": 2,
+      "cross_gt_markers": 2,
+      "mean_markers_per_gt": 3.289732770745429,
+      "median_markers_per_gt": 2.0,
+      "multi_gt_count": 579,
+      "multi_gt_with_detected_pair": 568,
+      "multi_gt_enclosed_in_one_pair": 223,
+      "median_same_gt_markers_in_pair": 2.0,
+      "mean_same_gt_markers_in_pair": 1.5158450704225352,
+      "pairs_covering_multiple_gt": 120,
+      "rois": [
+        {
+          "label": "multi_2m_14",
+          "kind": "multi_2m",
+          "gt_ids": [
+            14
+          ],
+          "bbox_full": [
+            0,
+            0,
+            64,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 11.0,
+          "pair_confidence": 0.8454971313476562,
+          "markers_in_pair": 1,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_20",
+          "kind": "multi_2m",
+          "gt_ids": [
+            20
+          ],
+          "bbox_full": [
+            1766,
+            0,
+            1846,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 10.0,
+          "pair_confidence": 0.8781002163887024,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_23",
+          "kind": "multi_2m",
+          "gt_ids": [
+            23
+          ],
+          "bbox_full": [
+            1738,
+            0,
+            1818,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 10.0,
+          "pair_confidence": 0.8874222338199615,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_31",
+          "kind": "multi_2m",
+          "gt_ids": [
+            31
+          ],
+          "bbox_full": [
+            1586,
+            840,
+            1666,
+            1475
+          ],
+          "pair_found": true,
+          "pair_width": 11.0,
+          "pair_confidence": 0.926264077425003,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_42",
+          "kind": "multi_2m",
+          "gt_ids": [
+            42
+          ],
+          "bbox_full": [
+            320,
+            840,
+            400,
+            1474
+          ],
+          "pair_found": true,
+          "pair_width": 12.0,
+          "pair_confidence": 0.8908778131008148,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "multi_2m_47",
+          "kind": "multi_2m",
+          "gt_ids": [
+            47
+          ],
+          "bbox_full": [
+            292,
+            840,
+            372,
+            1474
+          ],
+          "pair_found": true,
+          "pair_width": 11.0,
+          "pair_confidence": 0.8506722152233124,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "single_15",
+          "kind": "single",
+          "gt_ids": [
+            15
+          ],
+          "bbox_full": [
+            1794,
+            0,
+            1874,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 10.0,
+          "pair_confidence": 0.8571425080299377,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "single_18",
+          "kind": "single",
+          "gt_ids": [
+            18
+          ],
+          "bbox_full": [
+            0,
+            0,
+            79,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 10.0,
+          "pair_confidence": 0.8901412487030029,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "single_21",
+          "kind": "single",
+          "gt_ids": [
+            21
+          ],
+          "bbox_full": [
+            27,
+            0,
+            107,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 11.0,
+          "pair_confidence": 0.8897665739059448,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "wide_66116_1",
+          "kind": "wide_66116",
+          "gt_ids": [
+            1
+          ],
+          "bbox_full": [
+            105,
+            0,
+            197,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 32.0,
+          "pair_confidence": 0.8788334131240845,
+          "markers_in_pair": 4,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "wide_65641_2",
+          "kind": "wide_65641",
+          "gt_ids": [
+            2
+          ],
+          "bbox_full": [
+            1647,
+            0,
+            1740,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 32.0,
+          "pair_confidence": 0.8787333965301514,
+          "markers_in_pair": 4,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "between_113_119_14",
+          "kind": "between",
+          "gt_ids": [
+            113,
+            119
+          ],
+          "bbox_full": [
+            1315,
+            841,
+            1395,
+            1179
+          ],
+          "pair_found": true,
+          "pair_width": 5.0,
+          "pair_confidence": 0.7399369478225708,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "between_143_148_14",
+          "kind": "between",
+          "gt_ids": [
+            143,
+            148
+          ],
+          "bbox_full": [
+            1329,
+            1729,
+            1409,
+            1928
+          ],
+          "pair_found": true,
+          "pair_width": 6.0,
+          "pair_confidence": 0.8718637824058533,
+          "markers_in_pair": 0,
+          "separator_absence": 1.0
+        },
+        {
+          "label": "between_318_435_14",
+          "kind": "between",
+          "gt_ids": [
+            318,
+            435
+          ],
+          "bbox_full": [
+            1848,
+            1776,
+            1928,
+            1904
+          ],
+          "pair_found": true,
+          "pair_width": 32.0,
+          "pair_confidence": 0.6883636116981506,
+          "markers_in_pair": 1,
+          "separator_absence": 0.0
+        }
+      ],
+      "consolidation": {
+        "raw_ridge_count": 1609,
+        "logical_ridge_count": 1558,
+        "combined_logical_count": 2653,
+        "logical_wide_count": 1355
+      }
+    }
+  }
+}

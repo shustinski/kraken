@@ -1,0 +1,5 @@
+include THIRD_PARTY_NOTICES.md
+include third_party/BSR-AGPL-3.0.txt
+recursive-include third_party/bsr_owt_ucm *
+recursive-include third_party/multi_separator/include *
+recursive-include third_party/multi_separator/src *

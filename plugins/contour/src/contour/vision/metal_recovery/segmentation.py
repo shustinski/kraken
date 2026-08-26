@@ -19,6 +19,12 @@ SEEDED_SEGMENTATION_STRATEGIES = frozenset(
         "reconstruction",
         "closed_boundary",
         "structural_watershed",
+        "owt_ucm",
+        "graph_multi_separator",
+        "gasp",
+        "mutex_watershed",
+        "multicut",
+        "lifted_multicut",
     }
 )
 
@@ -38,6 +44,27 @@ def normalize_metal_segmentation_strategy(value: Any) -> str:
         return "edges"
     if text in {"auto", "hybrid", "adaptive_auto", "гибрид", "гибридная"}:
         return "auto"
+    if text in {
+        "owt_ucm",
+        "owtucm",
+        "oriented_watershed_ucm",
+    }:
+        return "owt_ucm"
+    if text in {
+        "graph_multi_separator",
+        "graph_multiseparator",
+        "multi_separator",
+        "msp",
+    }:
+        return "graph_multi_separator"
+    if text == "gasp":
+        return "gasp"
+    if text in {"mutex_watershed", "mutexwatershed", "mws"}:
+        return "mutex_watershed"
+    if text in {"multicut", "correlation_clustering"}:
+        return "multicut"
+    if text in {"lifted_multicut", "liftedmulticut"}:
+        return "lifted_multicut"
     if text in {
         "gradient_watershed",
         "watershed",
@@ -176,6 +203,7 @@ class MetalSegmentationConfig:
     adaptive_block_size: int = 0
     adaptive_c: float = 0.0
     adaptive_method: str = "gaussian"
+    strategy_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -188,6 +216,10 @@ class MetalSegmentationResult:
     polarity: SemPolarity
     debug_images: dict[str, np.ndarray] = field(default_factory=dict)
     instance_labels: np.ndarray | None = None
+    boundary_map: np.ndarray | None = None
+    confidence_map: np.ndarray | None = None
+    debug_data: dict[str, Any] = field(default_factory=dict)
+    timings_ms: dict[str, float] = field(default_factory=dict)
 
 
 def otsu_segmentation_mask(gray: np.ndarray, *, otsu_offset: float, dark_foreground: bool) -> np.ndarray:

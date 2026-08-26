@@ -12,7 +12,7 @@ import argparse
 import csv
 import json
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
@@ -33,6 +33,7 @@ from contour.vision.metal_recovery import (  # noqa: E402
     detect_metalization,
     metal_recovery_config_from_settings,
 )
+from contour.vision.metal_recovery.detector import _segmentation_config_from_recovery  # noqa: E402
 from contour.vision.metal_recovery.gradient_watershed import (  # noqa: E402
     GradientWatershedConfig,
     analyze_metal_presence,
@@ -41,7 +42,11 @@ from contour.vision.metal_recovery.gradient_watershed import (  # noqa: E402
     intensity_class_limits,
     selective_conductor_recovery,
 )
-from contour.vision.metal_recovery.pipeline_stages import _segment  # noqa: E402
+from contour.vision.metal_recovery.pipeline_stages import (  # noqa: E402
+    IMPLEMENTED_NEW_STRATEGIES,
+    _segment,
+    build_metal_segmentation_mask_staged,
+)
 from contour.vision.preprocessing import (  # noqa: E402
     metal_preprocess_config_from_settings,
     preprocess_for_sem,
@@ -57,6 +62,12 @@ STRATEGIES = (
     "reconstruction",
     "closed_boundary",
     "structural_watershed",
+    "owt_ucm",
+    "graph_multi_separator",
+    "gasp",
+    "mutex_watershed",
+    "multicut",
+    "lifted_multicut",
 )
 
 REAL_DATASET_ROOT = PLUGIN_ROOT / "tests" / "test_metal"
@@ -306,11 +317,7 @@ def _rasterize_polygon_labels(
     shape: tuple[int, int],
 ) -> np.ndarray:
     """Rasterize each conductor independently, subtracting only its own holes."""
-    selected = [
-        polygon
-        for polygon in polygons
-        if polygon.shape_hint != "box" and len(polygon.points) >= 3
-    ]
+    selected = [polygon for polygon in polygons if polygon.shape_hint != "box" and len(polygon.points) >= 3]
     holes_by_parent: dict[int, list[PolygonData]] = {}
     conductors: list[tuple[float, PolygonData]] = []
     for polygon in selected:
@@ -394,10 +401,7 @@ def evaluation_crop_slices(
         return slice(None), slice(None)
     if height <= 2 * crop_px or width <= 2 * crop_px:
         frame = f"Frame {frame_id}: " if frame_id else ""
-        raise ValueError(
-            f"{frame}image size {height}x{width} is too small for "
-            f"evaluation_border_crop_px={crop_px}"
-        )
+        raise ValueError(f"{frame}image size {height}x{width} is too small for evaluation_border_crop_px={crop_px}")
     return slice(crop_px, height - crop_px), slice(crop_px, width - crop_px)
 
 
@@ -439,9 +443,7 @@ def prepare_evaluation_masks(
     predicted_eval = crop_evaluation_region(predicted, crop_px, frame_id=frame_id)
     expected_eval = crop_evaluation_region(expected_labels, crop_px, frame_id=frame_id)
     predicted_labels_eval = (
-        None
-        if predicted_labels is None
-        else crop_evaluation_region(predicted_labels, crop_px, frame_id=frame_id)
+        None if predicted_labels is None else crop_evaluation_region(predicted_labels, crop_px, frame_id=frame_id)
     )
     if crop_px == 0:
         return predicted_eval, expected_eval, predicted_labels_eval
@@ -485,17 +487,9 @@ def components_removed_by_crop(
     """Full-frame components whose pixels all lie in the discarded border."""
     if crop_px == 0:
         return []
-    remaining = set(
-        np.unique(
-            crop_evaluation_region(full_labels, crop_px, frame_id=frame_id)
-        ).tolist()
-    )
+    remaining = set(np.unique(crop_evaluation_region(full_labels, crop_px, frame_id=frame_id)).tolist())
     remaining.discard(0)
-    return [
-        record
-        for record in _component_records(full_labels)
-        if int(record["id"]) not in remaining
-    ]
+    return [record for record in _component_records(full_labels) if int(record["id"]) not in remaining]
 
 
 def labels_for_component_audit(
@@ -606,11 +600,11 @@ def measure_segmentation(
     supported_components = max(0, predicted_components - false_positive_components)
     expected_components = int(np.unique(expected_labels[expected_labels > 0]).size)
     component_precision = (
-        1.0 if predicted_components == 0 and expected_components == 0 else supported_components / max(1, predicted_components)
+        1.0
+        if predicted_components == 0 and expected_components == 0
+        else supported_components / max(1, predicted_components)
     )
-    component_recall = (
-        1.0 if expected_components == 0 else matched_expected_components / expected_components
-    )
+    component_recall = 1.0 if expected_components == 0 else matched_expected_components / expected_components
     component_f1 = (
         0.0
         if component_precision + component_recall <= 0.0
@@ -789,7 +783,11 @@ def _rasterize_detected_polygons(
     return _rasterize_polygon_labels(polygons, shape)
 
 
-def _ui_recovery_config(strategy: str, config: GradientWatershedConfig):
+def _ui_recovery_config(
+    strategy: str,
+    config: GradientWatershedConfig,
+    strategy_parameter_overrides: Mapping[str, object] | None = None,
+):
     base = ContourExtractionSettings(
         recognition_mode="conductors",
         extraction_profile="conductors",
@@ -817,6 +815,11 @@ def _ui_recovery_config(strategy: str, config: GradientWatershedConfig):
             "metal_reconstruction_erode_px": config.reconstruction_erode_px,
             "metal_boundary_relief": config.boundary_relief,
             "metal_boundary_background_sigma": config.boundary_background_sigma,
+            **(
+                {"metal_strategy_parameters": {strategy: dict(strategy_parameter_overrides)}}
+                if strategy_parameter_overrides
+                else {}
+            ),
         }
     )
     return metal_recovery_config_from_settings(settings)
@@ -826,20 +829,21 @@ def _aggregate_strategy_metrics(
     case_results: dict[str, dict[str, dict[str, object]]],
     case_categories: dict[str, str],
     strategy_names: tuple[str, ...],
-) -> dict[str, dict[str, float | int]]:
-    aggregates: dict[str, dict[str, float | int]] = {}
+) -> dict[str, dict[str, object]]:
+    aggregates: dict[str, dict[str, object]] = {}
     for strategy in strategy_names:
         metrics = [case_results[name][strategy] for name in case_results]
-        positive_metrics = [
-            case_results[name][strategy]
-            for name in case_results
-            if case_categories[name] != "empty"
-        ]
-        empty_metrics = [
-            case_results[name][strategy]
-            for name in case_results
-            if case_categories[name] == "empty"
-        ]
+        positive_metrics = [case_results[name][strategy] for name in case_results if case_categories[name] != "empty"]
+        empty_metrics = [case_results[name][strategy] for name in case_results if case_categories[name] == "empty"]
+        stage_names = sorted(
+            {
+                stage_name
+                for item in metrics
+                for stage_name in (
+                    item.get("stage_timings_ms", {}) if isinstance(item.get("stage_timings_ms"), dict) else {}
+                )
+            }
+        )
         aggregates[strategy] = {
             "mean_iou": float(np.mean([item["iou"] for item in metrics])),
             "positive_mean_iou": float(np.mean([item["iou"] for item in positive_metrics])),
@@ -852,35 +856,29 @@ def _aggregate_strategy_metrics(
             "positive_mean_boundary_f1": float(np.mean([item["boundary_f1"] for item in positive_metrics])),
             "false_merges": int(sum(item["false_merges"] for item in metrics)),
             "false_splits": int(sum(item["false_splits"] for item in metrics)),
-            "false_positive_components": int(
-                sum(item["false_positive_components"] for item in metrics)
-            ),
-            "missed_expected_components": int(
-                sum(item["missed_expected_components"] for item in metrics)
-            ),
-            "component_count_absolute_error": int(
-                sum(item["component_count_absolute_error"] for item in metrics)
-            ),
+            "false_positive_components": int(sum(item["false_positive_components"] for item in metrics)),
+            "missed_expected_components": int(sum(item["missed_expected_components"] for item in metrics)),
+            "component_count_absolute_error": int(sum(item["component_count_absolute_error"] for item in metrics)),
             "positive_mean_component_precision": float(
                 np.mean([item["component_precision"] for item in positive_metrics])
             ),
-            "positive_mean_component_recall": float(
-                np.mean([item["component_recall"] for item in positive_metrics])
-            ),
-            "positive_mean_component_f1": float(
-                np.mean([item["component_f1"] for item in positive_metrics])
-            ),
+            "positive_mean_component_recall": float(np.mean([item["component_recall"] for item in positive_metrics])),
+            "positive_mean_component_f1": float(np.mean([item["component_f1"] for item in positive_metrics])),
             "empty_false_metal_fraction": float(
                 np.mean([item["false_metal_fraction"] for item in empty_metrics]) if empty_metrics else 0.0
             ),
             "exact_topology_frames": int(sum(bool(item["topology_exact_match"]) for item in metrics)),
-            "positive_exact_topology_frames": int(
-                sum(bool(item["topology_exact_match"]) for item in positive_metrics)
-            ),
+            "positive_exact_topology_frames": int(sum(bool(item["topology_exact_match"]) for item in positive_metrics)),
             "elapsed_ms": float(sum(item["elapsed_ms"] for item in metrics)),
             "mean_elapsed_ms": float(np.mean([item["elapsed_ms"] for item in metrics])),
             "mean_segmentation_ms": float(np.mean([item["segmentation_ms"] for item in metrics])),
             "mean_refinement_ms": float(np.mean([item["refinement_ms"] for item in metrics])),
+            "mean_stage_timings_ms": {
+                stage_name: float(
+                    np.mean([float(item.get("stage_timings_ms", {}).get(stage_name, 0.0)) for item in metrics])
+                )
+                for stage_name in stage_names
+            },
         }
     return aggregates
 
@@ -925,6 +923,7 @@ def run_benchmark(
     check_presence: bool = True,
     evaluation_stage: str = "ui",
     evaluation_border_crop_px: int = 0,
+    strategy_parameter_overrides: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     config = GradientWatershedConfig()
     case_results: dict[str, dict[str, dict[str, object]]] = {}
@@ -944,17 +943,47 @@ def run_benchmark(
         for strategy in strategy_names:
             started = perf_counter()
             predicted_labels: np.ndarray | None = None
+            stage_timings_ms: dict[str, float] = {}
             if evaluation_stage == "ui":
                 detection = detect_metalization(
                     case.image,
-                    _ui_recovery_config(strategy, config),
+                    _ui_recovery_config(
+                        strategy,
+                        config,
+                        None if strategy_parameter_overrides is None else strategy_parameter_overrides.get(strategy),
+                    ),
                     source_image=case.source_image,
                 )
+                raw_stage_timings = detection.params_snapshot.get("strategy_timings_ms", {})
+                if isinstance(raw_stage_timings, dict):
+                    stage_timings_ms = {
+                        str(name): float(value)
+                        for name, value in raw_stage_timings.items()
+                        if isinstance(value, (int, float))
+                    }
                 predicted_labels = _rasterize_detected_polygons(
                     detection.accepted,
                     case.image.shape[:2],
                 )
                 mask = np.where(predicted_labels > 0, 255, 0).astype(np.uint8)
+                segmentation_ms = (perf_counter() - started) * 1000.0
+                refinement_ms = 0.0
+            elif strategy in IMPLEMENTED_NEW_STRATEGIES:
+                segmentation = build_metal_segmentation_mask_staged(
+                    case.image,
+                    _segmentation_config_from_recovery(
+                        _ui_recovery_config(
+                            strategy,
+                            config,
+                            None
+                            if strategy_parameter_overrides is None
+                            else strategy_parameter_overrides.get(strategy),
+                        )
+                    ),
+                )
+                mask = segmentation.mask
+                predicted_labels = segmentation.instance_labels
+                stage_timings_ms = dict(segmentation.timings_ms)
                 segmentation_ms = (perf_counter() - started) * 1000.0
                 refinement_ms = 0.0
             elif strategy == "gradient_watershed":
@@ -1030,6 +1059,7 @@ def run_benchmark(
                 removed_gt_component_count=len(removed_gt),
                 removed_predicted_component_count=len(removed_predicted),
             )
+            per_strategy[strategy]["stage_timings_ms"] = stage_timings_ms
             per_strategy_full[strategy] = asdict(full_metrics)
             if case.name in BORDER_AUDIT_FRAMES:
                 border_audit.setdefault(case.name, {})[strategy] = {
@@ -1060,9 +1090,7 @@ def run_benchmark(
     aggregates = _aggregate_strategy_metrics(case_results, case_categories, strategy_names)
     exact_topology_frames = {
         strategy: [
-            name
-            for name, per_strategy in case_results.items()
-            if bool(per_strategy[strategy]["topology_exact_match"])
+            name for name, per_strategy in case_results.items() if bool(per_strategy[strategy]["topology_exact_match"])
         ]
         for strategy in strategy_names
     }
@@ -1077,12 +1105,16 @@ def run_benchmark(
         "strategies": list(strategy_names),
         "config": asdict(config),
         "recovery_configs": {
-            strategy: asdict(_ui_recovery_config(strategy, config))
+            strategy: asdict(
+                _ui_recovery_config(
+                    strategy,
+                    config,
+                    None if strategy_parameter_overrides is None else strategy_parameter_overrides.get(strategy),
+                )
+            )
             for strategy in strategy_names
         },
-        "preprocess_config": asdict(
-            metal_preprocess_config_from_settings(ContourExtractionSettings())
-        ),
+        "preprocess_config": asdict(metal_preprocess_config_from_settings(ContourExtractionSettings())),
         "metal_presence_check": check_presence,
         "aggregates": aggregates,
         "full_frame_aggregates": _aggregate_strategy_metrics(
@@ -1114,9 +1146,7 @@ def _write_csv(report: dict[str, object], output_path: Path) -> None:
         for strategy, raw_metrics in raw_strategies.items():
             assert isinstance(raw_metrics, dict)
             scalar_metrics = {
-                key: value
-                for key, value in raw_metrics.items()
-                if not isinstance(value, (dict, list, tuple))
+                key: value for key, value in raw_metrics.items() if not isinstance(value, (dict, list, tuple))
             }
             rows.append(
                 {
@@ -1261,9 +1291,7 @@ def _markdown(report: dict[str, object]) -> str:
                     lines.append(f"- GT id={record['id']} area={record['area']} bbox={record['bbox_xyxy']}")
                 lines.append(f"Predicted components removed by crop: {len(removed_pred)}")
                 for record in removed_pred:
-                    lines.append(
-                        f"- pred id={record['id']} area={record['area']} bbox={record['bbox_xyxy']}"
-                    )
+                    lines.append(f"- pred id={record['id']} area={record['area']} bbox={record['bbox_xyxy']}")
                 lines.append(
                     "Remaining topology: "
                     f"false={remaining['false_positive_components']}, "
@@ -1327,8 +1355,20 @@ def main() -> int:
         ),
     )
     parser.add_argument("--strategies", nargs="+", choices=STRATEGIES, default=list(STRATEGIES))
+    parser.add_argument(
+        "--frames",
+        nargs="+",
+        help="benchmark only these frame ids (for example: 0175 0580 3242)",
+    )
     args = parser.parse_args()
     cases = build_real_benchmark_cases(args.dataset_root) if args.suite == "real" else build_benchmark_cases()
+    if args.frames:
+        requested_frames = set(args.frames)
+        available_frames = {case.name for case in cases}
+        missing_frames = sorted(requested_frames - available_frames)
+        if missing_frames:
+            parser.error(f"unknown frame ids: {', '.join(missing_frames)}")
+        cases = tuple(case for case in cases if case.name in requested_frames)
     report = run_benchmark(
         args.strategies,
         cases=cases,

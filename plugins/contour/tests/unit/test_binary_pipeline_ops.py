@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -19,6 +20,41 @@ def _mask_iou(first_mask: np.ndarray, second_mask: np.ndarray) -> float:
 
 
 class BinaryPipelineOperationTests(unittest.TestCase):
+    def test_denoise_uses_grayscale_nlm_for_achromatic_bgr_image(self) -> None:
+        gray = np.arange(64, dtype=np.uint8).reshape(8, 8)
+        image = cv2.merge((gray, gray, gray))
+        expected_gray = np.full((8, 8), 91, dtype=np.uint8)
+        pipeline = PreprocessingPipeline([PreprocessingPipeline.create_step("denoise")])
+
+        with (
+            patch("contour.pipeline.cv2.fastNlMeansDenoising", return_value=expected_gray) as grayscale_nlm,
+            patch("contour.pipeline.cv2.fastNlMeansDenoisingColored") as color_nlm,
+        ):
+            result = pipeline.apply(image)
+
+        grayscale_nlm.assert_called_once()
+        color_nlm.assert_not_called()
+        self.assertEqual(result.shape, image.shape)
+        np.testing.assert_array_equal(result[..., 0], expected_gray)
+        np.testing.assert_array_equal(result[..., 1], expected_gray)
+        np.testing.assert_array_equal(result[..., 2], expected_gray)
+
+    def test_denoise_keeps_color_nlm_for_genuinely_colored_image(self) -> None:
+        image = np.zeros((8, 8, 3), dtype=np.uint8)
+        image[3, 4] = (10, 20, 30)
+        expected = np.full_like(image, 73)
+        pipeline = PreprocessingPipeline([PreprocessingPipeline.create_step("denoise")])
+
+        with (
+            patch("contour.pipeline.cv2.fastNlMeansDenoising") as grayscale_nlm,
+            patch("contour.pipeline.cv2.fastNlMeansDenoisingColored", return_value=expected) as color_nlm,
+        ):
+            result = pipeline.apply(image)
+
+        grayscale_nlm.assert_not_called()
+        color_nlm.assert_called_once()
+        np.testing.assert_array_equal(result, expected)
+
     def test_brightness_and_contrast_are_separate_public_operations_with_legacy_support(self) -> None:
         image = np.array([[10, 80], [120, 150]], dtype=np.uint8)
         split_pipeline = PreprocessingPipeline(

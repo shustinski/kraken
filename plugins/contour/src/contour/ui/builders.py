@@ -52,8 +52,22 @@ from ..contour_extractor import APPROXIMATION_MODE_MAP, RETRIEVAL_MODE_MAP
 from ..gamification.ui import GamificationPanel
 from ..graphics.tools import MIN_MANUAL_STROKE_WIDTH_PX
 from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode, PolygonEditorView
+from ..vision.metal_recovery.strategy_registry import (
+    IMPLEMENTED_NEW_STRATEGIES,
+    ParameterSpec,
+    StrategySpec,
+    strategy_spec,
+    visible_strategy_specs,
+)
 from .frame_matrix_view import FrameMatrixGraphicsView
 from .frame_path_list_model import FramePathListView
+from .metal_strategy_i18n import (
+    choice_label,
+    parameter_label,
+    parameter_tooltip,
+    strategy_description,
+    strategy_name,
+)
 from .no_wheel_controls import NoWheelComboBox as QComboBox
 from .no_wheel_controls import NoWheelDoubleSpinBox as QDoubleSpinBox
 from .no_wheel_controls import NoWheelSpinBox as QSpinBox
@@ -64,6 +78,147 @@ if TYPE_CHECKING:
     pass
 
 USE_GAMIFICATION = False
+
+
+def _strategy_parameter_widget(parameter: ParameterSpec, language: str) -> QWidget:
+    if parameter.kind == "bool":
+        widget = QCheckBox()
+        widget.setChecked(bool(parameter.default))
+    elif parameter.kind == "choice":
+        combo = QComboBox()
+        for value, label in parameter.choices:
+            combo.addItem(choice_label(label, language), value)
+        index = combo.findData(parameter.default)
+        combo.setCurrentIndex(max(0, index))
+        widget = combo
+    elif parameter.kind == "int":
+        spin = QSpinBox()
+        minimum = -2_147_483_648 if parameter.minimum is None else int(parameter.minimum)
+        maximum = 2_147_483_647 if parameter.maximum is None else int(parameter.maximum)
+        spin.setRange(minimum, maximum)
+        spin.setSingleStep(max(1, int(parameter.step or 1)))
+        spin.setValue(int(parameter.default))
+        if parameter.units:
+            spin.setSuffix(f" {parameter.units}")
+        widget = spin
+    else:
+        spin = QDoubleSpinBox()
+        minimum = -1e12 if parameter.minimum is None else float(parameter.minimum)
+        maximum = 1e12 if parameter.maximum is None else float(parameter.maximum)
+        spin.setRange(minimum, maximum)
+        spin.setSingleStep(float(parameter.step or 0.1))
+        spin.setDecimals(4 if float(parameter.step or 0.1) < 0.01 else 3)
+        spin.setValue(float(parameter.default))
+        if parameter.units:
+            spin.setSuffix(f" {parameter.units}")
+        widget = spin
+    widget.setToolTip(parameter_tooltip(parameter, language))
+    widget.setObjectName(f"metal_strategy_parameter_{parameter.key}")
+    return widget
+
+
+def _build_strategy_parameter_page(self, spec: StrategySpec) -> QWidget:
+    page = QWidget()
+    page_layout = QVBoxLayout(page)
+    page_layout.setContentsMargins(0, 0, 0, 0)
+    page_layout.setSpacing(6)
+    controls: dict[str, QWidget] = {}
+    language = str(getattr(self, "_ui_language", "ru") or "ru")
+    group_titles = (
+        ((False, "Основные"), (True, "Дополнительные")) if language == "ru" else ((False, "Basic"), (True, "Advanced"))
+    )
+    for advanced, title in group_titles:
+        parameters = [parameter for parameter in spec.parameters if parameter.advanced is advanced]
+        if not parameters:
+            continue
+        group = QGroupBox(title)
+        group.setObjectName(f"metal_strategy_{spec.strategy_id}_{'advanced' if advanced else 'basic'}_group")
+        form = QFormLayout(group)
+        self._configure_compact_form(form)
+        for parameter in parameters:
+            widget = _strategy_parameter_widget(parameter, language)
+            label = QLabel(parameter_label(parameter, language))
+            label.setToolTip(parameter_tooltip(parameter, language))
+            form.addRow(label, widget)
+            controls[parameter.key] = widget
+            if isinstance(widget, QCheckBox):
+                widget.toggled.connect(self._on_extraction_settings_changed)
+            elif isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._on_extraction_settings_changed)
+            else:
+                widget.valueChanged.connect(self._on_extraction_settings_changed)
+        page_layout.addWidget(group)
+    if "minimum_lifted_distance" in controls and "maximum_lifted_distance" in controls:
+        minimum_distance = controls["minimum_lifted_distance"]
+        maximum_distance = controls["maximum_lifted_distance"]
+        minimum_distance.valueChanged.connect(maximum_distance.setMinimum)
+        maximum_distance.setMinimum(minimum_distance.value())
+    if "minimum_background_confidence" in controls and "minimum_metal_confidence" in controls:
+        background_confidence = controls["minimum_background_confidence"]
+        metal_confidence = controls["minimum_metal_confidence"]
+        metal_confidence.valueChanged.connect(background_confidence.setMaximum)
+        background_confidence.setMaximum(metal_confidence.value())
+    page_layout.addStretch(1)
+    self.metal_strategy_parameter_widgets[spec.strategy_id] = controls
+    return page
+
+
+def _sync_metal_strategy_panel(self) -> None:
+    strategy = str(self.metal_segmentation_strategy_combo.currentData() or "legacy_otsu")
+    spec = strategy_spec(strategy)
+    language = str(getattr(self, "_ui_language", "ru") or "ru")
+    self.metal_strategy_description_label.setText(strategy_description(spec, language))
+    page_index = self.metal_strategy_parameter_pages.get(strategy)
+    self.metal_strategy_parameters_group.setVisible(page_index is not None)
+    if page_index is not None:
+        if hasattr(self, "metal_advanced_group"):
+            self.metal_advanced_group.setChecked(True)
+        self.metal_strategy_parameter_stack.setCurrentIndex(page_index)
+        title = strategy_name(spec, language)
+        self.metal_strategy_parameters_group.setTitle(
+            f"Параметры: {title}" if language == "ru" else f"{title} parameters"
+        )
+
+    new_strategy = strategy in IMPLEMENTED_NEW_STRATEGIES
+    seeded_strategy = strategy in {
+        "gradient_watershed",
+        "random_walker",
+        "graph_cut",
+        "reconstruction",
+        "closed_boundary",
+        "structural_watershed",
+        *IMPLEMENTED_NEW_STRATEGIES,
+    }
+    basic_form = self.metal_basic_group.layout()
+    if isinstance(basic_form, QFormLayout):
+        basic_form.setRowVisible(self.metal_min_contrast_widget, not seeded_strategy)
+        basic_form.setRowVisible(self.metal_gap_bridge_spin, not seeded_strategy)
+        basic_form.setRowVisible(self.metal_speckle_removal_spin, not new_strategy)
+        for auto_control in (
+            self.metal_auto_contrast_step_spin,
+            self.metal_auto_source_contrast_step_spin,
+            self.metal_auto_directional_gap_bridge_spin,
+            self.metal_auto_directional_gap_min_source_spin,
+        ):
+            basic_form.setRowVisible(auto_control, strategy == "auto")
+
+    self.metal_adaptive_group.setVisible(strategy in {"auto", "local_adaptive"})
+    self.metal_watershed_group.setVisible(
+        strategy
+        in {
+            "auto",
+            "gradient_watershed",
+            "random_walker",
+            "graph_cut",
+            "reconstruction",
+            "closed_boundary",
+            "structural_watershed",
+        }
+    )
+    self.metal_random_walker_group.setVisible(strategy == "random_walker")
+    self.metal_graph_cut_group.setVisible(strategy == "graph_cut")
+    self.metal_reconstruction_group.setVisible(strategy == "reconstruction")
+    self.metal_closed_boundary_group.setVisible(strategy == "closed_boundary")
 
 
 class _DockWidthComboBox(QComboBox):
@@ -166,7 +321,6 @@ def build_ui(self) -> None:
     self.left_controls_scroll.setWidget(controls_container)
     controls_layout = QVBoxLayout(controls_container)
     self.control_tabs = self._build_tabs()
-    self.control_tabs.currentChanged.connect(self._on_control_tab_changed)
     controls_layout.addWidget(self.control_tabs, 1)
     self.main_splitter.addWidget(self.left_controls_scroll)
     self.visual_panel = self._build_visual_panel()
@@ -605,17 +759,12 @@ def build_pipeline_tab(self) -> QWidget:
     self.save_pipeline_button.clicked.connect(self._save_pipeline_json)
     self.load_pipeline_button = QPushButton("Load JSON")
     self.load_pipeline_button.clicked.connect(self._load_pipeline_json)
-    self.pipeline_preset_combo = QComboBox()
-    self.apply_pipeline_preset_button = QPushButton("Apply filter preset")
-    self.apply_pipeline_preset_button.clicked.connect(self._apply_selected_pipeline_preset)
-    self.auto_tune_button = QPushButton("Auto-fit from drawing")
-    self.auto_tune_button.clicked.connect(self._start_auto_tune_from_reference)
-    self.auto_tune_button.setToolTip("Tunes filter parameters using the drawn polygons as the target result")
+    self.show_applied_filters_checkbox = QCheckBox("Show applied filters")
+    self.show_applied_filters_checkbox.setChecked(True)
+    self.show_applied_filters_checkbox.toggled.connect(self._on_show_applied_filters_changed)
     apply_layout.addWidget(self.save_pipeline_button, 0, 0)
     apply_layout.addWidget(self.load_pipeline_button, 0, 1)
-    apply_layout.addWidget(self.pipeline_preset_combo, 1, 0)
-    apply_layout.addWidget(self.apply_pipeline_preset_button, 1, 1)
-    apply_layout.addWidget(self.auto_tune_button, 2, 0, 1, 2)
+    apply_layout.addWidget(self.show_applied_filters_checkbox, 1, 0, 1, 2)
     apply_layout.setColumnStretch(0, 1)
     apply_layout.setColumnStretch(1, 1)
     steps_layout.addWidget(apply_row)
@@ -949,12 +1098,8 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_basics_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
     self.bright_via_basics_form = QFormLayout(self.bright_via_basics_group)
     self._configure_compact_form(self.bright_via_basics_form)
-    self.bright_via_basics_form.setRowWrapPolicy(
-        QFormLayout.RowWrapPolicy.DontWrapRows
-    )
-    self.bright_via_basics_form.setFormAlignment(
-        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-    )
+    self.bright_via_basics_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+    self.bright_via_basics_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
     self.bright_via_quality_group = QGroupBox("Фильтры качества")
     self.bright_via_quality_form = QFormLayout(self.bright_via_quality_group)
     self._configure_compact_form(self.bright_via_quality_form)
@@ -970,9 +1115,7 @@ def build_extraction_tab(self) -> QWidget:
     # Expert numeric editors form one stable column. Wrapping individual rows
     # would shift some spin boxes to the label's left edge in a narrow dock.
     self.bright_via_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
-    self.bright_via_form.setFormAlignment(
-        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
-    )
+    self.bright_via_form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
     _bright_adv_wrap = QVBoxLayout(self.bright_via_advanced_outer)
     _bright_adv_wrap.setContentsMargins(8, 4, 8, 8)
     _bright_adv_wrap.addWidget(self.bright_via_advanced_inner)
@@ -1157,6 +1300,7 @@ def build_extraction_tab(self) -> QWidget:
     self.heuristic_min_abs_peak_spin.setDecimals(1)
     self.heuristic_min_abs_peak_spin.setValue(0.0)
     self.heuristic_use_bilateral_checkbox = QCheckBox("Bilateral вместо медианы")
+
     def _expert_spin(name: str, minimum: float, maximum: float, value: float, decimals: int = 2):
         spin = QDoubleSpinBox()
         spin.setRange(minimum, maximum)
@@ -1479,9 +1623,7 @@ def build_extraction_tab(self) -> QWidget:
     self.bright_via_basics_form.addRow(self.bright_via_mode_stack)
     self.bright_via_mode_stack_label_widget = None
     self.bright_via_basics_form.addRow("Полярность контакта", self.via_heuristic_polarity_combo)
-    self.bright_via_polarity_label_widget = self.bright_via_basics_form.labelForField(
-        self.via_heuristic_polarity_combo
-    )
+    self.bright_via_polarity_label_widget = self.bright_via_basics_form.labelForField(self.via_heuristic_polarity_combo)
     self.bright_via_diameter_mode_label_widget = None
     self.bright_via_diameter_fixed_label_widget = None
     self.bright_via_basics_form.addRow("Диаметр поиска", self.bright_via_diameter_range_widget)
@@ -1489,9 +1631,7 @@ def build_extraction_tab(self) -> QWidget:
         self.bright_via_diameter_range_widget
     )
     self.bright_via_basics_form.addRow("Диаметр сохранения", self.via_output_diameter_spin)
-    self.via_output_diameter_label_widget = self.bright_via_basics_form.labelForField(
-        self.via_output_diameter_spin
-    )
+    self.via_output_diameter_label_widget = self.bright_via_basics_form.labelForField(self.via_output_diameter_spin)
     self.bright_via_basics_form.addRow(self.via_white_range_checkbox, self.via_white_range_widget)
     self.bright_via_white_range_label_widget = self.bright_via_basics_form.labelForField(self.via_white_range_widget)
     self.bright_via_basics_form.addRow(self.via_black_range_checkbox, self.via_black_range_widget)
@@ -1519,9 +1659,7 @@ def build_extraction_tab(self) -> QWidget:
     ):
         _basic_editor.setFixedWidth(self.bright_via_basics_editor_width)
     for _row in range(self.bright_via_basics_form.rowCount()):
-        _label_item = self.bright_via_basics_form.itemAt(
-            _row, QFormLayout.ItemRole.LabelRole
-        )
+        _label_item = self.bright_via_basics_form.itemAt(_row, QFormLayout.ItemRole.LabelRole)
         _label_widget = _label_item.widget() if _label_item is not None else None
         if _label_widget is None:
             continue
@@ -1538,9 +1676,7 @@ def build_extraction_tab(self) -> QWidget:
     self.debug_candidates_label_widget = None
     self.bright_via_display_form.addRow(self.bright_via_show_rejected_checkbox)
     self.bright_via_display_form.addRow("Вид", self.gradient_overlay_mode_combo)
-    self.gradient_overlay_label_widget = self.bright_via_display_form.labelForField(
-        self.gradient_overlay_mode_combo
-    )
+    self.gradient_overlay_label_widget = self.bright_via_display_form.labelForField(self.gradient_overlay_mode_combo)
     self.bright_via_form.addRow(QLabel("<b>Генерация кандидатов</b>"))
     self.bright_via_form.addRow("Сигма коррекции фона", self.heuristic_background_sigma_spin)
     self.bright_via_form.addRow("Размер окна анализа (множитель диаметра)", self.heuristic_analysis_window_scale_spin)
@@ -1691,11 +1827,21 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_segmentation_strategy_combo.addItem("Reconstruction", "reconstruction")
     self.metal_segmentation_strategy_combo.addItem("Замкнутые границы", "closed_boundary")
     self.metal_segmentation_strategy_combo.addItem("Структурный водораздел", "structural_watershed")
+    for _strategy_spec in visible_strategy_specs():
+        if self.metal_segmentation_strategy_combo.findData(_strategy_spec.strategy_id) < 0:
+            self.metal_segmentation_strategy_combo.addItem(
+                _strategy_spec.display_name,
+                _strategy_spec.strategy_id,
+            )
     self.metal_segmentation_strategy_combo.setCurrentIndex(0)
     _metal_basic_form.addRow("Алгоритм распознавания", self.metal_segmentation_strategy_combo)
     self.metal_segmentation_strategy_label_widget = _metal_basic_form.labelForField(
         self.metal_segmentation_strategy_combo
     )
+    self.metal_strategy_description_label = QLabel()
+    self.metal_strategy_description_label.setWordWrap(True)
+    self.metal_strategy_description_label.setStyleSheet("color: #7f8c8d;")
+    _metal_basic_form.addRow(self.metal_strategy_description_label)
     self.metal_auto_contrast_step_spin = QDoubleSpinBox()
     self.metal_auto_contrast_step_spin.setRange(0.0, 255.0)
     self.metal_auto_contrast_step_spin.setDecimals(1)
@@ -1703,9 +1849,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_auto_contrast_step_spin.setSpecialValueText("Off")
     self.metal_auto_contrast_step_spin.setValue(10.0)
     _metal_basic_form.addRow("Auto contrast step", self.metal_auto_contrast_step_spin)
-    self.metal_auto_contrast_step_label_widget = _metal_basic_form.labelForField(
-        self.metal_auto_contrast_step_spin
-    )
+    self.metal_auto_contrast_step_label_widget = _metal_basic_form.labelForField(self.metal_auto_contrast_step_spin)
     self.metal_auto_source_contrast_step_spin = QDoubleSpinBox()
     self.metal_auto_source_contrast_step_spin.setRange(0.0, 255.0)
     self.metal_auto_source_contrast_step_spin.setDecimals(1)
@@ -1798,6 +1942,28 @@ def build_extraction_tab(self) -> QWidget:
         ("Структура: instance labels", "metal_structural_instance_labels"),
         ("Структура: label boundary", "metal_structural_label_boundary"),
         ("Структура: final mask", "metal_structural_final_mask"),
+        ("OWT-UCM: oriented boundaries", "metal_owt_oriented_boundaries"),
+        ("OWT-UCM: initial watershed", "metal_owt_initial_watershed"),
+        ("OWT-UCM: UCM", "metal_owt_ucm"),
+        ("OWT-UCM: selected hierarchy", "metal_owt_selected_hierarchy"),
+        ("Multi-Separator: separator cost", "metal_msp_separator_cost"),
+        ("Multi-Separator: selected separators", "metal_msp_selected_separators"),
+        ("Multi-Separator: regions", "metal_msp_regions"),
+        ("GASP: attractive affinity", "metal_gasp_attractive_affinity"),
+        ("GASP: repulsive affinity", "metal_gasp_repulsive_affinity"),
+        ("GASP: final labels", "metal_gasp_final_labels"),
+        ("MWS: attractive affinity", "metal_mutex_watershed_attractive_affinity"),
+        ("MWS: repulsive affinity", "metal_mutex_watershed_repulsive_affinity"),
+        ("MWS: long-range mutex", "metal_mutex_watershed_long_range_mutex"),
+        ("MWS: final labels", "metal_mutex_watershed_final_labels"),
+        ("Multicut: attractive affinity", "metal_multicut_attractive_affinity"),
+        ("Multicut: repulsive affinity", "metal_multicut_repulsive_affinity"),
+        ("Multicut: final labels", "metal_multicut_final_labels"),
+        ("Lifted Multicut: lifted relations", "metal_lifted_multicut_lifted_relations"),
+        ("Lifted Multicut: final labels", "metal_lifted_multicut_final_labels"),
+        ("Material: confidence", "metal_material_confidence"),
+        ("Material: core evidence", "metal_material_core_evidence"),
+        ("Material: substrate evidence", "metal_material_substrate_evidence"),
     ):
         self.metal_debug_visual_combo.addItem(_l, _d)
     self.metal_gradient_3d_button = QPushButton("3D поле")
@@ -1874,35 +2040,6 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_min_hole_source_contrast_fraction_spin.setValue(0.35)
     self.metal_approximation_checkbox = QCheckBox("Режим аппроксимации контуров")
     self.metal_approximation_checkbox.setChecked(True)
-    self.metal_preprocess_subtract_background_checkbox = QCheckBox("Subtract background")
-    self.metal_preprocess_subtract_background_checkbox.setChecked(True)
-    self.metal_preprocess_background_sigma_spin = QDoubleSpinBox()
-    self.metal_preprocess_background_sigma_spin.setRange(0.005, 0.25)
-    self.metal_preprocess_background_sigma_spin.setDecimals(3)
-    self.metal_preprocess_background_sigma_spin.setSingleStep(0.005)
-    self.metal_preprocess_background_sigma_spin.setValue(0.05)
-    self.metal_preprocess_clahe_clip_spin = QDoubleSpinBox()
-    self.metal_preprocess_clahe_clip_spin.setRange(0.1, 20.0)
-    self.metal_preprocess_clahe_clip_spin.setDecimals(1)
-    self.metal_preprocess_clahe_clip_spin.setSingleStep(0.1)
-    self.metal_preprocess_clahe_clip_spin.setValue(2.0)
-    self.metal_preprocess_clahe_grid_spin = QSpinBox()
-    self.metal_preprocess_clahe_grid_spin.setRange(2, 64)
-    self.metal_preprocess_clahe_grid_spin.setValue(8)
-    self.metal_preprocess_denoise_combo = QComboBox()
-    self.metal_preprocess_denoise_combo.addItem("Low", "low")
-    self.metal_preprocess_denoise_combo.addItem("Medium", "medium")
-    self.metal_preprocess_denoise_combo.addItem("High", "high")
-    self.metal_preprocess_subtract_background_checkbox.setToolTip(
-        "\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u0435\u0442 \u043c\u0435\u0434\u043b\u0435\u043d\u043d\u043e \u043c\u0435\u043d\u044f\u044e\u0449\u0443\u044e\u0441\u044f \u044f\u0440\u043a\u043e\u0441\u0442\u044c SEM-\u043a\u0430\u0434\u0440\u0430 \u043f\u0435\u0440\u0435\u0434 \u0440\u0430\u0441\u043f\u043e\u0437\u043d\u0430\u0432\u0430\u043d\u0438\u0435\u043c."
-        if self._ui_language == "ru"
-        else "Flattens slowly varying SEM illumination before recognition."
-    )
-    self.metal_preprocess_background_sigma_spin.setToolTip(
-        "\u0414\u043e\u043b\u044f \u043c\u0435\u043d\u044c\u0448\u0435\u0439 \u0441\u0442\u043e\u0440\u043e\u043d\u044b \u043a\u0430\u0434\u0440\u0430, \u0437\u0430\u0434\u0430\u044e\u0449\u0430\u044f \u043c\u0430\u0441\u0448\u0442\u0430\u0431 \u043f\u043b\u0430\u0432\u043d\u043e\u0433\u043e \u0444\u043e\u043d\u0430; \u0432 \u0431\u0435\u043d\u0447\u043c\u0430\u0440\u043a\u0435 0,05."
-        if self._ui_language == "ru"
-        else "Fraction of the shorter image side used for the smooth background scale; benchmark: 0.05."
-    )
     self.metal_ws_smoothing_spin = QDoubleSpinBox()
     self.metal_ws_smoothing_spin.setRange(0.1, 8.0)
     self.metal_ws_smoothing_spin.setDecimals(1)
@@ -2019,27 +2156,6 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_min_hole_source_contrast_fraction_spin,
     )
 
-    self.metal_preprocessing_group = QGroupBox("SEM preprocessing")
-    _metal_preprocess_form = QFormLayout(self.metal_preprocessing_group)
-    self._configure_compact_form(_metal_preprocess_form)
-    _metal_preprocess_form.addRow(self.metal_preprocess_subtract_background_checkbox)
-    _metal_preprocess_form.addRow("Background scale, image fraction", self.metal_preprocess_background_sigma_spin)
-    self.metal_preprocess_background_sigma_label_widget = _metal_preprocess_form.labelForField(
-        self.metal_preprocess_background_sigma_spin
-    )
-    _metal_preprocess_form.addRow("CLAHE clip limit", self.metal_preprocess_clahe_clip_spin)
-    self.metal_preprocess_clahe_clip_label_widget = _metal_preprocess_form.labelForField(
-        self.metal_preprocess_clahe_clip_spin
-    )
-    _metal_preprocess_form.addRow("CLAHE grid", self.metal_preprocess_clahe_grid_spin)
-    self.metal_preprocess_clahe_grid_label_widget = _metal_preprocess_form.labelForField(
-        self.metal_preprocess_clahe_grid_spin
-    )
-    _metal_preprocess_form.addRow("Denoising", self.metal_preprocess_denoise_combo)
-    self.metal_preprocess_denoise_label_widget = _metal_preprocess_form.labelForField(
-        self.metal_preprocess_denoise_combo
-    )
-
     self.metal_watershed_group = QGroupBox("Watershed")
     _metal_ws_form = QFormLayout(self.metal_watershed_group)
     self._configure_compact_form(_metal_ws_form)
@@ -2082,13 +2198,9 @@ def build_extraction_tab(self) -> QWidget:
     _metal_cb_form = QFormLayout(self.metal_closed_boundary_group)
     self._configure_compact_form(_metal_cb_form)
     _metal_cb_form.addRow("Высота рельефа границы", self.metal_boundary_relief_spin)
-    self.metal_boundary_relief_label_widget = _metal_cb_form.labelForField(
-        self.metal_boundary_relief_spin
-    )
+    self.metal_boundary_relief_label_widget = _metal_cb_form.labelForField(self.metal_boundary_relief_spin)
     _metal_cb_form.addRow("Масштаб фона, σ", self.metal_boundary_background_spin)
-    self.metal_boundary_background_label_widget = _metal_cb_form.labelForField(
-        self.metal_boundary_background_spin
-    )
+    self.metal_boundary_background_label_widget = _metal_cb_form.labelForField(self.metal_boundary_background_spin)
 
     self.metal_adaptive_group = QGroupBox("Адаптивный порог")
     _metal_ad_form = QFormLayout(self.metal_adaptive_group)
@@ -2098,9 +2210,18 @@ def build_extraction_tab(self) -> QWidget:
     _metal_ad_form.addRow("Смещение порога C", self.metal_adaptive_c_spin)
     self.metal_adaptive_c_label_widget = _metal_ad_form.labelForField(self.metal_adaptive_c_spin)
     _metal_ad_form.addRow("Метод", self.metal_adaptive_method_combo)
-    self.metal_adaptive_method_label_widget = _metal_ad_form.labelForField(
-        self.metal_adaptive_method_combo
-    )
+    self.metal_adaptive_method_label_widget = _metal_ad_form.labelForField(self.metal_adaptive_method_combo)
+
+    self.metal_strategy_parameters_group = QGroupBox("Strategy parameters")
+    _strategy_parameters_layout = QVBoxLayout(self.metal_strategy_parameters_group)
+    _strategy_parameters_layout.setContentsMargins(4, 4, 4, 4)
+    self.metal_strategy_parameter_stack = QStackedWidget()
+    self.metal_strategy_parameter_widgets: dict[str, dict[str, QWidget]] = {}
+    self.metal_strategy_parameter_pages: dict[str, int] = {}
+    for _strategy_id in sorted(IMPLEMENTED_NEW_STRATEGIES):
+        _page = _build_strategy_parameter_page(self, strategy_spec(_strategy_id))
+        self.metal_strategy_parameter_pages[_strategy_id] = self.metal_strategy_parameter_stack.addWidget(_page)
+    _strategy_parameters_layout.addWidget(self.metal_strategy_parameter_stack)
 
     _metal_adv_wrap = QWidget()
     _adv_box_l = QVBoxLayout(_metal_adv_wrap)
@@ -2108,7 +2229,7 @@ def build_extraction_tab(self) -> QWidget:
     _adv_box_l.setSpacing(8)
     _adv_box_l.addWidget(self.metal_filter_group)
     _adv_box_l.addWidget(self.metal_recognition_params_group)
-    _adv_box_l.addWidget(self.metal_preprocessing_group)
+    _adv_box_l.addWidget(self.metal_strategy_parameters_group)
     _adv_box_l.addWidget(self.metal_adaptive_group)
     _adv_box_l.addWidget(self.metal_watershed_group)
     _adv_box_l.addWidget(self.metal_random_walker_group)
@@ -2141,15 +2262,9 @@ def build_extraction_tab(self) -> QWidget:
     )
     self.metal_min_contrast_slider.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_auto_contrast_step_spin.valueChanged.connect(self._on_extraction_settings_changed)
-    self.metal_auto_source_contrast_step_spin.valueChanged.connect(
-        self._on_extraction_settings_changed
-    )
-    self.metal_auto_directional_gap_bridge_spin.valueChanged.connect(
-        self._on_extraction_settings_changed
-    )
-    self.metal_auto_directional_gap_min_source_spin.valueChanged.connect(
-        self._on_extraction_settings_changed
-    )
+    self.metal_auto_source_contrast_step_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_auto_directional_gap_bridge_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_auto_directional_gap_min_source_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_gap_bridge_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_speckle_removal_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
@@ -2179,9 +2294,6 @@ def build_extraction_tab(self) -> QWidget:
         self.metal_min_object_rim_area_fraction_spin,
         self.metal_min_hole_source_contrast_spin,
         self.metal_min_hole_source_contrast_fraction_spin,
-        self.metal_preprocess_background_sigma_spin,
-        self.metal_preprocess_clahe_clip_spin,
-        self.metal_preprocess_clahe_grid_spin,
         self.metal_ws_smoothing_spin,
         self.metal_ws_core_margin_spin,
         self.metal_ws_groove_margin_spin,
@@ -2200,15 +2312,9 @@ def build_extraction_tab(self) -> QWidget:
     ):
         _w.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_approximation_checkbox.stateChanged.connect(self._on_extraction_settings_changed)
-    self.metal_preprocess_subtract_background_checkbox.stateChanged.connect(
-        self._on_extraction_settings_changed
-    )
-    self.metal_preprocess_subtract_background_checkbox.toggled.connect(
-        self.metal_preprocess_background_sigma_spin.setEnabled
-    )
-    self.metal_preprocess_denoise_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_adaptive_method_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(self._on_extraction_settings_changed)
+    self.metal_segmentation_strategy_combo.currentIndexChanged.connect(lambda _index: _sync_metal_strategy_panel(self))
     self.metal_segmentation_strategy_combo.currentIndexChanged.connect(
         lambda: self.metal_auto_contrast_step_spin.setEnabled(
             self.metal_segmentation_strategy_combo.currentData() == "auto"
@@ -2237,6 +2343,7 @@ def build_extraction_tab(self) -> QWidget:
     self.recognition_stack.addWidget(self.recognition_page_conductors)
     self.recognition_stack.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
     self.recognition_stack.setCurrentIndex(1)
+    _sync_metal_strategy_panel(self)
     self.recognition_mode_combo.currentIndexChanged.connect(self._update_extraction_profile_controls_state)
     self.recognition_mode_combo.currentIndexChanged.connect(self._on_recognition_mode_changed)
     self.gradient_overlay_mode_combo.currentIndexChanged.connect(self._refresh_gradient_overlay)
@@ -2459,27 +2566,13 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.currentFrameChanged.connect(self._on_editor_current_frame_changed)
     self.polygon_editor.viaDebugRequested.connect(self._on_via_debug_requested)
     self.polygon_editor.contactPlacementHotkeyPressed.connect(self._start_contact_placement_profile)
-    self.polygon_editor.contactPlacementAttemptStarted.connect(
-        self._ensure_contact_placement_profile
-    )
-    self.polygon_editor.contactPlacementAttemptFinished.connect(
-        self._on_contact_placement_attempt_finished
-    )
-    self.polygon_editor.contactMultiSelectionStarted.connect(
-        self._start_contact_multi_selection_profile
-    )
-    self.polygon_editor.contactMultiSelectionApplyStarted.connect(
-        self._mark_contact_multi_selection_apply_started
-    )
-    self.polygon_editor.contactMultiSelectionFinished.connect(
-        self._finish_contact_multi_selection_profile
-    )
-    self.polygon_editor.contactDeletionStarted.connect(
-        self._start_contact_deletion_profile
-    )
-    self.polygon_editor.contactDeletionFinished.connect(
-        self._on_contact_deletion_finished
-    )
+    self.polygon_editor.contactPlacementAttemptStarted.connect(self._ensure_contact_placement_profile)
+    self.polygon_editor.contactPlacementAttemptFinished.connect(self._on_contact_placement_attempt_finished)
+    self.polygon_editor.contactMultiSelectionStarted.connect(self._start_contact_multi_selection_profile)
+    self.polygon_editor.contactMultiSelectionApplyStarted.connect(self._mark_contact_multi_selection_apply_started)
+    self.polygon_editor.contactMultiSelectionFinished.connect(self._finish_contact_multi_selection_profile)
+    self.polygon_editor.contactDeletionStarted.connect(self._start_contact_deletion_profile)
+    self.polygon_editor.contactDeletionFinished.connect(self._on_contact_deletion_finished)
     self.polygon_editor.contactCopyStarted.connect(self._start_contact_copy_profile)
     self.polygon_editor.contactCopyFinished.connect(self._finish_contact_copy_profile)
     self.polygon_editor.contactPasteStarted.connect(self._start_contact_paste_profile)
@@ -2491,7 +2584,6 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.manualViaAdded.connect(self._on_manual_via_added)
     self.polygon_editor.recognizedViasDeleted.connect(self._on_recognized_vias_deleted)
     self.polygon_editor.metalOverlayDetailRequested.connect(self._on_metal_overlay_detail_requested)
-    self.polygon_editor.middlePreviewHoldChanged.connect(self._on_middle_preview_hold_changed)
     self.polygon_editor.filterPreviewHoldChanged.connect(self._on_filter_preview_hold_changed)
     self.polygon_editor.effectivePolygonCreateModeChanged.connect(self._on_effective_polygon_create_mode_changed)
     self.polygon_editor.polygonCreateModeChanged.connect(self._sync_polygon_mode_combo)

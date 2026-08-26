@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -26,6 +27,8 @@ from .segmentation import (
     normalize_metal_segmentation_strategy,
     otsu_segmentation_mask,
 )
+from .strategy_contracts import StrategyUnavailableError
+from .strategy_registry import IMPLEMENTED_NEW_STRATEGIES, normalize_strategy_parameters, strategy_spec
 
 
 def image_signature(gray: np.ndarray) -> str:
@@ -362,6 +365,61 @@ def build_metal_segmentation_mask_staged(
             polarity=SemPolarity.AUTO,
         )
 
+    requested_strategy = normalize_metal_segmentation_strategy(config.segmentation_strategy)
+    if requested_strategy in IMPLEMENTED_NEW_STRATEGIES:
+        from .features import build_metal_structural_features
+
+        parameters = normalize_strategy_parameters(
+            requested_strategy,
+            config.strategy_parameters.get(requested_strategy),
+        )
+        feature_started = perf_counter()
+        features = build_metal_structural_features(
+            g0,
+            smoothing_sigma=float(parameters.get("contour_smoothing_sigma", 1.0)),
+            orientation_smoothing_sigma=float(parameters.get("orientation_smoothing_sigma", 2.0)),
+        )
+        feature_build_ms = (perf_counter() - feature_started) * 1000.0
+        backend = strategy_spec(requested_strategy).load_backend()
+        if backend is None:
+            raise StrategyUnavailableError(f"{requested_strategy} backend is unavailable")
+        strategy_result = backend(g0, features, parameters)
+        timings_ms = dict(strategy_result.timings_ms)
+        backend_total_ms = float(timings_ms.get("total", 0.0))
+        timings_ms["feature_build"] = feature_build_ms
+        timings_ms["total"] = feature_build_ms + backend_total_ms
+        instance_labels = strategy_result.instance_labels
+        if instance_labels is not None:
+            instance_labels, mask = _filter_instance_labels_by_area(
+                instance_labels,
+                int(config.min_component_area),
+            )
+        else:
+            mask = filter_mask_components(strategy_result.binary_mask, int(config.min_component_area))
+        debug = {
+            "metal_source_gray": g0,
+            "metal_preprocessed": g0,
+            "metal_raw_segmentation": ensure_binary_mask(strategy_result.binary_mask),
+            "metal_after_topology": ensure_binary_mask(mask),
+            "metal_threshold_mask": ensure_binary_mask(strategy_result.binary_mask),
+            **axis_gradient_debug_images(g0),
+            **strategy_result.debug_images,
+        }
+        return MetalSegmentationResult(
+            mask=ensure_binary_mask(mask),
+            preprocessed=g0,
+            raw_segmentation=ensure_binary_mask(strategy_result.binary_mask),
+            after_topology=ensure_binary_mask(mask),
+            strategy=requested_strategy,
+            polarity=SemPolarity.BRIGHT_FOREGROUND,
+            debug_images=debug,
+            instance_labels=instance_labels,
+            boundary_map=strategy_result.boundary_map,
+            confidence_map=strategy_result.confidence_map,
+            debug_data=dict(strategy_result.debug_data),
+            timings_ms=timings_ms,
+        )
+
     sig = image_signature(g0)
     entry = _SEGMENTATION_CACHE.get(sig)
     if entry is None or entry.image_sig != sig:
@@ -370,7 +428,6 @@ def build_metal_segmentation_mask_staged(
     elif entry.gray is None:
         entry.gray = g0.copy()
 
-    requested_strategy = normalize_metal_segmentation_strategy(config.segmentation_strategy)
     watershed_config = gradient_watershed_config_from_object(config)
     watershed_key = _watershed_cache_key(watershed_config)
     structural_variant = str(getattr(config, "structural_variant", "s2") or "s2")

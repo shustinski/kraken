@@ -27,32 +27,6 @@ class WidgetPipelineMixin:
         if target_item is not None:
             self.operation_tree.setCurrentItem(target_item)
             self._update_pipeline_help_preview(target_operation)
-        self._refresh_pipeline_preset_combo()
-
-    def _built_in_pipeline_presets(self) -> dict[str, dict[str, object]]:
-        return built_in_pipeline_presets(self._ui_language)
-
-    def _refresh_pipeline_preset_combo(self) -> None:
-        if not hasattr(self, "pipeline_preset_combo"):
-            return
-        current_name = self.pipeline_preset_combo.currentText()
-        self.pipeline_preset_combo.clear()
-        for name in self._built_in_pipeline_presets():
-            self.pipeline_preset_combo.addItem(name, name)
-        index = self.pipeline_preset_combo.findText(current_name)
-        if index >= 0:
-            self.pipeline_preset_combo.setCurrentIndex(index)
-
-    def _apply_selected_pipeline_preset(self) -> None:
-        if not hasattr(self, "pipeline_preset_combo"):
-            return
-        preset_name = str(self.pipeline_preset_combo.currentData() or self.pipeline_preset_combo.currentText() or "")
-        payload = self._built_in_pipeline_presets().get(preset_name)
-        if not isinstance(payload, dict):
-            return
-        self._pipeline = PreprocessingPipeline.from_dict(payload)
-        self._populate_pipeline_list()
-        self.process_current_image(debounced=True)
 
     def _populate_pipeline_list(self) -> None:
         self._ignore_pipeline_item_change = True
@@ -932,6 +906,7 @@ class WidgetPipelineMixin:
             "metal_min_hole_source_contrast",
             "metal_min_hole_source_contrast_fraction",
             "metal_segmentation_strategy",
+            "metal_strategy_parameters",
             "metal_auto_contrast_step",
             "metal_auto_source_contrast_step",
             "metal_auto_directional_gap_bridge_px",

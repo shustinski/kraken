@@ -448,6 +448,7 @@ class ContourExtractionSettings:
     metal_boundary_relief: float = 16.0
     metal_boundary_background_sigma: float = 12.0
     metal_structural_variant: str = "s2"
+    metal_strategy_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
     metal_adaptive_block_size: int = 0
     metal_adaptive_c: float = 0.0
     metal_adaptive_method: str = "gaussian"
@@ -668,6 +669,10 @@ class ContourExtractionSettings:
             "metal_boundary_relief": self.metal_boundary_relief,
             "metal_boundary_background_sigma": self.metal_boundary_background_sigma,
             "metal_structural_variant": self.metal_structural_variant,
+            "metal_strategy_parameters": {
+                str(strategy): dict(parameters)
+                for strategy, parameters in self.metal_strategy_parameters.items()
+            },
             "metal_adaptive_block_size": self.metal_adaptive_block_size,
             "metal_adaptive_c": self.metal_adaptive_c,
             "metal_adaptive_method": self.metal_adaptive_method,
@@ -684,6 +689,7 @@ class ContourExtractionSettings:
             normalize_metal_adaptive_method,
             resolve_metal_segmentation_strategy,
         )
+        from ..vision.metal_recovery.strategy_registry import MetalStrategyConfigs
 
         legacy_method_only = "metal_segmentation_method" in payload and "metal_segmentation_strategy" not in payload
         payload = migrate_legacy_metal_settings(dict(payload))
@@ -1071,6 +1077,11 @@ class ContourExtractionSettings:
                 min(60.0, float(payload.get("metal_boundary_background_sigma", 12.0) or 12.0)),
             ),
             metal_structural_variant=str(payload.get("metal_structural_variant", "s2") or "s2"),
+            metal_strategy_parameters=MetalStrategyConfigs.from_mapping(
+                payload.get("metal_strategy_parameters")
+                if isinstance(payload.get("metal_strategy_parameters"), dict)
+                else None
+            ).to_dict(),
             metal_adaptive_block_size=max(
                 0, min(255, int(payload.get("metal_adaptive_block_size", 0) or 0))
             ),

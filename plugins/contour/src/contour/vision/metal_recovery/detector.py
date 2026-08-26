@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from math import ceil
 from typing import Any
@@ -26,6 +27,7 @@ from .segmentation import (
     normalize_metal_segmentation_strategy,
     resolve_metal_segmentation_strategy,
 )
+from .strategy_registry import IMPLEMENTED_NEW_STRATEGIES, MetalStrategyConfigs
 
 
 def _normalize_metal_extraction_mode(value: Any) -> str:
@@ -89,12 +91,23 @@ class MetalRecoveryConfig:
     boundary_relief: float = 16.0
     boundary_background_sigma: float = 12.0
     structural_variant: str = "s2"
+    strategy_configs: MetalStrategyConfigs = field(default_factory=MetalStrategyConfigs)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.strategy_configs, MetalStrategyConfigs):
+            return
+        if isinstance(self.strategy_configs, Mapping):
+            self.strategy_configs = MetalStrategyConfigs.from_mapping(self.strategy_configs)
+            return
+        raise TypeError("strategy_configs must be MetalStrategyConfigs or a mapping")
 
     def to_snapshot(self) -> dict[str, Any]:
-        return {
+        snapshot = {
             field.name: getattr(self, field.name)
             for field in MetalRecoveryConfig.__dataclass_fields__.values()
         }
+        snapshot["strategy_configs"] = self.strategy_configs.to_dict()
+        return snapshot
 
 
 @dataclass(slots=True)
@@ -163,6 +176,7 @@ def _segmentation_config_from_recovery(config: MetalRecoveryConfig) -> MetalSegm
         adaptive_block_size=max(0, min(255, int(config.adaptive_block_size))),
         adaptive_c=max(-64.0, min(64.0, float(config.adaptive_c))),
         adaptive_method=normalize_metal_adaptive_method(config.adaptive_method),
+        strategy_parameters=config.strategy_configs.to_dict(),
     )
 
 
@@ -272,15 +286,52 @@ def _extract_polygons_per_instance(
     labels: np.ndarray,
     config: MetalRecoveryConfig,
 ) -> list[PolygonData]:
-    """Extract contours for each instance ID without unioning neighbouring labels."""
+    """Extract each instance in its bounding box without full-frame rescans."""
 
     extraction_settings = contour_extraction_settings_from_metal(config)
     polygons: list[PolygonData] = []
-    for label_id in np.unique(labels):
-        if int(label_id) <= 0:
+    next_id = 1
+    active_labels = np.unique(labels)
+    active_labels = active_labels[active_labels > 0].astype(np.int32)
+    if active_labels.size == 0:
+        return polygons
+    height, width = labels.shape
+    maximum_label = int(active_labels.max())
+    min_x = np.full(maximum_label + 1, width, dtype=np.int32)
+    max_x = np.full(maximum_label + 1, -1, dtype=np.int32)
+    min_y = np.full(maximum_label + 1, height, dtype=np.int32)
+    max_y = np.full(maximum_label + 1, -1, dtype=np.int32)
+    x_coordinates = np.broadcast_to(np.arange(width, dtype=np.int32), labels.shape)
+    y_coordinates = np.broadcast_to(np.arange(height, dtype=np.int32)[:, None], labels.shape)
+    np.minimum.at(min_x, labels, x_coordinates)
+    np.maximum.at(max_x, labels, x_coordinates)
+    np.minimum.at(min_y, labels, y_coordinates)
+    np.maximum.at(max_y, labels, y_coordinates)
+    for label_id in active_labels:
+        x0 = int(min_x[label_id])
+        x1 = int(max_x[label_id]) + 1
+        y0 = int(min_y[label_id])
+        y1 = int(max_y[label_id]) + 1
+        if x1 <= x0 or y1 <= y0:
             continue
-        instance_mask = np.where(labels == label_id, 255, 0).astype(np.uint8)
-        polygons.extend(extract_polygons(instance_mask, extraction_settings))
+        instance_mask = np.where(labels[y0:y1, x0:x1] == label_id, 255, 0).astype(np.uint8)
+        instance_polygons = extract_polygons(instance_mask, extraction_settings)
+        id_map = {
+            int(polygon.id): next_id + index
+            for index, polygon in enumerate(instance_polygons)
+        }
+        for polygon in instance_polygons:
+            old_parent = polygon.parent_id
+            polygon.id = id_map[int(polygon.id)]
+            polygon.parent_id = None if old_parent is None else id_map.get(int(old_parent))
+            polygon.points = [
+                (float(x_coord) + x0, float(y_coord) + y0)
+                for x_coord, y_coord in polygon.points
+            ]
+            bbox_x, bbox_y, bbox_width, bbox_height = polygon.bbox
+            polygon.bbox = (bbox_x + x0, bbox_y + y0, bbox_width, bbox_height)
+            polygons.append(polygon)
+        next_id += len(instance_polygons)
     return polygons
 
 
@@ -593,10 +644,14 @@ def _detect_metalization_explicit(
         mask = ensure_binary_mask(segmentation.mask)
         pre_dbg = dict(segmentation.debug_images)
         instance_labels = segmentation.instance_labels
+        strategy_timings = dict(segmentation.timings_ms)
+        strategy_debug_data = dict(segmentation.debug_data)
     else:
         mask = ensure_binary_mask(mask_override)
         pre_dbg = {}
         instance_labels = None
+        strategy_timings = {}
+        strategy_debug_data = {}
     raise_if_preview_cancelled()
 
     h, w = mask.shape[:2]
@@ -607,7 +662,10 @@ def _detect_metalization_explicit(
 
     if (
         instance_labels is not None
-        and str(getattr(config, "structural_variant", "s2") or "s2") in INSTANCE_IDENTITY_VARIANTS
+        and (
+            _requested_segmentation_strategy(config) in IMPLEMENTED_NEW_STRATEGIES
+            or str(getattr(config, "structural_variant", "s2") or "s2") in INSTANCE_IDENTITY_VARIANTS
+        )
         and np.any(instance_labels > 0)
     ):
         polygons = _extract_polygons_per_instance(instance_labels, config)
@@ -692,13 +750,19 @@ def _detect_metalization_explicit(
     dbg["metal_contours_raw"] = vis
     dbg["metal_width_check"] = cv2.cvtColor(accepted_mask, cv2.COLOR_GRAY2BGR)
 
+    params_snapshot = config.to_snapshot()
+    if strategy_timings:
+        params_snapshot["strategy_timings_ms"] = strategy_timings
+    if strategy_debug_data:
+        params_snapshot["strategy_debug_data"] = strategy_debug_data
+
     return MetalDetectionResult(
         accepted=accepted,
         rejected=[],
         suspicious=[],
         border=border,
         debug_images=dbg,
-        params_snapshot=config.to_snapshot(),
+        params_snapshot=params_snapshot,
     )
 
 

@@ -14,6 +14,7 @@ from ..infrastructure.contact_placement_profiler import (
     ContactPlacementProfile,
     ImageRecognitionProfile,
 )
+from ..infrastructure.filter_application_profiler import FilterApplicationProfile
 from ..infrastructure.frame_switch_profiler import (
     MAX_IDLE_POLLS,
     FrameSwitchProfile,
@@ -28,6 +29,7 @@ from ..infrastructure.profiling import (
     contact_placement_profiling_enabled,
     contact_redo_profiling_enabled,
     contact_undo_profiling_enabled,
+    filter_application_profiling_enabled,
     image_recognition_profiling_enabled,
 )
 from ._imports import *  # noqa: F403
@@ -821,14 +823,20 @@ class WidgetProcessingMixin:
         return self._try_leave_current_frame()
 
     def _source_preview_active(self: Any) -> bool:
+        checkbox = getattr(self, "show_applied_filters_checkbox", None)
         return bool(
-            getattr(self, "_show_source_while_middle_held", False)
+            (checkbox is not None and not checkbox.isChecked())
             or getattr(self, "_show_source_while_filter_hotkey_held", False)
         )
 
+    def _on_show_applied_filters_changed(self: Any, _checked: bool) -> None:
+        self._refresh_current_display_image_only(preserve_view=True)
+
     def _editor_display_cache_key(self: Any, image_path: str, state) -> tuple[str, str, str]:
         if state is not None and self._source_preview_active() and state.source_image is not None:
-            return (str(Path(image_path)), "source-preview", "")
+            # The source frame is already cached while the image is loaded.
+            # Reuse it when the processed-filter display is disabled.
+            return (str(Path(image_path)), "source", "")
         if state is not None and state.preprocessed_image is not None:
             pipeline_key = json.dumps(
                 getattr(state, "pipeline_config", None) or {},
@@ -942,6 +950,7 @@ class WidgetProcessingMixin:
         *,
         cache_key: tuple[str, str, str],
         preserve_view: bool = False,
+        cache_only: bool = False,
     ) -> None:
         if display_image is None:
             self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
@@ -949,23 +958,22 @@ class WidgetProcessingMixin:
         session = self._frame_switch_profile_for_path(image_path)
         if session is not None:
             session.mark_pending("editor_display")
-        self._editor_display_request_serial = int(getattr(self, "_editor_display_request_serial", 0)) + 1
-        request_id = self._editor_display_request_serial
+        if cache_only:
+            request_id = 0
+        else:
+            self._editor_display_request_serial = int(getattr(self, "_editor_display_request_serial", 0)) + 1
+            request_id = self._editor_display_request_serial
         target_path = str(Path(image_path))
+        request_state = self._workspace.current_state
         runnable = EditorDisplayRunnable(request_id, target_path, display_image)
 
         def _on_display_ready(req_id: int, path: str, qimage: object) -> None:
+            if cache_only:
+                getattr(self, "_editor_source_cache_pending_keys", set()).discard(cache_key)
             if bool(getattr(self, "_closing", False)) or not qt_object_is_valid(self):
                 return
             editor = getattr(self, "polygon_editor", None)
             if not qt_object_is_valid(editor):
-                return
-            if req_id != self._editor_display_request_serial:
-                return
-            if str(Path(path)) != str(Path(self._workspace.current_image_path or "")):
-                return
-            current_state = self._workspace.current_state
-            if current_state is not None and self._editor_display_cache_key(path, current_state) != cache_key:
                 return
             pixmap = QPixmap()
             if isinstance(qimage, QImage):
@@ -973,16 +981,37 @@ class WidgetProcessingMixin:
                     pixmap = QPixmap.fromImage(qimage)
                 except Exception:
                     pixmap = QPixmap()
+            current_path = str(Path(self._workspace.current_image_path or ""))
+            target_path = str(Path(path))
+            current_state = self._workspace.current_state
+            same_frame_state = target_path == current_path and current_state is request_state
+            is_current_display = (
+                not cache_only
+                and req_id == self._editor_display_request_serial
+                and same_frame_state
+                and (
+                    current_state is None
+                    or self._editor_display_cache_key(path, current_state) == cache_key
+                )
+            )
             if pixmap.isNull():
-                self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
-                self._pending_editor_frame_apply = None
+                if is_current_display:
+                    self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
+                    self._pending_editor_frame_apply = None
                 return
-            if current_state is not None:
-                cache = getattr(self, "_editor_pixmap_cache", {})
-                cache[cache_key] = pixmap
-                while len(cache) > 48:
-                    cache.pop(next(iter(cache)))
-                self._editor_pixmap_cache = cache
+            if not same_frame_state:
+                return
+            # A newer filtered display request may supersede the initial
+            # source-frame request before this queued signal is delivered.
+            # Keep the completed pixmap for source preview, but
+            # only the newest matching request may alter the visible image.
+            cache = getattr(self, "_editor_pixmap_cache", {})
+            cache[cache_key] = pixmap
+            while len(cache) > 48:
+                cache.pop(next(iter(cache)))
+            self._editor_pixmap_cache = cache
+            if not is_current_display:
+                return
             self.polygon_editor.set_image_pixmap(pixmap, preserve_view=preserve_view)
             self._last_editor_display_cache_key = cache_key
             session = self._frame_switch_profile_for_path(path)
@@ -992,6 +1021,27 @@ class WidgetProcessingMixin:
 
         runnable.signals.result.connect(_on_display_ready)
         self._editor_display_thread_pool.start(runnable)
+
+    def _ensure_source_preview_pixmap_cached(self: Any, image_path: str, state) -> None:
+        if state is None or state.source_image is None:
+            return
+        source_key = (str(Path(image_path)), "source", "")
+        if source_key in getattr(self, "_editor_pixmap_cache", {}):
+            return
+        pending_keys = getattr(self, "_editor_source_cache_pending_keys", None)
+        if pending_keys is None:
+            pending_keys = set()
+            self._editor_source_cache_pending_keys = pending_keys
+        if source_key in pending_keys:
+            return
+        pending_keys.add(source_key)
+        self._queue_editor_display_pixmap(
+            image_path,
+            state.source_image,
+            cache_key=source_key,
+            preserve_view=True,
+            cache_only=True,
+        )
 
     def _apply_display_image_to_editor(
         self: Any,
@@ -1008,6 +1058,8 @@ class WidgetProcessingMixin:
         cached = getattr(self, "_editor_pixmap_cache", {}).get(cache_key)
         if cached is not None and not cached.isNull():
             self.polygon_editor.set_image_pixmap(cached, preserve_view=preserve_view)
+            if cache_key[1] != "source":
+                self._ensure_source_preview_pixmap_cached(image_path, state)
             return True
         self._queue_editor_display_pixmap(
             image_path,
@@ -1015,6 +1067,8 @@ class WidgetProcessingMixin:
             cache_key=cache_key,
             preserve_view=preserve_view,
         )
+        if cache_key[1] != "source":
+            self._ensure_source_preview_pixmap_cached(image_path, state)
         return False
 
     def _refresh_current_display_image_only(self: Any, *, preserve_view: bool = True) -> None:
@@ -1647,6 +1701,10 @@ class WidgetProcessingMixin:
     def _start_pending_prepared_image_update(self: Any) -> None:
         if self._prepared_image_pending_request is None:
             return
+        if self._preview_running_request_id is not None:
+            if self._preview_run_cancel is not None:
+                self._preview_run_cancel.set()
+            return
         if self._prepared_image_running_request_id is not None:
             if self._prepared_image_run_cancel is not None:
                 self._prepared_image_run_cancel.set()
@@ -1661,12 +1719,29 @@ class WidgetProcessingMixin:
         self._prepared_image_running_signature = request_signature
         cancel = threading.Event()
         self._prepared_image_run_cancel = cancel
-        worker = PreparedImageRunnable(request_id=request_id, request=request, cancel_event=cancel)
+        worker = PreparedImageRunnable(
+            request_id=request_id,
+            request=request,
+            cancel_event=cancel,
+            profile=filter_application_profiling_enabled(),
+        )
+        worker.signals.profile.connect(self._on_filter_application_profile)
         worker.signals.result.connect(self._on_prepared_image_result)
         worker.signals.error.connect(self._on_prepared_image_error)
         worker.signals.finished.connect(self._on_prepared_image_finished)
         self._prepared_image_thread_pool.start(worker)
         self._refresh_busy_indicator()
+
+    def _on_filter_application_profile(
+        self: Any,
+        request_id: int,
+        profile: FilterApplicationProfile,
+        status: str,
+    ) -> None:
+        if request_id != self._prepared_image_running_request_id:
+            status = "superseded"
+        print(profile.format_summary(status=status), flush=True)
+        print(profile.format_stats(), flush=True)
 
     def _build_preview_request(self: Any) -> PreviewProcessingRequest | None:
         if not self._workspace.current_image_path:
@@ -1739,6 +1814,13 @@ class WidgetProcessingMixin:
 
     def _start_pending_preview_processing(self: Any) -> None:
         if self._preview_pending_request is None:
+            return
+        if (
+            self._prepared_image_running_request_id is not None
+            or self._prepared_image_pending_request is not None
+        ):
+            if self._prepared_image_running_request_id is None:
+                self._start_pending_prepared_image_update()
             return
         if self._preview_running_request_id is not None:
             if self._preview_run_cancel is not None:
@@ -1817,9 +1899,6 @@ class WidgetProcessingMixin:
                 self._busy_progress_timer.start()
         else:
             self._busy_progress_timer.stop()
-        if hasattr(self, "auto_tune_button"):
-            self.auto_tune_button.setEnabled(self._auto_tune_running_request_id is None)
-
     def _on_prepared_image_result(
         self: Any, request_id: int, image_path: str, preprocessed_image, pipeline_config: dict
     ) -> None:
@@ -1828,7 +1907,7 @@ class WidgetProcessingMixin:
         if pipeline_config != self.get_pipeline():
             return
         if self._workspace.store_preprocessed_image(image_path, preprocessed_image, pipeline_config):
-            self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
+            self._refresh_current_display_image_only(preserve_view=True)
             self._try_extract_if_recognition_enabled()
 
     def _on_prepared_image_error(self: Any, request_id: int, message: str) -> None:
@@ -1843,6 +1922,8 @@ class WidgetProcessingMixin:
             self._prepared_image_run_cancel = None
         if self._prepared_image_pending_request is not None:
             self._start_pending_prepared_image_update()
+        elif self._preview_pending_request is not None and not self._preview_update_timer.isActive():
+            self._start_pending_preview_processing()
         self._refresh_busy_indicator()
 
     def _on_auto_tune_result(self: Any, request_id: int, result: AutoTuneResult) -> None:
@@ -1986,7 +2067,9 @@ class WidgetProcessingMixin:
             self._preview_running_request_for_progress = None
             self._busy_progress_stage = ""
             self._busy_progress_value = 0
-        if self._preview_pending_request is not None and not self._preview_update_timer.isActive():
+        if self._prepared_image_pending_request is not None:
+            self._start_pending_prepared_image_update()
+        elif self._preview_pending_request is not None and not self._preview_update_timer.isActive():
             self._start_pending_preview_processing()
         self._refresh_busy_indicator()
         if cancelled_finish is not None:

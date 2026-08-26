@@ -16,6 +16,7 @@ from ...application.use_cases.processing import (
     prepare_image_for_preview,
     process_image_path,
 )
+from ...infrastructure.filter_application_profiler import FilterApplicationProfile
 from .image_conversion import cv_to_qimage
 
 
@@ -60,6 +61,7 @@ class PreviewProcessingSignals(QObject):
 
 
 class PreparedImageSignals(QObject):
+    profile = pyqtSignal(int, object, str)
     result = pyqtSignal(int, str, object, object)
     error = pyqtSignal(int, str)
     finished = pyqtSignal(int)
@@ -155,24 +157,58 @@ class PreparedImageRunnable(QRunnable):
         request: PreparedImageRequest,
         *,
         cancel_event: threading.Event | None = None,
+        profile: bool = False,
     ) -> None:
         super().__init__()
         self.request_id = int(request_id)
         self.request = PreparedImageRequest(
             image_path=request.image_path,
-            source_image=request.source_image.copy(),
+            source_image=request.source_image,
             pipeline_config=dict(request.pipeline_config),
+            queued_at=request.queued_at,
         )
         self._cancel = cancel_event
+        self._profile = bool(profile)
         self.signals = PreparedImageSignals()
 
     def run(self) -> None:
+        profile = (
+            FilterApplicationProfile.begin(
+                image_path=self.request.image_path,
+                pipeline_config=self.request.pipeline_config,
+                queued_at=self.request.queued_at,
+            )
+            if self._profile
+            else None
+        )
+        status = "failed"
         try:
             with use_preview_cancellation_event(self._cancel):
-                preprocessed_image = prepare_image_for_preview(
-                    source_image=self.request.source_image,
-                    pipeline_config=self.request.pipeline_config,
-                )
+                copy_started_at = perf_counter()
+                source_image = self.request.source_image.copy()
+                if profile is not None:
+                    profile.record_phase(
+                        "source_copy",
+                        (perf_counter() - copy_started_at) * 1000.0,
+                    )
+                    pipeline_started_at = perf_counter()
+                    try:
+                        preprocessed_image = prepare_image_for_preview(
+                            source_image=source_image,
+                            pipeline_config=self.request.pipeline_config,
+                            step_timing_callback=profile.record_step,
+                        )
+                    finally:
+                        profile.record_phase(
+                            "pipeline",
+                            (perf_counter() - pipeline_started_at) * 1000.0,
+                        )
+                else:
+                    preprocessed_image = prepare_image_for_preview(
+                        source_image=source_image,
+                        pipeline_config=self.request.pipeline_config,
+                    )
+            status = "completed"
             self.signals.result.emit(
                 self.request_id,
                 self.request.image_path,
@@ -180,10 +216,13 @@ class PreparedImageRunnable(QRunnable):
                 self.request.pipeline_config,
             )
         except PreviewProcessingCancelled:
-            pass
+            status = "cancelled"
         except Exception as exc:
             self.signals.error.emit(self.request_id, str(exc))
         finally:
+            if profile is not None:
+                profile.finish()
+                self.signals.profile.emit(self.request_id, profile, status)
             self.signals.finished.emit(self.request_id)
 
 

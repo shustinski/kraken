@@ -171,7 +171,6 @@ from .ui.i18n_content import (
     LocalizedTextMap,
     _localized_text,
 )
-from .ui.pipeline_presets import built_in_pipeline_presets
 from .ui.retranslate import retranslate_ui
 from .ui.styles import COMPACT_UI_STYLE
 from .ui.via_presets import (
@@ -401,8 +400,6 @@ class PolygonExtractionWidget(
         self._thumbnail_radial_pump_timer = QTimer(self)
         self._thumbnail_radial_pump_timer.setSingleShot(True)
         self._thumbnail_radial_pump_timer.timeout.connect(self._pump_thumbnail_radial_loads)
-        self._show_source_while_middle_held = False
-
         self._persisted_highlight_paths: set[str] = set()
         self._cif_load_failure_stems: set[str] = set()
         self._closing = False

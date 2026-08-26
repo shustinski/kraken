@@ -778,10 +778,6 @@ PIPELINE_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Загружает pipeline из JSON-файла и заменяет текущий список фильтров.",
         "Loads a pipeline from a JSON file and replaces the current filter list.",
     ),
-    "auto_tune_button": (
-        "Подбирает параметры фильтров по нарисованным полигонам, используя их как эталон результата.",
-        "Tunes filter parameters using the drawn polygons as the target result.",
-    ),
 }
 
 EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {

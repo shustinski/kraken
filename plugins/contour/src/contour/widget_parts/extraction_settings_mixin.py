@@ -5,11 +5,22 @@ from ._imports import *  # noqa: F403
 
 class WidgetExtractionSettingsMixin:
     def _auto_apply_pipeline(self) -> None:
-        if not self._workspace.current_image_path:
+        current_path = self._workspace.current_image_path
+        state = self._workspace.current_state
+        if not current_path or state is None or state.source_image is None:
+            return
+        # Filtering is an image-display operation and must not depend on the
+        # recognition mode or its preview worker. The prepared-image result is
+        # always displayed; it starts extraction afterwards only when enabled.
+        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        self._queue_prepared_image_update(current_path, state.source_image)
+
+    def _auto_apply_recognition_settings(self) -> None:
+        if not self._workspace.current_image_path or not self._is_extraction_mode_enabled():
             return
         if hasattr(self, "auto_apply_checkbox") and not self.auto_apply_checkbox.isChecked():
             return
-        self._abort_in_flight_interactive_processing(preview=True, prepared=True)
+        self._abort_in_flight_interactive_processing(preview=True, prepared=False)
         self.process_current_image(debounced=False)
 
     def _try_extract_if_recognition_enabled(self) -> None:
@@ -138,6 +149,42 @@ class WidgetExtractionSettingsMixin:
         if hasattr(self, "metal_auto_directional_gap_min_source_spin"):
             self.metal_auto_directional_gap_min_source_spin.setEnabled(strategy == "auto")
 
+    def _metal_strategy_parameters_from_widgets(self) -> dict[str, dict[str, object]]:
+        from ..vision.metal_recovery.strategy_registry import MetalStrategyConfigs
+
+        raw: dict[str, dict[str, object]] = {}
+        for strategy, controls in getattr(self, "metal_strategy_parameter_widgets", {}).items():
+            values: dict[str, object] = {}
+            for key, widget in controls.items():
+                if isinstance(widget, QCheckBox):
+                    values[key] = widget.isChecked()
+                elif isinstance(widget, QComboBox):
+                    values[key] = str(widget.currentData())
+                else:
+                    values[key] = widget.value()
+            raw[strategy] = values
+        return MetalStrategyConfigs.from_mapping(raw).to_dict()
+
+    def _set_metal_strategy_parameter_widgets(self, raw: object) -> None:
+        from ..vision.metal_recovery.strategy_registry import MetalStrategyConfigs
+
+        mapping = raw if isinstance(raw, dict) else None
+        configs = MetalStrategyConfigs.from_mapping(mapping)
+        for strategy, controls in getattr(self, "metal_strategy_parameter_widgets", {}).items():
+            values = configs.for_strategy(strategy)
+            for key, widget in controls.items():
+                blocker = QSignalBlocker(widget)
+                value = values[key]
+                if isinstance(widget, QCheckBox):
+                    widget.setChecked(bool(value))
+                elif isinstance(widget, QComboBox):
+                    index = widget.findData(value)
+                    if index >= 0:
+                        widget.setCurrentIndex(index)
+                else:
+                    widget.setValue(value)
+                del blocker
+
     def _set_extraction_settings(self, settings: ContourExtractionSettings) -> None:
         blockers = [
             QSignalBlocker(self.retrieval_mode_combo),
@@ -221,11 +268,6 @@ class WidgetExtractionSettingsMixin:
             "metal_min_object_rim_area_fraction_spin",
             "metal_min_hole_source_contrast_spin",
             "metal_min_hole_source_contrast_fraction_spin",
-            "metal_preprocess_subtract_background_checkbox",
-            "metal_preprocess_background_sigma_spin",
-            "metal_preprocess_clahe_clip_spin",
-            "metal_preprocess_clahe_grid_spin",
-            "metal_preprocess_denoise_combo",
             "metal_ws_smoothing_spin",
             "metal_ws_core_margin_spin",
             "metal_ws_groove_margin_spin",
@@ -592,33 +634,12 @@ class WidgetExtractionSettingsMixin:
                 self.metal_approximation_checkbox.setChecked(
                     bool(getattr(settings, "metal_approximation_enabled", True))
                 )
-                if hasattr(self, "metal_preprocess_subtract_background_checkbox"):
-                    self.metal_preprocess_subtract_background_checkbox.setChecked(
-                        bool(getattr(settings, "metal_preprocess_subtract_background", True))
-                    )
-                if hasattr(self, "metal_preprocess_background_sigma_spin"):
-                    self.metal_preprocess_background_sigma_spin.setValue(
-                        float(getattr(settings, "metal_preprocess_background_sigma_fraction", 0.05))
-                    )
-                    self.metal_preprocess_background_sigma_spin.setEnabled(
-                        bool(getattr(settings, "metal_preprocess_subtract_background", True))
-                    )
-                if hasattr(self, "metal_preprocess_clahe_clip_spin"):
-                    self.metal_preprocess_clahe_clip_spin.setValue(
-                        float(getattr(settings, "metal_preprocess_clahe_clip", 2.0))
-                    )
-                if hasattr(self, "metal_preprocess_clahe_grid_spin"):
-                    self.metal_preprocess_clahe_grid_spin.setValue(
-                        int(getattr(settings, "metal_preprocess_clahe_grid", 8))
-                    )
-                if hasattr(self, "metal_preprocess_denoise_combo"):
-                    denoise_index = self.metal_preprocess_denoise_combo.findData(
-                        str(getattr(settings, "metal_preprocess_denoise", "low") or "low")
-                    )
-                    if denoise_index >= 0:
-                        self.metal_preprocess_denoise_combo.setCurrentIndex(denoise_index)
                 if hasattr(self, "metal_segmentation_strategy_combo"):
                     self._apply_metal_strategy_to_combo(settings)
+                if hasattr(self, "metal_strategy_parameter_widgets"):
+                    self._set_metal_strategy_parameter_widgets(
+                        getattr(settings, "metal_strategy_parameters", None)
+                    )
                 if hasattr(self, "metal_ws_smoothing_spin"):
                     self.metal_ws_smoothing_spin.setValue(
                         float(getattr(settings, "metal_watershed_smoothing_sigma", 1.0) or 1.0)
@@ -974,6 +995,7 @@ class WidgetExtractionSettingsMixin:
             if hasattr(self, "metal_min_hole_source_contrast_fraction_spin")
             else 0.35,
             metal_segmentation_strategy=self._metal_strategy_from_combo(),
+            metal_strategy_parameters=self._metal_strategy_parameters_from_widgets(),
             metal_auto_contrast_step=float(self.metal_auto_contrast_step_spin.value())
             if hasattr(self, "metal_auto_contrast_step_spin")
             else 10.0,
@@ -1027,31 +1049,6 @@ class WidgetExtractionSettingsMixin:
             metal_approximation_enabled=self.metal_approximation_checkbox.isChecked()
             if hasattr(self, "metal_approximation_checkbox")
             else True,
-            metal_preprocess_subtract_background=(
-                self.metal_preprocess_subtract_background_checkbox.isChecked()
-                if hasattr(self, "metal_preprocess_subtract_background_checkbox")
-                else True
-            ),
-            metal_preprocess_background_sigma_fraction=(
-                float(self.metal_preprocess_background_sigma_spin.value())
-                if hasattr(self, "metal_preprocess_background_sigma_spin")
-                else 0.05
-            ),
-            metal_preprocess_clahe_clip=(
-                float(self.metal_preprocess_clahe_clip_spin.value())
-                if hasattr(self, "metal_preprocess_clahe_clip_spin")
-                else 2.0
-            ),
-            metal_preprocess_clahe_grid=(
-                int(self.metal_preprocess_clahe_grid_spin.value())
-                if hasattr(self, "metal_preprocess_clahe_grid_spin")
-                else 8
-            ),
-            metal_preprocess_denoise=(
-                str(self.metal_preprocess_denoise_combo.currentData() or "low")
-                if hasattr(self, "metal_preprocess_denoise_combo")
-                else "low"
-            ),
             metal_use_wide_conductor_gradient=self._metal_strategy_from_combo() == "gradient_watershed",
             metal_watershed_smoothing_sigma=float(self.metal_ws_smoothing_spin.value())
             if hasattr(self, "metal_ws_smoothing_spin")
@@ -1346,24 +1343,12 @@ class WidgetExtractionSettingsMixin:
             )
         if hasattr(self, "metal_approximation_checkbox"):
             self.metal_approximation_checkbox.setChecked(bool(defaults.metal_approximation_enabled))
-        if hasattr(self, "metal_preprocess_subtract_background_checkbox"):
-            self.metal_preprocess_subtract_background_checkbox.setChecked(
-                bool(defaults.metal_preprocess_subtract_background)
-            )
-        if hasattr(self, "metal_preprocess_background_sigma_spin"):
-            self.metal_preprocess_background_sigma_spin.setValue(
-                float(defaults.metal_preprocess_background_sigma_fraction)
-            )
-        if hasattr(self, "metal_preprocess_clahe_clip_spin"):
-            self.metal_preprocess_clahe_clip_spin.setValue(float(defaults.metal_preprocess_clahe_clip))
-        if hasattr(self, "metal_preprocess_clahe_grid_spin"):
-            self.metal_preprocess_clahe_grid_spin.setValue(int(defaults.metal_preprocess_clahe_grid))
-        if hasattr(self, "metal_preprocess_denoise_combo"):
-            ix = self.metal_preprocess_denoise_combo.findData(defaults.metal_preprocess_denoise)
-            if ix >= 0:
-                self.metal_preprocess_denoise_combo.setCurrentIndex(ix)
         if hasattr(self, "metal_segmentation_strategy_combo"):
             self._apply_metal_strategy_to_combo(defaults)
+        if hasattr(self, "metal_strategy_parameter_widgets"):
+            self._set_metal_strategy_parameter_widgets(
+                getattr(defaults, "metal_strategy_parameters", None)
+            )
         if hasattr(self, "metal_ws_smoothing_spin"):
             self.metal_ws_smoothing_spin.setValue(float(defaults.metal_watershed_smoothing_sigma))
         if hasattr(self, "metal_ws_core_margin_spin"):

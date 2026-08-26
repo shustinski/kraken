@@ -70,7 +70,7 @@ class ProcessingUseCasesTests(unittest.TestCase):
         self.assertEqual(loaded.metal_preprocess_clahe_grid, 12)
         self.assertEqual(loaded.metal_preprocess_denoise, "high")
 
-    def test_structural_metal_recognition_applies_typed_preprocessing(self) -> None:
+    def test_structural_metal_recognition_skips_sem_preprocessing(self) -> None:
         source_image = np.full((32, 40), 90, dtype=np.uint8)
         settings = ContourExtractionSettings(
             recognition_mode="conductors",
@@ -96,14 +96,9 @@ class ProcessingUseCasesTests(unittest.TestCase):
                 source_image=source_image,
             )
 
-        apply.assert_called_once()
-        config = apply.call_args.args[1]
-        self.assertFalse(config.subtract_background)
-        self.assertEqual(config.background_sigma_fraction, 0.075)
-        self.assertEqual(config.clahe_clip, 3.5)
-        self.assertEqual(config.clahe_grid, 12)
-        self.assertEqual(config.denoise.value, "high")
+        apply.assert_not_called()
         self.assertIn("metal_preprocessed", result.debug_gradient_maps)
+        np.testing.assert_array_equal(result.debug_gradient_maps["metal_preprocessed"], source_image)
 
     def test_contour_settings_from_dict_ignores_legacy_via_detector_keys(self) -> None:
         legacy_payload = {

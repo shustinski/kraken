@@ -37,6 +37,7 @@ from .application.preview_cancellation import raise_if_preview_cancelled
 from .utils import ensure_binary_mask, ensure_uint8
 
 OperationCallable = Callable[[np.ndarray, dict[str, Any]], np.ndarray]
+OperationTimingCallback = Callable[[int, str, float], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,12 +87,18 @@ class PreprocessingPipeline:
     def __init__(self, steps: list[PipelineStepConfig] | None = None) -> None:
         self.steps = [step.clone() for step in (steps or [])]
 
-    def apply(self, image: np.ndarray) -> np.ndarray:
+    def apply(
+        self,
+        image: np.ndarray,
+        *,
+        timing_callback: OperationTimingCallback | None = None,
+    ) -> np.ndarray:
         result = ensure_uint8(image)
         for index, step in enumerate(self.steps):
             if not step.enabled:
                 continue
             descriptor = get_operation_descriptor(step.operation)
+            started_at = perf_counter() if timing_callback is not None else 0.0
             try:
                 result = descriptor.handler(result, dict(step.parameters))
                 result = ensure_uint8(result)
@@ -104,6 +111,12 @@ class PreprocessingPipeline:
                         error=exc,
                     )
                 ) from exc
+            if timing_callback is not None:
+                timing_callback(
+                    index,
+                    descriptor.type_name,
+                    (perf_counter() - started_at) * 1000.0,
+                )
             raise_if_preview_cancelled()
         return result
 
@@ -757,7 +770,14 @@ def _denoise(image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
         templateWindowSize=_odd(int(parameters.get("template_window_size", 7)), minimum=3),
         searchWindowSize=_odd(int(parameters.get("search_window_size", 21)), minimum=3),
     )
-    if image.ndim == 3:
+    if image.ndim == 3 and image.shape[2] == 3:
+        if (
+            np.array_equal(image[..., 0], image[..., 1])
+            and np.array_equal(image[..., 0], image[..., 2])
+        ):
+            gray = np.ascontiguousarray(image[..., 0])
+            denoised = cv2.fastNlMeansDenoising(gray, None, **kwargs)
+            return cv2.merge((denoised, denoised, denoised))
         return cv2.fastNlMeansDenoisingColored(
             image, None, kwargs["h"], kwargs["h"], kwargs["templateWindowSize"], kwargs["searchWindowSize"]
         )

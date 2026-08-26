@@ -5,6 +5,7 @@ from typing import Any
 from .detector import MetalRecoveryConfig
 from .gradient_watershed import clamped_gradient_watershed_config
 from .segmentation import normalize_metal_adaptive_method, resolve_metal_segmentation_strategy
+from .strategy_registry import MetalStrategyConfigs
 
 
 def _normalize_border_mode(value: Any) -> str:
@@ -167,4 +168,7 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         adaptive_block_size=max(0, min(255, int(getattr(settings, "metal_adaptive_block_size", 0) or 0))),
         adaptive_c=max(-64.0, min(64.0, float(getattr(settings, "metal_adaptive_c", 0.0) or 0.0))),
         adaptive_method=normalize_metal_adaptive_method(getattr(settings, "metal_adaptive_method", "gaussian")),
+        strategy_configs=MetalStrategyConfigs.from_mapping(
+            getattr(settings, "metal_strategy_parameters", None)
+        ),
     )

@@ -5,8 +5,9 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QAction
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QDockWidget, QGroupBox, QTabBar, QToolBar
 
 from contour.application.model import ContourApplicationModel
@@ -155,6 +156,104 @@ def test_main_view_docks_thumbnail_matrix_and_keeps_file_menu_first() -> None:
         assert dock.widget() is view.widget.thumbnail_matrix_panel
         assert view.widget.thumbnail_grid_scroll_area.widget() is view.widget.thumbnail_grid
         assert not view.widget.thumbnail_grid_label.isVisible()
+    finally:
+        view.close()
+        view.deleteLater()
+
+
+def test_middle_button_only_hides_vectors_and_filter_checkbox_controls_raster() -> None:
+    app = _app()
+    view = ContourMainView()
+    try:
+        editor = view.widget.polygon_editor
+        source = np.full((100, 100), 23, dtype=np.uint8)
+        filtered = np.full((100, 100), 197, dtype=np.uint8)
+        image_path = "middle-preview.png"
+        conductor = PolygonData(
+            id=1,
+            points=[(20, 20), (80, 20), (80, 80), (20, 80)],
+            category="conductor",
+            shape_hint="polygon",
+            bbox=(20, 20, 61, 61),
+        )
+        view.widget._workspace.apply_loaded_frame(
+            image_path,
+            source_image=source,
+            polygons=[conductor],
+        )
+        state = view.widget._workspace.current_state
+        assert state is not None
+        state.reference_polygons = [conductor.clone()]
+        view.widget._pending_restore_current_image_path = None
+        view.show()
+
+        view._pipeline_dock.raise_()
+        app.processEvents()
+        view.widget._sync_current_state_views(sync_neighbors=False)
+        source_key = (image_path, "source", "")
+        view.widget._editor_display_thread_pool.waitForDone()
+        for _attempt in range(100):
+            app.processEvents()
+            if source_key in view.widget._editor_pixmap_cache:
+                break
+            QTest.qWait(5)
+        assert source_key in view.widget._editor_pixmap_cache
+
+        view.widget._prepared_image_running_request_id = 7
+        view.widget._on_prepared_image_result(
+            7,
+            image_path,
+            filtered,
+            view.widget.get_pipeline(),
+        )
+        filtered_key = view.widget._editor_display_cache_key(image_path, state)
+        view.widget._editor_display_thread_pool.waitForDone()
+        for _attempt in range(100):
+            app.processEvents()
+            if filtered_key in view.widget._editor_pixmap_cache:
+                break
+            QTest.qWait(5)
+        assert filtered_key in view.widget._editor_pixmap_cache
+        assert editor._editor_scene._image_item.pixmap().toImage().pixelColor(0, 0).red() == 197
+        app.processEvents()
+        viewport_point = editor.mapFromScene(QPointF(10.0, 10.0))
+        rendered = editor.viewport().grab().toImage()
+        assert rendered.pixelColor(viewport_point).red() >= 190
+
+        assert not hasattr(view.widget, "pipeline_preset_combo")
+        assert not hasattr(view.widget, "apply_pipeline_preset_button")
+        assert not hasattr(view.widget, "auto_tune_button")
+        assert view.widget.show_applied_filters_checkbox.isChecked()
+        QTest.mousePress(editor.viewport(), Qt.MouseButton.MiddleButton)
+        app.processEvents()
+        assert not editor.polygon_overlays_visible()
+        assert editor._editor_scene._image_item.pixmap().toImage().pixelColor(0, 0).red() == 197
+        QTest.mouseRelease(editor.viewport(), Qt.MouseButton.MiddleButton)
+        app.processEvents()
+        assert editor.polygon_overlays_visible()
+        assert editor._editor_scene._image_item.pixmap().toImage().pixelColor(0, 0).red() == 197
+
+        view.widget.show_applied_filters_checkbox.setChecked(False)
+        app.processEvents()
+        assert editor.polygon_overlays_visible()
+        assert editor._editor_scene._image_item.pixmap().toImage().pixelColor(0, 0).red() == 23
+        rendered = editor.viewport().grab().toImage()
+        assert rendered.pixelColor(viewport_point).red() <= 30
+        view.widget.show_applied_filters_checkbox.setChecked(True)
+        app.processEvents()
+        assert editor._editor_scene._image_item.pixmap().toImage().pixelColor(0, 0).red() == 197
+        rendered = editor.viewport().grab().toImage()
+        assert rendered.pixelColor(viewport_point).red() >= 190
+
+        view._recognition_dock.raise_()
+        app.processEvents()
+        QTest.mousePress(editor.viewport(), Qt.MouseButton.MiddleButton)
+        app.processEvents()
+        assert not editor.polygon_overlays_visible()
+        assert editor._editor_scene._image_item.pixmap().toImage().pixelColor(0, 0).red() == 197
+        QTest.mouseRelease(editor.viewport(), Qt.MouseButton.MiddleButton)
+        app.processEvents()
+        assert editor.polygon_overlays_visible()
     finally:
         view.close()
         view.deleteLater()

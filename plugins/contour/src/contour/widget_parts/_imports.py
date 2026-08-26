@@ -210,7 +210,6 @@ from ..ui.i18n_content import (
     LocalizedTextMap,
     _localized_text,
 )
-from ..ui.pipeline_presets import built_in_pipeline_presets
 from ..ui.retranslate import retranslate_ui
 from ..ui.styles import COMPACT_UI_STYLE, RECOGNITION_SCENE_FRAME_STYLE
 from ..ui.metal_presets import built_in_metal_presets, metal_preset_table

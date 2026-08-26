@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -308,10 +309,112 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
 
         self.widget.auto_apply_checkbox.setChecked(False)
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("conductors")
+        )
         self.widget.min_area_spin.setValue(self.widget.min_area_spin.value() + 5.0)
         self._app.processEvents()
 
         self.assertEqual(process_calls, [])
+
+    def test_filter_change_queues_preprocessing_without_starting_recognition(self) -> None:
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("disabled")
+        )
+        prepared_calls: list[tuple[str, object]] = []
+        process_calls: list[bool] = []
+        self.widget._abort_in_flight_interactive_processing = lambda **_kwargs: None  # type: ignore[method-assign]
+        self.widget._queue_prepared_image_update = lambda *args: prepared_calls.append(args)  # type: ignore[method-assign]
+        self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
+
+        self.widget._auto_apply_pipeline()
+
+        self.assertEqual(len(prepared_calls), 1)
+        self.assertEqual(prepared_calls[0][0], "sample.png")
+        self.assertIs(prepared_calls[0][1], self.widget._workspace.current_state.source_image)
+        self.assertEqual(process_calls, [])
+
+    def test_recognition_setting_change_does_not_process_when_recognition_is_disabled(self) -> None:
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("disabled")
+        )
+        process_calls: list[bool] = []
+        self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
+
+        self.widget._auto_apply_recognition_settings()
+
+        self.assertEqual(process_calls, [])
+
+    def test_prepared_filter_result_is_displayed_when_recognition_is_disabled(self) -> None:
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("disabled")
+        )
+        state = self.widget._workspace.current_state
+        assert state is not None
+        self.widget._workspace._state_cache = {"sample.png": state}
+        self.widget._prepared_image_running_request_id = 7
+        display_calls: list[dict[str, bool]] = []
+        process_calls: list[bool] = []
+        self.widget._refresh_current_display_image_only = lambda **kwargs: display_calls.append(kwargs)  # type: ignore[method-assign]
+        self.widget._sync_current_state_views = MagicMock()  # type: ignore[method-assign]
+        self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
+        filtered = np.full((32, 32), 173, dtype=np.uint8)
+        pipeline = self.widget.get_pipeline()
+
+        self.widget._on_prepared_image_result(7, "sample.png", filtered, pipeline)
+
+        self.assertIs(state.preprocessed_image, filtered)
+        self.assertEqual(state.pipeline_config, pipeline)
+        self.assertEqual(display_calls, [{"preserve_view": True}])
+        self.widget._sync_current_state_views.assert_not_called()
+        self.assertEqual(process_calls, [])
+
+    def test_pending_filter_waits_until_running_recognition_finishes(self) -> None:
+        cancel = threading.Event()
+        self.widget._preview_running_request_id = 4
+        self.widget._preview_run_cancel = cancel
+        pending_request = object()
+        self.widget._prepared_image_pending_request = pending_request  # type: ignore[assignment]
+
+        self.widget._start_pending_prepared_image_update()
+
+        self.assertTrue(cancel.is_set())
+        self.assertIs(self.widget._prepared_image_pending_request, pending_request)
+        self.assertIsNone(self.widget._prepared_image_running_request_id)
+
+    def test_filter_has_priority_when_recognition_worker_finishes(self) -> None:
+        self.widget._preview_running_request_id = 4
+        self.widget._prepared_image_pending_request = object()  # type: ignore[assignment]
+        self.widget._preview_pending_request = object()  # type: ignore[assignment]
+        starts: list[str] = []
+        self.widget._start_pending_prepared_image_update = lambda: starts.append("filter")  # type: ignore[method-assign]
+        self.widget._start_pending_preview_processing = lambda: starts.append("recognition")  # type: ignore[method-assign]
+
+        self.widget._on_preview_processing_finished(4)
+
+        self.assertEqual(starts, ["filter"])
+        self.assertIsNone(self.widget._preview_running_request_id)
+
+    def test_pending_recognition_starts_after_filter_worker_finishes(self) -> None:
+        self.widget._prepared_image_running_request_id = 6
+        self.widget._preview_pending_request = object()  # type: ignore[assignment]
+        starts: list[str] = []
+        self.widget._start_pending_preview_processing = lambda: starts.append("recognition")  # type: ignore[method-assign]
+
+        self.widget._on_prepared_image_finished(6)
+
+        self.assertEqual(starts, ["recognition"])
+        self.assertIsNone(self.widget._prepared_image_running_request_id)
+
+    def test_recognition_does_not_start_while_filter_worker_is_running(self) -> None:
+        pending_request = object()
+        self.widget._preview_pending_request = pending_request  # type: ignore[assignment]
+        self.widget._prepared_image_running_request_id = 6
+
+        self.widget._start_pending_preview_processing()
+
+        self.assertIs(self.widget._preview_pending_request, pending_request)
+        self.assertIsNone(self.widget._preview_running_request_id)
 
     def test_extraction_mode_defaults_to_no_extraction(self) -> None:
         self.assertEqual(self.widget.recognition_mode_combo.currentData(), "disabled")
@@ -645,6 +748,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget.process_current_image = lambda *_args, debounced=False: process_calls.append(debounced)  # type: ignore[method-assign]
 
         self.widget.auto_apply_checkbox.setChecked(True)
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("conductors")
+        )
         self.widget.min_area_spin.setValue(self.widget.min_area_spin.value() + 5.0)
         self._app.processEvents()
         QTest.qWait(200)
@@ -2765,7 +2871,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         )
         self._app.processEvents()
         self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
-        self.assertFalse(overlay_item.isVisible())
+        self.assertTrue(overlay_item.isVisible())
         self.view.set_polygon_overlays_visible(True)
         self.assertFalse(self.view._editor_scene.polygon_overlays_visible())
 

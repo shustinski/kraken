@@ -25,6 +25,12 @@ MetalSegmentationStrategyV2 = Literal[
     "reconstruction",
     "closed_boundary",
     "structural_watershed",
+    "owt_ucm",
+    "graph_multi_separator",
+    "gasp",
+    "mutex_watershed",
+    "multicut",
+    "lifted_multicut",
 ]
 
 
@@ -84,6 +90,7 @@ class MetalRecoverySettings:
     adaptive_block_size: int = 0
     adaptive_c: float = 0.0
     adaptive_method: str = "gaussian"
+    strategy_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.min_contrast = max(1.0, min(255.0, float(self.min_contrast)))
@@ -115,6 +122,9 @@ class MetalRecoverySettings:
         self.adaptive_block_size = max(0, min(255, int(self.adaptive_block_size)))
         self.adaptive_c = max(-64.0, min(64.0, float(self.adaptive_c)))
         self.adaptive_method = normalize_metal_adaptive_method(self.adaptive_method)
+        from ..vision.metal_recovery.strategy_registry import MetalStrategyConfigs
+
+        self.strategy_parameters = MetalStrategyConfigs.from_mapping(self.strategy_parameters).to_dict()
 
 
 @dataclass(slots=True)
@@ -278,6 +288,7 @@ class ProcessingRequestV2:
                 metal_adaptive_block_size=metal_mode.adaptive_block_size,
                 metal_adaptive_c=metal_mode.adaptive_c,
                 metal_adaptive_method=metal_mode.adaptive_method,
+                metal_strategy_parameters=metal_mode.strategy_parameters,
             )
         else:
             via_mode = self.recognition
@@ -395,6 +406,7 @@ class ProcessingRequestV2:
                 adaptive_block_size=legacy.metal_adaptive_block_size,
                 adaptive_c=legacy.metal_adaptive_c,
                 adaptive_method=legacy.metal_adaptive_method,
+                strategy_parameters=legacy.metal_strategy_parameters,
             )
         return (
             cls(

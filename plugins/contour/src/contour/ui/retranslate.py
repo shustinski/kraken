@@ -10,11 +10,60 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QSignalBlocker
+from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox
 
+from ..vision.metal_recovery.strategy_registry import strategy_spec
 from .i18n_content import PIPELINE_CONTROL_TOOLTIPS, _localized_text
+from .metal_strategy_i18n import choice_label, parameter_label, parameter_tooltip, strategy_name
 
 if TYPE_CHECKING:
     from contour.widget import PolygonExtractionWidget
+
+
+def _set_form_label(group: QGroupBox, field: object, text: str) -> None:
+    form = group.layout()
+    if not isinstance(form, QFormLayout):
+        return
+    label = form.labelForField(field)
+    if label is not None:
+        label.setText(text)
+
+
+def _retranslate_strategy_parameter_pages(self: PolygonExtractionWidget) -> None:
+    language = str(self._ui_language)
+    for strategy_id, controls in getattr(self, "metal_strategy_parameter_widgets", {}).items():
+        spec = strategy_spec(strategy_id)
+        parameters = {parameter.key: parameter for parameter in spec.parameters}
+        for key, control in controls.items():
+            parameter = parameters[key]
+            tooltip = parameter_tooltip(parameter, language)
+            control.setToolTip(tooltip)
+            parent = control.parentWidget()
+            form = parent.layout() if parent is not None else None
+            if isinstance(form, QFormLayout):
+                label = form.labelForField(control)
+                if label is not None:
+                    label.setText(parameter_label(parameter, language))
+                    label.setToolTip(tooltip)
+            if isinstance(control, QComboBox):
+                labels_by_value = dict(parameter.choices)
+                for index in range(control.count()):
+                    value = str(control.itemData(index))
+                    source_label = labels_by_value.get(value)
+                    if source_label is not None:
+                        control.setItemText(index, choice_label(source_label, language))
+
+        page_index = self.metal_strategy_parameter_pages.get(strategy_id)
+        if page_index is None:
+            continue
+        page = self.metal_strategy_parameter_stack.widget(page_index)
+        for group in page.findChildren(QGroupBox):
+            advanced = group.objectName().endswith("_advanced_group")
+            group.setTitle(
+                ("Дополнительные" if advanced else "Основные")
+                if language == "ru"
+                else ("Advanced" if advanced else "Basic")
+            )
 
 
 def retranslate_ui(self: PolygonExtractionWidget) -> None:
@@ -194,45 +243,19 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.pipeline_help_after_title.setText("После" if self._ui_language == "ru" else "After")
     self.save_pipeline_button.setText(self._tr("save_json_button"))
     self.load_pipeline_button.setText(self._tr("load_json_button"))
-    self.apply_pipeline_preset_button.setText(
+    self.show_applied_filters_checkbox.setText(
         self._tr(
-            "apply_pipeline_preset_button",
-            "Применить пресет фильтров" if self._ui_language == "ru" else "Apply filter preset",
-        )
-    )
-    self.auto_tune_button.setText(
-        self._tr(
-            "auto_tune_button",
-            "Автоподбор по рисунку" if self._ui_language == "ru" else "Auto-fit from drawing",
-        )
-    )
-    self.auto_tune_button.setToolTip(
-        self._tr(
-            "auto_tune_button_tooltip",
-            "Использовать текущие нарисованные полигоны как эталон"
-            if self._ui_language == "ru"
-            else "Use the currently drawn polygons as the fitting target",
+            "show_applied_filters_checkbox",
+            "Показывать примененные фильтры" if self._ui_language == "ru" else "Show applied filters",
         )
     )
     for widget, tooltip_key in (
         (self.save_pipeline_button, "save_json_button"),
         (self.load_pipeline_button, "load_json_button"),
-        (self.auto_tune_button, "auto_tune_button"),
     ):
         tooltip = _localized_text(PIPELINE_CONTROL_TOOLTIPS, tooltip_key, self._ui_language)
         widget.setToolTip(tooltip)
         widget.setStatusTip(tooltip)
-    self.pipeline_preset_combo.setToolTip(
-        self._tr(
-            "pipeline_preset_selector_tooltip",
-            "Выберите готовый набор фильтров для типового сценария."
-            if self._ui_language == "ru"
-            else "Choose a ready filter chain for a typical scenario.",
-        )
-    )
-    self.pipeline_preset_combo.setStatusTip(self.pipeline_preset_combo.toolTip())
-    self.apply_pipeline_preset_button.setToolTip(self.pipeline_preset_combo.toolTip())
-    self.apply_pipeline_preset_button.setStatusTip(self.pipeline_preset_combo.toolTip())
     self.parameters_group.setTitle(self._tr("step_parameters_group"))
 
     self.contour_group.setTitle(self._tr("contour_extraction_group"))
@@ -258,33 +281,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if hasattr(self, "recognition_mode_label"):
         self.recognition_mode_label.setText("Распознавание" if self._ui_language == "ru" else "Recognition")
     if hasattr(self, "metal_segmentation_strategy_combo"):
-        _strategy_labels = {
-            "auto": (
-                "Авто (контроль связности)",
-                "Auto (topology control)",
-            ),
-            "legacy_otsu": ("Порог Otsu", "Otsu threshold"),
-            "local_adaptive": ("Адаптивный порог", "Adaptive threshold"),
-            "gradient_watershed": ("Watershed", "Watershed"),
-            "random_walker": ("Random Walker", "Random Walker"),
-            "graph_cut": ("Graph Cut", "Graph Cut"),
-            "reconstruction": ("Reconstruction", "Reconstruction"),
-            "closed_boundary": (
-                "Замкнутые границы",
-                "Closed boundary",
-            ),
-            "structural_watershed": (
-                "Структурный водораздел",
-                "Structural watershed",
-            ),
-        }
         combo = self.metal_segmentation_strategy_combo
-        lang_index = 0 if self._ui_language == "ru" else 1
         for index in range(combo.count()):
             data = str(combo.itemData(index) or "")
-            labels = _strategy_labels.get(data)
-            if labels is not None:
-                combo.setItemText(index, labels[lang_index])
+            combo.setItemText(index, strategy_name(strategy_spec(data), self._ui_language))
     if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
         self.metal_segmentation_strategy_label_widget.setText(
             "Алгоритм распознавания" if self._ui_language == "ru" else "Recognition algorithm"
@@ -294,34 +294,22 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Шаг контраста Auto" if self._ui_language == "ru" else "Auto contrast step"
         )
     if getattr(self, "metal_auto_contrast_step_spin", None) is not None:
-        self.metal_auto_contrast_step_spin.setSpecialValueText(
-            "Выкл." if self._ui_language == "ru" else "Off"
-        )
+        self.metal_auto_contrast_step_spin.setSpecialValueText("Выкл." if self._ui_language == "ru" else "Off")
     if getattr(self, "metal_auto_source_contrast_step_label_widget", None) is not None:
         self.metal_auto_source_contrast_step_label_widget.setText(
-            "Шаг фильтра объектов Auto"
-            if self._ui_language == "ru"
-            else "Auto object-filter step"
+            "Шаг фильтра объектов Auto" if self._ui_language == "ru" else "Auto object-filter step"
         )
     if getattr(self, "metal_auto_source_contrast_step_spin", None) is not None:
-        self.metal_auto_source_contrast_step_spin.setSpecialValueText(
-            "Выкл." if self._ui_language == "ru" else "Off"
-        )
+        self.metal_auto_source_contrast_step_spin.setSpecialValueText("Выкл." if self._ui_language == "ru" else "Off")
     if getattr(self, "metal_auto_directional_gap_bridge_label_widget", None) is not None:
         self.metal_auto_directional_gap_bridge_label_widget.setText(
-            "Направленная сшивка Auto, пикс."
-            if self._ui_language == "ru"
-            else "Auto directional gap, px"
+            "Направленная сшивка Auto, пикс." if self._ui_language == "ru" else "Auto directional gap, px"
         )
     if getattr(self, "metal_auto_directional_gap_bridge_spin", None) is not None:
-        self.metal_auto_directional_gap_bridge_spin.setSpecialValueText(
-            "Выкл." if self._ui_language == "ru" else "Off"
-        )
+        self.metal_auto_directional_gap_bridge_spin.setSpecialValueText("Выкл." if self._ui_language == "ru" else "Off")
     if getattr(self, "metal_auto_directional_gap_min_source_label_widget", None) is not None:
         self.metal_auto_directional_gap_min_source_label_widget.setText(
-            "Мин. яркость направленной сшивки"
-            if self._ui_language == "ru"
-            else "Directional gap source minimum"
+            "Мин. яркость направленной сшивки" if self._ui_language == "ru" else "Directional gap source minimum"
         )
     if getattr(self, "metal_min_object_rim_contrast_label_widget", None) is not None:
         self.metal_min_object_rim_contrast_label_widget.setText(
@@ -339,50 +327,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_ws_smoothing_label_widget.setText(
             "Сглаживание водораздела, σ" if self._ui_language == "ru" else "Watershed smoothing, σ"
         )
-    if getattr(self, "metal_preprocessing_group", None) is not None:
-        self.metal_preprocessing_group.setTitle(
-            "\u041f\u0440\u0435\u0434\u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0430 SEM"
-            if self._ui_language == "ru"
-            else "SEM preprocessing"
-        )
-    if getattr(self, "metal_preprocess_subtract_background_checkbox", None) is not None:
-        self.metal_preprocess_subtract_background_checkbox.setText(
-            "\u0412\u044b\u0447\u0438\u0442\u0430\u043d\u0438\u0435 \u0444\u043e\u043d\u0430"
-            if self._ui_language == "ru"
-            else "Subtract background"
-        )
-    if getattr(self, "metal_preprocess_background_sigma_label_widget", None) is not None:
-        self.metal_preprocess_background_sigma_label_widget.setText(
-            "\u041c\u0430\u0441\u0448\u0442\u0430\u0431 \u0444\u043e\u043d\u0430, \u0434\u043e\u043b\u044f \u043a\u0430\u0434\u0440\u0430"
-            if self._ui_language == "ru"
-            else "Background scale, image fraction"
-        )
-    if getattr(self, "metal_preprocess_clahe_clip_label_widget", None) is not None:
-        self.metal_preprocess_clahe_clip_label_widget.setText(
-            "\u041e\u0433\u0440\u0430\u043d\u0438\u0447\u0435\u043d\u0438\u0435 \u043a\u043e\u043d\u0442\u0440\u0430\u0441\u0442\u0430 CLAHE"
-            if self._ui_language == "ru"
-            else "CLAHE clip limit"
-        )
-    if getattr(self, "metal_preprocess_clahe_grid_label_widget", None) is not None:
-        self.metal_preprocess_clahe_grid_label_widget.setText(
-            "\u0421\u0435\u0442\u043a\u0430 CLAHE"
-            if self._ui_language == "ru"
-            else "CLAHE grid"
-        )
-    if getattr(self, "metal_preprocess_denoise_label_widget", None) is not None:
-        self.metal_preprocess_denoise_label_widget.setText(
-            "\u0428\u0443\u043c\u043e\u043f\u043e\u0434\u0430\u0432\u043b\u0435\u043d\u0438\u0435"
-            if self._ui_language == "ru"
-            else "Denoising"
-        )
-    if getattr(self, "metal_preprocess_denoise_combo", None) is not None:
-        noise_labels = (
-            ("\u041d\u0438\u0437\u043a\u043e\u0435", "\u0421\u0440\u0435\u0434\u043d\u0435\u0435", "\u0412\u044b\u0441\u043e\u043a\u043e\u0435")
-            if self._ui_language == "ru"
-            else ("Low", "Medium", "High")
-        )
-        for index, label in enumerate(noise_labels):
-            self.metal_preprocess_denoise_combo.setItemText(index, label)
     if getattr(self, "metal_ws_core_margin_label_widget", None) is not None:
         self.metal_ws_core_margin_label_widget.setText(
             "Отступ ядер металла" if self._ui_language == "ru" else "Metal core margin"
@@ -452,32 +396,207 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             "Замкнутые границы" if self._ui_language == "ru" else "Closed boundary"
         )
     if getattr(self, "metal_adaptive_group", None) is not None:
-        self.metal_adaptive_group.setTitle(
-            "Адаптивный порог" if self._ui_language == "ru" else "Adaptive threshold"
-        )
+        self.metal_adaptive_group.setTitle("Адаптивный порог" if self._ui_language == "ru" else "Adaptive threshold")
     if getattr(self, "metal_adaptive_block_label_widget", None) is not None:
         self.metal_adaptive_block_label_widget.setText(
             "Размер окна, px" if self._ui_language == "ru" else "Window size, px"
         )
     if getattr(self, "metal_adaptive_block_spin", None) is not None:
-        self.metal_adaptive_block_spin.setSpecialValueText(
-            "Авто" if self._ui_language == "ru" else "Auto"
-        )
+        self.metal_adaptive_block_spin.setSpecialValueText("Авто" if self._ui_language == "ru" else "Auto")
     if getattr(self, "metal_adaptive_c_label_widget", None) is not None:
         self.metal_adaptive_c_label_widget.setText(
             "Смещение порога C" if self._ui_language == "ru" else "Threshold offset C"
         )
     if getattr(self, "metal_adaptive_method_label_widget", None) is not None:
-        self.metal_adaptive_method_label_widget.setText(
-            "Метод" if self._ui_language == "ru" else "Method"
-        )
+        self.metal_adaptive_method_label_widget.setText("Метод" if self._ui_language == "ru" else "Method")
     if getattr(self, "metal_adaptive_method_combo", None) is not None:
-        self.metal_adaptive_method_combo.setItemText(
-            0, "Гаусс" if self._ui_language == "ru" else "Gaussian"
+        self.metal_adaptive_method_combo.setItemText(0, "Гаусс" if self._ui_language == "ru" else "Gaussian")
+        self.metal_adaptive_method_combo.setItemText(1, "Среднее" if self._ui_language == "ru" else "Mean")
+
+    if hasattr(self, "metal_basic_group"):
+        is_ru = self._ui_language == "ru"
+        self.metal_basic_group.setTitle("Основные параметры" if is_ru else "Basic parameters")
+        self.metal_display_group.setTitle("Отображение" if is_ru else "Display")
+        _set_form_label(
+            self.metal_basic_group,
+            self.metal_min_contrast_widget,
+            "Мин. контраст проводника" if is_ru else "Minimum conductor contrast",
         )
-        self.metal_adaptive_method_combo.setItemText(
-            1, "Среднее" if self._ui_language == "ru" else "Mean"
+        _set_form_label(
+            self.metal_basic_group,
+            self.metal_gap_bridge_spin,
+            "Сшивка разрывов, пикс." if is_ru else "Gap bridging, px",
         )
+        _set_form_label(
+            self.metal_basic_group,
+            self.metal_speckle_removal_spin,
+            "Удаление шума, пикс." if is_ru else "Speckle removal, px",
+        )
+        _set_form_label(
+            self.metal_basic_group,
+            self.metal_width_row,
+            "Ширина проводника, пикс." if is_ru else "Conductor width, px",
+        )
+        _set_form_label(
+            self.metal_basic_group,
+            self.metal_epsilon_spin,
+            "Точность аппроксимации" if is_ru else "Approximation epsilon",
+        )
+        self.metal_show_conductors_checkbox.setText("Показывать проводники" if is_ru else "Show conductors")
+        self.metal_show_rejected_checkbox.setText("Показывать отклонённые" if is_ru else "Show rejected")
+        self.metal_show_suspicious_checkbox.setText("Показывать подозрительные" if is_ru else "Show suspicious")
+        self.metal_show_mask_checkbox.setText("Показывать маску" if is_ru else "Show mask")
+        if is_ru:
+            debug_labels_ru = {
+                "metal_structural_ridge_response": "Структура: отклик гребня",
+                "metal_structural_ridge_markers": "Структура: маркеры гребня",
+                "metal_structural_ridge_fragments": "Структура: фрагменты гребня",
+                "metal_structural_ridge_links_accepted": "Структура: принятые связи гребня",
+                "metal_structural_ridge_links_rejected": "Структура: отклонённые связи гребня",
+                "metal_structural_ridge_links_boundary_veto": "Структура: запрет пересечения границы",
+                "metal_structural_logical_ridge": "Структура: объединённый гребень",
+                "metal_structural_wide_interior_markers": "Структура: маркеры широкой области",
+                "metal_structural_wide_fragments": "Структура: широкие фрагменты",
+                "metal_structural_logical_wide": "Структура: объединённая широкая область",
+                "metal_structural_logical_markers": "Структура: объединённые маркеры",
+                "metal_structural_conductor_bands": "Структура: полосы проводников",
+                "metal_structural_transverse_samples": "Структура: поперечные отсчёты",
+                "metal_structural_band_groups_accepted": "Структура: принятые группы полос",
+                "metal_structural_band_groups_rejected": "Структура: отклонённые группы полос",
+                "metal_structural_foreground_markers": "Структура: маркеры переднего плана",
+                "metal_structural_background_markers": "Структура: маркеры фона",
+                "metal_structural_boundary_cost": "Структура: стоимость границы",
+                "metal_structural_watershed_labels": "Структура: метки водораздела",
+                "metal_structural_instance_labels": "Структура: метки экземпляров",
+                "metal_structural_label_boundary": "Структура: границы меток",
+                "metal_structural_final_mask": "Структура: итоговая маска",
+                "metal_owt_oriented_boundaries": "OWT-UCM: ориентированные границы",
+                "metal_owt_initial_watershed": "OWT-UCM: исходный водораздел",
+                "metal_owt_ucm": "OWT-UCM: карта иерархии",
+                "metal_owt_selected_hierarchy": "OWT-UCM: выбранная иерархия",
+                "metal_msp_separator_cost": "Мульти-разделитель: стоимость разделителя",
+                "metal_msp_selected_separators": "Мульти-разделитель: выбранные разделители",
+                "metal_msp_regions": "Мульти-разделитель: области",
+                "metal_gasp_attractive_affinity": "GASP: сходство притяжения",
+                "metal_gasp_repulsive_affinity": "GASP: сходство отталкивания",
+                "metal_gasp_final_labels": "GASP: итоговые метки",
+                "metal_mutex_watershed_attractive_affinity": "MWS: сходство притяжения",
+                "metal_mutex_watershed_repulsive_affinity": "MWS: сходство отталкивания",
+                "metal_mutex_watershed_long_range_mutex": "MWS: дальние взаимоисключения",
+                "metal_mutex_watershed_final_labels": "MWS: итоговые метки",
+                "metal_multicut_attractive_affinity": "Мультиразрез: сходство притяжения",
+                "metal_multicut_repulsive_affinity": "Мультиразрез: сходство отталкивания",
+                "metal_multicut_final_labels": "Мультиразрез: итоговые метки",
+                "metal_lifted_multicut_lifted_relations": "Расширенный мультиразрез: дальние связи",
+                "metal_lifted_multicut_final_labels": "Расширенный мультиразрез: итоговые метки",
+                "metal_material_confidence": "Материал: уверенность",
+                "metal_material_core_evidence": "Материал: признак ядра",
+                "metal_material_substrate_evidence": "Материал: признак подложки",
+            }
+            for index in range(self.metal_debug_visual_combo.count()):
+                data = str(self.metal_debug_visual_combo.itemData(index) or "")
+                localized = debug_labels_ru.get(data)
+                if localized is not None:
+                    self.metal_debug_visual_combo.setItemText(index, localized)
+        _set_form_label(
+            self.metal_display_group,
+            self.metal_overlay_opacity_spin,
+            "Прозрачность наложения" if is_ru else "Overlay opacity",
+        )
+
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_min_object_source_contrast_spin,
+            "Мин. контраст объекта к фону" if is_ru else "Minimum object/background contrast",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_min_area_spin,
+            "Мин. площадь" if is_ru else "Minimum area",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_max_area_spin,
+            "Макс. площадь (0 — без ограничения)" if is_ru else "Maximum area (0 = unlimited)",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_min_perimeter_spin,
+            "Мин. периметр" if is_ru else "Minimum perimeter",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_max_perimeter_spin,
+            "Макс. периметр (0 — без ограничения)" if is_ru else "Maximum perimeter (0 = unlimited)",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_min_length_spin,
+            "Мин. длина проводника, пикс." if is_ru else "Minimum conductor length, px",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_min_points_spin,
+            "Мин. число точек" if is_ru else "Minimum point count",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_min_angle_spin,
+            "Мин. угол полигона, °" if is_ru else "Minimum polygon angle, °",
+        )
+        _set_form_label(
+            self.metal_filter_group,
+            self.metal_border_handling_combo,
+            "Объекты у границы кадра" if is_ru else "Objects at image border",
+        )
+        border_labels = (
+            ("Игнорировать", "Принимать", "Помечать отдельно") if is_ru else ("Ignore", "Accept", "Mark separately")
+        )
+        for index, text in enumerate(border_labels):
+            self.metal_border_handling_combo.setItemText(index, text)
+
+        self.metal_approximation_checkbox.setText("Аппроксимировать контуры" if is_ru else "Approximate contours")
+        _set_form_label(
+            self.metal_recognition_params_group,
+            self.metal_hierarchy_combo,
+            "Режим иерархии" if is_ru else "Hierarchy mode",
+        )
+        hierarchy_labels = (
+            ("Полная иерархия", "Только внешние контуры") if is_ru else ("Full hierarchy", "External contours only")
+        )
+        for index, text in enumerate(hierarchy_labels):
+            self.metal_hierarchy_combo.setItemText(index, text)
+        _set_form_label(
+            self.metal_recognition_params_group,
+            self.min_inner_hole_area_spin,
+            "Мин. площадь отверстия для заливки, пикс.²" if is_ru else "Minimum hole area to preserve, px²",
+        )
+        _set_form_label(
+            self.metal_recognition_params_group,
+            self.metal_min_hole_source_contrast_spin,
+            "Мин. контраст отверстия" if is_ru else "Minimum hole contrast",
+        )
+        _set_form_label(
+            self.metal_recognition_params_group,
+            self.metal_min_hole_source_contrast_fraction_spin,
+            "Доля контраста классов для отверстия" if is_ru else "Class-contrast fraction for hole",
+        )
+
+        self.metal_watershed_group.setTitle("Параметры водораздела" if is_ru else "Watershed parameters")
+        self.metal_random_walker_group.setTitle("Случайное блуждание" if is_ru else "Random Walker")
+        self.metal_graph_cut_group.setTitle("Графовый разрез" if is_ru else "Graph Cut")
+        self.metal_reconstruction_group.setTitle("Морфологическая реконструкция" if is_ru else "Reconstruction")
+        self.metal_closed_boundary_group.setTitle("Замкнутые границы" if is_ru else "Closed boundary")
+        self.metal_adaptive_group.setTitle("Адаптивный порог" if is_ru else "Adaptive threshold")
+        self.apply_metal_preset_button.setText("Применить" if is_ru else "Apply")
+        self.save_metal_preset_button.setText("Сохранить" if is_ru else "Save")
+        self.delete_metal_preset_button.setText("Удалить" if is_ru else "Delete")
+        self.metal_reset_params_button.setText("Сбросить параметры" if is_ru else "Reset parameters")
+
+        _retranslate_strategy_parameter_pages(self)
+        from .builders import _sync_metal_strategy_panel
+
+        _sync_metal_strategy_panel(self)
     if getattr(self, "metal_gradient_3d_button", None) is not None:
         self.metal_gradient_3d_button.setText("3D поле" if self._ui_language == "ru" else "3D field")
     if getattr(self, "metal_debug_visual_label_widget", None) is not None:
@@ -552,15 +671,11 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     if self.via_search_mode_combo.count() >= 3:
         if getattr(self, "bright_via_diameter_range_label_widget", None) is not None:
             self.bright_via_diameter_range_label_widget.setText(
-                "Диаметр поиска"
-                if self._ui_language == "ru"
-                else "Candidate diameter range, px"
+                "Диаметр поиска" if self._ui_language == "ru" else "Candidate diameter range, px"
             )
         if getattr(self, "via_output_diameter_label_widget", None) is not None:
             self.via_output_diameter_label_widget.setText(
-                "Диаметр сохранения"
-                if self._ui_language == "ru"
-                else "Saved contact diameter, px"
+                "Диаметр сохранения" if self._ui_language == "ru" else "Saved contact diameter, px"
             )
         self.via_search_mode_combo.setItemText(
             0,
@@ -685,9 +800,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.reset_via_search_button.setText(
         self._tr(
             "reset_via_search_button",
-            "Сбросить параметры поиска контактов"
-            if self._ui_language == "ru"
-            else "Reset contact search parameters",
+            "Сбросить параметры поиска контактов" if self._ui_language == "ru" else "Reset contact search parameters",
         )
     )
     self.debug_candidates_checkbox.setText(

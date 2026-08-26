@@ -113,7 +113,7 @@ class WidgetPipelineActionsMixin:
             self.polygon_editor.set_debug_candidates([])
             self.polygon_editor.set_via_debug_inspection_enabled(self._via_debug_inspection_enabled())
         self._refresh_gradient_overlay()
-        self._auto_apply_pipeline()
+        self._auto_apply_recognition_settings()
 
     def _on_via_search_method_changed(self, *_args) -> None:
         if not hasattr(self, "bright_via_mode_stack"):

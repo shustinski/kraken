@@ -36,6 +36,7 @@ CONTACT_REDO_PROFILING_ENABLED = False
 CONTACT_DRAG_PROFILING_ENABLED = False
 SCENE_ZOOM_PROFILING_ENABLED = False
 IMAGE_RECOGNITION_PROFILING_ENABLED = False
+FILTER_APPLICATION_PROFILING_ENABLED = True
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
@@ -224,6 +225,13 @@ def image_recognition_profiling_enabled() -> bool:
     return profiling_enabled(
         "image_recognition",
         default=IMAGE_RECOGNITION_PROFILING_ENABLED,
+    )
+
+
+def filter_application_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "filter_application",
+        default=FILTER_APPLICATION_PROFILING_ENABLED,
     )
 
 

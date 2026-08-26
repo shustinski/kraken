@@ -51,6 +51,7 @@ hiddenimports = list(
     dict.fromkeys(
         collect_submodules("contour")
         + _collect_src_python_modules(SRC_ROOT, "contour")
+        + ["contour._native.multi_separator"]
     )
 )
 

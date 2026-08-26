@@ -7,7 +7,7 @@ import io
 import pstats
 from time import perf_counter
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import cv2
@@ -69,6 +69,7 @@ class PreparedImageRequest:
     image_path: str
     source_image: Any
     pipeline_config: dict[str, Any]
+    queued_at: float = field(default_factory=perf_counter, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,9 +126,17 @@ def build_prepared_image_signature(request: PreparedImageRequest) -> tuple[str, 
     )
 
 
-def prepare_image_for_preview(source_image: Any, pipeline_config: dict[str, Any]) -> Any:
+def prepare_image_for_preview(
+    source_image: Any,
+    pipeline_config: dict[str, Any],
+    *,
+    step_timing_callback: Callable[[int, str, float], None] | None = None,
+) -> Any:
     raise_if_preview_cancelled()
-    return PreprocessingPipeline.from_dict(pipeline_config).apply(source_image)
+    return PreprocessingPipeline.from_dict(pipeline_config).apply(
+        source_image,
+        timing_callback=step_timing_callback,
+    )
 
 
 def _recognition_image(source_image: Any, preprocessed_image: Any | None) -> Any:
@@ -1584,10 +1593,8 @@ def _run_structural_metal_recovery(
     contour_settings: ContourExtractionSettings,
 ) -> tuple[list[PolygonData], np.ndarray, dict[str, np.ndarray], dict[str, list[PolygonData]]]:
     from ....vision.metal_recovery import detect_metalization, metal_recovery_config_from_settings
-    from ....vision.preprocessing import metal_preprocess_config_from_settings, preprocess_for_sem
 
     gray = ensure_uint8(_via_grayscale(preprocessed))
-    gray = preprocess_for_sem(gray, metal_preprocess_config_from_settings(contour_settings))
     source_gray = ensure_uint8(_via_grayscale(source))
     cfg = metal_recovery_config_from_settings(contour_settings)
     mr = detect_metalization(gray, cfg, source_image=source_gray)

@@ -1,12 +1,17 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "pybind11>=3.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "contour"
 description = "Standalone polygon extraction and editing widget."
 readme = "README.md"
-license = { text = "MIT" }
+license = "AGPL-3.0-or-later"
+license-files = [
+    "THIRD_PARTY_NOTICES.md",
+    "third_party/BSR-AGPL-3.0.txt",
+    "third_party/bsr_owt_ucm/LICENSE",
+]
 requires-python = ">=3.14"
 authors = [{ name = "ViaLaNet" }]
 keywords = ["pyqt", "polygon", "contour", "image-processing", "opencv"]
@@ -15,7 +20,6 @@ classifiers = [
     "Environment :: X11 Applications :: Qt",
     "Environment :: Win32 (MS Windows)",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.14",

@@ -10,16 +10,13 @@ from ._imports import *  # noqa: F403
 class WidgetDebugMixin:
     if TYPE_CHECKING:
         _workspace: WorkspaceSession
-        _show_source_while_middle_held: bool
         _show_source_while_filter_hotkey_held: bool
 
-        control_tabs: QTabWidget
         gradient_overlay_mode_combo: QComboBox
         metal_debug_visual_combo: QComboBox
         metal_gradient_3d_button: QPushButton
         metal_overlay_opacity_spin: QDoubleSpinBox
         metal_show_mask_checkbox: QCheckBox
-        pipeline_tab: QWidget
         polygon_editor: Any
         recognition_mode_combo: QComboBox
         _ui_language: str
@@ -394,31 +391,11 @@ class WidgetDebugMixin:
         self._append_log(f"{title}: {r or body}")
         QMessageBox.information(self._debug_parent_widget(), title, body)
 
-    def _on_middle_preview_hold_changed(self, active: bool) -> None:
-        should_show_source = bool(active and self._is_filters_tab_active())
-        if self._show_source_while_middle_held == should_show_source:
-            return
-        self._show_source_while_middle_held = should_show_source
-        self._refresh_current_display_image_only(preserve_view=True)
-
     def _on_filter_preview_hold_changed(self, active: bool) -> None:
         should_show_source = bool(active)
         if self._show_source_while_filter_hotkey_held == should_show_source:
             return
         self._show_source_while_filter_hotkey_held = should_show_source
-        self._refresh_current_display_image_only(preserve_view=True)
-
-    def _is_filters_tab_active(self) -> bool:
-        if not hasattr(self, "control_tabs") or not hasattr(self, "pipeline_tab"):
-            return False
-        return self.control_tabs.currentWidget() is self.pipeline_tab
-
-    def _on_control_tab_changed(self, _index: int) -> None:
-        if not self._show_source_while_middle_held:
-            return
-        if self._is_filters_tab_active():
-            return
-        self._show_source_while_middle_held = False
         self._refresh_current_display_image_only(preserve_view=True)
 
     def _compute_gradient_debug_maps_on_demand(self) -> dict[str, object]:
@@ -586,16 +563,9 @@ class WidgetDebugMixin:
             return None
         mode = str(self.gradient_overlay_mode_combo.currentData() or "source")
         if mode == "source":
-            current_state = self._workspace.current_state
-            original = (
-                current_state.source_image
-                if current_state is not None and current_state.source_image is not None
-                else source_image
-            )
-            data = np.asarray(original)
-            if data.ndim == 2:
-                return cv2.cvtColor(data, cv2.COLOR_GRAY2BGR)
-            return np.ascontiguousarray(data[..., :3])
+            # The base raster already owns the source/filtered choice. Drawing
+            # the source again as an opaque debug overlay hides applied filters.
+            return None
         if mode not in {"heatmap", "threshold", "elevation"}:
             current_state = self._workspace.current_state
             maps = (

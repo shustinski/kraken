@@ -47,13 +47,13 @@ def metal_recovery_config_from_settings(settings: Any) -> MetalRecoveryConfig:
         speckle_raw = getattr(settings, "metal_morph_open_radius", 0)
 
     watershed = clamped_gradient_watershed_config(
-        smoothing_sigma=float(getattr(settings, "metal_watershed_smoothing_sigma", 1.0) or 1.0),
-        core_margin=float(getattr(settings, "metal_watershed_core_margin", 8.0) or 0.0),
-        groove_margin=float(getattr(settings, "metal_watershed_groove_margin", 16.0) or 0.0),
-        rim_probe_px=int(getattr(settings, "metal_watershed_rim_probe_px", 6) or 1),
-        seed_speckle_px=int(getattr(settings, "metal_watershed_seed_speckle_px", 4) or 0),
+        smoothing_sigma=float(getattr(settings, "metal_watershed_smoothing_sigma", 1.2) or 1.2),
+        core_margin=float(getattr(settings, "metal_watershed_core_margin", 23.0) or 0.0),
+        groove_margin=float(getattr(settings, "metal_watershed_groove_margin", 19.0) or 0.0),
+        rim_probe_px=int(getattr(settings, "metal_watershed_rim_probe_px", 2) or 1),
+        seed_speckle_px=int(getattr(settings, "metal_watershed_seed_speckle_px", 1) or 0),
         valley_span_px=int(getattr(settings, "metal_watershed_valley_span_px", 5) or 0),
-        valley_depth=float(getattr(settings, "metal_watershed_valley_depth", 45.0) or 0.0),
+        valley_depth=float(getattr(settings, "metal_watershed_valley_depth", 65.0) or 0.0),
         random_walker_beta=float(getattr(settings, "metal_random_walker_beta", 90.0) or 90.0),
         random_walker_iterations=int(getattr(settings, "metal_random_walker_iterations", 160) or 160),
         graph_cut_iterations=int(getattr(settings, "metal_graph_cut_iterations", 5) or 5),

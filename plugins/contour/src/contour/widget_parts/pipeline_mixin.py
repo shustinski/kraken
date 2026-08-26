@@ -915,6 +915,7 @@ class WidgetPipelineMixin:
             "metal_speckle_removal_px",
             "metal_contour_smooth_px",
             "metal_min_trace_width_px",
+            "metal_conductor_size_offset_px",
             "metal_max_trace_width_px",
             "metal_min_trace_length_px",
             "metal_min_straightness",

@@ -29,13 +29,13 @@ _REFINEMENT_MIN_CONFIRMED_PIXELS = 5
 class GradientWatershedConfig:
     """Seed levels are expressed as margins around the two Otsu class limits."""
 
-    smoothing_sigma: float = 1.0
-    core_margin: float = 8.0
-    groove_margin: float = 16.0
-    rim_probe_px: int = 6
-    seed_speckle_px: int = 4
+    smoothing_sigma: float = 1.2
+    core_margin: float = 23.0
+    groove_margin: float = 19.0
+    rim_probe_px: int = 2
+    seed_speckle_px: int = 1
     valley_span_px: int = 5
-    valley_depth: float = 45.0
+    valley_depth: float = 65.0
     random_walker_beta: float = 90.0
     random_walker_iterations: int = 160
     graph_cut_iterations: int = 5
@@ -105,13 +105,13 @@ def analyze_metal_presence(
 
 def clamped_gradient_watershed_config(
     *,
-    smoothing_sigma: float = 1.0,
-    core_margin: float = 8.0,
-    groove_margin: float = 16.0,
-    rim_probe_px: int = 6,
-    seed_speckle_px: int = 4,
+    smoothing_sigma: float = 1.2,
+    core_margin: float = 23.0,
+    groove_margin: float = 19.0,
+    rim_probe_px: int = 2,
+    seed_speckle_px: int = 1,
     valley_span_px: int = 5,
-    valley_depth: float = 45.0,
+    valley_depth: float = 65.0,
     random_walker_beta: float = 90.0,
     random_walker_iterations: int = 160,
     graph_cut_iterations: int = 5,
@@ -138,13 +138,13 @@ def clamped_gradient_watershed_config(
 
 def gradient_watershed_config_from_object(source: object) -> GradientWatershedConfig:
     return clamped_gradient_watershed_config(
-        smoothing_sigma=float(getattr(source, "watershed_smoothing_sigma", 1.0) or 1.0),
-        core_margin=float(getattr(source, "watershed_core_margin", 8.0) or 0.0),
-        groove_margin=float(getattr(source, "watershed_groove_margin", 16.0) or 0.0),
-        rim_probe_px=int(getattr(source, "watershed_rim_probe_px", 6) or 1),
-        seed_speckle_px=int(getattr(source, "watershed_seed_speckle_px", 4) or 0),
+        smoothing_sigma=float(getattr(source, "watershed_smoothing_sigma", 1.2) or 1.2),
+        core_margin=float(getattr(source, "watershed_core_margin", 23.0) or 0.0),
+        groove_margin=float(getattr(source, "watershed_groove_margin", 19.0) or 0.0),
+        rim_probe_px=int(getattr(source, "watershed_rim_probe_px", 2) or 1),
+        seed_speckle_px=int(getattr(source, "watershed_seed_speckle_px", 1) or 0),
         valley_span_px=int(getattr(source, "watershed_valley_span_px", 5) or 0),
-        valley_depth=float(getattr(source, "watershed_valley_depth", 45.0) or 0.0),
+        valley_depth=float(getattr(source, "watershed_valley_depth", 65.0) or 0.0),
         random_walker_beta=float(getattr(source, "random_walker_beta", 90.0) or 90.0),
         random_walker_iterations=int(getattr(source, "random_walker_iterations", 160) or 160),
         graph_cut_iterations=int(getattr(source, "graph_cut_iterations", 5) or 5),

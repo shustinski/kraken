@@ -964,7 +964,6 @@ class WidgetProcessingMixin:
             self._editor_display_request_serial = int(getattr(self, "_editor_display_request_serial", 0)) + 1
             request_id = self._editor_display_request_serial
         target_path = str(Path(image_path))
-        request_state = self._workspace.current_state
         runnable = EditorDisplayRunnable(request_id, target_path, display_image)
 
         def _on_display_ready(req_id: int, path: str, qimage: object) -> None:
@@ -983,15 +982,14 @@ class WidgetProcessingMixin:
                     pixmap = QPixmap()
             current_path = str(Path(self._workspace.current_image_path or ""))
             target_path = str(Path(path))
-            current_state = self._workspace.current_state
-            same_frame_state = target_path == current_path and current_state is request_state
+            same_frame_state = target_path == current_path
             is_current_display = (
                 not cache_only
                 and req_id == self._editor_display_request_serial
                 and same_frame_state
                 and (
-                    current_state is None
-                    or self._editor_display_cache_key(path, current_state) == cache_key
+                    self._workspace.current_state is None
+                    or self._editor_display_cache_key(path, self._workspace.current_state) == cache_key
                 )
             )
             if pixmap.isNull():
@@ -1014,6 +1012,7 @@ class WidgetProcessingMixin:
                 return
             self.polygon_editor.set_image_pixmap(pixmap, preserve_view=preserve_view)
             self._last_editor_display_cache_key = cache_key
+            self._last_editor_display_path = str(Path(path))
             session = self._frame_switch_profile_for_path(path)
             if session is not None:
                 session.complete_pending("editor_display", suffix="_ready")
@@ -1058,6 +1057,8 @@ class WidgetProcessingMixin:
         cached = getattr(self, "_editor_pixmap_cache", {}).get(cache_key)
         if cached is not None and not cached.isNull():
             self.polygon_editor.set_image_pixmap(cached, preserve_view=preserve_view)
+            self._last_editor_display_cache_key = cache_key
+            self._last_editor_display_path = str(Path(image_path))
             if cache_key[1] != "source":
                 self._ensure_source_preview_pixmap_cached(image_path, state)
             return True
@@ -1077,6 +1078,7 @@ class WidgetProcessingMixin:
         if current_state is None or not image_path:
             self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
             self._last_editor_display_cache_key = None
+            self._last_editor_display_path = None
             return
         display_image = self._display_image_for_current_state()
         image_ready = self._apply_display_image_to_editor(
@@ -1087,6 +1089,30 @@ class WidgetProcessingMixin:
         )
         if image_ready:
             self._last_editor_display_cache_key = self._editor_display_cache_key(image_path, current_state)
+            self._last_editor_display_path = str(Path(image_path))
+
+    def _recognition_hides_loaded_vectors(self: Any) -> bool:
+        if not hasattr(self, "recognition_mode_combo"):
+            return False
+        return str(self.recognition_mode_combo.currentData() or "") != "disabled"
+
+    def _state_has_recognition_result(self: Any, state) -> bool:
+        if state is None:
+            return False
+        if getattr(state, "mask_image", None) is not None:
+            return True
+        if getattr(state, "metal_overlay_polygons", None):
+            return True
+        if getattr(state, "recognition_base_polygons", None):
+            return True
+        return False
+
+    def _polygons_visible_in_editor(self: Any, state, polygons: list) -> list:
+        if not self._recognition_hides_loaded_vectors():
+            return list(polygons)
+        if self._state_has_recognition_result(state):
+            return list(polygons)
+        return []
 
     def _apply_editor_vectors_for_frame(
         self: Any,
@@ -1096,11 +1122,10 @@ class WidgetProcessingMixin:
         *,
         defer_heavy_overlays: bool,
     ) -> None:
+        visible_polygons = self._polygons_visible_in_editor(state, polygons)
         if hasattr(self, "polygon_editor"):
-            # Recognition controls whether new geometry is extracted.  It must
-            # not hide vectors that were loaded from CIF/CV or edited manually.
             self.polygon_editor.set_polygon_overlays_visible(True)
-        self._sync_polygons_to_editor(image_path, polygons)
+        self._sync_polygons_to_editor(image_path, visible_polygons)
         if defer_heavy_overlays:
             return
         debug_candidates = list(state.debug_candidates)
@@ -1217,6 +1242,7 @@ class WidgetProcessingMixin:
             self.polygon_editor.set_polygons([], emit_signal=False)
             self._editor_polygons_signature = None
             self._last_editor_display_cache_key = None
+            self._last_editor_display_path = None
             return
         display_image = self._display_image_for_current_state()
         polygons = list(current_state.polygons)
@@ -1224,6 +1250,7 @@ class WidgetProcessingMixin:
         skip_display_refresh = bool(
             preserve_view
             and getattr(self, "_last_editor_display_cache_key", None) == display_cache_key
+            and str(Path(getattr(self, "_last_editor_display_path", "") or "")) == str(Path(image_path))
         )
         if skip_display_refresh:
             image_ready = True
@@ -1236,6 +1263,7 @@ class WidgetProcessingMixin:
             )
             if image_ready:
                 self._last_editor_display_cache_key = display_cache_key
+                self._last_editor_display_path = str(Path(image_path))
         self._pending_editor_frame_apply = None
         self._apply_editor_vectors_for_frame(
             image_path,
@@ -3032,6 +3060,22 @@ class WidgetProcessingMixin:
         if hasattr(self, "_refresh_image_list_item_states"):
             self._image_list_model.invalidate_path(normalized)
 
+    def clear_all_loaded_vectors(self: Any) -> None:
+        self._workspace.clear_cif_index()
+        if hasattr(self, "cif_dir_edit"):
+            self.cif_dir_edit.setText("")
+        for image_path in list(self._workspace.image_paths):
+            self._workspace.mark_vectors_cleared(image_path)
+        if hasattr(self, "polygon_editor"):
+            self.polygon_editor.set_polygons([])
+        if hasattr(self, "_sync_editor_polygons_to_current_workspace"):
+            self._sync_editor_polygons_to_current_workspace()
+        self._refresh_image_list_item_states()
+        self._refresh_vector_rows_for_workspace()
+        self._rebuild_vector_list()
+        if hasattr(self, "_save_persisted_paths"):
+            self._save_persisted_paths()
+
     def reset_project(self: Any) -> None:
         if self._workspace.current_state is not None and not self._try_leave_current_frame():
             return
@@ -3265,10 +3309,6 @@ class WidgetProcessingMixin:
                     and not state.polygons
                     and bool(self._find_matching_cif_path(normalized_load_path))
                 )
-                if needs_vectors:
-                    self._loading_image_path = normalized_load_path
-                    self._begin_frame_vectors_reload(normalized_load_path)
-                    return
                 session = getattr(self, "_frame_switch_profile", None)
                 if session is not None:
                     session.enable_main_profiler()
@@ -3282,6 +3322,9 @@ class WidgetProcessingMixin:
                     cif_path_for_profile=cif_path_for_profile,
                     phase_start=perf_counter(),
                 )
+                if needs_vectors:
+                    self._loading_image_path = normalized_load_path
+                    self._begin_frame_vectors_reload(normalized_load_path)
                 return
 
             self._frame_load_running_path = normalized_load_path
@@ -3593,7 +3636,10 @@ class WidgetProcessingMixin:
             current_state = self._workspace.current_state
             if current_state is not None:
                 step_start = perf_counter()
-                self._sync_polygons_to_editor(image_result.image_path, list(current_state.polygons))
+                self._sync_polygons_to_editor(
+                    image_result.image_path,
+                    self._polygons_visible_in_editor(current_state, list(current_state.polygons)),
+                )
                 if profile_enabled:
                     profile_timings["editor_set_polygons"] = (perf_counter() - step_start) * 1000.0
             step_start = perf_counter()

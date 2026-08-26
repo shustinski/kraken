@@ -72,14 +72,14 @@ def test_main_view_dock_contents_do_not_force_excessive_minimum_height() -> None
         view.show()
         app.processEvents()
 
-        assert view.minimumSizeHint().height() <= 420
+        assert view.minimumSizeHint().height() <= 560
         assert view._pipeline_dock.widget() is view.widget.pipeline_panel_scroll
         assert view._display_dock.widget() is view.widget.display_panel_scroll
-        assert view._paths_dock.widget() is view.widget.paths_panel_scroll
+        assert view.findChild(QDockWidget, "pathsDock") is None
 
-        view.resize(800, 420)
+        view.resize(800, 560)
         app.processEvents()
-        assert view.height() <= 420
+        assert view.height() <= 560
     finally:
         view.close()
         view.deleteLater()
@@ -132,7 +132,9 @@ def test_main_view_exposes_file_menu_new_project_action() -> None:
         assert "Загрузить кадры из папки…" in load_labels or "Load frames from folder…" in load_labels
         assert "Загрузить кадры…" in load_labels or "Load frame files…" in load_labels
         assert "Загрузить векторы из папки…" in load_labels or "Load vectors from folder…" in load_labels
+        assert "Убрать вектор" in load_labels or "Clear vectors" in load_labels
         assert view.findChild(QAction, "loadImagesFolderAction") is not None
+        assert view.findChild(QAction, "clearVectorsAction") is not None
     finally:
         view.close()
         view.deleteLater()
@@ -283,7 +285,7 @@ def test_main_view_uses_flat_dock_roots_and_full_width_editor_toolbar() -> None:
 
         assert not isinstance(widget.path_group, QGroupBox)
         assert not widget.path_panel.isVisible()
-        assert widget.paths_tab.isAncestorOf(widget.extra_layers_group)
+        assert widget.files_tab.isAncestorOf(widget.extra_layers_group)
         assert not isinstance(widget.run_group, QGroupBox)
         assert view._run_dock.isAncestorOf(widget.save_group)
         assert not widget.extraction_tab.isAncestorOf(widget.save_group)
@@ -307,17 +309,17 @@ def test_main_view_gives_central_image_area_default_priority() -> None:
         app.processEvents()
 
         files_dock = view.findChild(QDockWidget, "filesDock")
-        paths_dock = view.findChild(QDockWidget, "pathsDock")
+        pipeline_dock = view.findChild(QDockWidget, "pipelineDock")
         thumbnail_dock = view.findChild(QDockWidget, "thumbnailMatrixDock")
 
         assert files_dock is not None
-        assert paths_dock is not None
+        assert pipeline_dock is not None
         assert thumbnail_dock is not None
         assert files_dock.minimumWidth() >= DEFAULT_RIGHT_DOCK_MIN_WIDTH
         assert thumbnail_dock.minimumWidth() >= DEFAULT_RIGHT_DOCK_MIN_WIDTH
-        assert paths_dock.minimumWidth() >= DEFAULT_PANEL_DOCK_MIN_WIDTH
+        assert pipeline_dock.minimumWidth() >= DEFAULT_PANEL_DOCK_MIN_WIDTH
         assert view.widget.width() > files_dock.width()
-        assert view.widget.width() > paths_dock.width()
+        assert view.widget.width() > pipeline_dock.width()
     finally:
         view.close()
         view.deleteLater()
@@ -349,12 +351,12 @@ def test_main_view_restores_floating_thumbnail_matrix_from_view_toggle() -> None
         view.deleteLater()
 
 
-def test_main_view_default_left_dock_tab_order_is_paths_pipeline_recognition_display() -> None:
+def test_main_view_default_left_dock_tab_order_is_pipeline_recognition_display() -> None:
     _app()
     view = ContourMainView()
     try:
         view.set_ui_language("en")
-        expected = ["Paths", "Pipeline", "Recognition", "Display"]
+        expected = ["Pipeline", "Recognition", "Display"]
         matching_bars = [
             [bar.tabText(index) for index in range(bar.count())]
             for bar in view.findChildren(QTabBar)
@@ -376,6 +378,7 @@ def test_main_view_exposes_dock_theme_and_language_actions_in_view_menu() -> Non
 
         action_texts = {action.text() for action in view_menu.actions() if action.text()}
         assert {"Файлы", "Распознавание", "Матрица кадров"} <= action_texts
+        assert "Пути" not in action_texts
         assert view._theme_menu.menuAction() in view_menu.actions()
         assert view._language_menu.menuAction() in view_menu.actions()
         assert {action.data() for action in view._theme_menu.actions()} == {"dark", "light"}

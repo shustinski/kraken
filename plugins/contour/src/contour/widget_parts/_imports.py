@@ -133,6 +133,7 @@ from ..application.use_cases import (
 from ..application.vector_geometry_postprocess import VectorGeometrySettings
 from ..batch_processor import BatchProcessor
 from ..domain import PolygonData
+from ..domain.polygon_offset import offset_conductor_polygons
 from ..graphics.editor_hotkeys import (
     append_shortcut_to_tooltip,
     build_editor_hotkeys_plain_text,

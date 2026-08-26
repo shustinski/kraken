@@ -495,40 +495,6 @@ def build_paths_tab(self) -> QWidget:
             _w.valueChanged.connect(self._on_vector_geom_control_changed)
     self.vector_geom_group.setVisible(False)
 
-    self.extra_layers_group = QGroupBox("Additional layers")
-    self.extra_layers_form = QFormLayout(self.extra_layers_group)
-    self._configure_compact_form(self.extra_layers_form)
-    self.extra_layers_widget = QWidget()
-    extra_layers_layout = QVBoxLayout(self.extra_layers_widget)
-    extra_layers_layout.setContentsMargins(0, 0, 0, 0)
-    extra_layers_layout.setSpacing(6)
-    self.extra_layers_list = QListWidget()
-    self.extra_layers_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-    self.extra_layers_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-    self.extra_layers_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-    self.extra_layers_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    self.extra_layers_list.setMaximumHeight(200)
-    extra_layers_layout.addWidget(self.extra_layers_list)
-    self.add_extra_layers_button = QPushButton("+")
-    self.add_extra_layers_button.setMinimumHeight(28)
-    self.add_extra_layers_button.setStyleSheet(
-        "QPushButton { background-color: #16A34A; color: white; font-weight: 700; border-radius: 4px; padding: 2px 8px; }"
-    )
-    extra_layers_layout.addWidget(self.add_extra_layers_button)
-
-    self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
-    extra_layers_model = self.extra_layers_list.model()
-    if extra_layers_model is not None:
-        extra_layers_model.rowsMoved.connect(self._on_extra_layers_rows_moved)
-
-    self.extra_layers_form.addRow(self.extra_layers_widget)
-    self.extra_layers_label_widget = None
-    self.extra_layer_path_label_widget = None
-    self.extra_layer_opacity_label_widget = None
-    self.extra_layer_dx_label_widget = None
-    self.extra_layer_dy_label_widget = None
-    layout.addWidget(self.extra_layers_group)
-
     layout.addStretch(1)
     return tab
 
@@ -655,6 +621,40 @@ def build_files_tab(self) -> QWidget:
     layout.addWidget(self.asset_view_tabs, 1)
     layout.addWidget(self.thumbnail_matrix_panel, 0)
     layout.addWidget(overlay_buttons_row)
+
+    self.extra_layers_group = QGroupBox("Additional layers")
+    self.extra_layers_form = QFormLayout(self.extra_layers_group)
+    self._configure_compact_form(self.extra_layers_form)
+    self.extra_layers_widget = QWidget()
+    extra_layers_layout = QVBoxLayout(self.extra_layers_widget)
+    extra_layers_layout.setContentsMargins(0, 0, 0, 0)
+    extra_layers_layout.setSpacing(6)
+    self.extra_layers_list = QListWidget()
+    self.extra_layers_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+    self.extra_layers_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+    self.extra_layers_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    self.extra_layers_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    self.extra_layers_list.setMaximumHeight(96)
+    extra_layers_layout.addWidget(self.extra_layers_list)
+    self.add_extra_layers_button = QPushButton("+")
+    self.add_extra_layers_button.setMinimumHeight(28)
+    self.add_extra_layers_button.setStyleSheet(
+        "QPushButton { background-color: #16A34A; color: white; font-weight: 700; border-radius: 4px; padding: 2px 8px; }"
+    )
+    extra_layers_layout.addWidget(self.add_extra_layers_button)
+
+    self.add_extra_layers_button.clicked.connect(self._load_extra_layers)
+    extra_layers_model = self.extra_layers_list.model()
+    if extra_layers_model is not None:
+        extra_layers_model.rowsMoved.connect(self._on_extra_layers_rows_moved)
+
+    self.extra_layers_form.addRow(self.extra_layers_widget)
+    self.extra_layers_label_widget = None
+    self.extra_layer_path_label_widget = None
+    self.extra_layer_opacity_label_widget = None
+    self.extra_layer_dx_label_widget = None
+    self.extra_layer_dy_label_widget = None
+    layout.addWidget(self.extra_layers_group)
 
     # The containing QDockWidget is titled "Run" / "Обработка".
     self.run_group = QWidget()
@@ -1816,6 +1816,23 @@ def build_extraction_tab(self) -> QWidget:
     _metal_basic_form.addRow("Сшивка разрывов, px", self.metal_gap_bridge_spin)
     _metal_basic_form.addRow("Удаление шума (opening), px", self.metal_speckle_removal_spin)
     _metal_basic_form.addRow("Ширина проводника, px", self.metal_width_row)
+    self.metal_conductor_size_offset_slider = QSlider(Qt.Orientation.Horizontal)
+    self.metal_conductor_size_offset_slider.setRange(-20, 20)
+    self.metal_conductor_size_offset_slider.setPageStep(1)
+    self.metal_conductor_size_offset_slider.setTickInterval(5)
+    self.metal_conductor_size_offset_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+    self.metal_conductor_size_offset_slider.setValue(0)
+    self.metal_conductor_size_offset_value_label = QLabel("0")
+    self.metal_conductor_size_offset_value_label.setMinimumWidth(28)
+    self.metal_conductor_size_offset_value_label.setAlignment(
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+    )
+    self.metal_conductor_size_offset_widget = QWidget()
+    _conductor_size_layout = QHBoxLayout(self.metal_conductor_size_offset_widget)
+    _conductor_size_layout.setContentsMargins(0, 0, 0, 0)
+    _conductor_size_layout.addWidget(self.metal_conductor_size_offset_slider, 1)
+    _conductor_size_layout.addWidget(self.metal_conductor_size_offset_value_label)
+    _metal_basic_form.addRow("Размер проводника, px", self.metal_conductor_size_offset_widget)
     _metal_basic_form.addRow("Epsilon (approxPolyDP)", self.metal_epsilon_spin)
     self.metal_segmentation_strategy_combo = QComboBox()
     self.metal_segmentation_strategy_combo.addItem("Авто (контроль связности)", "auto")
@@ -2044,23 +2061,23 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_ws_smoothing_spin.setRange(0.1, 8.0)
     self.metal_ws_smoothing_spin.setDecimals(1)
     self.metal_ws_smoothing_spin.setSingleStep(0.1)
-    self.metal_ws_smoothing_spin.setValue(1.0)
+    self.metal_ws_smoothing_spin.setValue(1.2)
     self.metal_ws_core_margin_spin = QDoubleSpinBox()
     self.metal_ws_core_margin_spin.setRange(0.0, 40.0)
     self.metal_ws_core_margin_spin.setDecimals(1)
     self.metal_ws_core_margin_spin.setSingleStep(1.0)
-    self.metal_ws_core_margin_spin.setValue(8.0)
+    self.metal_ws_core_margin_spin.setValue(23.0)
     self.metal_ws_groove_margin_spin = QDoubleSpinBox()
     self.metal_ws_groove_margin_spin.setRange(0.0, 40.0)
     self.metal_ws_groove_margin_spin.setDecimals(1)
     self.metal_ws_groove_margin_spin.setSingleStep(1.0)
-    self.metal_ws_groove_margin_spin.setValue(16.0)
+    self.metal_ws_groove_margin_spin.setValue(19.0)
     self.metal_ws_rim_probe_spin = QSpinBox()
     self.metal_ws_rim_probe_spin.setRange(1, 32)
-    self.metal_ws_rim_probe_spin.setValue(6)
+    self.metal_ws_rim_probe_spin.setValue(2)
     self.metal_ws_seed_speckle_spin = QSpinBox()
     self.metal_ws_seed_speckle_spin.setRange(0, 8)
-    self.metal_ws_seed_speckle_spin.setValue(4)
+    self.metal_ws_seed_speckle_spin.setValue(1)
     self.metal_ws_valley_span_spin = QSpinBox()
     self.metal_ws_valley_span_spin.setRange(0, 16)
     self.metal_ws_valley_span_spin.setValue(5)
@@ -2068,7 +2085,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_ws_valley_depth_spin.setRange(0.0, 160.0)
     self.metal_ws_valley_depth_spin.setDecimals(1)
     self.metal_ws_valley_depth_spin.setSingleStep(5.0)
-    self.metal_ws_valley_depth_spin.setValue(45.0)
+    self.metal_ws_valley_depth_spin.setValue(65.0)
     self.metal_rw_beta_spin = QDoubleSpinBox()
     self.metal_rw_beta_spin.setRange(1.0, 400.0)
     self.metal_rw_beta_spin.setDecimals(0)
@@ -2270,6 +2287,7 @@ def build_extraction_tab(self) -> QWidget:
     self.metal_epsilon_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_min_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
     self.metal_max_width_spin.valueChanged.connect(self._on_extraction_settings_changed)
+    self.metal_conductor_size_offset_slider.valueChanged.connect(self._on_conductor_size_offset_changed)
     for _w in (
         self.metal_show_conductors_checkbox,
         self.metal_show_rejected_checkbox,

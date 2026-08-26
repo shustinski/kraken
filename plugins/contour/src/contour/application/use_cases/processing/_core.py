@@ -15,6 +15,7 @@ import numpy as np
 
 from ....contour_extractor import extract_polygons
 from ....domain import PolygonData
+from ....domain.polygon_offset import offset_conductor_polygons
 from ....edge_detection import (
     build_gradient_elevation,
     normalize_edge_method,
@@ -1881,6 +1882,11 @@ def _process_image_path_impl(
             debug_gradient_maps = dict(base_metal_maps)
     if metal_debug_extra and "mask" not in debug_gradient_maps:
         debug_gradient_maps["mask"] = ensure_binary_mask(mask)
+    recognition_base = [polygon.clone() for polygon in polygons]
+    polygons = offset_conductor_polygons(
+        recognition_base,
+        float(getattr(contour_settings, "metal_conductor_size_offset_px", 0.0) or 0.0),
+    )
     saved_files: dict[str, str] = {}
     if output_directory:
         phase_started = perf_counter()
@@ -1910,6 +1916,7 @@ def _process_image_path_impl(
         pipeline_config=dict(pipeline_config),
         mask_image=result_mask,
         polygons=polygons,
+        recognition_base_polygons=recognition_base,
         debug_candidates=debug_candidates,
         debug_gradient_maps=debug_gradient_maps if include_images_in_result else {},
         metal_overlay_polygons=metal_overlays,

@@ -334,6 +334,12 @@ class WorkspaceSession:
             pipeline_config=None if result.pipeline_config is None else dict(result.pipeline_config),
             mask_image=result.mask_image,
             polygons=result.polygons,
+            recognition_base_polygons=[
+                polygon.clone()
+                for polygon in (
+                    getattr(result, "recognition_base_polygons", None) or result.polygons
+                )
+            ],
             debug_candidates=list(result.debug_candidates),
             debug_gradient_maps=dict(result.debug_gradient_maps),
             metal_overlay_polygons={k: [p.clone() for p in v] for k, v in metal_layers.items()},

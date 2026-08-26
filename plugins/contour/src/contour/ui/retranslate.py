@@ -437,6 +437,12 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
             self.metal_width_row,
             "Ширина проводника, пикс." if is_ru else "Conductor width, px",
         )
+        if hasattr(self, "metal_conductor_size_offset_widget"):
+            _set_form_label(
+                self.metal_basic_group,
+                self.metal_conductor_size_offset_widget,
+                "Размер проводника, пикс." if is_ru else "Conductor size, px",
+            )
         _set_form_label(
             self.metal_basic_group,
             self.metal_epsilon_spin,

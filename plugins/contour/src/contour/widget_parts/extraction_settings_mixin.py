@@ -248,6 +248,7 @@ class WidgetExtractionSettingsMixin:
             "metal_epsilon_spin",
             "metal_min_width_spin",
             "metal_max_width_spin",
+            "metal_conductor_size_offset_slider",
             "metal_show_conductors_checkbox",
             "metal_show_rejected_checkbox",
             "metal_show_suspicious_checkbox",
@@ -616,6 +617,10 @@ class WidgetExtractionSettingsMixin:
                 self.metal_min_width_spin.setValue(float(getattr(settings, "metal_min_trace_width_px", 8.0) or 8.0))
                 mw = getattr(settings, "metal_max_trace_width_px", None)
                 self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
+                if hasattr(self, "metal_conductor_size_offset_slider"):
+                    self.metal_conductor_size_offset_slider.setValue(
+                        int(round(float(getattr(settings, "metal_conductor_size_offset_px", 0.0) or 0.0)))
+                    )
                 self.metal_min_area_spin.setValue(float(getattr(settings, "metal_min_area", 60.0) or 60.0))
                 ma = getattr(settings, "metal_max_area", None)
                 self.metal_max_area_spin.setValue(0.0 if ma is None else float(ma))
@@ -642,23 +647,23 @@ class WidgetExtractionSettingsMixin:
                     )
                 if hasattr(self, "metal_ws_smoothing_spin"):
                     self.metal_ws_smoothing_spin.setValue(
-                        float(getattr(settings, "metal_watershed_smoothing_sigma", 1.0) or 1.0)
+                        float(getattr(settings, "metal_watershed_smoothing_sigma", 1.2) or 1.2)
                     )
                 if hasattr(self, "metal_ws_core_margin_spin"):
                     self.metal_ws_core_margin_spin.setValue(
-                        float(getattr(settings, "metal_watershed_core_margin", 8.0) or 0.0)
+                        float(getattr(settings, "metal_watershed_core_margin", 23.0) or 0.0)
                     )
                 if hasattr(self, "metal_ws_groove_margin_spin"):
                     self.metal_ws_groove_margin_spin.setValue(
-                        float(getattr(settings, "metal_watershed_groove_margin", 16.0) or 0.0)
+                        float(getattr(settings, "metal_watershed_groove_margin", 19.0) or 0.0)
                     )
                 if hasattr(self, "metal_ws_rim_probe_spin"):
                     self.metal_ws_rim_probe_spin.setValue(
-                        int(getattr(settings, "metal_watershed_rim_probe_px", 6) or 1)
+                        int(getattr(settings, "metal_watershed_rim_probe_px", 2) or 1)
                     )
                 if hasattr(self, "metal_ws_seed_speckle_spin"):
                     self.metal_ws_seed_speckle_spin.setValue(
-                        int(getattr(settings, "metal_watershed_seed_speckle_px", 4) or 0)
+                        int(getattr(settings, "metal_watershed_seed_speckle_px", 1) or 0)
                     )
                 if hasattr(self, "metal_ws_valley_span_spin"):
                     self.metal_ws_valley_span_spin.setValue(
@@ -666,7 +671,7 @@ class WidgetExtractionSettingsMixin:
                     )
                 if hasattr(self, "metal_ws_valley_depth_spin"):
                     self.metal_ws_valley_depth_spin.setValue(
-                        float(getattr(settings, "metal_watershed_valley_depth", 45.0) or 0.0)
+                        float(getattr(settings, "metal_watershed_valley_depth", 65.0) or 0.0)
                     )
                 if hasattr(self, "metal_rw_beta_spin"):
                     self.metal_rw_beta_spin.setValue(
@@ -1024,6 +1029,9 @@ class WidgetExtractionSettingsMixin:
             metal_min_trace_width_px=float(self.metal_min_width_spin.value())
             if hasattr(self, "metal_min_width_spin")
             else 8.0,
+            metal_conductor_size_offset_px=float(self.metal_conductor_size_offset_slider.value())
+            if hasattr(self, "metal_conductor_size_offset_slider")
+            else 0.0,
             metal_max_trace_width_px=None
             if not hasattr(self, "metal_max_width_spin") or self.metal_max_width_spin.value() <= 0
             else float(self.metal_max_width_spin.value()),
@@ -1052,16 +1060,16 @@ class WidgetExtractionSettingsMixin:
             metal_use_wide_conductor_gradient=self._metal_strategy_from_combo() == "gradient_watershed",
             metal_watershed_smoothing_sigma=float(self.metal_ws_smoothing_spin.value())
             if hasattr(self, "metal_ws_smoothing_spin")
-            else 1.0,
+            else 1.2,
             metal_watershed_core_margin=float(self.metal_ws_core_margin_spin.value())
             if hasattr(self, "metal_ws_core_margin_spin")
-            else 8.0,
+            else 23.0,
             metal_watershed_groove_margin=float(self.metal_ws_groove_margin_spin.value())
             if hasattr(self, "metal_ws_groove_margin_spin")
-            else 16.0,
+            else 19.0,
             metal_watershed_rim_probe_px=int(self.metal_ws_rim_probe_spin.value())
             if hasattr(self, "metal_ws_rim_probe_spin")
-            else 6,
+            else 2,
             metal_watershed_seed_speckle_px=int(self.metal_ws_seed_speckle_spin.value())
             if hasattr(self, "metal_ws_seed_speckle_spin")
             else 1,
@@ -1070,7 +1078,7 @@ class WidgetExtractionSettingsMixin:
             else 5,
             metal_watershed_valley_depth=float(self.metal_ws_valley_depth_spin.value())
             if hasattr(self, "metal_ws_valley_depth_spin")
-            else 45.0,
+            else 65.0,
             metal_random_walker_beta=float(self.metal_rw_beta_spin.value())
             if hasattr(self, "metal_rw_beta_spin")
             else 90.0,
@@ -1169,7 +1177,28 @@ class WidgetExtractionSettingsMixin:
             self._update_extraction_profile_controls_state()
         self._sync_recognition_scene_frame()
         if data == "disabled":
+            current = self._workspace.current_image_path
+            has_cif = bool(current and self._find_matching_cif_path(current))
             self._restore_cif_overlay_after_recognition()
+            if not has_cif and hasattr(self, "_apply_editor_vectors_for_frame"):
+                state = self._workspace.current_state
+                if current and state is not None:
+                    self._apply_editor_vectors_for_frame(
+                        current,
+                        state,
+                        list(state.polygons),
+                        defer_heavy_overlays=False,
+                    )
+        elif hasattr(self, "_apply_editor_vectors_for_frame"):
+            current = self._workspace.current_image_path
+            state = self._workspace.current_state
+            if current and state is not None:
+                self._apply_editor_vectors_for_frame(
+                    current,
+                    state,
+                    list(state.polygons),
+                    defer_heavy_overlays=False,
+                )
         if hasattr(self, "_apply_conductor_display_visibility"):
             self._apply_conductor_display_visibility(self._workspace.current_state)
         if hasattr(self, "_refresh_gradient_overlay"):
@@ -1239,6 +1268,28 @@ class WidgetExtractionSettingsMixin:
                 payload = self._built_in_metal_presets().get(preset_name, {})
                 return str(payload.get("metal_preset", "standard") or "standard")
         return "standard"
+
+    def _on_conductor_size_offset_changed(self, value: int) -> None:
+        if hasattr(self, "metal_conductor_size_offset_value_label"):
+            self.metal_conductor_size_offset_value_label.setText(str(int(value)))
+        if not hasattr(self, "_workspace"):
+            return
+        state = self._workspace.current_state
+        image_path = self._workspace.current_image_path
+        if state is None or not image_path:
+            return
+        if not self._state_has_recognition_result(state):
+            return
+        base = list(getattr(state, "recognition_base_polygons", None) or [])
+        if not base:
+            base = [polygon.clone() for polygon in state.polygons]
+            state.recognition_base_polygons = [polygon.clone() for polygon in base]
+        buffered = offset_conductor_polygons(base, float(value))
+        self._workspace.update_current_polygons(buffered)
+        if hasattr(self, "_sync_polygons_to_editor"):
+            self._sync_polygons_to_editor(image_path, buffered)
+        if hasattr(self, "_update_frame_item_status"):
+            self._update_frame_item_status(image_path)
 
     def _on_metal_overlay_opacity_changed(self, value: float) -> None:
         if hasattr(self, "polygon_editor"):
@@ -1319,6 +1370,10 @@ class WidgetExtractionSettingsMixin:
         if hasattr(self, "metal_max_width_spin"):
             mw = defaults.metal_max_trace_width_px
             self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
+        if hasattr(self, "metal_conductor_size_offset_slider"):
+            self.metal_conductor_size_offset_slider.setValue(
+                int(round(float(defaults.metal_conductor_size_offset_px)))
+            )
         if hasattr(self, "metal_min_area_spin"):
             self.metal_min_area_spin.setValue(float(defaults.metal_min_area))
         if hasattr(self, "metal_max_area_spin"):

@@ -610,33 +610,53 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
         self.assertNotEqual(first_key, second_key)
 
-    def test_no_extraction_keeps_loaded_vector_overlay_visible(self) -> None:
-        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
+    def test_recognition_mode_hides_loaded_vector_overlay(self) -> None:
+        self.widget.auto_apply_checkbox.setChecked(False)
+        polygon = _rectangle_polygon(4, 4, 20, 20)
+        state = ImageProcessingState(
+            image_path="sample.png",
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[polygon.clone()],
+        )
+        self.widget._workspace._current_image_path = "sample.png"
+        self.widget._workspace._current_state = state
+        self.widget._workspace._state_cache = {"sample.png": state}
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
         self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
-        self.widget.polygon_editor.set_polygons([_rectangle_polygon(4, 4, 20, 20)])
+        self.widget.polygon_editor.set_polygons([polygon.clone()])
         self._app.processEvents()
         items = list(self.widget.polygon_editor._editor_scene._polygon_items.values())
         self.assertTrue(items)
         self.assertTrue(all(item.isVisible() for item in items))
 
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
+        self._app.processEvents()
+
+        self.assertEqual(self.widget.polygon_editor.get_polygons(), [])
+        self.assertTrue(self.widget.polygon_editor.polygon_overlays_visible())
+
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
         self._app.processEvents()
 
-        self.assertTrue(self.widget.polygon_editor.polygon_overlays_visible())
-        self.assertTrue(all(item.isVisible() for item in items))
-
-        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
-        self._app.processEvents()
-
-        self.assertTrue(self.widget.polygon_editor.polygon_overlays_visible())
-        self.assertTrue(all(item.isVisible() for item in items))
+        restored = self.widget.polygon_editor.get_polygons()
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0].points, polygon.points)
 
     def test_conductor_display_filters_apply_only_during_recognition(self) -> None:
         self.widget.auto_apply_checkbox.setChecked(False)
-        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
         polygon = _rectangle_polygon(4, 4, 20, 20)
+        state = ImageProcessingState(
+            image_path="sample.png",
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            mask_image=np.full((32, 32), 255, dtype=np.uint8),
+            polygons=[polygon.clone()],
+            recognition_base_polygons=[polygon.clone()],
+        )
+        self.widget._workspace._current_image_path = "sample.png"
+        self.widget._workspace._current_state = state
+        self.widget._workspace._state_cache = {"sample.png": state}
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("conductors"))
         self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
-        self.widget.polygon_editor.set_polygons([polygon])
         self.widget.metal_show_conductors_checkbox.setChecked(False)
         self.widget.metal_show_mask_checkbox.setChecked(True)
         items = list(self.widget.polygon_editor._editor_scene._polygon_items.values())
@@ -742,6 +762,51 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertIsNone(state.preprocessed_image)
         self.assertEqual(state.pipeline_config, None)
         self.assertEqual(prepared_calls, [("sample.png", state.source_image)])
+
+    def test_cached_frame_switch_applies_image_when_vectors_need_reload(self) -> None:
+        self.widget.auto_apply_checkbox.setChecked(False)
+        self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
+        path_a = str(Path("frame_a.png"))
+        path_b = str(Path("frame_b.png"))
+        polygon_a = _rectangle_polygon(1, 1, 8, 8)
+        polygon_b = _rectangle_polygon(10, 10, 18, 18)
+        state_a = ImageProcessingState(
+            image_path=path_a,
+            source_image=np.full((32, 32), 10, dtype=np.uint8),
+            polygons=[polygon_a.clone()],
+        )
+        state_b = ImageProcessingState(
+            image_path=path_b,
+            source_image=np.full((32, 32), 200, dtype=np.uint8),
+            polygons=[],
+        )
+        self.widget._workspace._image_paths = [path_a, path_b]
+        self.widget._workspace._current_image_path = path_a
+        self.widget._workspace._current_state = state_a
+        self.widget._workspace._state_cache = {path_a: state_a, path_b: state_b}
+        self.widget._last_editor_display_cache_key = ("stale", "source", "")
+        self.widget._last_editor_display_path = path_a
+        self.widget._abort_in_flight_interactive_processing = lambda **_kwargs: None  # type: ignore[method-assign]
+        self.widget._start_frame_switch_profile = lambda _path: None  # type: ignore[method-assign]
+        self.widget._frame_switch_profile_for_path = lambda _path: None  # type: ignore[method-assign]
+        self.widget._find_matching_cif_path = lambda image_path: "frame_b.cif" if str(Path(image_path)) == path_b else None  # type: ignore[method-assign]
+        reloads: list[str] = []
+        self.widget._begin_frame_vectors_reload = lambda image_path: reloads.append(str(Path(image_path)))  # type: ignore[method-assign]
+        self.widget._request_neighbor_frame_sync = lambda *, delay_ms=0: None  # type: ignore[method-assign]
+        self.widget._queue_prepared_image_update = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        self.widget._try_extract_if_recognition_enabled = lambda: None  # type: ignore[method-assign]
+        self.widget._apply_frame_to_editor()
+        self._app.processEvents()
+
+        self.widget._begin_frame_load(path_b, load_vectors=True)
+        self._app.processEvents()
+
+        self.assertIs(self.widget._workspace.current_state, state_b)
+        self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), path_b)
+        self.assertEqual(reloads, [path_b])
+        pixmap = self.widget.polygon_editor._editor_scene._image_item.pixmap()
+        self.assertFalse(pixmap.isNull())
+        self.assertEqual(pixmap.toImage().pixelColor(0, 0).red(), 200)
 
     def test_extraction_change_processes_when_auto_apply_enabled(self) -> None:
         process_calls: list[bool] = []

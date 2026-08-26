@@ -119,6 +119,9 @@ class ContourMainView(QMainWindow):
         self._load_vector_files_action = _add_action(self._file_menu, "")
         self._load_vector_files_action.setObjectName("loadVectorFilesAction")
         self._load_vector_files_action.triggered.connect(lambda _checked=False: self._widget._merge_cif_files_dialog())
+        self._clear_vectors_action = _add_action(self._file_menu, "")
+        self._clear_vectors_action.setObjectName("clearVectorsAction")
+        self._clear_vectors_action.triggered.connect(lambda _checked=False: self._widget.clear_all_loaded_vectors())
         self._refresh_files_action = _add_action(self._file_menu, "")
         self._refresh_files_action.setObjectName("refreshFilesAction")
         self._refresh_files_action.triggered.connect(lambda _checked=False: self._widget.refresh_image_list())
@@ -136,7 +139,9 @@ class ContourMainView(QMainWindow):
         self._refresh_file_menu()
         self._view_menu = _add_menu(menu_bar, "")
         self._files_dock = self._create_panel_dock("filesDock", self._widget._take_files_panel())
-        self._paths_dock = self._create_panel_dock("pathsDock", self._widget._take_paths_panel())
+        paths_panel = self._widget._take_paths_panel()
+        paths_panel.setParent(self._widget)
+        paths_panel.hide()
         self._pipeline_dock = self._create_panel_dock("pipelineDock", self._widget._take_pipeline_panel())
         self._display_dock = self._create_panel_dock("displayDock", self._widget._take_display_panel())
         self._recognition_dock = self._create_panel_dock("recognitionDock", self._widget._take_recognition_panel())
@@ -150,20 +155,17 @@ class ContourMainView(QMainWindow):
         self.splitDockWidget(self._files_dock, self._thumbnail_matrix_dock, Qt.Orientation.Vertical)
         self._files_dock.raise_()
         for dock in (
-            self._paths_dock,
             self._pipeline_dock,
             self._recognition_dock,
             self._display_dock,
         ):
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-        self.tabifyDockWidget(self._paths_dock, self._pipeline_dock)
-        self.tabifyDockWidget(self._paths_dock, self._recognition_dock)
-        self.tabifyDockWidget(self._paths_dock, self._display_dock)
-        self._paths_dock.raise_()
+        self.tabifyDockWidget(self._pipeline_dock, self._recognition_dock)
+        self.tabifyDockWidget(self._pipeline_dock, self._display_dock)
+        self._pipeline_dock.raise_()
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._run_dock)
         self._run_dock.hide()
         self._files_toggle_action = _dock_toggle_action(self._files_dock)
-        self._paths_toggle_action = _dock_toggle_action(self._paths_dock)
         self._pipeline_toggle_action = _dock_toggle_action(self._pipeline_dock)
         self._display_toggle_action = _dock_toggle_action(self._display_dock)
         self._recognition_toggle_action = _dock_toggle_action(self._recognition_dock)
@@ -172,8 +174,6 @@ class ContourMainView(QMainWindow):
         self._thumbnail_matrix_toggle_action.triggered.connect(self._on_thumbnail_matrix_toggle_triggered)
         if hasattr(self._widget, "show_frame_matrix_checkbox"):
             self._widget.show_frame_matrix_checkbox.stateChanged.connect(self._sync_thumbnail_matrix_dock_visibility)
-        self._paths_dock.setWindowTitle("Paths")
-        self._paths_toggle_action.setText("Paths")
         self._pipeline_dock.setWindowTitle("Pipeline")
         self._pipeline_toggle_action.setText("Pipeline")
         self._display_dock.setWindowTitle("Display")
@@ -181,7 +181,6 @@ class ContourMainView(QMainWindow):
         self._run_dock.setWindowTitle("Run")
         self._run_toggle_action.setText("Run")
         self._view_menu.addAction(self._files_toggle_action)
-        self._view_menu.addAction(self._paths_toggle_action)
         self._view_menu.addAction(self._pipeline_toggle_action)
         self._view_menu.addAction(self._display_toggle_action)
         self._view_menu.addAction(self._recognition_toggle_action)
@@ -254,7 +253,6 @@ class ContourMainView(QMainWindow):
         horizontal_docks = [
             dock
             for dock in (
-                self._paths_dock,
                 self._pipeline_dock,
                 self._recognition_dock,
                 self._display_dock,
@@ -431,6 +429,9 @@ class ContourMainView(QMainWindow):
         self._load_vector_files_action.setText(
             self._widget._tr("menu_load_vector_files", "Загрузить векторные файлы…" if language == "ru" else "Load vector files…")
         )
+        self._clear_vectors_action.setText(
+            self._widget._tr("menu_clear_vectors", "Убрать вектор" if language == "ru" else "Clear vectors")
+        )
         self._refresh_files_action.setText(
             self._widget._tr("menu_refresh_files", "Обновить список" if language == "ru" else "Refresh files")
         )
@@ -446,8 +447,6 @@ class ContourMainView(QMainWindow):
         self._view_menu.setTitle("Вид" if language == "ru" else "View")
         self._files_dock.setWindowTitle("Файлы" if language == "ru" else "Files")
         self._files_toggle_action.setText("Файлы" if language == "ru" else "Files")
-        self._paths_dock.setWindowTitle("Пути" if language == "ru" else "Paths")
-        self._paths_toggle_action.setText("Пути" if language == "ru" else "Paths")
         self._pipeline_dock.setWindowTitle("Фильтры" if language == "ru" else "Pipeline")
         self._pipeline_toggle_action.setText("Фильтры" if language == "ru" else "Pipeline")
         self._display_dock.setWindowTitle("Отображение" if language == "ru" else "Display")

@@ -56,10 +56,16 @@ plugins/
     resources/...
     packaging/...
     scripts/
+  cartograph/
+    pyproject.toml
+    README.md
+    src/...
+    tests/...
+    resources/...
 ```
 
 The active plugin package names are `neuralimage`, `contour`, `krona`,
-`csliser`, and `karakal`.
+`csliser`, `karakal`, and `cartograph`.
 
 ## UV Setup
 
@@ -163,7 +169,7 @@ uv sync
 uv run python -m contour
 ```
 
-Same pattern for `krona`, `neuralimage`, `csliser`, `karakal` (replace the folder and module name). Do not set `PYTHONPATH` by hand for normal use; `uv` installs dependencies.
+Same pattern for `krona`, `neuralimage`, `csliser`, `karakal`, `cartograph` (replace the folder and module name). Do not set `PYTHONPATH` by hand for normal use; `uv` installs dependencies.
 
 ### Debugging in VS Code / Cursor
 

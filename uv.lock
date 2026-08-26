@@ -11,6 +11,7 @@ supported-markers = [
 
 [manifest]
 members = [
+    "cartograph",
     "contour",
     "csliser",
     "karakal",
@@ -132,6 +133,36 @@ sdist = { url = "https://files.pythonhosted.org/packages/78/e0/df5e171f685f82f37
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0d/fe/6bea5c9162869c5beba5d9c8abbed835ec85bf1ec1fba05a3822325c45f3/build-1.5.0-py3-none-any.whl", hash = "sha256:13f3eecb844759ab66efec90ca17639bbf14dc06cb2fdf37a9010322d9c50a6f", size = 26018, upload-time = "2026-04-30T03:18:23.644Z" },
 ]
+
+[[package]]
+name = "cartograph"
+version = "0.1.0"
+source = { editable = "plugins/cartograph" }
+dependencies = [
+    { name = "kraken", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "opencv-python", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pytest-qt", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "ruff", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "kraken", editable = "." },
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "opencv-python", specifier = ">=4.13" },
+    { name = "pyqt6", specifier = ">=6.6" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pytest-qt", marker = "extra == 'dev'", specifier = ">=4.4" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "certifi"

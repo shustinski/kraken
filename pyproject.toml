@@ -81,6 +81,7 @@ members = [
     "plugins/csliser",
     "plugins/karakal",
     "plugins/kategb",
+    "plugins/cartograph",
 ]
 
 [tool.uv]
@@ -99,6 +100,7 @@ pythonpath = [
     "plugins/csliser/src",
     "plugins/karakal/src",
     "plugins/kategb/src",
+    "plugins/cartograph/src",
 ]
 addopts = "-ra"
 

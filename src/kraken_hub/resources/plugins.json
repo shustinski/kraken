@@ -105,6 +105,20 @@
         "linux": {"command": ["python", "__main__.py"]}
       },
       "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+    },
+    {
+      "id": "cartograph",
+      "display_name": "Cartograph",
+      "description": "Local SEM-frame navigation and 3x3 stitching without a global mosaic.",
+      "version": "0.1.0",
+      "protocol_version": "1.0",
+      "enabled": true,
+      "platforms": ["windows", "linux"],
+      "executables": {
+        "windows": {"command": ["python", "-m", "cartograph"]},
+        "linux": {"command": ["python", "-m", "cartograph"]}
+      },
+      "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
     }
   ]
 }

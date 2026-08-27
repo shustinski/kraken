@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "neuralimage"
 dynamic = ["version"]
-description = "Desktop and web tooling for neural IC image segmentation, training, and recognition."
+description = "Desktop tooling for neural IC image segmentation, training, and recognition."
 requires-python = ">=3.13"
 dependencies = [
     "kraken",
@@ -42,10 +42,6 @@ url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [project.optional-dependencies]
-web = [
-    "django>=5.1",
-    "ldap3>=2.9",
-]
 monitoring = [
     "psutil>=5.9",
 ]
@@ -58,8 +54,6 @@ build = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
-    "django>=5.1",
-    "ldap3>=2.9",
     "psutil>=5.9",
     "Cython>=3.0",
     "huggingface_hub>=0.30",
@@ -69,7 +63,6 @@ dev = [
 
 [project.scripts]
 neuralimage = "neuralimage.main:main"
-neuralimage-manage = "neuralimage.manage:main"
 neuralimage-config = "neuralimage.main_code_version:main"
 
 [tool.setuptools]
@@ -87,12 +80,6 @@ include = [
 exclude = [
     "tests",
     "tests.*",
-]
-
-[tool.setuptools.package-data]
-neuralimage = [
-    "webui/templates/**/*.html",
-    "webui/static/**/*",
 ]
 
 [tool.pytest.ini_options]

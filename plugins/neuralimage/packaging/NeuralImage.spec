@@ -1,20 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import sys
-from importlib.util import find_spec
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files
 
 APP_NAME = 'NeuralImage'
-INCLUDE_WEBUI = True
 BUILD_TARGET = 'auto'  # Supported values: 'auto', 'linux', 'windows', 'native'.
 
 block_cipher = None
 _spec_file = globals().get('__file__')
 project_root = Path(_spec_file).resolve().parent.parent if _spec_file else Path.cwd()
-
-
-include_webui = bool(INCLUDE_WEBUI)
 
 
 def _resolve_build_target() -> str:
@@ -63,27 +58,7 @@ if offline_timm_root.exists():
         relative_parent = source_path.parent.relative_to(project_root / 'resources' / 'internal')
         datas.append((str(source_path), str(relative_parent)))
 
-if include_webui:
-    # WebUI assets for optional --web mode.
-    datas += collect_data_files('neuralimage.webui', includes=['templates/**/*.html', 'static/**/*'])
-    datas += collect_data_files('django', includes=['contrib/admin/templates/**/*', 'contrib/admin/static/**/*'])
-    datas += copy_metadata('django')
-
 hiddenimports = []
-if include_webui:
-    hiddenimports += [
-        'django',
-        'django.core.management',
-        'neuralimage.webui',
-        'neuralimage.webui_project',
-        'neuralimage.webui_project.settings',
-        'neuralimage.webui_project.urls',
-    ]
-    hiddenimports += collect_submodules('django')
-    hiddenimports += collect_submodules('neuralimage.webui')
-    hiddenimports += collect_submodules('neuralimage.webui_project')
-    if find_spec('ldap3') is not None:
-        hiddenimports += collect_submodules('ldap3')
 
 datas += collect_data_files(
     'kraken_core',
@@ -94,15 +69,6 @@ datas += collect_data_files(
 )
 
 base_excludes = []
-
-
-if not include_webui:
-    # Optional web mode is disabled in this build.
-    base_excludes += [
-        'django',
-        'neuralimage.webui',
-        'neuralimage.webui_project',
-    ]
 
 icon_path = None
 if build_target == 'windows':

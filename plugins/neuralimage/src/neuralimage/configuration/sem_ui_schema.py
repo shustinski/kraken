@@ -64,38 +64,20 @@ def _field(
     return SemUiField(key, path, section, kind, label, default, minimum, maximum, step, decimals, choices)
 
 
-_OPS = (
-    ('background_subtraction', 'Background subtraction'),
-    ('illumination_correction', 'Illumination correction'),
-    ('scan_line_suppression', 'Scan-line suppression'),
-    ('denoise', 'Denoising'),
-    ('percentile_normalization', 'Percentile normalization'),
-    ('clahe', 'CLAHE'),
-)
-
-
 SEM_UI_FIELDS: tuple[SemUiField, ...] = (
     # Shared preprocessing.
-    _field('pre_percentile', ('preprocessing', 'percentile_normalization'), 'preprocessing', 'bool', 'Percentile normalization', False),
-    _field('pre_percentile_low', ('preprocessing', 'percentile_low'), 'preprocessing', 'float', 'Lower percentile', 1.0, 0.0, 99.99, 0.1, 2),
-    _field('pre_percentile_high', ('preprocessing', 'percentile_high'), 'preprocessing', 'float', 'Upper percentile', 99.0, 0.01, 100.0, 0.1, 2),
-    _field('pre_clahe', ('preprocessing', 'clahe'), 'preprocessing', 'bool', 'CLAHE', False),
-    _field('pre_clahe_clip', ('preprocessing', 'clahe_clip_limit'), 'preprocessing', 'float', 'CLAHE clip limit', 2.0, 0.01, 100.0, 0.1, 2),
-    _field('pre_clahe_grid_x', ('preprocessing', 'clahe_tile_grid_size', 0), 'preprocessing', 'int', 'CLAHE grid width', 8, 1, 128, 1),
-    _field('pre_clahe_grid_y', ('preprocessing', 'clahe_tile_grid_size', 1), 'preprocessing', 'int', 'CLAHE grid height', 8, 1, 128, 1),
-    _field('pre_illumination', ('preprocessing', 'illumination_correction'), 'preprocessing', 'bool', 'Illumination correction', False),
-    _field('pre_illumination_kernel', ('preprocessing', 'illumination_kernel_size'), 'preprocessing', 'int', 'Illumination kernel', 51, 3, 1001, 2),
-    _field('pre_background', ('preprocessing', 'background_subtraction'), 'preprocessing', 'bool', 'Background subtraction', False),
-    _field('pre_background_kernel', ('preprocessing', 'background_blur_kernel'), 'preprocessing', 'int', 'Background kernel', 31, 3, 1001, 2),
-    _field('pre_scan', ('preprocessing', 'scan_line_suppression'), 'preprocessing', 'bool', 'Scan-line suppression', False),
-    _field('pre_scan_strength', ('preprocessing', 'scan_line_strength'), 'preprocessing', 'float', 'Scan-line strength', 0.5, 0.0, 1.0, 0.05, 2),
-    _field('pre_scan_axis', ('preprocessing', 'scan_axis'), 'preprocessing', 'choice', 'Scan direction', 'rows', choices=(('rows', 'Rows'), ('columns', 'Columns'))),
-    _field('pre_scan_kernel', ('preprocessing', 'scan_profile_kernel'), 'preprocessing', 'int', 'Scan profile kernel', 31, 3, 1001, 2),
-    _field('pre_denoise', ('preprocessing', 'denoise'), 'preprocessing', 'bool', 'Denoising', False),
-    _field('pre_denoise_strength', ('preprocessing', 'denoise_strength'), 'preprocessing', 'float', 'Denoising strength', 5.0, 0.0, 100.0, 0.5, 2),
-    *tuple(
-        _field(f'pre_order_{index + 1}', ('preprocessing', 'operation_order', index), 'preprocessing', 'choice', f'Operation {index + 1}', value, choices=_OPS)
-        for index, (value, _label) in enumerate(_OPS)
+    _field(
+        'pre_mode',
+        ('preprocessing', 'mode'),
+        'preprocessing',
+        'choice',
+        'Normalization mode',
+        'none',
+        choices=(
+            ('none', 'None'),
+            ('per_image_percentile', 'Per-image percentile (P1–P99)'),
+            ('dataset_zscore', 'Dataset z-score (train statistics)'),
+        ),
     ),
     # Acquisition augmentation.
     _field('aug_enabled', ('augmentation', 'enabled'), 'augmentation', 'bool', 'Enable SEM augmentation', False),
@@ -196,7 +178,7 @@ SEM_UI_FIELDS: tuple[SemUiField, ...] = (
 SEM_UI_FIELDS_BY_KEY = {field.key: field for field in SEM_UI_FIELDS}
 
 SEM_UI_SECTION_LABELS_RU = {
-    'preprocessing': 'Предобработка',
+    'preprocessing': 'Препроцессинг',
     'augmentation': 'SEM-аугментация',
     'basic_targets': 'Основные цели',
     'geometry_targets': 'Геометрия',
@@ -209,25 +191,36 @@ SEM_UI_SECTION_LABELS_RU = {
     'experiment': 'Эксперимент',
 }
 
+SEM_UI_SECTION_HELP_EN = {
+    'preprocessing': 'Shared deterministic SEM preprocessing. The same operations and order are used for training and recognition.',
+    'augmentation': 'Models SEM acquisition defects in training images without changing their masks.',
+    'basic_targets': 'Auxiliary targets generated automatically from each binary mask; no additional annotation is required.',
+    'geometry_targets': 'Geometry and topology targets reconstructed automatically from the raster binary mask.',
+    'losses': 'Controls how the main mask loss and auxiliary training tasks are balanced.',
+    'hard_mining': 'Prioritizes geometrically important or previously difficult training patches while retaining random exploration.',
+    'context': 'Controls the model branch that combines a local patch with a larger image context.',
+    'uncertainty': 'Estimates prediction uncertainty and optionally exports a confidence map; it does not replace the binary mask.',
+    'active_learning': 'Exports the most uncertain full-frame regions to NeedsAnnotation for later expert review.',
+    'validation': 'Adds topology- and boundary-aware metrics to the existing validation dataset.',
+    'experiment': 'Makes topology-first comparison runs reproducible. These settings do not change inference output.',
+}
+
+SEM_UI_SECTION_HELP_RU = {
+    'preprocessing': 'Нормализация SEM, одинаковая для обучения и распознавания. Для dataset z-score статистика вычисляется только по train-части.',
+    'augmentation': 'Имитирует дефекты получения SEM-изображения только при обучении и не изменяет маску.',
+    'basic_targets': 'Вспомогательные цели автоматически строятся из бинарной маски; дополнительная разметка не нужна.',
+    'geometry_targets': 'Геометрия и топология автоматически восстанавливаются из растровой бинарной маски.',
+    'losses': 'Настраивает баланс основной ошибки маски и вспомогательных обучающих задач.',
+    'hard_mining': 'Чаще выбирает геометрически важные или ранее сложные патчи, сохраняя долю случайных примеров.',
+    'context': 'Настраивает ветвь модели, объединяющую локальный патч с более крупным контекстом изображения.',
+    'uncertainty': 'Оценивает неопределённость прогноза и при необходимости сохраняет карту уверенности; бинарную маску не заменяет.',
+    'active_learning': 'Экспортирует наиболее неопределённые области целого кадра в NeedsAnnotation для последующей проверки экспертом.',
+    'validation': 'Добавляет к существующей валидации метрики границ и сохранения топологии.',
+    'experiment': 'Обеспечивает воспроизводимое topology-first сравнение запусков и не изменяет результат распознавания.',
+}
+
 SEM_UI_LABELS_RU = {
-    'pre_percentile': 'Процентильная нормализация',
-    'pre_percentile_low': 'Нижний процентиль',
-    'pre_percentile_high': 'Верхний процентиль',
-    'pre_clahe': 'CLAHE',
-    'pre_clahe_clip': 'Ограничение контраста CLAHE',
-    'pre_clahe_grid_x': 'Ширина сетки CLAHE',
-    'pre_clahe_grid_y': 'Высота сетки CLAHE',
-    'pre_illumination': 'Коррекция освещения',
-    'pre_illumination_kernel': 'Ядро коррекции освещения',
-    'pre_background': 'Вычитание фона',
-    'pre_background_kernel': 'Ядро оценки фона',
-    'pre_scan': 'Подавление строк сканирования',
-    'pre_scan_strength': 'Сила подавления строк',
-    'pre_scan_axis': 'Направление сканирования',
-    'pre_scan_kernel': 'Ядро профиля сканирования',
-    'pre_denoise': 'Шумоподавление',
-    'pre_denoise_strength': 'Сила шумоподавления',
-    **{f'pre_order_{index}': f'Операция {index}' for index in range(1, 7)},
+    'pre_mode': 'Режим нормализации',
     'aug_enabled': 'Включить SEM-аугментацию',
     'aug_plan': 'Набор аугментаций',
     'aug_charging': 'Эффекты заряда',
@@ -334,15 +327,15 @@ SEM_UI_LABELS_RU = {
 }
 
 SEM_UI_CHOICE_LABELS_RU = {
+    'none': 'Без нормализации',
+    'per_image_percentile': 'Процентили каждого кадра (P1–P99)',
+    'dataset_zscore': 'Z-score датасета (статистика train)',
     'rows': 'Строки', 'columns': 'Столбцы', 'legacy_v1': 'Legacy v1', 'sem_v2': 'SEM v2',
     'static': 'Фиксированные веса', 'homoscedastic_uncertainty': 'Обучаемая неопределённость',
     'off': 'Выключено', 'online': 'Онлайн', 'offline': 'Офлайн',
     'online_and_offline': 'Онлайн + офлайн', 'concat': 'Конкатенация', 'add': 'Сложение',
     'confidence_head': 'Голова уверенности', 'mc_dropout': 'MC Dropout',
     'tta_variance': 'Дисперсия TTA', 'combined': 'Комбинированный', 'auto': 'Автоматически',
-    'background_subtraction': 'Вычитание фона', 'illumination_correction': 'Коррекция освещения',
-    'scan_line_suppression': 'Подавление строк', 'denoise': 'Шумоподавление',
-    'percentile_normalization': 'Процентильная нормализация', 'clahe': 'CLAHE',
 }
 
 
@@ -356,6 +349,26 @@ def sem_ui_field_label(field: SemUiField, language: str) -> str:
 
 def sem_ui_choice_label(value: str, english_label: str, language: str) -> str:
     return SEM_UI_CHOICE_LABELS_RU.get(value, english_label) if str(language).startswith('ru') else english_label
+
+
+def sem_ui_section_help(section: str, language: str) -> str:
+    descriptions = SEM_UI_SECTION_HELP_RU if str(language).startswith('ru') else SEM_UI_SECTION_HELP_EN
+    return descriptions.get(section, '')
+
+
+def sem_ui_field_help(field: SemUiField, language: str) -> str:
+    section_help = sem_ui_section_help(field.section, language)
+    label = sem_ui_field_label(field, language)
+    if field.kind in {'int', 'float'} and field.minimum is not None and field.maximum is not None:
+        bounds = (
+            f' Допустимый диапазон: {field.minimum}–{field.maximum}.'
+            if str(language).startswith('ru')
+            else f' Allowed range: {field.minimum}–{field.maximum}.'
+        )
+    else:
+        bounds = ''
+    prefix = f'{label}. ' if label else ''
+    return f'{prefix}{section_help}{bounds}'.strip()
 
 
 def _read_path(payload: Any, path: tuple[PathPart, ...], default: Any) -> Any:

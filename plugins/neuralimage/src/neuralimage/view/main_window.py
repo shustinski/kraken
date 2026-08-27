@@ -407,7 +407,6 @@ class MainView(QMainWindow):
     release_memory_requested: pyqtSignal = pyqtSignal()
     open_tic_tac_toe_requested: pyqtSignal = pyqtSignal()
     open_validation_gradient_requested: pyqtSignal = pyqtSignal()
-    developer_tools_requested: pyqtSignal = pyqtSignal()
     update_check_requested: pyqtSignal = pyqtSignal()
     update_channel_selected: pyqtSignal = pyqtSignal(str)
     ui_language_selected: pyqtSignal = pyqtSignal(str)
@@ -460,7 +459,6 @@ class MainView(QMainWindow):
         self._settings_menu = None
         self._view_menu = None
         self._plugins_menu = None
-        self._tools_menu = None
         self._info_menu = None
         self._language_menu = None
         self._theme_menu = None
@@ -481,7 +479,6 @@ class MainView(QMainWindow):
         self._available_update_channels: list[str] = []
         self._selected_update_channel = 'stable'
         self._open_validation_gradient_action = None
-        self._developer_tools_action = None
         self._ui_mode_menu = None
         self._ui_mode_simple_action = None
         self._ui_mode_advanced_action = None
@@ -933,13 +930,11 @@ class MainView(QMainWindow):
         view_menu = self._view_menu
         self._plugins_menu = menubar.addMenu(t.get("menu_plugins", "Plugins"))
         plugins_menu = self._plugins_menu
-        self._tools_menu = menubar.addMenu(t.get("menu_tools", "Инструменты"))
-        tools_menu = self._tools_menu
         info_menu = menubar.addMenu(t["menu_help"])
         self._file_menu = file_menu
         self._settings_menu = settings_menu
         self._info_menu = info_menu
-        if file_menu is None or settings_menu is None or view_menu is None or plugins_menu is None or tools_menu is None or info_menu is None:
+        if file_menu is None or settings_menu is None or view_menu is None or plugins_menu is None or info_menu is None:
             return
 
         self._open_config_action = QAction(t.get("menu_open_config", "Открыть"), self)
@@ -988,8 +983,6 @@ class MainView(QMainWindow):
             self,
         )
         plugins_menu.addAction(self._open_validation_gradient_action)
-        self._developer_tools_action = QAction(t.get("menu_developer", "Разработчик"), self)
-        tools_menu.addAction(self._developer_tools_action)
         view_menu.addSeparator()
         self._language_menu = view_menu.addMenu(t.get("menu_language", "Язык"))
         language_group = QActionGroup(self)
@@ -1185,8 +1178,6 @@ class MainView(QMainWindow):
             self.open_tic_tac_toe_action.triggered.connect(self.open_tic_tac_toe_requested.emit)
         if self._open_validation_gradient_action is not None:
             self._open_validation_gradient_action.triggered.connect(self.open_validation_gradient_requested.emit)
-        if self._developer_tools_action is not None:
-            self._developer_tools_action.triggered.connect(self.developer_tools_requested.emit)
         if self._check_updates_action is not None:
             self._check_updates_action.triggered.connect(self.update_check_requested.emit)
         if hasattr(self, "ui_language_ru_action"):
@@ -1963,8 +1954,6 @@ class MainView(QMainWindow):
             self._info_menu.setTitle(t["menu_help"])
         if self._plugins_menu is not None:
             self._plugins_menu.setTitle(t.get("menu_plugins", "Plugins"))
-        if self._tools_menu is not None:
-            self._tools_menu.setTitle(t.get("menu_tools", "Инструменты"))
         if self._update_channel_menu is not None:
             self._update_channel_menu.setTitle(t.get("menu_update_channel", "Update channel"))
         if self._update_menu is not None:
@@ -2001,8 +1990,6 @@ class MainView(QMainWindow):
             self._open_validation_gradient_action.setText(
                 t.get("menu_open_validation_gradient", "Open Validation gradient")
             )
-        if self._developer_tools_action is not None:
-            self._developer_tools_action.setText(t.get("menu_developer", "Разработчик"))
         if self._help_action is not None:
             self._help_action.setText(t.get("menu_open_help", "Открыть справку"))
         if self._changelog_action is not None:

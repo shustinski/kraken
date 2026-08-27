@@ -32,14 +32,16 @@ from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.model.NeuralNetwork import create_model, model_supports_init_kwarg
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
 from neuralimage.model.NeuralNetwork.dataset import (
-    CustomDataset,
     NoCutDataset,
     PatchSampleRequest,
     SyntheticDefectDataset,
 )
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
 from neuralimage.model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, ModelTrainer
-from neuralimage.model.image_workers import ConvertCifThread, CutImageThread
+from neuralimage.model.image_workers import ConvertCifThread
+from neuralimage.preprocessing.config import PreprocessingConfig
+from neuralimage.preprocessing.pipeline import image_to_channel_first_float01
+from neuralimage.preprocessing.statistics import compute_dataset_statistics
 from neuralimage.training.hard_mining import compute_geometry_difficulty_score
 
 
@@ -565,6 +567,10 @@ class GeneralNeuralHandler:
         self._start_recognition()
 
     def _prepare_training_pipeline(self):
+        if self.tranining_parameters.cut_mode != SampleCutMode.online:
+            raise ValueError(
+                'Disk-cut datasets are no longer supported. Use online patch generation.'
+            )
         dataset_image, dataset_label = self._prepare_dataset_folders()
         validation_image = None
         validation_label = None
@@ -618,16 +624,6 @@ class GeneralNeuralHandler:
             binary_labels = dataset_label.parent / binary_dir_name
             self._start_cif_conversion(dataset_label, binary_labels)
             dataset_label = binary_labels
-
-        if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-            image_dir_name = 'input_dir' if is_training_data else f'input_dir_{normalized_purpose}'
-            label_dir_name = 'label_dir' if is_training_data else f'label_dir_{normalized_purpose}'
-            cut_images = dataset_image.parent / image_dir_name
-            cut_labels = dataset_label.parent / label_dir_name
-            self._start_cut(dataset_image, cut_images)
-            self._start_cut(dataset_label, cut_labels)
-            dataset_image = cut_images
-            dataset_label = cut_labels
 
         return dataset_image, dataset_label
 
@@ -781,20 +777,6 @@ class GeneralNeuralHandler:
         self.current_thread.start()
         self._wait_for_current_thread('cif conversion')
 
-    def _start_cut(self, source: Path, result: Path):
-        if self._check_folder_existance(result):
-            return
-        self.current_thread = CutImageThread(
-            source,
-            result,
-            self.tranining_parameters.generation,
-            message_bus=self.message_bus,
-            recursive=bool(getattr(self.tranining_parameters, 'recursive_file_search', False)),
-        )
-        self.current_thread.daemon = False
-        self.current_thread.start()
-        self._wait_for_current_thread('dataset cutting')
-
     def _create_dataset(
         self,
         image_folder: Path,
@@ -805,14 +787,6 @@ class GeneralNeuralHandler:
     ):
         if self._need_stop:
             return None, None
-        if (
-            bool(getattr(self.tranining_parameters, 'use_context_branch', False))
-            and self.tranining_parameters.cut_mode == SampleCutMode.disk
-        ):
-            raise ValueError(
-                'Context branch is supported only with online patch generation (cut_mode=online).'
-            )
-
         train_samples = self._collect_matched_samples(image_folder, label_folder)
         if self._need_stop or train_samples is None:
             return None, None
@@ -837,6 +811,8 @@ class GeneralNeuralHandler:
             train_samples, val_samples = self._split_validation_samples(train_samples)
             if self._need_stop:
                 return None, None
+
+        self._resolve_training_preprocessing(train_samples)
 
         training_without_tech_aug = replace(
             self.tranining_parameters,
@@ -871,57 +847,28 @@ class GeneralNeuralHandler:
             getattr(self.tranining_parameters, 'synthetic_defect_generator', None)
         )
 
-        if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-            train_dataset = CustomDataset(
-                train_samples,
-                self.tranining_parameters.generation.channels,
-                pcb_defects=None,
-                tech_aug=None,
-                apply_train_only_transforms=True,
+        train_dataset = NoCutDataset(
+            train_samples,
+            training_without_tech_aug,
+            apply_train_only_transforms=True,
+        )
+        val_dataset = (
+            NoCutDataset(
+                val_samples,
+                evaluation_settings,
+                apply_train_only_transforms=False,
             )
-            val_dataset = (
-                CustomDataset(
-                    val_samples,
-                    self.tranining_parameters.generation.channels,
-                    pcb_defects=None,
-                    tech_aug=None,
-                    apply_train_only_transforms=False,
-                )
-                if val_samples
-                else None
-            )
-        else:
-            train_dataset = NoCutDataset(
-                train_samples,
-                training_without_tech_aug,
-                apply_train_only_transforms=True,
-            )
-            val_dataset = (
-                NoCutDataset(
-                    val_samples,
-                    evaluation_settings,
-                    apply_train_only_transforms=False,
-                )
-                if val_samples
-                else None
-            )
+            if val_samples
+            else None
+        )
 
         self._train_control_dataset = None
         if bool(getattr(self.tranining_parameters.early_stopping, 'enabled', False)) and not val_samples:
-            if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-                self._train_control_dataset = CustomDataset(
-                    train_samples,
-                    self.tranining_parameters.generation.channels,
-                    pcb_defects=None,
-                    tech_aug=None,
-                    apply_train_only_transforms=False,
-                )
-            else:
-                self._train_control_dataset = NoCutDataset(
-                    train_samples,
-                    evaluation_settings,
-                    apply_train_only_transforms=False,
-                )
+            self._train_control_dataset = NoCutDataset(
+                train_samples,
+                evaluation_settings,
+                apply_train_only_transforms=False,
+            )
             self.message_bus.publish(
                 'logging',
                 'Early stopping without validation uses a fixed train-control set. '
@@ -959,6 +906,35 @@ class GeneralNeuralHandler:
 
         return train_dataset, val_dataset
 
+    def _resolve_training_preprocessing(self, train_samples: list[tuple[Path, Path]]) -> None:
+        config = getattr(self.tranining_parameters, 'preprocessing', None) or PreprocessingConfig()
+        if config.mode != 'dataset_zscore':
+            return
+        if config.has_dataset_statistics():
+            return
+        channels = int(self.tranining_parameters.generation.channels)
+
+        def training_images() -> Iterable[Any]:
+            for image_path, _label_path in train_samples:
+                image = ImagePreparator(image_path, self.tranining_parameters.prepare).image
+                yield image_to_channel_first_float01(image, channels)
+
+        statistics = compute_dataset_statistics(training_images())
+        resolved = replace(
+            config,
+            dataset_mean=statistics.mean,
+            dataset_std=statistics.std,
+        )
+        self.tranining_parameters.preprocessing = resolved
+        self.message_bus.publish(
+            'logging',
+            (
+                'Dataset z-score statistics calculated from train split only: '
+                f'mean={statistics.mean:.8f}, std={statistics.std:.8f}, '
+                f'pixels={statistics.pixel_count}.'
+            ),
+        )
+
     def _split_validation_samples(
         self,
         samples: list[tuple[Path, Path]],
@@ -987,7 +963,7 @@ class GeneralNeuralHandler:
         if self._need_stop or train_dataset is None:
             return
 
-        shuffle = self.tranining_parameters.shuffle if self.tranining_parameters.cut_mode == SampleCutMode.disk else False
+        shuffle = False
         workers = self._resolve_dataloader_workers()
         pin_memory = bool(torch.cuda.is_available())
         train_persistent_workers = workers > 0 and not self._dataset_requires_worker_restart(train_dataset)

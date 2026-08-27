@@ -75,7 +75,6 @@ from neuralimage.model.NeuralNetwork import get_registered_model_names_by_type
 from neuralimage.model.general_neural_handler import GeneralNeuralHandler
 from neuralimage.lib.ui_texts import get_ui_section
 from neuralimage.view import MainView, SettingsPanel
-from neuralimage.view.developer_tools_dialog import DeveloperToolsDialog
 from neuralimage.view.task_properties_dialog import TaskPropertiesDialog
 import neuralimage.presenter.dialogs as presenter_dialogs
 import neuralimage.presenter.plugin_flow as plugin_flow
@@ -189,7 +188,6 @@ class MainPresenter(QObject):
         self._update_download_thread: AppUpdateDownloadThread | None = None
         self._validation_gradient_plugin = None
         self._validation_gradient_window: _ValidationGradientPluginWindow | None = None
-        self._developer_tools_dialog: DeveloperToolsDialog | None = None
         self._shutdown_requested = False
         self._shutdown_complete = False
         self._update_check_manual = False
@@ -267,7 +265,6 @@ class MainPresenter(QObject):
         v.batch_preview_visibility_changed.connect(self._on_batch_preview_visibility_changed)
         v.release_memory_requested.connect(self._on_release_memory_requested)
         v.open_validation_gradient_requested.connect(self._on_open_validation_gradient_requested)
-        v.developer_tools_requested.connect(self._on_developer_tools_requested)
         v.update_check_requested.connect(self._on_update_check_requested)
         v.update_channel_selected.connect(self._on_update_channel_selected)
         v.ui_language_selected.connect(self._on_ui_language_selected)
@@ -1342,20 +1339,6 @@ class MainPresenter(QObject):
     def _shutdown_validation_gradient_plugin(self) -> None:
         plugin_flow.shutdown_validation_gradient_plugin(self)
 
-    def _on_developer_tools_requested(self) -> None:
-        if self._developer_tools_dialog is None:
-            self._developer_tools_dialog = DeveloperToolsDialog(self.view)
-        self._developer_tools_dialog.show()
-        self._developer_tools_dialog.raise_()
-        self._developer_tools_dialog.activateWindow()
-
-    def _shutdown_developer_tools(self) -> None:
-        if self._developer_tools_dialog is not None:
-            try:
-                self._developer_tools_dialog.shutdown()
-            finally:
-                self._developer_tools_dialog = None
-
     def shutdown(self, *, wait_ms: int = 15000) -> None:
         if self._shutdown_complete:
             return
@@ -1387,8 +1370,6 @@ class MainPresenter(QObject):
             self._sample_count_worker_thread = None
 
         self._shutdown_validation_gradient_plugin()
-        self._shutdown_developer_tools()
-
     def _stop_owned_qthread(self, attr_name: str, wait_ms: int, operation_name: str) -> None:
         thread = getattr(self, attr_name, None)
         if thread is None:

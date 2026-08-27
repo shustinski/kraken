@@ -1,5 +1,4 @@
 import argparse
-import importlib
 import multiprocessing as mp
 import os
 import sys
@@ -75,22 +74,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Run only the UI layer without presenter/business logic.',
     )
     parser.add_argument(
-        '--web',
-        action='store_true',
-        help='Run Django web UI instead of Qt UI.',
-    )
-    parser.add_argument(
-        '--host',
-        default='127.0.0.1',
-        help='Host for Django web UI. Default: 127.0.0.1',
-    )
-    parser.add_argument(
-        '--port',
-        type=int,
-        default=8000,
-        help='Port for Django web UI. Default: 8000',
-    )
-    parser.add_argument(
         '--version',
         action='version',
         version=get_app_title(),
@@ -116,16 +99,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help='Kraken two-root local workspace context (interactive training).',
     )
     return parser
-
-
-def _run_web_ui(host: str, port: int) -> None:
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'neuralimage.webui_project.settings')
-    try:
-        management = importlib.import_module('django.core.management')
-    except ImportError as exc:
-        raise RuntimeError('Django is not installed. Install requirements-dev.txt first.') from exc
-    management.execute_from_command_line(['manage.py', 'migrate', '--noinput'])
-    management.execute_from_command_line(['manage.py', 'runserver', f'{host}:{port}', '--noreload'])
 
 
 def _run_desktop_ui(*, ui_only: bool, workspace_session=None) -> None:
@@ -154,8 +127,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     if kraken_session is not None:
         if args.kraken_workspace_context:
             parser.error('Agent and direct workspace modes cannot be combined.')
-        if args.web or args.ui_only:
-            parser.error('Kraken Agent mode is headless and cannot be combined with --web or --ui-only.')
+        if args.ui_only:
+            parser.error('Kraken Agent mode is headless and cannot be combined with --ui-only.')
         kraken_session.run_headless()
         return
     workspace_session = (
@@ -163,11 +136,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.kraken_workspace_context
         else None
     )
-    if args.web:
-        if workspace_session is not None:
-            parser.error('Kraken workspace mode is available only in the desktop UI.')
-        _run_web_ui(args.host, args.port)
-        return
     if args.ui_only and workspace_session is not None:
         parser.error('Kraken workspace training cannot be combined with --ui-only.')
     _run_desktop_ui(ui_only=args.ui_only, workspace_session=workspace_session)

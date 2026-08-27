@@ -6,7 +6,9 @@ from neuralimage.configuration import (
     SEM_UI_FIELDS,
     SEM_UI_SECTIONS,
     sem_ui_choice_label,
+    sem_ui_field_help,
     sem_ui_field_label,
+    sem_ui_section_help,
     sem_ui_section_label,
 )
 from neuralimage.lib.ui_texts import get_ui_language
@@ -1167,20 +1169,33 @@ def apply_settings_panel_texts(panel: Any) -> None:
         panel.sem_segmentation_validate_button.setText(
             str(t.get('sem_segmentation_validate', 'Validate settings'))
         )
-        if hasattr(panel, 'sem_segmentation_tabs'):
+        preset_help = (
+            'Пресет согласованно заполняет новые параметры SEM. После ручного изменения выбран режим «Пользовательский».'
+            if language == 'ru'
+            else 'A preset fills the related SEM settings consistently. Manual edits switch it to Custom.'
+        )
+        panel.sem_segmentation_preset_combo.setToolTip(preset_help)
+        panel.sem_segmentation_apply_preset_button.setToolTip(preset_help)
+        panel.sem_segmentation_validate_button.setToolTip(
+            'Проверить диапазоны и зависимости параметров.'
+            if language == 'ru'
+            else 'Validate parameter ranges and cross-field dependencies.'
+        )
+        if hasattr(panel, 'sem_segmentation_section_groupboxes'):
             for section_key, english_label in SEM_UI_SECTIONS:
-                index = panel.sem_segmentation_section_indexes.get(section_key)
-                if index is not None:
-                    panel.sem_segmentation_tabs.setTabText(
-                        index,
-                        sem_ui_section_label(section_key, english_label, language),
-                    )
+                groupbox = panel.sem_segmentation_section_groupboxes.get(section_key)
+                if groupbox is not None:
+                    groupbox.setTitle(sem_ui_section_label(section_key, english_label, language))
+                    groupbox.setToolTip(sem_ui_section_help(section_key, language))
             for field in SEM_UI_FIELDS:
                 label = panel.sem_segmentation_field_labels.get(field.key)
                 if label is not None:
                     label.setText(sem_ui_field_label(field, language))
+                    label.setToolTip(sem_ui_field_help(field, language))
+                control = panel.sem_segmentation_controls.get(field.key)
+                if control is not None:
+                    control.setToolTip(sem_ui_field_help(field, language))
                 if field.kind == 'choice':
-                    control = panel.sem_segmentation_controls.get(field.key)
                     if control is not None:
                         for item_index, (value, english_label) in enumerate(field.choices):
                             control.setItemText(

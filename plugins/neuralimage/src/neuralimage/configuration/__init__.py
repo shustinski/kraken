@@ -14,7 +14,9 @@ from neuralimage.configuration.sem_ui_schema import (
     sem_config_from_form_values,
     sem_config_to_form_values,
     sem_ui_choice_label,
+    sem_ui_field_help,
     sem_ui_field_label,
+    sem_ui_section_help,
     sem_ui_section_label,
 )
 
@@ -30,6 +32,8 @@ __all__ = [
     'sem_config_from_form_values',
     'sem_config_to_form_values',
     'sem_ui_choice_label',
+    'sem_ui_field_help',
     'sem_ui_field_label',
+    'sem_ui_section_help',
     'sem_ui_section_label',
 ]

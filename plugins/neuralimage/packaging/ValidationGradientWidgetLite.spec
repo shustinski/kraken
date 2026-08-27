@@ -21,15 +21,13 @@ hiddenimports = [
 
 # Keep this executable focused on the lite validation viewer. The repository
 # module may use NumPy/OpenCV/SciPy paths, but it does not need the main
-# NeuralImage training stack or WebUI.
+# NeuralImage training stack.
 excludes = [
     "neuralimage.application",
     "neuralimage.augmentations",
     "neuralimage.controller",
-    "django",
     "neuralimage.infrastructure",
     "neuralimage.lib",
-    "neuralimage.manage",
     "matplotlib",
     "neuralimage.model",
     "neuralimage.presenter",
@@ -42,8 +40,6 @@ excludes = [
     "torchvision",
     "neuralimage.UI",
     "neuralimage.view",
-    "neuralimage.webui",
-    "neuralimage.webui_project",
 ]
 
 a = Analysis(

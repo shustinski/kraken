@@ -401,11 +401,6 @@ def update_work_mode(presenter) -> str:
 
 
 def update_cut_mode(presenter) -> str:
-    panel = presenter.settings_panel
-    if panel.cut_dataset_type.isChecked():
-        return SampleCutMode.disk.value
-    if panel.no_cut_dataset_type.isChecked():
-        return SampleCutMode.online.value
     return SampleCutMode.online.value
 
 

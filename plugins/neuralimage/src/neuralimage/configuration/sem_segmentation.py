@@ -256,11 +256,9 @@ def get_sem_preset(name: str) -> SemSegmentationConfig:
             'version': CONFIG_VERSION,
             'preset': normalized,
             'preprocessing': {
-                'percentile_normalization': True,
-                'percentile_low': 0.5,
-                'percentile_high': 99.5,
-                'scan_line_suppression': True,
-                'scan_line_strength': 0.35,
+                'mode': 'per_image_percentile',
+                'percentile_low': 1.0,
+                'percentile_high': 99.0,
             },
             'augmentation': {'enabled': True, 'plan': 'sem_v2'},
             'targets': {

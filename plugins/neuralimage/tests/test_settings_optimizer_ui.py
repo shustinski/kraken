@@ -48,9 +48,10 @@ def test_settings_panel_round_trips_sem_topology_configuration(qapp):
     payload = get_sem_preset('sem_topology_experimental_v1').to_dict()
 
     panel.set_sem_segmentation_config(payload)
+    panel.hard_mining_check_box.setChecked(True)
 
     assert not hasattr(panel, 'sem_segmentation_config_editor')
-    assert panel.sem_segmentation_tabs.count() >= 10
+    assert not hasattr(panel, 'sem_segmentation_tabs')
     assert panel.sem_segmentation_controls['target_skeleton'].isChecked()
     assert panel.get_sem_segmentation_config() == payload
     panel.sem_segmentation_validate_button.click()
@@ -70,6 +71,23 @@ def test_settings_panel_sem_preset_populates_typed_controls(qapp):
     assert panel.sem_segmentation_controls['aug_enabled'].isChecked()
     assert panel.sem_segmentation_controls['target_boundary'].isChecked()
     assert panel.sem_segmentation_controls['uncertainty_enabled'].isChecked()
+    assert panel.hard_mining_check_box.isChecked()
+
+
+def test_settings_panel_merges_sem_fields_into_existing_groups_with_tooltips(qapp):
+    panel = SettingsPanel()
+
+    groups = panel.sem_segmentation_section_groupboxes
+    assert panel.prepare_samples_form.indexOf(groups['preprocessing']) >= 0
+    assert panel.photometric_form.indexOf(groups['augmentation']) >= 0
+    assert panel.loss_advanced_form.indexOf(groups['losses']) >= 0
+    assert panel.hard_mining_form.indexOf(groups['hard_mining']) >= 0
+    assert panel.recognition_form.indexOf(groups['uncertainty']) >= 0
+    assert panel.validation_form.indexOf(groups['validation']) >= 0
+    assert panel.sem_segmentation_form.indexOf(groups['basic_targets']) >= 0
+    assert panel.sem_segmentation_form.indexOf(groups['geometry_targets']) >= 0
+    assert panel.sem_segmentation_controls['uncertainty_method'].toolTip()
+    assert panel.sem_segmentation_controls['hard_exploration'].toolTip()
 
 
 def test_settings_panel_sem_target_toggle_marks_custom_and_syncs_head(qapp):

@@ -32,8 +32,6 @@ def _to_tensor(array: np.ndarray) -> torch.Tensor:
 
 
 def apply_dataset_preprocessing(image: Any, config: PreprocessingConfig | None) -> Any:
-    if config is None or not config.any_enabled():
-        return image
     pipeline = SemPreprocessingPipeline(config)
     if torch.is_tensor(image):
         array = image.detach().cpu().numpy()

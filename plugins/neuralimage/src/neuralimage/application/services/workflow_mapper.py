@@ -45,7 +45,9 @@ def build_workflow_parameters(
 ) -> tuple[WorkMode | None, TrainingParameters, RecognitionParameters]:
     work_mode = resolve_work_mode(main_window.work_mode)
     channels = 3 if settings.color_mode == 'RGB' else 1
-    cut_mode = SampleCutMode.online if settings.sample_cut_mode == SampleCutMode.online.value else SampleCutMode.disk
+    if settings.sample_cut_mode != SampleCutMode.online.value:
+        raise ValueError('Disk-cut datasets are no longer supported. Use sample_cut_mode="online".')
+    cut_mode = SampleCutMode.online
     train_patch_size = tuple(getattr(settings, 'train_patch_size', None) or settings.sample_size)
     recognition_patch_size = tuple(getattr(settings, 'recognition_patch_size', None) or settings.sample_size)
     train_batch_size = int(getattr(settings, 'train_batch_size', None) or settings.batch_size)

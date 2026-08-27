@@ -66,6 +66,8 @@ from neuralimage.configuration import (
     get_sem_preset,
     sem_config_from_form_values,
     sem_config_to_form_values,
+    sem_ui_field_help,
+    sem_ui_section_help,
 )
 
 FIELD_DESCRIPTION_ROW_SPACING = 8
@@ -1419,34 +1421,33 @@ class SettingsPanel(QDockWidget):
         self.sem_segmentation_validate_button = QPushButton('Validate settings')
         self.sem_segmentation_validation_label = QLabel('')
         self.sem_segmentation_validation_label.setWordWrap(True)
-        self.sem_segmentation_tabs = QTabWidget()
-        self.sem_segmentation_tabs.setTabPosition(QTabWidget.TabPosition.West)
-        self.sem_segmentation_tabs.setMinimumHeight(420)
-        self.sem_segmentation_tabs.setMaximumHeight(560)
         self.sem_segmentation_controls: dict[str, QWidget] = {}
         self.sem_segmentation_field_labels: dict[str, QLabel] = {}
-        self.sem_segmentation_section_indexes: dict[str, int] = {}
+        self.sem_segmentation_section_groupboxes: dict[str, QGroupBox] = {}
+        self.sem_segmentation_section_forms: dict[str, QFormLayout] = {}
         self._sem_segmentation_update_guard = True
         for section_key, section_title in SEM_UI_SECTIONS:
-            section_widget = QWidget()
+            section_groupbox, section_layout, _content_widget = self._create_collapsible_groupbox()
+            section_groupbox.setTitle(section_title)
             section_form = self._create_form_layout()
-            section_widget.setLayout(section_form)
+            section_layout.addLayout(section_form)
+            section_groupbox.setToolTip(sem_ui_section_help(section_key, 'en'))
+            self.sem_segmentation_section_groupboxes[section_key] = section_groupbox
+            self.sem_segmentation_section_forms[section_key] = section_form
             for field in fields_for_section(section_key):
                 control = self._create_sem_segmentation_control(field)
                 label = QLabel(field.label_en)
                 label.setWordWrap(True)
-                section_form.addRow(label, control)
+                tooltip = sem_ui_field_help(field, 'en')
+                control.setToolTip(tooltip)
+                label.setToolTip(tooltip)
+                if field.key != 'validation_enabled':
+                    section_form.addRow(label, control)
                 self.sem_segmentation_controls[field.key] = control
                 self.sem_segmentation_field_labels[field.key] = label
-            section_scroll = QScrollArea()
-            section_scroll.setWidgetResizable(True)
-            section_scroll.setWidget(section_widget)
-            self.sem_segmentation_section_indexes[section_key] = self.sem_segmentation_tabs.addTab(
-                section_scroll,
-                section_title,
-            )
         self.sem_segmentation_form.addRow(self.sem_segmentation_preset_combo, self.sem_segmentation_apply_preset_button)
-        self.sem_segmentation_form.addRow(self.sem_segmentation_tabs)
+        self.sem_segmentation_form.addRow(self.sem_segmentation_section_groupboxes['basic_targets'])
+        self.sem_segmentation_form.addRow(self.sem_segmentation_section_groupboxes['geometry_targets'])
         self.sem_segmentation_form.addRow(self.sem_segmentation_validate_button)
         self.sem_segmentation_form.addRow(self.sem_segmentation_validation_label)
         self.set_sem_segmentation_config({})
@@ -1477,6 +1478,7 @@ class SettingsPanel(QDockWidget):
         self.loss_advanced_layout.addLayout(self.loss_advanced_form)
         self.loss_advanced_form.addRow(self.deep_supervision_check_box)
         self.loss_advanced_form.addRow(self.loss_terms_groupbox)
+        self.loss_advanced_form.addRow(self.sem_segmentation_section_groupboxes['losses'])
         self.precision_loss_form.addRow(self.loss_advanced_groupbox)
 
         self.rare_patch_form.addRow(self.skip_uniform_labels_check_box)
@@ -1503,6 +1505,8 @@ class SettingsPanel(QDockWidget):
             self.recognition_postprocess_kernel_size_spinbox,
             'recognition_postprocess_kernel_size',
         )
+        self.recognition_form.addRow(self.sem_segmentation_section_groupboxes['uncertainty'])
+        self.recognition_form.addRow(self.sem_segmentation_section_groupboxes['active_learning'])
         self._add_labeled_row(self.runtime_form, self.train_batch_spinbox, 'train_batch_size')
         self._add_labeled_row(self.runtime_form, self.dataloader_num_workers_spinbox, 'dataloader_num_workers')
         self._add_labeled_row(self.runtime_form, self.multi_gpu_mode_combo, 'multi_gpu')
@@ -1566,6 +1570,7 @@ class SettingsPanel(QDockWidget):
         self.hard_mining_form.addRow(self.hard_mining_check_box)
         self.hard_mining_form.addRow(self.hard_pixel_mining_check_box)
         self._add_labeled_row(self.hard_mining_form, self.hard_pixel_mining_ratio_spinbox, 'hard_pixel_mining_ratio')
+        self.hard_mining_form.addRow(self.sem_segmentation_section_groupboxes['hard_mining'])
 
         nn_sections_layout.addWidget(self.optimizer_groupbox)
         nn_sections_layout.addWidget(self.precision_loss_groupbox)
@@ -1584,6 +1589,7 @@ class SettingsPanel(QDockWidget):
         self.hard_pixel_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
         self.sem_segmentation_apply_preset_button.clicked.connect(self._apply_sem_segmentation_preset)
         self.sem_segmentation_validate_button.clicked.connect(self._validate_sem_segmentation_settings)
+        self.validation_check_box.toggled.connect(lambda _checked: self._sync_sem_segmentation_controls())
         self.early_stopping_check_box.toggled.connect(self._sync_early_stopping_controls)
         self.rare_patch_oversampling_check_box.toggled.connect(self._sync_rare_patch_oversampling_controls)
         self.recognition_binarize_output_check_box.toggled.connect(self._sync_recognition_output_controls)
@@ -1689,6 +1695,7 @@ class SettingsPanel(QDockWidget):
         self.model_variants_groupbox.setLayout(self.model_variants_form)
         self._add_labeled_row(self.model_variants_form, self.deprecated_model_type, 'deprecated_models')
         self._add_labeled_row(self.model_variants_form, self.experimental_model_type, 'experimental_models')
+        self.model_variants_form.addRow(self.sem_segmentation_section_groupboxes['context'])
 
         self.augmentation_groupbox = QGroupBox('')
         self.augmentation_form = self._create_form_layout()
@@ -1735,6 +1742,7 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.photometric_form, self.augmentation_noise_sigma_spinbox, 'augmentation_noise_sigma')
         self._add_labeled_row(self.photometric_form, self.augmentation_blur_probability_spinbox, 'augmentation_blur_probability')
         self._add_labeled_row(self.photometric_form, self.augmentation_blur_radius_spinbox, 'augmentation_blur_radius')
+        self.photometric_form.addRow(self.sem_segmentation_section_groupboxes['augmentation'])
         self.synthetic_defect_generator_groupbox = QGroupBox('')
         self.synthetic_defect_generator_form = self._create_form_layout()
         self.synthetic_defect_generator_groupbox.setLayout(self.synthetic_defect_generator_form)
@@ -1893,6 +1901,11 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.validation_form, self.validation_image_path_label, 'validation_image_path')
         self._add_labeled_row(self.validation_form, self.validation_label_path_label, 'validation_label_path')
         self.validation_form.addRow(self.save_validation_binary_images_check_box)
+        self.validation_form.addRow(self.sem_segmentation_section_groupboxes['validation'])
+        self.validation_form.addRow(self.sem_segmentation_section_groupboxes['experiment'])
+
+        self.preprocessing_groupbox = self.sem_segmentation_section_groupboxes['preprocessing']
+        self.preprocessing_groupbox.toggled.connect(self._on_preprocessing_group_toggled)
 
         self.main_form = self.general_form
         self.reset_defaults_button = QPushButton('')
@@ -1908,6 +1921,7 @@ class SettingsPanel(QDockWidget):
         self.training_page_layout.addWidget(self.general_groupbox)
         self.training_page_layout.addWidget(self.spatial_groupbox)
         self.training_page_layout.addWidget(self.prepare_samples_groupbox)
+        self.training_page_layout.addWidget(self.preprocessing_groupbox)
         self.training_page_layout.addWidget(self.rare_patch_groupbox)
         self.training_page_layout.addWidget(self.optimizer_groupbox)
         self.training_page_layout.addWidget(self.precision_loss_groupbox)
@@ -1921,7 +1935,6 @@ class SettingsPanel(QDockWidget):
         self.expert_content_layout = QVBoxLayout(self.expert_content_widget)
         self.expert_content_layout.setContentsMargins(0, 0, 0, 0)
         self.expert_content_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.expert_content_layout.addWidget(self.sample_type_groupbox)
         self.expert_content_layout.addWidget(self.validation_groupbox)
         self.expert_content_layout.addWidget(self.shuffle_groupbox)
         self.expert_content_layout.addWidget(self.photometric_groupbox)
@@ -2818,6 +2831,21 @@ class SettingsPanel(QDockWidget):
         self.sem_segmentation_validation_label.clear()
         self._sync_sem_segmentation_controls()
 
+    def _on_preprocessing_group_toggled(self, enabled: bool) -> None:
+        if self._sem_segmentation_update_guard:
+            return
+        mode_control = self.sem_segmentation_controls.get('pre_mode')
+        if mode_control is None:
+            return
+        desired_mode = str(mode_control.currentData() or 'none')
+        if not enabled:
+            desired_mode = 'none'
+        elif desired_mode == 'none':
+            desired_mode = 'per_image_percentile'
+        index = mode_control.findData(desired_mode)
+        if index >= 0 and index != mode_control.currentIndex():
+            mode_control.setCurrentIndex(index)
+
     def _sync_sem_segmentation_controls(self) -> None:
         controls = self.sem_segmentation_controls
         for target_name in (
@@ -2846,7 +2874,11 @@ class SettingsPanel(QDockWidget):
             parent = controls.get(parent_key)
             if parent is None:
                 continue
-            enabled = bool(parent.isChecked())
+            enabled = (
+                bool(self.validation_check_box.isChecked())
+                if parent_key == 'validation_enabled'
+                else bool(parent.isChecked())
+            )
             for child_key in child_keys:
                 controls[child_key].setEnabled(enabled)
 
@@ -2873,6 +2905,7 @@ class SettingsPanel(QDockWidget):
             if index < 0:
                 index = self.sem_segmentation_preset_combo.findData('custom')
             self.sem_segmentation_preset_combo.setCurrentIndex(max(0, index))
+            self.preprocessing_groupbox.setChecked(canonical.preprocessing.mode != 'none')
         finally:
             self._sem_segmentation_update_guard = False
         self._sync_sem_segmentation_controls()
@@ -2886,6 +2919,12 @@ class SettingsPanel(QDockWidget):
             )
             for field in SEM_UI_FIELDS
         }
+        if not self.preprocessing_groupbox.isChecked():
+            values['sem__pre_mode'] = 'none'
+        if not self.hard_mining_check_box.isChecked():
+            values['sem__hard_mode'] = 'off'
+        elif values.get('sem__hard_mode') == 'off':
+            values['sem__hard_mode'] = 'online'
         preset = str(self.sem_segmentation_preset_combo.currentData() or 'custom')
         return sem_config_from_form_values(values, preset=preset)
 
@@ -2896,6 +2935,7 @@ class SettingsPanel(QDockWidget):
             return
         config = get_sem_preset(preset_name)
         self.set_sem_segmentation_config(config.to_dict())
+        self.hard_mining_check_box.setChecked(config.hard_mining.mode != 'off')
         self._validate_sem_segmentation_settings()
 
     def _validate_sem_segmentation_settings(self) -> None:
@@ -2912,6 +2952,21 @@ class SettingsPanel(QDockWidget):
     def _sync_hard_mining_controls(self, enabled: bool) -> None:
         pixel_control_enabled = self._training_controls_applicable and bool(self.hard_pixel_mining_check_box.isChecked())
         self._set_field_enabled(self.hard_pixel_mining_ratio_spinbox, pixel_control_enabled)
+        sem_groups = getattr(self, 'sem_segmentation_section_groupboxes', {})
+        sem_group = sem_groups.get('hard_mining')
+        if sem_group is not None:
+            sem_group.setEnabled(self._training_controls_applicable and bool(enabled))
+        hard_mode = getattr(self, 'sem_segmentation_controls', {}).get('hard_mode')
+        if hard_mode is not None:
+            desired_mode = None
+            if enabled and hard_mode.currentData() == 'off':
+                desired_mode = 'online'
+            elif not enabled:
+                desired_mode = 'off'
+            if desired_mode is not None:
+                index = hard_mode.findData(desired_mode)
+                if index >= 0 and index != hard_mode.currentIndex():
+                    hard_mode.setCurrentIndex(index)
 
     def _sync_loss_controls(self, _index: int | None = None) -> None:
         total = loss_term_weight_sum(self.get_loss_term_weights())
@@ -3503,11 +3558,8 @@ class SettingsPanel(QDockWidget):
             self._model_combo_guard = False
 
     def restore_cut_mode(self, mode: Any) -> None:
-        """Restore sample cut mode radio button selection from persisted value."""
-        if mode == SampleCutMode.disk.value:
-            self.cut_dataset_type.setChecked(True)
-        else:
-            self.no_cut_dataset_type.setChecked(True)
+        """Retain the legacy hook while only online patch generation is supported."""
+        self.no_cut_dataset_type.setChecked(True)
 
     def apply_style(self, style: str) -> None:
         """Apply stylesheet to the settings panel."""

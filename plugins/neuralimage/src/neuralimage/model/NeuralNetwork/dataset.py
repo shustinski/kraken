@@ -35,6 +35,7 @@ from neuralimage.model.NeuralNetwork.context_utils import (
     normalize_patch_coords,
     normalize_size_pair,
 )
+from neuralimage.preprocessing.pipeline import image_to_channel_first_float01
 from neuralimage.targets.dataset_hooks import (
     apply_dataset_preprocessing,
     apply_dataset_sem_augmentation,
@@ -457,11 +458,6 @@ class NoCutDataset(Dataset):
         prepared_image = ImagePreparator(image_path, self._prep_settings).image
         prepared_label = ImagePreparator(label_path, self._prep_settings).image
 
-        if self.colors == 1:
-            prepared_image = prepared_image.convert('L')
-        else:
-            prepared_image = prepared_image.convert('RGB')
-
         prepared_label = prepared_label.convert('L')
         prepared_rare_mask = self._load_prepared_rare_mask(image_path, prepared_image.size)
         return image_path, prepared_image, prepared_label, prepared_rare_mask
@@ -476,7 +472,7 @@ class NoCutDataset(Dataset):
         random.seed(self._frame_seed(frame_index))
         try:
             np.random.seed(self._frame_seed(frame_index))
-            image_matrix = SampleFastCutter.get_matrix_from_image(prepared_image, self.colors)
+            image_matrix = image_to_channel_first_float01(prepared_image, self.colors)
             label_matrix = SampleFastCutter.get_matrix_from_image(prepared_label, 1)
             image_matrix, label_matrix = _apply_binary_tech_augmentation_to_pair(
                 image_matrix,
@@ -1119,6 +1115,8 @@ class CustomDataset(Dataset):
         pcb_defects=None,
         apply_train_only_transforms: bool = True,
         tech_aug=None,
+        preprocessing=None,
+        sem_augmentation=None,
     ):
         self.samples: list[tuple[Path, Path]] = samples
         self.channels = channels
@@ -1140,6 +1138,9 @@ class CustomDataset(Dataset):
             else None
         )
         self._use_defect_mask_as_label = bool(self._pcb_defects.use_defect_mask_as_label)
+        self._preprocessing = preprocessing
+        self._sem_augmentation = sem_augmentation
+        self._apply_train_only_transforms = bool(apply_train_only_transforms)
 
     def __len__(self):
         return len(self.samples)
@@ -1162,19 +1163,12 @@ class CustomDataset(Dataset):
         if self._defect_augmentor is not None:
             image_path = self.samples[idx][0]
             label_path = self.samples[idx][1]
-            image_pil = retry_file_read(
-                lambda: Image.open(image_path).convert("RGB" if self.channels == 3 else "L"),
-                path=image_path,
-            )
+            image_pil = retry_file_read(lambda: Image.open(image_path).copy(), path=image_path)
             label_pil = retry_file_read(
                 lambda: Image.open(label_path).convert("L"),
                 path=label_path,
             )
-            image_array = np.asarray(image_pil, dtype=np.float32)
-            if self.channels == 1:
-                image_array = (image_array / 255.0)[None, :, :]
-            else:
-                image_array = np.transpose(image_array, (2, 0, 1)) / 255.0
+            image_array = image_to_channel_first_float01(image_pil, self.channels)
             label_array = (np.asarray(label_pil, dtype=np.float32) / 255.0)[None, :, :]
             image_array, label_array = _apply_binary_tech_augmentation_to_pair_with_seed(
                 image_array,
@@ -1190,6 +1184,7 @@ class CustomDataset(Dataset):
                 return_augmented_mask=True,
             )
             target_array = defect_mask if self._use_defect_mask_as_label else augmented_mask
+            augmented_image = apply_dataset_preprocessing(augmented_image, self._preprocessing)
             return (
                 torch.from_numpy(np.asarray(augmented_image, dtype=np.float32)).float(),
                 torch.from_numpy(np.asarray(target_array, dtype=np.float32)).float(),
@@ -1197,16 +1192,8 @@ class CustomDataset(Dataset):
 
         image_path = self.samples[idx][0]
         label_path = self.samples[idx][1]
-        image = retry_file_read(
-            lambda: Image.open(image_path).convert("RGB" if self.channels == 3 else "L"),
-            path=image_path,
-        )
-
-        # Convert to tensor and normalize to [0., 1.]
-        image_tensor = ToTensor()(image)
-
-        # If needed, ensure the data type is float32
-        image_tensor = image_tensor.float()
+        image = retry_file_read(lambda: Image.open(image_path).copy(), path=image_path)
+        image_tensor = torch.from_numpy(image_to_channel_first_float01(image, self.channels)).float()
 
         label = retry_file_read(
             lambda: Image.open(label_path).convert("L"),
@@ -1228,6 +1215,17 @@ class CustomDataset(Dataset):
             )
             image_tensor = torch.from_numpy(np.ascontiguousarray(augmented_image)).float()
             label_tensor = torch.from_numpy(np.ascontiguousarray(augmented_label)).float()
+
+        image_value: np.ndarray | torch.Tensor = image_tensor
+        label_value: np.ndarray | torch.Tensor = label_tensor
+        if self._apply_train_only_transforms:
+            image_value, label_value = apply_dataset_sem_augmentation(
+                image_value,
+                label_value,
+                self._sem_augmentation,
+            )
+        image_tensor = apply_dataset_preprocessing(image_value, self._preprocessing).float()
+        label_tensor = label_value if torch.is_tensor(label_value) else torch.from_numpy(label_value).float()
 
         # if self.transform:
         #     image = self.transform(image)

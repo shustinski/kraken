@@ -854,3 +854,57 @@ def test_via_preset_json_contains_full_snapshot_but_applies_only_expert_settings
         widget.close()
         widget.deleteLater()
         app.processEvents()
+
+
+def test_metal_preset_export_import_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    app = QApplication.instance() or QApplication([])
+    widget = PolygonExtractionWidget()
+    path = tmp_path / "metal_preset.json"
+    try:
+        widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("conductors"))
+        widget.metal_min_contrast_slider.setValue(77)
+        widget.metal_gap_bridge_spin.setValue(5)
+        widget._user_metal_presets = {"My metal": widget._current_metal_preset_payload()}
+        widget._refresh_metal_preset_combo()
+        widget.metal_preset_combo.setCurrentIndex(widget.metal_preset_combo.findText("My metal"))
+
+        monkeypatch.setattr(
+            "contour.widget_parts.pipeline_mixin.QFileDialog.getSaveFileName",
+            lambda *_args, **_kwargs: (str(path), "JSON"),
+        )
+        widget._export_selected_metal_preset()
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["format"] == "contour-metal-preset"
+        assert payload["name"] == "My metal"
+        assert payload["settings"]["metal_min_contrast"] == 77.0
+        assert payload["settings"]["metal_gap_bridge_px"] == 5
+
+        widget.metal_min_contrast_slider.setValue(10)
+        widget.metal_gap_bridge_spin.setValue(0)
+        widget._user_metal_presets = {}
+        widget._refresh_metal_preset_combo()
+        monkeypatch.setattr(
+            "contour.widget_parts.pipeline_mixin.QFileDialog.getOpenFileName",
+            lambda *_args, **_kwargs: (str(path), "JSON"),
+        )
+        widget._import_metal_preset()
+
+        assert "My metal" in widget._user_metal_presets
+        assert widget.metal_preset_combo.currentText() == "My metal"
+        assert widget.metal_min_contrast_slider.value() == 77
+        assert widget.metal_gap_bridge_spin.value() == 5
+        builtin_names = [
+            widget.metal_preset_combo.itemText(i)
+            for i in range(widget.metal_preset_combo.count())
+            if isinstance(widget.metal_preset_combo.itemData(i), tuple)
+            and widget.metal_preset_combo.itemData(i)[0] == "builtin"
+        ]
+        assert builtin_names == ["Стандартный"]
+    finally:
+        widget.close()
+        widget.deleteLater()
+        app.processEvents()

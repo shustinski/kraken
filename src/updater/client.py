@@ -14,6 +14,10 @@ from urllib import error, parse as urlparse, request
 
 _VERSION_PART_RE = re.compile(r"\d+")
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+_INSTALLER_NAME_RE = re.compile(
+    r"^(?P<stem>.+?)-(?P<version>\d+(?:\.\d+)*(?:[-._][A-Za-z0-9]+)*)\.(?:exe|msi|appimage)$",
+    re.IGNORECASE,
+)
 _UPDATE_SETTINGS_KEY = "last_notified_version"
 _UPDATE_CHANNEL_SETTINGS_KEY = "selected_channel"
 _UPDATE_CLEANUP_MAX_RETRIES = 300
@@ -208,25 +212,103 @@ def fetch_update_info(
         return None
     try:
         if _is_filesystem_source(url):
-            manifest_path = Path(url)
-            if not manifest_path.is_file():
-                return None
-            payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+            update_info = _fetch_filesystem_update_info(Path(url))
         else:
             with request.urlopen(url, timeout=timeout_seconds) as response:
                 charset = response.headers.get_content_charset() or "utf-8"
                 payload = json.loads(response.read().decode(charset))
+            if not isinstance(payload, dict):
+                return None
+            update_info = parse_update_payload(payload, source=url)
     except (OSError, ValueError, error.URLError):
         return None
-    if not isinstance(payload, dict):
-        return None
-    update_info = parse_update_payload(payload, source=url)
     if update_info is None:
         return None
     requested_channel = normalize_update_channel(expected_channel) if expected_channel is not None else ""
     if requested_channel and update_info.channel and update_info.channel != requested_channel:
         return None
     return update_info
+
+
+def _fetch_filesystem_update_info(source_path: Path) -> UpdateInfo | None:
+    if source_path.is_dir():
+        manifest_path = source_path / "version.json"
+        if manifest_path.is_file():
+            return _parse_filesystem_manifest(manifest_path, source_path)
+        return _update_info_from_installer_directory(source_path)
+    if source_path.is_file():
+        return _parse_filesystem_manifest(source_path, source_path.parent)
+    return None
+
+
+def _parse_filesystem_manifest(manifest_path: Path, directory: Path) -> UpdateInfo | None:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        return None
+    update_info = parse_update_payload(payload, source=str(manifest_path))
+    if update_info is None:
+        return None
+    return _resolve_filesystem_downloads(update_info, directory)
+
+
+def _resolve_filesystem_downloads(update_info: UpdateInfo, directory: Path) -> UpdateInfo:
+    return UpdateInfo(
+        version=update_info.version,
+        download_url=_resolve_local_download_url(update_info.download_url, directory),
+        release_notes=update_info.release_notes,
+        mandatory=update_info.mandatory,
+        releases=tuple(
+            ReleaseInfo(
+                version=release.version,
+                download_url=_resolve_local_download_url(release.download_url, directory),
+                notes=release.notes,
+                channel=release.channel,
+                platform=release.platform,
+            )
+            for release in update_info.releases
+        ),
+        channel=update_info.channel,
+    )
+
+
+def _resolve_local_download_url(download_url: str, directory: Path) -> str:
+    value = str(download_url or "").strip()
+    if not value or not _is_filesystem_source(value):
+        return value
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return str((directory / path).resolve())
+
+
+def _update_info_from_installer_directory(directory: Path) -> UpdateInfo | None:
+    releases: list[ReleaseInfo] = []
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        match = _INSTALLER_NAME_RE.match(path.name)
+        if match is None:
+            continue
+        version = str(match.group("version")).strip()
+        if not version:
+            continue
+        releases.append(
+            ReleaseInfo(
+                version=version,
+                download_url=str(path.resolve()),
+                channel="stable",
+            )
+        )
+    if not releases:
+        return None
+    releases.sort(key=lambda release: parse_version_parts(release.version), reverse=True)
+    latest = releases[0]
+    return UpdateInfo(
+        version=latest.version,
+        download_url=latest.download_url,
+        releases=tuple(releases),
+        channel="stable",
+    )
 
 
 def load_selected_update_channel(

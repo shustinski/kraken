@@ -394,7 +394,25 @@ class WidgetProcessingMixin:
     def _image_path_index(self: Any, image_path: str | Path) -> int | None:
         return self._image_path_to_index.get(str(Path(image_path)))
 
-    def _image_list_model_item_data(self: Any, image_path: str, role: int):
+    def _ordered_workspace_image_paths(self: Any) -> list[str]:
+        """Return normalized image paths in list order without re-parsing pathlib."""
+
+        ordered = getattr(self, "_image_paths_ordered", None)
+        if ordered is not None:
+            return ordered
+        mapping = getattr(self, "_image_path_to_index", None)
+        if mapping:
+            rebuilt = [""] * len(mapping)
+            for path, index in mapping.items():
+                rebuilt[index] = path
+            self._image_paths_ordered = rebuilt
+            return rebuilt
+        workspace_paths = getattr(self._workspace, "_image_paths", None)
+        if workspace_paths is not None:
+            return list(workspace_paths)
+        return list(self._workspace.image_paths)
+
+    def _image_list_model_row_paint_roles(self: Any, image_path: str) -> dict[int, object]:
         from ..application.frame_asset_sync import (
             background_hex_image_paint_status_for_theme,
             classify_image_side_paint_status,
@@ -427,27 +445,36 @@ class WidgetProcessingMixin:
             persist_highlight=False if extraction_enabled else normalized in self._persisted_highlight_paths,
         )
         theme = getattr(self, "_ui_theme", "dark")
-        if role == FRAME_STATUS_ROLE:
-            return painted.value
-        if role == int(Qt.ItemDataRole.BackgroundRole):
-            hex_background = background_hex_image_paint_status_for_theme(painted, theme=theme)
-            return QColor(hex_background) if hex_background else None
-        if role == int(Qt.ItemDataRole.ForegroundRole):
-            return QColor(
+        hex_background = background_hex_image_paint_status_for_theme(painted, theme=theme)
+        return {
+            FRAME_STATUS_ROLE: painted.value,
+            int(Qt.ItemDataRole.BackgroundRole): QColor(hex_background) if hex_background else None,
+            int(Qt.ItemDataRole.ForegroundRole): QColor(
                 foreground_hex_image_paint_status_for_theme(
                     painted,
                     has_matching_cif=has_vector,
                     theme=theme,
                 )
-            )
-        return None
+            ),
+        }
+
+    def _image_list_model_item_data(self: Any, image_path: str, role: int):
+        return self._image_list_model_row_paint_roles(image_path).get(int(role))
 
     def _set_image_list_paths(self: Any, normalized_paths: list[str]) -> None:
         paths = [str(Path(path)) for path in normalized_paths]
         if hasattr(self.image_list, "clear_manual_items"):
             self.image_list.clear_manual_items()
+        self._image_paths_ordered = paths
         self._image_path_to_index = {path: index for index, path in enumerate(paths)}
-        self._image_path_stem_lower = {path: Path(path).stem.lower() for path in paths}
+        stem_lower_by_path: dict[str, str] = {}
+        path_by_stem_lower: dict[str, str] = {}
+        for path in paths:
+            stem_lower = Path(path).stem.lower()
+            stem_lower_by_path[path] = stem_lower
+            path_by_stem_lower.setdefault(stem_lower, path)
+        self._image_path_stem_lower = stem_lower_by_path
+        self._image_path_by_stem_lower = path_by_stem_lower
         self._image_list_model.set_paths(paths)
 
     def _thumbnail_disk_cache_marker_path(self: Any) -> Path:
@@ -537,7 +564,7 @@ class WidgetProcessingMixin:
             if row is not None:
                 proxy_index = self._image_list_proxy.mapFromSource(self._image_list_model.index(row))
                 if proxy_index.isValid():
-                    self.image_list.setCurrentIndex(proxy_index)
+                    self._set_image_list_current_index_preserving_scroll(proxy_index)
                     selected_path = self._image_list_path_from_proxy_index(self.image_list.currentIndex())
                     if str(Path(selected_path or "")) == str(Path(image_path)):
                         self._sync_workspace_selection_to_path(image_path)
@@ -545,7 +572,7 @@ class WidgetProcessingMixin:
                     return False
                 return False
         if fallback_to_first and self._image_list_proxy.rowCount() > 0:
-            self.image_list.setCurrentIndex(self._image_list_proxy.index(0, 0))
+            self._set_image_list_current_index_preserving_scroll(self._image_list_proxy.index(0, 0))
             selected_path = self._image_list_path_from_proxy_index(self.image_list.currentIndex())
             if selected_path:
                 self._sync_workspace_selection_to_path(selected_path)
@@ -554,6 +581,23 @@ class WidgetProcessingMixin:
         elif self._image_list_proxy.rowCount() <= 0:
             self._sync_current_state_views()
         return False
+
+    def _set_image_list_current_index_preserving_scroll(self: Any, proxy_index: QModelIndex) -> None:
+        """Select a row without jumping the list when the row is already on screen."""
+
+        view = self.image_list
+        bar = view.verticalScrollBar()
+        previous = int(bar.value()) if bar is not None else 0
+        viewport = view.viewport()
+        already_visible = False
+        if viewport is not None and proxy_index.isValid():
+            row_rect = view.visualRect(proxy_index)
+            already_visible = viewport.rect().intersects(row_rect) and not row_rect.isEmpty()
+        view.setCurrentIndex(proxy_index)
+        if already_visible and bar is not None and int(bar.value()) != previous:
+            bar.setValue(previous)
+        elif not already_visible and proxy_index.isValid():
+            view.scrollTo(proxy_index, QAbstractItemView.ScrollHint.EnsureVisible)
 
     def _image_path_in_image_list(self: Any, image_path: str) -> bool:
         return self._image_path_index(image_path) is not None
@@ -574,9 +618,7 @@ class WidgetProcessingMixin:
         else:
             self._image_list_model.invalidate_all_rows()
         self._refresh_vector_rows_for_workspace()
-        if len(self._workspace.image_paths) <= ASSET_FILTER_LISTS_MAX_FRAMES:
-            self._rebuild_asset_filter_lists()
-            self._apply_asset_view_filter()
+        self._refresh_asset_filter_list_item_states()
         self._update_thumbnail_grid_selection()
 
     def _update_thumbnail_item_status(self: Any, image_path: str | None) -> None:
@@ -608,6 +650,7 @@ class WidgetProcessingMixin:
     def _persist_current_overlay_changes(self: Any) -> bool:
         """Persist editor polygons for the current frame (dataset export and/or linked CIF)."""
 
+        self._last_vector_persist_error = None
         current_state = self._workspace.current_state
         current_image_path = self._workspace.current_image_path
         if current_state is None or current_image_path is None:
@@ -623,44 +666,54 @@ class WidgetProcessingMixin:
             return True
 
         want_dataset = bool(self.dataset_mode_checkbox.isChecked())
-        can_cif = bool(current_state.loaded_cif_path and current_state.source_image is not None)
+        cif_path = current_state.loaded_cif_path or self._find_matching_cif_path(current_image_path)
+        if cif_path and not current_state.loaded_cif_path:
+            current_state.loaded_cif_path = str(cif_path)
+        can_cif = bool(cif_path and current_state.source_image is not None)
 
         if not want_dataset and not can_cif:
-            self._append_log(
-                self._tr(
-                    "vector_save_no_target_log",
-                    "Нет каталога набора данных или связанного CIF для сохранения правок текущего кадра."
-                    if self._ui_language == "ru"
-                    else "No dataset directory or linked CIF available to save edits for the current frame.",
-                )
+            reason = self._tr(
+                "vector_save_no_target_log",
+                "Нет каталога набора данных или связанного CIF для сохранения правок текущего кадра."
+                if self._ui_language == "ru"
+                else "No dataset directory or linked CIF available to save edits for the current frame.",
             )
+            self._last_vector_persist_error = reason
+            self._append_log(reason)
             return False
 
         if want_dataset:
             saved_ds = self._export_dataset_frame_for_state(current_image_path, current_state, current_polygons)
             if not saved_ds:
+                if not self._last_vector_persist_error:
+                    self._last_vector_persist_error = self._tr(
+                        "dataset_directory_not_set_log",
+                        "Папка выборки не задана."
+                        if self._ui_language == "ru"
+                        else "Dataset directory is not set.",
+                    )
                 return False
 
         if can_cif:
             image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
             try:
                 save_polygons_vector(
-                    current_state.loaded_cif_path,
+                    cif_path,
                     current_image_path,
                     current_polygons,
                     image_size=image_size,
                 )
             except Exception as exc:
-                self._append_log(
-                    self._tr(
-                        "autosave_failed_log",
-                        "Не удалось сохранить CIF {path}: {error}"
-                        if self._ui_language == "ru"
-                        else "Failed to save CIF {path}: {error}",
-                        path=current_state.loaded_cif_path,
-                        error=exc,
-                    )
+                reason = self._tr(
+                    "autosave_failed_log",
+                    "Не удалось сохранить CIF {path}: {error}"
+                    if self._ui_language == "ru"
+                    else "Failed to save CIF {path}: {error}",
+                    path=cif_path,
+                    error=exc,
                 )
+                self._last_vector_persist_error = reason
+                self._append_log(reason)
                 return False
 
         persisted_path = str(Path(current_image_path))
@@ -754,33 +807,41 @@ class WidgetProcessingMixin:
         return TransitionPromptChoice.SAVE
 
     def _warn_transition_blocked_after_failed_autosave(self: Any) -> None:
+        detail = str(getattr(self, "_last_vector_persist_error", "") or "").strip()
+        body = self._tr(
+            "autosave_transition_blocked_text",
+            "Автосохранение не выполнено; переход отменён, данные не потеряны."
+            if self._ui_language == "ru"
+            else "Autosave failed; navigation cancelled — your edits were kept.",
+        )
+        if detail:
+            body = f"{body}\n\n{detail}"
         QMessageBox.warning(
             self,
             self._tr(
                 "autosave_transition_blocked_title",
                 "Не удалось сохранить" if self._ui_language == "ru" else "Save failed",
             ),
-            self._tr(
-                "autosave_transition_blocked_text",
-                "Автосохранение не выполнено; переход отменён, данные не потеряны."
-                if self._ui_language == "ru"
-                else "Autosave failed; navigation cancelled — your edits were kept.",
-            ),
+            body,
         )
 
     def _warn_transition_blocked_after_failed_manual_save(self: Any) -> None:
+        detail = str(getattr(self, "_last_vector_persist_error", "") or "").strip()
+        body = self._tr(
+            "manual_save_transition_blocked_text",
+            "Сохранение не выполнено; переход отменён, данные не потеряны."
+            if self._ui_language == "ru"
+            else "Save failed; navigation cancelled — your edits were kept.",
+        )
+        if detail:
+            body = f"{body}\n\n{detail}"
         QMessageBox.warning(
             self,
             self._tr(
                 "manual_save_transition_blocked_title",
                 "Не удалось сохранить" if self._ui_language == "ru" else "Save failed",
             ),
-            self._tr(
-                "manual_save_transition_blocked_text",
-                "Сохранение не выполнено; переход отменён, данные не потеряны."
-                if self._ui_language == "ru"
-                else "Save failed; navigation cancelled — your edits were kept.",
-            ),
+            body,
         )
 
     def _try_leave_current_frame(self: Any) -> bool:
@@ -867,13 +928,72 @@ class WidgetProcessingMixin:
             )
         return (str(Path(image_path)), tuple(geometry))
 
+    def _editor_polygons_match_hole_topology(self: Any, editor_polygons: list, polygons: list) -> bool:
+        if len(editor_polygons) != len(polygons):
+            return False
+        by_id = {getattr(polygon, "id", None): polygon for polygon in editor_polygons}
+        if len(by_id) != len(polygons):
+            return False
+        for polygon in polygons:
+            existing = by_id.get(getattr(polygon, "id", None))
+            if existing is None:
+                return False
+            if bool(getattr(existing, "is_hole", False)) != bool(getattr(polygon, "is_hole", False)):
+                return False
+            if getattr(existing, "parent_id", None) != getattr(polygon, "parent_id", None):
+                return False
+        return True
+
     def _sync_polygons_to_editor(self: Any, image_path: str, polygons: list) -> None:
         signature = self._polygons_editor_signature(image_path, polygons)
         if getattr(self, "_editor_polygons_signature", None) == signature:
-            if len(self.polygon_editor.get_polygons()) == len(polygons):
+            editor_polygons = self.polygon_editor.get_polygons()
+            if self._editor_polygons_match_hole_topology(editor_polygons, polygons):
+                if hasattr(self.polygon_editor, "refresh_polygon_overlays"):
+                    # Keep overlays in sync without rescanning repair geometry on frame switch.
+                    scene = getattr(self.polygon_editor, "_editor_scene", None)
+                    if scene is not None and hasattr(scene, "_refresh_all_items"):
+                        scene._refresh_all_items(rebuild_repair_cache=False)
+                    else:
+                        self.polygon_editor.refresh_polygon_overlays()
                 return
-        self.polygon_editor.set_polygons(polygons, emit_signal=False)
+        repair_reasons = self._repair_reasons_for_image_path(image_path)
+        self.polygon_editor.set_polygons(
+            polygons,
+            emit_signal=False,
+            repair_reasons=repair_reasons,
+            scan_repair=False,
+        )
         self._editor_polygons_signature = signature
+
+    def _repair_reasons_for_image_path(self: Any, image_path: str) -> dict[int, list[str]] | None:
+        state = self._workspace.cached_state(image_path)
+        if state is None:
+            return None
+        reasons = getattr(state, "polygons_needing_repair", None)
+        if reasons is None:
+            return None
+        return {int(polygon_id): list(codes) for polygon_id, codes in reasons.items()}
+
+    def _make_polygon_repair_scanner(self: Any):
+        settings = (
+            self._vector_geometry_settings_from_widgets()
+            if hasattr(self, "_vector_geometry_settings_from_widgets")
+            else VectorGeometrySettings()
+        )
+
+        def _scan(polygons: list) -> dict[int, list[str]]:
+            for polygon in polygons:
+                polygon.description_invalid_reason()
+            return polygons_needing_repair(list(polygons), settings)
+
+        return _scan
+
+    def _payload_repair_reasons(self: Any, payload: FrameLoadPayload) -> dict[int, list[str]] | None:
+        reasons = getattr(payload, "repair_reasons", None)
+        if reasons is None:
+            return None
+        return {int(polygon_id): list(codes) for polygon_id, codes in reasons.items()}
 
     def _editor_polygons_are_current_frame(self: Any) -> bool:
         current_path = self._workspace.current_image_path
@@ -943,6 +1063,23 @@ class WidgetProcessingMixin:
             return False
         return str(Path(sync_path)) == str(Path(current_path))
 
+    def _suspend_editor_viewport_updates(self: Any, callback) -> None:
+        """Apply editor mutations without intermediate paints (image+vectors swap)."""
+
+        editor = getattr(self, "polygon_editor", None)
+        if not qt_object_is_valid(editor):
+            callback()
+            return
+        editor.setUpdatesEnabled(False)
+        try:
+            callback()
+        finally:
+            if qt_object_is_valid(editor):
+                editor.setUpdatesEnabled(True)
+                viewport = editor.viewport()
+                if viewport is not None:
+                    viewport.update()
+
     def _queue_editor_display_pixmap(
         self: Any,
         image_path: str,
@@ -994,8 +1131,11 @@ class WidgetProcessingMixin:
             )
             if pixmap.isNull():
                 if is_current_display:
-                    self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
-                    self._pending_editor_frame_apply = None
+                    def _clear_null() -> None:
+                        self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
+                        self._pending_editor_frame_apply = None
+
+                    self._suspend_editor_viewport_updates(_clear_null)
                 return
             if not same_frame_state:
                 return
@@ -1010,13 +1150,17 @@ class WidgetProcessingMixin:
             self._editor_pixmap_cache = cache
             if not is_current_display:
                 return
-            self.polygon_editor.set_image_pixmap(pixmap, preserve_view=preserve_view)
-            self._last_editor_display_cache_key = cache_key
-            self._last_editor_display_path = str(Path(path))
-            session = self._frame_switch_profile_for_path(path)
-            if session is not None:
-                session.complete_pending("editor_display", suffix="_ready")
-            self._flush_pending_editor_frame_apply(str(Path(path)))
+
+            def _commit_display() -> None:
+                self.polygon_editor.set_image_pixmap(pixmap, preserve_view=preserve_view)
+                self._last_editor_display_cache_key = cache_key
+                self._last_editor_display_path = str(Path(path))
+                session = self._frame_switch_profile_for_path(path)
+                if session is not None:
+                    session.complete_pending("editor_display", suffix="_ready")
+                self._flush_pending_editor_frame_apply(str(Path(path)))
+
+            self._suspend_editor_viewport_updates(_commit_display)
 
         runnable.signals.result.connect(_on_display_ready)
         self._editor_display_thread_pool.start(runnable)
@@ -1049,19 +1193,32 @@ class WidgetProcessingMixin:
         *,
         state,
         preserve_view: bool = False,
+        apply_now: bool = True,
     ) -> bool:
         if display_image is None:
-            self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
+            if apply_now:
+                self.polygon_editor.set_image_pixmap(QPixmap(), preserve_view=preserve_view)
+            else:
+                self._editor_frame_pending_pixmap = (QPixmap(), preserve_view, None, str(Path(image_path)))
             return True
         cache_key = self._editor_display_cache_key(image_path, state)
         cached = getattr(self, "_editor_pixmap_cache", {}).get(cache_key)
         if cached is not None and not cached.isNull():
-            self.polygon_editor.set_image_pixmap(cached, preserve_view=preserve_view)
-            self._last_editor_display_cache_key = cache_key
-            self._last_editor_display_path = str(Path(image_path))
+            if apply_now:
+                self.polygon_editor.set_image_pixmap(cached, preserve_view=preserve_view)
+                self._last_editor_display_cache_key = cache_key
+                self._last_editor_display_path = str(Path(image_path))
+            else:
+                self._editor_frame_pending_pixmap = (
+                    cached,
+                    preserve_view,
+                    cache_key,
+                    str(Path(image_path)),
+                )
             if cache_key[1] != "source":
                 self._ensure_source_preview_pixmap_cached(image_path, state)
             return True
+        self._editor_frame_pending_pixmap = None
         self._queue_editor_display_pixmap(
             image_path,
             display_image,
@@ -1215,10 +1372,16 @@ class WidgetProcessingMixin:
             polygons,
             defer_heavy_overlays=defer_heavy_overlays,
         )
+        if not defer_heavy_overlays:
+            self._sync_extra_layers()
+            self._refresh_gradient_overlay()
+        self._update_vector_edit_status_label()
         session = self._frame_switch_profile_for_path(image_path)
         if session is not None:
             session.note_timing("editor_vectors_apply", (perf_counter() - step_start) * 1000.0)
             session.complete_pending("editor_vectors", suffix="_flushed")
+        # Vectors just became visible (pixmap was async); validate off the UI thread.
+        self._schedule_deferred_geometry_validation(pending_path)
         self._schedule_neighbor_frames_after_main_image_ready()
 
     def _apply_frame_to_editor(
@@ -1252,6 +1415,7 @@ class WidgetProcessingMixin:
             and getattr(self, "_last_editor_display_cache_key", None) == display_cache_key
             and str(Path(getattr(self, "_last_editor_display_path", "") or "")) == str(Path(image_path))
         )
+        self._editor_frame_pending_pixmap = None
         if skip_display_refresh:
             image_ready = True
         else:
@@ -1260,31 +1424,49 @@ class WidgetProcessingMixin:
                 display_image,
                 state=current_state,
                 preserve_view=preserve_view,
+                apply_now=False,
             )
-            if image_ready:
-                self._last_editor_display_cache_key = display_cache_key
-                self._last_editor_display_path = str(Path(image_path))
-        self._pending_editor_frame_apply = None
-        self._apply_editor_vectors_for_frame(
-            image_path,
-            current_state,
+        pending_pixmap = getattr(self, "_editor_frame_pending_pixmap", None)
+        self._editor_frame_pending_pixmap = None
+
+        def _commit_layers() -> None:
+            if pending_pixmap is not None:
+                pixmap, pixmap_preserve_view, cache_key, path = pending_pixmap
+                self.polygon_editor.set_image_pixmap(pixmap, preserve_view=pixmap_preserve_view)
+                if cache_key is not None:
+                    self._last_editor_display_cache_key = cache_key
+                    self._last_editor_display_path = path
+            self._apply_editor_vectors_for_frame(
+                image_path,
+                current_state,
+                polygons,
+                defer_heavy_overlays=defer_heavy_overlays,
+            )
+
+        if image_ready:
+            self._pending_editor_frame_apply = None
+            self._suspend_editor_viewport_updates(_commit_layers)
+            if sync_neighbors:
+                neighbor_delay_ms = 200 if self._uses_large_frame_list() else 0
+                if defer_neighbors:
+                    self._request_neighbor_frame_sync(delay_ms=neighbor_delay_ms)
+                else:
+                    self._request_neighbor_frame_sync(delay_ms=0)
+            if not defer_heavy_overlays:
+                self._sync_extra_layers()
+                self._refresh_gradient_overlay()
+            self._update_vector_edit_status_label()
+            return
+        # Keep the previous complete frame on screen until the new pixmap is ready,
+        # then swap image + vectors together in _on_display_ready.
+        self._pending_editor_frame_apply = (
+            str(Path(image_path)),
             polygons,
-            defer_heavy_overlays=defer_heavy_overlays,
+            defer_heavy_overlays,
         )
-        if not image_ready:
-            session = self._frame_switch_profile_for_path(image_path)
-            if session is not None:
-                session.complete_pending("editor_vectors", suffix="_applied_before_pixmap")
-        if sync_neighbors:
-            neighbor_delay_ms = 200 if self._uses_large_frame_list() else 0
-            if defer_neighbors:
-                self._request_neighbor_frame_sync(delay_ms=neighbor_delay_ms)
-            else:
-                self._request_neighbor_frame_sync(delay_ms=0)
-        if not defer_heavy_overlays:
-            self._sync_extra_layers()
-            self._refresh_gradient_overlay()
-        self._update_vector_edit_status_label()
+        session = self._frame_switch_profile_for_path(image_path)
+        if session is not None:
+            session.mark_pending("editor_vectors")
 
     def _sync_current_state_views(
         self: Any,
@@ -1614,7 +1796,7 @@ class WidgetProcessingMixin:
             if timer is not None:
                 timer.stop()
             store = getattr(self, "_pyramid_frame_store", None)
-            image_paths = [str(Path(path)) for path in self._workspace.image_paths]
+            image_paths = self._ordered_workspace_image_paths()
             frame_id = self._image_path_index(current_path) if current_path else None
             self.polygon_editor.set_pyramid_frame_store(
                 store,
@@ -1630,9 +1812,12 @@ class WidgetProcessingMixin:
                 session.complete_pending("neighbor_sync", suffix="_disabled")
             QTimer.singleShot(0, self._center_editor_on_current_main_image)
             return
-        image_paths = [str(Path(path)) for path in self._workspace.image_paths]
-        normalized_current_path = str(Path(current_path)) if current_path else ""
-        if not normalized_current_path or normalized_current_path not in image_paths:
+        image_paths = self._ordered_workspace_image_paths()
+        mapping = getattr(self, "_image_path_to_index", {})
+        normalized_current_path = current_path or ""
+        if normalized_current_path and normalized_current_path not in mapping:
+            normalized_current_path = str(Path(current_path))
+        if not normalized_current_path or normalized_current_path not in mapping:
             self._neighbor_sync_image_path = None
             self._neighbor_frame_specs = []
             self._neighbor_queued_paths.clear()
@@ -1694,6 +1879,7 @@ class WidgetProcessingMixin:
             self.load_image(image_path)
 
     def _abort_in_flight_interactive_processing(self: Any, *, preview: bool, prepared: bool) -> None:
+        self._geometry_validation_generation = int(getattr(self, "_geometry_validation_generation", 0)) + 1
         self._preview_update_timer.stop()
         if preview:
             if self._preview_run_cancel is not None:
@@ -2864,8 +3050,8 @@ class WidgetProcessingMixin:
             self.files_scan_progress_bar.setRange(0, 100)
             self.files_scan_progress_bar.setValue(0)
         self._set_image_list_paths(paths)
+        self._rebuild_asset_filter_lists()
         if len(paths) <= ASSET_FILTER_LISTS_MAX_FRAMES:
-            self._rebuild_asset_filter_lists()
             self._apply_asset_view_filter()
         self._finish_pending_image_list_rebuild()
 
@@ -3228,6 +3414,10 @@ class WidgetProcessingMixin:
             )
         else:
             self._append_log(self._tr("cif_overlay_loaded_log", file_name=Path(cif_path).name, count=len(polygons)))
+        # Warm topology caches on the loader thread (bool + reason). Full overlap
+        # repair scan runs via FrameLoadRunnable.scan_repair when provided.
+        for polygon in polygons:
+            polygon.description_invalid_reason()
         return polygons
 
     def load_image(
@@ -3303,12 +3493,15 @@ class WidgetProcessingMixin:
             sync_result = self._workspace.resolve_cached_load(normalized_load_path)
             if sync_result is not None:
                 state = sync_result.state
-                needs_vectors = (
-                    load_vectors
-                    and state is not None
-                    and not state.polygons
-                    and bool(self._find_matching_cif_path(normalized_load_path))
+                needs_vectors = load_vectors and self._workspace.needs_vector_overlay(
+                    normalized_load_path
                 )
+                if needs_vectors:
+                    # Hold the previous complete frame until CIF overlays arrive so
+                    # image and vectors appear together (no empty-overlay flash).
+                    self._loading_image_path = normalized_load_path
+                    self._begin_frame_vectors_reload(normalized_load_path)
+                    return
                 session = getattr(self, "_frame_switch_profile", None)
                 if session is not None:
                     session.enable_main_profiler()
@@ -3322,9 +3515,6 @@ class WidgetProcessingMixin:
                     cif_path_for_profile=cif_path_for_profile,
                     phase_start=perf_counter(),
                 )
-                if needs_vectors:
-                    self._loading_image_path = normalized_load_path
-                    self._begin_frame_vectors_reload(normalized_load_path)
                 return
 
             self._frame_load_running_path = normalized_load_path
@@ -3362,6 +3552,7 @@ class WidgetProcessingMixin:
                 load_cif_overlay=load_cif_overlay_timed,
                 load_vectors=load_vectors,
                 vectors_only=False,
+                scan_repair=self._make_polygon_repair_scanner() if load_vectors else None,
             )
 
             def _on_result(req_id: int, payload_obj: object) -> None:
@@ -3383,6 +3574,8 @@ class WidgetProcessingMixin:
                     source_image=payload.source_image,
                     polygons=list(payload.polygons),
                     make_current=not superseded,
+                    loaded_cif_path=self._find_matching_cif_path(payload.image_path),
+                    polygons_needing_repair=self._payload_repair_reasons(payload),
                 )
                 profile_timings["workspace_apply_loaded_frame"] = (perf_counter() - apply_start) * 1000.0
                 self._frame_load_running_path = None
@@ -3485,6 +3678,7 @@ class WidgetProcessingMixin:
             load_cif_overlay=load_cif_overlay_timed,
             load_vectors=True,
             vectors_only=True,
+            scan_repair=self._make_polygon_repair_scanner(),
         )
 
         def _on_vectors(req_id: int, payload_obj: object) -> None:
@@ -3505,6 +3699,7 @@ class WidgetProcessingMixin:
                 payload.image_path,
                 polygons=list(payload.polygons),
                 loaded_cif_path=self._find_matching_cif_path(payload.image_path),
+                polygons_needing_repair=self._payload_repair_reasons(payload),
             )
             profile_timings["workspace_apply_frame_vectors"] = (perf_counter() - apply_start) * 1000.0
             self._frame_load_running_path = None
@@ -3567,6 +3762,7 @@ class WidgetProcessingMixin:
             )
             return
         self._flush_pending_thumbnail_grid_rebuild()
+        self._schedule_frame_prefetch()
 
     def _finish_frame_load_ui(
         self: Any,
@@ -3602,6 +3798,9 @@ class WidgetProcessingMixin:
             image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
             image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
             image_result.state.polygons_dirty = False
+        elif image_result.state is not None and not image_result.state.loaded_cif_path:
+            # Heal cached frames that kept polygons but lost the CIF target path.
+            image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
         if image_result.state is not None and not image_result.vectors_only:
             self._clear_stale_preprocessed_image_for_current_pipeline(image_result.state)
         if image_result.reused_current_state:
@@ -3617,6 +3816,16 @@ class WidgetProcessingMixin:
                 profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
             if getattr(self, "_loading_image_path", None) == image_result.image_path:
                 self._loading_image_path = None
+            if image_result.state is not None and hasattr(self, "polygon_editor"):
+                self._sync_polygons_to_editor(
+                    image_result.image_path,
+                    self._polygons_visible_in_editor(
+                        image_result.state,
+                        list(image_result.state.polygons),
+                    ),
+                )
+            # Offer after deferred geometry validation; never scan on the UI switch path.
+            self._schedule_deferred_geometry_validation(image_result.image_path)
             step_start = perf_counter()
             self._resume_frame_matrix_thumbnail_loading()
             if profile_enabled:
@@ -3631,17 +3840,33 @@ class WidgetProcessingMixin:
                     profiler=profiler,
                     vectors_only=image_result.vectors_only,
                 )
+            self._schedule_frame_prefetch()
             return
         if image_result.vectors_only:
-            current_state = self._workspace.current_state
-            if current_state is not None:
+            self._updating_views = True
+            try:
                 step_start = perf_counter()
-                self._sync_polygons_to_editor(
-                    image_result.image_path,
-                    self._polygons_visible_in_editor(current_state, list(current_state.polygons)),
+                self._apply_frame_to_editor(
+                    defer_neighbors=True,
+                    defer_heavy_overlays=False,
+                    preserve_view=preserve_editor_view_position,
+                    clear_neighbors=True,
+                    sync_neighbors=False,
                 )
                 if profile_enabled:
-                    profile_timings["editor_set_polygons"] = (perf_counter() - step_start) * 1000.0
+                    profile_timings["apply_frame_to_editor"] = (perf_counter() - step_start) * 1000.0
+            finally:
+                self._updating_views = False
+            step_start = perf_counter()
+            self._center_editor_on_current_main_image(force=True)
+            if profile_enabled:
+                profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
+            if load_vectors:
+                self._schedule_deferred_geometry_validation(image_result.image_path)
+            step_start = perf_counter()
+            self._request_neighbor_frame_sync(delay_ms=0)
+            if profile_enabled:
+                profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
             step_start = perf_counter()
             self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
@@ -3659,19 +3884,22 @@ class WidgetProcessingMixin:
                     defer_heavy_overlays=False,
                     preserve_view=preserve_editor_view_position,
                     clear_neighbors=True,
+                    sync_neighbors=False,
                 )
                 if profile_enabled:
                     profile_timings["apply_frame_to_editor"] = (perf_counter() - step_start) * 1000.0
             finally:
                 self._updating_views = False
             step_start = perf_counter()
-            self._request_neighbor_frame_sync(delay_ms=0)
-            if profile_enabled:
-                profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
-            step_start = perf_counter()
             self._center_editor_on_current_main_image(force=True)
             if profile_enabled:
                 profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
+            if load_vectors:
+                self._schedule_deferred_geometry_validation(image_result.image_path)
+            step_start = perf_counter()
+            self._request_neighbor_frame_sync(delay_ms=0)
+            if profile_enabled:
+                profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
             step_start = perf_counter()
             self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
@@ -3685,19 +3913,22 @@ class WidgetProcessingMixin:
                     defer_heavy_overlays=False,
                     preserve_view=preserve_editor_view_position,
                     clear_neighbors=True,
+                    sync_neighbors=False,
                 )
                 if profile_enabled:
                     profile_timings["apply_frame_to_editor"] = (perf_counter() - step_start) * 1000.0
             finally:
                 self._updating_views = False
             step_start = perf_counter()
-            self._request_neighbor_frame_sync(delay_ms=0)
-            if profile_enabled:
-                profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
-            step_start = perf_counter()
             self._center_editor_on_current_main_image(force=True)
             if profile_enabled:
                 profile_timings["center_main_image"] = (perf_counter() - step_start) * 1000.0
+            if load_vectors:
+                self._schedule_deferred_geometry_validation(image_result.image_path)
+            step_start = perf_counter()
+            self._request_neighbor_frame_sync(delay_ms=0)
+            if profile_enabled:
+                profile_timings["sync_neighbor_frames"] = (perf_counter() - step_start) * 1000.0
             step_start = perf_counter()
             self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
@@ -3746,6 +3977,421 @@ class WidgetProcessingMixin:
                 profiler=profiler,
                 vectors_only=image_result.vectors_only,
             )
+        self._schedule_frame_prefetch()
+
+    def _offer_invalid_polygon_descriptions_if_vectors_visible(self: Any, image_path: str) -> None:
+        """Start deferred geometry validation once current-frame vectors are on the editor."""
+
+        if getattr(self, "_pending_editor_frame_apply", None) is not None:
+            return
+        if not self._editor_polygons_are_current_frame():
+            return
+        self._schedule_deferred_geometry_validation(image_path)
+
+    def _schedule_deferred_geometry_validation(self: Any, image_path: str) -> None:
+        """Validate repair reasons off the UI thread; abort if the frame switches."""
+
+        if bool(getattr(self, "_closing", False)):
+            return
+        if getattr(self, "_pending_editor_frame_apply", None) is not None:
+            return
+        if not self._editor_polygons_are_current_frame():
+            return
+        expected = str(Path(image_path))
+        current = str(Path(self._workspace.current_image_path or ""))
+        if expected != current:
+            return
+        cached = self._repair_reasons_for_image_path(expected)
+        if cached is not None:
+            if hasattr(self, "polygon_editor") and hasattr(self.polygon_editor, "apply_polygons_needing_repair"):
+                self.polygon_editor.apply_polygons_needing_repair(cached)
+            if cached:
+                self._schedule_invalid_polygon_description_offer(expected)
+            return
+        self._geometry_validation_generation = int(getattr(self, "_geometry_validation_generation", 0)) + 1
+        generation = self._geometry_validation_generation
+        state = self._workspace.cached_state(expected)
+        polygons = list(state.polygons) if state is not None else self.polygon_editor.get_polygons()
+        if not polygons:
+            if hasattr(self, "polygon_editor") and hasattr(self.polygon_editor, "apply_polygons_needing_repair"):
+                self.polygon_editor.apply_polygons_needing_repair({})
+            return
+        runnable = GeometryValidationRunnable(
+            generation,
+            expected,
+            polygons,
+            self._make_polygon_repair_scanner(),
+        )
+
+        def _on_result(req_id: int, path: str, reasons_obj: object) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            if req_id != int(getattr(self, "_geometry_validation_generation", 0)):
+                return
+            if str(Path(self._workspace.current_image_path or "")) != str(Path(path)):
+                return
+            reasons = {
+                int(polygon_id): list(codes)
+                for polygon_id, codes in dict(reasons_obj or {}).items()
+            }
+            cached_state = self._workspace.cached_state(path)
+            if cached_state is not None:
+                cached_state.polygons_needing_repair = reasons
+            if hasattr(self, "polygon_editor") and hasattr(self.polygon_editor, "apply_polygons_needing_repair"):
+                self.polygon_editor.apply_polygons_needing_repair(reasons)
+            if reasons:
+                self._schedule_invalid_polygon_description_offer(path)
+
+        def _on_error(req_id: int, path: str, message: str) -> None:
+            if req_id != int(getattr(self, "_geometry_validation_generation", 0)):
+                return
+            if str(Path(self._workspace.current_image_path or "")) != str(Path(path)):
+                return
+            self._append_log(
+                self._tr(
+                    "geometry_validation_failed_log",
+                    "Geometry validation failed: {error}" if self._ui_language != "ru" else "Проверка геометрии не удалась: {error}",
+                    error=message,
+                )
+            )
+
+        runnable.signals.result.connect(_on_result)
+        runnable.signals.error.connect(_on_error)
+        self._frame_load_thread_pool.start(runnable)
+
+    def _schedule_invalid_polygon_description_offer(self: Any, image_path: str) -> None:
+        """Prompt for topology repair after deferred validation marks invalid polygons."""
+
+        if bool(getattr(self, "_invalid_polygon_offer_active", False)):
+            return
+        expected = str(Path(image_path))
+        editor = getattr(self, "polygon_editor", None)
+        if editor is not None:
+            viewport = getattr(editor, "viewport", None)
+            view = viewport() if callable(viewport) else None
+            if view is not None:
+                view.repaint()
+        QTimer.singleShot(
+            0,
+            lambda path=expected: self._offer_repair_invalid_polygon_descriptions(path),
+        )
+
+    def _format_invalid_polygon_description_reasons(
+        self: Any,
+        polygons: list,
+        *,
+        reasons_by_id: dict[int, list[str]] | None = None,
+    ) -> str:
+        reason_defaults = {
+            "repeated_vertex": (
+                "повтор вершины (связка keyhole)"
+                if self._ui_language == "ru"
+                else "repeated vertex (keyhole link)"
+            ),
+            "self_intersecting": (
+                "самопересечение или самокасание контура"
+                if self._ui_language == "ru"
+                else "self-intersecting or self-touching outline"
+            ),
+            "overlapping": (
+                "пересечение / наложение полигонов"
+                if self._ui_language == "ru"
+                else "intersecting / overlapping polygons"
+            ),
+            "small_object": (
+                "площадь объекта ниже минимума"
+                if self._ui_language == "ru"
+                else "object area below minimum"
+            ),
+            "small_hole": (
+                "площадь выреза ниже минимума"
+                if self._ui_language == "ru"
+                else "cutout area below minimum"
+            ),
+        }
+        counts: dict[str, int] = {}
+        order: list[str] = []
+        if reasons_by_id is not None:
+            for polygon in polygons:
+                for reason in reasons_by_id.get(int(getattr(polygon, "id", -1)), ()):
+                    if reason not in counts:
+                        order.append(reason)
+                        counts[reason] = 0
+                    counts[reason] += 1
+        else:
+            settings = None
+            if hasattr(self, "_vector_geometry_settings_from_widgets"):
+                settings = self._vector_geometry_settings_from_widgets()
+            for reason, count in summarize_invalid_polygon_description_reasons(polygons, settings):
+                order.append(reason)
+                counts[reason] = count
+        parts: list[str] = []
+        for reason in order:
+            count = counts[reason]
+            label = self._tr(
+                f"invalid_polygon_reason_{reason}",
+                reason_defaults.get(reason, reason),
+            )
+            if count > 1:
+                parts.append(f"{label} ({count})")
+            else:
+                parts.append(label)
+        if parts:
+            return "; ".join(parts)
+        return "—" if self._ui_language == "ru" else "—"
+
+    def _offer_repair_invalid_polygon_descriptions(self: Any, expected_path: str = "") -> None:
+        if bool(getattr(self, "_invalid_polygon_offer_active", False)):
+            return
+        if bool(getattr(self, "_closing", False)):
+            return
+        if bool(getattr(self, "_work_simulation_running", False)):
+            return
+        current = str(Path(self._workspace.current_image_path or ""))
+        if expected_path and current != str(Path(expected_path)):
+            return
+        from os import environ
+
+        if environ.get("PYTEST_CURRENT_TEST"):
+            return
+        if not self.isVisible():
+            return
+        polygons = self.polygon_editor.get_polygons()
+        reasons_by_id = None
+        if hasattr(self.polygon_editor, "polygons_needing_repair_map"):
+            reasons_by_id = self.polygon_editor.polygons_needing_repair_map()
+        if not reasons_by_id:
+            reasons_by_id = self._repair_reasons_for_image_path(current) or {}
+        invalid_count = len(reasons_by_id)
+        if invalid_count <= 0:
+            return
+        reasons_text = self._format_invalid_polygon_description_reasons(
+            polygons,
+            reasons_by_id=reasons_by_id,
+        )
+        dismissed = getattr(self, "_invalid_polygon_prompt_dismissed", set())
+        if current in dismissed:
+            return
+        self._invalid_polygon_offer_active = True
+        try:
+            answer = QMessageBox.question(
+                self,
+                self._tr(
+                    "invalid_polygon_description_title",
+                    "Некорректное описание полигона" if self._ui_language == "ru" else "Incorrect polygon description",
+                ),
+                self._tr(
+                    "invalid_polygon_description_prompt",
+                    "Найдено полигонов с некорректным описанием: {count}. Причина: {reasons}. "
+                    "Они выделены красным. Исправить топологию?"
+                    if self._ui_language == "ru"
+                    else "Found {count} incorrectly described polygon(s). Reason: {reasons}. "
+                    "They are marked in red. Repair the topology?",
+                    count=invalid_count,
+                    reasons=reasons_text,
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+        finally:
+            self._invalid_polygon_offer_active = False
+        if answer != QMessageBox.StandardButton.Yes:
+            dismissed.add(current)
+            self._invalid_polygon_prompt_dismissed = dismissed
+            self._append_log(
+                self._tr(
+                    "invalid_polygon_description_kept_log",
+                    "Оставлены некорректные полигоны: {count}. Причина: {reasons}."
+                    if self._ui_language == "ru"
+                    else "Left {count} incorrectly described polygon(s). Reason: {reasons}.",
+                    count=invalid_count,
+                    reasons=reasons_text,
+                )
+            )
+            return
+        repaired = self.polygon_editor.repair_invalid_polygon_descriptions()
+        if not repaired:
+            self._append_log(
+                self._tr(
+                    "invalid_polygon_description_unrepaired_log",
+                    "Не удалось автоматически исправить некорректные полигоны."
+                    if self._ui_language == "ru"
+                    else "Could not automatically repair incorrectly described polygons.",
+                )
+            )
+            return
+        self._sync_editor_polygons_to_current_workspace()
+        settings = (
+            self._vector_geometry_settings_from_widgets()
+            if hasattr(self, "_vector_geometry_settings_from_widgets")
+            else VectorGeometrySettings()
+        )
+        remaining = len(
+            polygons_needing_repair(self.polygon_editor.get_polygons(), settings)
+        )
+        state = self._workspace.current_state
+        if state is not None:
+            state.polygons_needing_repair = {}
+        if hasattr(self.polygon_editor, "apply_polygons_needing_repair"):
+            self.polygon_editor.apply_polygons_needing_repair({})
+        self._append_log(
+            self._tr(
+                "invalid_polygon_description_repaired_log",
+                "Исправлено некорректных полигонов: {count}. Причина: {reasons}."
+                if self._ui_language == "ru"
+                else "Repaired incorrectly described polygons: {count}. Reason: {reasons}.",
+                count=invalid_count - remaining,
+                reasons=reasons_text,
+            )
+        )
+
+    def _schedule_frame_prefetch(self: Any) -> None:
+        if bool(getattr(self, "_closing", False)):
+            return
+        timer = getattr(self, "_prefetch_timer", None)
+        if timer is None:
+            return
+        timer.stop()
+        timer.start(80)
+
+    def _prefetch_neighborhood_paths(self: Any) -> tuple[str, ...]:
+        paths = self._ordered_workspace_image_paths()
+        current = self._workspace.current_image_path
+        if not paths or current is None:
+            return ()
+        mapping = getattr(self, "_image_path_to_index", {})
+        current_index = mapping.get(current) if mapping else None
+        if current_index is None:
+            current_normalized = current if current in paths else str(Path(current))
+            try:
+                current_index = paths.index(current_normalized)
+            except ValueError:
+                return ()
+        matrix_enabled = bool(self._frame_matrix_enabled()) if hasattr(self, "_frame_matrix_enabled") else False
+        columns = int(self._thumbnail_columns()) if hasattr(self, "_thumbnail_columns") else 1
+        indices = neighborhood_indices(
+            current_index,
+            len(paths),
+            matrix_enabled=matrix_enabled,
+            columns=columns,
+        )
+        return tuple(paths[index] for index in indices)
+
+    def _prefetch_frame_neighborhood(self: Any) -> None:
+        if bool(getattr(self, "_closing", False)):
+            return
+        if getattr(self, "_frame_load_running_path", None) is not None:
+            self._schedule_frame_prefetch()
+            return
+        neighborhood = self._prefetch_neighborhood_paths()
+        if not neighborhood:
+            return
+        neighborhood_set = frozenset(neighborhood)
+        self._prefetch_neighborhood_set = neighborhood_set
+        self._workspace.retain_cached_states(neighborhood)
+        self._prefetch_generation = int(getattr(self, "_prefetch_generation", 0)) + 1
+        generation = self._prefetch_generation
+        current = self._workspace.current_image_path or ""
+        if current and current not in getattr(self, "_image_path_to_index", {}):
+            current = str(Path(current))
+        running = getattr(self, "_frame_load_running_path", "") or ""
+        if running and running not in getattr(self, "_image_path_to_index", {}):
+            running = str(Path(running))
+        queued = getattr(self, "_prefetch_queued_paths", set())
+        for path in neighborhood:
+            if path in {current, running} or path in queued:
+                continue
+            needs_source = not self._workspace.has_cached_source(path)
+            needs_vectors = self._workspace.needs_vector_overlay(path)
+            if not needs_source and not needs_vectors:
+                continue
+            self._enqueue_prefetch_frame(
+                path,
+                generation,
+                vectors_only=bool(not needs_source and needs_vectors),
+                neighborhood_set=neighborhood_set,
+            )
+
+    def _enqueue_prefetch_frame(
+        self: Any,
+        image_path: str,
+        generation: int,
+        *,
+        vectors_only: bool = False,
+        neighborhood_set: frozenset[str] | None = None,
+    ) -> None:
+        self._prefetch_request_serial = int(getattr(self, "_prefetch_request_serial", 0)) + 1
+        request_id = self._prefetch_request_serial
+        self._prefetch_queued_paths.add(image_path)
+        active_neighborhood = neighborhood_set or frozenset(self._prefetch_neighborhood_paths())
+
+        runnable = FrameLoadRunnable(
+            request_id,
+            image_path,
+            load_source_image=None if vectors_only else self._load_scene_source_image_cached,
+            load_cif_overlay=self._load_cif_overlay_polygons,
+            load_vectors=True,
+            vectors_only=vectors_only,
+            scan_repair=self._make_polygon_repair_scanner(),
+        )
+
+        def _on_result(_req_id: int, payload_obj: object) -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            self._prefetch_queued_paths.discard(image_path)
+            if generation != int(getattr(self, "_prefetch_generation", 0)):
+                latest = getattr(self, "_prefetch_neighborhood_set", active_neighborhood)
+                if image_path not in latest:
+                    return
+            if not isinstance(payload_obj, FrameLoadPayload):
+                return
+            loaded_path = payload_obj.image_path
+            if loaded_path not in getattr(self, "_image_path_to_index", {}):
+                loaded_path = str(Path(payload_obj.image_path))
+            latest = getattr(self, "_prefetch_neighborhood_set", active_neighborhood)
+            if loaded_path not in latest:
+                return
+            if self._workspace.image_has_changes(loaded_path):
+                return
+            cif_path = self._find_matching_cif_path(loaded_path)
+            repair_reasons = self._payload_repair_reasons(payload_obj)
+            if payload_obj.vectors_only:
+                if not self._workspace.has_cached_source(loaded_path):
+                    return
+                if not self._workspace.needs_vector_overlay(loaded_path):
+                    return
+                self._workspace.apply_frame_vectors(
+                    loaded_path,
+                    polygons=list(payload_obj.polygons),
+                    loaded_cif_path=cif_path,
+                    polygons_needing_repair=repair_reasons,
+                )
+                return
+            if self._workspace.has_cached_source(loaded_path):
+                # Source arrived from another path; still fill missing overlays.
+                if self._workspace.needs_vector_overlay(loaded_path):
+                    self._workspace.apply_frame_vectors(
+                        loaded_path,
+                        polygons=list(payload_obj.polygons),
+                        loaded_cif_path=cif_path,
+                        polygons_needing_repair=repair_reasons,
+                    )
+                return
+            self._workspace.apply_loaded_frame(
+                loaded_path,
+                source_image=payload_obj.source_image,
+                polygons=list(payload_obj.polygons),
+                make_current=False,
+                loaded_cif_path=cif_path,
+                polygons_needing_repair=repair_reasons,
+            )
+
+        def _on_error(_req_id: int, failed_path: str, _message: str) -> None:
+            self._prefetch_queued_paths.discard(failed_path)
+
+        runnable.signals.result.connect(_on_result)
+        runnable.signals.error.connect(_on_error)
+        self._prefetch_thread_pool.start(runnable)
 
     def _frame_switch_profiling_active(self: Any) -> bool:
         return frame_switch_profiling_enabled()
@@ -4123,7 +4769,10 @@ class WidgetProcessingMixin:
             polygons=polygons,
         )
         if result.message_key is not None:
-            self._append_log(self._tr(result.message_key, **(result.message_kwargs or {})))
+            message = self._tr(result.message_key, **(result.message_kwargs or {}))
+            self._append_log(message)
+            if not result.saved_files:
+                self._last_vector_persist_error = message
         return result.saved_files
 
     def export_current_frame_to_dataset(self: Any, dataset_directory: str | None = None) -> dict[str, str]:

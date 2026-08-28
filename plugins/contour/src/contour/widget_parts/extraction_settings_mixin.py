@@ -562,14 +562,15 @@ class WidgetExtractionSettingsMixin:
                 mp_key = str(getattr(settings, "metal_preset", "standard") or "standard")
                 label_map = {
                     "standard": "Стандартный" if self._ui_language == "ru" else "Standard",
-                    "noisy_sem": "Шумное SEM" if self._ui_language == "ru" else "Noisy SEM",
-                    "thin_traces": "Тонкие дорожки" if self._ui_language == "ru" else "Thin traces",
-                    "wide_fills": "Широкие заливки" if self._ui_language == "ru" else "Wide fills",
                 }
                 mp_label = label_map.get(mp_key, label_map["standard"])
                 mp = self.metal_preset_combo.findText(mp_label)
                 if mp >= 0:
                     self.metal_preset_combo.setCurrentIndex(mp)
+                elif mp_key != "standard":
+                    user_index = self.metal_preset_combo.findText(mp_key)
+                    if user_index >= 0:
+                        self.metal_preset_combo.setCurrentIndex(user_index)
                 if hasattr(self, "metal_min_contrast_slider"):
                     self.metal_min_contrast_slider.setValue(
                         int(round(float(getattr(settings, "metal_min_contrast", 50.0))))
@@ -1240,6 +1241,8 @@ class WidgetExtractionSettingsMixin:
             self._update_frame_item_status(current)
         if hasattr(self, "_update_vector_edit_status_label"):
             self._update_vector_edit_status_label()
+        if hasattr(self, "_schedule_invalid_polygon_description_offer"):
+            self._schedule_invalid_polygon_description_offer(current)
 
     def _on_via_brightness_range_changed(self, *_args) -> None:
         if (

@@ -60,6 +60,8 @@ QDockWidget {
     background-color: #121922;
     border: 1px solid #2a3a4d;
     border-radius: 10px;
+    titlebar-close-icon: url(icons/dock_close_light.svg);
+    titlebar-normal-icon: url(icons/dock_float_light.svg);
 }
 
 QDockWidget::title {

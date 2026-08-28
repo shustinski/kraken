@@ -101,6 +101,54 @@ def _normalized_closed_points_and_index(
     return list(points), vertex_index
 
 
+def closed_ring_has_repeated_vertex(points: list[tuple[float, float]]) -> bool:
+    """True when a vertex repeats and is not only the closing duplicate of a ring."""
+
+    if len(points) < 2:
+        return False
+    open_points = list(points)
+    if len(open_points) >= 2 and _point_equal(open_points[0], open_points[-1]):
+        open_points = open_points[:-1]
+    seen: set[tuple[int, int]] = set()
+    inv_eps = 1.0 / _POINT_EQ_EPS
+    for x_coord, y_coord in open_points:
+        key = (int(round(float(x_coord) * inv_eps)), int(round(float(y_coord) * inv_eps)))
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
+
+
+def closed_ring_description_is_invalid(points: list[tuple[float, float]]) -> bool:
+    """True for a truly invalid outline (e.g. bowtie), not a CIF keyhole bridge.
+
+    CIF keyholes use a repeated vertex as a cut-line bridge; that is valid CIF and
+    still reported by ``closed_ring_description_invalid_reason`` as ``repeated_vertex``
+    for diagnostics / explicit keyhole repair, but is not treated as invalid here.
+    """
+
+    reason = closed_ring_description_invalid_reason(points)
+    return reason is not None and reason != "repeated_vertex"
+
+
+def closed_ring_description_invalid_reason(points: list[tuple[float, float]]) -> str | None:
+    """Return a stable reason code, or ``None`` when the outline is a simple ring.
+
+    Codes:
+    - ``repeated_vertex`` — a non-closing vertex repeats (typical CIF keyhole bridge;
+      diagnostic / explicit repair only; not an invalid description by itself)
+    - ``self_intersecting`` — edges cross or the ring self-touches without a repeated vertex
+    """
+
+    if len(points) < 3:
+        return None
+    if closed_ring_has_repeated_vertex(points):
+        return "repeated_vertex"
+    if not is_valid_closed_polygon_ring(points):
+        return "self_intersecting"
+    return None
+
+
 def is_valid_closed_polygon_ring(points: list[tuple[float, float]]) -> bool:
     """Closed polygon with edges (i, i+1 mod n); reject self-intersection / self-touch and
     duplicate vertices that are not consecutive on the ring."""

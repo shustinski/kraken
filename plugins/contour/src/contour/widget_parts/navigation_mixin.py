@@ -45,6 +45,15 @@ class WidgetNavigationMixin:
 
     def _image_path_for_cif_stem(self: Any, stem: str) -> str | None:
         target = stem.lower()
+        indexed = getattr(self, "_image_path_by_stem_lower", None)
+        if indexed:
+            return indexed.get(target)
+        stems = getattr(self, "_image_path_stem_lower", None)
+        if stems:
+            for path, path_stem in stems.items():
+                if path_stem == target:
+                    return path
+            return None
         for path in self._workspace.image_paths:
             if Path(path).stem.lower() == target:
                 return str(Path(path))
@@ -59,7 +68,7 @@ class WidgetNavigationMixin:
         ipath = self._image_path_for_cif_stem(stem_lower)
         has_matching = ipath is not None
         cif_failed = stem_lower in self._cif_load_failure_stems
-        normalized = "" if ipath is None else str(Path(ipath))
+        normalized = ipath or ""
         never_opened = (not normalized) or (normalized not in self._viewed_image_paths)
         dirty = bool(ipath is not None and self._workspace.image_has_changes(normalized))
         persist = normalized in self._persisted_highlight_paths if normalized else False
@@ -136,10 +145,49 @@ class WidgetNavigationMixin:
                 item.setHidden(bool(match_only and not has_vector))
                 return
 
+    def _cancel_asset_filter_list_build(self: Any) -> None:
+        self._asset_list_build_generation += 1
+        if not hasattr(self, "image_vector_list"):
+            return
+        for list_widget in (self.image_vector_list, self.image_only_list, self.vector_only_list):
+            list_widget.clear()
+
+    def _refresh_asset_filter_list_item_states(self: Any) -> None:
+        if not hasattr(self, "image_vector_list"):
+            return
+        if len(self._workspace.image_paths) > ASSET_FILTER_LISTS_MAX_FRAMES:
+            if self.image_vector_list.count() or self.image_only_list.count() or self.vector_only_list.count():
+                self._cancel_asset_filter_list_build()
+            return
+        match_only = bool(getattr(self, "_asset_filter_match_only", False))
+        for list_widget in (self.image_vector_list, self.image_only_list):
+            for index in range(list_widget.count()):
+                item = list_widget.item(index)
+                if item is None:
+                    continue
+                image_path = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                if not image_path:
+                    continue
+                self._paint_image_row_item(item, image_path)
+                item.setHidden(
+                    bool(match_only and not self._image_path_has_matching_vector(image_path))
+                )
+        if not hasattr(self, "vector_only_list"):
+            return
+        for index in range(self.vector_only_list.count()):
+            item = self.vector_only_list.item(index)
+            if item is None:
+                continue
+            tip = item.toolTip()
+            if not tip:
+                continue
+            self._paint_vector_list_item(item, Path(tip).stem.lower())
+
     def _rebuild_asset_filter_lists(self: Any) -> None:
         if not hasattr(self, "image_vector_list"):
             return
         if len(self._workspace.image_paths) > ASSET_FILTER_LISTS_MAX_FRAMES:
+            self._cancel_asset_filter_list_build()
             return
         self._asset_list_build_generation += 1
         generation = self._asset_list_build_generation
@@ -362,6 +410,7 @@ class WidgetNavigationMixin:
         else:
             self._disable_frame_matrix_runtime()
         self._save_persisted_display_settings()
+        self._schedule_frame_prefetch()
 
     def _on_frame_matrix_thumbnail_settings_changed(self: Any, *_args) -> None:
         thumbnails_enabled = self._frame_matrix_thumbnails_enabled()
@@ -1714,6 +1763,7 @@ class WidgetNavigationMixin:
             self._sync_neighbor_frames()
             self._configure_thumbnail_grid_geometry()
             self._save_persisted_display_settings()
+            self._schedule_frame_prefetch()
             return
         self._sync_neighbor_frames()
         self._configure_thumbnail_grid_geometry()
@@ -1722,6 +1772,7 @@ class WidgetNavigationMixin:
                 [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
             )
         self._save_persisted_display_settings()
+        self._schedule_frame_prefetch()
 
     def _refresh_extra_layers_list(self: Any) -> None:
         if not hasattr(self, "extra_layers_list"):

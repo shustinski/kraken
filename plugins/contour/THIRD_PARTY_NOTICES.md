@@ -38,3 +38,13 @@ authorised this integration. Distribution must comply with the AGPL and make
 the corresponding source and licence notices available.
 
 The complete AGPL text is shipped as `third_party/BSR-AGPL-3.0.txt`.
+
+## LibOpenCIF
+
+Source: `D:\code\LibOpenCIF`, upstream LibOpenCIF 1.2.0 (Moises Chavez Martinez).
+
+Contour vendors the upstream two-file distribution (`libopencif.hh`, `libopencif.cc`)
+under `third_party/libopencif/` and exposes it through the `contour._native.cif_loader`
+pybind11 extension for standards-compliant CIF parsing.
+
+License: GNU General Public License v3.0 or later. See the upstream `LICENSE` file.

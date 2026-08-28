@@ -18,6 +18,7 @@ from contour.application.services.workspace_session import WorkspaceSession
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 from contour.graphics.editor_scene import PolygonEditorScene
+from contour.graphics_items import EditablePolygonItem
 from contour.graphics.polygon_creation import (
     POLYGON_COMMIT_INVALID_RING,
     POLYGON_COMMIT_TOO_FEW_VERTICES,
@@ -128,6 +129,49 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
 
         self.assertEqual(self.scene._recycled_polygon_items, [])
         self.assertFalse(self.scene._recycled_polygon_cleanup_timer.isActive())
+
+    def test_set_polygons_paints_conductor_items_once(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        with patch.object(
+            EditablePolygonItem,
+            "update_from_polygon",
+            autospec=True,
+            side_effect=EditablePolygonItem.update_from_polygon,
+        ) as update:
+            self.scene.set_polygons([outer, hole])
+
+        self.assertEqual(update.call_count, 2)
+        self.assertEqual(self.scene._polygon_items[1].polygon_id, 1)
+        self.assertEqual(self.scene._polygon_items[2].polygon_id, 2)
+
+    def test_set_polygons_can_skip_repair_geometry_scan(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        with patch(
+            "contour.graphics.editor_scene.polygons_needing_repair",
+            side_effect=AssertionError("frame switch must not scan repair geometry"),
+        ):
+            self.scene.set_polygons([outer], scan_repair=False)
+        self.assertEqual(self.scene.polygons_needing_repair_map(), {})
+
+    def test_set_polygons_applies_precomputed_repair_reasons(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        with patch(
+            "contour.graphics.editor_scene.polygons_needing_repair",
+            side_effect=AssertionError("precomputed repair must not rescan"),
+        ):
+            self.scene.set_polygons(
+                [outer],
+                repair_reasons={1: ["overlapping"]},
+                scan_repair=False,
+            )
+        self.assertEqual(self.scene.polygons_needing_repair_map(), {1: ["overlapping"]})
+        self.assertTrue(self.scene.polygon_needs_repair(1))
 
     def test_polygon_points_returns_empty_for_missing_id(self) -> None:
         self._reset([_polygon(2, [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)])])
@@ -374,6 +418,24 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.assertEqual(len(self.scene._polygon_items[1]._handles), 4)
         self.assertEqual(len(self.scene._polygon_items[2]._handles), 4)
 
+    def test_show_all_editable_vertices_draws_handles_on_unselected_polygons(self) -> None:
+        first = _polygon(1, [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)])
+        second = _polygon(2, [(50.0, 0.0), (90.0, 0.0), (90.0, 40.0), (50.0, 40.0)])
+        via = _polygon(3, [(0.0, 50.0), (20.0, 50.0), (20.0, 70.0), (0.0, 70.0)])
+        via.category = "via"
+        via.shape_hint = "box"
+        self._reset([first, second, via])
+
+        self.assertEqual(len(self.scene._polygon_items[1]._handles), 0)
+        self.scene.set_show_all_editable_vertices(True)
+
+        self.assertEqual(len(self.scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.scene._polygon_items[2]._handles), 4)
+        self.assertEqual(len(self.scene._polygon_items[3]._handles), 0)
+
+        self.scene.set_show_all_editable_vertices(False)
+        self.assertEqual(len(self.scene._polygon_items[1]._handles), 0)
+
     def test_multi_selection_computes_editable_vertex_ids_once_for_full_refresh(self) -> None:
         polygons = [
             _polygon(
@@ -406,6 +468,72 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.scene.select_polygon(7)
 
         self.assertEqual(self.scene._polygon_items[7].pen().color().name().upper(), "#FACC15")
+
+    def test_hole_styling_survives_replacing_then_restoring_polygons(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (80.0, 0.0), (80.0, 80.0), (0.0, 80.0)])
+        hole = _polygon(
+            2,
+            [(20.0, 20.0), (40.0, 20.0), (40.0, 40.0), (20.0, 40.0)],
+            is_hole=True,
+            parent_id=1,
+        )
+        self._reset([outer, hole])
+        hole_color = self.scene._display_settings.hole_color.lower()
+        self.assertTrue(self.scene.get_polygons()[1].is_hole)
+        self.assertEqual(self.scene._polygon_items[2].pen().color().name().lower(), hole_color)
+        self.assertTrue(self.scene._cutout_polygons_for(1))
+        self.assertFalse(self.scene._polygon_items[1].contains(QPointF(30.0, 30.0)))
+        self.assertEqual(self.scene._polygon_items[2].brush().color().alpha(), 0)
+
+        self._reset([_polygon(1, [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])])
+        self._reset([outer.clone(), hole.clone()])
+
+        restored = {polygon.id: polygon for polygon in self.scene.get_polygons()}
+        self.assertTrue(restored[2].is_hole)
+        self.assertEqual(restored[2].parent_id, 1)
+        self.assertEqual(self.scene._polygon_items[2].pen().color().name().lower(), hole_color)
+        self.assertTrue(self.scene._cutout_polygons_for(1))
+        self.assertFalse(self.scene._polygon_items[1].contains(QPointF(30.0, 30.0)))
+        self.assertEqual(self.scene._polygon_items[2].brush().color().alpha(), 0)
+        self.assertGreater(
+            self.scene._polygon_items[2].zValue(),
+            self.scene._polygon_items[1].zValue(),
+        )
+
+    def test_invalid_description_is_drawn_red_and_can_be_repaired(self) -> None:
+        bowtie = _polygon(1, [(0.0, 0.0), (40.0, 40.0), (40.0, 0.0), (0.0, 40.0)])
+        self._reset([bowtie])
+
+        item = self.scene._polygon_items[1]
+        self.assertEqual(item.pen().color().name().upper(), "#DC2626")
+        self.assertTrue(item.toolTip())
+
+        self.assertTrue(self.scene.repair_invalid_polygon_descriptions())
+        self.assertFalse(any(polygon.description_is_invalid() for polygon in self.scene.get_polygons()))
+        for item in self.scene._polygon_items.values():
+            self.assertNotEqual(item.pen().color().name().upper(), "#DC2626")
+
+    def test_overlapping_and_small_geometry_are_drawn_red_and_repaired(self) -> None:
+        self.scene.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=50.0,
+                min_hole_area_to_remove_px2=100.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
+        a = _polygon(1, [(0.0, 0.0), (70.0, 0.0), (70.0, 70.0), (0.0, 70.0)])
+        b = _polygon(2, [(35.0, 35.0), (95.0, 35.0), (95.0, 95.0), (35.0, 95.0)])
+        tiny = _polygon(3, [(200.0, 200.0), (203.0, 200.0), (203.0, 203.0), (200.0, 203.0)])
+        self._reset([a, b, tiny])
+
+        self.assertEqual(self.scene._polygon_items[1].pen().color().name().upper(), "#DC2626")
+        self.assertEqual(self.scene._polygon_items[2].pen().color().name().upper(), "#DC2626")
+        self.assertEqual(self.scene._polygon_items[3].pen().color().name().upper(), "#DC2626")
+        self.assertTrue(self.scene.repair_invalid_polygon_descriptions())
+        remaining = self.scene.get_polygons()
+        self.assertEqual(len([polygon for polygon in remaining if not polygon.is_hole]), 1)
+        for item in self.scene._polygon_items.values():
+            self.assertNotEqual(item.pen().color().name().upper(), "#DC2626")
 
     def test_invalid_polygon_not_committed_keeps_pending(self) -> None:
         self._reset([])
@@ -503,3 +631,46 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         polygons = self.scene.get_polygons()
         self.assertEqual(len(polygons), 2)
         self.assertEqual(self.scene.selected_polygon_id(), 11)
+
+
+class PolygonOverlapPickTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = _app()
+
+    def setUp(self) -> None:
+        self.scene = PolygonEditorScene()
+
+    def tearDown(self) -> None:
+        self.scene.deleteLater()
+
+    def test_keyhole_frame_does_not_block_inner_conductor_pick(self) -> None:
+        """Self-intersecting frame hull must not steal picks from nested conductors."""
+        from pathlib import Path
+
+        from contour.serializers import clear_cif_parse_cache, load_polygons_cif
+
+        cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0516.cif")
+        if not cif_path.exists():
+            self.skipTest("0516.cif sample is not available")
+        clear_cif_parse_cache()
+        _, _, polygons = load_polygons_cif(cif_path)
+        by_id = {polygon.id: polygon for polygon in polygons}
+        self.scene.set_polygons([by_id[18], by_id[22]])
+        center = QPointF(1146.0, 1471.0)
+        self.assertEqual(self.scene.polygons_at(center), [18])
+
+    def test_repeated_click_cycles_overlapping_conductors(self) -> None:
+        small = _polygon(1, [(40.0, 40.0), (90.0, 40.0), (90.0, 90.0), (40.0, 90.0)])
+        large = _polygon(2, [(0.0, 0.0), (120.0, 0.0), (120.0, 120.0), (0.0, 120.0)])
+        self.scene.set_polygons([large, small])
+        overlap = QPointF(65.0, 65.0)
+        self.assertEqual(self.scene.polygons_at(overlap), [1, 2])
+        first = self.scene.polygon_at(overlap, cycle=True)
+        second = self.scene.polygon_at(overlap, cycle=True)
+        self.assertNotEqual(first, second)
+        self.assertEqual({first, second}, {1, 2})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -212,6 +212,26 @@ class WidgetPipelineActionsMixin:
                 selected_index = self.via_preset_combo.findText(preset_name)
                 if selected_index >= 0:
                     self.via_preset_combo.setCurrentIndex(selected_index)
+        elif payload.get("format") == "contour-metal-preset":
+            settings_payload = payload.get("settings")
+            if isinstance(settings_payload, dict):
+                preset_name = str(payload.get("name") or Path(path).stem).strip() or Path(path).stem
+                if preset_name in self._built_in_metal_presets():
+                    preset_name = (
+                        f"{preset_name} (user)"
+                        if self._ui_language != "ru"
+                        else f"{preset_name} (пользовательский)"
+                    )
+                self._user_metal_presets[preset_name] = {
+                    str(key): value for key, value in settings_payload.items()
+                }
+                self._save_user_metal_presets()
+                self._refresh_metal_preset_combo()
+                self._apply_metal_preset_payload(dict(settings_payload))
+                with QSignalBlocker(self.metal_preset_combo):
+                    selected_index = self.metal_preset_combo.findText(preset_name)
+                    if selected_index >= 0:
+                        self.metal_preset_combo.setCurrentIndex(selected_index)
         elif isinstance(payload.get("pipeline"), dict):
             self.set_pipeline(dict(payload["pipeline"]))
             recognition_payload = payload.get("recognition_settings")

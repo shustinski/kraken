@@ -13,7 +13,9 @@ from PyQt6.QtCore import QSignalBlocker
 from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox
 
 from ..vision.metal_recovery.strategy_registry import strategy_spec
+from .bright_via_i18n import retranslate_bright_via_panel
 from .i18n_content import PIPELINE_CONTROL_TOOLTIPS, _localized_text
+from .metal_debug_i18n import retranslate_metal_debug_visual_combo
 from .metal_strategy_i18n import choice_label, parameter_label, parameter_tooltip, strategy_name
 
 if TYPE_CHECKING:
@@ -107,11 +109,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.merge_cif_files_button, "merge_cif_files"),
     ):
         self._set_common_tooltip(widget, tooltip_key)
-    self.pick_input_files_button.setToolTip("Выбрать кадры базового слоя")
-    self.pick_input_files_button.setStatusTip(self.pick_input_files_button.toolTip())
-    self.browse_input_button.setToolTip("Загрузить папку базового слоя")
-    self.browse_input_button.setStatusTip(self.browse_input_button.toolTip())
-
     for tab, key in (
         (getattr(self, "paths_tab", None), "tab_paths"),
         (getattr(self, "pipeline_tab", None), "tab_pipeline"),
@@ -415,6 +412,10 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
 
     if hasattr(self, "metal_basic_group"):
         is_ru = self._ui_language == "ru"
+        if hasattr(self, "metal_preset_group"):
+            self.metal_preset_group.setTitle(
+                "Пресеты распознавания" if is_ru else "Recognition presets"
+            )
         self.metal_basic_group.setTitle("Основные параметры" if is_ru else "Basic parameters")
         self.metal_display_group.setTitle("Отображение" if is_ru else "Display")
         _set_form_label(
@@ -452,58 +453,12 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.metal_show_rejected_checkbox.setText("Показывать отклонённые" if is_ru else "Show rejected")
         self.metal_show_suspicious_checkbox.setText("Показывать подозрительные" if is_ru else "Show suspicious")
         self.metal_show_mask_checkbox.setText("Показывать маску" if is_ru else "Show mask")
-        if is_ru:
-            debug_labels_ru = {
-                "metal_structural_ridge_response": "Структура: отклик гребня",
-                "metal_structural_ridge_markers": "Структура: маркеры гребня",
-                "metal_structural_ridge_fragments": "Структура: фрагменты гребня",
-                "metal_structural_ridge_links_accepted": "Структура: принятые связи гребня",
-                "metal_structural_ridge_links_rejected": "Структура: отклонённые связи гребня",
-                "metal_structural_ridge_links_boundary_veto": "Структура: запрет пересечения границы",
-                "metal_structural_logical_ridge": "Структура: объединённый гребень",
-                "metal_structural_wide_interior_markers": "Структура: маркеры широкой области",
-                "metal_structural_wide_fragments": "Структура: широкие фрагменты",
-                "metal_structural_logical_wide": "Структура: объединённая широкая область",
-                "metal_structural_logical_markers": "Структура: объединённые маркеры",
-                "metal_structural_conductor_bands": "Структура: полосы проводников",
-                "metal_structural_transverse_samples": "Структура: поперечные отсчёты",
-                "metal_structural_band_groups_accepted": "Структура: принятые группы полос",
-                "metal_structural_band_groups_rejected": "Структура: отклонённые группы полос",
-                "metal_structural_foreground_markers": "Структура: маркеры переднего плана",
-                "metal_structural_background_markers": "Структура: маркеры фона",
-                "metal_structural_boundary_cost": "Структура: стоимость границы",
-                "metal_structural_watershed_labels": "Структура: метки водораздела",
-                "metal_structural_instance_labels": "Структура: метки экземпляров",
-                "metal_structural_label_boundary": "Структура: границы меток",
-                "metal_structural_final_mask": "Структура: итоговая маска",
-                "metal_owt_oriented_boundaries": "OWT-UCM: ориентированные границы",
-                "metal_owt_initial_watershed": "OWT-UCM: исходный водораздел",
-                "metal_owt_ucm": "OWT-UCM: карта иерархии",
-                "metal_owt_selected_hierarchy": "OWT-UCM: выбранная иерархия",
-                "metal_msp_separator_cost": "Мульти-разделитель: стоимость разделителя",
-                "metal_msp_selected_separators": "Мульти-разделитель: выбранные разделители",
-                "metal_msp_regions": "Мульти-разделитель: области",
-                "metal_gasp_attractive_affinity": "GASP: сходство притяжения",
-                "metal_gasp_repulsive_affinity": "GASP: сходство отталкивания",
-                "metal_gasp_final_labels": "GASP: итоговые метки",
-                "metal_mutex_watershed_attractive_affinity": "MWS: сходство притяжения",
-                "metal_mutex_watershed_repulsive_affinity": "MWS: сходство отталкивания",
-                "metal_mutex_watershed_long_range_mutex": "MWS: дальние взаимоисключения",
-                "metal_mutex_watershed_final_labels": "MWS: итоговые метки",
-                "metal_multicut_attractive_affinity": "Мультиразрез: сходство притяжения",
-                "metal_multicut_repulsive_affinity": "Мультиразрез: сходство отталкивания",
-                "metal_multicut_final_labels": "Мультиразрез: итоговые метки",
-                "metal_lifted_multicut_lifted_relations": "Расширенный мультиразрез: дальние связи",
-                "metal_lifted_multicut_final_labels": "Расширенный мультиразрез: итоговые метки",
-                "metal_material_confidence": "Материал: уверенность",
-                "metal_material_core_evidence": "Материал: признак ядра",
-                "metal_material_substrate_evidence": "Материал: признак подложки",
-            }
-            for index in range(self.metal_debug_visual_combo.count()):
-                data = str(self.metal_debug_visual_combo.itemData(index) or "")
-                localized = debug_labels_ru.get(data)
-                if localized is not None:
-                    self.metal_debug_visual_combo.setItemText(index, localized)
+        if getattr(self, "metal_show_border_checkbox", None) is not None:
+            self.metal_show_border_checkbox.setText(
+                "Подсветка у границы кадра" if is_ru else "Highlight objects at frame border"
+            )
+        if hasattr(self, "metal_debug_visual_combo"):
+            retranslate_metal_debug_visual_combo(self.metal_debug_visual_combo, self._ui_language)
         _set_form_label(
             self.metal_display_group,
             self.metal_overlay_opacity_spin,
@@ -597,7 +552,13 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         self.apply_metal_preset_button.setText("Применить" if is_ru else "Apply")
         self.save_metal_preset_button.setText("Сохранить" if is_ru else "Save")
         self.delete_metal_preset_button.setText("Удалить" if is_ru else "Delete")
+        if hasattr(self, "export_metal_preset_button"):
+            self.export_metal_preset_button.setText("Выгрузить" if is_ru else "Export")
+        if hasattr(self, "import_metal_preset_button"):
+            self.import_metal_preset_button.setText("Загрузить" if is_ru else "Import")
         self.metal_reset_params_button.setText("Сбросить параметры" if is_ru else "Reset parameters")
+        if hasattr(self, "_refresh_metal_preset_combo"):
+            self._refresh_metal_preset_combo()
 
         _retranslate_strategy_parameter_pages(self)
         from .builders import _sync_metal_strategy_panel
@@ -815,6 +776,7 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.via_show_detected_checkbox.setText(
         "Показывать найденные контакты" if self._ui_language == "ru" else "Show detected contacts"
     )
+    retranslate_bright_via_panel(self)
     if getattr(self, "gradient_overlay_label_widget", None) is not None:
         self.gradient_overlay_label_widget.setText(
             self._tr(

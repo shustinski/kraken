@@ -16,9 +16,12 @@ from .client import (
     fetch_update_info,
     is_newer_version,
     launch_update_installer,
+    load_last_notified_version,
     load_selected_update_channel,
     load_update_client_config,
+    save_last_notified_version,
     save_selected_update_channel,
+    should_notify_version,
 )
 
 
@@ -131,7 +134,7 @@ class QtUpdateController(QtCore.QObject):
         submenu_object_name: str = "",
         action_object_name: str = "",
     ) -> QAction:
-        update_menu = QMenu(submenu_title, self._parent)
+        update_menu = QMenu(submenu_title, menu)
         if submenu_object_name:
             update_menu.setObjectName(submenu_object_name)
         menu.addMenu(update_menu)
@@ -178,9 +181,25 @@ class QtUpdateController(QtCore.QObject):
             if manual:
                 QMessageBox.warning(self._parent, self._app_name, "Не удалось проверить наличие обновлений.")
             return
-        if not manual and not is_newer_version(update_info.version, self._current_version):
+        if manual:
+            self._show_update_notification(update_info, manual=True, channel=channel)
             return
-        self._show_update_notification(update_info, manual=manual, channel=channel)
+        if not is_newer_version(update_info.version, self._current_version):
+            return
+        last_notified = load_last_notified_version(
+            channel,
+            settings_org=self._settings_org,
+            settings_app=self._settings_app,
+        )
+        if not should_notify_version(update_info.version, self._current_version, last_notified):
+            return
+        self._show_update_notification(update_info, manual=False, channel=channel)
+        save_last_notified_version(
+            update_info.version,
+            channel,
+            settings_org=self._settings_org,
+            settings_app=self._settings_app,
+        )
 
     def _show_update_notification(self, update_info: UpdateInfo, *, manual: bool, channel: str) -> None:
         if manual:

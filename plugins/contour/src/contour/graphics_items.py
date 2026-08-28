@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsSimpleTextItem
 
 from .application.processing import DisplaySettings, normalize_via_display_mode
 from .domain import PolygonData
+
+INVALID_POLYGON_DESCRIPTION_COLOR = "#DC2626"
 
 
 class ZoomContactBatchItem(QGraphicsItem):
@@ -110,6 +114,7 @@ class EditablePolygonItem(QGraphicsPathItem):
         display_settings: DisplaySettings,
         *,
         custom_color: str | None = None,
+        paint: bool = True,
     ) -> None:
         super().__init__()
         self.polygon_id = polygon.id
@@ -119,12 +124,23 @@ class EditablePolygonItem(QGraphicsPathItem):
         self._handles: list[VertexHandleItem] = []
         self.setZValue(3)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-        self.update_from_polygon(
-            polygon,
-            display_settings,
-            selected=False,
-            custom_color=custom_color,
-        )
+        if paint:
+            self.update_from_polygon(
+                polygon,
+                display_settings,
+                selected=False,
+                custom_color=custom_color,
+            )
+        else:
+            self.bind_polygon_data(polygon)
+
+    def bind_polygon_data(self, polygon: PolygonData) -> None:
+        """Attach polygon identity without rebuilding path/appearance (bulk load)."""
+
+        self.polygon_id = polygon.id
+        self._polygon = polygon
+        for handle in self._handles:
+            handle.setVisible(False)
 
     def update_from_polygon(
         self,
@@ -136,21 +152,24 @@ class EditablePolygonItem(QGraphicsPathItem):
         *,
         conductor_hover_highlight: bool = False,
         preview_vertices: bool = False,
+        needs_repair: bool | None = None,
     ) -> None:
         self.polygon_id = polygon.id
         self._polygon = polygon
         path = QPainterPath()
         path.addPath(_display_path_for_polygon(self._polygon, display_settings))
         for cutout in cutout_polygons or []:
-            path.addPath(_display_path_for_polygon(cutout, display_settings))
-        path.setFillRule(Qt.FillRule.OddEvenFill)
+            path.addPath(_cutout_path_for_polygon(cutout, display_settings, outer=self._polygon))
+        path.setFillRule(Qt.FillRule.WindingFill)
         self.setPath(path)
+        self._hit_path = _hit_path_for_polygon(self._polygon, cutout_polygons=cutout_polygons)
 
         self._update_appearance(
             display_settings,
             selected=selected,
             custom_color=custom_color,
             conductor_hover_highlight=conductor_hover_highlight,
+            needs_repair=needs_repair,
         )
 
         self._label_item.setText(str(polygon.id))
@@ -160,10 +179,8 @@ class EditablePolygonItem(QGraphicsPathItem):
         self._label_item.setPos(bbox.left(), bbox.top() - 16.0)
 
         handle_color = QColor(display_settings.vertex_color)
-        show_handles = (
-            display_settings.show_vertices
-            and (selected or preview_vertices)
-            and not _is_ellipse_display_polygon(self._polygon)
+        show_handles = not _is_ellipse_display_polygon(self._polygon) and (
+            preview_vertices or (selected and display_settings.show_vertices)
         )
         target_handle_count = len(self._polygon.points) if show_handles else 0
         while len(self._handles) < target_handle_count:
@@ -188,12 +205,14 @@ class EditablePolygonItem(QGraphicsPathItem):
         *,
         selected: bool,
         custom_color: str | None = None,
+        needs_repair: bool | None = None,
     ) -> None:
         self._update_appearance(
             display_settings,
             selected=selected,
             custom_color=custom_color,
             conductor_hover_highlight=False,
+            needs_repair=needs_repair,
         )
 
     def _update_appearance(
@@ -203,15 +222,19 @@ class EditablePolygonItem(QGraphicsPathItem):
         selected: bool,
         custom_color: str | None,
         conductor_hover_highlight: bool,
+        needs_repair: bool | None = None,
     ) -> None:
         polygon = self._polygon
         cat = str(getattr(polygon, "category", "") or "")
+        mark_repair = bool(needs_repair) if needs_repair is not None else polygon.description_is_invalid()
         if selected and cat == "via":
             color_name = display_settings.via_selection_color
         elif selected:
             color_name = display_settings.selected_color
         elif conductor_hover_highlight:
             color_name = display_settings.conductor_hover_highlight_color
+        elif mark_repair:
+            color_name = INVALID_POLYGON_DESCRIPTION_COLOR
         elif cat == "metal_wide_gradient":
             color_name = "#2563EB"
         elif custom_color:
@@ -237,6 +260,90 @@ class EditablePolygonItem(QGraphicsPathItem):
     def polygon(self) -> PolygonData:
         return self._polygon.clone()
 
+    def shape(self) -> QPainterPath:
+        hit_path = getattr(self, "_hit_path", None)
+        if hit_path is not None and not hit_path.isEmpty():
+            return hit_path
+        return super().shape()
+
+
+def _iter_shapely_polygon_parts(geom: object) -> Iterator[object]:
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    if getattr(geom, "is_empty", True):
+        return
+    geom_type = getattr(geom, "geom_type", "")
+    if geom_type == "Polygon":
+        yield geom
+    elif geom_type == "MultiPolygon":
+        for part in geom.geoms:
+            yield part
+    elif geom_type == "GeometryCollection":
+        for part in geom.geoms:
+            yield from _iter_shapely_polygon_parts(part)
+
+
+def _ring_to_path(coords: object) -> QPainterPath:
+    ring_points = list(coords)
+    if len(ring_points) < 2:
+        return QPainterPath()
+    path = QPainterPath()
+    start_x, start_y = float(ring_points[0][0]), float(ring_points[0][1])
+    path.moveTo(start_x, start_y)
+    for x_coord, y_coord in ring_points[1:]:
+        path.lineTo(float(x_coord), float(y_coord))
+    path.closeSubpath()
+    return path
+
+
+def _shapely_polygon_parts_to_path(geom: object) -> QPainterPath:
+    path = QPainterPath()
+    for poly in _iter_shapely_polygon_parts(geom):
+        exterior_coords = list(poly.exterior.coords)
+        path.addPath(_ring_to_path(exterior_coords))
+        exterior_area = _ring_signed_area(exterior_coords)
+        for interior in poly.interiors:
+            interior_coords = list(interior.coords)
+            if exterior_area != 0.0 and _ring_signed_area(interior_coords) * exterior_area > 0.0:
+                interior_coords = list(reversed(interior_coords))
+            path.addPath(_ring_to_path(interior_coords))
+    path.setFillRule(Qt.FillRule.WindingFill)
+    return path
+
+
+def _hit_path_for_polygon(
+    polygon: PolygonData,
+    *,
+    cutout_polygons: list[PolygonData] | None = None,
+) -> QPainterPath:
+    """Build a pick path that matches editable metal, not phantom winding-fill overlap."""
+
+    if _is_ellipse_display_polygon(polygon):
+        return _ellipse_path_from_points(polygon.points)
+
+    if cutout_polygons:
+        path = QPainterPath()
+        path.addPath(_display_path_for_polygon(polygon))
+        for cutout in cutout_polygons:
+            path.addPath(_cutout_path_for_polygon(cutout, outer=polygon))
+        path.setFillRule(Qt.FillRule.WindingFill)
+        return path
+
+    shell = list(polygon.points)
+    if len(shell) < 3:
+        return _closed_polygon_path(shell)
+
+    from shapely import make_valid
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    try:
+        geom = make_valid(ShapelyPolygon(shell))
+    except Exception:
+        return _closed_polygon_path(shell)
+    if geom.is_empty:
+        return QPainterPath()
+    return _shapely_polygon_parts_to_path(geom)
+
 
 def _closed_polygon_path(points: list[tuple[float, float]]) -> QPainterPath:
     path = QPainterPath()
@@ -249,6 +356,45 @@ def _closed_polygon_path(points: list[tuple[float, float]]) -> QPainterPath:
     if len(points) > 2:
         path.closeSubpath()
     return path
+
+
+def _ring_signed_area(points: list[tuple[float, float]]) -> float:
+    if len(points) < 3:
+        return 0.0
+    area = 0.0
+    count = len(points)
+    for index, (x_coord, y_coord) in enumerate(points):
+        next_x, next_y = points[(index + 1) % count]
+        area += float(x_coord) * float(next_y) - float(next_x) * float(y_coord)
+    return area
+
+
+def _cutout_path_for_polygon(
+    polygon: PolygonData,
+    display_settings: DisplaySettings | None = None,
+    *,
+    outer: PolygonData | None = None,
+) -> QPainterPath:
+    """Build a hole subpath that stays a hole under winding-fill hit tests.
+
+    ``QGraphicsPathItem.shape()`` uses winding fill. CIF holes often share the
+    outer ring's winding, so they must be reversed; shapely interiors are
+    already opposite and must be left as-is.
+    """
+
+    if _is_ellipse_display_polygon(polygon) and (
+        display_settings is None or normalize_via_display_mode(display_settings.via_display_mode) == "circle"
+    ):
+        return _ellipse_path_from_points(polygon.points)
+    points = list(polygon.points)
+    if (
+        outer is not None
+        and len(points) >= 3
+        and len(outer.points) >= 3
+        and _ring_signed_area(outer.points) * _ring_signed_area(points) > 0.0
+    ):
+        points = list(reversed(points))
+    return _closed_polygon_path(points)
 
 
 def _is_ellipse_display_polygon(polygon: PolygonData) -> bool:

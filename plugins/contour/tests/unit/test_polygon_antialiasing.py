@@ -46,6 +46,41 @@ def test_antialias_polygons_can_limit_to_selected_ids() -> None:
     assert len(result[1].points) < len(second.points)
 
 
+def test_antialias_outer_id_also_smooths_hole_children() -> None:
+    outer = _oversampled_rectangle(1)
+    hole_points = [
+        (2.0, 2.0),
+        (3.0, 2.0),
+        (4.0, 2.0),
+        (6.0, 2.0),
+        (6.0, 4.0),
+        (6.0, 6.0),
+        (4.0, 6.0),
+        (2.0, 6.0),
+        (2.0, 4.0),
+    ]
+    hole_area, hole_perimeter, hole_bbox = compute_polygon_metrics(hole_points)
+    hole = PolygonData(
+        id=2,
+        points=hole_points,
+        area=hole_area,
+        perimeter=hole_perimeter,
+        bbox=hole_bbox,
+        is_hole=True,
+        parent_id=1,
+    )
+    untouched = _square(3)
+
+    result, changed = antialias_polygons([outer, hole, untouched], 2, only_ids={1})
+
+    assert changed
+    assert len(result[0].points) < len(outer.points)
+    assert len(result[1].points) < len(hole.points)
+    assert result[1].is_hole
+    assert result[1].parent_id == 1
+    assert result[2].points == untouched.points
+
+
 def test_antialias_skips_via_boxes() -> None:
     via = _square()
     via.category = "via"

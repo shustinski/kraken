@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -30,6 +31,13 @@ MIN_INITIAL_WINDOW_HEIGHT = 420
 DEFAULT_PANEL_DOCK_MIN_WIDTH = 260
 DEFAULT_RIGHT_DOCK_MIN_WIDTH = 240
 CONTOUR_ENABLE_WORK_SIMULATION = True
+
+
+def _should_schedule_startup_update_check() -> bool:
+    disabled_flag = str(os.getenv("CONTOUR_DISABLE_AUTO_UPDATE_CHECK", "") or "").strip().lower()
+    if disabled_flag in {"1", "true", "yes", "on"}:
+        return False
+    return not bool(os.getenv("PYTEST_CURRENT_TEST"))
 
 
 def _required_qt_object[QtObjectT](value: QtObjectT | None, description: str) -> QtObjectT:
@@ -204,6 +212,8 @@ class ContourMainView(QMainWindow):
         self._refresh_view_and_tools_menus()
         _try_apply_app_icon(self)
         QTimer.singleShot(0, self._apply_default_dock_layout)
+        if _should_schedule_startup_update_check():
+            QTimer.singleShot(0, lambda: self._update_controller.check_for_updates(manual=False))
 
     @property
     def widget(self) -> PolygonExtractionWidget:
@@ -405,10 +415,29 @@ class ContourMainView(QMainWindow):
             return
         language = getattr(self._widget, "_ui_language", "ru")
         is_ru = language == "ru"
+        check_text = "Проверить обновления" if is_ru else "Check for updates"
+        submenu_title = "Обновление" if is_ru else "Update"
+        existing_menu = None
+        for action in self._help_menu.actions():
+            submenu = action.menu()
+            if submenu is not None and submenu.objectName() == "contourUpdateMenu":
+                existing_menu = submenu
+                break
+        if existing_menu is not None:
+            existing_menu.setTitle(submenu_title)
+            existing_action = None
+            for action in existing_menu.actions():
+                if action.objectName() == "contourCheckUpdatesAction":
+                    existing_action = action
+                    break
+            if existing_action is not None:
+                existing_action.setText(check_text)
+            self._update_menu_action = existing_action
+            return
         self._update_menu_action = self._update_controller.add_menu_action(
             self._help_menu,
-            "Проверить обновления" if is_ru else "Check for updates",
-            submenu_title="Обновление" if is_ru else "Update",
+            check_text,
+            submenu_title=submenu_title,
             submenu_object_name="contourUpdateMenu",
             action_object_name="contourCheckUpdatesAction",
         )

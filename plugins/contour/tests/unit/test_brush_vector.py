@@ -382,3 +382,41 @@ def test_invalid_boolean_result_keeps_polygon_unchanged() -> None:
         polygons_after_scene = scene.get_polygons()
 
     assert polygons_before_scene[0].points == polygons_after_scene[0].points
+
+
+def test_self_intersecting_keyhole_footprint_allows_interior_rectangle_erase() -> None:
+    """Interior erase rects must hit winding-fill metal, not only make_valid ring fragments."""
+
+    from pathlib import Path
+
+    import pytest
+    from shapely import make_valid
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    from contour.serializers import clear_cif_parse_cache, load_polygons_cif
+
+    cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0516.cif")
+    if not cif_path.exists():
+        pytest.skip("0516.cif sample is not available")
+
+    clear_cif_parse_cache()
+    _, _, polygons = load_polygons_cif(cif_path)
+    polygon_dict = {polygon.id: polygon for polygon in polygons}
+    keyhole = polygon_dict[19]
+    valid_geom = make_valid(ShapelyPolygon(keyhole.points))
+    interior_rect = [(1400.0, 540.0), (1450.0, 540.0), (1450.0, 580.0), (1400.0, 580.0)]
+    tool = tool_geometry(interior_rect, None, quad_segs=QUAD_SEGS_BRUSH_DEFAULT).buffer(1e-7)
+
+    assert not valid_geom.intersects(tool)
+
+    region_shape = region_geometry(polygon_dict, [19])
+    assert region_shape.intersects(tool)
+
+    carved, fault = apply_boolean(
+        region_shape,
+        tool_geometry(interior_rect, None, quad_segs=QUAD_SEGS_BRUSH_DEFAULT),
+        subtract=True,
+    )
+    assert fault is None
+    assert carved is not None
+    assert float(carved.area) < float(region_shape.area)

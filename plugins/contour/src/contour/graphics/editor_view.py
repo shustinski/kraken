@@ -356,6 +356,8 @@ class PolygonEditorView(QGraphicsView):
         if tool not in (EditorTool.ADD_POLYGON, EditorTool.BRUSH, EditorTool.TRACE_PEN):
             self._editor_scene.cancel_pending_polygon()
             self._pending_polygon_erases = None
+        if tool != EditorTool.ADD_POLYGON:
+            self._cancel_rectangle_polygon()
         if tool != EditorTool.DELETE_VERTEX:
             self._editor_scene.clear_preview_rect()
         if tool != EditorTool.RULER:
@@ -363,6 +365,7 @@ class PolygonEditorView(QGraphicsView):
             self.rulerMeasurementChanged.emit("")
         if tool != EditorTool.ANTIALIAS:
             self._editor_scene.clear_vertex_preview()
+        self._sync_all_editable_vertices_display()
         self._update_tool_cursors()
         self.toolChanged.emit(tool)
         self._emit_effective_polygon_create_mode_changed()
@@ -417,6 +420,7 @@ class PolygonEditorView(QGraphicsView):
         mode = PolygonCreateMode(mode)
         changed = mode != self._polygon_create_mode
         self._polygon_create_mode = mode
+        self._cancel_rectangle_polygon()
         self._editor_scene.cancel_pending_polygon()
         self._pending_polygon_erases = None
         if changed:
@@ -461,8 +465,17 @@ class PolygonEditorView(QGraphicsView):
         changed = mode != self._delete_vertex_mode
         self._delete_vertex_mode = mode
         self._editor_scene.clear_preview_rect()
+        self._sync_all_editable_vertices_display()
         if changed:
             self.deleteVertexModeChanged.emit(mode)
+
+    def _should_show_all_editable_vertices(self) -> bool:
+        if self._tool in {EditorTool.ANTIALIAS, EditorTool.MOVE_VERTEX}:
+            return True
+        return self._tool == EditorTool.DELETE_VERTEX and self._delete_vertex_mode == DeleteVertexMode.SINGLE
+
+    def _sync_all_editable_vertices_display(self) -> None:
+        self._editor_scene.set_show_all_editable_vertices(self._should_show_all_editable_vertices())
 
     def _effective_polygon_create_mode(self) -> PolygonCreateMode:
         return effective_polygon_create_mode(
@@ -524,15 +537,44 @@ class PolygonEditorView(QGraphicsView):
         self._update_navigation_scene_rect()
         if view_anchor is not None:
             self._restore_viewport_view_anchor(*view_anchor)
-    def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
-        self._editor_scene.set_polygons(polygons, emit_signal=emit_signal)
+    def set_polygons(
+        self,
+        polygons: list[PolygonData],
+        *,
+        emit_signal: bool = True,
+        repair_reasons: dict[int, list[str]] | None = None,
+        scan_repair: bool = True,
+    ) -> None:
+        self._editor_scene.set_polygons(
+            polygons,
+            emit_signal=emit_signal,
+            repair_reasons=repair_reasons,
+            scan_repair=scan_repair,
+        )
         self._refresh_available_tools_from_scene()
+
+    def apply_polygons_needing_repair(
+        self,
+        reasons: dict[int, list[str]] | None,
+        *,
+        refresh_items: bool = True,
+    ) -> None:
+        self._editor_scene.apply_polygons_needing_repair(reasons, refresh_items=refresh_items)
+
+    def polygons_needing_repair_map(self) -> dict[int, list[str]]:
+        return self._editor_scene.polygons_needing_repair_map()
+
+    def refresh_polygon_overlays(self) -> None:
+        self._editor_scene.refresh_polygon_items()
 
     def get_polygons(self) -> list[PolygonData]:
         return self._editor_scene.get_polygons()
 
     def antialias_selected_polygons(self, grade: int) -> bool:
         return self._editor_scene.antialias_selected_polygons(grade)
+
+    def repair_invalid_polygon_descriptions(self) -> bool:
+        return self._editor_scene.repair_invalid_polygon_descriptions()
 
     def set_antialias_grade(self, grade: int) -> None:
         self._antialias_grade = max(1, int(grade))
@@ -1206,26 +1248,23 @@ class PolygonEditorView(QGraphicsView):
 
         if self._tool == EditorTool.ADD_POLYGON:
             create_mode = self._effective_polygon_create_mode()
-            if (
-                event.button() == Qt.MouseButton.RightButton
-                and not self._editor_scene.has_pending_polygon()
-                and self._editor_scene.polygon_at(scene_pos) is not None
+            if create_mode == PolygonCreateMode.RECTANGLE and event.button() in (
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.RightButton,
             ):
-                self._editor_scene.delete_polygon_at(scene_pos)
-                event.accept()
-                return
-            if create_mode == PolygonCreateMode.RECTANGLE and event.button() == Qt.MouseButton.LeftButton:
-                self._drag_kind = "rect_polygon"
-                self._drag_start_scene_pos = scene_pos
-                self._drag_erases = False
-                self._editor_scene.set_preview_rect(scene_pos, scene_pos)
-                event.accept()
-                return
-            if create_mode == PolygonCreateMode.RECTANGLE and event.button() == Qt.MouseButton.RightButton:
-                self._drag_kind = "rect_polygon"
-                self._drag_start_scene_pos = scene_pos
-                self._drag_erases = True
-                self._editor_scene.set_preview_rect(scene_pos, scene_pos)
+                if self._drag_kind == "rect_polygon":
+                    started_with_right = self._drag_erases
+                    clicked_right = event.button() == Qt.MouseButton.RightButton
+                    if clicked_right == started_with_right:
+                        self._commit_rectangle_polygon(scene_pos)
+                    else:
+                        self._cancel_rectangle_polygon()
+                    event.accept()
+                    return
+                self._start_rectangle_polygon(
+                    scene_pos,
+                    erase=event.button() == Qt.MouseButton.RightButton,
+                )
                 event.accept()
                 return
             if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
@@ -1347,8 +1386,8 @@ class PolygonEditorView(QGraphicsView):
             return
 
         if self._tool == EditorTool.SELECT:
-            polygon_id = self._editor_scene.polygon_at(scene_pos)
             additive_selection = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            polygon_id = self._editor_scene.polygon_at(scene_pos, cycle=not additive_selection)
             if polygon_id is None:
                 neighbor_path = self._editor_scene.neighbor_frame_path_at(scene_pos)
                 if neighbor_path is not None:
@@ -1523,15 +1562,15 @@ class PolygonEditorView(QGraphicsView):
         if self._tool == EditorTool.PAN:
             super().mouseMoveEvent(event)
             return
+        if self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
+            self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
+            event.accept()
+            return
         if self._tool == EditorTool.ADD_POLYGON and (
             self._effective_polygon_create_mode() == PolygonCreateMode.POINTS
             or self._editor_scene.has_pending_polygon()
         ):
             self._editor_scene.update_pending_cursor(scene_pos)
-            event.accept()
-            return
-        if self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
-            self._editor_scene.set_preview_rect(self._drag_start_scene_pos, scene_pos)
             event.accept()
             return
         if self._drag_kind == "ruler" and self._drag_start_scene_pos is not None:
@@ -1627,17 +1666,13 @@ class PolygonEditorView(QGraphicsView):
             self._select_press_start = None
             event.accept()
             return
+        if self._drag_kind == "rect_polygon":
+            event.accept()
+            return
         if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton) and self._drag_kind is not None:
             if self._drag_kind == "brush":
                 release_pos = self.mapToScene(event.position().toPoint())
                 self._commit_brush_drag(release_pos)
-
-            elif self._drag_kind == "rect_polygon" and self._drag_start_scene_pos is not None:
-                self._editor_scene.add_rectangle_polygon(
-                    self._drag_start_scene_pos,
-                    self.mapToScene(event.position().toPoint()),
-                    erase=self._drag_erases,
-                )
             elif self._drag_kind == "ruler" and self._drag_start_scene_pos is not None:
                 release_pos = self.mapToScene(event.position().toPoint())
                 target_pos = self._ruler_target(self._drag_start_scene_pos, release_pos, event.modifiers())
@@ -1922,6 +1957,20 @@ class PolygonEditorView(QGraphicsView):
                     self.neighborFrameActivated.emit(neighbor_path)
                 event.accept()
                 return
+        if (
+            self._tool == EditorTool.ADD_POLYGON
+            and self._effective_polygon_create_mode() == PolygonCreateMode.RECTANGLE
+            and self._drag_kind == "rect_polygon"
+            and event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
+        ):
+            started_with_right = self._drag_erases
+            clicked_right = event.button() == Qt.MouseButton.RightButton
+            if clicked_right == started_with_right:
+                self._commit_rectangle_polygon(self.mapToScene(event.position().toPoint()))
+            else:
+                self._cancel_rectangle_polygon()
+            event.accept()
+            return
         if (
             self._tool in (EditorTool.ADD_POLYGON, EditorTool.TRACE_PEN)
             and self._editor_scene.has_pending_polygon()
@@ -2378,9 +2427,34 @@ class PolygonEditorView(QGraphicsView):
             return
         self._editor_scene.append_brush_vertex(target, self._brush_thickness)
 
+    def _start_rectangle_polygon(self, scene_pos: QPointF, *, erase: bool) -> None:
+        self._drag_kind = "rect_polygon"
+        self._drag_start_scene_pos = QPointF(scene_pos)
+        self._drag_erases = bool(erase)
+        self._editor_scene.set_preview_rect(scene_pos, scene_pos)
+
+    def _commit_rectangle_polygon(self, scene_pos: QPointF) -> None:
+        start = self._drag_start_scene_pos
+        erase = self._drag_erases
+        self._drag_kind = None
+        self._drag_start_scene_pos = None
+        self._drag_erases = False
+        if start is None:
+            self._editor_scene.clear_preview_rect()
+            return
+        self._editor_scene.add_rectangle_polygon(start, scene_pos, erase=erase)
+
+    def _cancel_rectangle_polygon(self) -> None:
+        if self._drag_kind != "rect_polygon":
+            return
+        self._drag_kind = None
+        self._drag_start_scene_pos = None
+        self._drag_erases = False
+        self._editor_scene.clear_preview_rect()
+
     def _cycle_active_tool_mode(self) -> bool:
         if self._tool == EditorTool.ADD_POLYGON:
-            if self._editor_scene.has_pending_polygon():
+            if self._editor_scene.has_pending_polygon() or self._drag_kind == "rect_polygon":
                 return False
             next_mode = (
                 PolygonCreateMode.RECTANGLE

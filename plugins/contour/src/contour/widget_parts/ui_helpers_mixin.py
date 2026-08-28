@@ -236,6 +236,8 @@ class WidgetUiHelpersMixin:
         self._update_editor_selection_status()
         if hasattr(self, "recognition_mode_combo"):
             self._update_extraction_profile_controls_state()
+        if hasattr(self, "gamification_panel"):
+            self.gamification_panel.set_ui_language(self._ui_language)
 
     def _retranslate_ui(self) -> None:
         retranslate_ui(self)

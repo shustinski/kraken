@@ -333,6 +333,38 @@ def _stamp_visual_metadata(reference: list[PolygonData], target: list[PolygonDat
         poly.reject_reason = str(best.reject_reason)
 
 
+def _relabel_polygon_ids(polygons: list[PolygonData], *, start_id: int) -> list[PolygonData]:
+    """Assign unique ids starting at ``start_id``, remapping ``parent_id`` within the list.
+
+    Mask / shapely rebuild helpers always emit ids from 1. Without this remapping,
+    repaired rings collide with untouched polygons and wipe them in the editor.
+    """
+
+    if not polygons:
+        return []
+    old_to_new: dict[int, int] = {}
+    next_id = max(1, int(start_id))
+    for polygon in polygons:
+        if polygon.id in old_to_new:
+            continue
+        old_to_new[polygon.id] = next_id
+        next_id += 1
+    relabeled: list[PolygonData] = []
+    for polygon in polygons:
+        clone = polygon.clone()
+        clone.id = old_to_new[polygon.id]
+        if clone.parent_id is not None:
+            clone.parent_id = old_to_new.get(clone.parent_id)
+        relabeled.append(clone)
+    return relabeled
+
+
+def _next_polygon_id_after(polygons: list[PolygonData]) -> int:
+    if not polygons:
+        return 1
+    return max(polygon.id for polygon in polygons) + 1
+
+
 class _UnionFind:
     def __init__(self, items: list[int]) -> None:
         self._parent = {item: item for item in items}
@@ -392,7 +424,7 @@ def _families_mask_overlap(polygons: list[PolygonData], root_a: int, root_b: int
     fam2 = _collect_family(polygons, root_b)
     _render_polygon_collection_on_mask(mask1, fam1, (x, y))
     _render_polygon_collection_on_mask(mask2, fam2, (x, y))
-    return bool(np.any(cv2.bitwise_and(mask1, mask2)))
+    return int(np.count_nonzero(cv2.bitwise_and(mask1, mask2))) > 1
 
 
 def _families_mask_overlap_cached(
@@ -414,7 +446,8 @@ def _families_mask_overlap_cached(
     mask2 = np.zeros_like(mask1)
     _render_polygon_collection_on_mask(mask1, families[root_a], (x, y))
     _render_polygon_collection_on_mask(mask2, families[root_b], (x, y))
-    return bool(np.any(cv2.bitwise_and(mask1, mask2)))
+    # Require >1 pixel so shared vertices / edge touches from rasterization do not count.
+    return int(np.count_nonzero(cv2.bitwise_and(mask1, mask2))) > 1
 
 
 def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[PolygonData]:
@@ -443,7 +476,7 @@ def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[Polygon
         return polygons
     consumed_poly_ids: set[int] = set()
     survivors: list[PolygonData] = []
-    rebuilt: list[list[PolygonData]] = []
+    next_id = _next_polygon_id_after(polygons)
 
     for leader in sorted(merged_roots):
         members = clusters[leader]
@@ -453,7 +486,6 @@ def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[Polygon
             fam = _collect_family(polygons, mr)
             combined.extend([p.clone() for p in fam])
             poly_ids_in_cluster.update(p.id for p in fam)
-        rebuilt.append(poly_ids_in_cluster)
         consumed_poly_ids |= poly_ids_in_cluster
 
         bbox = _bbox_from_points(
@@ -467,13 +499,14 @@ def merge_overlapping_root_families(polygons: list[PolygonData]) -> list[Polygon
         _stamp_visual_metadata(combined, merged)
         for p in merged:
             _refresh_metrics(p)
+        merged = _relabel_polygon_ids(merged, start_id=next_id)
+        if merged:
+            next_id = _next_polygon_id_after(merged)
         survivors.extend(merged)
 
     leftover_ids = {p.id for p in polygons} - consumed_poly_ids
     leftovers = drop_orphan_holes([p.clone() for p in polygons if p.id in leftover_ids])
-
-    merged_all = drop_orphan_holes(leftovers + survivors)
-    return merged_all
+    return drop_orphan_holes(leftovers + survivors)
 
 
 def _rebuild_family_from_filled_mask(family: list[PolygonData]) -> list[PolygonData]:
@@ -493,38 +526,55 @@ def _rebuild_family_from_filled_mask(family: list[PolygonData]) -> list[PolygonD
 
 
 def _polygon_ring_needs_dissolve(polygon: PolygonData) -> bool:
-    if _is_via_like(polygon):
-        return False
-    if len(polygon.points) < 3:
-        return False
-    return not is_valid_closed_polygon_ring(polygon.points)
+    return polygon.description_is_invalid()
 
 
-def dissolve_self_intersecting_polygons(polygons: list[PolygonData]) -> list[PolygonData]:
-    """Rebuild rings whose new edges cross existing ones into a simple filled union."""
+def _polygon_ring_has_keyhole_bridge(polygon: PolygonData) -> bool:
+    return (not polygon.is_hole) and polygon.description_invalid_reason() == "repeated_vertex"
 
-    if not any(_polygon_ring_needs_dissolve(polygon) for polygon in polygons):
+
+def _polygon_ring_needs_explicit_topology_repair(polygon: PolygonData) -> bool:
+    """True for bowties or CIF keyholes when the user explicitly requests repair."""
+
+    return _polygon_ring_needs_dissolve(polygon) or _polygon_ring_has_keyhole_bridge(polygon)
+
+
+def dissolve_self_intersecting_polygons(
+    polygons: list[PolygonData],
+    *,
+    include_keyhole_bridges: bool = False,
+) -> list[PolygonData]:
+    """Rebuild rings whose new edges cross existing ones into a simple filled union.
+
+    By default only true invalids (e.g. bowties) are rewritten. Pass
+    ``include_keyhole_bridges=True`` for explicit repair that also splits CIF
+    keyhole ``repeated_vertex`` bridges into outer+hole children.
+    """
+
+    def _needs(polygon: PolygonData) -> bool:
+        if include_keyhole_bridges:
+            return _polygon_ring_needs_explicit_topology_repair(polygon)
+        return _polygon_ring_needs_dissolve(polygon)
+
+    if not any(_needs(polygon) for polygon in polygons):
         return polygons
-
-    from ..graphics.brush_vector import region_geometry, shapely_to_polygon_data_list
 
     roots = [polygon.id for polygon in polygons if polygon.parent_id is None]
     consumed_ids: set[int] = set()
     rebuilt: list[PolygonData] = []
+    next_id = _next_polygon_id_after(polygons)
     for root_id in roots:
         family = _collect_family(polygons, root_id)
-        if not any(_polygon_ring_needs_dissolve(polygon) for polygon in family):
+        if not any(_needs(polygon) for polygon in family):
             continue
-        by_id = {polygon.id: polygon for polygon in family}
-        geom = region_geometry(by_id, [polygon.id for polygon in family])
-        extracted = shapely_to_polygon_data_list(geom)
-        if not extracted:
-            extracted = _rebuild_family_from_filled_mask(family)
+        extracted = _dissolve_family_to_simple_rings(family)
         if not extracted:
             continue
         _stamp_visual_metadata(family, extracted)
         for polygon in extracted:
             _refresh_metrics(polygon)
+        extracted = _relabel_polygon_ids(extracted, start_id=next_id)
+        next_id = _next_polygon_id_after(extracted)
         rebuilt.extend(extracted)
         consumed_ids.update(polygon.id for polygon in family)
 
@@ -532,6 +582,271 @@ def dissolve_self_intersecting_polygons(polygons: list[PolygonData]) -> list[Pol
         return polygons
     leftovers = [polygon.clone() for polygon in polygons if polygon.id not in consumed_ids]
     return drop_orphan_holes(leftovers + rebuilt)
+
+
+def _repair_family_by_keyhole_split(family: list[PolygonData]) -> list[PolygonData] | None:
+    """Split CIF keyhole polylines into outer+holes without reshaping via make_valid.
+
+    Shapely dissolve changes the filled outline; keyhole extraction keeps the authored
+    rings and only cuts the bridge that made the description invalid.
+    """
+
+    from ..serializers import _split_linked_polygon_rings
+
+    if not any(
+        (not polygon.is_hole) and polygon.description_invalid_reason() == "repeated_vertex"
+        for polygon in family
+    ):
+        return None
+
+    current = [polygon.clone() for polygon in family]
+    changed = False
+    for _pass in range(8):
+        next_id = max((polygon.id for polygon in current), default=0) + 1
+        rebuilt: list[PolygonData] = []
+        progress = False
+        for polygon in current:
+            if polygon.is_hole or polygon.description_invalid_reason() != "repeated_vertex":
+                rebuilt.append(polygon)
+                continue
+            outer_points, hole_rings = _split_linked_polygon_rings(polygon.points)
+            if not hole_rings:
+                rebuilt.append(polygon)
+                continue
+            progress = True
+            changed = True
+            area, perimeter, bbox = compute_polygon_metrics(outer_points)
+            outer = polygon.clone()
+            outer.points = list(outer_points)
+            outer.area = float(area)
+            outer.perimeter = float(perimeter)
+            outer.bbox = bbox
+            rebuilt.append(outer)
+            for hole_points in hole_rings:
+                area, perimeter, bbox = compute_polygon_metrics(hole_points)
+                rebuilt.append(
+                    PolygonData(
+                        id=next_id,
+                        points=list(hole_points),
+                        is_hole=True,
+                        parent_id=outer.id,
+                        category=str(polygon.category),
+                        shape_hint=str(polygon.shape_hint),
+                        area=float(area),
+                        perimeter=float(perimeter),
+                        bbox=bbox,
+                    )
+                )
+                next_id += 1
+        current = rebuilt
+        if not progress:
+            break
+
+    if not changed:
+        return None
+    if any(_polygon_ring_needs_explicit_topology_repair(polygon) for polygon in current):
+        return None
+    return current
+
+
+def _dissolve_family_to_simple_rings(family: list[PolygonData]) -> list[PolygonData]:
+    from ..graphics.brush_vector import region_geometry, shapely_to_polygon_data_list
+
+    keyhole_repaired = _repair_family_by_keyhole_split(family)
+    if keyhole_repaired is not None:
+        return keyhole_repaired
+
+    by_id = {polygon.id: polygon for polygon in family}
+    extracted = shapely_to_polygon_data_list(region_geometry(by_id, [polygon.id for polygon in family]))
+    if not extracted:
+        extracted = shapely_to_polygon_data_list(_make_valid_union_of_family_rings(family))
+    if not extracted:
+        extracted = _rebuild_family_from_filled_mask(family)
+    if extracted and any(_polygon_ring_needs_explicit_topology_repair(polygon) for polygon in extracted):
+        repaired = shapely_to_polygon_data_list(_make_valid_union_of_family_rings(extracted))
+        if repaired:
+            extracted = repaired
+    return extracted
+
+
+def _make_valid_union_of_family_rings(family: list[PolygonData]):
+    from shapely import make_valid, unary_union
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    parts = []
+    for polygon in family:
+        if polygon.is_hole:
+            continue
+        shell = [(float(x_coord), float(y_coord)) for x_coord, y_coord in polygon.points]
+        interiors = [
+            [(float(x_coord), float(y_coord)) for x_coord, y_coord in hole.points]
+            for hole in family
+            if hole.is_hole and hole.parent_id == polygon.id
+        ]
+        try:
+            geom = ShapelyPolygon(shell, interiors) if interiors else ShapelyPolygon(shell)
+        except (ValueError, TypeError):
+            geom = ShapelyPolygon(shell)
+        repaired = unary_union(make_valid(geom))
+        if not repaired.is_empty:
+            parts.append(repaired)
+    if not parts:
+        return ShapelyPolygon()
+    return unary_union(parts)
+
+
+def polygon_description_is_invalid(polygon: PolygonData) -> bool:
+    return polygon.description_is_invalid()
+
+
+def polygon_description_invalid_reason(polygon: PolygonData) -> str | None:
+    return polygon.description_invalid_reason()
+
+
+def overlapping_root_family_ids(polygons: list[PolygonData]) -> set[int]:
+    """Return non-via root ids whose filled families mask-overlap at least one sibling root."""
+
+    roots = [
+        polygon.id
+        for polygon in polygons
+        if polygon.parent_id is None and not polygon.is_hole and not _is_via_like(polygon)
+    ]
+    if len(roots) < 2:
+        return set()
+    ordered = sorted(roots)
+    families = {root_id: _collect_family(polygons, root_id) for root_id in ordered}
+    bboxes = {root_id: _family_bbox(polygons, root_id) for root_id in ordered}
+    overlapping: set[int] = set()
+    for idx, root_a in enumerate(ordered):
+        for root_b in ordered[idx + 1 :]:
+            if _families_mask_overlap_cached(root_a, root_b, families=families, bboxes=bboxes):
+                overlapping.add(root_a)
+                overlapping.add(root_b)
+    return overlapping
+
+
+def polygons_needing_repair(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings,
+) -> dict[int, list[str]]:
+    """Map polygon id → ordered unique repair reason codes (topology + area + overlap).
+
+    Reason codes:
+    - ``self_intersecting`` — ring-local invalid description (bowtie / crossing)
+    - ``overlapping`` — filled root family intersects another conductor root
+    - ``small_object`` — non-via outer below ``settings.min_outer_area_px2``
+    - ``small_hole`` — hole below ``settings.min_hole_area_to_remove_px2``
+
+    Note: CIF keyhole ``repeated_vertex`` is intentionally omitted here so auto red-mark
+    and repair offers do not treat valid keyhole ``P`` rings as broken.
+    """
+
+    reasons_by_id: dict[int, list[str]] = {}
+
+    def _add(polygon_id: int, reason: str) -> None:
+        existing = reasons_by_id.setdefault(polygon_id, [])
+        if reason not in existing:
+            existing.append(reason)
+
+    for polygon in polygons:
+        ring_reason = polygon.description_invalid_reason()
+        # CIF keyhole bridges (repeated_vertex) are valid descriptions; keep them out of
+        # auto red-mark / repair-offer maps. Explicit repair still targets them via reason.
+        if ring_reason is not None and ring_reason != "repeated_vertex":
+            _add(polygon.id, ring_reason)
+
+    overlapping_roots = overlapping_root_family_ids(polygons)
+    for root_id in overlapping_roots:
+        for member in _collect_family(polygons, root_id):
+            _add(member.id, "overlapping")
+
+    min_outer = float(settings.min_outer_area_px2)
+    min_hole = float(settings.min_hole_area_to_remove_px2)
+    for polygon in polygons:
+        if polygon.is_hole:
+            if min_hole > 0.0 and _is_small_inner_area(polygon, min_hole):
+                _add(polygon.id, "small_hole")
+            continue
+        if _is_via_like(polygon):
+            continue
+        if min_outer > 0.0 and abs(float(polygon.area)) < min_outer:
+            _add(polygon.id, "small_object")
+
+    return reasons_by_id
+
+
+def summarize_invalid_polygon_description_reasons(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings | None = None,
+) -> list[tuple[str, int]]:
+    """Count repair reason codes across polygons, preserving first-seen order.
+
+    When ``settings`` is omitted, only ring-local invalid-description reasons are counted
+    (backwards-compatible with topology-only callers). With settings, also counts
+    overlapping / small-object / small-hole reasons using the same thresholds as manual postprocess.
+    """
+
+    counts: dict[str, int] = {}
+    order: list[str] = []
+
+    def _bump(reason: str) -> None:
+        if reason not in counts:
+            order.append(reason)
+            counts[reason] = 0
+        counts[reason] += 1
+
+    if settings is None:
+        for polygon in polygons:
+            reason = polygon.description_invalid_reason()
+            if reason is not None:
+                _bump(reason)
+    else:
+        reasons_by_id = polygons_needing_repair(polygons, settings)
+        for polygon in polygons:
+            for reason in reasons_by_id.get(polygon.id, ()):
+                _bump(reason)
+    return [(reason, counts[reason]) for reason in order]
+
+
+def repair_invalid_polygon_descriptions(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings | None = None,
+) -> list[PolygonData]:
+    """Repair rings that need cleanup.
+
+    Without ``settings``: rebuild keyholes / self-intersections only (legacy topology path).
+    With ``settings``: also merge overlapping root families, dissolve small holes, and drop
+    small outers using the same thresholds as manual vector postprocess.
+
+    CIF keyhole ``repeated_vertex`` rings are not auto-offered as invalid, but explicit
+    repair still splits them when this function is invoked.
+    """
+
+    if settings is None:
+        if not any(_polygon_ring_needs_explicit_topology_repair(polygon) for polygon in polygons):
+            return [polygon.clone() for polygon in polygons]
+        return dissolve_self_intersecting_polygons(polygons, include_keyhole_bridges=True)
+
+    needs = polygons_needing_repair(polygons, settings)
+    has_keyhole = any(_polygon_ring_has_keyhole_bridge(polygon) for polygon in polygons)
+    if not needs and not has_keyhole:
+        return [polygon.clone() for polygon in polygons]
+
+    all_reasons = {reason for reasons in needs.values() for reason in reasons}
+    work = [polygon.clone() for polygon in polygons]
+
+    if has_keyhole or any(reason in {"repeated_vertex", "self_intersecting"} for reason in all_reasons):
+        work = dissolve_self_intersecting_polygons(work, include_keyhole_bridges=True)
+
+    if "overlapping" in all_reasons:
+        work = merge_overlapping_root_families(work)
+        # Raster merge of adjacent healed rings can recreate keyhole descriptions; heal again.
+        work = dissolve_self_intersecting_polygons(work, include_keyhole_bridges=True)
+
+    work = dissolve_small_holes(work, settings.min_hole_area_to_remove_px2)
+    work = drop_small_outer_polygons(work, settings.min_outer_area_px2)
+    work = drop_orphan_holes(work)
+    return collapse_redundant_vertices_in_polygons(work)
 
 
 def _polygon_topo_points_key(points: list[tuple[float, float]]) -> object:

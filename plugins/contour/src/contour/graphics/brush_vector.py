@@ -120,10 +120,30 @@ def brush_stroke_geometry(points: list[tuple[float, float]], diameter: float, *,
     return unary_union([make_valid(part) for part in (gp, *_stroke_endpoint_caps(cleaned, radius))])
 
 
+def polygon_paint_footprint_geom(
+    points: list[tuple[float, float]],
+    holes: list[list[tuple[float, float]]] | None = None,
+) -> BaseGeometry:
+    """Filled footprint for editor booleans, aligned with winding-fill display on CIF keyholes."""
+
+    shell = _usable_ring_coords(points)
+    if not shell:
+        return Polygon()
+    usable_holes = [hole for hole in (_usable_ring_coords(hole_points) for hole_points in holes or []) if hole]
+    try:
+        base = Polygon(shell, usable_holes) if usable_holes else Polygon(shell)
+    except ValueError:
+        return Polygon()
+    if base.is_empty:
+        return Polygon()
+  # buffer(0) keeps self-intersecting CIF rings solid like Qt WindingFill; make_valid would carve holes.
+    return unary_union(make_valid(base.buffer(0)))
+
+
 def filled_polygon_geometry(points: list[tuple[float, float]]) -> BaseGeometry:
     if len(points) < 3:
         return Polygon()
-    return unary_union(make_valid(_polygon_from_points(points)))
+    return polygon_paint_footprint_geom(points)
 
 
 def tool_geometry(points: list[tuple[float, float]], thickness: float | None, *, quad_segs: int) -> BaseGeometry:
@@ -220,8 +240,7 @@ def _subtree_geometry(
     if poly.is_hole:
         return unary_union(make_valid(_polygon_from_points(poly.points)))
 
-    exterior_ring = _polygon_from_points(poly.points, interior_rings)
-    hull = unary_union(make_valid(exterior_ring))
+    hull = polygon_paint_footprint_geom(poly.points, interior_rings)
     if not extra_parts:
         return unary_union(make_valid(hull))
 
@@ -495,8 +514,4 @@ def bbox_intersects_geom_bounds(tool_bounds: tuple[float, float, float, float], 
 
 
 def polygon_footprint_geom(polygon_points: list[tuple[float, float]]) -> BaseGeometry:
-    poly = _polygon_from_points(polygon_points)
-    if poly.is_empty:
-        empty_result: BaseGeometry = Polygon()
-        return empty_result
-    return unary_union(make_valid(poly.buffer(0)))
+    return polygon_paint_footprint_geom(polygon_points)

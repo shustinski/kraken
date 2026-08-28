@@ -67,7 +67,7 @@ from ..adapters.qt.antialias_cif import (
 )
 from ..adapters.qt.image_conversion import cv_to_qimage
 from ..adapters.qt.editor_display import EditorDisplayRunnable
-from ..adapters.qt.frame_load import FrameLoadPayload, FrameLoadRunnable
+from ..adapters.qt.frame_load import FrameLoadPayload, FrameLoadRunnable, GeometryValidationRunnable
 from ..adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from ..adapters.qt.thumbnails import ThumbnailLoadRunnable
 from ..application.dto import PersistedPaths
@@ -79,6 +79,7 @@ from ..application.frame_asset_sync import (
     index_cif_file_paths,
 )
 from ..application.frame_drop import classify_dropped_paths
+from ..application.frame_prefetch import neighborhood_indices
 from ..application.frame_layers import (
     build_additional_layer_frame_map,
     build_base_frame_number_map,
@@ -130,7 +131,11 @@ from ..application.use_cases import (
     build_preview_request_signature,
     index_cif_directory,
 )
-from ..application.vector_geometry_postprocess import VectorGeometrySettings
+from ..application.vector_geometry_postprocess import (
+    VectorGeometrySettings,
+    polygons_needing_repair,
+    summarize_invalid_polygon_description_reasons,
+)
 from ..batch_processor import BatchProcessor
 from ..domain import PolygonData
 from ..domain.polygon_offset import offset_conductor_polygons

@@ -107,6 +107,17 @@ def test_shared_stylesheet_includes_tab_scroller_arrow_assets():
     assert "QTabBar QToolButton::right-arrow" in stylesheet
 
 
+def test_shared_stylesheet_includes_dock_titlebar_icon_assets():
+    stylesheet = load_shared_stylesheet("dark_modern.qss")
+
+    expected_close = (shared_styles_root() / "icons" / "dock_close_light.svg").resolve().as_posix()
+    expected_float = (shared_styles_root() / "icons" / "dock_float_light.svg").resolve().as_posix()
+    assert f'url("{expected_close}")' in stylesheet
+    assert f'url("{expected_float}")' in stylesheet
+    assert "titlebar-close-icon" in stylesheet
+    assert "titlebar-normal-icon" in stylesheet
+
+
 def test_hub_prefers_root_plugin_launcher(tmp_path, monkeypatch):
     plugin_root = tmp_path / "plugins" / "contour"
     plugin_root.mkdir(parents=True)

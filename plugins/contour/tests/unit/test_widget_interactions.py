@@ -13,8 +13,8 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap, QRegion, QWheelEvent
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QRectF, QSignalBlocker, QSize, Qt, QTimer
+from PyQt6.QtGui import QColor, QIcon, QImage, QMouseEvent, QPainter, QPixmap, QRegion, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import (
     QApplication,
@@ -763,13 +763,12 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(state.pipeline_config, None)
         self.assertEqual(prepared_calls, [("sample.png", state.source_image)])
 
-    def test_cached_frame_switch_applies_image_when_vectors_need_reload(self) -> None:
+    def test_cached_frame_switch_holds_previous_frame_until_vectors_reload(self) -> None:
         self.widget.auto_apply_checkbox.setChecked(False)
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("disabled"))
         path_a = str(Path("frame_a.png"))
         path_b = str(Path("frame_b.png"))
         polygon_a = _rectangle_polygon(1, 1, 8, 8)
-        polygon_b = _rectangle_polygon(10, 10, 18, 18)
         state_a = ImageProcessingState(
             image_path=path_a,
             source_image=np.full((32, 32), 10, dtype=np.uint8),
@@ -784,12 +783,23 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget._workspace._current_image_path = path_a
         self.widget._workspace._current_state = state_a
         self.widget._workspace._state_cache = {path_a: state_a, path_b: state_b}
+        cache_key_a = self.widget._editor_display_cache_key(path_a, state_a)
+        seed = np.full((32, 32, 3), 10, dtype=np.uint8)
+        qimage = QImage(seed.data, 32, 32, 96, QImage.Format.Format_RGB888).copy()
+        self.widget._editor_pixmap_cache[cache_key_a] = QPixmap.fromImage(qimage)
         self.widget._last_editor_display_cache_key = ("stale", "source", "")
         self.widget._last_editor_display_path = path_a
         self.widget._abort_in_flight_interactive_processing = lambda **_kwargs: None  # type: ignore[method-assign]
         self.widget._start_frame_switch_profile = lambda _path: None  # type: ignore[method-assign]
         self.widget._frame_switch_profile_for_path = lambda _path: None  # type: ignore[method-assign]
-        self.widget._find_matching_cif_path = lambda image_path: "frame_b.cif" if str(Path(image_path)) == path_b else None  # type: ignore[method-assign]
+        self.widget._workspace.set_cif_index({"frame_b": "frame_b.cif"})
+        # set_cif_index clears overlays; restore the prepared source caches used by this test.
+        state_a.polygons = [polygon_a.clone()]
+        state_a.loaded_cif_path = None
+        state_b.polygons = []
+        state_b.loaded_cif_path = None
+        self.widget._workspace._state_cache = {path_a: state_a, path_b: state_b}
+        self.widget._workspace._current_state = state_a
         reloads: list[str] = []
         self.widget._begin_frame_vectors_reload = lambda image_path: reloads.append(str(Path(image_path)))  # type: ignore[method-assign]
         self.widget._request_neighbor_frame_sync = lambda *, delay_ms=0: None  # type: ignore[method-assign]
@@ -804,9 +814,53 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertIs(self.widget._workspace.current_state, state_b)
         self.assertEqual(str(Path(self.widget._workspace.current_image_path or "")), path_b)
         self.assertEqual(reloads, [path_b])
+        # Previous complete frame stays visible until vectors arrive with the new image.
         pixmap = self.widget.polygon_editor._editor_scene._image_item.pixmap()
         self.assertFalse(pixmap.isNull())
-        self.assertEqual(pixmap.toImage().pixelColor(0, 0).red(), 200)
+        self.assertEqual(pixmap.toImage().pixelColor(0, 0).red(), 10)
+        self.assertEqual(len(self.widget.polygon_editor.get_polygons()), 1)
+
+    def test_frame_apply_defers_vectors_until_pixmap_ready(self) -> None:
+        path = str(Path("frame_defer.png"))
+        polygon = _rectangle_polygon(2, 2, 12, 12)
+        state = ImageProcessingState(
+            image_path=path,
+            source_image=np.full((24, 24), 40, dtype=np.uint8),
+            polygons=[polygon.clone()],
+        )
+        self.widget._workspace._image_paths = [path]
+        self.widget._workspace._current_image_path = path
+        self.widget._workspace._current_state = state
+        self.widget._editor_pixmap_cache.clear()
+        queued: list[str] = []
+        vector_applies: list[int] = []
+
+        def _queue(image_path: str, display_image: object, **kwargs) -> None:
+            del display_image, kwargs
+            queued.append(str(Path(image_path)))
+
+        self.widget._queue_editor_display_pixmap = _queue  # type: ignore[method-assign]
+        self.widget._apply_editor_vectors_for_frame = (  # type: ignore[method-assign]
+            lambda *_args, **_kwargs: vector_applies.append(1)
+        )
+        self.widget._request_neighbor_frame_sync = lambda *, delay_ms=0: None  # type: ignore[method-assign]
+        self.widget._sync_extra_layers = lambda: None  # type: ignore[method-assign]
+        self.widget._refresh_gradient_overlay = lambda: None  # type: ignore[method-assign]
+        self.widget._update_vector_edit_status_label = lambda: None  # type: ignore[method-assign]
+
+        self.widget._apply_frame_to_editor(clear_neighbors=False, sync_neighbors=False)
+
+        self.assertEqual(queued, [path])
+        self.assertEqual(vector_applies, [])
+        pending = self.widget._pending_editor_frame_apply
+        self.assertIsNotNone(pending)
+        assert pending is not None
+        self.assertEqual(str(Path(pending[0])), path)
+        self.assertEqual(len(pending[1]), 1)
+
+        self.widget._flush_pending_editor_frame_apply(path)
+        self.assertEqual(vector_applies, [1])
+        self.assertIsNone(self.widget._pending_editor_frame_apply)
 
     def test_extraction_change_processes_when_auto_apply_enabled(self) -> None:
         process_calls: list[bool] = []
@@ -1579,6 +1633,76 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(self.widget._workspace.current_state.image_path, paths[0])
         apply_frame.assert_called_once()
 
+    def test_inner_hole_stays_a_hole_after_switching_frames_and_back(self) -> None:
+        first_path = str(Path("frame_with_hole.png"))
+        second_path = str(Path("frame_plain.png"))
+        outer = _rectangle_polygon(0, 0, 80, 80)
+        outer.id = 1
+        hole = _rectangle_polygon(20, 20, 40, 40)
+        hole.id = 2
+        hole.is_hole = True
+        hole.parent_id = 1
+        plain = _rectangle_polygon(4, 4, 12, 12)
+        self.widget._workspace.replace_image_selection(
+            [first_path, second_path],
+            is_supported_image=lambda _path: True,
+        )
+        self.widget._workspace.apply_loaded_frame(
+            first_path,
+            source_image=np.zeros((80, 80), dtype=np.uint8),
+            polygons=[outer.clone(), hole.clone()],
+        )
+        self.widget._workspace.apply_loaded_frame(
+            second_path,
+            source_image=np.full((80, 80), 9, dtype=np.uint8),
+            polygons=[plain.clone()],
+        )
+        with patch.object(self.widget, "_try_extract_if_recognition_enabled"):
+            self.widget.load_image(first_path, load_vectors=True)
+        self._app.processEvents()
+        first_holes = [polygon for polygon in self.widget.get_polygons() if polygon.is_hole]
+        self.assertEqual(len(first_holes), 1)
+        self.assertEqual(first_holes[0].parent_id, 1)
+
+        self.widget._sync_editor_polygons_to_current_workspace()
+        with patch.object(self.widget, "_try_extract_if_recognition_enabled"):
+            self.widget.load_image(second_path, load_vectors=True)
+        self._app.processEvents()
+        self.assertFalse(any(polygon.is_hole for polygon in self.widget.get_polygons()))
+
+        self.widget._sync_editor_polygons_to_current_workspace()
+        with patch.object(self.widget, "_try_extract_if_recognition_enabled"):
+            self.widget.load_image(first_path, load_vectors=True)
+        self._app.processEvents()
+
+        restored = {polygon.id: polygon for polygon in self.widget.get_polygons()}
+        self.assertTrue(restored[2].is_hole)
+        self.assertEqual(restored[2].parent_id, 1)
+        scene = self.widget.polygon_editor._editor_scene
+        hole_color = scene._display_settings.hole_color.lower()
+        self.assertEqual(scene._polygon_items[2].pen().color().name().lower(), hole_color)
+        self.assertEqual(scene._polygon_items[2].brush().color().alpha(), 0)
+        self.assertTrue(scene._cutout_polygons_for(1))
+        self.assertFalse(scene._polygon_items[1].contains(QPointF(30.0, 30.0)))
+
+        self.widget._sync_editor_polygons_to_current_workspace()
+        with patch.object(self.widget, "_try_extract_if_recognition_enabled"):
+            self.widget.load_image(second_path, load_vectors=True)
+        self._app.processEvents()
+        self.widget._workspace._current_image_path = first_path
+        self.widget._workspace._current_state = self.widget._workspace._state_cache[first_path]
+        with patch.object(self.widget, "_try_extract_if_recognition_enabled"):
+            self.widget.load_image(first_path, load_vectors=True)
+        self._app.processEvents()
+
+        restored = {polygon.id: polygon for polygon in self.widget.get_polygons()}
+        self.assertTrue(restored[2].is_hole)
+        self.assertEqual(restored[2].parent_id, 1)
+        self.assertEqual(scene._polygon_items[2].pen().color().name().lower(), hole_color)
+        self.assertEqual(scene._polygon_items[2].brush().color().alpha(), 0)
+        self.assertTrue(scene._cutout_polygons_for(1))
+        self.assertFalse(scene._polygon_items[1].contains(QPointF(30.0, 30.0)))
+
     def test_checked_toolbar_tool_has_explicit_high_contrast_style(self) -> None:
         stylesheet = self.widget.styleSheet()
 
@@ -1818,6 +1942,29 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
             self.assertIs(main_source, neighbor_source)
             self.assertEqual(decode.call_count, 1)
             self.assertEqual(self.widget._scene_source_image_cache_bytes, neighbor_source.nbytes)
+
+    def test_image_path_for_cif_stem_uses_indexed_lookup(self) -> None:
+        paths = [str(Path(rf"d:\frames\frame_{index:04d}.png")) for index in range(80)]
+        self.widget._workspace._image_paths = paths
+        self.widget._set_image_list_paths(paths)
+
+        matched = self.widget._image_path_for_cif_stem("frame_0042")
+        missing = self.widget._image_path_for_cif_stem("frame_9999")
+
+        self.assertEqual(matched, paths[42])
+        self.assertIsNone(missing)
+        self.assertEqual(self.widget._image_path_by_stem_lower["frame_0000"], paths[0])
+
+    def test_refresh_image_list_item_states_does_not_rebuild_asset_lists(self) -> None:
+        rebuilds: list[int] = []
+        self.widget._rebuild_asset_filter_lists = lambda: rebuilds.append(1)  # type: ignore[method-assign]
+        self.widget._refresh_vector_rows_for_workspace = lambda: None  # type: ignore[method-assign]
+        self.widget._update_thumbnail_grid_selection = lambda: None  # type: ignore[method-assign]
+        self.widget._refresh_asset_filter_list_item_states = lambda: None  # type: ignore[method-assign]
+
+        self.widget._refresh_image_list_item_states()
+
+        self.assertEqual(rebuilds, [])
 
     def test_large_frame_matrix_count_matches_images_tab_count(self) -> None:
         paths = [rf"d:\frames\frame_{index:05d}.png" for index in range(1_200)]
@@ -2626,6 +2773,15 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertEqual(scene.neighbor_frame_path_at(QPointF(20, 20)), None)
         self.assertEqual(scene.neighbor_frame_path_at(QPointF(120, 20)), "neighbor.jpg")
 
+    def test_select_click_computes_additive_mode_before_picking_polygon(self) -> None:
+        scene = self.view._editor_scene
+        with patch.object(scene, "polygon_at", return_value=1) as polygon_at:
+            self._press_editor(Qt.MouseButton.LeftButton, QPointF(50.0, 50.0))
+
+        polygon_at.assert_called_once()
+        self.assertTrue(polygon_at.call_args.kwargs["cycle"])
+        self.assertEqual(scene.selected_polygon_id(), 1)
+
     def test_conductor_recognition_mode_blocks_vector_edit_tools(self) -> None:
         self.view.set_tool(EditorTool.BRUSH)
         self.assertEqual(self.view.current_tool, EditorTool.BRUSH)
@@ -3149,30 +3305,139 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         final_area = _net_outline_area(self.view.get_polygons())
         self.assertLess(final_area, initial_area)
 
+    def _press_editor(self, button: Qt.MouseButton, scene_pos: QPointF) -> None:
+        pos = QPointF(self.view.mapFromScene(scene_pos))
+        event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            pos,
+            button,
+            button,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.view.mousePressEvent(event)
+
+    def _release_editor(self, button: Qt.MouseButton, scene_pos: QPointF) -> None:
+        pos = QPointF(self.view.mapFromScene(scene_pos))
+        event = QMouseEvent(
+            QEvent.Type.MouseButtonRelease,
+            pos,
+            button,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.view.mouseReleaseEvent(event)
+
+    def _click_editor(self, button: Qt.MouseButton, scene_pos: QPointF) -> None:
+        self._press_editor(button, scene_pos)
+        self._release_editor(button, scene_pos)
+        self._app.processEvents()
+
+    def _move_editor_pointer(self, scene_pos: QPointF) -> None:
+        viewport_pos = QPointF(self.view.mapFromScene(scene_pos))
+        move_event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            viewport_pos,
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        self.view.mouseMoveEvent(move_event)
+        self._app.processEvents()
+
     def test_right_button_rectangle_polygon_erases_existing_polygon_area(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)
         self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
         initial_area = _net_outline_area(self.view.get_polygons())
-        start_pos = self.view.mapFromScene(QPointF(42.0, 20.0))
-        end_pos = self.view.mapFromScene(QPointF(58.0, 80.0))
 
-        QTest.mousePress(
-            self.view.viewport(),
-            Qt.MouseButton.RightButton,
-            Qt.KeyboardModifier.NoModifier,
-            start_pos,
-        )
-        QTest.mouseMove(self.view.viewport(), end_pos)
-        QTest.mouseRelease(
-            self.view.viewport(),
-            Qt.MouseButton.RightButton,
-            Qt.KeyboardModifier.NoModifier,
-            end_pos,
-        )
-        self._app.processEvents()
+        self._click_editor(Qt.MouseButton.RightButton, QPointF(5.0, 5.0))
+        self._move_editor_pointer(QPointF(50.0, 50.0))
+        self._click_editor(Qt.MouseButton.RightButton, QPointF(50.0, 50.0))
 
         final_area = _net_outline_area(self.view.get_polygons())
         self.assertLess(final_area, initial_area)
+
+    def test_rectangle_polygon_is_created_with_two_clicks(self) -> None:
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
+        self.view.set_polygons([])
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
+
+        self._click_editor(Qt.MouseButton.LeftButton, QPointF(10.0, 12.0))
+        self.assertEqual(self.view._drag_kind, "rect_polygon")
+        self.assertEqual(len(self.view.get_polygons()), 0)
+
+        self._move_editor_pointer(QPointF(40.0, 50.0))
+        preview_bounds = self.view._editor_scene._preview_rect_item.path().boundingRect()
+        self.assertGreater(preview_bounds.width(), 1.0)
+        self.assertGreater(preview_bounds.height(), 1.0)
+
+        self._click_editor(Qt.MouseButton.LeftButton, QPointF(40.0, 50.0))
+        self.assertIsNone(self.view._drag_kind)
+        polygons = self.view.get_polygons()
+        self.assertEqual(len(polygons), 1)
+        xs = [point[0] for point in polygons[0].points]
+        ys = [point[1] for point in polygons[0].points]
+        self.assertAlmostEqual(min(xs), 10.0, delta=2.0)
+        self.assertAlmostEqual(min(ys), 12.0, delta=2.0)
+        self.assertAlmostEqual(max(xs), 40.0, delta=2.0)
+        self.assertAlmostEqual(max(ys), 50.0, delta=2.0)
+
+    def test_rectangle_polygon_hold_and_release_does_not_finish(self) -> None:
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
+        self.view.set_polygons([])
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
+        start_pos = QPointF(10.0, 10.0)
+        end_pos = QPointF(40.0, 40.0)
+
+        self._press_editor(Qt.MouseButton.LeftButton, start_pos)
+        self._move_editor_pointer(end_pos)
+        self._release_editor(Qt.MouseButton.LeftButton, end_pos)
+        self._app.processEvents()
+
+        self.assertEqual(self.view._drag_kind, "rect_polygon")
+        self.assertEqual(len(self.view.get_polygons()), 0)
+
+        self._click_editor(Qt.MouseButton.LeftButton, QPointF(40.0, 40.0))
+        self.assertEqual(len(self.view.get_polygons()), 1)
+
+    def test_escape_cancels_in_progress_rectangle_polygon(self) -> None:
+        self.view.set_polygons([])
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
+
+        self._click_editor(Qt.MouseButton.LeftButton, QPointF(10.0, 10.0))
+        self._move_editor_pointer(QPointF(40.0, 40.0))
+        QTest.keyClick(self.view, Qt.Key.Key_Escape)
+        self._app.processEvents()
+
+        self.assertIsNone(self.view._drag_kind)
+        self.assertTrue(self.view._editor_scene._preview_rect_item.path().isEmpty())
+        self.assertEqual(self.view.get_polygons(), [])
+
+    def test_right_click_cancels_in_progress_left_rectangle_polygon(self) -> None:
+        self.view.set_polygons([])
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
+
+        self._click_editor(Qt.MouseButton.LeftButton, QPointF(10.0, 10.0))
+        self._move_editor_pointer(QPointF(40.0, 40.0))
+        self._click_editor(Qt.MouseButton.RightButton, QPointF(40.0, 40.0))
+
+        self.assertIsNone(self.view._drag_kind)
+        self.assertEqual(self.view.get_polygons(), [])
 
     def test_brush_drag_skips_conductor_hover_sync_on_mouse_move(self) -> None:
         self.view.set_tool(EditorTool.BRUSH)
@@ -3219,6 +3484,56 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         after = self.view.get_polygons()[0]
         self.assertLess(len(after.points), before_count)
         self.assertEqual(self.view.current_tool, EditorTool.ANTIALIAS)
+
+    def test_antialias_click_on_outer_also_smooths_hole(self) -> None:
+        outer = _oversampled_rectangle_polygon(10, 10, 90, 90)
+        hole = _oversampled_rectangle_polygon(30, 30, 70, 70)
+        hole.id = 2
+        hole.is_hole = True
+        hole.parent_id = 1
+        self.view.set_polygons([outer, hole])
+        self.view.set_tool(EditorTool.ANTIALIAS)
+        self.view.set_antialias_grade(2)
+        before = {polygon.id: len(polygon.points) for polygon in self.view.get_polygons()}
+
+        # Click on metal between outer and hole so hit-test returns the outer id.
+        click_pos = self.view.mapFromScene(QPointF(20.0, 50.0))
+        QTest.mouseClick(self.view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, click_pos)
+        self._app.processEvents()
+
+        after = {polygon.id: polygon for polygon in self.view.get_polygons()}
+        self.assertLess(len(after[1].points), before[1])
+        self.assertLess(len(after[2].points), before[2])
+        self.assertTrue(after[2].is_hole)
+        self.assertEqual(after[2].parent_id, 1)
+
+    def test_vertex_edit_tools_show_all_polygon_vertices(self) -> None:
+        first = _rectangle_polygon(10, 10, 40, 40)
+        second = _rectangle_polygon(50, 50, 80, 80)
+        second.id = 2
+        self.view.set_polygons([first, second])
+        self.view.set_tool(EditorTool.SELECT)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[1]._handles), 0)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[2]._handles), 0)
+
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[2]._handles), 4)
+
+        self.view.set_tool(EditorTool.ANTIALIAS)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[2]._handles), 4)
+
+        self.view.set_delete_vertex_mode(DeleteVertexMode.AREA)
+        self.view.set_tool(EditorTool.DELETE_VERTEX)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[1]._handles), 0)
+
+        self.view.set_delete_vertex_mode(DeleteVertexMode.SINGLE)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[1]._handles), 4)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[2]._handles), 4)
+
+        self.view.set_tool(EditorTool.SELECT)
+        self.assertEqual(len(self.view._editor_scene._polygon_items[1]._handles), 0)
 
     def test_antialias_tool_drag_simplifies_polygons_in_area(self) -> None:
         first = _oversampled_rectangle_polygon(20, 20, 40, 40)
@@ -3674,23 +3989,44 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         after = self.view.get_polygons()[0].points
         self.assertNotEqual(before, after)
 
-    def test_polygon_tool_right_click_deletes_existing_polygon(self) -> None:
+    def test_polygon_tool_right_click_on_existing_starts_erase_not_delete(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)
-        before_undo_count = self.view.undo_stack.count()
+        self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
+        before = [polygon.clone() for polygon in self.view.get_polygons()]
 
-        QTest.mouseClick(
-            self.view.viewport(),
-            Qt.MouseButton.RightButton,
-            Qt.KeyboardModifier.NoModifier,
-            self.view.mapFromScene(QPointF(50.0, 50.0)),
+        self._click_editor(Qt.MouseButton.RightButton, QPointF(50.0, 50.0))
+
+        self.assertEqual(self.view._drag_kind, "rect_polygon")
+        self.assertTrue(self.view._drag_erases)
+        after = self.view.get_polygons()
+        self.assertEqual(len(after), len(before))
+        self.assertEqual(after[0].points, before[0].points)
+
+    def test_polygon_tool_right_click_inside_existing_erases_area(self) -> None:
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
         )
-        self._app.processEvents()
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        self.view.set_polygon_create_mode(PolygonCreateMode.RECTANGLE)
+        initial_area = _net_outline_area(self.view.get_polygons())
 
-        self.assertEqual(self.view.get_polygons(), [])
-        self.assertGreater(self.view.undo_stack.count(), before_undo_count)
+        self._click_editor(Qt.MouseButton.RightButton, QPointF(40.0, 40.0))
+        self._move_editor_pointer(QPointF(60.0, 60.0))
+        self._click_editor(Qt.MouseButton.RightButton, QPointF(60.0, 60.0))
+
+        polygons = self.view.get_polygons()
+        final_area = _net_outline_area(polygons)
+        self.assertLess(final_area, initial_area)
+        self.assertTrue(polygons)
+        self.assertTrue(any(polygon.is_hole for polygon in polygons))
 
     def test_polygon_tool_right_click_while_drawing_keeps_erase_drawing_behavior(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)
+        self.view.set_polygon_create_mode(PolygonCreateMode.POINTS)
 
         QTest.mouseClick(
             self.view.viewport(),
@@ -4184,6 +4520,41 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
         self.assertFalse(self.widget._workspace.current_image_has_changes())
         self.assertEqual(second_state.polygons[0].points, second_polygon.points)
 
+    def test_switching_frames_after_loading_cif_overlay_does_not_prompt(self) -> None:
+        first_path = str(Path("frame_1.png"))
+        second_path = str(Path("frame_2.png"))
+        overlay = _rectangle_polygon(4, 4, 20, 20)
+        self.widget._workspace.replace_image_selection(
+            [first_path, second_path],
+            is_supported_image=lambda _path: True,
+        )
+        self.widget._workspace.apply_loaded_frame(
+            first_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[overlay.clone()],
+            make_current=True,
+        )
+        self.widget._workspace.apply_loaded_frame(
+            second_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[],
+            make_current=False,
+        )
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([overlay.clone()])
+        self.widget._editor_polygons_signature = self.widget._polygons_editor_signature(
+            first_path,
+            [overlay.clone()],
+        )
+        self.widget.autosave_on_frame_transition_checkbox.setChecked(False)
+
+        with patch.object(widget_module.QMessageBox, "exec", side_effect=AssertionError("unexpected prompt")):
+            allowed = self.widget._try_leave_current_frame()
+
+        self.assertTrue(allowed)
+        self.assertFalse(self.widget._workspace.image_has_changes(first_path))
+        self.assertFalse(self.widget._workspace.current_image_has_changes())
+
     def test_switching_frames_does_not_save_when_autosave_disabled_even_if_dialog_discards(self) -> None:
         first_path = "frame_1.png"
         second_path = "frame_2.png"
@@ -4340,6 +4711,72 @@ class PolygonExtractionWidgetAutosaveTests(unittest.TestCase):
             self.widget.load_image = original_load_image  # type: ignore[method-assign]
 
         self.assertEqual(exported_calls, [("dataset", first_path, 1)])
+
+    def test_persist_resolves_missing_loaded_cif_path_from_index(self) -> None:
+        image_path = "0555.png"
+        cif_path = "0555.cif"
+        original = _rectangle_polygon(4, 4, 20, 20)
+        changed = _rectangle_polygon(4, 4, 24, 20)
+        state = ImageProcessingState(
+            image_path=image_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[changed.clone()],
+            loaded_cif_path=None,
+            reference_polygons=[original.clone()],
+        )
+        self.widget._workspace._state_cache = {image_path: state}
+        self.widget._workspace._current_image_path = image_path
+        self.widget._workspace._current_state = state
+        self.widget._workspace._cif_paths_by_stem = {"0555": cif_path}
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([changed.clone()])
+        self.widget._editor_polygons_signature = self.widget._polygons_editor_signature(
+            image_path,
+            [changed.clone()],
+        )
+        self.widget.dataset_mode_checkbox.setChecked(False)
+
+        saved_calls: list[tuple[str, str, int]] = []
+        original_save = processing_mixin_module.save_polygons_vector
+        try:
+            processing_mixin_module.save_polygons_vector = lambda path, image_path, polygons, image_size: (
+                saved_calls.append((str(path), image_path, len(polygons)))
+            )
+            ok = self.widget._persist_current_overlay_changes()
+        finally:
+            processing_mixin_module.save_polygons_vector = original_save
+
+        self.assertTrue(ok)
+        self.assertEqual(saved_calls, [(cif_path, image_path, 1)])
+        self.assertEqual(state.loaded_cif_path, cif_path)
+
+    def test_persist_failure_without_target_sets_visible_error(self) -> None:
+        image_path = "0555.png"
+        original = _rectangle_polygon(4, 4, 20, 20)
+        changed = _rectangle_polygon(4, 4, 24, 20)
+        state = ImageProcessingState(
+            image_path=image_path,
+            source_image=np.zeros((32, 32), dtype=np.uint8),
+            polygons=[changed.clone()],
+            loaded_cif_path=None,
+            reference_polygons=[original.clone()],
+        )
+        self.widget._workspace._state_cache = {image_path: state}
+        self.widget._workspace._current_image_path = image_path
+        self.widget._workspace._current_state = state
+        self.widget._workspace._cif_paths_by_stem = {}
+        self.widget.polygon_editor.set_image(np.zeros((32, 32), dtype=np.uint8))
+        self.widget.polygon_editor.set_polygons([changed.clone()])
+        self.widget._editor_polygons_signature = self.widget._polygons_editor_signature(
+            image_path,
+            [changed.clone()],
+        )
+        self.widget.dataset_mode_checkbox.setChecked(False)
+
+        ok = self.widget._persist_current_overlay_changes()
+
+        self.assertFalse(ok)
+        self.assertTrue(self.widget._last_vector_persist_error)
 
 
 class PolygonExtractionWidgetBrushModeUiTests(unittest.TestCase):

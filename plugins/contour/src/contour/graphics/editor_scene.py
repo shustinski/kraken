@@ -34,8 +34,10 @@ from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
     collapse_redundant_vertices_in_polygons,
     dissolve_self_intersecting_polygons,
+    polygons_needing_repair,
     postprocess_after_editor_mutation,
     postprocess_changed_polygon_edit,
+    repair_invalid_polygon_descriptions,
     resolve_focus_id_after_geometry_pass,
     union_after_removing_polygon_ids,
 )
@@ -49,8 +51,10 @@ from ..commands import (
 from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
 from ..graphics_items import (
     EditablePolygonItem,
+    INVALID_POLYGON_DESCRIPTION_COLOR,
     VertexHandleItem,
     ZoomContactBatchItem,
+    _cutout_path_for_polygon,
     _display_path_for_polygon,
 )
 from ..i18n import active_language, tr
@@ -61,6 +65,7 @@ from .brush_vector import (
     extract_polygonal_union,
     polygon_equivalent_preserved,
     polygon_footprint_geom,
+    polygon_paint_footprint_geom,
     region_geometry,
     shapely_to_polygon_data_list,
     simplify_polygonal_geometry,
@@ -101,6 +106,10 @@ _ZOOM_COLOR_QUANTIZATION_STEP = 17
 _ZOOM_BATCH_TILE_SIZE = 256.0
 _ZOOM_RASTER_MAX_DIMENSION = 4096
 _CONTACT_PASTE_SPATIAL_CELL_SIZE = 64.0
+_OUTER_POLYGON_ITEM_Z = 3.0
+_HOLE_POLYGON_ITEM_Z = 3.2
+_OUTER_PICK_Z_SPAN = 0.19
+_PICK_CYCLE_DISTANCE = 4.0
 _ZOOM_QUANTIZED_CHANNELS = tuple(
     min(255, max(0, round(channel / _ZOOM_COLOR_QUANTIZATION_STEP) * _ZOOM_COLOR_QUANTIZATION_STEP))
     for channel in range(256)
@@ -227,6 +236,10 @@ class PolygonEditorScene(QGraphicsScene):
         self._zoom_hidden_contact_ids: set[int] = set()
         self._protect_recognized_vias = False
         self._minimum_contact_distance = 0.0
+        self._outer_pick_z_rank: dict[int, int] = {}
+        self._pick_cycle_pos: QPointF | None = None
+        self._pick_cycle_ids: list[int] = []
+        self._pick_cycle_index = 0
 
         self._image_item = QGraphicsPixmapItem()
         self._image_item.setZValue(0)
@@ -268,8 +281,10 @@ class PolygonEditorScene(QGraphicsScene):
         self._object_colors: dict[int, str] = {}
         self._hover_conductor_polygon_id: int | None = None
         self._vertex_preview_polygon_id: int | None = None
+        self._show_all_editable_vertices = False
         self._delete_area_highlight_ids: set[int] = set()
         self._vector_geometry_settings = VectorGeometrySettings()
+        self._polygons_needing_repair: dict[int, list[str]] = {}
 
         self._main_frame_item = QGraphicsPathItem()
         self._main_frame_item.setZValue(2)
@@ -479,8 +494,19 @@ class PolygonEditorScene(QGraphicsScene):
                     main_width / max(1, int(source_width)),
                     main_height / max(1, int(source_height)),
                 )
+                holes_by_parent: dict[int, list[PolygonData]] = {}
                 for polygon in polygons:
-                    path_item = self._neighbor_vector_item(polygon, str(image_path), clamped_opacity)
+                    if polygon.is_hole and polygon.parent_id is not None:
+                        holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
+                for polygon in polygons:
+                    cutouts = [] if polygon.is_hole else holes_by_parent.get(int(polygon.id), [])
+                    path_item = self._neighbor_vector_item(
+                        polygon,
+                        str(image_path),
+                        clamped_opacity,
+                        cutouts,
+                    )
+                    path_item.setZValue(-18.9 if polygon.is_hole else -19)
                     path_item.setTransform(vector_transform)
                     path_item.setPos(item.pos())
                     self.addItem(path_item)
@@ -518,11 +544,24 @@ class PolygonEditorScene(QGraphicsScene):
                 return self._neighbor_frame_paths[item]
         return None
 
-    def _neighbor_vector_item(self, polygon: PolygonData, image_path: str, opacity: float) -> QGraphicsPathItem:
-        path_item = QGraphicsPathItem(_display_path_for_polygon(polygon, self._display_settings))
+    def _neighbor_vector_item(
+        self,
+        polygon: PolygonData,
+        image_path: str,
+        opacity: float,
+        cutout_polygons: list[PolygonData] | None = None,
+    ) -> QGraphicsPathItem:
+        path = QPainterPath()
+        path.addPath(_display_path_for_polygon(polygon, self._display_settings))
+        for cutout in cutout_polygons or []:
+            path.addPath(_cutout_path_for_polygon(cutout, self._display_settings, outer=polygon))
+        path.setFillRule(Qt.FillRule.WindingFill)
+        path_item = QGraphicsPathItem(path)
         path_item.setZValue(-19)
         path_item.setOpacity(opacity)
         color_name = self._display_settings.hole_color if polygon.is_hole else self._display_settings.external_color
+        if polygon.description_is_invalid():
+            color_name = INVALID_POLYGON_DESCRIPTION_COLOR
         outline = QColor(color_name)
         fill = QColor(color_name)
         if polygon.is_hole:
@@ -985,6 +1024,46 @@ class PolygonEditorScene(QGraphicsScene):
 
     def set_vector_geometry_settings(self, settings: VectorGeometrySettings | None) -> None:
         self._vector_geometry_settings = settings if settings is not None else VectorGeometrySettings()
+        if self._polygon_items:
+            self._refresh_all_items()
+        else:
+            self._polygons_needing_repair = {}
+
+    def _rebuild_polygons_needing_repair_cache(self) -> None:
+        self._polygons_needing_repair = polygons_needing_repair(
+            list(self._polygons.values()),
+            self._vector_geometry_settings,
+        )
+
+    def apply_polygons_needing_repair(
+        self,
+        reasons: dict[int, list[str]] | None,
+        *,
+        refresh_items: bool = True,
+    ) -> None:
+        """Install a precomputed repair map without rescanning geometry."""
+
+        previous_ids = set(self._polygons_needing_repair)
+        if reasons is None:
+            self._polygons_needing_repair = {}
+        else:
+            self._polygons_needing_repair = {
+                int(polygon_id): list(codes) for polygon_id, codes in reasons.items()
+            }
+        if not refresh_items or not self._polygon_items:
+            return
+        changed_ids = previous_ids | set(self._polygons_needing_repair)
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
+        for polygon_id in changed_ids:
+            item = self._polygon_items.get(polygon_id)
+            if item is not None:
+                self._refresh_polygon_item(polygon_id, item, editable_vertex_ids=editable_vertex_ids)
+
+    def polygon_needs_repair(self, polygon_id: int) -> bool:
+        return polygon_id in self._polygons_needing_repair
+
+    def polygons_needing_repair_map(self) -> dict[int, list[str]]:
+        return {polygon_id: list(reasons) for polygon_id, reasons in self._polygons_needing_repair.items()}
 
     def _selection_reference_polygon(self) -> PolygonData | None:
         if self._selected_polygon_id is None:
@@ -1053,7 +1132,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._selected_polygon_ids.clear()
         self._next_polygon_id = 1
         for polygon in polygons:
-            self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
+            self._add_polygon_internal(polygon, emit_signal=False, refresh=False, paint=False)
         self._start_recycled_polygon_cleanup()
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
@@ -1081,7 +1160,14 @@ class PolygonEditorScene(QGraphicsScene):
             self.polygonsChanged.emit()
             self.activePolygonChanged.emit(self._selected_polygon_id)
 
-    def set_polygons(self, polygons: list[PolygonData], *, emit_signal: bool = True) -> None:
+    def set_polygons(
+        self,
+        polygons: list[PolygonData],
+        *,
+        emit_signal: bool = True,
+        repair_reasons: dict[int, list[str]] | None = None,
+        scan_repair: bool = True,
+    ) -> None:
         self.end_zoom_vector_render_mode()
         self.undo_stack.clear()
         self._recycle_polygon_items()
@@ -1093,13 +1179,30 @@ class PolygonEditorScene(QGraphicsScene):
         self._selected_polygon_id = None
         self._selected_polygon_ids.clear()
         self._next_polygon_id = 1
+        if repair_reasons is not None:
+            self._polygons_needing_repair = {
+                int(polygon_id): list(codes) for polygon_id, codes in repair_reasons.items()
+            }
+        elif not scan_repair:
+            self._polygons_needing_repair = {}
+        will_refresh = bool(polygons) and (
+            any(polygon.is_hole for polygon in polygons)
+            or not all(_is_via_polygon(polygon) for polygon in polygons)
+        )
         for polygon in polygons:
-            self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
+            self._add_polygon_internal(
+                polygon,
+                emit_signal=False,
+                refresh=False,
+                paint=not will_refresh,
+            )
         self._start_recycled_polygon_cleanup()
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
-        if not all(_is_via_polygon(polygon) for polygon in polygons):
-            self._refresh_all_items()
+        if will_refresh:
+            self._refresh_all_items(rebuild_repair_cache=scan_repair and repair_reasons is None)
+        elif scan_repair and repair_reasons is None and polygons:
+            self._rebuild_polygons_needing_repair_cache()
         if emit_signal:
             self.polygonsChanged.emit()
             self.activePolygonChanged.emit(self._selected_polygon_id)
@@ -1115,8 +1218,17 @@ class PolygonEditorScene(QGraphicsScene):
     def clear_conductor_hover_highlight(self) -> None:
         self._set_hover_conductor_polygon_id(None)
 
+    def set_show_all_editable_vertices(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._show_all_editable_vertices:
+            return
+        self._show_all_editable_vertices = enabled
+        if enabled:
+            self._vertex_preview_polygon_id = None
+        self._refresh_all_items()
+
     def sync_vertex_preview(self, scene_pos: QPointF) -> None:
-        if not self._polygon_overlays_visible:
+        if self._show_all_editable_vertices or not self._polygon_overlays_visible:
             self._set_vertex_preview_polygon_id(None)
             return
         self._set_vertex_preview_polygon_id(self.polygon_at(scene_pos))
@@ -1226,16 +1338,55 @@ class PolygonEditorScene(QGraphicsScene):
             and _is_via_polygon(self._polygons[polygon_id])
         )
 
-    def polygon_at(self, scene_pos: QPointF) -> int | None:
-        for item in self.items(scene_pos):
-            if isinstance(item, VertexHandleItem):
-                return item.polygon_id
-            if isinstance(item, EditablePolygonItem):
-                return item.polygon_id
+    def _polygon_id_from_item(self, item: QGraphicsItem | None) -> int | None:
+        if isinstance(item, VertexHandleItem):
+            return item.polygon_id
+        if isinstance(item, EditablePolygonItem):
+            return item.polygon_id
+        if item is not None:
             parent = item.parentItem()
             if isinstance(parent, EditablePolygonItem):
                 return parent.polygon_id
         return None
+
+    def _reset_pick_cycle(self) -> None:
+        self._pick_cycle_pos = None
+        self._pick_cycle_ids = []
+        self._pick_cycle_index = 0
+
+    def polygons_at(self, scene_pos: QPointF) -> list[int]:
+        ordered: list[int] = []
+        seen: set[int] = set()
+        for item in self.items(scene_pos):
+            polygon_id = self._polygon_id_from_item(item)
+            if polygon_id is None or polygon_id in seen:
+                continue
+            seen.add(polygon_id)
+            ordered.append(polygon_id)
+        return ordered
+
+    def polygon_at(self, scene_pos: QPointF, *, cycle: bool = False) -> int | None:
+        hits = self.polygons_at(scene_pos)
+        if not hits:
+            self._reset_pick_cycle()
+            return None
+        if not cycle or len(hits) == 1:
+            self._reset_pick_cycle()
+            return hits[0]
+
+        same_spot = (
+            self._pick_cycle_pos is not None
+            and hypot(scene_pos.x() - self._pick_cycle_pos.x(), scene_pos.y() - self._pick_cycle_pos.y())
+            <= _PICK_CYCLE_DISTANCE
+            and hits == self._pick_cycle_ids
+        )
+        if same_spot:
+            self._pick_cycle_index = (self._pick_cycle_index + 1) % len(hits)
+        else:
+            self._pick_cycle_pos = QPointF(scene_pos)
+            self._pick_cycle_ids = list(hits)
+            self._pick_cycle_index = 0
+        return hits[self._pick_cycle_index]
 
     def polygon_at_nearest_edge(self, scene_pos: QPointF, tolerance: float) -> int | None:
         hit = self.polygon_at(scene_pos)
@@ -1397,6 +1548,34 @@ class PolygonEditorScene(QGraphicsScene):
             return False
         self.undo_stack.push(ReplacePolygonSetCommand(self, before, after, "Antialias polygons"))
         self.select_polygons(sorted(target_ids))
+        return True
+
+    def repair_invalid_polygon_descriptions(self) -> bool:
+        before = self.get_polygons()
+        settings = self._vector_geometry_settings
+        has_keyhole = any(
+            (not polygon.is_hole) and polygon.description_invalid_reason() == "repeated_vertex"
+            for polygon in before
+        )
+        if not polygons_needing_repair(before, settings) and not has_keyhole:
+            return False
+        after = repair_invalid_polygon_descriptions(before, settings)
+        before_signature = [
+            (polygon.id, polygon.is_hole, polygon.parent_id, tuple(polygon.points)) for polygon in before
+        ]
+        after_signature = [
+            (polygon.id, polygon.is_hole, polygon.parent_id, tuple(polygon.points)) for polygon in after
+        ]
+        if after_signature == before_signature:
+            return False
+        self.undo_stack.push(
+            ReplacePolygonSetCommand(
+                self,
+                before,
+                after,
+                tr("repair_invalid_polygons_undo", language=self._ui_language),
+            )
+        )
         return True
 
     def antialias_polygon(self, polygon_id: int | None, grade: int) -> bool:
@@ -2411,7 +2590,7 @@ class PolygonEditorScene(QGraphicsScene):
             if _is_via_polygon(polygon) or len(polygon.points) < 3:
                 continue
             try:
-                containing_shape = tool_geometry(polygon.points, None, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
+                containing_shape = polygon_paint_footprint_geom(polygon.points)
             except Exception:
                 continue
             if containing_shape.is_empty:
@@ -2628,10 +2807,32 @@ class PolygonEditorScene(QGraphicsScene):
         elif geom_type == "MultiPolygon":
             for part in geom.geoms:
                 add_polygon(part)
-        path.setFillRule(Qt.FillRule.OddEvenFill)
+        path.setFillRule(Qt.FillRule.WindingFill)
         return path
 
-    def _refresh_all_items(self) -> None:
+    def refresh_polygon_items(self) -> None:
+        self._refresh_all_items()
+
+    def _rebuild_outer_pick_z_ranks(self) -> None:
+        outer_ids = sorted(
+            polygon_id for polygon_id, polygon in self._polygons.items() if not polygon.is_hole
+        )
+        outer_ids.sort(key=lambda polygon_id: float(self._polygons[polygon_id].area))
+        self._outer_pick_z_rank = {polygon_id: rank for rank, polygon_id in enumerate(outer_ids)}
+
+    def _pick_z_value_for_polygon(self, polygon: PolygonData) -> float:
+        if polygon.is_hole:
+            return _HOLE_POLYGON_ITEM_Z
+        rank = self._outer_pick_z_rank.get(polygon.id, 0)
+        count = len(self._outer_pick_z_rank)
+        if count <= 1:
+            return _OUTER_POLYGON_ITEM_Z + _OUTER_PICK_Z_SPAN
+        return _OUTER_POLYGON_ITEM_Z + _OUTER_PICK_Z_SPAN * (1.0 - rank / (count - 1))
+
+    def _refresh_all_items(self, *, rebuild_repair_cache: bool = True) -> None:
+        if rebuild_repair_cache:
+            self._rebuild_polygons_needing_repair_cache()
+        self._rebuild_outer_pick_z_ranks()
         editable_vertex_ids = self._editable_vertex_polygon_ids()
         for polygon_id, item in self._polygon_items.items():
             self._refresh_polygon_item(polygon_id, item, editable_vertex_ids=editable_vertex_ids)
@@ -2659,6 +2860,7 @@ class PolygonEditorScene(QGraphicsScene):
                     self._via_score_color(polygon)
                     or self._object_color_for(polygon_id)
                 ),
+                needs_repair=self.polygon_needs_repair(polygon_id),
             )
             return
         self._refresh_polygon_item(
@@ -2699,10 +2901,16 @@ class PolygonEditorScene(QGraphicsScene):
                 if editable_vertex_ids is not None
                 else self._editable_vertex_polygon_ids()
             ),
+            needs_repair=self.polygon_needs_repair(polygon_id),
         )
+        item.setZValue(self._pick_z_value_for_polygon(polygon))
         cat = str(getattr(polygon, "category", "") or "")
         vis = self._polygon_category_visible.get(cat, True)
         item.setVisible(bool(vis) and self._polygon_overlays_visible)
+        if self.polygon_needs_repair(polygon_id):
+            item.setToolTip(tr("invalid_polygon_description_tooltip", language=self._ui_language))
+        else:
+            item.setToolTip("")
 
     @staticmethod
     def _via_score_color(polygon: PolygonData) -> str | None:
@@ -2786,6 +2994,12 @@ class PolygonEditorScene(QGraphicsScene):
         return sorted(render_ids)
 
     def _editable_vertex_polygon_ids(self, extra_ids: set[int | None] | None = None) -> set[int]:
+        if self._show_all_editable_vertices:
+            return {
+                polygon_id
+                for polygon_id, polygon in self._polygons.items()
+                if not _is_via_polygon(polygon)
+            }
         active_ids: set[int] = {
             polygon_id for polygon_id in self._selected_polygon_ids if polygon_id in self._polygons
         }
@@ -2958,38 +3172,55 @@ class PolygonEditorScene(QGraphicsScene):
             reject_reason=existing.reject_reason,
         )
 
-    def _add_polygon_internal(self, polygon: PolygonData, emit_signal: bool = True, refresh: bool = True) -> None:
+    def _add_polygon_internal(
+        self,
+        polygon: PolygonData,
+        emit_signal: bool = True,
+        refresh: bool = True,
+        *,
+        paint: bool | None = None,
+    ) -> None:
         if polygon.id in self._polygon_items:
             self._remove_polygon_internal(polygon.id, emit_signal=False, refresh=False)
         self._polygons[polygon.id] = polygon.clone()
         self._index_polygon_relationship(self._polygons[polygon.id])
         self._next_polygon_id = max(self._next_polygon_id, polygon.id + 1)
+        should_paint = True if paint is None else bool(paint)
         custom_color = self._via_score_color(self._polygons[polygon.id]) or self._object_color_for(
             polygon.id
         )
         if self._recycled_polygon_items:
             item = self._recycled_polygon_items.pop()
-            item.update_from_polygon(
-                self._polygons[polygon.id],
-                self._display_settings,
-                selected=False,
-                custom_color=custom_color,
-            )
+            if should_paint:
+                item.update_from_polygon(
+                    self._polygons[polygon.id],
+                    self._display_settings,
+                    selected=False,
+                    cutout_polygons=self._cutout_polygons_for(polygon.id) if refresh else None,
+                    custom_color=custom_color,
+                    needs_repair=self.polygon_needs_repair(polygon.id),
+                )
+            else:
+                item.bind_polygon_data(self._polygons[polygon.id])
         else:
             item = EditablePolygonItem(
                 self._polygons[polygon.id],
                 self._display_settings,
                 custom_color=custom_color,
+                paint=should_paint,
             )
             self.addItem(item)
+        if refresh:
+            self._refresh_all_items()
+        else:
+            self._rebuild_outer_pick_z_ranks()
+            item.setZValue(self._pick_z_value_for_polygon(self._polygons[polygon.id]))
         category = str(getattr(polygon, "category", "") or "")
         item.setVisible(
             self._polygon_category_visible.get(category, True)
             and self._polygon_overlays_visible
         )
         self._polygon_items[polygon.id] = item
-        if refresh:
-            self._refresh_all_items()
         if emit_signal:
             self.polygonsChanged.emit()
 
@@ -3054,7 +3285,12 @@ class PolygonEditorScene(QGraphicsScene):
         refresh: bool = True,
     ) -> None:
         for polygon in polygons:
-            self._add_polygon_internal(polygon, emit_signal=False, refresh=False)
+            self._add_polygon_internal(
+                polygon,
+                emit_signal=False,
+                refresh=False,
+                paint=not refresh,
+            )
         if refresh:
             self._refresh_all_items()
         if emit_signal:

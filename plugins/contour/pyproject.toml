@@ -30,7 +30,7 @@ dynamic = ["version"]
 dependencies = [
     "kraken",
     "numpy>=2.4.0",
-    "opencv-python>=4.13",
+    "opencv-python>=5.0",
     "PyQt6>=6.11",
     "shapely>=2.1",
 ]

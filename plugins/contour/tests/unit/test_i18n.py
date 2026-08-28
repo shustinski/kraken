@@ -116,3 +116,51 @@ def test_editor_toolbar_retranslates_to_russian() -> None:
     finally:
         widget.close()
         widget.deleteLater()
+
+
+def _has_cyrillic(text: str) -> bool:
+    return any("\u0400" <= character <= "\u04ff" for character in text)
+
+
+def test_contact_and_metal_panels_retranslate_to_english() -> None:
+    from contour.widget import PolygonExtractionWidget
+
+    widget = PolygonExtractionWidget()
+    try:
+        widget.set_ui_language("en")
+
+        assert widget.bright_via_basics_group.title() == "Basic parameters"
+        assert widget.bright_via_quality_group.title() == "Quality filters"
+        assert widget.via_heuristic_polarity_combo.itemText(0) == "Bright"
+        assert widget.metal_show_border_checkbox.text() == "Highlight objects at frame border"
+        assert not _has_cyrillic(widget.pick_input_files_button.toolTip())
+        assert not _has_cyrillic(widget.browse_input_button.toolTip())
+        overlay_index = widget.metal_debug_visual_combo.findData("overlay")
+        assert overlay_index >= 0
+        assert widget.metal_debug_visual_combo.itemText(overlay_index) == "Final overlay"
+        ridge_index = widget.metal_debug_visual_combo.findData("metal_structural_ridge_response")
+        assert ridge_index >= 0
+        assert not _has_cyrillic(widget.metal_debug_visual_combo.itemText(ridge_index))
+        widget.set_ui_language("ru")
+        assert widget.bright_via_basics_group.title() == "Основные параметры"
+        assert widget.via_heuristic_polarity_combo.itemText(0) == "Светлые"
+    finally:
+        widget.close()
+        widget.deleteLater()
+
+
+def test_strategy_registry_has_russian_display_names() -> None:
+    from contour.ui.metal_strategy_i18n import strategy_description, strategy_name
+    from contour.vision.metal_recovery.strategy_registry import STRATEGY_REGISTRY
+
+    for spec in STRATEGY_REGISTRY.values():
+        russian_name = strategy_name(spec, "ru")
+        russian_description = strategy_description(spec, "ru")
+        assert russian_name
+        assert _has_cyrillic(russian_description)
+
+
+def test_menu_clear_vectors_is_catalogued() -> None:
+    assert load_ui_texts("ru")["translations"]["menu_clear_vectors"] == "Убрать вектор"
+    assert load_ui_texts("en")["translations"]["menu_clear_vectors"] == "Clear vectors"
+    assert tr("min_solidity_label", language="ru") == "Мин. заполненность"

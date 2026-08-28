@@ -652,10 +652,12 @@ class WidgetExtractionControlsMixin:
         if getattr(self, "metal_preset_combo", None) is not None:
             self.metal_preset_combo.setToolTip(
                 tt(
-                    "Сценарный пресет: подготовка, сегментация, топология и геометрические фильтры.\n"
-                    "«Стандартный» — чистые кадры; «Шумное SEM» — сильное подавление зерна; "
-                    "«Тонкие дорожки» — узкие проводники; «Широкие заливки» — толстые полигоны.",
-                    "Scenario preset for the metal recovery pipeline.",
+                    "Пресет распознавания проводников.\n"
+                    "Встроен только «Стандартный»; остальные пресеты — пользовательские "
+                    "(сохранение, выгрузка и загрузка из JSON).",
+                    "Conductor recognition preset.\n"
+                    "Only «Standard» is built-in; other presets are user-created "
+                    "(save, export, and import from JSON).",
                 )
             )
         if getattr(self, "metal_noise_suppression_slider", None) is not None:

@@ -99,6 +99,7 @@ def standard_metal_preset_payload() -> dict[str, Any]:
 
 
 def noisy_sem_metal_preset_payload() -> dict[str, Any]:
+    """Legacy scenario payload kept for recovery/benchmark tests."""
     return {
         "metal_preset": "noisy_sem",
         "metal_min_contrast": 50.0,
@@ -120,6 +121,7 @@ def noisy_sem_metal_preset_payload() -> dict[str, Any]:
 
 
 def thin_traces_metal_preset_payload() -> dict[str, Any]:
+    """Legacy scenario payload kept for recovery/benchmark tests."""
     return {
         "metal_preset": "thin_traces",
         "metal_min_contrast": 50.0,
@@ -142,6 +144,7 @@ def thin_traces_metal_preset_payload() -> dict[str, Any]:
 
 
 def wide_fills_metal_preset_payload() -> dict[str, Any]:
+    """Legacy scenario payload kept for recovery/benchmark tests."""
     return {
         "metal_preset": "wide_fills",
         "metal_min_contrast": 50.0,
@@ -163,7 +166,7 @@ def wide_fills_metal_preset_payload() -> dict[str, Any]:
 
 
 def strategy_standard_metal_preset_payload(strategy_id: str) -> dict[str, Any]:
-    """Built-in Standard preset for one explicit mathematical strategy."""
+    """Factory payload for one explicit mathematical strategy (not a UI built-in)."""
     strategy_spec(strategy_id)
     if strategy_id not in IMPLEMENTED_NEW_STRATEGIES:
         raise ValueError(f"No new-strategy preset for {strategy_id}")
@@ -177,36 +180,13 @@ def strategy_standard_metal_preset_payload(strategy_id: str) -> dict[str, Any]:
 
 def built_in_metal_presets(language: str) -> dict[str, dict[str, Any]]:
     if language == "ru":
-        presets = {
-            "Стандартный": standard_metal_preset_payload(),
-            "Шумное SEM": noisy_sem_metal_preset_payload(),
-            "Тонкие дорожки": thin_traces_metal_preset_payload(),
-            "Широкие заливки": wide_fills_metal_preset_payload(),
-        }
-    else:
-        presets = {
-            "Standard": standard_metal_preset_payload(),
-            "Noisy SEM": noisy_sem_metal_preset_payload(),
-            "Thin traces": thin_traces_metal_preset_payload(),
-            "Wide fills": wide_fills_metal_preset_payload(),
-        }
-    for strategy_id in sorted(IMPLEMENTED_NEW_STRATEGIES):
-        spec = strategy_spec(strategy_id)
-        presets[f"{spec.display_name} Standard"] = strategy_standard_metal_preset_payload(strategy_id)
-    return presets
+        return {"Стандартный": standard_metal_preset_payload()}
+    return {"Standard": standard_metal_preset_payload()}
 
 
 def metal_preset_table() -> dict[str, dict[str, Any]]:
-    """Preset key → payload (builtin scenario keys)."""
-    presets = {
-        "standard": standard_metal_preset_payload(),
-        "noisy_sem": noisy_sem_metal_preset_payload(),
-        "thin_traces": thin_traces_metal_preset_payload(),
-        "wide_fills": wide_fills_metal_preset_payload(),
-    }
-    for strategy_id in sorted(IMPLEMENTED_NEW_STRATEGIES):
-        presets[f"{strategy_id}_standard"] = strategy_standard_metal_preset_payload(strategy_id)
-    return presets
+    """Preset key → payload for the single built-in scenario."""
+    return {"standard": standard_metal_preset_payload()}
 
 
 __all__ = [

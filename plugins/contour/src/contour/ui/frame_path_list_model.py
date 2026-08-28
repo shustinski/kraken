@@ -10,6 +10,16 @@ from PyQt6.QtWidgets import QListView, QListWidgetItem
 
 from .item_status_painting import FRAME_STATUS_ROLE
 
+_UNSET = object()
+_ROLE_DISPLAY = int(Qt.ItemDataRole.DisplayRole)
+_ROLE_TOOLTIP = int(Qt.ItemDataRole.ToolTipRole)
+_ROLE_USER = int(Qt.ItemDataRole.UserRole)
+_ROLE_BACKGROUND = int(Qt.ItemDataRole.BackgroundRole)
+_ROLE_FOREGROUND = int(Qt.ItemDataRole.ForegroundRole)
+_ROLE_FRAME_STATUS = int(FRAME_STATUS_ROLE)
+_PAINT_ROLES = (_ROLE_BACKGROUND, _ROLE_FOREGROUND, _ROLE_FRAME_STATUS)
+_PAINT_ROLE_SET = frozenset(_PAINT_ROLES)
+
 
 class FramePathListModel(QAbstractListModel):
     def __init__(self, widget: Any | None = None) -> None:
@@ -17,16 +27,31 @@ class FramePathListModel(QAbstractListModel):
         self._widget = widget
         self._paths: list[str] = []
         self._stems: list[str] = []
+        self._tooltips_ru: list[str] = []
+        self._tooltips_en: list[str] = []
         self._path_to_row: dict[str, int] = {}
-        self._role_cache: dict[tuple[int, int], object] = {}
+        self._count = 0
+        self._paint_status: list[object] = []
+        self._paint_background: list[object] = []
+        self._paint_foreground: list[object] = []
 
     def set_paths(self, paths: list[str]) -> None:
         self.beginResetModel()
-        self._paths = [str(Path(path)) for path in paths]
+        # Callers pass already-normalized paths from the widget index; keep as-is.
+        self._paths = list(paths)
+        self._count = len(self._paths)
         self._stems = [Path(path).stem for path in self._paths]
+        self._tooltips_ru = [f"Путь к файлу: {path}" for path in self._paths]
+        self._tooltips_en = [f"File path: {path}" for path in self._paths]
         self._path_to_row = {path: row for row, path in enumerate(self._paths)}
-        self._role_cache.clear()
+        self._reset_paint_caches()
         self.endResetModel()
+
+    def _reset_paint_caches(self) -> None:
+        count = self._count
+        self._paint_status = [_UNSET] * count
+        self._paint_background = [_UNSET] * count
+        self._paint_foreground = [_UNSET] * count
 
     def paths(self) -> tuple[str, ...]:
         return tuple(self._paths)
@@ -39,7 +64,7 @@ class FramePathListModel(QAbstractListModel):
         return self._path_to_row.get(str(Path(path)))
 
     def path_at(self, row: int) -> str | None:
-        if row < 0 or row >= len(self._paths):
+        if row < 0 or row >= self._count:
             return None
         return self._paths[row]
 
@@ -47,71 +72,104 @@ class FramePathListModel(QAbstractListModel):
         row = self.index_for_path(path)
         if row is None:
             return
-        for key in [key for key in self._role_cache if key[0] == row]:
-            self._role_cache.pop(key, None)
+        self._paint_status[row] = _UNSET
+        self._paint_background[row] = _UNSET
+        self._paint_foreground[row] = _UNSET
         top_left = self.index(row, 0)
-        self.dataChanged.emit(
-            top_left,
-            top_left,
-            [
-                Qt.ItemDataRole.DisplayRole,
-                Qt.ItemDataRole.ForegroundRole,
-                Qt.ItemDataRole.BackgroundRole,
-                FRAME_STATUS_ROLE,
-            ],
-        )
+        self.dataChanged.emit(top_left, top_left, list(_PAINT_ROLES))
+
+    def invalidate_row_range(self, first_row: int, last_row: int) -> None:
+        if self._count <= 0:
+            return
+        first = max(0, int(first_row))
+        last = min(self._count - 1, int(last_row))
+        if last < first:
+            return
+        for row in range(first, last + 1):
+            self._paint_status[row] = _UNSET
+            self._paint_background[row] = _UNSET
+            self._paint_foreground[row] = _UNSET
+        self.dataChanged.emit(self.index(first, 0), self.index(last, 0), list(_PAINT_ROLES))
+
+    def invalidate_visible_rows(self, view: QListView | None) -> None:
+        """Refresh only rows intersecting the viewport (large lists)."""
+
+        if view is None or self._count <= 0:
+            return
+        viewport = view.viewport()
+        if viewport is None:
+            self.invalidate_all_rows()
+            return
+        rect = viewport.rect()
+        top = view.indexAt(rect.topLeft())
+        bottom = view.indexAt(rect.bottomLeft())
+        if not top.isValid():
+            return
+        first = top.row()
+        last = bottom.row() if bottom.isValid() else first
+        model = view.model()
+        if isinstance(model, QSortFilterProxyModel):
+            source_first = model.mapToSource(top).row()
+            source_last = model.mapToSource(bottom).row() if bottom.isValid() else source_first
+            if source_first < 0:
+                return
+            if source_last < source_first:
+                source_first, source_last = source_last, source_first
+            self.invalidate_row_range(source_first, source_last)
+            return
+        if last < first:
+            first, last = last, first
+        self.invalidate_row_range(first, last)
 
     def invalidate_all_rows(self) -> None:
-        if not self._paths:
+        if self._count <= 0:
             return
-        self._role_cache.clear()
+        self._reset_paint_caches()
         top_left = self.index(0, 0)
-        bottom_right = self.index(len(self._paths) - 1, 0)
-        self.dataChanged.emit(
-            top_left,
-            bottom_right,
-            [
-                Qt.ItemDataRole.DisplayRole,
-                Qt.ItemDataRole.ForegroundRole,
-                Qt.ItemDataRole.BackgroundRole,
-                FRAME_STATUS_ROLE,
-            ],
-        )
+        bottom_right = self.index(self._count - 1, 0)
+        self.dataChanged.emit(top_left, bottom_right, list(_PAINT_ROLES))
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         if parent.isValid():
             return 0
-        return len(self._paths)
+        return self._count
 
-    def data(self, index: QModelIndex, role: int = int(Qt.ItemDataRole.DisplayRole)):
+    def _fill_paint_roles(self, row: int) -> None:
+        widget = self._widget
+        if widget is None or not hasattr(widget, "_image_list_model_row_paint_roles"):
+            self._paint_status[row] = None
+            self._paint_background[row] = None
+            self._paint_foreground[row] = None
+            return
+        roles = widget._image_list_model_row_paint_roles(self._paths[row])
+        self._paint_status[row] = roles.get(_ROLE_FRAME_STATUS)
+        self._paint_background[row] = roles.get(_ROLE_BACKGROUND)
+        self._paint_foreground[row] = roles.get(_ROLE_FOREGROUND)
+
+    def data(self, index: QModelIndex, role: int = _ROLE_DISPLAY):
         if not index.isValid():
             return None
         row = index.row()
-        if row < 0 or row >= len(self._paths):
+        if row < 0 or row >= self._count:
             return None
-        path = self._paths[row]
-        widget = self._widget
-        if role == int(Qt.ItemDataRole.DisplayRole):
+        role_value = int(role)
+        if role_value == _ROLE_DISPLAY:
             return self._stems[row]
-        if role == int(Qt.ItemDataRole.ToolTipRole):
-            if widget is not None and getattr(widget, "_ui_language", "en") == "ru":
-                return f"Путь к файлу: {path}"
-            return f"File path: {path}"
-        if role == int(Qt.ItemDataRole.UserRole):
-            return path
-        if role in (
-            int(Qt.ItemDataRole.BackgroundRole),
-            int(Qt.ItemDataRole.ForegroundRole),
-            FRAME_STATUS_ROLE,
-        ):
-            cache_key = (row, int(role))
-            if cache_key in self._role_cache:
-                return self._role_cache[cache_key]
-            if widget is not None and hasattr(widget, "_image_list_model_item_data"):
-                value = widget._image_list_model_item_data(path, role)
-                self._role_cache[cache_key] = value
-                return value
-        return None
+        if role_value == _ROLE_USER:
+            return self._paths[row]
+        if role_value == _ROLE_TOOLTIP:
+            if self._widget is not None and getattr(self._widget, "_ui_language", "en") == "ru":
+                return self._tooltips_ru[row]
+            return self._tooltips_en[row]
+        if role_value not in _PAINT_ROLE_SET:
+            return None
+        if self._paint_status[row] is _UNSET:
+            self._fill_paint_roles(row)
+        if role_value == _ROLE_FRAME_STATUS:
+            return self._paint_status[row]
+        if role_value == _ROLE_BACKGROUND:
+            return self._paint_background[row]
+        return self._paint_foreground[row]
 
 
 class FramePathFilterProxyModel(QSortFilterProxyModel):

@@ -1242,7 +1242,7 @@ def normalize_strategy_parameters(
     for parameter in spec.parameters:
         try:
             normalized[parameter.key] = parameter.normalize(source.get(parameter.key, parameter.default))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             normalized[parameter.key] = parameter.default
     if strategy_id == "lifted_multicut":
         minimum = int(normalized["minimum_lifted_distance"])

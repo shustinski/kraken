@@ -209,12 +209,18 @@ def test_touching_instance_labels_are_contoured_separately() -> None:
     assert {polygon.id for polygon in outer} == {1, 2}
 
 
-def test_each_new_strategy_has_a_standard_builtin_preset() -> None:
-    from contour.ui.metal_presets import metal_preset_table
+def test_strategy_standard_payload_factory_covers_new_strategies() -> None:
+    from contour.ui.metal_presets import (
+        built_in_metal_presets,
+        metal_preset_table,
+        strategy_standard_metal_preset_payload,
+    )
 
-    presets = metal_preset_table()
+    assert list(metal_preset_table()) == ["standard"]
+    assert list(built_in_metal_presets("ru")) == ["Стандартный"]
+    assert list(built_in_metal_presets("en")) == ["Standard"]
     for strategy in NEW_STRATEGIES:
-        payload = presets[f"{strategy}_standard"]
+        payload = strategy_standard_metal_preset_payload(strategy)
         assert payload["metal_segmentation_strategy"] == strategy
         assert strategy in payload["metal_strategy_parameters"]
 

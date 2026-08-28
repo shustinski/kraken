@@ -451,3 +451,21 @@ def test_main_view_exposes_update_action_in_help_menu() -> None:
     finally:
         view.close()
         view.deleteLater()
+
+
+def test_main_view_does_not_duplicate_update_menu_on_language_change() -> None:
+    _app()
+    view = ContourMainView()
+    try:
+        view.set_ui_language("en")
+        view.set_ui_language("ru")
+        update_menus = [
+            action.menu()
+            for action in view._help_menu.actions()
+            if action.menu() is not None and action.menu().objectName() == "contourUpdateMenu"
+        ]
+        assert len(update_menus) == 1
+        assert update_menus[0].title() == "Обновление"
+    finally:
+        view.close()
+        view.deleteLater()

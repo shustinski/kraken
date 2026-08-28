@@ -346,6 +346,16 @@ class PolygonExtractionWidget(
         self._frame_load_thread_pool = QThreadPool(self)
         self._frame_load_thread_pool.setMaxThreadCount(2)
         self._frame_load_thread_pool.setExpiryTimeout(30000)
+        self._prefetch_thread_pool = QThreadPool(self)
+        self._prefetch_thread_pool.setMaxThreadCount(1)
+        self._prefetch_thread_pool.setExpiryTimeout(30000)
+        self._prefetch_request_serial = 0
+        self._prefetch_generation = 0
+        self._prefetch_queued_paths: set[str] = set()
+        self._prefetch_neighborhood_set: frozenset[str] = frozenset()
+        self._prefetch_timer = QTimer(self)
+        self._prefetch_timer.setSingleShot(True)
+        self._prefetch_timer.timeout.connect(self._prefetch_frame_neighborhood)
         self._frame_load_request_serial = 0
         self._frame_load_running_path: str | None = None
         self._frame_load_pending: tuple[str, bool, bool] | None = None
@@ -362,6 +372,7 @@ class PolygonExtractionWidget(
         self._editor_pixmap_cache: dict[tuple[str, str, str], QPixmap] = {}
         self._editor_polygons_signature: tuple[str, int, int] | None = None
         self._pending_editor_frame_apply: tuple[str, list, bool] | None = None
+        self._editor_frame_pending_pixmap = None
         self._frame_switch_profile = None
         self._frame_switch_profile_generation = 0
         self._thumbnail_path_to_row: dict[str, int] = {}
@@ -401,6 +412,7 @@ class PolygonExtractionWidget(
         self._thumbnail_radial_pump_timer.setSingleShot(True)
         self._thumbnail_radial_pump_timer.timeout.connect(self._pump_thumbnail_radial_loads)
         self._persisted_highlight_paths: set[str] = set()
+        self._last_vector_persist_error: str | None = None
         self._cif_load_failure_stems: set[str] = set()
         self._closing = False
         self._loading_image_path: str | None = None
@@ -428,6 +440,9 @@ class PolygonExtractionWidget(
         self._indexed_cif_directory: str | None = None
         self._asset_filter_match_only = False
         self._image_path_to_index: dict[str, int] = {}
+        self._image_paths_ordered: list[str] | None = None
+        self._image_path_stem_lower: dict[str, str] = {}
+        self._image_path_by_stem_lower: dict[str, str] = {}
         self._work_simulation_interval_ms = 200
         self._work_simulation_timer = QTimer(self)
         self._work_simulation_timer.setSingleShot(False)
@@ -489,6 +504,11 @@ class PolygonExtractionWidget(
                 pass
         self._deferred_thumbnail_load_timers = []
         self._frame_load_request_serial = int(getattr(self, "_frame_load_request_serial", 0)) + 1
+        self._prefetch_generation = int(getattr(self, "_prefetch_generation", 0)) + 1
+        self._prefetch_queued_paths = set()
+        prefetch_timer = getattr(self, "_prefetch_timer", None)
+        if prefetch_timer is not None:
+            prefetch_timer.stop()
         self._frame_load_pending = None
         self._frame_load_running_path = None
         self._loading_image_path = None
@@ -501,6 +521,7 @@ class PolygonExtractionWidget(
             self._cancel_antialias_job()
         for pool_name in (
             "_frame_load_thread_pool",
+            "_prefetch_thread_pool",
             "_thumbnail_thread_pool",
             "_neighbor_thread_pool",
             "_editor_display_thread_pool",

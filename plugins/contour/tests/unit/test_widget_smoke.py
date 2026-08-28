@@ -211,7 +211,19 @@ class WidgetSmokeTests(unittest.TestCase):
             self.assertEqual(widget._current_contour_settings().metal_random_walker_beta, 120.0)
             widget.metal_ws_core_margin_spin.setValue(12.0)
             self.assertEqual(widget._current_contour_settings().metal_watershed_core_margin, 12.0)
-            self.assertFalse(widget.metal_preset_widget.isVisible())
+            self.assertFalse(widget.metal_preset_group.isHidden())
+            self.assertFalse(widget.metal_preset_widget.isHidden())
+            self.assertFalse(widget.save_metal_preset_button.isHidden())
+            self.assertFalse(widget.apply_metal_preset_button.isHidden())
+            self.assertFalse(widget.export_metal_preset_button.isHidden())
+            self.assertFalse(widget.import_metal_preset_button.isHidden())
+            builtin_names = [
+                widget.metal_preset_combo.itemText(i)
+                for i in range(widget.metal_preset_combo.count())
+                if isinstance(widget.metal_preset_combo.itemData(i), tuple)
+                and widget.metal_preset_combo.itemData(i)[0] == "builtin"
+            ]
+            self.assertEqual(builtin_names, ["Стандартный"])
             self.assertFalse(widget.metal_preview_mask_button.isVisible())
             self.assertFalse(widget.contour_group.isVisible())
             self.assertGreaterEqual(widget.metal_debug_visual_combo.findData("metal_gradient_x"), 0)

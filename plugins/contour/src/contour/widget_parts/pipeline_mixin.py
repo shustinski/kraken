@@ -980,6 +980,17 @@ class WidgetPipelineMixin:
         name = str(name).strip()
         if not ok or not name:
             return
+        if name in self._built_in_metal_presets():
+            QMessageBox.warning(
+                self,
+                "Пресет" if self._ui_language == "ru" else "Preset",
+                (
+                    "Нельзя перезаписать встроенный пресет. Выберите другое имя."
+                    if self._ui_language == "ru"
+                    else "Built-in presets cannot be overwritten. Choose another name."
+                ),
+            )
+            return
         self._user_metal_presets[name] = self._current_metal_preset_payload()
         self._save_user_metal_presets()
         self._refresh_metal_preset_combo()
@@ -994,6 +1005,112 @@ class WidgetPipelineMixin:
         self._user_metal_presets.pop(str(data[1]), None)
         self._save_user_metal_presets()
         self._refresh_metal_preset_combo()
+
+    def _selected_metal_preset_payload(self) -> tuple[str, dict[str, object]] | None:
+        data = self.metal_preset_combo.currentData()
+        if not isinstance(data, tuple) or len(data) != 2:
+            return None
+        preset_type, preset_name = str(data[0]), str(data[1])
+        payload = (
+            self._built_in_metal_presets().get(preset_name)
+            if preset_type == "builtin"
+            else self._user_metal_presets.get(preset_name)
+        )
+        if not isinstance(payload, dict):
+            return None
+        return preset_name, dict(payload)
+
+    def _export_selected_metal_preset(self) -> None:
+        selected = self._selected_metal_preset_payload()
+        if selected is None:
+            payload = self._current_metal_preset_payload()
+            default_name = "metal_preset"
+        else:
+            default_name, payload = selected
+        safe_name = "".join(
+            character if character not in '<>:"/\\|?*' else "_"
+            for character in default_name
+        ).strip(" .") or "metal_preset"
+        start_directory = self._dialog_start_directory_from_line_edit(self.output_dir_edit)
+        suggested_path = str(Path(start_directory) / f"{safe_name}.json")
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Выгрузить пресет распознавания" if self._ui_language == "ru" else "Export recognition preset",
+            suggested_path,
+            self._tr("json_file_filter"),
+        )
+        if not path:
+            return
+        save_pipeline_config_to_path(
+            path,
+            {
+                "format": "contour-metal-preset",
+                "version": 1,
+                "name": default_name,
+                "settings": payload,
+            },
+        )
+        self._append_log(
+            (
+                f"Пресет распознавания выгружен: {path}"
+                if self._ui_language == "ru"
+                else f"Recognition preset exported: {path}"
+            )
+        )
+
+    def _import_metal_preset(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Загрузить пресет распознавания" if self._ui_language == "ru" else "Import recognition preset",
+            self._dialog_start_directory_from_line_edit(self.input_dir_edit),
+            self._tr("json_file_filter"),
+        )
+        if not path:
+            return
+        file_payload = load_pipeline_config_from_path(path)
+        if str(file_payload.get("format") or "") != "contour-metal-preset":
+            QMessageBox.warning(
+                self,
+                "Пресет" if self._ui_language == "ru" else "Preset",
+                (
+                    "Файл не является пресетом распознавания проводников."
+                    if self._ui_language == "ru"
+                    else "File is not a conductor recognition preset."
+                ),
+            )
+            return
+        settings_payload = file_payload.get("settings")
+        if not isinstance(settings_payload, dict):
+            QMessageBox.warning(
+                self,
+                "Пресет" if self._ui_language == "ru" else "Preset",
+                (
+                    "В файле пресета отсутствуют настройки."
+                    if self._ui_language == "ru"
+                    else "Preset file has no settings."
+                ),
+            )
+            return
+        name = str(file_payload.get("name") or Path(path).stem).strip() or Path(path).stem
+        if name in self._built_in_metal_presets():
+            name = f"{name} (user)" if self._ui_language != "ru" else f"{name} (пользовательский)"
+        self._user_metal_presets[name] = {
+            str(key): value for key, value in settings_payload.items()
+        }
+        self._save_user_metal_presets()
+        self._refresh_metal_preset_combo()
+        self._apply_metal_preset_payload(dict(settings_payload))
+        with QSignalBlocker(self.metal_preset_combo):
+            index = self.metal_preset_combo.findText(name)
+            if index >= 0:
+                self.metal_preset_combo.setCurrentIndex(index)
+        self._append_log(
+            (
+                f"Пресет распознавания загружен: {path}"
+                if self._ui_language == "ru"
+                else f"Recognition preset imported: {path}"
+            )
+        )
 
     def _apply_noisy_traces_via_preset(self, *_args) -> None:
         self._apply_via_preset_payload(self._noisy_traces_via_preset_payload())

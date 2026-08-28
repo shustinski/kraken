@@ -802,8 +802,8 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Measure distance on the image by dragging the mouse.",
     ),
     EditorTool.ADD_POLYGON: (
-        "Создание нового полигона точками или прямоугольником.",
-        "Create a new polygon with points or a rectangle.",
+        "Создание нового полигона точками или прямоугольником. Правая кнопка вырезает область из существующих полигонов.",
+        "Create a new polygon with points or a rectangle. Right-click cuts an area out of existing polygons.",
     ),
     EditorTool.BRUSH: (
         "Рисование или стирание области кистью. Круг под курсором показывает текущую толщину кисти.",
@@ -830,7 +830,7 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Move a single vertex of the selected polygon.",
     ),
     EditorTool.ANTIALIAS: (
-        "Antialias polygon under cursor.",
+        "Сгладить полигон под курсором: показывает вершины и уменьшает их число по клику.",
         "Shows vertices for the polygon under the cursor and reduces its vertex count on click.",
     ),
     EditorTool.DELETE_POLYGON: (
@@ -880,8 +880,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Dataset folder where the current frame is exported during dataset preparation.",
     ),
     "browse_input": (
-        "Выбрать папку с исходными изображениями.",
-        "Choose the folder with source images.",
+        "Загрузить папку базового слоя.",
+        "Load the base-layer image folder.",
     ),
     "browse_cif": (
         "Выбрать папку с CIF/CV-разметкой для наложения.",
@@ -900,8 +900,8 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Reload the image list from the selected input folder.",
     ),
     "pick_input_images": (
-        "Выбрать отдельные файлы изображений (не всю папку).",
-        "Pick individual image files instead of scanning the entire folder.",
+        "Выбрать кадры базового слоя.",
+        "Pick base-layer frame files.",
     ),
     "merge_cif_files": (
         "Добавить в индекс отдельные .cif или .cv файлы (по имени сопоставляются с изображением).",

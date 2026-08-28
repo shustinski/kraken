@@ -50,6 +50,16 @@ def _rarity_text(rarity: Rarity | None) -> str:
     return "locked" if rarity is None else rarity.value
 
 
+def _ui(language: str, russian: str, english: str) -> str:
+    return english if language == "en" else russian
+
+
+def _lock_status(language: str, unlocked: bool) -> str:
+    if language == "en":
+        return "unlocked" if unlocked else "locked"
+    return "открыт" if unlocked else "закрыт"
+
+
 def _fragment_line(values: Callable[[Rarity], int]) -> str:
     return " / ".join(f"{rarity.value}: {values(rarity)}" for rarity in Rarity)
 
@@ -81,8 +91,17 @@ class GamificationPanel(QWidget):
         self._balance = balance
         self._reaction_service = PetReactionService()
         self._last_event_type: RewardEventType | None = None
-        self._last_reward = "Пока нет наград"
+        self._language = "ru"
+        self._last_reward = _ui(self._language, "Пока нет наград", "No rewards yet")
         self._build_ui()
+        self.refresh_profile()
+
+    def set_ui_language(self, language: str | None) -> None:
+        self._language = "en" if str(language or "").lower().startswith("en") else "ru"
+        self.title_label.setText(_ui(self._language, "Питомец", "Pet"))
+        self.open_button.setText(_ui(self._language, "Коллекция", "Collection"))
+        if self._last_reward in {"Пока нет наград", "No rewards yet"}:
+            self._last_reward = _ui(self._language, "Пока нет наград", "No rewards yet")
         self.refresh_profile()
 
     def set_last_results(self, results: list[ServiceResult]) -> None:
@@ -113,11 +132,19 @@ class GamificationPanel(QWidget):
         pet_progress = profile.pet_progress[profile.selected_pet]
         self.avatar.set_pet(profile.selected_pet, skin_id, rarity=pet_progress.rarity)
         self.pet_label.setText(f"{pet.title} / {skin.title}")
-        self.rarity_label.setText(f"Редкость: {_rarity_text(pet_progress.rarity)}")
-        self.level_label.setText(f"Уровень: {profile.level}   XP: {profile.xp}")
-        self.balance_label.setText(f"Фрагменты кристалла: {profile.wallet_balance}")
+        self.rarity_label.setText(
+            f"{_ui(self._language, 'Редкость', 'Rarity')}: {_rarity_text(pet_progress.rarity)}"
+        )
+        self.level_label.setText(
+            f"{_ui(self._language, 'Уровень', 'Level')}: {profile.level}   XP: {profile.xp}"
+        )
+        self.balance_label.setText(
+            f"{_ui(self._language, 'Фрагменты кристалла', 'Crystal fragments')}: {profile.wallet_balance}"
+        )
         self.reaction_label.setText(self._reaction_service.reaction_for_event(profile, self._last_event_type))
-        self.last_reward_label.setText(f"Последняя награда: {self._last_reward}")
+        self.last_reward_label.setText(
+            f"{_ui(self._language, 'Последняя награда', 'Last reward')}: {self._last_reward}"
+        )
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -149,7 +176,12 @@ class GamificationPanel(QWidget):
         layout.addStretch(1)
 
     def _open_dialog(self) -> None:
-        dialog = GamificationDialog(self._profile_service, balance=self._balance, parent=self)
+        dialog = GamificationDialog(
+            self._profile_service,
+            balance=self._balance,
+            language=self._language,
+            parent=self,
+        )
         dialog.messageRequested.connect(self.messageRequested.emit)
         dialog.finished.connect(lambda _result: self.refresh_profile())
         dialog.exec()
@@ -163,10 +195,12 @@ class GamificationDialog(QDialog):
         profile_service: GamificationProfileService,
         *,
         balance: GamificationBalance = DEFAULT_GAMIFICATION_BALANCE,
+        language: str = "ru",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Геймификация")
+        self._language = "en" if str(language).lower().startswith("en") else "ru"
+        self.setWindowTitle(_ui(self._language, "Геймификация", "Gamification"))
         self.resize(820, 680)
         self._profile_service = profile_service
         self._balance = balance
@@ -202,11 +236,11 @@ class GamificationDialog(QDialog):
         self.shop_widget = QWidget()
         self.shop_layout = QVBoxLayout(self.shop_widget)
         self.exchange_scroll, self.exchange_content, self.exchange_layout = self._scroll_tab()
-        self.tabs.addTab(self.overview_widget, "Главная")
-        self.tabs.addTab(self.pets_scroll, "Питомцы")
-        self.tabs.addTab(self.skins_scroll, "Скины")
-        self.tabs.addTab(self.shop_widget, "Магазин")
-        self.tabs.addTab(self.exchange_scroll, "Обмен")
+        self.tabs.addTab(self.overview_widget, _ui(self._language, "Главная", "Home"))
+        self.tabs.addTab(self.pets_scroll, _ui(self._language, "Питомцы", "Pets"))
+        self.tabs.addTab(self.skins_scroll, _ui(self._language, "Скины", "Skins"))
+        self.tabs.addTab(self.shop_widget, _ui(self._language, "Магазин", "Shop"))
+        self.tabs.addTab(self.exchange_scroll, _ui(self._language, "Обмен", "Exchange"))
         layout.addWidget(self.tabs, 1)
         layout.addWidget(self._status_label)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -247,12 +281,12 @@ class GamificationDialog(QDialog):
         self.overview_layout.addWidget(avatar, 0, Qt.AlignmentFlag.AlignHCenter)
         reaction = self._reaction_service.reaction_for_event(profile, self._last_event_type)
         for text in (
-            f"Текущий питомец: {pet.title}",
-            f"Текущий skin: {skin.title}",
-            f"Редкость питомца: {_rarity_text(profile.pet_progress[profile.selected_pet].rarity)}",
-            f"Уровень: {profile.level}",
+            f"{_ui(self._language, 'Текущий питомец', 'Current pet')}: {pet.title}",
+            f"{_ui(self._language, 'Текущий скин', 'Current skin')}: {skin.title}",
+            f"{_ui(self._language, 'Редкость питомца', 'Pet rarity')}: {_rarity_text(profile.pet_progress[profile.selected_pet].rarity)}",
+            f"{_ui(self._language, 'Уровень', 'Level')}: {profile.level}",
             f"XP: {profile.xp}",
-            f"Фрагменты кристалла: {profile.wallet_balance}",
+            f"{_ui(self._language, 'Фрагменты кристалла', 'Crystal fragments')}: {profile.wallet_balance}",
             reaction,
         ):
             label = QLabel(text)
@@ -274,10 +308,20 @@ class GamificationDialog(QDialog):
         avatar = PetAvatarWidget(avatar_size=96)
         avatar.set_pet(pet_type, DEFAULT_SKIN_BY_PET[pet_type], PetMood.IDLE, locked=not progress.unlocked)
         layout.addWidget(avatar, 0, Qt.AlignmentFlag.AlignLeft)
-        selected = "выбран" if profile.selected_pet == pet_type else ""
+        selected = _ui(self._language, "выбран", "selected") if profile.selected_pet == pet_type else ""
         layout.addWidget(QLabel(f"{definition.description} {selected}".strip()))
-        layout.addWidget(QLabel(f"Статус: {'unlocked' if progress.unlocked else 'locked'} / {_rarity_text(progress.rarity)}"))
-        layout.addWidget(QLabel(f"Фрагменты: {_fragment_line(lambda rarity: profile.pet_fragments.get(pet_type, rarity))}"))
+        layout.addWidget(
+            QLabel(
+                f"{_ui(self._language, 'Статус', 'Status')}: "
+                f"{_lock_status(self._language, progress.unlocked)} / {_rarity_text(progress.rarity)}"
+            )
+        )
+        layout.addWidget(
+            QLabel(
+                f"{_ui(self._language, 'Фрагменты', 'Fragments')}: "
+                f"{_fragment_line(lambda rarity: profile.pet_fragments.get(pet_type, rarity))}"
+            )
+        )
         if not progress.unlocked:
             layout.addWidget(
                 QLabel(
@@ -297,19 +341,19 @@ class GamificationDialog(QDialog):
                 )
             )
         row = QHBoxLayout()
-        unlock_button = QPushButton("Открыть")
+        unlock_button = QPushButton(_ui(self._language, "Открыть", "Unlock"))
         unlock_button.setEnabled(self._pet_unlocks.can_unlock_pet(profile, pet_type))
         unlock_button.clicked.connect(lambda _checked=False, pet=pet_type: self._unlock_pet(pet))
         row.addWidget(unlock_button)
         method_combo = self._upgrade_method_combo(profile, pet_type, self._pet_unlocks.can_upgrade_pet)
         row.addWidget(method_combo)
-        upgrade_button = QPushButton("Повысить")
+        upgrade_button = QPushButton(_ui(self._language, "Повысить", "Upgrade"))
         upgrade_button.setEnabled(self._pet_unlocks.can_upgrade_pet(profile, pet_type))
         upgrade_button.clicked.connect(
             lambda _checked=False, pet=pet_type, combo=method_combo: self._upgrade_pet(pet, combo.currentData())
         )
         row.addWidget(upgrade_button)
-        select_button = QPushButton("Выбрать")
+        select_button = QPushButton(_ui(self._language, "Выбрать", "Select"))
         select_button.setEnabled(progress.unlocked)
         select_button.clicked.connect(lambda _checked=False, pet=pet_type: self._select_pet(pet))
         row.addWidget(select_button)
@@ -337,25 +381,49 @@ class GamificationDialog(QDialog):
         )
         layout.addWidget(avatar, 0, Qt.AlignmentFlag.AlignLeft)
         selected_skin = profile.selected_skin_by_pet.get(definition.pet_type)
-        selected = "выбран" if selected_skin == skin_id and profile.selected_pet == definition.pet_type else ""
-        layout.addWidget(QLabel(f"Питомец: {PET_DEFINITIONS[definition.pet_type].title}. {definition.description} {selected}".strip()))
-        layout.addWidget(QLabel(f"Статус питомца: {'unlocked' if pet_progress.unlocked else 'locked'}"))
-        layout.addWidget(QLabel(f"Статус skin: {'unlocked' if progress.unlocked else 'locked'} / {_rarity_text(progress.rarity)}"))
-        layout.addWidget(QLabel(f"Фрагменты: {_fragment_line(lambda rarity: profile.skin_fragments.get(skin_id, rarity))}"))
+        selected = (
+            _ui(self._language, "выбран", "selected")
+            if selected_skin == skin_id and profile.selected_pet == definition.pet_type
+            else ""
+        )
+        layout.addWidget(
+            QLabel(
+                f"{_ui(self._language, 'Питомец', 'Pet')}: "
+                f"{PET_DEFINITIONS[definition.pet_type].title}. {definition.description} {selected}".strip()
+            )
+        )
+        layout.addWidget(
+            QLabel(
+                f"{_ui(self._language, 'Статус питомца', 'Pet status')}: "
+                f"{_lock_status(self._language, pet_progress.unlocked)}"
+            )
+        )
+        layout.addWidget(
+            QLabel(
+                f"{_ui(self._language, 'Статус скина', 'Skin status')}: "
+                f"{_lock_status(self._language, progress.unlocked)} / {_rarity_text(progress.rarity)}"
+            )
+        )
+        layout.addWidget(
+            QLabel(
+                f"{_ui(self._language, 'Фрагменты', 'Fragments')}: "
+                f"{_fragment_line(lambda rarity: profile.skin_fragments.get(skin_id, rarity))}"
+            )
+        )
         row = QHBoxLayout()
-        unlock_button = QPushButton("Открыть")
+        unlock_button = QPushButton(_ui(self._language, "Открыть", "Unlock"))
         unlock_button.setEnabled(self._skin_unlocks.can_unlock_skin(profile, skin_id))
         unlock_button.clicked.connect(lambda _checked=False, skin=skin_id: self._unlock_skin(skin))
         row.addWidget(unlock_button)
         method_combo = self._upgrade_method_combo(profile, skin_id, self._skin_unlocks.can_upgrade_skin)
         row.addWidget(method_combo)
-        upgrade_button = QPushButton("Повысить")
+        upgrade_button = QPushButton(_ui(self._language, "Повысить", "Upgrade"))
         upgrade_button.setEnabled(self._skin_unlocks.can_upgrade_skin(profile, skin_id))
         upgrade_button.clicked.connect(
             lambda _checked=False, skin=skin_id, combo=method_combo: self._upgrade_skin(skin, combo.currentData())
         )
         row.addWidget(upgrade_button)
-        select_button = QPushButton("Выбрать")
+        select_button = QPushButton(_ui(self._language, "Выбрать", "Select"))
         select_button.setEnabled(progress.unlocked and pet_progress.unlocked)
         select_button.clicked.connect(lambda _checked=False, skin=skin_id: self._select_skin(skin))
         row.addWidget(select_button)
@@ -383,11 +451,22 @@ class GamificationDialog(QDialog):
     def _rebuild_shop_tab(self, profile: GamificationProfile) -> None:
         _clear_layout(self.shop_layout)
         items = self._shop.get_available_shop_items(profile)
-        self.shop_layout.addWidget(QLabel(f"Баланс: {profile.wallet_balance} фрагментов кристалла"))
-        pet_button = QPushButton(f"Купить pet capsule ({items['pet_fragment_capsule_price']})")
+        self.shop_layout.addWidget(
+            QLabel(
+                f"{_ui(self._language, 'Баланс', 'Balance')}: "
+                f"{profile.wallet_balance} {_ui(self._language, 'фрагментов кристалла', 'crystal fragments')}"
+            )
+        )
+        pet_button = QPushButton(
+            f"{_ui(self._language, 'Купить капсулу питомца', 'Buy pet capsule')} "
+            f"({items['pet_fragment_capsule_price']})"
+        )
         pet_button.clicked.connect(self._buy_pet_capsule)
         self.shop_layout.addWidget(pet_button)
-        skin_button = QPushButton(f"Купить skin capsule ({items['skin_fragment_capsule_price']})")
+        skin_button = QPushButton(
+            f"{_ui(self._language, 'Купить капсулу скина', 'Buy skin capsule')} "
+            f"({items['skin_fragment_capsule_price']})"
+        )
         skin_button.setEnabled(bool(items["skin_fragment_capsule_available"]))
         skin_button.clicked.connect(self._buy_skin_capsule)
         self.shop_layout.addWidget(skin_button)
@@ -400,7 +479,7 @@ class GamificationDialog(QDialog):
         self.exchange_layout.addStretch(1)
 
     def _pet_exchange_group(self, profile: GamificationProfile) -> QWidget:
-        group = QGroupBox("Обмен фрагментов питомцев")
+        group = QGroupBox(_ui(self._language, "Обмен фрагментов питомцев", "Pet fragment exchange"))
         layout = QVBoxLayout(group)
         rarity_combo = self._rarity_combo()
         layout.addWidget(rarity_combo)
@@ -417,9 +496,9 @@ class GamificationDialog(QDialog):
         target_combo = QComboBox()
         for pet_type in COLLECTIBLE_PET_TYPES:
             target_combo.addItem(PET_DEFINITIONS[pet_type].title, pet_type)
-        layout.addWidget(QLabel("Target pet"))
+        layout.addWidget(QLabel(_ui(self._language, "Целевой питомец", "Target pet")))
         layout.addWidget(target_combo)
-        button = QPushButton("Обменять")
+        button = QPushButton(_ui(self._language, "Обменять", "Exchange"))
         button.clicked.connect(
             lambda _checked=False: self._exchange_pet_fragments(
                 spins,
@@ -431,7 +510,7 @@ class GamificationDialog(QDialog):
         return group
 
     def _skin_exchange_group(self, profile: GamificationProfile) -> QWidget:
-        group = QGroupBox("Обмен skin fragments")
+        group = QGroupBox(_ui(self._language, "Обмен фрагментов скинов", "Skin fragment exchange"))
         layout = QVBoxLayout(group)
         rarity_combo = self._rarity_combo()
         layout.addWidget(rarity_combo)
@@ -450,9 +529,9 @@ class GamificationDialog(QDialog):
             definition = SKIN_DEFINITIONS[skin_id]
             if profile.pet_progress[definition.pet_type].unlocked:
                 target_combo.addItem(definition.title, skin_id)
-        layout.addWidget(QLabel("Target skin"))
+        layout.addWidget(QLabel(_ui(self._language, "Целевой скин", "Target skin")))
         layout.addWidget(target_combo)
-        button = QPushButton("Обменять")
+        button = QPushButton(_ui(self._language, "Обменять", "Exchange"))
         button.setEnabled(target_combo.count() > 0)
         button.clicked.connect(
             lambda _checked=False: self._exchange_skin_fragments(

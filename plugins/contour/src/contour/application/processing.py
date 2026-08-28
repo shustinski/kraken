@@ -1236,6 +1236,8 @@ class ImageProcessingState:
     reference_polygons: list[PolygonData] = field(default_factory=list)
     #: Cached ``image_has_changes``; ``None`` means recompute on next query.
     polygons_dirty: bool | None = None
+    #: Prefetch/worker result of ``polygons_needing_repair``; ``None`` means not scanned yet.
+    polygons_needing_repair: dict[int, list[str]] | None = None
 
 
 @dataclass(slots=True)

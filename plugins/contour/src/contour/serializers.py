@@ -13,8 +13,10 @@ import cv2
 import numpy as np
 
 from .application.processing import DisplaySettings, SaveOptions
-from .domain import PolygonData, compute_polygon_metrics
+from .domain import PolygonData, compute_polygon_metrics, integer_points
+from .domain.polygon_ring import collapse_redundant_polyline_vertices
 from .i18n import tr
+from .infrastructure.cif_primitives import CifBox, CifPrimitive
 from .utils import draw_polygon_overlay, ensure_directory, imwrite_unicode_safe
 
 _CIF_PARSE_CACHE: dict[tuple[str, int, int], tuple[str | None, tuple[int, int] | None, list[PolygonData]]] = {}
@@ -486,6 +488,188 @@ def _read_cif_text(path: str | Path) -> str:
     return payload.decode("cp1251", errors="replace")
 
 
+def _cif_box_to_polygon(
+    box_width: int,
+    box_height: int,
+    center_x: int,
+    center_y: int,
+    image_size: tuple[int, int],
+    polygon_id: int,
+) -> PolygonData:
+    _width, height = image_size
+    image_center_y = int(height) - center_y
+    left, right = _pixel_box_bounds(center_x, box_width)
+    top, bottom = _pixel_box_bounds(image_center_y, box_height)
+    image_points = [
+        (left, top),
+        (right, top),
+        (right, bottom),
+        (left, bottom),
+    ]
+    area, perimeter, bbox = compute_polygon_metrics(image_points)
+    return PolygonData(
+        id=polygon_id,
+        points=image_points,
+        is_hole=False,
+        parent_id=None,
+        category="via",
+        shape_hint="box",
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+        _points_normalized=True,
+    )
+
+
+def _cif_polygon_points_to_polygon(
+    raw_points: list[tuple[int, int]],
+    image_size: tuple[int, int],
+    polygon_id: int,
+) -> PolygonData | None:
+    if len(raw_points) >= 2 and raw_points[0] == raw_points[-1]:
+        raw_points = raw_points[:-1]
+    if len(raw_points) < 3:
+        return None
+
+    _width, height = image_size
+    image_height = int(height)
+    image_points = [(x_coord, image_height - y_coord) for x_coord, y_coord in raw_points]
+    area, perimeter, bbox = compute_polygon_metrics(image_points)
+    return PolygonData(
+        id=polygon_id,
+        points=image_points,
+        is_hole=False,
+        parent_id=None,
+        category="conductor",
+        shape_hint="polygon",
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+        _points_normalized=True,
+    )
+
+
+def _cif_box_primitive_to_polygon(
+    box: CifBox,
+    image_size: tuple[int, int],
+    polygon_id: int,
+) -> PolygonData:
+    from .infrastructure.cif_klayout_reader import rotated_box_points
+
+    if box.rotation_x >= 0 and box.rotation_y == 0:
+        return _cif_box_to_polygon(
+            box.width,
+            box.height,
+            box.center_x,
+            box.center_y,
+            image_size,
+            polygon_id,
+        )
+
+    _width, height = image_size
+    image_height = int(height)
+    image_points = [
+        (float(x_coord), float(image_height - y_coord))
+        for x_coord, y_coord in rotated_box_points(
+            box.width,
+            box.height,
+            box.center_x,
+            box.center_y,
+            box.rotation_x,
+            box.rotation_y,
+        )
+    ]
+    area, perimeter, bbox = compute_polygon_metrics(image_points)
+    return PolygonData(
+        id=polygon_id,
+        points=image_points,
+        is_hole=False,
+        parent_id=None,
+        category="via",
+        shape_hint="box",
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+        _points_normalized=True,
+    )
+
+
+def _cif_primitives_to_polygons(
+    cif_path: Path,
+    primitives: Iterable[CifPrimitive],
+) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]]:
+    from .infrastructure.cif_primitives import CifBox, CifComment, CifPolygon
+
+    image_name: str | None = None
+    image_size: tuple[int, int] | None = None
+    polygons: list[PolygonData] = []
+
+    for primitive in primitives:
+        if isinstance(primitive, CifComment):
+            tokens = _extract_parenthesized_tokens(primitive.content.strip())
+            if len(tokens) >= 2 and tokens[0] == "R":
+                image_name = tokens[1]
+            elif len(tokens) >= 3 and tokens[0] == "S":
+                image_size = (_parse_cif_int(tokens[1]), _parse_cif_int(tokens[2]))
+            continue
+        if isinstance(primitive, CifBox):
+            if image_size is None:
+                raise ValueError(tr("cif_size_header_missing", path=cif_path))
+            polygons.append(
+                _cif_box_primitive_to_polygon(
+                    primitive,
+                    image_size,
+                    len(polygons) + 1,
+                )
+            )
+            continue
+        if isinstance(primitive, CifPolygon):
+            if image_size is None:
+                raise ValueError(tr("cif_size_header_missing", path=cif_path))
+            polygon = _cif_polygon_points_to_polygon(
+                list(primitive.points),
+                image_size,
+                len(polygons) + 1,
+            )
+            if polygon is not None:
+                polygons.append(polygon)
+
+    return image_name, image_size, polygons
+
+
+def _load_polygons_cif_via_klayout(
+    cif_path: Path,
+) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]] | None:
+    from .infrastructure.cif_klayout_reader import klayout_cif_reader_enabled, load_cif_primitives_klayout
+
+    if not klayout_cif_reader_enabled():
+        return None
+
+    parsed = load_cif_primitives_klayout(cif_path)
+    return _cif_primitives_to_polygons(cif_path, parsed.primitives)
+
+
+def _load_polygons_cif_via_opencif(
+    cif_path: Path,
+) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]] | None:
+    from .infrastructure.cif_opencif import (
+        load_cif_primitives,
+        opencif_loader_available,
+        opencif_use_enabled,
+    )
+
+    if not opencif_use_enabled() or not opencif_loader_available():
+        return None
+
+    parsed = load_cif_primitives(cif_path)
+    if parsed is None:
+        return None
+    if parsed.status == "cant_open":
+        return None
+
+    return _cif_primitives_to_polygons(cif_path, parsed.primitives)
+
+
 def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]]:
     cif_path = Path(path)
     cache_key = _cif_parse_cache_key(cif_path)
@@ -495,6 +679,22 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
         if cached is not None:
             image_name, image_size, polygons = cached
             return image_name, image_size, [polygon.clone() for polygon in polygons]
+
+    klayout_payload = _load_polygons_cif_via_klayout(cif_path)
+    if klayout_payload is not None:
+        image_name, image_size, polygons = klayout_payload
+        polygons = _recover_cut_hole_topology(polygons, image_size)
+        if cache_key is not None:
+            _cache_cif_parse_result(cache_key, image_name, image_size, polygons)
+        return image_name, image_size, polygons
+
+    opencif_payload = _load_polygons_cif_via_opencif(cif_path)
+    if opencif_payload is not None:
+        image_name, image_size, polygons = opencif_payload
+        polygons = _recover_cut_hole_topology(polygons, image_size)
+        if cache_key is not None:
+            _cache_cif_parse_result(cache_key, image_name, image_size, polygons)
+        return image_name, image_size, polygons
 
     lines = _read_cif_text(cif_path).splitlines()
 
@@ -522,34 +722,14 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
             payload = stripped[2:].rstrip(";").split()
             if len(payload) != 4:
                 continue
-            box_width = _parse_cif_int(payload[0])
-            box_height = _parse_cif_int(payload[1])
-            center_x = _parse_cif_int(payload[2])
-            center_y = _parse_cif_int(payload[3])
-
-            _, height = image_size
-            image_center_y = int(height) - center_y
-            left, right = _pixel_box_bounds(center_x, box_width)
-            top, bottom = _pixel_box_bounds(image_center_y, box_height)
-            image_points = [
-                (left, top),
-                (right, top),
-                (right, bottom),
-                (left, bottom),
-            ]
-            area, perimeter, bbox = compute_polygon_metrics(image_points)
             polygons.append(
-                PolygonData(
-                    id=len(polygons) + 1,
-                    points=image_points,
-                    is_hole=False,
-                    parent_id=None,
-                    category="via",
-                    shape_hint="box",
-                    area=area,
-                    perimeter=perimeter,
-                    bbox=bbox,
-                    _points_normalized=True,
+                _cif_box_to_polygon(
+                    _parse_cif_int(payload[0]),
+                    _parse_cif_int(payload[1]),
+                    _parse_cif_int(payload[2]),
+                    _parse_cif_int(payload[3]),
+                    image_size,
+                    len(polygons) + 1,
                 )
             )
             continue
@@ -565,29 +745,9 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
         raw_points = [
             (_parse_cif_int(payload[index]), _parse_cif_int(payload[index + 1])) for index in range(0, len(payload), 2)
         ]
-        if len(raw_points) >= 2 and raw_points[0] == raw_points[-1]:
-            raw_points = raw_points[:-1]
-        if len(raw_points) < 3:
-            continue
-
-        _width, height = image_size
-        image_height = int(height)
-        image_points = [(x_coord, image_height - y_coord) for x_coord, y_coord in raw_points]
-        area, perimeter, bbox = compute_polygon_metrics(image_points)
-        polygons.append(
-            PolygonData(
-                id=len(polygons) + 1,
-                points=image_points,
-                is_hole=False,
-                parent_id=None,
-                category="conductor",
-                shape_hint="polygon",
-                area=area,
-                perimeter=perimeter,
-                bbox=bbox,
-                _points_normalized=True,
-            )
-        )
+        polygon = _cif_polygon_points_to_polygon(raw_points, image_size, len(polygons) + 1)
+        if polygon is not None:
+            polygons.append(polygon)
 
     polygons = _recover_cut_hole_topology(polygons, image_size)
     if cache_key is not None:
@@ -635,12 +795,33 @@ def _dedupe_closed_points(points: list[tuple[float, float]]) -> list[tuple[float
         return []
     first_x, first_y = points[0]
     if isinstance(first_x, int) and isinstance(first_y, int):
-        cleaned: list[tuple[float, float]] = [(int(x_coord), int(y_coord)) for x_coord, y_coord in points]
+        source: list[tuple[float, float]] = [(int(x_coord), int(y_coord)) for x_coord, y_coord in points]
     else:
-        cleaned = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
+        source = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
+    cleaned: list[tuple[float, float]] = [source[0]]
+    for point in source[1:]:
+        if point != cleaned[-1]:
+            cleaned.append(point)
     while len(cleaned) >= 2 and cleaned[0] == cleaned[-1]:
         cleaned = cleaned[:-1]
     return cleaned
+
+
+def _ring_has_retracing_entry_edge(ring: list[tuple[float, float]]) -> bool:
+    """True when closing the ring immediately retraces its first edge.
+
+    Legacy CIF keyholes sometimes repeat the bridge vertex, so a zero-length
+    ``A -> A`` pair is treated as the hole mouth and the real bridge is swallowed
+    into the hole outline as a long spike.
+    """
+
+    return len(ring) >= 3 and ring[-1] == ring[1]
+
+
+def _is_simple_extracted_hole_ring(ring: list[tuple[float, float]]) -> bool:
+    """Reject nested keyholes that still contain their own bridge vertices."""
+
+    return len(ring) >= 3 and not _ring_has_retracing_entry_edge(ring) and not _has_duplicate_points(ring)
 
 
 def _has_duplicate_points(points: list[tuple[float, float]]) -> bool:
@@ -753,21 +934,76 @@ def _split_linked_polygon_rings(
             (open_points[return_index], open_points[return_index + 1]),
             [],
         ).append(return_index)
+    best_span: int | None = None
+    best_hole: list[tuple[float, float]] | None = None
+    best_outer: list[tuple[float, float]] | None = None
     for start_index in range(0, point_count - 3):
         outer_anchor = open_points[start_index]
         hole_anchor = open_points[start_index + 1]
+        if outer_anchor == hole_anchor:
+            continue
         for return_index in bridge_return_indices.get((hole_anchor, outer_anchor), ()):
             if return_index < start_index + 3:
                 continue
-            hole_ring = _dedupe_closed_points(open_points[start_index + 1 : return_index + 1])
+            span = return_index - start_index
+            if best_span is not None and span >= best_span:
+                continue
+            # Spike-clean the hole so A->B->A bridge leftovers do not look like
+            # nested keyholes. Do not collinear-collapse the outer yet: that can
+            # delete still-needed bridge anchors (e.g. right-edge multi-hole CIF).
+            hole_ring = _remove_out_and_back_spikes(
+                _dedupe_closed_points(open_points[start_index + 1 : return_index + 1])
+            )
             outer_ring = _dedupe_closed_points(
                 [outer_anchor, *open_points[return_index + 2 :], *open_points[: start_index + 1]]
             )
             if len(hole_ring) < 3 or len(outer_ring) < 3:
                 continue
-            base_outer, base_holes = _split_linked_polygon_rings(outer_ring)
-            return base_outer, [hole_ring, *base_holes]
-    return open_points, []
+            hole_area, _, _ = compute_polygon_metrics(hole_ring)
+            outer_area, _, _ = compute_polygon_metrics(outer_ring)
+            if hole_area > outer_area:
+                hole_ring, outer_ring = outer_ring, hole_ring
+            if not _is_simple_extracted_hole_ring(hole_ring):
+                continue
+            best_span = span
+            best_hole = hole_ring
+            best_outer = outer_ring
+    if best_hole is None or best_outer is None:
+        return open_points, []
+    base_outer, base_holes = _split_linked_polygon_rings(best_outer)
+    return _collapse_recovered_outline(base_outer), [
+        _collapse_recovered_outline(hole) for hole in (best_hole, *base_holes)
+    ]
+
+
+def _remove_out_and_back_spikes(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop zero-area spikes ``A -> B -> A`` that leftover CIF bridges often leave behind."""
+
+    if len(points) < 3:
+        return list(points)
+    open_points = _dedupe_closed_points(points)
+    stack: list[tuple[float, float]] = []
+    for point in open_points:
+        if len(stack) >= 2 and stack[-2] == point:
+            stack.pop()
+            continue
+        stack.append(point)
+    # Closing the ring can also leave a wrap-around spike: last -> first -> second.
+    while len(stack) >= 3 and stack[-1] == stack[1]:
+        stack.pop(0)
+        stack.pop()
+    while len(stack) >= 3 and stack[0] == stack[-2]:
+        stack.pop()
+        stack.pop(0)
+    return stack if len(stack) >= 3 else list(points)
+
+
+def _collapse_recovered_outline(ring: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Drop leftover keyhole bridges, out-and-back spikes, and collinear stubs."""
+
+    cleaned = _remove_out_and_back_spikes(ring)
+    collapsed = collapse_redundant_polyline_vertices(cleaned, closed=True, min_vertices=3)
+    return collapsed if len(collapsed) >= 3 else cleaned if len(cleaned) >= 3 else ring
 
 
 def _legacy_cut_hole_recovery_enabled() -> bool:
@@ -779,7 +1015,88 @@ def _legacy_cut_hole_recovery_enabled() -> bool:
     }
 
 
-def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[int, int] | None) -> list[PolygonData]:
+def _nested_outer_punch_on_load_enabled() -> bool:
+    """Opt-in only: punch nested outers after CIF load.
+
+    Default is off so filled coverage matches KLayout / CIF semantics (each ``P``
+    is painted independently; overlaps OR together; no cross-polygon subtraction).
+    Enable via ``CONTOUR_CIF_PUNCH_NESTED_OUTERS`` when an empty window under a
+    nested island is required for editing.
+    """
+
+    return str(os.environ.get("CONTOUR_CIF_PUNCH_NESTED_OUTERS", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _ring_coords_from_shapely(coords) -> list[tuple[float, float]]:
+    points = [(float(x_coord), float(y_coord)) for x_coord, y_coord in list(coords)[:-1]]
+    points = integer_points(points)
+    collapsed = collapse_redundant_polyline_vertices(points, closed=True, min_vertices=3)
+    return collapsed if len(collapsed) >= 3 else points
+
+
+def _normalize_cif_polygon_families(
+    points: list[tuple[float, float]],
+) -> list[tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]] | None:
+    """Normalize a CIF ``P`` ring to outer+holes via make_valid (KLayout-like fill).
+
+    Heuristic keyhole splitting can invent extra holes and change filled area. Shapely
+    ``make_valid`` matches the geometric fill of self-touching CIF polygons that layout
+    viewers normalize when rendering.
+    """
+
+    from shapely import make_valid
+    from shapely.geometry import GeometryCollection, MultiPolygon
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    if len(points) < 3:
+        return None
+    shell = [(float(x_coord), float(y_coord)) for x_coord, y_coord in points]
+    geom = make_valid(ShapelyPolygon(shell))
+    if geom.is_empty:
+        return None
+
+    polygons: list = []
+
+    def _collect(part) -> None:
+        if part.is_empty:
+            return
+        if isinstance(part, ShapelyPolygon):
+            polygons.append(part)
+        elif isinstance(part, MultiPolygon):
+            polygons.extend(child for child in part.geoms if isinstance(child, ShapelyPolygon))
+        elif isinstance(part, GeometryCollection):
+            for child in part.geoms:
+                _collect(child)
+
+    _collect(geom)
+    if not polygons:
+        return None
+
+    families: list[tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]] = []
+    for poly in polygons:
+        if float(poly.area) <= 1.0:
+            continue
+        outer = _ring_coords_from_shapely(poly.exterior.coords)
+        if len(outer) < 3:
+            continue
+        holes: list[list[tuple[float, float]]] = []
+        for interior in poly.interiors:
+            hole = _ring_coords_from_shapely(interior.coords)
+            if len(hole) >= 3:
+                holes.append(hole)
+        families.append((outer, holes))
+    return families or None
+
+
+def _recover_cut_hole_topology(
+    polygons: list[PolygonData],
+    image_size: tuple[int, int] | None,
+) -> list[PolygonData]:
     if image_size is None:
         return polygons
     image_width, image_height = image_size
@@ -797,32 +1114,29 @@ def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[in
             recovered.append(_clone_polygon_with_id(polygon, next_id))
             next_id += 1
             continue
+
+        families = _normalize_cif_polygon_families(polygon.points)
         linked_outer, linked_holes = _split_linked_polygon_rings(polygon.points)
-        if linked_holes:
-            area, perimeter, bbox = compute_polygon_metrics(linked_outer)
-            parent_id = next_id
-            recovered.append(
-                PolygonData(
-                    id=parent_id,
-                    points=linked_outer,
-                    is_hole=False,
-                    parent_id=None,
-                    category=polygon.category,
-                    shape_hint=polygon.shape_hint,
-                    area=area,
-                    perimeter=perimeter,
-                    bbox=bbox,
-                )
-            )
-            next_id += 1
-            for hole_points in linked_holes:
-                area, perimeter, bbox = compute_polygon_metrics(hole_points)
+        # Prefer make_valid when it yields one outer with holes (KLayout-like fill).
+        # Fall back to keyhole split when make_valid shatters a linked bridge into
+        # separate solids and loses hole topology (right-edge multi-hole CIF).
+        if families and len(families) == 1 and families[0][1]:
+            pass
+        elif linked_holes:
+            families = [(linked_outer, linked_holes)]
+        elif not families:
+            families = []
+
+        if families:
+            for outer_points, hole_rings in families:
+                area, perimeter, bbox = compute_polygon_metrics(outer_points)
+                parent_id = next_id
                 recovered.append(
                     PolygonData(
-                        id=next_id,
-                        points=hole_points,
-                        is_hole=True,
-                        parent_id=parent_id,
+                        id=parent_id,
+                        points=outer_points,
+                        is_hole=False,
+                        parent_id=None,
                         category=polygon.category,
                         shape_hint=polygon.shape_hint,
                         area=area,
@@ -831,6 +1145,22 @@ def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[in
                     )
                 )
                 next_id += 1
+                for hole_points in hole_rings:
+                    area, perimeter, bbox = compute_polygon_metrics(hole_points)
+                    recovered.append(
+                        PolygonData(
+                            id=next_id,
+                            points=hole_points,
+                            is_hole=True,
+                            parent_id=parent_id,
+                            category=polygon.category,
+                            shape_hint=polygon.shape_hint,
+                            area=area,
+                            perimeter=perimeter,
+                            bbox=bbox,
+                        )
+                    )
+                    next_id += 1
             continue
         if not recover_legacy_cut_holes:
             recovered.append(_clone_polygon_with_id(polygon, next_id))
@@ -905,7 +1235,213 @@ def _recover_cut_hole_topology(polygons: list[PolygonData], image_size: tuple[in
             )
             recovered.append(hole_poly)
             next_id += 1
+        # fall through: punch handling below uses full recovered list after loop
+        continue
+    # Assumption: KLayout renders each CIF polygon independently with OR/overlap
+    # paint and does not punch nested outers out of covering frames. Keep that
+    # fidelity on load; opt in only when empty nested windows are needed.
+    if _nested_outer_punch_on_load_enabled():
+        return _punch_nested_outer_covers(recovered)
     return recovered
+
+
+def _family_geometry(outer: PolygonData, holes: list[PolygonData]):
+    from shapely import make_valid
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    shell = [(float(x_coord), float(y_coord)) for x_coord, y_coord in outer.points]
+    interiors = [
+        [(float(x_coord), float(y_coord)) for x_coord, y_coord in hole.points]
+        for hole in holes
+        if len(hole.points) >= 3
+    ]
+    if len(shell) < 3:
+        return ShapelyPolygon()
+    return make_valid(ShapelyPolygon(shell, interiors))
+
+
+def _nested_outer_punch_footprint(small_solid, large_geom):
+    """Footprint to subtract from a covering parent for a nested outer.
+
+    Concave outer notches (e.g. a U-cut at the top of a pad island) sit outside the
+    island solid but still belong to the nested window. Punching only the solid leaves
+    parent metal in those pockets and hides the inner contour. Expand to the convex
+    hull when those pockets lie under the covering parent.
+    """
+
+    from shapely import make_valid
+
+    hull = make_valid(small_solid.convex_hull)
+    if hull.is_empty or float(hull.area) <= float(small_solid.area) + 1.0:
+        return small_solid
+    extra = make_valid(hull.difference(small_solid))
+    if extra.is_empty or float(extra.area) <= 1.0:
+        return small_solid
+    covered_extra = large_geom.intersection(extra)
+    if covered_extra.is_empty or float(covered_extra.area) < 0.5 * float(extra.area):
+        return small_solid
+    return hull
+
+
+def _punch_nested_outer_covers(polygons: list[PolygonData]) -> list[PolygonData]:
+    """Subtract smaller outers from larger overlapping fills (opt-in topology rewrite).
+
+    Not applied on normal CIF load: overlapping frame+island metal is valid CIF and
+    matches KLayout OR paint. When enabled (see ``_nested_outer_punch_on_load_enabled``),
+    each nested outer's window footprint (solid, expanded to convex hull when concave
+    pockets sit under the parent) is carved from covering parents so island holes open
+    onto empty space instead of parent metal.
+    """
+
+    from shapely import make_valid
+    from shapely.geometry import Point
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    outers = [polygon for polygon in polygons if not polygon.is_hole]
+    if len(outers) < 2:
+        return polygons
+    holes_by_parent: dict[int, list[PolygonData]] = {}
+    for polygon in polygons:
+        if polygon.is_hole and polygon.parent_id is not None:
+            holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
+
+    geoms = {
+        int(outer.id): _family_geometry(outer, holes_by_parent.get(int(outer.id), []))
+        for outer in outers
+    }
+    originals = {int(outer.id): outer for outer in outers}
+    changed_ids: set[int] = set()
+
+    for large_id in sorted(originals, key=lambda item_id: -float(originals[item_id].area)):
+        large_geom = geoms.get(large_id)
+        if large_geom is None or large_geom.is_empty:
+            continue
+        for small_id, small_outer in originals.items():
+            if small_id == large_id:
+                continue
+            if float(small_outer.area) >= float(originals[large_id].area) * 0.5:
+                continue
+            if len(small_outer.points) < 3:
+                continue
+            center = Point(
+                float(small_outer.bbox[0]) + float(small_outer.bbox[2]) * 0.5,
+                float(small_outer.bbox[1]) + float(small_outer.bbox[3]) * 0.5,
+            )
+            if not large_geom.contains(center):
+                continue
+            small_solid = make_valid(
+                ShapelyPolygon([(float(x_coord), float(y_coord)) for x_coord, y_coord in small_outer.points])
+            )
+            if small_solid.is_empty or float(small_solid.area) <= 1.0:
+                continue
+            overlap = large_geom.intersection(small_solid)
+            if overlap.is_empty or float(overlap.area) < 0.5 * float(small_solid.area):
+                continue
+            punch_footprint = _nested_outer_punch_footprint(small_solid, large_geom)
+            punched = make_valid(large_geom.difference(punch_footprint))
+            if punched.is_empty:
+                continue
+            if abs(float(punched.area) - float(large_geom.area)) < 1.0:
+                continue
+            geoms[large_id] = punched
+            large_geom = punched
+            changed_ids.add(large_id)
+
+    if not changed_ids:
+        return polygons
+
+    rebuilt: list[PolygonData] = []
+    next_id = 1
+    for outer in sorted(outers, key=lambda item: int(item.id)):
+        outer_id = int(outer.id)
+        family_holes = holes_by_parent.get(outer_id, [])
+        if outer_id not in changed_ids:
+            clone = _clone_polygon_with_id(outer, next_id)
+            parent_id = next_id
+            rebuilt.append(clone)
+            next_id += 1
+            for hole in family_holes:
+                hole_clone = _clone_polygon_with_id(hole, next_id)
+                hole_clone.is_hole = True
+                hole_clone.parent_id = parent_id
+                rebuilt.append(hole_clone)
+                next_id += 1
+            continue
+        pieces = _polygons_from_shapely_geometry(geoms[outer_id], start_id=next_id)
+        if not pieces:
+            clone = _clone_polygon_with_id(outer, next_id)
+            rebuilt.append(clone)
+            next_id += 1
+            continue
+        for piece in pieces:
+            piece.category = str(outer.category)
+            piece.shape_hint = str(outer.shape_hint)
+            rebuilt.append(piece)
+            next_id = max(next_id, int(piece.id) + 1)
+    return rebuilt
+
+
+def _polygons_from_shapely_geometry(geometry, *, start_id: int) -> list[PolygonData]:
+    from shapely import make_valid
+    from shapely.geometry import GeometryCollection, MultiPolygon
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    geom = make_valid(geometry)
+    if geom.is_empty:
+        return []
+
+    def _collect_polygons(part) -> list:
+        if isinstance(part, ShapelyPolygon):
+            return [part] if not part.is_empty else []
+        if isinstance(part, MultiPolygon):
+            return [child for child in part.geoms if isinstance(child, ShapelyPolygon) and not child.is_empty]
+        if isinstance(part, GeometryCollection):
+            collected: list = []
+            for child in part.geoms:
+                collected.extend(_collect_polygons(child))
+            return collected
+        return []
+
+    result: list[PolygonData] = []
+    next_id = start_id
+    for poly in _collect_polygons(geom):
+        if float(poly.area) <= 1.0:
+            continue
+        exterior = [(float(x_coord), float(y_coord)) for x_coord, y_coord in poly.exterior.coords[:-1]]
+        if len(exterior) < 3:
+            continue
+        area, perimeter, bbox = compute_polygon_metrics(exterior)
+        parent_id = next_id
+        result.append(
+            PolygonData(
+                id=parent_id,
+                points=exterior,
+                is_hole=False,
+                parent_id=None,
+                area=area,
+                perimeter=perimeter,
+                bbox=bbox,
+            )
+        )
+        next_id += 1
+        for interior in poly.interiors:
+            hole_points = [(float(x_coord), float(y_coord)) for x_coord, y_coord in interior.coords[:-1]]
+            if len(hole_points) < 3:
+                continue
+            area, perimeter, bbox = compute_polygon_metrics(hole_points)
+            result.append(
+                PolygonData(
+                    id=next_id,
+                    points=hole_points,
+                    is_hole=True,
+                    parent_id=parent_id,
+                    area=area,
+                    perimeter=perimeter,
+                    bbox=bbox,
+                )
+            )
+            next_id += 1
+    return result
 
 
 def save_polygons_cif(

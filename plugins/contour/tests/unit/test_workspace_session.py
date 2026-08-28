@@ -108,6 +108,49 @@ class WorkspaceSessionTests(unittest.TestCase):
 
         self.assertFalse(session.current_image_has_changes())
 
+    def test_loaded_cif_overlay_is_clean_when_switching_frames(self) -> None:
+        session = WorkspaceSession()
+        overlay = _triangle_polygon()
+        session.replace_image_selection(
+            ["frame_a.png", "frame_b.png"],
+            is_supported_image=lambda _path: True,
+        )
+        session.load_image(
+            "frame_a.png",
+            load_source_image=lambda path: f"source:{path}",
+            load_cif_overlay=lambda _path: [overlay.clone()],
+        )
+
+        self.assertFalse(session.current_image_has_changes())
+        self.assertFalse(session.image_has_changes("frame_a.png"))
+
+        session.apply_loaded_frame(
+            "frame_b.png",
+            source_image="source:frame_b.png",
+            polygons=[],
+            make_current=True,
+        )
+
+        self.assertFalse(session.image_has_changes("frame_a.png"))
+        self.assertFalse(session.current_image_has_changes())
+
+    def test_deferred_cif_overlay_load_is_not_dirty(self) -> None:
+        session = WorkspaceSession()
+        overlay = _triangle_polygon()
+        session.load_image(
+            "sample.png",
+            load_source_image=lambda _path: "source",
+            load_cif_overlay=lambda _path: [],
+        )
+        overlay_result = session.apply_frame_vectors(
+            "sample.png",
+            polygons=[overlay.clone()],
+            loaded_cif_path="sample.cif",
+        )
+
+        self.assertIsNotNone(overlay_result)
+        self.assertFalse(session.current_image_has_changes())
+
     def test_image_has_changes_handles_mixed_parent_ids(self) -> None:
         session = WorkspaceSession()
         parent = _triangle_polygon()
@@ -256,6 +299,23 @@ class WorkspaceSessionTests(unittest.TestCase):
 
         self.assertFalse(session.vectors_are_cleared("drop.png"))
         self.assertFalse(session.vectors_are_cleared("keep.png"))
+
+    def test_retain_cached_states_keeps_neighborhood_current_and_dirty(self) -> None:
+        session = WorkspaceSession()
+        session.replace_image_selection(
+            ["a.png", "b.png", "c.png", "d.png"],
+            is_supported_image=lambda _path: True,
+        )
+        for name in ("a.png", "b.png", "c.png", "d.png"):
+            session.apply_loaded_frame(name, source_image=f"src:{name}", polygons=[], make_current=name == "b.png")
+        session.mark_vectors_cleared("d.png")
+
+        session.retain_cached_states(["a.png", "b.png"])
+
+        cached = {Path(path).name for path, _state in session.cached_states()}
+        self.assertEqual(cached, {"a.png", "b.png", "d.png"})
+        self.assertTrue(session.has_cached_source("a.png"))
+        self.assertFalse(session.has_cached_source("c.png"))
 
 
 if __name__ == "__main__":

@@ -11,17 +11,20 @@ from contour.application.vector_geometry_postprocess import (
     dissolve_small_holes,
     drop_triangle_outer_artifacts,
     merge_overlapping_root_families,
+    polygon_description_is_invalid,
+    polygons_needing_repair,
     postprocess_after_editor_mutation,
     postprocess_after_vertex_move,
     postprocess_changed_polygon_edit,
     postprocess_changed_polygon_only,
     postprocess_polygons_for_frame_navigation,
     remove_spikes_from_polygon_ring,
+    repair_invalid_polygon_descriptions,
+    summarize_invalid_polygon_description_reasons,
     union_after_removing_polygon_ids,
 )
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
-from contour.graphics.editor_scene import PolygonEditorScene
 
 
 def _rect(left: float, top: float, right: float, bottom: float, pid: int) -> PolygonData:
@@ -214,13 +217,6 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         filled_area = sum(abs(float(polygon.area)) for polygon in healed if not polygon.is_hole)
         self.assertGreater(filled_area, 1000.0)
 
-    def test_set_polygons_clears_selection(self) -> None:
-        scene = PolygonEditorScene()
-        sq = _rect(0.0, 0.0, 40.0, 40.0, 77)
-        scene.set_polygons([sq, _rect(50.0, 50.0, 55.0, 55.0, 88)])
-        self.assertIsNone(scene.selected_polygon_id())
-        self.assertEqual(len(scene.get_polygons()), 2)
-
     def test_geometry_postprocess_with_no_changes_reports_clean(self) -> None:
         poly = _rect(5.0, 5.0, 35.0, 35.0, 1)
         out, changed = postprocess_polygons_for_frame_navigation(
@@ -375,6 +371,307 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(len(processed), 1)
         self.assertEqual(processed[0].points, tiny.points)
+
+    def test_via_and_box_rings_are_not_flagged_as_invalid_descriptions(self) -> None:
+        via = _rect(0.0, 0.0, 8.0, 8.0, 1)
+        via.category = "via"
+        via.shape_hint = "box"
+        via.points = [(0.0, 0.0), (8.0, 8.0), (8.0, 0.0), (0.0, 8.0)]
+        self.assertFalse(polygon_description_is_invalid(via))
+
+    def test_repair_invalid_polygon_descriptions_splits_keyhole(self) -> None:
+        keyhole = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (80.0, 0.0),
+                (80.0, 80.0),
+                (0.0, 80.0),
+                (0.0, 40.0),
+                (40.0, 40.0),
+                (40.0, 50.0),
+                (20.0, 50.0),
+                (20.0, 30.0),
+                (40.0, 30.0),
+                (40.0, 40.0),
+                (0.0, 40.0),
+            ],
+        )
+        self.assertFalse(polygon_description_is_invalid(keyhole))
+        self.assertEqual(keyhole.description_invalid_reason(), "repeated_vertex")
+        repaired = repair_invalid_polygon_descriptions([keyhole])
+        self.assertTrue(repaired)
+        self.assertFalse(any(polygon_description_is_invalid(polygon) for polygon in repaired))
+        self.assertTrue(any(polygon.is_hole for polygon in repaired))
+        self.assertTrue(any(not polygon.is_hole for polygon in repaired))
+
+    def test_repair_invalid_polygon_descriptions_splits_bowtie(self) -> None:
+        bowtie = PolygonData(
+            id=1,
+            points=[(0.0, 0.0), (40.0, 40.0), (40.0, 0.0), (0.0, 40.0)],
+        )
+        self.assertTrue(polygon_description_is_invalid(bowtie))
+        repaired = repair_invalid_polygon_descriptions([bowtie])
+        self.assertGreaterEqual(len(repaired), 2)
+        self.assertFalse(any(polygon_description_is_invalid(polygon) for polygon in repaired))
+        self.assertTrue(all(not polygon.is_hole for polygon in repaired))
+
+    def test_repair_invalid_polygon_descriptions_is_noop_for_simple_rings(self) -> None:
+        square = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        repaired = repair_invalid_polygon_descriptions([square])
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(repaired[0].points, square.points)
+        self.assertFalse(polygon_description_is_invalid(repaired[0]))
+
+    def test_summarize_invalid_polygon_description_reasons(self) -> None:
+        keyhole = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (80.0, 0.0),
+                (80.0, 80.0),
+                (0.0, 80.0),
+                (0.0, 40.0),
+                (40.0, 40.0),
+                (40.0, 50.0),
+                (20.0, 50.0),
+                (20.0, 30.0),
+                (40.0, 30.0),
+                (40.0, 40.0),
+                (0.0, 40.0),
+            ],
+        )
+        bowtie = PolygonData(
+            id=2,
+            points=[(0.0, 0.0), (40.0, 40.0), (40.0, 0.0), (0.0, 40.0)],
+        )
+        square = _rect(100.0, 100.0, 120.0, 120.0, 3)
+        self.assertEqual(
+            summarize_invalid_polygon_description_reasons([keyhole, bowtie, square, keyhole]),
+            [("repeated_vertex", 2), ("self_intersecting", 1)],
+        )
+
+    def test_repair_invalid_polygon_descriptions_keeps_other_polygons(self) -> None:
+        keepers = [
+            _rect(0.0, 0.0, 40.0, 40.0, 1),
+            _rect(100.0, 0.0, 140.0, 40.0, 2),
+            _rect(200.0, 0.0, 240.0, 40.0, 3),
+        ]
+        keyhole = PolygonData(
+            id=10,
+            points=[
+                (0.0, 100.0),
+                (80.0, 100.0),
+                (80.0, 180.0),
+                (0.0, 180.0),
+                (0.0, 140.0),
+                (40.0, 140.0),
+                (40.0, 150.0),
+                (20.0, 150.0),
+                (20.0, 130.0),
+                (40.0, 130.0),
+                (40.0, 140.0),
+                (0.0, 140.0),
+            ],
+        )
+        self.assertFalse(polygon_description_is_invalid(keyhole))
+        self.assertEqual(keyhole.description_invalid_reason(), "repeated_vertex")
+
+        repaired = repair_invalid_polygon_descriptions([*keepers, keyhole])
+
+        self.assertEqual(len({polygon.id for polygon in repaired}), len(repaired))
+        for keeper in keepers:
+            match = next(polygon for polygon in repaired if polygon.points == keeper.points)
+            self.assertEqual(match.id, keeper.id)
+            self.assertFalse(match.is_hole)
+        self.assertFalse(any(polygon_description_is_invalid(polygon) for polygon in repaired))
+        self.assertTrue(any(polygon.is_hole for polygon in repaired))
+        self.assertGreaterEqual(len(repaired), len(keepers) + 2)
+
+    def test_repair_keyhole_with_spikes_keeps_authored_geometry(self) -> None:
+        """0560-style: repair must split keyholes, not reshape via shapely dissolve."""
+
+        # Incomplete multi-keyhole bar with A->B->A spikes on two hole rims.
+        points = [
+            (1958.0, 1805.0),
+            (1937.0, 1805.0),
+            (1931.0, 1799.0),
+            (1825.0, 1800.0),
+            (1820.0, 1805.0),
+            (1823.0, 1811.0),
+            (1828.0, 1813.0),
+            (1862.0, 1814.0),
+            (1915.0, 1812.0),
+            (1928.0, 1813.0),
+            (1933.0, 1812.0),
+            (1937.0, 1807.0),
+            (1937.0, 1805.0),
+            (1958.0, 1805.0),
+            (1799.0, 1805.0),
+            (1795.0, 1801.0),
+            (1790.0, 1799.0),
+            (1689.0, 1800.0),
+            (1683.0, 1806.0),
+            (1684.0, 1809.0),
+            (1689.0, 1813.0),
+            (1794.0, 1813.0),
+            (1799.0, 1809.0),
+            (1799.0, 1805.0),
+            (1958.0, 1805.0),
+            (1958.0, 1804.0),
+            (1525.0, 1804.0),
+            (1519.0, 1800.0),
+            (1416.0, 1800.0),
+            (1413.0, 1801.0),
+            (1408.0, 1807.0),
+            (1414.0, 1813.0),
+            (1511.0, 1813.0),
+            (1512.0, 1827.0),
+            (1511.0, 1813.0),
+            (1521.0, 1813.0),
+            (1525.0, 1809.0),
+            (1525.0, 1804.0),
+            (1958.0, 1804.0),
+            (1963.0, 1800.0),
+            (1998.0, 1800.0),
+            (1998.0, 1775.0),
+            (1990.0, 1774.0),
+            (1.0, 1776.0),
+            (1.0, 1794.0),
+            (1011.0, 1793.0),
+            (1016.0, 1794.0),
+            (1026.0, 1800.0),
+            (1052.0, 1801.0),
+            (1066.0, 1800.0),
+            (1077.0, 1794.0),
+            (1201.0, 1793.0),
+            (1216.0, 1800.0),
+            (1232.0, 1799.0),
+            (1385.0, 1801.0),
+            (1389.0, 1806.0),
+            (1382.0, 1813.0),
+            (1.0, 1813.0),
+            (1.0, 1828.0),
+            (1790.0, 1828.0),
+            (1937.0, 1826.0),
+            (1998.0, 1827.0),
+            (1998.0, 1813.0),
+            (1963.0, 1813.0),
+            (1959.0, 1809.0),
+            (1662.0, 1809.0),
+            (1660.0, 1802.0),
+            (1655.0, 1799.0),
+            (1552.0, 1800.0),
+            (1546.0, 1805.0),
+            (1546.0, 1807.0),
+            (1552.0, 1813.0),
+            (1589.0, 1813.0),
+            (1589.0, 1827.0),
+            (1589.0, 1813.0),
+            (1657.0, 1813.0),
+            (1662.0, 1809.0),
+            (1959.0, 1809.0),
+            (1957.0, 1807.0),
+            (1958.0, 1805.0),
+        ]
+        area, perimeter, bbox = compute_polygon_metrics(points)
+        keyhole = PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
+        self.assertEqual(keyhole.description_invalid_reason(), "repeated_vertex")
+
+        repaired = repair_invalid_polygon_descriptions([keyhole])
+        outers = [polygon for polygon in repaired if not polygon.is_hole]
+        holes = [polygon for polygon in repaired if polygon.is_hole]
+
+        self.assertFalse(any(polygon_description_is_invalid(polygon) for polygon in repaired))
+        self.assertEqual(len(outers), 1)
+        self.assertEqual(len(holes), 4)
+        # Shapely dissolve used to spawn a tiny floating outer (~576) and merge holes.
+        self.assertFalse(any(polygon.area < 1000.0 for polygon in outers))
+        self.assertAlmostEqual(outers[0].area, 79595.0, delta=1.0)
+        self.assertEqual(outers[0].bbox[1], bbox[1])
+        self.assertEqual(outers[0].bbox[3], bbox[3])
+
+    def test_polygons_needing_repair_skips_keyhole_repeated_vertex(self) -> None:
+        keyhole = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (80.0, 0.0),
+                (80.0, 80.0),
+                (0.0, 80.0),
+                (0.0, 40.0),
+                (40.0, 40.0),
+                (40.0, 50.0),
+                (20.0, 50.0),
+                (20.0, 30.0),
+                (40.0, 30.0),
+                (40.0, 40.0),
+                (0.0, 40.0),
+            ],
+        )
+        settings = VectorGeometrySettings(min_outer_area_px2=0.0, min_hole_area_to_remove_px2=0.0)
+        self.assertEqual(keyhole.description_invalid_reason(), "repeated_vertex")
+        self.assertFalse(polygons_needing_repair([keyhole], settings))
+
+    def test_polygons_needing_repair_flags_overlapping_small_object_and_hole(self) -> None:
+        big_a = _rect(0.0, 0.0, 80.0, 80.0, 1)
+        big_b = _rect(40.0, 40.0, 120.0, 120.0, 2)
+        tiny = _rect(200.0, 200.0, 205.0, 205.0, 3)
+        outer = _rect(300.0, 300.0, 400.0, 400.0, 4)
+        hole = PolygonData(
+            id=5,
+            points=[(320.0, 320.0), (330.0, 320.0), (330.0, 330.0), (320.0, 330.0)],
+            is_hole=True,
+            parent_id=4,
+            area=100.0,
+            perimeter=40.0,
+            bbox=(320, 320, 10, 10),
+        )
+        settings = VectorGeometrySettings(min_outer_area_px2=50.0, min_hole_area_to_remove_px2=150.0)
+        reasons = polygons_needing_repair([big_a, big_b, tiny, outer, hole], settings)
+
+        self.assertEqual(reasons[1], ["overlapping"])
+        self.assertEqual(reasons[2], ["overlapping"])
+        self.assertEqual(reasons[3], ["small_object"])
+        self.assertEqual(reasons[5], ["small_hole"])
+        self.assertNotIn(4, reasons)
+
+    def test_summarize_with_settings_includes_new_reason_codes(self) -> None:
+        a = _rect(0.0, 0.0, 60.0, 60.0, 1)
+        b = _rect(30.0, 30.0, 90.0, 90.0, 2)
+        tiny = _rect(200.0, 200.0, 204.0, 204.0, 3)
+        settings = VectorGeometrySettings(min_outer_area_px2=50.0, min_hole_area_to_remove_px2=0.0)
+        summary = summarize_invalid_polygon_description_reasons([a, b, tiny], settings)
+        self.assertEqual(summary, [("overlapping", 2), ("small_object", 1)])
+
+    def test_repair_with_settings_merges_overlap_and_drops_small_geometry(self) -> None:
+        a = _rect(0.0, 0.0, 70.0, 70.0, 1)
+        b = _rect(35.0, 35.0, 95.0, 95.0, 2)
+        tiny = _rect(200.0, 200.0, 203.0, 203.0, 3)
+        outer = _rect(300.0, 300.0, 420.0, 420.0, 4)
+        hole = PolygonData(
+            id=5,
+            points=[(320.0, 320.0), (328.0, 320.0), (328.0, 328.0), (320.0, 328.0)],
+            is_hole=True,
+            parent_id=4,
+            area=64.0,
+            perimeter=32.0,
+            bbox=(320, 320, 8, 8),
+        )
+        settings = VectorGeometrySettings(min_outer_area_px2=50.0, min_hole_area_to_remove_px2=100.0)
+        repaired = repair_invalid_polygon_descriptions([a, b, tiny, outer, hole], settings)
+
+        self.assertFalse(polygons_needing_repair(repaired, settings))
+        roots = [polygon for polygon in repaired if not polygon.is_hole and polygon.parent_id is None]
+        self.assertEqual(len(roots), 2)
+        self.assertFalse(any(polygon.is_hole for polygon in repaired))
+        self.assertTrue(all(abs(float(polygon.area)) >= 49.5 for polygon in roots))
+
+    def test_repair_without_settings_keeps_topology_only_behavior(self) -> None:
+        tiny = _rect(0.0, 0.0, 5.0, 5.0, 1)
+        repaired = repair_invalid_polygon_descriptions([tiny])
+        self.assertEqual(len(repaired), 1)
+        self.assertEqual(repaired[0].points, tiny.points)
 
 
 if __name__ == "__main__":

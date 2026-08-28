@@ -67,13 +67,33 @@ def antialias_polygon(polygon: PolygonData, grade: int) -> PolygonData:
     return clone
 
 
+def expand_antialias_target_ids(
+    polygons: list[PolygonData],
+    only_ids: set[int] | None,
+) -> set[int] | None:
+    """Include hole children when their outer parent is targeted.
+
+    Click / selection usually hits the outer ring; without this expansion the
+    inner contours would stay unsmoothed.
+    """
+
+    if only_ids is None:
+        return None
+    target_ids = {int(polygon_id) for polygon_id in only_ids}
+    for polygon in polygons:
+        parent_id = polygon.parent_id
+        if polygon.is_hole and parent_id is not None and int(parent_id) in target_ids:
+            target_ids.add(int(polygon.id))
+    return target_ids
+
+
 def antialias_polygons(
     polygons: list[PolygonData],
     grade: int,
     *,
     only_ids: set[int] | None = None,
 ) -> tuple[list[PolygonData], bool]:
-    target_ids = None if only_ids is None else {int(polygon_id) for polygon_id in only_ids}
+    target_ids = expand_antialias_target_ids(polygons, only_ids)
     processed: list[PolygonData] = []
     for polygon in polygons:
         if target_ids is not None and int(polygon.id) not in target_ids:

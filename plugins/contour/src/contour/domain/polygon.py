@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import InitVar, dataclass
+from dataclasses import InitVar, dataclass, field
 from typing import Any
 
 Point = tuple[float, float]
@@ -38,6 +38,9 @@ def integer_points(points: list[Point]) -> list[tuple[int, int]]:
     return [integer_point(point) for point in points]
 
 
+_REASON_UNSET = object()
+
+
 @dataclass(slots=True)
 class PolygonData:
     id: int
@@ -53,7 +56,15 @@ class PolygonData:
     recognition_score: float | None = None
     #: Metal recovery / debug only; not written to CIF by default.
     reject_reason: str = ""
+    _description_invalid: bool | None = field(default=None, compare=False, repr=False)
+    _description_invalid_reason: object = field(default=_REASON_UNSET, compare=False, repr=False)
     _points_normalized: InitVar[bool] = False
+
+    def __setattr__(self, name: str, value: object) -> None:
+        object.__setattr__(self, name, value)
+        if name in {"points", "category", "shape_hint"}:
+            object.__setattr__(self, "_description_invalid", None)
+            object.__setattr__(self, "_description_invalid_reason", _REASON_UNSET)
 
     def __post_init__(self, _points_normalized: bool) -> None:
         if _points_normalized:
@@ -61,8 +72,46 @@ class PolygonData:
             return
         self.points = integer_points(self.points)
 
+    def description_is_invalid(self) -> bool:
+        """True for truly invalid outlines (e.g. self-crossing), not CIF keyhole bridges.
+
+        ``repeated_vertex`` keyholes remain diagnosable via ``description_invalid_reason``
+        but are valid CIF and must not trigger red marking / auto-repair offers.
+        """
+
+        cached = self._description_invalid
+        if cached is not None:
+            return cached
+        reason = self.description_invalid_reason()
+        return reason is not None and reason != "repeated_vertex"
+
+    def description_invalid_reason(self) -> str | None:
+        """Stable reason code for outline diagnostics, or ``None`` when the ring is simple.
+
+        ``repeated_vertex`` is retained for keyhole tooling; use ``description_is_invalid``
+        to decide whether the description itself is considered broken.
+        """
+
+        cached_reason = self._description_invalid_reason
+        if cached_reason is not _REASON_UNSET:
+            return None if cached_reason is None else str(cached_reason)
+        if str(self.category) == "via" or str(self.shape_hint) == "box":
+            object.__setattr__(self, "_description_invalid", False)
+            object.__setattr__(self, "_description_invalid_reason", None)
+            return None
+        from .polygon_ring import closed_ring_description_invalid_reason
+
+        reason = closed_ring_description_invalid_reason(self.points)
+        object.__setattr__(
+            self,
+            "_description_invalid",
+            reason is not None and reason != "repeated_vertex",
+        )
+        object.__setattr__(self, "_description_invalid_reason", reason)
+        return reason
+
     def clone(self) -> PolygonData:
-        return PolygonData(
+        cloned = PolygonData(
             id=self.id,
             points=list(self.points),
             is_hole=self.is_hole,
@@ -78,6 +127,9 @@ class PolygonData:
             reject_reason=str(self.reject_reason),
             _points_normalized=True,
         )
+        object.__setattr__(cloned, "_description_invalid", self._description_invalid)
+        object.__setattr__(cloned, "_description_invalid_reason", self._description_invalid_reason)
+        return cloned
 
     def to_dict(self) -> dict[str, Any]:
         return {

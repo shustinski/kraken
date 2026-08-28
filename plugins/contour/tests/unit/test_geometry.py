@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import unittest
 
+from unittest.mock import patch
+
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.domain.polygon_ring import (
     TOPOLOGY_CHECK_MAX_VERTICES,
+    closed_ring_description_invalid_reason,
+    closed_ring_description_is_invalid,
     collapse_redundant_polyline_vertices,
     is_valid_closed_polygon_vertex_move,
 )
@@ -40,6 +44,30 @@ class GeometryTests(unittest.TestCase):
     def test_is_valid_closed_rejects_bowtie(self) -> None:
         bow = [(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)]
         self.assertFalse(is_valid_closed_polygon_ring(bow))
+        self.assertTrue(closed_ring_description_is_invalid(bow))
+        self.assertEqual(closed_ring_description_invalid_reason(bow), "self_intersecting")
+
+    def test_closed_ring_description_flags_keyhole_repeated_vertex(self) -> None:
+        keyhole = [
+            (0.0, 0.0),
+            (80.0, 0.0),
+            (80.0, 80.0),
+            (0.0, 80.0),
+            (0.0, 40.0),
+            (40.0, 40.0),
+            (40.0, 50.0),
+            (20.0, 50.0),
+            (20.0, 30.0),
+            (40.0, 30.0),
+            (40.0, 40.0),
+            (0.0, 40.0),
+        ]
+        # CIF keyhole bridges are diagnosable but not an invalid description.
+        self.assertFalse(closed_ring_description_is_invalid(keyhole))
+        self.assertEqual(closed_ring_description_invalid_reason(keyhole), "repeated_vertex")
+        square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        self.assertFalse(closed_ring_description_is_invalid(square))
+        self.assertIsNone(closed_ring_description_invalid_reason(square))
 
     def test_is_valid_closed_accepts_convex_square(self) -> None:
         sq = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
@@ -144,6 +172,50 @@ class GeometryTests(unittest.TestCase):
         )
         registry = {1: outer, 3: via}
         self.assertEqual(resolve_conductor_hover_target_id(registry, 3), 1)
+
+    def test_description_is_invalid_cache_survives_clone_and_clears_on_point_replace(self) -> None:
+        bowtie = PolygonData(
+            id=1,
+            points=[(0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0)],
+        )
+        square = PolygonData(
+            id=2,
+            points=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+        )
+
+        self.assertTrue(bowtie.description_is_invalid())
+        self.assertEqual(bowtie.description_invalid_reason(), "self_intersecting")
+        self.assertFalse(square.description_is_invalid())
+        self.assertIsNone(square.description_invalid_reason())
+        with patch(
+            "contour.domain.polygon_ring.closed_ring_description_invalid_reason",
+            side_effect=AssertionError("topology check should use the cached result"),
+        ):
+            self.assertTrue(bowtie.description_is_invalid())
+            self.assertEqual(bowtie.description_invalid_reason(), "self_intersecting")
+            self.assertTrue(bowtie.clone().description_is_invalid())
+            self.assertEqual(bowtie.clone().description_invalid_reason(), "self_intersecting")
+            self.assertFalse(square.description_is_invalid())
+            self.assertIsNone(square.description_invalid_reason())
+            self.assertFalse(square.clone().description_is_invalid())
+
+        bowtie.points = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        self.assertFalse(bowtie.description_is_invalid())
+        self.assertIsNone(bowtie.description_invalid_reason())
+
+    def test_warmed_description_cache_survives_worker_style_clone_chain(self) -> None:
+        bowtie = PolygonData(
+            id=1,
+            points=[(0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 10.0)],
+        )
+        bowtie.description_invalid_reason()
+        stored = [bowtie.clone() for _ in range(2)]
+        with patch(
+            "contour.domain.polygon_ring.closed_ring_description_invalid_reason",
+            side_effect=AssertionError("topology check should use the cached result"),
+        ):
+            self.assertTrue(all(polygon.description_is_invalid() for polygon in stored))
+            self.assertTrue(all(polygon.description_invalid_reason() == "self_intersecting" for polygon in stored))
 
 
 if __name__ == "__main__":

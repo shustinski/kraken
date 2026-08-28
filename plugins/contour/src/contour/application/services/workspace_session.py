@@ -77,6 +77,13 @@ def _polygons_equal(first: list[PolygonData], second: list[PolygonData]) -> bool
     return first_signatures == second_signatures
 
 
+def _mark_loaded_vectors_clean(state: ImageProcessingState) -> None:
+    """Treat disk-loaded overlay polygons as the saved baseline, not as edits."""
+
+    state.reference_polygons = [polygon.clone() for polygon in state.polygons]
+    state.polygons_dirty = False
+
+
 class WorkspaceSession:
     def __init__(self) -> None:
         self._image_paths: list[str] = []
@@ -104,6 +111,41 @@ class WorkspaceSession:
 
     def cached_states(self) -> tuple[tuple[str, ImageProcessingState], ...]:
         return tuple((path, state) for path, state in self._state_cache.items())
+
+    def has_cached_source(self, image_path: str | Path) -> bool:
+        state = self._state_cache.get(_norm_path_key(image_path))
+        return state is not None and state.source_image is not None
+
+    def needs_vector_overlay(self, image_path: str | Path) -> bool:
+        """True when a CIF exists for the frame but overlays are not loaded yet."""
+
+        key = _norm_path_key(image_path)
+        if key in self._cleared_vector_paths:
+            return False
+        if self.resolve_cif_path(key) is None:
+            return False
+        state = self._state_cache.get(key)
+        if state is None:
+            return True
+        if state.loaded_cif_path:
+            return False
+        return not bool(state.polygons)
+
+    def retain_cached_states(
+        self,
+        keep_paths: Iterable[str | Path],
+        *,
+        retain_dirty: bool = True,
+    ) -> None:
+        keep = {_norm_path_key(path) for path in keep_paths}
+        if self._current_image_path is not None:
+            keep.add(self._current_image_path)
+        for key in list(self._state_cache):
+            if key in keep:
+                continue
+            if retain_dirty and self.image_has_changes(key):
+                continue
+            self._state_cache.pop(key, None)
 
     def replace_image_selection(
         self,
@@ -251,28 +293,13 @@ class WorkspaceSession:
             )
         return self._store_loaded_state(image_path, state)
 
-    def apply_loaded_frame(
-        self,
-        image_path: str | Path,
-        *,
-        source_image: Any,
-        polygons: list[PolygonData],
-        make_current: bool = True,
-    ) -> WorkspaceLoadResult:
-        path = str(Path(image_path))
-        state = ImageProcessingState(
-            image_path=path,
-            source_image=source_image,
-            polygons=list(polygons),
-        )
-        return self._store_loaded_state(path, state, make_current=make_current)
-
     def apply_frame_vectors(
         self,
         image_path: str | Path,
         *,
         polygons: list[PolygonData],
         loaded_cif_path: str | None = None,
+        polygons_needing_repair: dict[int, list[str]] | None = None,
     ) -> WorkspaceLoadResult | None:
         path = str(Path(image_path))
         state = self._state_cache.get(path)
@@ -283,6 +310,13 @@ class WorkspaceSession:
         state.polygons = list(polygons)
         if loaded_cif_path is not None:
             state.loaded_cif_path = loaded_cif_path
+        if polygons_needing_repair is not None:
+            state.polygons_needing_repair = {
+                int(polygon_id): list(codes) for polygon_id, codes in polygons_needing_repair.items()
+            }
+        else:
+            state.polygons_needing_repair = None
+        _mark_loaded_vectors_clean(state)
         self._state_cache[path] = state
         if self._current_image_path == path:
             self._current_state = state
@@ -294,6 +328,33 @@ class WorkspaceSession:
             vectors_only=True,
         )
 
+    def apply_loaded_frame(
+        self,
+        image_path: str | Path,
+        *,
+        source_image: Any,
+        polygons: list[PolygonData],
+        make_current: bool = True,
+        loaded_cif_path: str | None = None,
+        polygons_needing_repair: dict[int, list[str]] | None = None,
+    ) -> WorkspaceLoadResult:
+        path = str(Path(image_path))
+        state = ImageProcessingState(
+            image_path=path,
+            source_image=source_image,
+            polygons=list(polygons),
+            loaded_cif_path=loaded_cif_path,
+            polygons_needing_repair=(
+                None
+                if polygons_needing_repair is None
+                else {
+                    int(polygon_id): list(codes)
+                    for polygon_id, codes in polygons_needing_repair.items()
+                }
+            ),
+        )
+        return self._store_loaded_state(path, state, make_current=make_current)
+
     def _store_loaded_state(
         self,
         image_path: str,
@@ -301,6 +362,7 @@ class WorkspaceSession:
         *,
         make_current: bool = True,
     ) -> WorkspaceLoadResult:
+        _mark_loaded_vectors_clean(state)
         self._state_cache[image_path] = state
         if make_current:
             self._current_image_path = image_path
@@ -359,8 +421,12 @@ class WorkspaceSession:
             return False
         self._current_state.polygons = polygons
         self._current_state.polygons_dirty = None
+        self._current_state.polygons_needing_repair = None
         self._state_cache[self._current_image_path] = self._current_state
         return True
+
+    def cached_state(self, image_path: str | Path) -> ImageProcessingState | None:
+        return self._state_cache.get(_norm_path_key(image_path))
 
     def image_has_changes(self, image_path: str | Path) -> bool:
         state = self._state_cache.get(str(Path(image_path)))

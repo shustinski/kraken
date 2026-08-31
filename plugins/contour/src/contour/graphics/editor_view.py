@@ -46,6 +46,7 @@ from ..application.frame_lod import FixedGridFrameLayout, PyramidFrameStore
 from ..application.processing import DisplaySettings
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    apply_edge_translation_to_clone,
     apply_polygon_points_to_clone,
     apply_vertex_position_to_clone,
     collapse_redundant_vertices_in_polygons,
@@ -55,7 +56,7 @@ from ..application.vector_geometry_postprocess import (
 )
 from ..commands import MovePolygonCommand, ReplacePolygonSetCommand
 from ..domain import PolygonData
-from ..domain.polygon_ring import is_valid_closed_polygon_vertex_move
+from ..domain.polygon_ring import is_valid_closed_polygon_edge_move, is_valid_closed_polygon_vertex_move
 from ..infrastructure.contact_placement_profiler import ContactDragProfile, SceneZoomProfile
 from ..infrastructure.profiling import (
     contact_drag_profiling_enabled,
@@ -98,6 +99,13 @@ _ZOOM_ANIMATION_FRAME_MS = 16
 _ZOOM_EASING_FRACTION = 0.55
 _ZOOM_SETTLE_RATIO = 0.001
 _ZOOM_VECTOR_BATCH_THRESHOLD = 1000
+_MINIMAP_DRAWING_TOOLS = frozenset(
+    {
+        EditorTool.ADD_POLYGON,
+        EditorTool.BRUSH,
+        EditorTool.TRACE_PEN,
+    }
+)
 _OPENGL_VIEWPORT_ENABLED = True
 _OPENGL_DISABLED_PLATFORMS = {"offscreen", "minimal"}
 _PYRAMID_VISIBLE_UPDATE_MS = 24
@@ -183,6 +191,7 @@ class PolygonEditorView(QGraphicsView):
         self._drag_kind: str | None = None
         self._drag_polygon_id: int | None = None
         self._drag_vertex_index: int | None = None
+        self._drag_edge_index: int | None = None
         self._drag_origin_points: list[tuple[float, float]] | None = None
         self._drag_start_scene_pos: QPointF | None = None
         self._last_pointer_scene_pos: QPointF | None = None
@@ -367,6 +376,7 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.clear_vertex_preview()
         self._sync_all_editable_vertices_display()
         self._update_tool_cursors()
+        self._update_minimap_mouse_interaction()
         self.toolChanged.emit(tool)
         self._emit_effective_polygon_create_mode_changed()
 
@@ -1460,29 +1470,29 @@ class PolygonEditorView(QGraphicsView):
         if self._tool == EditorTool.MOVE_VERTEX:
             selected_polygon_id = self._editor_scene.selected_polygon_id()
             clicked_polygon_id = self._editor_scene.polygon_at(scene_pos)
-            target_polygon_id = selected_polygon_id or clicked_polygon_id
             if clicked_polygon_id is not None and clicked_polygon_id != selected_polygon_id:
                 self._editor_scene.select_polygon(clicked_polygon_id)
-                target_polygon_id = clicked_polygon_id
-            hit = self._editor_scene.vertex_at(scene_pos, tolerance)
-            if hit is None:
-                # Practical fallback: users often click near the handle, not exactly on it.
-                hit = self._editor_scene.vertex_at(scene_pos, self._scene_tolerance(12))
-            if hit is None and target_polygon_id is not None:
-                # If a polygon is clicked but no handle was hit, move the nearest vertex.
-                hit = self._editor_scene.nearest_vertex_in_polygon(target_polygon_id, scene_pos)
-            if hit is None:
-                # Last-resort fallback in move mode: pick nearest vertex globally.
-                hit = self._editor_scene.nearest_vertex(scene_pos)
-            if hit is not None:
-                polygon_id, vertex_index = hit
+            target = self._editor_scene.pick_move_target(
+                scene_pos,
+                self._scene_tolerance(8),
+                self._scene_tolerance(10),
+            )
+            if target is not None:
+                kind, polygon_id, target_index = target
                 self._editor_scene.select_polygon(polygon_id)
-                self._drag_kind = "vertex"
+                self._editor_scene.clear_move_target_preview()
                 self._drag_polygon_id = polygon_id
-                self._drag_vertex_index = vertex_index
                 self._drag_origin_points = self._editor_scene.polygon_points(polygon_id)
                 self._drag_polygons_snapshot = self._editor_scene.get_polygons()
                 self._drag_start_scene_pos = scene_pos
+                if kind == "vertex":
+                    self._drag_kind = "vertex"
+                    self._drag_vertex_index = target_index
+                    self._drag_edge_index = None
+                else:
+                    self._drag_kind = "edge"
+                    self._drag_edge_index = target_index
+                    self._drag_vertex_index = None
             event.accept()
             return
 
@@ -1519,8 +1529,7 @@ class PolygonEditorView(QGraphicsView):
         polygon_drag_active = self._drag_kind == "polygon"
         zoom_active = self._zoom_animation_timer.isActive()
         if (
-            self._tool in (EditorTool.BRUSH, EditorTool.TRACE_PEN)
-            or brush_drag_active
+            brush_drag_active
             or trace_drag_active
             or selection_drag_active
             or polygon_drag_active
@@ -1533,6 +1542,14 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.sync_vertex_preview(scene_pos)
         else:
             self._editor_scene.clear_vertex_preview()
+        if self._tool == EditorTool.MOVE_VERTEX and self._drag_kind is None:
+            self._editor_scene.sync_move_target_preview(
+                scene_pos,
+                vertex_tolerance=self._scene_tolerance(8),
+                edge_tolerance=self._scene_tolerance(10),
+            )
+        else:
+            self._editor_scene.clear_move_target_preview()
         if (
             self._tool == EditorTool.SELECT
             and not self.vector_edits_locked()
@@ -1620,6 +1637,25 @@ class PolygonEditorView(QGraphicsView):
             return
         if self._drag_kind == "vertex" and self._drag_polygon_id is not None and self._drag_vertex_index is not None:
             self._editor_scene.preview_vertex_move(self._drag_polygon_id, self._drag_vertex_index, scene_pos)
+            event.accept()
+            return
+        if (
+            self._drag_kind == "edge"
+            and self._drag_polygon_id is not None
+            and self._drag_edge_index is not None
+            and self._drag_origin_points is not None
+            and self._drag_start_scene_pos is not None
+        ):
+            delta = (
+                scene_pos.x() - self._drag_start_scene_pos.x(),
+                scene_pos.y() - self._drag_start_scene_pos.y(),
+            )
+            self._editor_scene.preview_edge_move(
+                self._drag_polygon_id,
+                self._drag_edge_index,
+                self._drag_origin_points,
+                delta,
+            )
             event.accept()
             return
         if (
@@ -1807,6 +1843,58 @@ class PolygonEditorView(QGraphicsView):
                 elif profiler_enabled and profiler is not None:
                     try_disable_profiler(profiler)
             elif (
+                self._drag_kind == "edge"
+                and self._drag_polygon_id is not None
+                and self._drag_edge_index is not None
+                and self._drag_origin_points is not None
+                and self._drag_polygons_snapshot is not None
+                and self._drag_start_scene_pos is not None
+            ):
+                release_pos = self.mapToScene(event.position().toPoint())
+                delta = (
+                    release_pos.x() - self._drag_start_scene_pos.x(),
+                    release_pos.y() - self._drag_start_scene_pos.y(),
+                )
+                new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
+                if new_points and _polygon_points_different(self._drag_origin_points, new_points):
+                    if not is_valid_closed_polygon_edge_move(new_points, self._drag_edge_index):
+                        self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
+                        self._editor_scene.warn_invalid_polygon_geometry()
+                    else:
+                        trial = apply_edge_translation_to_clone(
+                            self._drag_polygons_snapshot,
+                            self._drag_polygon_id,
+                            self._drag_edge_index,
+                            delta,
+                        )
+                        processed, accepted, _changed = postprocess_changed_polygon_edit(
+                            trial,
+                            self._vector_geometry_settings,
+                            polygon_id=self._drag_polygon_id,
+                        )
+                        if accepted:
+                            processed = collapse_redundant_vertices_in_polygons(processed)
+                            processed = merge_overlapping_root_families(processed)
+                            processed = collapse_redundant_vertices_in_polygons(processed)
+                        if not accepted:
+                            self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
+                            self._editor_scene.warn_invalid_polygon_geometry()
+                        else:
+                            focus_id = resolve_focus_id_after_geometry_pass(
+                                self._drag_polygons_snapshot,
+                                self._drag_polygon_id,
+                                processed,
+                            )
+                            self.undo_stack.push(
+                                ReplacePolygonSetCommand(
+                                    self._editor_scene,
+                                    self._drag_polygons_snapshot,
+                                    processed,
+                                    "Move edge",
+                                )
+                            )
+                            self._editor_scene.select_polygon(focus_id)
+            elif (
                 self._drag_kind == "polygon"
                 and self._drag_polygon_id is not None
                 and self._drag_origin_points is not None
@@ -1870,12 +1958,14 @@ class PolygonEditorView(QGraphicsView):
             self._drag_kind = None
             self._drag_polygon_id = None
             self._drag_vertex_index = None
+            self._drag_edge_index = None
             self._drag_origin_points = None
             self._drag_start_scene_pos = None
             self._drag_polygons_snapshot = None
             self._drag_polygon_is_contact = False
             self._drag_erases = False
             self._brush_pan_guard = False
+            self._editor_scene.clear_move_target_preview()
             self._update_tool_cursors()
             if contact_drag_commit_started_at is not None:
                 self._finish_contact_drag_profile(
@@ -1913,6 +2003,7 @@ class PolygonEditorView(QGraphicsView):
             self._drag_kind = None
             self._drag_polygon_id = None
             self._drag_vertex_index = None
+            self._drag_edge_index = None
             self._drag_origin_points = None
             self._drag_start_scene_pos = None
             self._drag_polygons_snapshot = None
@@ -2348,6 +2439,7 @@ class PolygonEditorView(QGraphicsView):
             return
         self._editor_scene.clear_conductor_hover_highlight()
         self._editor_scene.clear_vertex_preview()
+        self._editor_scene.clear_move_target_preview()
         self._editor_scene.hide_tool_cursors()
         super().leaveEvent(event)
 
@@ -2397,11 +2489,15 @@ class PolygonEditorView(QGraphicsView):
         self._minimap.show()
         self._minimap.raise_()
         self._position_minimap()
+        self._update_minimap_mouse_interaction()
         viewport = self.viewport()
         if viewport is None:
             return
         viewport_scene = self.mapToScene(viewport.rect()).boundingRect()
         self._minimap.set_viewport_scene_rect(viewport_scene)
+
+    def _update_minimap_mouse_interaction(self) -> None:
+        self._minimap.set_mouse_interactive(self._tool not in _MINIMAP_DRAWING_TOOLS)
 
     def _on_minimap_scene_point(self, scene_pos: QPointF) -> None:
         self.centerOn(scene_pos)

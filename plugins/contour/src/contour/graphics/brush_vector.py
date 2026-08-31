@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from math import cos, hypot, radians, sin
+from dataclasses import dataclass
 
 from shapely import BufferCapStyle, BufferJoinStyle, make_valid, unary_union
 from shapely.geometry import LineString, Polygon
@@ -289,6 +290,20 @@ def extract_polygonal_union(geom: BaseGeometry) -> BaseGeometry:
     return unary_union(fragments) if fragments else Polygon()
 
 
+def geometry_area_components(geom: BaseGeometry) -> list[BaseGeometry]:
+    """Return one entry per connected polygon area — never merge/sum regions."""
+
+    parts = extract_polygonal_union(geom)
+    if parts.is_empty:
+        return []
+    geom_type = getattr(parts, "geom_type", "")
+    if geom_type == "Polygon":
+        return [parts]
+    if geom_type == "MultiPolygon":
+        return list(parts.geoms)
+    return []
+
+
 def apply_boolean(
     base: BaseGeometry,
     tool: BaseGeometry,
@@ -463,36 +478,93 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
     return polygons_out
 
 
-def polygon_equivalent_preserved(poly: PolygonData, preserved_polygons: list[PolygonData]) -> bool:
+@dataclass(frozen=True)
+class PreservedPolygonMatchCache:
+    """Precomputed preserved footprints for duplicate detection during boolean edits."""
+
+    _entries: tuple[tuple[bool, tuple[int, int, int, int], float, object | None], ...]
+
+    @classmethod
+    def from_polygons(cls, preserved_polygons: list[PolygonData]) -> PreservedPolygonMatchCache:
+        entries: list[tuple[bool, tuple[int, int, int, int], float, object | None]] = []
+        for preserved in preserved_polygons:
+            footprint: object | None
+            try:
+                footprint = unary_union(make_valid(_polygon_from_points(preserved.points).buffer(0)))
+                if footprint.is_empty:
+                    footprint = None
+            except Exception:
+                footprint = None
+            entries.append(
+                (
+                    bool(preserved.is_hole),
+                    tuple(int(value) for value in preserved.bbox),
+                    float(preserved.area),
+                    footprint,
+                )
+            )
+        return cls(tuple(entries))
+
+
+def _bbox_overlap(
+    left_bbox: tuple[int, int, int, int],
+    right_bbox: tuple[int, int, int, int],
+) -> bool:
+    left, top, width, height = left_bbox
+    right = left + width
+    bottom = top + height
+    other_left, other_top, other_width, other_height = right_bbox
+    other_right = other_left + other_width
+    other_bottom = other_top + other_height
+    return not (right < other_left or left > other_right or bottom < other_top or top > other_bottom)
+
+
+def polygon_equivalent_preserved(
+    poly: PolygonData,
+    preserved_polygons: list[PolygonData],
+    *,
+    match_cache: PreservedPolygonMatchCache | None = None,
+) -> bool:
     """Detect rebuilt polygons that geometrically duplicate an untouched preserved polygon."""
 
-    try:
-        g = unary_union(make_valid(_polygon_from_points(poly.points).buffer(0)))
-    except Exception:
+    if not preserved_polygons:
         return False
-    if g.is_empty:
-        return False
+
+    poly_bbox = tuple(int(value) for value in poly.bbox)
+    poly_area = float(poly.area)
+    poly_points = poly.points
 
     for preserved in preserved_polygons:
-        try:
-            h = unary_union(make_valid(_polygon_from_points(preserved.points).buffer(0)))
-        except Exception:
-            continue
-
-        if h.is_empty:
-            continue
-
         if poly.is_hole != preserved.is_hole:
             continue
+        if poly_points == preserved.points:
+            return True
 
-        symmetric = unary_union(make_valid(g.symmetric_difference(h)))
+    try:
+        candidate = unary_union(make_valid(_polygon_from_points(poly_points).buffer(0)))
+    except Exception:
+        return False
+    if candidate.is_empty:
+        return False
 
-        symmetric_area_sym = float(symmetric.area)
+    candidate_area = float(candidate.area)
+    entries = match_cache._entries if match_cache is not None else PreservedPolygonMatchCache.from_polygons(
+        preserved_polygons
+    )._entries
 
-        denominator = max(1e-9, float(min(g.area, h.area)))
-
+    for is_hole, preserved_bbox, preserved_area, preserved_shape in entries:
+        if poly.is_hole != is_hole:
+            continue
+        if not _bbox_overlap(poly_bbox, preserved_bbox):
+            continue
+        denominator = max(1e-9, min(candidate_area, preserved_area))
         tolerance = max(4.0, denominator * 1e-4)
-        if symmetric_area_sym <= tolerance:
+        if abs(candidate_area - preserved_area) > tolerance:
+            continue
+        if preserved_shape is None:
+            continue
+        symmetric = unary_union(make_valid(candidate.symmetric_difference(preserved_shape)))
+        if float(symmetric.area) <= tolerance:
             return True
 
     return False

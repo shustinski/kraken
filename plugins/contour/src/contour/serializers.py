@@ -5,8 +5,10 @@ import json
 import os
 import shutil
 import threading
+from bisect import bisect_left
 from collections.abc import Iterable
 from pathlib import Path
+from time import perf_counter
 from xml.sax.saxutils import escape
 
 import cv2
@@ -18,6 +20,20 @@ from .domain.polygon_ring import collapse_redundant_polyline_vertices
 from .i18n import tr
 from .infrastructure.cif_primitives import CifBox, CifPrimitive
 from .utils import draw_polygon_overlay, ensure_directory, imwrite_unicode_safe
+
+
+def _note_cif_phase_timing(phase: str, started_at: float) -> None:
+    from .infrastructure.cif_operation_profiler import note_cif_operation_timing
+
+    note_cif_operation_timing(phase, (perf_counter() - started_at) * 1000.0)
+
+
+def _note_cif_slit_target(*, neighbor_hole: bool) -> None:
+    from .infrastructure.cif_operation_profiler import note_cif_operation_count
+
+    note_cif_operation_count(
+        "cif_hole_neighbor_slit" if neighbor_hole else "cif_hole_outer_slit",
+    )
 
 _CIF_PARSE_CACHE: dict[tuple[str, int, int], tuple[str | None, tuple[int, int] | None, list[PolygonData]]] = {}
 _CIF_PARSE_CACHE_LOCK = threading.Lock()
@@ -430,16 +446,34 @@ def load_polygons_vector(path: str | Path) -> tuple[str | None, tuple[int, int] 
     return load_polygons_cif(vector_path)
 
 
+CIF_CUTOUT_DISPLAY_MARKER = "( CONTOUR cutout_display );"
+
+
+def _cif_cutout_display_requested(cif_path: Path) -> bool:
+    for line in _read_cif_text(cif_path).splitlines():
+        if line.strip() == CIF_CUTOUT_DISPLAY_MARKER.strip():
+            return True
+    return False
+
+
 def save_polygons_vector(
     path: str | Path,
     image_path: str,
     polygons: list[PolygonData],
     image_size: tuple[int, int],
+    *,
+    cutout_display: bool = False,
 ) -> Path:
     vector_path = Path(path)
     if vector_path.suffix.lower() == ".cv":
         return save_polygons_cv(vector_path, image_path, polygons, image_size=image_size)
-    return save_polygons_cif(vector_path, image_path, polygons, image_size=image_size)
+    return save_polygons_cif(
+        vector_path,
+        image_path,
+        polygons,
+        image_size=image_size,
+        cutout_display=cutout_display,
+    )
 
 
 def _parse_cif_int(value: str) -> int:
@@ -463,6 +497,7 @@ def _clone_polygon_with_id(polygon: PolygonData, polygon_id: int) -> PolygonData
         perimeter=float(polygon.perimeter),
         bbox=(int(polygon.bbox[0]), int(polygon.bbox[1]), int(polygon.bbox[2]), int(polygon.bbox[3])),
         reject_reason=str(polygon.reject_reason),
+        cif_paint_ring=list(polygon.cif_paint_ring),
     )
 
 
@@ -683,7 +718,9 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
     klayout_payload = _load_polygons_cif_via_klayout(cif_path)
     if klayout_payload is not None:
         image_name, image_size, polygons = klayout_payload
-        polygons = _recover_cut_hole_topology(polygons, image_size)
+        cutout_display = _cif_cutout_display_requested(cif_path)
+        polygons = _recover_cut_hole_topology(polygons, image_size, cutout_display=cutout_display)
+        _ensure_cif_paint_rings(polygons)
         if cache_key is not None:
             _cache_cif_parse_result(cache_key, image_name, image_size, polygons)
         return image_name, image_size, polygons
@@ -691,7 +728,9 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
     opencif_payload = _load_polygons_cif_via_opencif(cif_path)
     if opencif_payload is not None:
         image_name, image_size, polygons = opencif_payload
-        polygons = _recover_cut_hole_topology(polygons, image_size)
+        cutout_display = _cif_cutout_display_requested(cif_path)
+        polygons = _recover_cut_hole_topology(polygons, image_size, cutout_display=cutout_display)
+        _ensure_cif_paint_rings(polygons)
         if cache_key is not None:
             _cache_cif_parse_result(cache_key, image_name, image_size, polygons)
         return image_name, image_size, polygons
@@ -749,7 +788,9 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
         if polygon is not None:
             polygons.append(polygon)
 
-    polygons = _recover_cut_hole_topology(polygons, image_size)
+    cutout_display = _cif_cutout_display_requested(cif_path)
+    polygons = _recover_cut_hole_topology(polygons, image_size, cutout_display=cutout_display)
+    _ensure_cif_paint_rings(polygons)
     if cache_key is not None:
         _cache_cif_parse_result(cache_key, image_name, image_size, polygons)
     return image_name, image_size, polygons
@@ -839,61 +880,308 @@ def _rightmost_point_index(points: list[tuple[float, float]]) -> int:
     return max(range(len(points)), key=lambda index: (points[index][0], -points[index][1]))
 
 
-def _horizontal_bridge_to_outer(
-    outer: list[tuple[float, float]],
-    anchor: tuple[float, float],
+_BOUNDARY_SNAP_NEIGHBOR_WINDOW = 8
+
+
+def _point_distance_squared(
+    left: tuple[float, float],
+    right: tuple[float, float],
+) -> float:
+    delta_x = float(left[0]) - float(right[0])
+    delta_y = float(left[1]) - float(right[1])
+    return delta_x * delta_x + delta_y * delta_y
+
+
+def _boundary_vertices_by_distance(
+    boundary: list[tuple[float, float]],
+    hole_start: tuple[float, float],
+    *,
+    neighbor_window: int = _BOUNDARY_SNAP_NEIGHBOR_WINDOW,
+    prefer_same_x_side: bool = True,
+) -> list[tuple[tuple[float, float], int]]:
+    """Rank boundary vertices by distance; bisect window first, then the rest."""
+
+    vertex_count = len(boundary)
+    if vertex_count < 3:
+        return []
+
+    hole_x = float(hole_start[0])
+    indexed_boundary = sorted(enumerate(boundary), key=lambda item: float(item[1][0]))
+    x_coords = [float(point[0]) for _, point in indexed_boundary]
+    anchor_index = bisect_left(x_coords, hole_x)
+    window = max(1, int(neighbor_window))
+    start = max(0, anchor_index - window)
+    end = min(len(indexed_boundary), anchor_index + window + 1)
+    window_pairs = [(boundary[index], index) for index, _point in indexed_boundary[start:end]]
+    window_keys = {index for index, _point in indexed_boundary[start:end]}
+
+    def _maybe_prioritize_same_x_side(
+        pairs: list[tuple[tuple[float, float], int]],
+    ) -> list[tuple[tuple[float, float], int]]:
+        if not prefer_same_x_side:
+            return pairs
+        same_x_side = [item for item in pairs if float(item[0][0]) + 1e-9 >= hole_x]
+        if same_x_side:
+            return same_x_side
+        return pairs
+
+    window_ranked = sorted(
+        _maybe_prioritize_same_x_side(window_pairs),
+        key=lambda item: _point_distance_squared(hole_start, item[0]),
+    )
+    remaining_pairs = [(boundary[index], index) for index in range(vertex_count) if index not in window_keys]
+    remaining_ranked = sorted(
+        _maybe_prioritize_same_x_side(remaining_pairs),
+        key=lambda item: _point_distance_squared(hole_start, item[0]),
+    )
+    return window_ranked + remaining_ranked
+
+
+def _snap_hole_to_boundary_vertex(
+    boundary: list[tuple[float, float]],
+    hole_start: tuple[float, float],
+    *,
+    neighbor_window: int = _BOUNDARY_SNAP_NEIGHBOR_WINDOW,
 ) -> tuple[tuple[float, float], int] | None:
-    anchor_x, anchor_y = anchor
-    candidates: list[tuple[float, int]] = []
-    for index, start in enumerate(outer):
-        end = outer[(index + 1) % len(outer)]
-        start_x, start_y = start
-        end_x, end_y = end
-        min_y, max_y = sorted((start_y, end_y))
-        if anchor_y < min_y or anchor_y > max_y:
-            continue
-        if start_y == end_y:
-            if anchor_y != start_y:
-                continue
-            for x_coord in (start_x, end_x):
-                if x_coord > anchor_x:
-                    candidates.append((x_coord, index + 1))
-            continue
-        ratio = (anchor_y - start_y) / (end_y - start_y)
-        x_coord = start_x + ratio * (end_x - start_x)
-        if x_coord > anchor_x:
-            candidates.append((x_coord, index + 1))
-    if not candidates:
+    """Return the nearest boundary vertex candidate (without material coverage check)."""
+
+    ranked = _boundary_vertices_by_distance(
+        boundary,
+        hole_start,
+        neighbor_window=neighbor_window,
+    )
+    if not ranked:
         return None
-    bridge_x, insert_index = min(candidates, key=lambda item: item[0])
-    return (float(bridge_x), float(anchor_y)), insert_index % len(outer)
+    outer_anchor, boundary_index = ranked[0]
+    return outer_anchor, boundary_index
+
+
+def _select_vertex_slit_for_hole(
+    hole_points: list[tuple[float, float]],
+    parent_solid,
+    *,
+    outer: list[tuple[float, float]],
+    linked_hole_rings: list[tuple[int, list[tuple[float, float]]]] | None = None,
+) -> tuple[int, tuple[float, float], int, int, list[tuple[float, float]]] | None:
+    """Pick the shortest vertex-to-vertex slit that stays inside parent material.
+
+    Targets include the outer ring and any already-linked sibling holes.
+    Returns ``(target_ring_key, target_anchor, insert_index, hole_vertex_index, slit_path)``.
+    ``target_ring_key`` is ``-1`` for the outer ring, otherwise the encoded-hole index.
+    """
+
+    from shapely.geometry import LineString
+
+    targets: list[tuple[int, list[tuple[float, float]]]] = [(-1, outer)]
+    if linked_hole_rings:
+        targets.extend(linked_hole_rings)
+
+    best: tuple[float, int, tuple[float, float], int, int, list[tuple[float, float]]] | None = None
+    anchor_index = _rightmost_point_index(hole_points)
+    hole_vertex_indices = [anchor_index] + [
+        index for index in range(len(hole_points)) if index != anchor_index
+    ]
+    for hole_index in hole_vertex_indices:
+        hole_anchor = hole_points[hole_index]
+        for target_key, target_ring in targets:
+            for target_anchor, insert_index in _boundary_vertices_by_distance(
+                target_ring,
+                hole_anchor,
+                prefer_same_x_side=False,
+            ):
+                distance_squared = _point_distance_squared(hole_anchor, target_anchor)
+                if best is not None and distance_squared >= best[0]:
+                    continue
+                if not parent_solid.covers(LineString([target_anchor, hole_anchor])):
+                    continue
+                best = (
+                    distance_squared,
+                    target_key,
+                    target_anchor,
+                    insert_index,
+                    hole_index,
+                    [target_anchor, hole_anchor],
+                )
+    if best is None:
+        return None
+    _distance_squared, target_key, target_anchor, insert_index, hole_index, slit_path = best
+    return target_key, target_anchor, insert_index, hole_index, slit_path
+
+
+_HoleLinkDetour = tuple[
+    float,
+    tuple[float, float],
+    list[tuple[float, float]],
+    int,
+    int,
+]
+
+
+def _trace_linked_hole_cycle(
+    path: list[tuple[float, float]],
+    hole_points: list[tuple[float, float]],
+    *,
+    hole_index: int,
+    start_vertex_index: int,
+    detours_by_ring: dict[int, dict[int, list[_HoleLinkDetour]]],
+    encoded_holes: list[tuple[PolygonData, list[tuple[float, float]]]],
+) -> None:
+    """Walk one closed hole ring, expanding nested keyhole detours along the way."""
+
+    vertex_count = len(hole_points)
+    for step in range(vertex_count):
+        edge_index = (start_vertex_index + step) % vertex_count
+        detours = sorted(
+            detours_by_ring.get(hole_index, {}).get(edge_index, ()),
+            key=lambda item: item[0],
+        )
+        for _parameter, anchor, slit_path, child_index, child_vertex_index in detours:
+            if path[-1] != anchor:
+                path.append(anchor)
+            child_points = encoded_holes[child_index][1]
+            path.extend(slit_path[1:])
+            _trace_linked_hole_cycle(
+                path,
+                child_points,
+                hole_index=child_index,
+                start_vertex_index=child_vertex_index,
+                detours_by_ring=detours_by_ring,
+                encoded_holes=encoded_holes,
+            )
+            path.append(child_points[child_vertex_index])
+            path.extend(reversed(slit_path[:-1]))
+        if step >= vertex_count - 1:
+            continue
+        next_vertex = hole_points[(edge_index + 1) % vertex_count]
+        if path[-1] != next_vertex:
+            path.append(next_vertex)
 
 
 def _rotate_open_ring(points: list[tuple[float, float]], start_index: int) -> list[tuple[float, float]]:
     return points[start_index:] + points[:start_index]
 
 
+def _signed_ring_area(points: list[tuple[float, float]]) -> float:
+    area_twice = 0.0
+    for index, (x_coord, y_coord) in enumerate(points):
+        next_x, next_y = points[(index + 1) % len(points)]
+        area_twice += float(x_coord) * float(next_y) - float(next_x) * float(y_coord)
+    return area_twice * 0.5
+
+
+def _ring_with_orientation(
+    points: list[tuple[float, float]],
+    *,
+    positive_area: bool,
+) -> list[tuple[float, float]]:
+    ring = _dedupe_closed_points(points)
+    if len(ring) < 3:
+        return ring
+    if (_signed_ring_area(ring) > 0.0) != positive_area:
+        ring.reverse()
+    return ring
+
+
+def _edge_parameter(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    point: tuple[float, float],
+) -> float:
+    delta_x = float(end[0]) - float(start[0])
+    delta_y = float(end[1]) - float(start[1])
+    if abs(delta_x) >= abs(delta_y) and abs(delta_x) > 1e-12:
+        return (float(point[0]) - float(start[0])) / delta_x
+    if abs(delta_y) > 1e-12:
+        return (float(point[1]) - float(start[1])) / delta_y
+    return 0.0
+
+
 def _encode_parent_with_holes_link_path(parent: PolygonData, holes: list[PolygonData]) -> list[tuple[float, float]]:
-    path = _dedupe_closed_points(parent.points)
-    if len(path) < 3:
+    encode_started_at = perf_counter()
+    # Image Y grows downwards and CIF Y grows upwards. A positive image-space
+    # winding therefore becomes clockwise in CIF; holes use the opposite winding.
+    outer = _ring_with_orientation(parent.points, positive_area=True)
+    if len(outer) < 3:
         return parent.points
-    for hole in sorted(holes, key=lambda item: item.id):
-        hole_points = _dedupe_closed_points(hole.points)
-        if len(hole_points) < 3:
-            continue
-        anchor_index = _rightmost_point_index(hole_points)
-        hole_anchor = hole_points[anchor_index]
-        bridge = _horizontal_bridge_to_outer(path, hole_anchor)
-        if bridge is None:
-            continue
-        outer_anchor, insert_index = bridge
-        outer_cycle = [outer_anchor, *_rotate_open_ring(path, insert_index), outer_anchor]
-        hole_cycle = list(reversed(_rotate_open_ring(hole_points, anchor_index)))
-        if hole_cycle[0] != hole_anchor:
-            hole_cycle = [hole_anchor, *hole_cycle]
-        if hole_cycle[-1] != hole_anchor:
-            hole_cycle.append(hole_anchor)
-        path = [outer_anchor, *hole_cycle, outer_anchor, *outer_cycle[1:]]
+
+    encoded_holes = [
+        (hole, _ring_with_orientation(hole.points, positive_area=False))
+        for hole in holes
+    ]
+    encoded_holes = [(hole, points) for hole, points in encoded_holes if len(points) >= 3]
+    encoded_holes.sort(
+        key=lambda item: -float(item[1][_rightmost_point_index(item[1])][0]),
+    )
+
+    from shapely import make_valid
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    parent_solid = make_valid(
+        ShapelyPolygon(
+            outer,
+            holes=[points for _hole, points in encoded_holes],
+        )
+    )
+    detours_by_ring: dict[int, dict[int, list[_HoleLinkDetour]]] = {}
+    linked_hole_indices: set[int] = set()
+    for hole_index, (hole, hole_points) in enumerate(encoded_holes):
+        slit_started_at = perf_counter()
+        linked_hole_rings = [
+            (linked_index, encoded_holes[linked_index][1])
+            for linked_index in sorted(linked_hole_indices)
+        ]
+        selected = _select_vertex_slit_for_hole(
+            hole_points,
+            parent_solid,
+            outer=outer,
+            linked_hole_rings=linked_hole_rings,
+        )
+        _note_cif_phase_timing("cif_hole_vertex_slit_search", slit_started_at)
+        if selected is None:
+            raise ValueError(f"Cannot encode CIF hole {hole.id}: hole is disconnected from parent {parent.id}")
+        target_ring_key, target_anchor, insert_index, anchor_index, slit_path = selected
+        _note_cif_slit_target(neighbor_hole=target_ring_key >= 0)
+        target_ring = outer if target_ring_key < 0 else encoded_holes[target_ring_key][1]
+        edge_index = (insert_index - 1) % len(target_ring)
+        edge_start = target_ring[edge_index]
+        edge_end = target_ring[(edge_index + 1) % len(target_ring)]
+        parameter = _edge_parameter(edge_start, edge_end, target_anchor)
+        detours_by_ring.setdefault(target_ring_key, {}).setdefault(edge_index, []).append(
+            (parameter, target_anchor, slit_path, hole_index, anchor_index)
+        )
+        linked_hole_indices.add(hole_index)
+
+    path = [outer[0]]
+    canonical_start_index: int | None = None
+    for edge_index, _edge_start in enumerate(outer):
+        detours = sorted(
+            detours_by_ring.get(-1, {}).get(edge_index, ()),
+            key=lambda item: item[0],
+        )
+        for _parameter, outer_anchor, slit_path, child_index, child_vertex_index in detours:
+            if path[-1] != outer_anchor:
+                path.append(outer_anchor)
+            child_points = encoded_holes[child_index][1]
+            path.extend(slit_path[1:])
+            _trace_linked_hole_cycle(
+                path,
+                child_points,
+                hole_index=child_index,
+                start_vertex_index=child_vertex_index,
+                detours_by_ring=detours_by_ring,
+                encoded_holes=encoded_holes,
+            )
+            path.append(child_points[child_vertex_index])
+            path.extend(reversed(slit_path[:-1]))
+            if canonical_start_index is None:
+                canonical_start_index = len(path) - 1
+        edge_end = outer[(edge_index + 1) % len(outer)]
+        if path[-1] != edge_end:
+            path.append(edge_end)
+    if canonical_start_index is not None:
+        open_path = path[:-1] if len(path) >= 2 and path[0] == path[-1] else path
+        path = _rotate_open_ring(open_path, canonical_start_index)
+    _note_cif_phase_timing("cif_hole_link_encode", encode_started_at)
     return path
 
 
@@ -1006,6 +1294,108 @@ def _collapse_recovered_outline(ring: list[tuple[float, float]]) -> list[tuple[f
     return collapsed if len(collapsed) >= 3 else cleaned if len(cleaned) >= 3 else ring
 
 
+def _cif_paint_mask_from_ring(
+    ring: list[tuple[float, float]],
+) -> tuple[np.ndarray, int, int]:
+    """Rasterize a CIF ``P`` ring with Qt WindingFill (KLayout viewer semantics)."""
+
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath
+
+    int_points = integer_points(_dedupe_closed_points(ring))
+    if len(int_points) < 3:
+        return np.zeros((1, 1), dtype=np.uint8), 0, 0
+    xs = [point[0] for point in int_points]
+    ys = [point[1] for point in int_points]
+    left = int(min(xs))
+    top = int(min(ys))
+    width = max(1, int(max(xs)) - left + 1)
+    height = max(1, int(max(ys)) - top + 1)
+    path = QPainterPath()
+    path.moveTo(float(int_points[0][0] - left), float(int_points[0][1] - top))
+    for x_coord, y_coord in int_points[1:]:
+        path.lineTo(float(x_coord - left), float(y_coord - top))
+    path.closeSubpath()
+    path.setFillRule(Qt.FillRule.WindingFill)
+    image = QImage(width, height, QImage.Format.Format_Grayscale8)
+    image.fill(0)
+    painter = QPainter(image)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.fillPath(path, QBrush(QColor(255, 255, 255)))
+    finally:
+        painter.end()
+    mask = np.frombuffer(
+        bytes(image.constBits().asarray(image.sizeInBytes())),
+        dtype=np.uint8,
+    ).reshape((height, image.bytesPerLine()))[:, :width].copy()
+    return mask, left, top
+
+
+def _stamp_cif_paint_ring_on_mask(
+    mask: np.ndarray,
+    ring: list[tuple[float, float]],
+    origin: tuple[int, int],
+    *,
+    value: int = 255,
+) -> None:
+    """Paint a CIF ring into ``mask`` using Qt WindingFill (KLayout viewer semantics)."""
+
+    paint_mask, left, top = _cif_paint_mask_from_ring(ring)
+    if paint_mask.size == 0 or not np.any(paint_mask):
+        return
+    x_offset = left - int(origin[0])
+    y_offset = top - int(origin[1])
+    height, width = paint_mask.shape
+    target_x_start = max(0, x_offset)
+    target_y_start = max(0, y_offset)
+    target_x_stop = min(mask.shape[1], x_offset + width)
+    target_y_stop = min(mask.shape[0], y_offset + height)
+    if target_x_start >= target_x_stop or target_y_start >= target_y_stop:
+        return
+
+    paint_x_start = target_x_start - x_offset
+    paint_y_start = target_y_start - y_offset
+    paint_x_stop = paint_x_start + (target_x_stop - target_x_start)
+    paint_y_stop = paint_y_start + (target_y_stop - target_y_start)
+    target = mask[target_y_start:target_y_stop, target_x_start:target_x_stop]
+    painted = paint_mask[paint_y_start:paint_y_stop, paint_x_start:paint_x_stop] > 0
+    if int(value) == 0:
+        target[painted] = 0
+        return
+    target[painted] = int(value)
+
+
+def _polygon_uses_authored_cif_paint_ring(polygon: PolygonData) -> bool:
+    """True when display must use the authored CIF ring with WindingFill (keyhole split)."""
+
+    if polygon.is_hole or not polygon.cif_paint_ring:
+        return False
+    return integer_points(polygon.cif_paint_ring) != integer_points(polygon.points)
+
+
+def _ensure_cif_paint_rings(polygons: list[PolygonData]) -> None:
+    """No-op; authored rings are attached during keyhole recovery only."""
+
+    del polygons
+
+
+def _render_cif_klayout_layer_mask(
+    image_size: tuple[int, int],
+    polygons: list[PolygonData],
+) -> np.ndarray:
+    """Rasterize loaded polygons the way KLayout paints independent CIF ``P`` commands."""
+
+    image_width, image_height = image_size
+    mask = np.zeros((int(image_height), int(image_width)), dtype=np.uint8)
+    for polygon in polygons:
+        if polygon.is_hole:
+            continue
+        ring = polygon.cif_paint_ring if _polygon_uses_authored_cif_paint_ring(polygon) else polygon.points
+        _stamp_cif_paint_ring_on_mask(mask, ring, (0, 0), value=255)
+    return mask
+
+
 def _legacy_cut_hole_recovery_enabled() -> bool:
     return str(os.environ.get("CONTOUR_CIF_RECOVER_LEGACY_CUT_HOLES", "")).strip().lower() in {
         "1",
@@ -1096,7 +1486,11 @@ def _normalize_cif_polygon_families(
 def _recover_cut_hole_topology(
     polygons: list[PolygonData],
     image_size: tuple[int, int] | None,
+    *,
+    cutout_display: bool = False,
 ) -> list[PolygonData]:
+    from .application.fix_internal_contours import should_use_cutout_display_for_keyhole_family
+
     if image_size is None:
         return polygons
     image_width, image_height = image_size
@@ -1128,7 +1522,15 @@ def _recover_cut_hole_topology(
             families = []
 
         if families:
+            authored_paint_ring = integer_points(polygon.points)
             for outer_points, hole_rings in families:
+                use_cutout_display = bool(cutout_display) or should_use_cutout_display_for_keyhole_family(
+                    authored_paint_ring,
+                    outer_points,
+                    hole_rings,
+                    image_size,
+                )
+                paint_ring = integer_points(outer_points) if use_cutout_display else authored_paint_ring
                 area, perimeter, bbox = compute_polygon_metrics(outer_points)
                 parent_id = next_id
                 recovered.append(
@@ -1142,6 +1544,7 @@ def _recover_cut_hole_topology(
                         area=area,
                         perimeter=perimeter,
                         bbox=bbox,
+                        cif_paint_ring=[(float(x_coord), float(y_coord)) for x_coord, y_coord in paint_ring],
                     )
                 )
                 next_id += 1
@@ -1444,12 +1847,51 @@ def _polygons_from_shapely_geometry(geometry, *, start_id: int) -> list[PolygonD
     return result
 
 
+def _connected_cif_families(
+    outer: PolygonData,
+    holes: list[PolygonData],
+) -> list[tuple[PolygonData, list[PolygonData]]]:
+    """Split disconnected material like KLayout's resolve-holes writer stage."""
+
+    from shapely import make_valid, unary_union
+    from shapely.geometry import Polygon as ShapelyPolygon
+
+    outer_geometry = make_valid(ShapelyPolygon(outer.points))
+    hole_geometries = [
+        make_valid(ShapelyPolygon(hole.points))
+        for hole in holes
+        if len(hole.points) >= 3
+    ]
+    material = make_valid(
+        outer_geometry.difference(unary_union(hole_geometries))
+        if hole_geometries
+        else outer_geometry
+    )
+    pieces = _polygons_from_shapely_geometry(material, start_id=1)
+    piece_outers = [piece for piece in pieces if not piece.is_hole]
+    if len(piece_outers) <= 1:
+        return [(outer, holes)]
+
+    result: list[tuple[PolygonData, list[PolygonData]]] = []
+    for piece_outer in piece_outers:
+        piece_outer.category = str(outer.category)
+        piece_outer.shape_hint = str(outer.shape_hint)
+        piece_holes = [piece for piece in pieces if piece.is_hole and piece.parent_id == piece_outer.id]
+        for piece_hole in piece_holes:
+            piece_hole.category = str(outer.category)
+            piece_hole.shape_hint = str(outer.shape_hint)
+        result.append((piece_outer, piece_holes))
+    return result
+
+
 def save_polygons_cif(
     path: str | Path,
     image_path: str,
     polygons: list[PolygonData],
     image_size: tuple[int, int],
     layer_name: str = "NM",
+    *,
+    cutout_display: bool = False,
 ) -> Path:
     output = Path(path)
     width, height = int(image_size[0]), int(image_size[1])
@@ -1459,6 +1901,8 @@ def save_polygons_cif(
         f"( R {Path(image_path).name} );",
         f"( S {width} {height} );",
     ]
+    if cutout_display:
+        lines.append(CIF_CUTOUT_DISPLAY_MARKER)
     sorted_polygons = sorted(polygons, key=lambda item: item.id)
     holes_by_parent: dict[int, list[PolygonData]] = {}
     orphan_holes: list[PolygonData] = []
@@ -1472,26 +1916,30 @@ def save_polygons_cif(
     for polygon in sorted_polygons:
         if polygon.is_hole:
             continue
-        save_polygon = polygon
+        save_families = [(polygon, [])]
         if polygon.category != "via" and polygon.shape_hint != "box":
             holes = holes_by_parent.get(int(polygon.id), [])
             if holes:
-                linked_points = _encode_parent_with_holes_link_path(polygon, holes)
+                save_families = _connected_cif_families(polygon, holes)
+        for family_outer, family_holes in save_families:
+            save_polygon = family_outer
+            if family_holes:
+                linked_points = _encode_parent_with_holes_link_path(family_outer, family_holes)
                 area, perimeter, bbox = compute_polygon_metrics(linked_points)
                 save_polygon = PolygonData(
-                    id=polygon.id,
+                    id=family_outer.id,
                     points=linked_points,
                     is_hole=False,
                     parent_id=None,
-                    category=polygon.category,
-                    shape_hint=polygon.shape_hint,
+                    category=family_outer.category,
+                    shape_hint=family_outer.shape_hint,
                     area=area,
                     perimeter=perimeter,
                     bbox=bbox,
                 )
-        line = _polygon_to_cif_line(save_polygon, image_width=width, image_height=height)
-        if line:
-            lines.append(line)
+            line = _polygon_to_cif_line(save_polygon, image_width=width, image_height=height)
+            if line:
+                lines.append(line)
     for hole in orphan_holes:
         clone = hole.clone()
         clone.is_hole = False

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from math import ceil, floor, hypot
+from time import perf_counter
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
@@ -32,8 +34,11 @@ from ..application.polygon_antialiasing import antialias_polygons
 from ..application.processing import DisplaySettings, normalize_via_display_mode
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    apply_overlap_repair_patch,
     collapse_redundant_vertices_in_polygons,
     dissolve_self_intersecting_polygons,
+    overlap_check_roots_for_layer_patch,
+    patch_polygons_needing_repair,
     polygons_needing_repair,
     postprocess_after_editor_mutation,
     postprocess_changed_polygon_edit,
@@ -45,27 +50,33 @@ from ..commands import (
     AddPolygonCommand,
     AddPolygonsCommand,
     AddVertexCommand,
-    DeletePolygonCommand,
     ReplacePolygonSetCommand,
+    ReplacePolygonsPatchCommand,
 )
 from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
 from ..graphics_items import (
     EditablePolygonItem,
     INVALID_POLYGON_DESCRIPTION_COLOR,
+    VectorPolygonDisplayItem,
     VertexHandleItem,
     ZoomContactBatchItem,
     _cutout_path_for_polygon,
     _display_path_for_polygon,
+    _hole_display_hidden,
 )
 from ..i18n import active_language, tr
+from ..infrastructure.polygon_change_profiler import PolygonChangeProfile
+from ..infrastructure.profiling import polygon_change_profiling_enabled
 from .brush_vector import (
     QUAD_SEGS_BRUSH_DEFAULT,
+    PreservedPolygonMatchCache,
     apply_boolean,
     bbox_intersects_geom_bounds,
     extract_polygonal_union,
     polygon_equivalent_preserved,
     polygon_footprint_geom,
     polygon_paint_footprint_geom,
+    geometry_area_components,
     region_geometry,
     shapely_to_polygon_data_list,
     simplify_polygonal_geometry,
@@ -83,6 +94,7 @@ from .geometry import (
     _stable_object_color,
     is_valid_open_polyline_last_edge,
     resolve_conductor_hover_target_id,
+    resolve_hover_polygon_id,
 )
 from .polygon_creation import (
     POLYGON_COMMIT_INVALID_RING,
@@ -224,6 +236,11 @@ class PolygonEditorScene(QGraphicsScene):
         self._recycled_polygon_cleanup_timer = QTimer(self)
         self._recycled_polygon_cleanup_timer.setInterval(0)
         self._recycled_polygon_cleanup_timer.timeout.connect(self._drain_recycled_polygon_items)
+        self._overlap_repair_patch_timer = QTimer(self)
+        self._overlap_repair_patch_timer.setSingleShot(True)
+        self._overlap_repair_patch_timer.setInterval(0)
+        self._overlap_repair_patch_timer.timeout.connect(self._run_pending_overlap_repair_patch)
+        self._pending_overlap_repair_roots: set[int] = set()
         self._hole_children_by_parent: dict[int, list[PolygonData]] = {}
         self._polygon_child_ids_by_parent: dict[int, set[int]] = {}
         self._selected_polygon_id: int | None = None
@@ -281,10 +298,12 @@ class PolygonEditorScene(QGraphicsScene):
         self._object_colors: dict[int, str] = {}
         self._hover_conductor_polygon_id: int | None = None
         self._vertex_preview_polygon_id: int | None = None
+        self._move_target_preview: tuple[str, int, int] | None = None
         self._show_all_editable_vertices = False
         self._delete_area_highlight_ids: set[int] = set()
         self._vector_geometry_settings = VectorGeometrySettings()
         self._polygons_needing_repair: dict[int, list[str]] = {}
+        self._polygon_change_profile: PolygonChangeProfile | None = None
 
         self._main_frame_item = QGraphicsPathItem()
         self._main_frame_item.setZValue(2)
@@ -499,6 +518,11 @@ class PolygonEditorScene(QGraphicsScene):
                     if polygon.is_hole and polygon.parent_id is not None:
                         holes_by_parent.setdefault(int(polygon.parent_id), []).append(polygon)
                 for polygon in polygons:
+                    if polygon.is_hole and _hole_display_hidden(
+                        polygon,
+                        {loaded_polygon.id: loaded_polygon for loaded_polygon in polygons},
+                    ):
+                        continue
                     cutouts = [] if polygon.is_hole else holes_by_parent.get(int(polygon.id), [])
                     path_item = self._neighbor_vector_item(
                         polygon,
@@ -551,28 +575,14 @@ class PolygonEditorScene(QGraphicsScene):
         opacity: float,
         cutout_polygons: list[PolygonData] | None = None,
     ) -> QGraphicsPathItem:
-        path = QPainterPath()
-        path.addPath(_display_path_for_polygon(polygon, self._display_settings))
-        for cutout in cutout_polygons or []:
-            path.addPath(_cutout_path_for_polygon(cutout, self._display_settings, outer=polygon))
-        path.setFillRule(Qt.FillRule.WindingFill)
-        path_item = QGraphicsPathItem(path)
+        path_item = VectorPolygonDisplayItem(
+            polygon,
+            self._display_settings,
+            cutout_polygons=cutout_polygons,
+            opacity=opacity,
+            tooltip=image_path,
+        )
         path_item.setZValue(-19)
-        path_item.setOpacity(opacity)
-        color_name = self._display_settings.hole_color if polygon.is_hole else self._display_settings.external_color
-        if polygon.description_is_invalid():
-            color_name = INVALID_POLYGON_DESCRIPTION_COLOR
-        outline = QColor(color_name)
-        fill = QColor(color_name)
-        if polygon.is_hole:
-            fill.setAlpha(0)
-        else:
-            fill.setAlphaF(max(0.0, min(1.0, self._display_settings.fill_opacity)))
-        pen = QPen(outline, max(1.0, self._display_settings.line_width))
-        pen.setCosmetic(True)
-        path_item.setPen(pen)
-        path_item.setBrush(QBrush(fill))
-        path_item.setToolTip(image_path)
         return path_item
 
     def set_debug_candidates(self, candidates: list[object]) -> None:
@@ -1079,38 +1089,292 @@ class PolygonEditorScene(QGraphicsScene):
                 self.select_polygon(polygon.id)
                 return
 
-    def _maybe_push_vector_postprocess(self, undo_text: str) -> None:
-        selection_fallback = self._selection_reference_polygon()
+    def _polygon_change_operation_from_label(self, label: str) -> str:
+        normalized = str(label).strip().lower()
+        mapping = {
+            "erase brush stroke": "erase_brush",
+            "erase rectangle": "erase_rectangle",
+            "erase trace": "erase_trace",
+            "erase polygon": "erase_polygon",
+            "add brush stroke": "add_brush",
+            "add trace": "add_trace",
+            "add rectangle": "add_rectangle",
+            "add polygon": "add_polygon",
+            "delete vertices in area": "delete_vertices",
+            "vector geometry cleanup": "postprocess",
+        }
+        return mapping.get(normalized, normalized.replace(" ", "_"))
+
+    @contextmanager
+    def _polygon_change_profile_scope(self, operation: str):
+        if not polygon_change_profiling_enabled():
+            yield None
+            return
+        previous = self._polygon_change_profile
+        if previous is not None:
+            self._emit_polygon_change_profile(previous, status="superseded")
+        profile = PolygonChangeProfile.begin(
+            operation=operation,
+            polygon_count_before=len(self._polygons),
+        )
+        self._polygon_change_profile = profile
+        status = "completed"
+        try:
+            yield profile
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            if self._polygon_change_profile is profile:
+                self._polygon_change_profile = None
+            profile.set_metadata(polygons_after=len(self._polygons))
+            profile.finish()
+            self._emit_polygon_change_profile(profile, status=status)
+
+    def _note_polygon_change_phase(
+        self,
+        profile: PolygonChangeProfile | None,
+        name: str,
+        started_at: float,
+    ) -> None:
+        if profile is not None:
+            profile.note_phase(name, started_at)
+
+    def _emit_polygon_change_profile(self, profile: PolygonChangeProfile, *, status: str) -> None:
+        summary = profile.format_summary(status=status)
+        print(summary, flush=True)
+        self.logRequested.emit(summary)
+        stats = profile.format_stats()
+        print(stats, flush=True)
+        self.logRequested.emit(stats)
+
+    def _push_polygon_layer_replacement(
+        self,
+        *,
+        remove_polygon_ids: list[int],
+        add_polygons: list[PolygonData],
+        description: str,
+        run_postprocess: bool = True,
+        select_polygon_id: int | None = None,
+    ) -> bool:
+        """Apply one polygon-layer edit with a single scene refresh for undo/redo."""
+
         before = self.get_polygons()
+        remove_ids = set(remove_polygon_ids)
+        remaining = [polygon.clone() for polygon in before if polygon.id not in remove_ids]
+        remaining.extend(polygon.clone() for polygon in add_polygons)
+        if run_postprocess:
+            profile = self._polygon_change_profile
+            phase_started_at = perf_counter()
+            remaining, _changed, accepted = self._apply_vector_postprocess_polygons(remaining)
+            self._note_polygon_change_phase(profile, "postprocess", phase_started_at)
+            if not accepted:
+                self.warn_invalid_polygon_geometry()
+                return False
+        removed, added = self._compute_polygon_layer_patch(before, remaining)
+        if self._should_use_incremental_polygon_patch(before, removed):
+            self.undo_stack.push(
+                ReplacePolygonsPatchCommand(
+                    self,
+                    removed,
+                    added,
+                    description,
+                    select_polygon_id=select_polygon_id,
+                ),
+            )
+        else:
+            self.undo_stack.push(ReplacePolygonSetCommand(self, before, remaining, description))
+            if select_polygon_id is not None:
+                self.select_polygon(select_polygon_id)
+        return True
+
+    @staticmethod
+    def _compute_polygon_layer_patch(
+        before: list[PolygonData],
+        after: list[PolygonData],
+    ) -> tuple[list[PolygonData], list[PolygonData]]:
+        before_by_id = {polygon.id: polygon for polygon in before}
+        after_by_id = {polygon.id: polygon for polygon in after}
+        removed: list[PolygonData] = []
+        added: list[PolygonData] = []
+
+        def _same_geometry(left: PolygonData, right: PolygonData) -> bool:
+            return (
+                left.points == right.points
+                and left.parent_id == right.parent_id
+                and left.is_hole == right.is_hole
+            )
+
+        for polygon_id, before_polygon in before_by_id.items():
+            after_polygon = after_by_id.get(polygon_id)
+            if after_polygon is None:
+                removed.append(before_polygon)
+            elif not _same_geometry(before_polygon, after_polygon):
+                removed.append(before_polygon)
+                added.append(after_polygon)
+
+        for polygon_id, after_polygon in after_by_id.items():
+            if polygon_id not in before_by_id:
+                added.append(after_polygon)
+
+        return removed, added
+
+    @staticmethod
+    def _should_use_incremental_polygon_patch(
+        before: list[PolygonData],
+        removed: list[PolygonData],
+    ) -> bool:
+        if not before or not removed:
+            return False
+        removed_ids = {polygon.id for polygon in removed}
+        unchanged_count = sum(1 for polygon in before if polygon.id not in removed_ids)
+        return unchanged_count > 0 and len(removed) < len(before)
+
+    def _apply_polygon_patch(
+        self,
+        *,
+        remove_ids: list[int],
+        add_polygons: list[PolygonData],
+        emit_signal: bool = True,
+        select_polygon_id: int | None = None,
+        apply_selection: bool = False,
+    ) -> None:
+        """Remove and add polygons, refreshing only affected scene items."""
+
+        self.end_zoom_vector_render_mode()
+        prev_primary = self._selected_polygon_id
+        prev_selected_ids = set(self._selected_polygon_ids)
+        removed_id_set = set(remove_ids)
+        refresh_ids: set[int] = set()
+        removed_snapshots = [
+            self._polygons[polygon_id].clone()
+            for polygon_id in remove_ids
+            if polygon_id in self._polygons
+        ]
+        for polygon_id in remove_ids:
+            refresh_ids.update(self._polygon_edit_family_ids(polygon_id))
+
+        for polygon_id in remove_ids:
+            self._remove_polygon_internal(polygon_id, emit_signal=False, refresh=False)
+
+        for polygon in add_polygons:
+            self._add_polygon_internal(polygon, emit_signal=False, refresh=False, paint=False)
+            refresh_ids.update(self._polygon_edit_family_ids(polygon.id))
+
+        for polygon_id in list(refresh_ids):
+            root_id = self._polygon_root_id(polygon_id)
+            if root_id is not None:
+                refresh_ids.update(self._polygon_family_ids(root_id))
+
+        current_polygons = list(self._polygons.values())
+        overlap_check_roots = overlap_check_roots_for_layer_patch(
+            current_polygons,
+            removed_snapshots,
+            add_polygons,
+        )
+        self._polygons_needing_repair = patch_polygons_needing_repair(
+            self._polygons_needing_repair,
+            current_polygons,
+            removed_ids=removed_id_set,
+            removed_polygons=removed_snapshots,
+            added_or_changed=add_polygons,
+            settings=self._vector_geometry_settings,
+            include_overlap=False,
+        )
+        self._schedule_overlap_repair_patch(overlap_check_roots)
+        self._rebuild_outer_pick_z_ranks()
+
+        if apply_selection and select_polygon_id is not None and select_polygon_id in self._polygons:
+            self._selected_polygon_ids = {select_polygon_id}
+            self._selected_polygon_id = select_polygon_id
+        else:
+            new_ids = set(self._polygons)
+            preserved_sorted = sorted(prev_selected_ids & new_ids)
+            if preserved_sorted:
+                self._selected_polygon_ids = set(preserved_sorted)
+                self._selected_polygon_id = (
+                    prev_primary if prev_primary in preserved_sorted else preserved_sorted[0]
+                )
+            elif prev_primary in removed_id_set or prev_selected_ids & removed_id_set:
+                self._selected_polygon_id = None
+                self._selected_polygon_ids.clear()
+
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
+        for polygon_id in refresh_ids:
+            if polygon_id in self._polygon_items:
+                self._refresh_polygon_item(
+                    polygon_id,
+                    editable_vertex_ids=editable_vertex_ids,
+                )
+
+        if emit_signal:
+            self.polygonsChanged.emit()
+            self.activePolygonChanged.emit(self._selected_polygon_id)
+
+    def _schedule_overlap_repair_patch(self, overlap_check_roots: set[int]) -> None:
+        if not overlap_check_roots:
+            return
+        self._pending_overlap_repair_roots.update(overlap_check_roots)
+        self._overlap_repair_patch_timer.start()
+
+    def _run_pending_overlap_repair_patch(self) -> None:
+        overlap_check_roots = self._pending_overlap_repair_roots
+        self._pending_overlap_repair_roots = set()
+        if not overlap_check_roots:
+            return
+        previous = self._polygons_needing_repair
+        updated = apply_overlap_repair_patch(
+            previous,
+            list(self._polygons.values()),
+            overlap_check_roots,
+        )
+        self.apply_polygons_needing_repair(updated, refresh_items=True)
+
+    def _apply_vector_postprocess_polygons(
+        self,
+        polygons: list[PolygonData],
+    ) -> tuple[list[PolygonData], bool, bool]:
         needs_full_cleanup = float(self._vector_geometry_settings.min_hole_area_to_remove_px2) > 0.0
         if needs_full_cleanup:
             final, changed = postprocess_after_editor_mutation(
-                before,
+                polygons,
                 self._vector_geometry_settings,
                 frame_width_height=None,
                 include_merge=False,
             )
-        else:
-            final, accepted, changed = postprocess_changed_polygon_edit(
-                before,
+            return final, changed, True
+        final, accepted, changed = postprocess_changed_polygon_edit(
+            polygons,
+            self._vector_geometry_settings,
+            polygon_id=self._selected_polygon_id,
+        )
+        if not accepted:
+            return polygons, False, False
+        if not changed:
+            final, changed = postprocess_after_editor_mutation(
+                polygons,
                 self._vector_geometry_settings,
-                polygon_id=self._selected_polygon_id,
+                frame_width_height=None,
+                include_merge=False,
             )
-            if not accepted:
-                self.undo_stack.undo()
-                self._restore_selection_fallback_if_needed(selection_fallback)
-                self.warn_invalid_polygon_geometry()
-                return
-            if not changed:
-                final, changed = postprocess_after_editor_mutation(
-                    before,
-                    self._vector_geometry_settings,
-                    frame_width_height=None,
-                    include_merge=False,
-                )
+        return final, changed, True
+
+    def _maybe_push_vector_postprocess(self, undo_text: str) -> None:
+        selection_fallback = self._selection_reference_polygon()
+        before = self.get_polygons()
+        profile = self._polygon_change_profile
+        phase_started_at = perf_counter()
+        final, changed, accepted = self._apply_vector_postprocess_polygons(before)
+        if not accepted:
+            self.undo_stack.undo()
+            self._restore_selection_fallback_if_needed(selection_fallback)
+            self.warn_invalid_polygon_geometry()
+            self._note_polygon_change_phase(profile, "postprocess", phase_started_at)
+            return
         if changed:
             self.undo_stack.push(ReplacePolygonSetCommand(self, before, final, undo_text))
             self._restore_selection_fallback_if_needed(selection_fallback)
+        self._note_polygon_change_phase(profile, "postprocess", phase_started_at)
 
     def _bulk_restore_polygons(
         self,
@@ -1211,8 +1475,15 @@ class PolygonEditorScene(QGraphicsScene):
         if not self._polygon_overlays_visible:
             self._set_hover_conductor_polygon_id(None)
             return
-        underneath = self.polygon_at(scene_pos)
-        target_id = resolve_conductor_hover_target_id(self._polygons, underneath)
+        target_id = resolve_hover_polygon_id(
+            self._polygons,
+            self._hole_children_by_parent,
+            scene_pos.x(),
+            scene_pos.y(),
+        )
+        if target_id is None:
+            underneath = self.polygon_at(scene_pos)
+            target_id = resolve_conductor_hover_target_id(self._polygons, underneath)
         self._set_hover_conductor_polygon_id(target_id)
 
     def clear_conductor_hover_highlight(self) -> None:
@@ -1235,6 +1506,102 @@ class PolygonEditorScene(QGraphicsScene):
 
     def clear_vertex_preview(self) -> None:
         self._set_vertex_preview_polygon_id(None)
+
+    def clear_move_target_preview(self) -> None:
+        self._set_move_target_preview(None)
+
+    def sync_move_target_preview(
+        self,
+        scene_pos: QPointF,
+        *,
+        vertex_tolerance: float,
+        edge_tolerance: float,
+    ) -> None:
+        if not self._polygon_overlays_visible:
+            self._set_move_target_preview(None)
+            return
+        self._set_move_target_preview(
+            self.pick_move_target(scene_pos, vertex_tolerance, edge_tolerance, strict=True)
+        )
+
+    def pick_move_target(
+        self,
+        scene_pos: QPointF,
+        vertex_tolerance: float,
+        edge_tolerance: float,
+        *,
+        strict: bool = False,
+    ) -> tuple[str, int, int] | None:
+        vertex_hit = self.vertex_at(scene_pos, vertex_tolerance)
+        if vertex_hit is None:
+            vertex_hit = self.vertex_at(scene_pos, max(vertex_tolerance, edge_tolerance))
+        if vertex_hit is not None:
+            return ("vertex", vertex_hit[0], vertex_hit[1])
+
+        edge_hit = self.edge_at(scene_pos, edge_tolerance, vertex_tolerance=vertex_tolerance)
+        if edge_hit is not None:
+            return ("edge", edge_hit[0], edge_hit[1])
+
+        selected_polygon_id = self._selected_polygon_id
+        clicked_polygon_id = self.polygon_at(scene_pos)
+        target_polygon_id = selected_polygon_id or clicked_polygon_id
+        if target_polygon_id is not None:
+            vertex_hit = self.nearest_vertex_in_polygon(target_polygon_id, scene_pos)
+            if vertex_hit is not None:
+                if not strict:
+                    return ("vertex", vertex_hit[0], vertex_hit[1])
+                polygon = self._polygons.get(target_polygon_id)
+                if polygon is not None:
+                    point = polygon.points[vertex_hit[1]]
+                    if hypot(scene_pos.x() - point[0], scene_pos.y() - point[1]) <= max(
+                        vertex_tolerance, edge_tolerance
+                    ):
+                        return ("vertex", vertex_hit[0], vertex_hit[1])
+            edge_hit = self.nearest_edge_in_polygon(target_polygon_id, scene_pos)
+            if edge_hit is not None:
+                polygon = self._polygons.get(target_polygon_id)
+                if polygon is not None and len(polygon.points) >= 2:
+                    start = polygon.points[edge_hit[1]]
+                    end = polygon.points[(edge_hit[1] + 1) % len(polygon.points)]
+                    distance = _distance_to_segment((scene_pos.x(), scene_pos.y()), start, end)
+                    if not strict or distance <= edge_tolerance:
+                        return ("edge", edge_hit[0], edge_hit[1])
+
+        vertex_hit = self.nearest_vertex(scene_pos)
+        if vertex_hit is not None:
+            if not strict:
+                return ("vertex", vertex_hit[0], vertex_hit[1])
+            polygon = self._polygons.get(vertex_hit[0])
+            if polygon is not None:
+                point = polygon.points[vertex_hit[1]]
+                if hypot(scene_pos.x() - point[0], scene_pos.y() - point[1]) <= max(vertex_tolerance, edge_tolerance):
+                    return ("vertex", vertex_hit[0], vertex_hit[1])
+        edge_hit = self.nearest_edge(scene_pos)
+        if edge_hit is not None:
+            polygon = self._polygons.get(edge_hit[0])
+            if polygon is not None and len(polygon.points) >= 2:
+                start = polygon.points[edge_hit[1]]
+                end = polygon.points[(edge_hit[1] + 1) % len(polygon.points)]
+                distance = _distance_to_segment((scene_pos.x(), scene_pos.y()), start, end)
+                if not strict or distance <= edge_tolerance:
+                    return ("edge", edge_hit[0], edge_hit[1])
+        return None
+
+    def _set_move_target_preview(self, target: tuple[str, int, int] | None) -> None:
+        if target is not None:
+            kind, polygon_id, _index = target
+            if polygon_id not in self._polygons or kind not in {"vertex", "edge"}:
+                target = None
+        if target == self._move_target_preview:
+            return
+        previous_ids = self._editable_vertex_polygon_ids(
+            extra_ids={None if self._move_target_preview is None else self._move_target_preview[1]}
+        )
+        self._move_target_preview = target
+        next_ids = self._editable_vertex_polygon_ids(
+            extra_ids={None if target is None else target[1]}
+        )
+        self._refresh_polygon_items_by_id(*(previous_ids | next_ids))
 
     def _set_hover_conductor_polygon_id(self, conductor_id: int | None) -> None:
         if conductor_id is not None and conductor_id not in self._polygons:
@@ -1372,8 +1739,9 @@ class PolygonEditorScene(QGraphicsScene):
             return None
         if not cycle or len(hits) == 1:
             self._reset_pick_cycle()
-            return hits[0]
+            return min(hits, key=lambda polygon_id: float(self._polygons[polygon_id].area))
 
+        hits = sorted(hits, key=lambda polygon_id: float(self._polygons[polygon_id].area))
         same_spot = (
             self._pick_cycle_pos is not None
             and hypot(scene_pos.x() - self._pick_cycle_pos.x(), scene_pos.y() - self._pick_cycle_pos.y())
@@ -1462,6 +1830,94 @@ class PolygonEditorScene(QGraphicsScene):
                 if distance < best_distance:
                     best_distance = distance
                     best_hit = (polygon_id, index)
+        return best_hit
+
+    def edge_at(
+        self,
+        scene_pos: QPointF,
+        tolerance: float,
+        *,
+        vertex_tolerance: float | None = None,
+    ) -> tuple[int, int] | None:
+        vertex_tol = vertex_tolerance if vertex_tolerance is not None else tolerance
+        candidate_ids = []
+        if self._selected_polygon_id is not None:
+            candidate_ids.append(self._selected_polygon_id)
+        candidate_ids.extend(
+            polygon_id for polygon_id in sorted(self._selected_polygon_ids) if polygon_id != self._selected_polygon_id
+        )
+        candidate_ids.extend(
+            polygon_id for polygon_id in sorted(self._polygons) if polygon_id not in self._selected_polygon_ids
+        )
+        target_x = float(scene_pos.x())
+        target_y = float(scene_pos.y())
+        best_hit: tuple[int, int] | None = None
+        best_distance = float(tolerance)
+        for polygon_id in candidate_ids:
+            polygon = self._polygons.get(polygon_id)
+            if polygon is None or len(polygon.points) < 2:
+                continue
+            for index, start in enumerate(polygon.points):
+                end = polygon.points[(index + 1) % len(polygon.points)]
+                if hypot(start[0] - end[0], start[1] - end[1]) < 1e-6:
+                    continue
+                distance = _distance_to_segment((target_x, target_y), start, end)
+                if distance > tolerance:
+                    continue
+                if hypot(target_x - start[0], target_y - start[1]) <= vertex_tol:
+                    continue
+                if hypot(target_x - end[0], target_y - end[1]) <= vertex_tol:
+                    continue
+                if distance < best_distance:
+                    best_distance = distance
+                    best_hit = (polygon_id, index)
+        return best_hit
+
+    def nearest_edge_in_polygon(self, polygon_id: int, scene_pos: QPointF) -> tuple[int, int] | None:
+        polygon = self._polygons.get(polygon_id)
+        if polygon is None or len(polygon.points) < 2:
+            return None
+        target_x = float(scene_pos.x())
+        target_y = float(scene_pos.y())
+        best_index: int | None = None
+        best_distance = float("inf")
+        for index, start in enumerate(polygon.points):
+            end = polygon.points[(index + 1) % len(polygon.points)]
+            if hypot(start[0] - end[0], start[1] - end[1]) < 1e-6:
+                continue
+            distance = _distance_to_segment((target_x, target_y), start, end)
+            if distance < best_distance:
+                best_distance = distance
+                best_index = index
+        if best_index is None:
+            return None
+        return polygon_id, best_index
+
+    def nearest_edge(self, scene_pos: QPointF) -> tuple[int, int] | None:
+        candidate_ids: list[int] = []
+        if self._selected_polygon_id is not None:
+            candidate_ids.append(self._selected_polygon_id)
+        candidate_ids.extend(
+            polygon_id for polygon_id in sorted(self._selected_polygon_ids) if polygon_id != self._selected_polygon_id
+        )
+        candidate_ids.extend(
+            polygon_id for polygon_id in sorted(self._polygons) if polygon_id not in self._selected_polygon_ids
+        )
+        best_hit: tuple[int, int] | None = None
+        best_distance = float("inf")
+        for polygon_id in candidate_ids:
+            hit = self.nearest_edge_in_polygon(polygon_id, scene_pos)
+            if hit is None:
+                continue
+            polygon = self._polygons.get(polygon_id)
+            if polygon is None:
+                continue
+            start = polygon.points[hit[1]]
+            end = polygon.points[(hit[1] + 1) % len(polygon.points)]
+            distance = _distance_to_segment((scene_pos.x(), scene_pos.y()), start, end)
+            if distance < best_distance:
+                best_distance = distance
+                best_hit = hit
         return best_hit
 
     def delete_polygon_at(self, scene_pos: QPointF) -> bool:
@@ -1912,6 +2368,16 @@ class PolygonEditorScene(QGraphicsScene):
     def preview_vertex_move(self, polygon_id: int, vertex_index: int, point: QPointF) -> None:
         self._set_vertex_internal(polygon_id, vertex_index, integer_point((point.x(), point.y())), emit_signal=False)
 
+    def preview_edge_move(
+        self,
+        polygon_id: int,
+        edge_index: int,
+        origin_points: list[tuple[float, float]],
+        delta: tuple[float, float],
+    ) -> None:
+        moved = self._translate_edge_points(origin_points, edge_index, delta)
+        self._replace_polygon_points_internal(polygon_id, moved, emit_signal=False)
+
     def preview_polygon_move(self, polygon_id: int, points: list[tuple[float, float]]) -> None:
         self._replace_polygon_points_internal(polygon_id, points, emit_signal=False)
 
@@ -2191,6 +2657,9 @@ class PolygonEditorScene(QGraphicsScene):
             return False
         polygon = clipped_polygons[0]
         if erase:
+            if self._is_small_inner_candidate(list(polygon.points), thickness=None):
+                self.clear_preview_rect()
+                return False
 
             erased_ok = bool(
                 self._subtract_shape_from_scene(points=list(polygon.points), thickness=None, label="Erase rectangle")
@@ -2311,33 +2780,43 @@ class PolygonEditorScene(QGraphicsScene):
             self.cancel_pending_polygon()
             return False
         if erase:
+            if self._is_small_inner_candidate(list(points), thickness=thickness):
+                self.cancel_pending_polygon()
+                return False
             changed = self._subtract_shape_from_scene(points=list(points), thickness=thickness, label="Erase brush stroke")
             self.cancel_pending_polygon()
             return changed
         if self._is_small_inner_candidate(list(points), thickness=thickness):
             self.cancel_pending_polygon()
             return False
-        merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=list(points), thickness=thickness)
-        if merged_polygons is None:
-            self.cancel_pending_polygon()
-            return False
-        if not merged_polygons:
-            self.cancel_pending_polygon()
-            return False
-        merged_polygons = self._clip_authored_polygons_to_image(merged_polygons)
-        if not merged_polygons:
-            self.cancel_pending_polygon()
-            return False
-        self.undo_stack.beginMacro("Add brush stroke")
-        try:
-            for polygon_id in overlapping_ids:
-                self.undo_stack.push(DeletePolygonCommand(self, self._polygons[polygon_id]))
-            for polygon in merged_polygons:
-                self.undo_stack.push(AddPolygonCommand(self, polygon))
-        finally:
-            self.undo_stack.endMacro()
-        self.select_polygon(merged_polygons[0].id)
-        self._maybe_push_vector_postprocess("Vector geometry cleanup")
+        with self._polygon_change_profile_scope("add_brush") as profile:
+            phase_started_at = perf_counter()
+            merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=list(points), thickness=thickness)
+            self._note_polygon_change_phase(profile, "merge", phase_started_at)
+            if merged_polygons is None:
+                self.cancel_pending_polygon()
+                return False
+            if not merged_polygons:
+                self.cancel_pending_polygon()
+                return False
+            phase_started_at = perf_counter()
+            merged_polygons = self._clip_authored_polygons_to_image(merged_polygons)
+            self._note_polygon_change_phase(profile, "clip", phase_started_at)
+            if not merged_polygons:
+                self.cancel_pending_polygon()
+                return False
+            if profile is not None:
+                profile.set_metadata(overlapping=len(overlapping_ids), result_polygons=len(merged_polygons))
+            phase_started_at = perf_counter()
+            if not self._push_polygon_layer_replacement(
+                remove_polygon_ids=overlapping_ids,
+                add_polygons=merged_polygons,
+                description="Add brush stroke",
+                select_polygon_id=merged_polygons[0].id,
+            ):
+                self.cancel_pending_polygon()
+                return False
+            self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
         self.cancel_pending_polygon()
         return True
 
@@ -2350,38 +2829,48 @@ class PolygonEditorScene(QGraphicsScene):
             return False
         label = "Erase trace" if erase else "Add trace"
         if erase:
+            if self._is_small_inner_candidate(list(points), thickness=width):
+                self.cancel_pending_polygon()
+                return False
             changed = self._subtract_shape_from_scene(points=list(points), thickness=width, label=label)
             self.cancel_pending_polygon()
             return changed
         if self._is_small_inner_candidate(list(points), thickness=width):
             self.cancel_pending_polygon()
             return False
-        merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=list(points), thickness=width)
-        if merged_polygons is None:
-            self.cancel_pending_polygon()
-            return False
-        if not merged_polygons:
-            self.cancel_pending_polygon()
-            return False
-        merged_polygons = self._clip_authored_polygons_to_image(merged_polygons)
-        if not merged_polygons:
-            self.cancel_pending_polygon()
-            return False
-        for polygon in merged_polygons:
-            if not str(getattr(polygon, "category", "") or ""):
-                polygon.category = "conductor"
-            if str(getattr(polygon, "shape_hint", "") or "") in {"", "polygon"}:
-                polygon.shape_hint = "trace_pen"
-        self.undo_stack.beginMacro(label)
-        try:
-            for polygon_id in overlapping_ids:
-                self.undo_stack.push(DeletePolygonCommand(self, self._polygons[polygon_id]))
+        with self._polygon_change_profile_scope("add_trace") as profile:
+            phase_started_at = perf_counter()
+            merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=list(points), thickness=width)
+            self._note_polygon_change_phase(profile, "merge", phase_started_at)
+            if merged_polygons is None:
+                self.cancel_pending_polygon()
+                return False
+            if not merged_polygons:
+                self.cancel_pending_polygon()
+                return False
+            phase_started_at = perf_counter()
+            merged_polygons = self._clip_authored_polygons_to_image(merged_polygons)
+            self._note_polygon_change_phase(profile, "clip", phase_started_at)
+            if not merged_polygons:
+                self.cancel_pending_polygon()
+                return False
             for polygon in merged_polygons:
-                self.undo_stack.push(AddPolygonCommand(self, polygon))
-        finally:
-            self.undo_stack.endMacro()
-        self.select_polygon(merged_polygons[0].id)
-        self._maybe_push_vector_postprocess("Vector geometry cleanup")
+                if not str(getattr(polygon, "category", "") or ""):
+                    polygon.category = "conductor"
+                if str(getattr(polygon, "shape_hint", "") or "") in {"", "polygon"}:
+                    polygon.shape_hint = "trace_pen"
+            if profile is not None:
+                profile.set_metadata(overlapping=len(overlapping_ids), result_polygons=len(merged_polygons))
+            phase_started_at = perf_counter()
+            if not self._push_polygon_layer_replacement(
+                remove_polygon_ids=overlapping_ids,
+                add_polygons=merged_polygons,
+                description=label,
+                select_polygon_id=merged_polygons[0].id,
+            ):
+                self.cancel_pending_polygon()
+                return False
+            self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
         self.cancel_pending_polygon()
         return True
 
@@ -2398,6 +2887,9 @@ class PolygonEditorScene(QGraphicsScene):
                 self.warn_invalid_polygon_geometry()
                 return False
             self._log_polygon_commit_rejection(reason)
+            return False
+        if self._is_small_inner_candidate(self._pending_points, thickness=None):
+            self.cancel_pending_polygon()
             return False
         changed = self._subtract_shape_from_scene(points=self._pending_points, thickness=None, label="Erase polygon")
         self.cancel_pending_polygon()
@@ -2444,58 +2936,81 @@ class PolygonEditorScene(QGraphicsScene):
         if not point_updates and not ids_to_delete:
             return 0
 
-        before = self.get_polygons()
-        remaining: list[PolygonData] = []
-        deleted = 0
-        remaining_lookup = dict(point_updates)
-        for polygon in before:
-            if polygon.id in ids_to_delete:
-                deleted += len(polygon.points)
-                continue
-            clone = polygon.clone()
-            if clone.id in remaining_lookup:
-                updated_points = remaining_lookup[clone.id]
-                deleted += len(clone.points) - len(updated_points)
-                clone.points = updated_points
-                area, perimeter, bbox = compute_polygon_metrics(clone.points)
-                clone.area = float(area)
-                clone.perimeter = float(perimeter)
-                clone.bbox = bbox
-            remaining.append(clone)
-        remaining = dissolve_self_intersecting_polygons(remaining)
-        remaining = union_after_removing_polygon_ids(remaining, ids_to_delete)
-        self.undo_stack.push(ReplacePolygonSetCommand(self, before, remaining, "Delete vertices in area"))
-        return deleted
+        with self._polygon_change_profile_scope("delete_vertices") as profile:
+            phase_started_at = perf_counter()
+            before = self.get_polygons()
+            remaining: list[PolygonData] = []
+            deleted = 0
+            remaining_lookup = dict(point_updates)
+            for polygon in before:
+                if polygon.id in ids_to_delete:
+                    deleted += len(polygon.points)
+                    continue
+                clone = polygon.clone()
+                if clone.id in remaining_lookup:
+                    updated_points = remaining_lookup[clone.id]
+                    deleted += len(clone.points) - len(updated_points)
+                    clone.points = updated_points
+                    area, perimeter, bbox = compute_polygon_metrics(clone.points)
+                    clone.area = float(area)
+                    clone.perimeter = float(perimeter)
+                    clone.bbox = bbox
+                remaining.append(clone)
+            self._note_polygon_change_phase(profile, "collect", phase_started_at)
+            phase_started_at = perf_counter()
+            remaining = dissolve_self_intersecting_polygons(remaining)
+            remaining = union_after_removing_polygon_ids(remaining, ids_to_delete)
+            self._note_polygon_change_phase(profile, "repair", phase_started_at)
+            phase_started_at = perf_counter()
+            self.undo_stack.push(ReplacePolygonSetCommand(self, before, remaining, "Delete vertices in area"))
+            self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
+            if profile is not None:
+                profile.set_metadata(deleted_vertices=deleted, polygons_removed=len(ids_to_delete))
+            return deleted
 
     def _add_or_merge_polygon(self, polygon: PolygonData, label: str = "Add polygon") -> None:
-        if not self._polygons:
-            self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
-            self._maybe_push_vector_postprocess("Vector geometry cleanup")
-            return
-        merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=polygon.points, thickness=None)
-        if merged_polygons is None:
-            # Boolean union failed — keep the authored ring so simple shapes still land in the undo stack.
-            self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
-            self._maybe_push_vector_postprocess("Vector geometry cleanup")
-            return
-        if not overlapping_ids:
-            self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
-            self._maybe_push_vector_postprocess("Vector geometry cleanup")
-            return
-        if not merged_polygons:
-            self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
-            self._maybe_push_vector_postprocess("Vector geometry cleanup")
-            return
-        self.undo_stack.beginMacro(label)
-        try:
-            for polygon_id in overlapping_ids:
-                self.undo_stack.push(DeletePolygonCommand(self, self._polygons[polygon_id]))
-            for merged_polygon in merged_polygons:
-                self.undo_stack.push(AddPolygonCommand(self, merged_polygon))
-        finally:
-            self.undo_stack.endMacro()
-        self.select_polygon(merged_polygons[0].id)
-        self._maybe_push_vector_postprocess("Vector geometry cleanup")
+        operation = self._polygon_change_operation_from_label(label)
+        with self._polygon_change_profile_scope(operation) as profile:
+            if not self._polygons:
+                phase_started_at = perf_counter()
+                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
+                self._maybe_push_vector_postprocess("Vector geometry cleanup")
+                return
+            phase_started_at = perf_counter()
+            merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=polygon.points, thickness=None)
+            self._note_polygon_change_phase(profile, "merge", phase_started_at)
+            if profile is not None:
+                profile.set_metadata(overlapping=len(overlapping_ids))
+            if merged_polygons is None:
+                phase_started_at = perf_counter()
+                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
+                self._maybe_push_vector_postprocess("Vector geometry cleanup")
+                return
+            if not overlapping_ids:
+                phase_started_at = perf_counter()
+                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
+                self._maybe_push_vector_postprocess("Vector geometry cleanup")
+                return
+            if not merged_polygons:
+                phase_started_at = perf_counter()
+                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
+                self._maybe_push_vector_postprocess("Vector geometry cleanup")
+                return
+            phase_started_at = perf_counter()
+            if not self._push_polygon_layer_replacement(
+                remove_polygon_ids=overlapping_ids,
+                add_polygons=merged_polygons,
+                description=label,
+                select_polygon_id=merged_polygons[0].id,
+            ):
+                return
+            self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
+            if profile is not None:
+                profile.set_metadata(result_polygons=len(merged_polygons))
 
     def _subtract_shape_from_scene(
         self,
@@ -2506,44 +3021,58 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> bool:
         if not points or not self.can_add_polygon():
             return False
-        shape_bbox = _bbox_from_points(points, padding=(round(thickness / 2.0) + 2) if thickness else 2)
-        overlapping_ids = self._find_overlapping_polygon_ids(points=points, thickness=thickness, shape_bbox=shape_bbox)
-        if not overlapping_ids:
-            return False
-        render_ids = self._render_polygon_ids(overlapping_ids)
-        touched_ids = self._touched_polygon_ids(render_ids, shape_bbox, points, thickness)
-        preserved_polygons = self._preserved_polygons(render_ids, touched_ids, overlapping_ids)
-        remaining_polygons, err_msg = self._apply_tool_boolean_to_polygon_subset(
-            render_ids=list(render_ids),
-            points=list(points),
-            thickness=thickness,
-            erase=True,
-        )
-        if err_msg is not None:
-            detail = err_msg.strip() or repr(err_msg)
-
-            prefix = tr("brush_boolean_failed_log", language=self._ui_language)
-
-            self.logRequested.emit(f"{prefix} ({detail})")
-            return False
-        assert remaining_polygons is not None
-        rebuilt_polygons = self._restore_preserved_polygons(remaining_polygons, render_ids, preserved_polygons)
-
-        self.undo_stack.beginMacro(label)
-        try:
-            for polygon_id in render_ids:
-                self.undo_stack.push(DeletePolygonCommand(self, self._polygons[polygon_id]))
-            for polygon in rebuilt_polygons:
-                self.undo_stack.push(AddPolygonCommand(self, polygon))
-        finally:
-            self.undo_stack.endMacro()
-
-        if rebuilt_polygons:
-            self.select_polygon(rebuilt_polygons[0].id)
-        else:
-            self.select_polygon(None)
-        self._maybe_push_vector_postprocess("Vector geometry cleanup")
-        return True
+        with self._polygon_change_profile_scope(self._polygon_change_operation_from_label(label)) as profile:
+            phase_started_at = perf_counter()
+            shape_bbox = _bbox_from_points(points, padding=(round(thickness / 2.0) + 2) if thickness else 2)
+            overlapping_ids = self._find_overlapping_polygon_ids(
+                points=points,
+                thickness=thickness,
+                shape_bbox=shape_bbox,
+            )
+            if not overlapping_ids:
+                if profile is not None:
+                    profile.set_metadata(changed=False)
+                return False
+            render_ids = self._render_polygon_ids(overlapping_ids)
+            touched_ids = self._touched_polygon_ids(render_ids, shape_bbox, points, thickness)
+            preserved_polygons = self._preserved_polygons(render_ids, touched_ids, overlapping_ids)
+            self._note_polygon_change_phase(profile, "overlap_find", phase_started_at)
+            if profile is not None:
+                profile.set_metadata(overlapping=len(overlapping_ids))
+            phase_started_at = perf_counter()
+            remaining_polygons, err_msg = self._apply_tool_boolean_to_polygon_subset(
+                render_ids=list(render_ids),
+                points=list(points),
+                thickness=thickness,
+                erase=True,
+            )
+            self._note_polygon_change_phase(profile, "boolean", phase_started_at)
+            if err_msg is not None:
+                detail = err_msg.strip() or repr(err_msg)
+                prefix = tr("brush_boolean_failed_log", language=self._ui_language)
+                self.logRequested.emit(f"{prefix} ({detail})")
+                if profile is not None:
+                    profile.set_metadata(changed=False, error=detail)
+                return False
+            assert remaining_polygons is not None
+            phase_started_at = perf_counter()
+            rebuilt_polygons = self._restore_preserved_polygons(remaining_polygons, render_ids, preserved_polygons)
+            self._note_polygon_change_phase(profile, "preserve_restore", phase_started_at)
+            phase_started_at = perf_counter()
+            select_polygon_id = rebuilt_polygons[0].id if rebuilt_polygons else None
+            if not self._push_polygon_layer_replacement(
+                remove_polygon_ids=render_ids,
+                add_polygons=rebuilt_polygons,
+                description=label,
+                select_polygon_id=select_polygon_id,
+            ):
+                if profile is not None:
+                    profile.set_metadata(changed=False)
+                return False
+            self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
+            if profile is not None:
+                profile.set_metadata(changed=True, result_polygons=len(rebuilt_polygons))
+            return True
 
     def _merge_shape_into_scene(
         self,
@@ -2576,6 +3105,8 @@ class PolygonEditorScene(QGraphicsScene):
         return self._restore_preserved_polygons(merged_contours, render_ids, preserved_polygons), render_ids
 
     def _is_small_inner_candidate(self, points: list[tuple[float, float]], thickness: float | None) -> bool:
+        """True when every connected tool region is below min area inside existing metal or void."""
+
         min_area = float(self._vector_geometry_settings.min_hole_area_to_remove_px2)
         if min_area <= 0.0 or not self._polygons or not points:
             return False
@@ -2583,20 +3114,52 @@ class PolygonEditorScene(QGraphicsScene):
             candidate_shape = tool_geometry(points, thickness, quad_segs=QUAD_SEGS_BRUSH_DEFAULT)
         except Exception:
             return False
-        if candidate_shape.is_empty or float(candidate_shape.area) >= min_area:
+        if candidate_shape.is_empty:
             return False
-        candidate_shape = make_valid(candidate_shape)
-        for polygon in self._polygons.values():
-            if _is_via_polygon(polygon) or len(polygon.points) < 3:
-                continue
+
+        tool_components = geometry_area_components(make_valid(candidate_shape))
+        if not tool_components:
+            return False
+        # Threshold applies to each inner region separately, never to their combined area.
+        if any(float(component.area) >= min_area for component in tool_components):
+            return False
+
+        candidate_union = unary_union(tool_components)
+        root_ids = sorted(
+            polygon_id
+            for polygon_id, polygon in self._polygons.items()
+            if not polygon.is_hole
+            and polygon.parent_id is None
+            and not _is_via_polygon(polygon)
+            and len(polygon.points) >= 3
+        )
+        for root_id in root_ids:
             try:
-                containing_shape = polygon_paint_footprint_geom(polygon.points)
+                metal = make_valid(region_geometry(self._polygons, self._polygon_family_ids(root_id)))
+            except ValueError:
+                continue
+            if metal.is_empty:
+                continue
+
+            if metal.intersects(candidate_union):
+                carved = make_valid(metal.intersection(candidate_union))
+                carved_components = geometry_area_components(carved)
+                if carved_components and all(float(part.area) < min_area for part in carved_components):
+                    return True
+
+            try:
+                envelope = make_valid(polygon_paint_footprint_geom(self._polygons[root_id].points))
             except Exception:
                 continue
-            if containing_shape.is_empty:
+            if envelope.is_empty:
                 continue
-            if make_valid(containing_shape).covers(candidate_shape):
-                return True
+            void_geom = make_valid(envelope.difference(metal))
+            if not void_geom.is_empty and void_geom.intersects(candidate_union):
+                void_touch = make_valid(void_geom.intersection(candidate_union))
+                void_components = geometry_area_components(void_touch)
+                if void_components and all(float(part.area) < min_area for part in void_components):
+                    return True
+
         return False
 
     def _apply_tool_boolean_to_polygon_subset(
@@ -2901,12 +3464,30 @@ class PolygonEditorScene(QGraphicsScene):
                 if editable_vertex_ids is not None
                 else self._editable_vertex_polygon_ids()
             ),
+            highlight_vertex_index=(
+                self._move_target_preview[2]
+                if self._move_target_preview is not None
+                and self._move_target_preview[0] == "vertex"
+                and self._move_target_preview[1] == polygon_id
+                else None
+            ),
+            highlight_edge_index=(
+                self._move_target_preview[2]
+                if self._move_target_preview is not None
+                and self._move_target_preview[0] == "edge"
+                and self._move_target_preview[1] == polygon_id
+                else None
+            ),
             needs_repair=self.polygon_needs_repair(polygon_id),
         )
         item.setZValue(self._pick_z_value_for_polygon(polygon))
         cat = str(getattr(polygon, "category", "") or "")
         vis = self._polygon_category_visible.get(cat, True)
-        item.setVisible(bool(vis) and self._polygon_overlays_visible)
+        item.setVisible(
+            bool(vis)
+            and self._polygon_overlays_visible
+            and not _hole_display_hidden(polygon, self._polygons)
+        )
         if self.polygon_needs_repair(polygon_id):
             item.setToolTip(tr("invalid_polygon_description_tooltip", language=self._ui_language))
         else:
@@ -3125,10 +3706,11 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> list[PolygonData]:
         if not preserved_polygons:
             return self._assign_polygon_ids(rebuilt_polygons, deleted_ids)
+        match_cache = PreservedPolygonMatchCache.from_polygons(preserved_polygons)
         filtered_rebuilt = [
             polygon
             for polygon in rebuilt_polygons
-            if not self._matches_any_preserved_polygon(polygon, preserved_polygons)
+            if not polygon_equivalent_preserved(polygon, preserved_polygons, match_cache=match_cache)
         ]
         assigned_rebuilt = self._assign_polygon_ids(
             filtered_rebuilt,
@@ -3170,6 +3752,9 @@ class PolygonEditorScene(QGraphicsScene):
             bbox=bbox,
             recognition_score=existing.recognition_score,
             reject_reason=existing.reject_reason,
+            # The authored CIF keyhole ring describes the geometry before this
+            # edit.  Keeping it would make display ignore the edited family.
+            cif_paint_ring=[],
         )
 
     def _add_polygon_internal(
@@ -3302,8 +3887,11 @@ class PolygonEditorScene(QGraphicsScene):
         if polygon_id not in self._polygons:
             return
         refresh_ids = set(self._polygon_edit_family_ids(polygon_id))
+        root_id = self._polygon_root_id(polygon_id)
         self._unindex_polygon_relationship(self._polygons.get(polygon_id))
         self._polygons[polygon_id] = self._create_polygon_snapshot(polygon_id, points)
+        if root_id is not None and root_id in self._polygons:
+            self._polygons[root_id].cif_paint_ring = []
         self._index_polygon_relationship(self._polygons[polygon_id])
         refresh_ids.update(self._polygon_edit_family_ids(polygon_id))
         self._refresh_polygon_items_by_id(*refresh_ids)
@@ -3333,6 +3921,29 @@ class PolygonEditorScene(QGraphicsScene):
             elif vertex_index == len(points) - 1:
                 points[0] = new_point
         self._replace_polygon_points_internal(polygon_id, points, emit_signal=emit_signal)
+
+    @staticmethod
+    def _translate_edge_points(
+        points: list[tuple[float, float]],
+        edge_index: int,
+        delta: tuple[float, float],
+    ) -> list[tuple[float, float]]:
+        if edge_index < 0 or edge_index >= len(points):
+            return list(points)
+        moved = [(float(x), float(y)) for x, y in points]
+        dx, dy = float(delta[0]), float(delta[1])
+        start_idx = edge_index
+        end_idx = (edge_index + 1) % len(moved)
+        closed_duplicate_endpoint = (
+            len(moved) > 2 and hypot(moved[0][0] - moved[-1][0], moved[0][1] - moved[-1][1]) < 1e-5
+        )
+        moved[start_idx] = integer_point((moved[start_idx][0] + dx, moved[start_idx][1] + dy))
+        moved[end_idx] = integer_point((moved[end_idx][0] + dx, moved[end_idx][1] + dy))
+        if closed_duplicate_endpoint and (
+            start_idx == 0 or end_idx == 0 or start_idx == len(moved) - 1 or end_idx == len(moved) - 1
+        ):
+            moved[-1] = moved[0]
+        return integer_points(moved)
 
     def _insert_vertex_internal(
         self,

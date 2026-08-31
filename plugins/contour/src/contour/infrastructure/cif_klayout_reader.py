@@ -1,7 +1,8 @@
-"""CIF reader ported from KLayout ``dbCIFReader.cc``.
+"""CIF syntax reader ported from KLayout ``dbCIFReader.cc``.
 
-KLayout stores each ``P`` command as a single polygon hull (``assign_hull``) without
-splitting keyhole bridges into hole contours. Contour follows the same rule on load.
+Like KLayout, this layer reads every ``P`` command as one polygon hull. Conversion
+from a standard self-touching cutline hull to Contour's editable outer/hole model is
+performed by the serializer after parsing.
 """
 
 from __future__ import annotations

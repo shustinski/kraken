@@ -4,15 +4,19 @@ import unittest
 
 from contour.application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    apply_edge_translation_to_clone,
+    apply_polygon_points_to_clone,
     apply_vertex_delete_to_clone,
     apply_vertex_position_to_clone,
     clip_polygons_to_frame_raster,
     dissolve_self_intersecting_polygons,
     dissolve_small_holes,
     drop_triangle_outer_artifacts,
+    apply_overlap_repair_patch,
     merge_overlapping_root_families,
     polygon_description_is_invalid,
     polygons_needing_repair,
+    patch_polygons_needing_repair,
     postprocess_after_editor_mutation,
     postprocess_after_vertex_move,
     postprocess_changed_polygon_edit,
@@ -247,6 +251,66 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         poly = _rect(0.0, 0.0, 40.0, 40.0, 1)
         moved = apply_vertex_position_to_clone([poly], 1, 1, (50.0, 0.0))
         self.assertEqual(moved[0].points[1], (50.0, 0.0))
+
+    def test_edge_move_valid_polygon_succeeds(self) -> None:
+        poly = _rect(0.0, 0.0, 100.0, 100.0, 1)
+        moved = apply_edge_translation_to_clone([poly], 1, 0, (0.0, 10.0))
+        self.assertEqual(moved[0].points[0], (0.0, 10.0))
+        self.assertEqual(moved[0].points[1], (100.0, 10.0))
+
+    def test_edge_move_invalid_polygon_is_rejected(self) -> None:
+        poly = _rect(0.0, 0.0, 100.0, 100.0, 1)
+        moved = apply_edge_translation_to_clone([poly], 1, 0, (60.0, 0.0))
+        self.assertEqual(moved[0].points, poly.points)
+
+    def test_manual_family_edit_discards_authored_cif_paint_ring(self) -> None:
+        outer = _rect(0.0, 0.0, 100.0, 100.0, 1)
+        outer.cif_paint_ring = [
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+            (0.0, 40.0),
+            (40.0, 40.0),
+            (40.0, 60.0),
+            (0.0, 60.0),
+        ]
+        hole = _rect(40.0, 40.0, 60.0, 60.0, 2)
+        hole.is_hole = True
+        hole.parent_id = outer.id
+
+        moved = apply_polygon_points_to_clone(
+            [outer, hole],
+            hole.id,
+            [(42.0, 40.0), (60.0, 40.0), (60.0, 60.0), (42.0, 60.0)],
+        )
+
+        self.assertEqual(next(polygon for polygon in moved if polygon.id == outer.id).cif_paint_ring, [])
+
+        moved_outer = apply_vertex_position_to_clone([outer, hole], outer.id, 1, (101.0, 0.0))
+        self.assertEqual(next(polygon for polygon in moved_outer if polygon.id == outer.id).cif_paint_ring, [])
+
+    def test_cif_paint_stamp_clips_ring_outside_target_mask(self) -> None:
+        import numpy as np
+
+        from contour.serializers import _stamp_cif_paint_ring_on_mask
+
+        mask = np.zeros((10, 10), dtype=np.uint8)
+        _stamp_cif_paint_ring_on_mask(
+            mask,
+            [(20.0, 0.0), (30.0, 0.0), (30.0, 9.0), (20.0, 9.0)],
+            (0, 0),
+        )
+        self.assertFalse(np.any(mask))
+
+        _stamp_cif_paint_ring_on_mask(
+            mask,
+            [(-5.0, 0.0), (5.0, 0.0), (5.0, 9.0), (-5.0, 9.0)],
+            (0, 0),
+        )
+        self.assertTrue(np.all(mask[:9, :5] == 255))
+        self.assertTrue(np.all(mask[9, :] == 0))
+        self.assertTrue(np.all(mask[:, 6:] == 0))
 
     def test_vertex_move_updates_both_closed_duplicate_endpoints(self) -> None:
         points = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0), (0.0, 0.0)]
@@ -635,6 +699,25 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         self.assertEqual(reasons[3], ["small_object"])
         self.assertEqual(reasons[5], ["small_hole"])
         self.assertNotIn(4, reasons)
+
+    def test_patch_polygons_needing_repair_updates_only_local_overlap(self) -> None:
+        big_a = _rect(0.0, 0.0, 80.0, 80.0, 1)
+        big_b = _rect(40.0, 40.0, 120.0, 120.0, 2)
+        untouched = _rect(300.0, 300.0, 400.0, 400.0, 3)
+        settings = VectorGeometrySettings(min_outer_area_px2=0.0, min_hole_area_to_remove_px2=0.0)
+        baseline = polygons_needing_repair([big_a, big_b, untouched], settings)
+        self.assertEqual(baseline[1], ["overlapping"])
+        self.assertEqual(baseline[2], ["overlapping"])
+
+        moved_b = _rect(200.0, 200.0, 280.0, 280.0, 2)
+        patched = apply_overlap_repair_patch(
+            baseline,
+            [big_a, moved_b, untouched],
+            {1, 2},
+        )
+        self.assertNotIn(1, patched)
+        self.assertNotIn(2, patched)
+        self.assertNotIn(3, patched)
 
     def test_summarize_with_settings_includes_new_reason_codes(self) -> None:
         a = _rect(0.0, 0.0, 60.0, 60.0, 1)

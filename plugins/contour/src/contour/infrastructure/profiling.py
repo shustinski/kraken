@@ -9,6 +9,8 @@ The contact-placement profiler is normally toggled with the
 CONTACT_PLACEMENT_PROFILING_ENABLED code variable below.
 Area vertex deletion is toggled with DELETE_AREA_PROFILING_ENABLED or
 CONTOUR_PROFILE_DELETE_AREA=0/1.
+Polygon edit mutations are toggled with POLYGON_CHANGE_PROFILING_ENABLED or
+CONTOUR_PROFILE_POLYGON_CHANGE=0/1.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import os
 PROFILE_ENV_TRUE = {"1", "true", "yes", "on"}
 PROFILE_ENV_FALSE = {"0", "false", "no", "off"}
 
-DEFAULT_FRAME_SWITCH_ENABLED = True
+DEFAULT_FRAME_SWITCH_ENABLED = False
 DEFAULT_PROCESSING_ENABLED = False
 DEFAULT_THUMBNAIL_ENABLED = False
 DEFAULT_VERTEX_MOVE_ENABLED = False
@@ -37,6 +39,7 @@ CONTACT_DRAG_PROFILING_ENABLED = False
 SCENE_ZOOM_PROFILING_ENABLED = False
 IMAGE_RECOGNITION_PROFILING_ENABLED = False
 FILTER_APPLICATION_PROFILING_ENABLED = False
+POLYGON_CHANGE_PROFILING_ENABLED = False
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
@@ -53,6 +56,7 @@ DEFAULT_CONTACT_REDO_TOP_LINES = 40
 DEFAULT_CONTACT_DRAG_TOP_LINES = 40
 DEFAULT_SCENE_ZOOM_TOP_LINES = 40
 DEFAULT_IMAGE_RECOGNITION_TOP_LINES = 40
+DEFAULT_POLYGON_CHANGE_TOP_LINES = 40
 DEFAULT_FRAME_SWITCH_IDLE_POLLS = 300
 
 
@@ -235,6 +239,13 @@ def filter_application_profiling_enabled() -> bool:
     )
 
 
+def polygon_change_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "polygon_change",
+        default=POLYGON_CHANGE_PROFILING_ENABLED,
+    )
+
+
 def frame_switch_top_lines() -> int:
     return profiling_top_lines("frame_switch", DEFAULT_FRAME_SWITCH_TOP_LINES)
 
@@ -299,6 +310,10 @@ def image_recognition_top_lines() -> int:
         "image_recognition",
         DEFAULT_IMAGE_RECOGNITION_TOP_LINES,
     )
+
+
+def polygon_change_top_lines() -> int:
+    return profiling_top_lines("polygon_change", DEFAULT_POLYGON_CHANGE_TOP_LINES)
 
 
 def frame_switch_idle_polls() -> int:

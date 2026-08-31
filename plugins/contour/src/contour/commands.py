@@ -190,3 +190,38 @@ class ReplacePolygonSetCommand(QUndoCommand):
 
     def undo(self) -> None:
         self._scene._bulk_restore_polygons(self._before, emit_signal=True)
+
+
+class ReplacePolygonsPatchCommand(QUndoCommand):
+    """Apply a polygon-layer delta without rebuilding untouched scene items."""
+
+    def __init__(
+        self,
+        scene: Any,
+        removed_polygons: list[PolygonData],
+        added_polygons: list[PolygonData],
+        description: str,
+        *,
+        select_polygon_id: int | None = None,
+    ) -> None:
+        super().__init__(description)
+        self._scene = scene
+        self._removed = [polygon.clone() for polygon in removed_polygons]
+        self._added = [polygon.clone() for polygon in added_polygons]
+        self._select_polygon_id = select_polygon_id
+
+    def redo(self) -> None:
+        self._scene._apply_polygon_patch(
+            remove_ids=[polygon.id for polygon in self._removed],
+            add_polygons=[polygon.clone() for polygon in self._added],
+            emit_signal=True,
+            select_polygon_id=self._select_polygon_id,
+            apply_selection=self._select_polygon_id is not None,
+        )
+
+    def undo(self) -> None:
+        self._scene._apply_polygon_patch(
+            remove_ids=[polygon.id for polygon in self._added],
+            add_polygons=[polygon.clone() for polygon in self._removed],
+            emit_signal=True,
+        )

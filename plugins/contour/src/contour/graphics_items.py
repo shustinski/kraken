@@ -10,6 +10,93 @@ from .application.processing import DisplaySettings, normalize_via_display_mode
 from .domain import PolygonData
 
 INVALID_POLYGON_DESCRIPTION_COLOR = "#DC2626"
+MOVE_TARGET_VERTEX_HIGHLIGHT_COLOR = "#FBBF24"
+MOVE_TARGET_EDGE_HIGHLIGHT_COLOR = "#38BDF8"
+
+
+def _uses_cif_paint_display(polygon: PolygonData) -> bool:
+    from .serializers import _polygon_uses_authored_cif_paint_ring
+
+    return _polygon_uses_authored_cif_paint_ring(polygon)
+
+
+def _hole_display_hidden(polygon: PolygonData, polygons_by_id: dict[int, PolygonData]) -> bool:
+    if not polygon.is_hole or polygon.parent_id is None:
+        return False
+    parent = polygons_by_id.get(polygon.parent_id)
+    if parent is None:
+        return False
+    return _uses_cif_paint_display(parent)
+
+
+def _vector_display_path_for_polygon(
+    polygon: PolygonData,
+    display_settings: DisplaySettings | None = None,
+    cutout_polygons: list[PolygonData] | None = None,
+) -> QPainterPath:
+    """Build the visible outline path for vector display."""
+
+    if _uses_cif_paint_display(polygon):
+        path = _closed_polygon_path(polygon.cif_paint_ring)
+        path.setFillRule(Qt.FillRule.WindingFill)
+        return path
+    path = QPainterPath()
+    path.addPath(_display_path_for_polygon(polygon, display_settings))
+    for cutout in cutout_polygons or []:
+        path.addPath(_cutout_path_for_polygon(cutout, display_settings, outer=polygon))
+    path.setFillRule(Qt.FillRule.WindingFill)
+    return path
+
+
+class VectorPolygonDisplayItem(QGraphicsPathItem):
+    """Read-only polygon item with KLayout-compatible CIF fill semantics."""
+
+    def __init__(
+        self,
+        polygon: PolygonData,
+        display_settings: DisplaySettings,
+        *,
+        cutout_polygons: list[PolygonData] | None = None,
+        opacity: float = 1.0,
+        color_name: str | None = None,
+        tooltip: str = "",
+    ) -> None:
+        super().__init__()
+        self._polygon = polygon
+        self.setOpacity(float(opacity))
+        self.setToolTip(tooltip)
+        self.apply_polygon_display(
+            polygon,
+            display_settings,
+            cutout_polygons=cutout_polygons,
+            color_name=color_name,
+        )
+
+    def apply_polygon_display(
+        self,
+        polygon: PolygonData,
+        display_settings: DisplaySettings,
+        *,
+        cutout_polygons: list[PolygonData] | None = None,
+        color_name: str | None = None,
+    ) -> None:
+        self._polygon = polygon
+        outline_path = _vector_display_path_for_polygon(polygon, display_settings, cutout_polygons)
+        self.setPath(outline_path)
+        if color_name is None:
+            color_name = display_settings.hole_color if polygon.is_hole else display_settings.external_color
+        if polygon.description_is_invalid():
+            color_name = INVALID_POLYGON_DESCRIPTION_COLOR
+        outline = QColor(color_name)
+        fill = QColor(color_name)
+        if polygon.is_hole:
+            fill.setAlpha(0)
+        else:
+            fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
+        pen = QPen(outline, max(1.0, display_settings.line_width))
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        self.setBrush(QBrush(fill))
 
 
 class ZoomContactBatchItem(QGraphicsItem):
@@ -122,6 +209,9 @@ class EditablePolygonItem(QGraphicsPathItem):
         self._label_item = QGraphicsSimpleTextItem(str(polygon.id), self)
         self._label_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self._handles: list[VertexHandleItem] = []
+        self._edge_highlight_item = QGraphicsPathItem(self)
+        self._edge_highlight_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._edge_highlight_item.setZValue(5)
         self.setZValue(3)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         if paint:
@@ -152,16 +242,14 @@ class EditablePolygonItem(QGraphicsPathItem):
         *,
         conductor_hover_highlight: bool = False,
         preview_vertices: bool = False,
+        highlight_vertex_index: int | None = None,
+        highlight_edge_index: int | None = None,
         needs_repair: bool | None = None,
     ) -> None:
         self.polygon_id = polygon.id
         self._polygon = polygon
-        path = QPainterPath()
-        path.addPath(_display_path_for_polygon(self._polygon, display_settings))
-        for cutout in cutout_polygons or []:
-            path.addPath(_cutout_path_for_polygon(cutout, display_settings, outer=self._polygon))
-        path.setFillRule(Qt.FillRule.WindingFill)
-        self.setPath(path)
+        outline_path = _vector_display_path_for_polygon(self._polygon, display_settings, cutout_polygons)
+        self.setPath(outline_path)
         self._hit_path = _hit_path_for_polygon(self._polygon, cutout_polygons=cutout_polygons)
 
         self._update_appearance(
@@ -192,12 +280,65 @@ class EditablePolygonItem(QGraphicsPathItem):
             handle.setParentItem(None)
 
         if show_handles:
+            highlight_size = max(display_settings.vertex_size + 2.0, display_settings.vertex_size * 1.35)
+            highlight_color = QColor(MOVE_TARGET_VERTEX_HIGHLIGHT_COLOR)
             for index, point in enumerate(self._polygon.points):
                 handle = self._handles[index]
                 handle.polygon_id = self.polygon_id
                 handle.vertex_index = index
-                handle.update_geometry(point, display_settings.vertex_size, handle_color)
+                if highlight_vertex_index is not None and index == highlight_vertex_index:
+                    handle.update_geometry(point, highlight_size, highlight_color)
+                else:
+                    handle.update_geometry(point, display_settings.vertex_size, handle_color)
                 handle.setVisible(True)
+
+        self._update_edge_highlight(
+            highlight_edge_index,
+            conductor_hover_highlight=conductor_hover_highlight,
+            display_settings=display_settings,
+        )
+
+    def _update_edge_highlight(
+        self,
+        highlight_edge_index: int | None,
+        *,
+        conductor_hover_highlight: bool = False,
+        display_settings: DisplaySettings | None = None,
+    ) -> None:
+        if highlight_edge_index is not None and len(self._polygon.points) >= 2:
+            points = self._polygon.points
+            start = points[highlight_edge_index]
+            end = points[(highlight_edge_index + 1) % len(points)]
+            path = QPainterPath()
+            path.moveTo(start[0], start[1])
+            path.lineTo(end[0], end[1])
+            self._edge_highlight_item.setPath(path)
+            edge_pen = QPen(QColor(MOVE_TARGET_EDGE_HIGHLIGHT_COLOR), 4.0)
+            edge_pen.setCosmetic(True)
+            edge_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            self._edge_highlight_item.setPen(edge_pen)
+            self._edge_highlight_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            self._edge_highlight_item.setVisible(True)
+            return
+        if conductor_hover_highlight and display_settings is not None:
+            hover_path = self.path()
+            if hover_path.isEmpty():
+                self._edge_highlight_item.setPath(QPainterPath())
+                return
+            self._edge_highlight_item.setPath(hover_path)
+            hover_color = QColor(display_settings.conductor_hover_highlight_color)
+            hover_pen = QPen(
+                hover_color,
+                max(3.0, float(display_settings.line_width) * 2.0),
+            )
+            hover_pen.setCosmetic(True)
+            hover_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            hover_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            self._edge_highlight_item.setPen(hover_pen)
+            self._edge_highlight_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            self._edge_highlight_item.setVisible(True)
+            return
+        self._edge_highlight_item.setPath(QPainterPath())
 
     def update_selection_appearance(
         self,
@@ -251,6 +392,8 @@ class EditablePolygonItem(QGraphicsPathItem):
             fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
 
         pen = QPen(outline, max(1.0, display_settings.line_width))
+        if conductor_hover_highlight:
+            pen.setWidthF(max(3.0, float(display_settings.line_width) * 2.0))
         pen.setCosmetic(True)
         self.setPen(pen)
         self.setBrush(QBrush(fill))
@@ -265,7 +408,6 @@ class EditablePolygonItem(QGraphicsPathItem):
         if hit_path is not None and not hit_path.isEmpty():
             return hit_path
         return super().shape()
-
 
 def _iter_shapely_polygon_parts(geom: object) -> Iterator[object]:
     from shapely.geometry import Polygon as ShapelyPolygon

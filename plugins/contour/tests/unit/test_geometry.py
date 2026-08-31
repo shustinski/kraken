@@ -10,12 +10,14 @@ from contour.domain.polygon_ring import (
     closed_ring_description_invalid_reason,
     closed_ring_description_is_invalid,
     collapse_redundant_polyline_vertices,
+    is_valid_closed_polygon_edge_move,
     is_valid_closed_polygon_vertex_move,
 )
 from contour.graphics.geometry import (
     is_valid_closed_polygon_ring,
     is_valid_open_polyline_last_edge,
     resolve_conductor_hover_target_id,
+    resolve_hover_polygon_id,
 )
 
 
@@ -87,6 +89,16 @@ class GeometryTests(unittest.TestCase):
         pts = [(0.0, 0.0), (20.0, 60.0), (40.0, 0.0), (0.0, 40.0)]
         self.assertFalse(is_valid_closed_polygon_vertex_move(pts, 1))
 
+    def test_edge_move_validation_accepts_parallel_translation(self) -> None:
+        pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
+        moved = [(0.0, 5.0), (40.0, 5.0), (40.0, 40.0), (0.0, 40.0)]
+        self.assertTrue(is_valid_closed_polygon_edge_move(moved, 0))
+
+    def test_edge_move_validation_rejects_crossing_translation(self) -> None:
+        pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
+        moved = [(15.0, 0.0), (55.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
+        self.assertFalse(is_valid_closed_polygon_edge_move(moved, 0))
+
     def test_open_polyline_rejects_segment_crossing_prior_edge(self) -> None:
         pts = [(0.0, 0.0), (2.0, 0.0), (1.0, 0.5), (1.0, -0.5)]
         self.assertFalse(is_valid_open_polyline_last_edge(pts))
@@ -115,19 +127,7 @@ class GeometryTests(unittest.TestCase):
         points = [(0.0, 0.0), (5.0, 4.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
         self.assertEqual(collapse_redundant_polyline_vertices(points), points)
 
-    def test_resolve_conductor_hover_outer_trace(self) -> None:
-        outer = PolygonData(
-            id=1,
-            points=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)],
-            category="conductor",
-            shape_hint="polygon",
-            area=10000.0,
-            bbox=(0, 0, 100, 100),
-        )
-        registry = {1: outer}
-        self.assertEqual(resolve_conductor_hover_target_id(registry, 1), 1)
-
-    def test_resolve_conductor_hover_hole_mapped_to_parent(self) -> None:
+    def test_resolve_hover_polygon_id_prefers_hole_in_cutout(self) -> None:
         outer = PolygonData(
             id=1,
             points=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)],
@@ -148,9 +148,68 @@ class GeometryTests(unittest.TestCase):
             bbox=(40, 40, 21, 21),
         )
         registry = {1: outer, 2: hole}
-        self.assertEqual(resolve_conductor_hover_target_id(registry, 2), 1)
+        holes_by_parent = {1: [hole]}
+        self.assertEqual(resolve_hover_polygon_id(registry, holes_by_parent, 50.0, 50.0), 2)
+        self.assertEqual(resolve_hover_polygon_id(registry, holes_by_parent, 10.0, 10.0), 1)
 
-    def test_resolve_conductor_hover_via_inside_trace(self) -> None:
+    def test_resolve_hover_polygon_id_prefers_smaller_nested_conductor(self) -> None:
+        outer = PolygonData(
+            id=1,
+            points=[(0.0, 0.0), (120.0, 0.0), (120.0, 120.0), (0.0, 120.0)],
+            is_hole=False,
+            category="conductor",
+            shape_hint="polygon",
+            area=14400.0,
+            bbox=(0, 0, 120, 120),
+        )
+        inner = PolygonData(
+            id=2,
+            points=[(40.0, 40.0), (90.0, 40.0), (90.0, 90.0), (40.0, 90.0)],
+            is_hole=False,
+            category="conductor",
+            shape_hint="polygon",
+            area=2500.0,
+            bbox=(40, 40, 51, 51),
+        )
+        registry = {1: outer, 2: inner}
+        self.assertEqual(resolve_hover_polygon_id(registry, {}, 65.0, 65.0), 2)
+
+    def test_resolve_conductor_hover_outer_trace(self) -> None:
+        outer = PolygonData(
+            id=1,
+            points=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)],
+            category="conductor",
+            shape_hint="polygon",
+            area=10000.0,
+            bbox=(0, 0, 100, 100),
+        )
+        registry = {1: outer}
+        self.assertEqual(resolve_conductor_hover_target_id(registry, 1), 1)
+
+    def test_resolve_conductor_hover_hole_highlights_hole(self) -> None:
+        outer = PolygonData(
+            id=1,
+            points=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)],
+            is_hole=False,
+            category="conductor",
+            shape_hint="polygon",
+            area=10000.0,
+            bbox=(0, 0, 100, 100),
+        )
+        hole = PolygonData(
+            id=2,
+            points=[(40.0, 40.0), (60.0, 40.0), (60.0, 60.0), (40.0, 60.0)],
+            is_hole=True,
+            parent_id=1,
+            category="conductor",
+            shape_hint="polygon",
+            area=400.0,
+            bbox=(40, 40, 21, 21),
+        )
+        registry = {1: outer, 2: hole}
+        self.assertEqual(resolve_conductor_hover_target_id(registry, 2), 2)
+
+    def test_resolve_conductor_hover_via_highlights_via(self) -> None:
         outer = PolygonData(
             id=1,
             points=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)],
@@ -171,7 +230,7 @@ class GeometryTests(unittest.TestCase):
             bbox=(45, 45, 11, 11),
         )
         registry = {1: outer, 3: via}
-        self.assertEqual(resolve_conductor_hover_target_id(registry, 3), 1)
+        self.assertEqual(resolve_conductor_hover_target_id(registry, 3), 3)
 
     def test_description_is_invalid_cache_survives_clone_and_clears_on_point_replace(self) -> None:
         bowtie = PolygonData(

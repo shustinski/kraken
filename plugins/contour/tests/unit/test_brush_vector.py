@@ -11,6 +11,7 @@ from shapely.geometry import Point
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.graphics.brush_vector import (
     QUAD_SEGS_BRUSH_DEFAULT,
+    PreservedPolygonMatchCache,
     apply_boolean,
     brush_stroke_geometry,
     densify_chain_with_new_vertex,
@@ -351,6 +352,24 @@ def test_preserved_overlap_flags_symmetric_difference_tiny() -> None:
     assert polygon_equivalent_preserved(subject, [phantom]) is True
 
 
+def test_preserved_match_cache_matches_equivalent_clone() -> None:
+    verts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    area, perimeter, bbox = compute_polygon_metrics(verts)
+    preserved = PolygonData(
+        id=2,
+        points=list(verts),
+        is_hole=True,
+        parent_id=1,
+        area=area,
+        perimeter=perimeter,
+        bbox=bbox,
+    )
+    rebuilt = preserved.clone()
+    rebuilt.id = 99
+    cache = PreservedPolygonMatchCache.from_polygons([preserved])
+    assert polygon_equivalent_preserved(rebuilt, [preserved], match_cache=cache) is True
+
+
 def test_invalid_boolean_result_keeps_polygon_unchanged() -> None:
 
     def fake_boolean(_base: object, _brush: object, *, subtract: bool = False):
@@ -384,14 +403,12 @@ def test_invalid_boolean_result_keeps_polygon_unchanged() -> None:
     assert polygons_before_scene[0].points == polygons_after_scene[0].points
 
 
-def test_self_intersecting_keyhole_footprint_allows_interior_rectangle_erase() -> None:
-    """Interior erase rects must hit winding-fill metal, not only make_valid ring fragments."""
+def test_normalized_keyhole_does_not_create_phantom_brush_metal() -> None:
+    """A standard CIF cutline must expose its hole to brush hit testing."""
 
     from pathlib import Path
 
     import pytest
-    from shapely import make_valid
-    from shapely.geometry import Polygon as ShapelyPolygon
 
     from contour.serializers import clear_cif_parse_cache, load_polygons_cif
 
@@ -402,15 +419,25 @@ def test_self_intersecting_keyhole_footprint_allows_interior_rectangle_erase() -
     clear_cif_parse_cache()
     _, _, polygons = load_polygons_cif(cif_path)
     polygon_dict = {polygon.id: polygon for polygon in polygons}
-    keyhole = polygon_dict[19]
-    valid_geom = make_valid(ShapelyPolygon(keyhole.points))
     interior_rect = [(1400.0, 540.0), (1450.0, 540.0), (1450.0, 580.0), (1400.0, 580.0)]
     tool = tool_geometry(interior_rect, None, quad_segs=QUAD_SEGS_BRUSH_DEFAULT).buffer(1e-7)
+    center_x, center_y = 1425.0, 560.0
+    hole = next(
+        polygon
+        for polygon in polygons
+        if polygon.is_hole
+        and polygon.parent_id is not None
+        and polygon.bbox[0] <= center_x <= polygon.bbox[0] + polygon.bbox[2]
+        and polygon.bbox[1] <= center_y <= polygon.bbox[1] + polygon.bbox[3]
+    )
+    family_ids = {
+        polygon.id
+        for polygon in polygons
+        if polygon.id == hole.parent_id or polygon.parent_id == hole.parent_id
+    }
 
-    assert not valid_geom.intersects(tool)
-
-    region_shape = region_geometry(polygon_dict, [19])
-    assert region_shape.intersects(tool)
+    region_shape = region_geometry(polygon_dict, family_ids)
+    assert not region_shape.intersects(tool)
 
     carved, fault = apply_boolean(
         region_shape,
@@ -419,4 +446,4 @@ def test_self_intersecting_keyhole_footprint_allows_interior_rectangle_erase() -
     )
     assert fault is None
     assert carved is not None
-    assert float(carved.area) < float(region_shape.area)
+    assert abs(float(carved.area) - float(region_shape.area)) <= 1e-6

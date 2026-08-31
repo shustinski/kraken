@@ -206,6 +206,9 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         button.setAccessibleName(accessible_name)
     self.antialias_opened_cif_button.setText(self._tr("antialias_opened_cif_button"))
     self.antialias_opened_cif_button.setAccessibleName(self._tr("antialias_opened_cif_button"))
+    if hasattr(self, "fix_internal_contours_button"):
+        self.fix_internal_contours_button.setText(self._tr("fix_internal_contours_button"))
+        self.fix_internal_contours_button.setAccessibleName(self._tr("fix_internal_contours_button"))
     self.save_current_button.setText(self._tr("save_current_button"))
     self.export_dataset_button.setText(self._tr("export_dataset_button"))
     self.dataset_mode_checkbox.setText(self._tr("dataset_mode_checkbox"))

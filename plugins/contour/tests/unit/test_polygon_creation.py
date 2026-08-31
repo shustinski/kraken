@@ -12,19 +12,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt6.QtCore import QPointF
 from PyQt6.QtWidgets import QApplication
 
-from contour.application.vector_geometry_postprocess import VectorGeometrySettings
 from contour.application.processing import ImageProcessingState
 from contour.application.services.workspace_session import WorkspaceSession
+from contour.application.vector_geometry_postprocess import VectorGeometrySettings
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.domain.polygon_ring import is_valid_closed_polygon_ring
 from contour.graphics.editor_scene import PolygonEditorScene
-from contour.graphics_items import EditablePolygonItem
 from contour.graphics.polygon_creation import (
     POLYGON_COMMIT_INVALID_RING,
     POLYGON_COMMIT_TOO_FEW_VERTICES,
     POLYGON_COMMIT_TOO_SMALL_AREA,
     polygon_commit_acceptability,
 )
+from contour.graphics_items import EditablePolygonItem
 
 
 def _app() -> QApplication:
@@ -655,10 +655,25 @@ class PolygonOverlapPickTests(unittest.TestCase):
             self.skipTest("0516.cif sample is not available")
         clear_cif_parse_cache()
         _, _, polygons = load_polygons_cif(cif_path)
-        by_id = {polygon.id: polygon for polygon in polygons}
-        self.scene.set_polygons([by_id[18], by_id[22]])
+        frame = max(
+            (polygon for polygon in polygons if not polygon.is_hole),
+            key=lambda polygon: polygon.area,
+        )
+        frame_holes = [polygon for polygon in polygons if polygon.parent_id == frame.id]
         center = QPointF(1146.0, 1471.0)
-        self.assertEqual(self.scene.polygons_at(center), [18])
+        inner = next(
+            polygon
+            for polygon in polygons
+            if not polygon.is_hole
+            and polygon.id != frame.id
+            and polygon.bbox[0] <= center.x() <= polygon.bbox[0] + polygon.bbox[2]
+            and polygon.bbox[1] <= center.y() <= polygon.bbox[1] + polygon.bbox[3]
+        )
+        self.scene.set_polygons([frame, *frame_holes, inner])
+
+        hits = self.scene.polygons_at(center)
+        self.assertIn(inner.id, hits)
+        self.assertNotIn(frame.id, hits)
 
     def test_repeated_click_cycles_overlapping_conductors(self) -> None:
         small = _polygon(1, [(40.0, 40.0), (90.0, 40.0), (90.0, 90.0), (40.0, 90.0)])
@@ -670,6 +685,34 @@ class PolygonOverlapPickTests(unittest.TestCase):
         second = self.scene.polygon_at(overlap, cycle=True)
         self.assertNotEqual(first, second)
         self.assertEqual({first, second}, {1, 2})
+
+    def test_editing_hole_discards_parent_authored_cif_paint_ring(self) -> None:
+        outer = _polygon(1, [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)])
+        outer.cif_paint_ring = [
+            (0.0, 0.0),
+            (100.0, 0.0),
+            (100.0, 40.0),
+            (70.0, 40.0),
+            (70.0, 70.0),
+            (40.0, 70.0),
+            (40.0, 40.0),
+            (100.0, 40.0),
+            (100.0, 100.0),
+            (0.0, 100.0),
+        ]
+        hole = _polygon(2, [(40.0, 40.0), (40.0, 70.0), (70.0, 70.0), (70.0, 40.0)])
+        hole.is_hole = True
+        hole.parent_id = outer.id
+        self.scene.set_polygons([outer, hole])
+
+        self.scene._replace_polygon_points_internal(
+            hole.id,
+            [(42.0, 40.0), (40.0, 70.0), (70.0, 70.0), (70.0, 40.0)],
+        )
+
+        by_id = {polygon.id: polygon for polygon in self.scene.get_polygons()}
+        self.assertEqual(by_id[outer.id].cif_paint_ring, [])
+        self.assertEqual(by_id[hole.id].cif_paint_ring, [])
 
 
 if __name__ == "__main__":

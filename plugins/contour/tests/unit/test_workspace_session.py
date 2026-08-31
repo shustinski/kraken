@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from contour.application.services import WorkspaceSession
 from contour.domain import PolygonData, compute_polygon_metrics
@@ -316,6 +317,72 @@ class WorkspaceSessionTests(unittest.TestCase):
         self.assertEqual(cached, {"a.png", "b.png", "d.png"})
         self.assertTrue(session.has_cached_source("a.png"))
         self.assertFalse(session.has_cached_source("c.png"))
+
+    def test_changed_cif_hash_invalidates_clean_cached_vectors(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            cif_path = Path(tmp_dir) / "sample.cif"
+            cif_path.write_bytes(b"first revision")
+            session = WorkspaceSession()
+            session.set_cif_index({"sample": str(cif_path)})
+            result = session.apply_loaded_frame(
+                "sample.png",
+                source_image="pixels",
+                polygons=[_triangle_polygon()],
+                loaded_cif_path=str(cif_path),
+            )
+            self.assertEqual(len(result.state.polygons), 1)
+
+            cif_path.write_bytes(b"other revision")
+            cached = session.resolve_cached_load("sample.png")
+
+            self.assertIsNotNone(cached)
+            assert cached is not None
+            self.assertEqual(cached.state.polygons, [])
+            self.assertIsNone(cached.state.loaded_cif_path)
+            self.assertTrue(session.needs_vector_overlay("sample.png"))
+
+    def test_changed_cif_hash_does_not_discard_unsaved_vectors(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            cif_path = Path(tmp_dir) / "sample.cif"
+            cif_path.write_bytes(b"first revision")
+            session = WorkspaceSession()
+            session.set_cif_index({"sample": str(cif_path)})
+            session.apply_loaded_frame(
+                "sample.png",
+                source_image="pixels",
+                polygons=[_triangle_polygon()],
+                loaded_cif_path=str(cif_path),
+            )
+            changed = _triangle_polygon()
+            changed.points[1] = (9.0, 0.0)
+            session.update_current_polygons([changed])
+            cif_path.write_bytes(b"other revision")
+
+            cached = session.resolve_cached_load("sample.png")
+
+            self.assertIsNotNone(cached)
+            assert cached is not None
+            self.assertEqual(cached.state.polygons[0].points[1], (9.0, 0.0))
+            self.assertTrue(session.current_image_has_changes())
+
+    def test_refresh_cif_revision_accepts_just_saved_file(self) -> None:
+        with TemporaryDirectory() as tmp_dir:
+            cif_path = Path(tmp_dir) / "sample.cif"
+            cif_path.write_bytes(b"first revision")
+            session = WorkspaceSession()
+            session.set_cif_index({"sample": str(cif_path)})
+            session.apply_loaded_frame(
+                "sample.png",
+                source_image="pixels",
+                polygons=[_triangle_polygon()],
+                loaded_cif_path=str(cif_path),
+            )
+            cif_path.write_bytes(b"saved revision")
+
+            self.assertTrue(session.refresh_cif_revision("sample.png", cif_path))
+            self.assertIsNotNone(session.resolve_cached_load("sample.png"))
+            assert session.current_state is not None
+            self.assertEqual(len(session.current_state.polygons), 1)
 
 
 if __name__ == "__main__":

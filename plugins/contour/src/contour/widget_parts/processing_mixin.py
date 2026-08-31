@@ -3,6 +3,7 @@ from __future__ import annotations
 import cProfile
 import hashlib
 import json
+import os
 import shutil
 from time import perf_counter, time_ns
 from typing import Any
@@ -697,12 +698,27 @@ class WidgetProcessingMixin:
         if can_cif:
             image_size = (int(current_state.source_image.shape[1]), int(current_state.source_image.shape[0]))
             try:
-                save_polygons_vector(
-                    cif_path,
-                    current_image_path,
-                    current_polygons,
-                    image_size=image_size,
-                )
+                if self._frame_switch_profiling_active():
+                    from ..infrastructure.cif_operation_profiler import cif_operation_profiling
+
+                    with cif_operation_profiling() as cif_timings:
+                        save_polygons_vector(
+                            cif_path,
+                            current_image_path,
+                            current_polygons,
+                            image_size=image_size,
+                        )
+                    session = getattr(self, "_frame_switch_profile", None)
+                    if session is not None:
+                        session.merge_timings(cif_timings)
+                else:
+                    save_polygons_vector(
+                        cif_path,
+                        current_image_path,
+                        current_polygons,
+                        image_size=image_size,
+                    )
+                self._workspace.refresh_cif_revision(current_image_path, cif_path)
             except Exception as exc:
                 reason = self._tr(
                     "autosave_failed_log",
@@ -2308,7 +2324,9 @@ class WidgetProcessingMixin:
 
     def _shared_progress_job_active(self: Any) -> bool:
         return bool(
-            self._batch_controller.is_running or getattr(self, "_antialias_running", False)
+            self._batch_controller.is_running
+            or getattr(self, "_antialias_running", False)
+            or getattr(self, "_fix_internal_contours_running", False)
         )
 
     def _finish_shared_progress_if_idle(self: Any) -> None:
@@ -2335,8 +2353,9 @@ class WidgetProcessingMixin:
             QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
 
     def _confirm_processing_question(self: Any, question: str) -> bool:
+        parent = self.window() if hasattr(self, "window") else self
         answer = QMessageBox.question(
-            self,
+            parent,
             self._tr(
                 "processing_confirm_title",
                 "Обработка" if self._ui_language == "ru" else "Processing",
@@ -2346,6 +2365,41 @@ class WidgetProcessingMixin:
             QMessageBox.StandardButton.No,
         )
         return answer == QMessageBox.StandardButton.Yes
+
+    def _collect_opened_cif_entries(self: Any) -> dict[str, str]:
+        """Collect stem → CIF path mappings for batch vector tools."""
+
+        entries: dict[str, str] = dict(self._workspace.cif_paths_by_stem)
+
+        for _image_path, state in self._workspace.cached_states():
+            loaded_cif_path = getattr(state, "loaded_cif_path", None)
+            if not loaded_cif_path:
+                continue
+            cif_path = Path(str(loaded_cif_path))
+            if cif_path.is_file() and cif_path.suffix.lower() in {".cif", ".cv"}:
+                entries.setdefault(cif_path.stem.lower(), str(cif_path.resolve()))
+
+        for image_path in self._workspace.image_paths:
+            matched = self._find_matching_cif_path(image_path)
+            if not matched:
+                continue
+            cif_path = Path(str(matched))
+            if cif_path.is_file() and cif_path.suffix.lower() in {".cif", ".cv"}:
+                entries.setdefault(cif_path.stem.lower(), str(cif_path.resolve()))
+
+        if hasattr(self, "cif_dir_edit"):
+            cif_directory = self.cif_dir_edit.text().strip()
+            if cif_directory:
+                directory = Path(cif_directory)
+                if directory.is_dir():
+                    vector_paths = [
+                        str(path.resolve())
+                        for path in directory.iterdir()
+                        if path.is_file() and path.suffix.lower() in {".cif", ".cv"}
+                    ]
+                    entries.update(index_cif_file_paths(vector_paths))
+
+        return entries
 
     def _confirm_and_start_batch_processing(self: Any) -> None:
         if not self._confirm_processing_question(
@@ -2743,7 +2797,7 @@ class WidgetProcessingMixin:
             )
         ):
             return
-        cif_entries = list(self._workspace.cif_paths_by_stem.items())
+        cif_entries = list(self._collect_opened_cif_entries().items())
         if not cif_entries:
             self._append_log(
                 self._tr(
@@ -2813,6 +2867,11 @@ class WidgetProcessingMixin:
 
     def _cancel_antialias_job(self: Any) -> None:
         cancel_event = getattr(self, "_antialias_cancel", None)
+        if cancel_event is not None:
+            cancel_event.set()
+
+    def _cancel_fix_internal_contours_job(self: Any) -> None:
+        cancel_event = getattr(self, "_fix_internal_contours_cancel", None)
         if cancel_event is not None:
             cancel_event.set()
 
@@ -2899,6 +2958,372 @@ class WidgetProcessingMixin:
                 count=summary.saved_count,
                 grade=summary.grade,
             )
+        )
+
+    def _fix_internal_contours_all_cifs(self: Any) -> None:
+        if hasattr(self, "polygon_editor") and self.polygon_editor.vector_edits_locked():
+            ru = self._ui_language == "ru"
+            QMessageBox.information(
+                self.window(),
+                self._tr(
+                    "fix_internal_contours_stats_title",
+                    "Исправление внутренних контуров" if ru else "Fix internal contours",
+                ),
+                self._tr(
+                    "fix_internal_contours_locked_log",
+                    "Сначала завершите текущее редактирование векторов."
+                    if ru
+                    else "Finish the current vector edit session first.",
+                ),
+            )
+            return
+        if self._batch_controller.is_running:
+            self._append_log(self._tr("batch_already_running_log"))
+            return
+        if getattr(self, "_antialias_running", False):
+            self._append_log(
+                self._tr(
+                    "antialias_already_running_log",
+                    "Сглаживание векторов уже выполняется."
+                    if self._ui_language == "ru"
+                    else "Vector antialiasing is already running.",
+                )
+            )
+            return
+        if getattr(self, "_fix_internal_contours_running", False):
+            self._append_log(
+                self._tr(
+                    "fix_internal_contours_already_running_log",
+                    "Исправление внутренних контуров уже выполняется."
+                    if self._ui_language == "ru"
+                    else "Fix internal contours is already running.",
+                )
+            )
+            return
+        if not self._confirm_processing_question(
+            self._tr(
+                "fix_internal_contours_confirm",
+                "Запустить исправление внутренних контуров?"
+                if self._ui_language == "ru"
+                else "Run internal contour correction?",
+            )
+        ):
+            return
+        cif_entries = list(self._collect_opened_cif_entries().items())
+        if not cif_entries:
+            ru = self._ui_language == "ru"
+            message = self._tr(
+                "fix_internal_contours_none_log",
+                "В проекте нет CIF для проверки." if ru else "The project has no CIF files to check.",
+            )
+            self._append_log(message)
+            QMessageBox.information(
+                self.window(),
+                self._tr(
+                    "fix_internal_contours_stats_title",
+                    "Исправление внутренних контуров" if ru else "Fix internal contours",
+                ),
+                message,
+            )
+            return
+        try:
+            current_path = self._workspace.current_image_path
+            if current_path is not None:
+                self._workspace.update_current_polygons(self.get_polygons())
+            cached_by_path = {
+                str(Path(image_path)): state for image_path, state in self._workspace.cached_states()
+            }
+            work_items: list[FixInternalContoursCifWorkItem] = []
+            for stem, cif_path in cif_entries:
+                image_path = self._image_path_for_cif_stem(stem)
+                if image_path is None:
+                    cif_file = Path(str(cif_path))
+                    image_path = self._image_path_for_cif_stem(cif_file.stem)
+                image_key = str(Path(image_path)) if image_path else None
+                state = cached_by_path.get(image_key) if image_key else None
+                snapshot_polygons: tuple[PolygonData, ...] | None = None
+                image_size: tuple[int, int] | None = None
+                if state is not None and state.polygons:
+                    snapshot_polygons = tuple(polygon.clone() for polygon in state.polygons)
+                    if state.source_image is not None:
+                        image_size = (
+                            int(state.source_image.shape[1]),
+                            int(state.source_image.shape[0]),
+                        )
+                work_items.append(
+                    FixInternalContoursCifWorkItem(
+                        stem=stem,
+                        cif_path=str(cif_path),
+                        image_path=image_path,
+                        polygons=snapshot_polygons,
+                        image_size=image_size,
+                    )
+                )
+            self._fix_internal_contours_run_id = int(getattr(self, "_fix_internal_contours_run_id", 0)) + 1
+            cancel_event = threading.Event()
+            self._fix_internal_contours_cancel = cancel_event
+            self._fix_internal_contours_running = True
+            run_dock = getattr(self.window(), "_run_dock", None)
+            if run_dock is not None:
+                run_dock.show()
+            self._show_batch_progress(len(work_items))
+            self._set_progress_status("fix_internal_contours_started_status")
+            self._begin_fix_internal_contours_batch(
+                tuple(work_items),
+                run_id=self._fix_internal_contours_run_id,
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            self._fix_internal_contours_running = False
+            self._fix_internal_contours_cancel = None
+            self._finish_shared_progress_if_idle()
+            ru = self._ui_language == "ru"
+            QMessageBox.critical(
+                self.window(),
+                self._tr(
+                    "fix_internal_contours_stats_title",
+                    "Исправление внутренних контуров" if ru else "Fix internal contours",
+                ),
+                str(exc),
+            )
+
+    def _begin_fix_internal_contours_batch(
+        self: Any,
+        work_items: tuple[FixInternalContoursCifWorkItem, ...],
+        *,
+        run_id: int,
+        cancel_event: threading.Event,
+    ) -> None:
+        self._fix_internal_contours_pending_items = list(work_items)
+        self._fix_internal_contours_batch_run_id = int(run_id)
+        self._fix_internal_contours_batch_cancel = cancel_event
+        self._fix_internal_contours_batch_total = len(work_items)
+        self._fix_internal_contours_batch_index = 0
+        self._fix_internal_contours_batch_failed: list[str] = []
+        self._fix_internal_contours_batch_stats = InternalContourFixStats()
+        self._fix_internal_contours_batch_saved_count = 0
+        QTimer.singleShot(0, self._step_fix_internal_contours_batch)
+
+    def _step_fix_internal_contours_batch(self: Any) -> None:
+        if not getattr(self, "_fix_internal_contours_running", False):
+            return
+        if int(getattr(self, "_fix_internal_contours_batch_run_id", 0)) != int(
+            getattr(self, "_fix_internal_contours_run_id", 0)
+        ):
+            return
+        cancel_event = getattr(self, "_fix_internal_contours_batch_cancel", None)
+        if cancel_event is not None and cancel_event.is_set():
+            self._complete_fix_internal_contours_batch(cancelled=True)
+            return
+
+        pending: list[FixInternalContoursCifWorkItem] = getattr(self, "_fix_internal_contours_pending_items", [])
+        if not pending:
+            self._complete_fix_internal_contours_batch(cancelled=False)
+            return
+
+        item = pending.pop(0)
+        self._fix_internal_contours_pending_items = pending
+        run_id = int(self._fix_internal_contours_batch_run_id)
+        try:
+            result = _fix_internal_contours_work_item(item, run_id)
+        except Exception as exc:
+            self._fix_internal_contours_batch_failed.append(f"{Path(item.cif_path).name}: {exc}")
+            result = FixInternalContoursCifItemResult(
+                run_id=run_id,
+                stem=item.stem,
+                cif_path=item.cif_path,
+                image_path=item.image_path,
+                polygons=(),
+                image_size=item.image_size,
+                changed=False,
+                error=str(exc),
+            )
+
+        stats = self._fix_internal_contours_batch_stats
+        stats = InternalContourFixStats(
+            checked_cif_files=stats.checked_cif_files + 1,
+            checked_families=stats.checked_families + result.checked_families,
+            fixed_cif_files=stats.fixed_cif_files + (1 if result.changed else 0),
+            fixed_families=stats.fixed_families + result.fixed_families,
+            fixed_hole_regions=stats.fixed_hole_regions + result.fixed_hole_regions,
+            skipped_klayout_keyholes=stats.skipped_klayout_keyholes + result.skipped_klayout_keyholes,
+            unchanged_cif_files=stats.unchanged_cif_files + (0 if result.changed else 1),
+            failed=tuple(self._fix_internal_contours_batch_failed),
+            cancelled=False,
+        )
+        self._fix_internal_contours_batch_stats = stats
+        if result.changed:
+            self._fix_internal_contours_batch_saved_count += 1
+        if result.changed or result.error:
+            self._on_fix_internal_contours_item_finished(result)
+
+        self._fix_internal_contours_batch_index = int(getattr(self, "_fix_internal_contours_batch_index", 0)) + 1
+        if self._batch_progress_enabled:
+            self._apply_batch_progress_bar(
+                self._fix_internal_contours_batch_index,
+                self._fix_internal_contours_batch_total,
+                pump_events=True,
+            )
+        self._set_progress_status(
+            "batch_progress_status",
+            current=self._fix_internal_contours_batch_index,
+            total=self._fix_internal_contours_batch_total,
+        )
+        QTimer.singleShot(0, self._step_fix_internal_contours_batch)
+
+    def _complete_fix_internal_contours_batch(self: Any, *, cancelled: bool) -> None:
+        summary = FixInternalContoursCifJobSummary(
+            run_id=int(getattr(self, "_fix_internal_contours_batch_run_id", 0)),
+            stats=InternalContourFixStats(
+                checked_cif_files=self._fix_internal_contours_batch_stats.checked_cif_files,
+                checked_families=self._fix_internal_contours_batch_stats.checked_families,
+                fixed_cif_files=self._fix_internal_contours_batch_stats.fixed_cif_files,
+                fixed_families=self._fix_internal_contours_batch_stats.fixed_families,
+                fixed_hole_regions=self._fix_internal_contours_batch_stats.fixed_hole_regions,
+                skipped_klayout_keyholes=self._fix_internal_contours_batch_stats.skipped_klayout_keyholes,
+                unchanged_cif_files=self._fix_internal_contours_batch_stats.unchanged_cif_files,
+                failed=tuple(getattr(self, "_fix_internal_contours_batch_failed", [])),
+                cancelled=cancelled,
+            ),
+            saved_count=int(getattr(self, "_fix_internal_contours_batch_saved_count", 0)),
+        )
+        self._fix_internal_contours_pending_items = []
+        self._on_fix_internal_contours_finished(summary)
+
+    def _on_fix_internal_contours_progress(self: Any, run_id: int, current: int, total: int) -> None:
+        if run_id != getattr(self, "_fix_internal_contours_run_id", 0):
+            return
+        if self._batch_progress_enabled:
+            self._apply_batch_progress_bar(current, total)
+        self._set_progress_status("batch_progress_status", current=current, total=total)
+
+    def _on_fix_internal_contours_item_finished(self: Any, result: FixInternalContoursCifItemResult) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if int(result.run_id) != getattr(self, "_fix_internal_contours_run_id", 0):
+            return
+        if result.error or not result.changed:
+            return
+        image_path = result.image_path
+        image_key = str(Path(image_path)) if image_path else None
+        current_path = self._workspace.current_image_path
+        current_key = str(Path(current_path)) if current_path else None
+        fixed_polygons = [polygon.clone() for polygon in result.polygons]
+        if image_key:
+            for cached_path, state in self._workspace.cached_states():
+                if str(Path(cached_path)) != image_key:
+                    continue
+                state.polygons = [polygon.clone() for polygon in fixed_polygons]
+                state.reference_polygons = [polygon.clone() for polygon in fixed_polygons]
+                state.polygons_dirty = False
+                state.loaded_cif_path = str(result.cif_path)
+                break
+            self._persisted_highlight_paths.add(image_key)
+            self._update_frame_item_status(image_path)
+            neighbor_cache = getattr(self, "_neighbor_vector_cache", None)
+            if isinstance(neighbor_cache, dict):
+                neighbor_cache.pop(image_key, None)
+        if image_key is not None and image_key == current_key and hasattr(self, "polygon_editor"):
+            self._updating_views = True
+            try:
+                self.polygon_editor.set_polygons(fixed_polygons)
+            finally:
+                self._updating_views = False
+            self._update_vector_edit_status_label()
+
+    def _on_fix_internal_contours_finished(self: Any, summary: FixInternalContoursCifJobSummary) -> None:
+        if int(summary.run_id) != getattr(self, "_fix_internal_contours_run_id", 0):
+            return
+        self._fix_internal_contours_running = False
+        self._fix_internal_contours_cancel = None
+        self._finish_shared_progress_if_idle()
+        self._refresh_image_list_item_states()
+        stats = summary.stats
+        ru = self._ui_language == "ru"
+        if stats.cancelled:
+            self._set_progress_status("fix_internal_contours_stopped_status")
+            self._append_log(
+                self._tr(
+                    "fix_internal_contours_stopped_log",
+                    "Исправление внутренних контуров остановлено."
+                    if ru
+                    else "Fix internal contours stopped.",
+                )
+            )
+        else:
+            self._set_progress_status("fix_internal_contours_finished_status")
+            if stats.failed:
+                self._append_log(
+                    self._tr(
+                        "fix_internal_contours_failed_log",
+                        "Исправление внутренних контуров: сохранено {saved}, ошибки: {errors}"
+                        if ru
+                        else "Fix internal contours: saved {saved}, errors: {errors}",
+                        saved=summary.saved_count,
+                        errors="; ".join(stats.failed[:4]),
+                    )
+                )
+            else:
+                self._append_log(
+                    self._tr(
+                        "fix_internal_contours_done_log",
+                        "Исправление внутренних контуров: проверено CIF {checked}, исправлено {fixed}, без изменений {unchanged}, пропущено keyhole KLayout {skipped}."
+                        if ru
+                        else "Fix internal contours: checked {checked} CIF files, fixed {fixed}, unchanged {unchanged}, skipped KLayout keyholes {skipped}.",
+                        checked=stats.checked_cif_files,
+                        fixed=stats.fixed_cif_files,
+                        unchanged=stats.unchanged_cif_files,
+                        skipped=stats.skipped_klayout_keyholes,
+                    )
+                )
+        stats_lines = [
+            (
+                f"Проверено CIF: {stats.checked_cif_files}"
+                if ru
+                else f"CIF files checked: {stats.checked_cif_files}"
+            ),
+            (
+                f"Проверено семейств: {stats.checked_families}"
+                if ru
+                else f"Families checked: {stats.checked_families}"
+            ),
+            (
+                f"Исправлено CIF: {stats.fixed_cif_files}"
+                if ru
+                else f"CIF files fixed: {stats.fixed_cif_files}"
+            ),
+            (
+                f"Исправлено семейств: {stats.fixed_families}"
+                if ru
+                else f"Families fixed: {stats.fixed_families}"
+            ),
+            (
+                f"Исправлено областей отверстий: {stats.fixed_hole_regions}"
+                if ru
+                else f"Hole regions fixed: {stats.fixed_hole_regions}"
+            ),
+            (
+                f"Без изменений: {stats.unchanged_cif_files}"
+                if ru
+                else f"Unchanged: {stats.unchanged_cif_files}"
+            ),
+            (
+                f"Пропущено KLayout keyhole: {stats.skipped_klayout_keyholes}"
+                if ru
+                else f"Skipped KLayout keyholes: {stats.skipped_klayout_keyholes}"
+            ),
+        ]
+        if stats.failed:
+            stats_lines.append(
+                f"Ошибки: {len(stats.failed)}" if ru else f"Errors: {len(stats.failed)}"
+            )
+        QMessageBox.information(
+            self.window(),
+            self._tr(
+                "fix_internal_contours_stats_title",
+                "Исправление внутренних контуров" if ru else "Fix internal contours",
+            ),
+            "\n".join(stats_lines),
         )
 
     def _on_batch_result(self: Any, result) -> None:
@@ -3388,7 +3813,16 @@ class WidgetProcessingMixin:
             self._cif_load_failure_stems.discard(stem_key)
             return []
         try:
-            referenced_image, image_size, polygons = load_polygons_vector(cif_path)
+            if self._frame_switch_profiling_active():
+                from ..infrastructure.cif_operation_profiler import cif_operation_profiling
+
+                with cif_operation_profiling() as cif_timings:
+                    referenced_image, image_size, polygons = load_polygons_vector(cif_path)
+                session = self._frame_switch_profile_for_path(image_path)
+                if session is not None:
+                    session.merge_timings(cif_timings)
+            else:
+                referenced_image, image_size, polygons = load_polygons_vector(cif_path)
         except Exception as exc:
             self._cif_load_failure_stems.add(stem_key)
             self._append_log(self._tr("cif_load_failed_log", file_name=Path(cif_path).name, error=exc))
@@ -4830,6 +5264,15 @@ class WidgetProcessingMixin:
             },
         )
         if saved_files:
+            saved_cif_path = saved_files.get("cif")
+            linked_cif_path = current_state.loaded_cif_path or self._find_matching_cif_path(current_image_path)
+            if (
+                saved_cif_path
+                and linked_cif_path
+                and os.path.normcase(os.path.abspath(saved_cif_path))
+                == os.path.normcase(os.path.abspath(linked_cif_path))
+            ):
+                self._workspace.refresh_cif_revision(current_image_path, saved_cif_path)
             self._append_log(self._tr("saved_result_log", saved_files=saved_files))
             self._handle_gamification_after_save(
                 image_path=current_image_path,
@@ -4991,6 +5434,7 @@ class WidgetProcessingMixin:
     def stop_batch_processing(self: Any) -> None:
         self._batch_controller.stop()
         self._cancel_antialias_job()
+        self._cancel_fix_internal_contours_job()
 
     def _handle_gamification_after_save(
         self: Any,

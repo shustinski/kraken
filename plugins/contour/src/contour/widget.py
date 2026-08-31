@@ -271,6 +271,18 @@ class PolygonExtractionWidget(
         self._antialias_signals.progress.connect(self._on_antialias_progress)
         self._antialias_signals.item_finished.connect(self._on_antialias_item_finished)
         self._antialias_signals.finished.connect(self._on_antialias_finished)
+        self._fix_internal_contours_run_id = 0
+        self._fix_internal_contours_cancel: threading.Event | None = None
+        self._fix_internal_contours_running = False
+        self._fix_internal_contours_thread_pool = QThreadPool(self)
+        self._fix_internal_contours_thread_pool.setMaxThreadCount(1)
+        self._fix_internal_contours_thread_pool.setExpiryTimeout(-1)
+        from .adapters.qt.fix_internal_contours_cif import FixInternalContoursCifSignals
+
+        self._fix_internal_contours_signals = FixInternalContoursCifSignals(self)
+        self._fix_internal_contours_signals.progress.connect(self._on_fix_internal_contours_progress)
+        self._fix_internal_contours_signals.item_finished.connect(self._on_fix_internal_contours_item_finished)
+        self._fix_internal_contours_signals.finished.connect(self._on_fix_internal_contours_finished)
         self._progress_status_key = "idle_status"
         self._progress_status_kwargs: dict[str, object] = {}
         self._preview_thread_pool = QThreadPool(self)

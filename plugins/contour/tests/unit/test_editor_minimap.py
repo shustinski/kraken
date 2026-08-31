@@ -91,11 +91,33 @@ class PolygonEditorMinimapTests(unittest.TestCase):
         self.assertAlmostEqual(center.x(), expected_x, delta=8.0)
         self.assertAlmostEqual(center.y(), expected_y, delta=8.0)
 
-    def test_minimap_click_does_not_reach_scene_tools(self) -> None:
+    def test_minimap_ignores_clicks_while_drawing(self) -> None:
         self.view.set_image(np.zeros((64, 64), dtype=np.uint8))
         self.view.set_tool(EditorTool.ADD_POLYGON)
         self._app.processEvents()
         minimap = self.view._minimap
+        self.assertTrue(
+            minimap.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents),
+        )
+
+    def test_minimap_accepts_clicks_outside_drawing_tools(self) -> None:
+        self.view.set_image(np.zeros((64, 64), dtype=np.uint8))
+        self.view.set_tool(EditorTool.SELECT)
+        self._app.processEvents()
+        minimap = self.view._minimap
+        self.assertFalse(
+            minimap.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents),
+        )
+        self.view.set_tool(EditorTool.ADD_POLYGON)
+        self._app.processEvents()
+        self.assertTrue(
+            minimap.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents),
+        )
+        self.view.set_tool(EditorTool.SELECT)
+        self._app.processEvents()
+        self.assertFalse(
+            minimap.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents),
+        )
         QTest.mouseClick(
             minimap,
             Qt.MouseButton.LeftButton,

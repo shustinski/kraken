@@ -671,6 +671,8 @@ def build_files_tab(self) -> QWidget:
     self.antialias_opened_cif_button = QPushButton()
     self.antialias_opened_cif_button.setIcon(self._create_editor_action_icon("antialias_all"))
     self.antialias_opened_cif_button.clicked.connect(self._antialias_opened_cif_files)
+    self.fix_internal_contours_button = QPushButton()
+    self.fix_internal_contours_button.clicked.connect(self._fix_internal_contours_all_cifs)
     self._configure_icon_only_button(
         self.process_current_button,
         self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay),
@@ -707,9 +709,10 @@ def build_files_tab(self) -> QWidget:
     run_layout.addWidget(self.export_dataset_button, 2, 0, 1, 2)
     run_layout.addWidget(self.dataset_mode_checkbox, 3, 0, 1, 2)
     run_layout.addWidget(self.antialias_opened_cif_button, 4, 0, 1, 2)
-    run_layout.addWidget(self.batch_progress_bar, 5, 0, 1, 2)
-    run_layout.addWidget(self.save_group, 6, 0, 1, 2)
-    run_layout.setRowStretch(7, 1)
+    run_layout.addWidget(self.fix_internal_contours_button, 5, 0, 1, 2)
+    run_layout.addWidget(self.batch_progress_bar, 6, 0, 1, 2)
+    run_layout.addWidget(self.save_group, 7, 0, 1, 2)
+    run_layout.setRowStretch(8, 1)
     layout.addWidget(self.run_group)
     return tab
 

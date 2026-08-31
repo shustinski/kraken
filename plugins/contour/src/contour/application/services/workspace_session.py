@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import os
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -13,6 +15,21 @@ from ..use_cases.workspace import find_matching_cif_path, normalize_image_select
 
 def _norm_path_key(path: str | Path) -> str:
     return str(Path(path))
+
+
+def _file_identity(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(os.fspath(path))))
+
+
+def _file_sha256(path: str | Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +148,47 @@ class WorkspaceSession:
             return False
         return not bool(state.polygons)
 
+    def _cached_cif_matches_disk(self, image_path: str, state: ImageProcessingState) -> bool:
+        cif_path = self.resolve_cif_path(image_path)
+        if cif_path is None or state.loaded_cif_path is None:
+            return True
+        if _file_identity(cif_path) != _file_identity(state.loaded_cif_path):
+            return False
+        current_sha256 = _file_sha256(cif_path)
+        if current_sha256 is None:
+            return False
+        if state.loaded_cif_sha256 is None:
+            state.loaded_cif_sha256 = current_sha256
+            return True
+        return current_sha256 == state.loaded_cif_sha256
+
+    def _invalidate_clean_cached_vectors_if_stale(
+        self,
+        image_path: str,
+        state: ImageProcessingState,
+    ) -> None:
+        if self._cached_cif_matches_disk(image_path, state):
+            return
+        dirty = state.polygons_dirty
+        if dirty is None:
+            dirty = not _polygons_equal(state.polygons, state.reference_polygons)
+            state.polygons_dirty = dirty
+        if dirty:
+            return
+        state.polygons = []
+        state.reference_polygons = []
+        state.polygons_dirty = False
+        state.loaded_cif_path = None
+        state.loaded_cif_sha256 = None
+
+    def refresh_cif_revision(self, image_path: str | Path, cif_path: str | Path) -> bool:
+        state = self._state_cache.get(_norm_path_key(image_path))
+        if state is None:
+            return False
+        state.loaded_cif_path = str(Path(cif_path))
+        state.loaded_cif_sha256 = _file_sha256(cif_path)
+        return state.loaded_cif_sha256 is not None
+
     def retain_cached_states(
         self,
         keep_paths: Iterable[str | Path],
@@ -199,6 +257,7 @@ class WorkspaceSession:
         state.polygons = []
         state.polygons_dirty = True
         state.loaded_cif_path = None
+        state.loaded_cif_sha256 = None
         self._state_cache[key] = state
         if self._current_image_path == key:
             self._current_state = state
@@ -210,6 +269,7 @@ class WorkspaceSession:
         for state in self._state_cache.values():
             state.polygons = []
             state.loaded_cif_path = None
+            state.loaded_cif_sha256 = None
             state.reference_polygons = []
             state.polygons_dirty = None
 
@@ -252,6 +312,7 @@ class WorkspaceSession:
             and self._current_state.image_path == image_path
             and image_path in self._state_cache
         ):
+            self._invalidate_clean_cached_vectors_if_stale(image_path, self._current_state)
             return WorkspaceLoadResult(
                 image_path=image_path,
                 state=self._current_state,
@@ -260,6 +321,7 @@ class WorkspaceSession:
 
         cached_state = self._state_cache.get(image_path)
         if cached_state is not None:
+            self._invalidate_clean_cached_vectors_if_stale(image_path, cached_state)
             self._current_image_path = image_path
             self._current_state = cached_state
             return WorkspaceLoadResult(
@@ -310,6 +372,7 @@ class WorkspaceSession:
         state.polygons = list(polygons)
         if loaded_cif_path is not None:
             state.loaded_cif_path = loaded_cif_path
+            state.loaded_cif_sha256 = _file_sha256(loaded_cif_path)
         if polygons_needing_repair is not None:
             state.polygons_needing_repair = {
                 int(polygon_id): list(codes) for polygon_id, codes in polygons_needing_repair.items()
@@ -344,6 +407,7 @@ class WorkspaceSession:
             source_image=source_image,
             polygons=list(polygons),
             loaded_cif_path=loaded_cif_path,
+            loaded_cif_sha256=_file_sha256(loaded_cif_path) if loaded_cif_path is not None else None,
             polygons_needing_repair=(
                 None
                 if polygons_needing_repair is None
@@ -406,6 +470,7 @@ class WorkspaceSession:
             debug_gradient_maps=dict(result.debug_gradient_maps),
             metal_overlay_polygons={k: [p.clone() for p in v] for k, v in metal_layers.items()},
             loaded_cif_path=None if existing_state is None else existing_state.loaded_cif_path,
+            loaded_cif_sha256=None if existing_state is None else existing_state.loaded_cif_sha256,
             reference_polygons=[]
             if existing_state is None
             else [polygon.clone() for polygon in existing_state.reference_polygons],

@@ -3439,6 +3439,40 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self.assertIsNone(self.view._drag_kind)
         self.assertEqual(self.view.get_polygons(), [])
 
+    def test_brush_tool_hover_syncs_conductor_highlight_on_mouse_move(self) -> None:
+        self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        self.view.set_tool(EditorTool.BRUSH)
+        self._move_editor_pointer(QPointF(50.0, 50.0))
+        self.assertEqual(self.view._editor_scene._hover_conductor_polygon_id, 1)
+
+    def test_hole_hover_highlights_inner_polygon_not_parent(self) -> None:
+        outer = _rectangle_polygon(0, 0, 80, 80)
+        outer.id = 1
+        hole = _rectangle_polygon(20, 20, 40, 40)
+        hole.id = 2
+        hole.is_hole = True
+        hole.parent_id = 1
+        self.view.set_polygons([outer, hole])
+        self.view.set_tool(EditorTool.SELECT)
+        self._move_editor_pointer(QPointF(30.0, 30.0))
+        self.assertEqual(self.view._editor_scene._hover_conductor_polygon_id, 2)
+
+    def test_nested_polygon_hover_highlights_smaller_inner_polygon(self) -> None:
+        outer = _rectangle_polygon(0, 0, 120, 120)
+        outer.id = 1
+        inner = _rectangle_polygon(40, 40, 90, 90)
+        inner.id = 2
+        self.view.set_polygons([outer, inner])
+        self.view.set_tool(EditorTool.SELECT)
+        self._move_editor_pointer(QPointF(65.0, 65.0))
+        self.assertEqual(self.view._editor_scene._hover_conductor_polygon_id, 2)
+
+    def test_trace_pen_tool_hover_syncs_conductor_highlight_on_mouse_move(self) -> None:
+        self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        self.view.set_tool(EditorTool.TRACE_PEN)
+        self._move_editor_pointer(QPointF(50.0, 50.0))
+        self.assertEqual(self.view._editor_scene._hover_conductor_polygon_id, 1)
+
     def test_brush_drag_skips_conductor_hover_sync_on_mouse_move(self) -> None:
         self.view.set_tool(EditorTool.BRUSH)
         calls: list[QPointF] = []
@@ -3693,7 +3727,9 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_closed_brush_contour_fills_center_below_manual_min_hole_area(self) -> None:
         self.view.set_polygons([])
-        self.view._editor_scene.set_vector_geometry_settings(VectorGeometrySettings(min_hole_area_to_remove_px2=150.0))
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=10.0, min_hole_area_to_remove_px2=150.0)
+        )
         points = [
             (30.0, 30.0),
             (50.0, 30.0),
@@ -3724,10 +3760,42 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         )
         self._app.processEvents()
 
-        self.assertTrue(changed)
+        self.assertFalse(changed)
+        self.assertEqual(len(self.view.get_polygons()), 1)
         self.assertFalse(any(polygon.is_hole for polygon in self.view.get_polygons()))
         outer_item = next(item for item in self.view._editor_scene._polygon_items.values() if not item.polygon.is_hole)
         self.assertTrue(outer_item.contains(QPointF(45.0, 45.0)))
+
+    def test_small_independent_erase_is_rejected_when_existing_hole_is_above_min_area(self) -> None:
+        outer = _rectangle_polygon(0, 0, 100, 100)
+        outer = PolygonData(id=1, points=outer.points, area=outer.area, perimeter=outer.perimeter, bbox=outer.bbox)
+        hole_points = [(40.0, 40.0), (54.0, 40.0), (54.0, 54.0), (40.0, 54.0)]
+        hole_area, hole_perimeter, hole_bbox = compute_polygon_metrics(hole_points)
+        hole = PolygonData(
+            id=2,
+            points=hole_points,
+            is_hole=True,
+            parent_id=1,
+            area=hole_area,
+            perimeter=hole_perimeter,
+            bbox=hole_bbox,
+        )
+        self.view.set_polygons([outer, hole])
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=10.0, min_hole_area_to_remove_px2=100.0)
+        )
+        before = [(polygon.id, polygon.points, polygon.is_hole) for polygon in self.view.get_polygons()]
+
+        changed = self.view._editor_scene.add_rectangle_polygon(
+            QPointF(10.0, 10.0),
+            QPointF(13.0, 13.0),
+            erase=True,
+        )
+        self._app.processEvents()
+
+        self.assertFalse(changed)
+        after = [(polygon.id, polygon.points, polygon.is_hole) for polygon in self.view.get_polygons()]
+        self.assertEqual(after, before)
 
     def test_brush_erase_keeps_hole_above_manual_min_hole_area(self) -> None:
         self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
@@ -3759,7 +3827,9 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_small_rectangle_fully_inside_existing_cutout_is_not_drawn(self) -> None:
         self.view.set_polygons([])
-        self.view._editor_scene.set_vector_geometry_settings(VectorGeometrySettings(min_hole_area_to_remove_px2=11.0))
+        self.view._editor_scene.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=10.0, min_hole_area_to_remove_px2=11.0)
+        )
         ring_points = [
             (30.0, 30.0),
             (70.0, 30.0),
@@ -3988,6 +4058,64 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
         after = self.view.get_polygons()[0].points
         self.assertNotEqual(before, after)
+
+    def test_move_edge_translates_both_endpoints(self) -> None:
+        poly = _rectangle_polygon(20, 20, 80, 80)
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=1.0, min_spike_interior_angle_deg=0.0)
+        )
+        self.view.set_polygons([poly])
+        self.view._editor_scene.select_polygon(1)
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+        before = self.view.get_polygons()[0].points
+
+        press_pos = self.view.mapFromScene(QPointF(50.0, 20.0))
+        release_pos = self.view.mapFromScene(QPointF(50.0, 35.0))
+        QTest.mousePress(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            press_pos,
+        )
+        QTest.mouseMove(self.view.viewport(), release_pos)
+        QTest.mouseRelease(
+            self.view.viewport(),
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+            release_pos,
+        )
+        self._app.processEvents()
+
+        after = self.view.get_polygons()[0].points
+        self.assertNotEqual(before, after)
+        self.assertAlmostEqual(after[0][1], 35.0, delta=1.0)
+        self.assertAlmostEqual(after[1][1], 35.0, delta=1.0)
+        self.assertEqual(after[2], before[2])
+        self.assertEqual(after[3], before[3])
+
+    def test_move_target_preview_highlights_edge_near_cursor(self) -> None:
+        poly = _rectangle_polygon(20, 20, 80, 80)
+        self.view.set_polygons([poly])
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+        scene_pos = QPointF(50.0, 20.0)
+        self.view._editor_scene.sync_move_target_preview(
+            scene_pos,
+            vertex_tolerance=2.0,
+            edge_tolerance=8.0,
+        )
+        self.assertEqual(self.view._editor_scene._move_target_preview, ("edge", 1, 0))
+
+    def test_move_target_preview_prefers_vertex_near_corner(self) -> None:
+        poly = _rectangle_polygon(20, 20, 80, 80)
+        self.view.set_polygons([poly])
+        self.view.set_tool(EditorTool.MOVE_VERTEX)
+        scene_pos = QPointF(22.0, 22.0)
+        self.view._editor_scene.sync_move_target_preview(
+            scene_pos,
+            vertex_tolerance=8.0,
+            edge_tolerance=8.0,
+        )
+        self.assertEqual(self.view._editor_scene._move_target_preview[0], "vertex")
 
     def test_polygon_tool_right_click_on_existing_starts_erase_not_delete(self) -> None:
         self.view.set_tool(EditorTool.ADD_POLYGON)

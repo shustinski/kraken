@@ -201,6 +201,10 @@ class ContourMainView(QMainWindow):
         self._language_menu = self._build_language_menu()
         self._view_menu.addMenu(self._language_menu)
         self._tools_menu = _add_menu(menu_bar, "")
+        self._fix_internal_contours_action = _add_action(self._tools_menu, "")
+        self._fix_internal_contours_action.triggered.connect(
+            lambda _checked=False: self._widget._fix_internal_contours_all_cifs()
+        )
         self._work_simulation_action = _add_action(self._tools_menu, "")
         self._work_simulation_action.setVisible(CONTOUR_ENABLE_WORK_SIMULATION)
         self._work_simulation_action.triggered.connect(lambda _checked=False: self._widget._toggle_work_simulation())
@@ -494,6 +498,9 @@ class ContourMainView(QMainWindow):
         self._language_ru_action.setText("Русский" if language == "ru" else "Russian")
         self._language_en_action.setText("Английский" if language == "ru" else "English")
         self._tools_menu.setTitle("Инструменты" if language == "ru" else "Tools")
+        self._fix_internal_contours_action.setText(
+            "Исправить внутренние контуры" if language == "ru" else "Fix internal contours"
+        )
         self._refresh_work_simulation_action()
 
     def _refresh_work_simulation_action(self) -> None:

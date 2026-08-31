@@ -56,6 +56,8 @@ class PolygonData:
     recognition_score: float | None = None
     #: Metal recovery / debug only; not written to CIF by default.
     reject_reason: str = ""
+    #: Authored self-touching CIF ring for KLayout-compatible cv2 fill display.
+    cif_paint_ring: list[Point] = field(default_factory=list)
     _description_invalid: bool | None = field(default=None, compare=False, repr=False)
     _description_invalid_reason: object = field(default=_REASON_UNSET, compare=False, repr=False)
     _points_normalized: InitVar[bool] = False
@@ -125,6 +127,7 @@ class PolygonData:
                 None if self.recognition_score is None else float(self.recognition_score)
             ),
             reject_reason=str(self.reject_reason),
+            cif_paint_ring=list(self.cif_paint_ring),
             _points_normalized=True,
         )
         object.__setattr__(cloned, "_description_invalid", self._description_invalid)
@@ -148,6 +151,7 @@ class PolygonData:
                 else {}
             ),
             **({"reject_reason": self.reject_reason} if str(self.reject_reason).strip() else {}),
+            **({"cif_paint_ring": [[integer_coord(x_coord), integer_coord(y_coord)] for x_coord, y_coord in self.cif_paint_ring]} if self.cif_paint_ring else {}),
         }
 
     @classmethod
@@ -173,5 +177,8 @@ class PolygonData:
                 else None
             ),
             reject_reason=str(payload.get("reject_reason", "") or ""),
+            cif_paint_ring=integer_points(
+                [(float(x_coord), float(y_coord)) for x_coord, y_coord in payload.get("cif_paint_ring", [])]
+            ),
             _points_normalized=True,
         )

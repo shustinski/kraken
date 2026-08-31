@@ -48,3 +48,14 @@ under `third_party/libopencif/` and exposes it through the `contour._native.cif_
 pybind11 extension for standards-compliant CIF parsing.
 
 License: GNU General Public License v3.0 or later. See the upstream `LICENSE` file.
+
+## KLayout CIF reader
+
+Source: `D:\code\klayout`, KLayout Layout Viewer (Matthias Koefferlein).
+
+`src/contour/infrastructure/cif_klayout_reader.py` ports the CIF command parsing
+semantics from KLayout's `src/plugins/streamers/cif/db_plugin/dbCIFReader.cc`.
+
+Copyright (C) 2006-2026 Matthias Koefferlein. License: GNU General Public
+License, version 2 or (at your option) any later version. The upstream license
+is available in the referenced KLayout source tree as `LICENSE`.

@@ -65,6 +65,14 @@ from ..adapters.qt.antialias_cif import (
     AntialiasCifRunnable,
     AntialiasCifWorkItem,
 )
+from ..adapters.qt.fix_internal_contours_cif import (
+    FixInternalContoursCifItemResult,
+    FixInternalContoursCifJobSummary,
+    FixInternalContoursCifRunnable,
+    FixInternalContoursCifWorkItem,
+    _fix_internal_contours_work_item,
+)
+from ..application.fix_internal_contours import InternalContourFixStats
 from ..adapters.qt.image_conversion import cv_to_qimage
 from ..adapters.qt.editor_display import EditorDisplayRunnable
 from ..adapters.qt.frame_load import FrameLoadPayload, FrameLoadRunnable, GeometryValidationRunnable

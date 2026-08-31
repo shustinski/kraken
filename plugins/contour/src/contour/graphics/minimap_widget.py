@@ -42,6 +42,15 @@ class MinimapWidget(QWidget):
     def has_image(self) -> bool:
         return not self._thumbnail.isNull()
 
+    def set_mouse_interactive(self, interactive: bool) -> None:
+        transparent = not interactive
+        if self.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents) == transparent:
+            return
+        if transparent:
+            self._drag_active = False
+            self._last_scene_point = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, transparent)
+
     def clear(self) -> None:
         self._thumbnail = QPixmap()
         self._image_scene_rect = (0.0, 0.0, 0.0, 0.0)

@@ -216,6 +216,41 @@ def is_valid_closed_polygon_vertex_move(points: list[tuple[float, float]], verte
     return True
 
 
+def is_valid_closed_polygon_edge_move(points: list[tuple[float, float]], edge_index: int) -> bool:
+    """Validate only the topology touched by one translated closed-ring edge."""
+
+    if edge_index < 0 or edge_index >= len(points):
+        return False
+    n = len(points)
+    if n < 3:
+        return True
+    start_idx = edge_index
+    end_idx = (edge_index + 1) % n
+    moved_vertices = {start_idx, end_idx}
+    if n > 3 and _point_equal(points[0], points[-1]):
+        if 0 in moved_vertices or (n - 1) in moved_vertices:
+            moved_vertices.update({0, n - 1})
+    for other_idx, other in enumerate(points):
+        if other_idx in moved_vertices:
+            continue
+        for moved_idx in moved_vertices:
+            if _point_equal(points[moved_idx], other):
+                return False
+
+    touched_edges = {(start_idx - 1) % n, edge_index, end_idx}
+    for touched_edge_index in touched_edges:
+        a, b = points[touched_edge_index], points[(touched_edge_index + 1) % n]
+        for other_edge_index in range(n):
+            if other_edge_index in touched_edges:
+                continue
+            if _closed_polygon_edges_share_vertex(n, touched_edge_index, other_edge_index):
+                continue
+            c, d = points[other_edge_index], points[(other_edge_index + 1) % n]
+            if _segment_forbidden_for_simple_polygon(a, b, c, d):
+                return False
+    return True
+
+
 def _three_share_axis(
     prev_point: tuple[float, float],
     current_point: tuple[float, float],

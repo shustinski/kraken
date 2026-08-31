@@ -826,8 +826,8 @@ EDITOR_TOOL_TOOLTIPS: dict[EditorTool, tuple[str, str]] = {
         "Delete vertices from the selected polygon. The delete mode controls whether one point or an area is removed.",
     ),
     EditorTool.MOVE_VERTEX: (
-        "Переместить отдельную вершину выбранного полигона.",
-        "Move a single vertex of the selected polygon.",
+        "Переместить вершину или ребро полигона. Вершина и ребро подсвечиваются при наведении.",
+        "Move a polygon vertex or edge. The target vertex or edge is highlighted on hover.",
     ),
     EditorTool.ANTIALIAS: (
         "Сгладить полигон под курсором: показывает вершины и уменьшает их число по клику.",

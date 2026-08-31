@@ -187,38 +187,41 @@ def _smallest_containing_polygon(polygon: PolygonData, candidates: list[PolygonD
     return min(containing, key=lambda candidate: candidate.area)
 
 
-def _polygon_is_via_box_display(polygon: PolygonData) -> bool:
-    return polygon.shape_hint == "box" or polygon.category == "via"
+def resolve_hover_polygon_id(
+    polygons_by_id: dict[int, PolygonData],
+    hole_children_by_parent: dict[int, list[PolygonData]],
+    scene_x: float,
+    scene_y: float,
+) -> int | None:
+    """Pick the smallest polygon under the pointer, preferring holes over outer metal."""
+    point = (float(scene_x), float(scene_y))
+    candidates: list[int] = []
+    hole_ids_at_point: list[int] = []
+    for polygon_id, polygon in polygons_by_id.items():
+        if not _polygon_contains_point(polygon, point):
+            continue
+        if polygon.is_hole:
+            hole_ids_at_point.append(polygon_id)
+            continue
+        hole_children = hole_children_by_parent.get(polygon_id, [])
+        if any(_polygon_contains_point(hole, point) for hole in hole_children):
+            continue
+        candidates.append(polygon_id)
+    candidates.extend(hole_ids_at_point)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda polygon_id: float(polygons_by_id[polygon_id].area))
 
 
 def resolve_conductor_hover_target_id(
     polygons_by_id: dict[int, PolygonData], hovered_polygon_id: int | None
 ) -> int | None:
-    """Map hovered polygon hole/via/trace to the outer conductor polygon id that should glow on hover."""
+    """Return the polygon id whose outline should glow on hover."""
     if hovered_polygon_id is None:
         return None
-    poly = polygons_by_id.get(hovered_polygon_id)
-    if poly is None:
+    if hovered_polygon_id not in polygons_by_id:
         return None
-    if poly.is_hole:
-        parent_id = poly.parent_id
-        if parent_id is None:
-            return None
-        parent = polygons_by_id.get(parent_id)
-        if parent is None or parent.is_hole or _polygon_is_via_box_display(parent):
-            return None
-        return parent_id
-    if _polygon_is_via_box_display(poly):
-        if poly.parent_id is not None:
-            parent = polygons_by_id.get(poly.parent_id)
-            if parent is not None and not parent.is_hole and not _polygon_is_via_box_display(parent):
-                return poly.parent_id
-        candidates = [candidate for candidate in polygons_by_id.values() if not candidate.is_hole and not _polygon_is_via_box_display(candidate)]
-        smallest = _smallest_containing_polygon(poly, candidates)
-        return smallest.id if smallest is not None else None
-    if not poly.is_hole:
-        return poly.id
-    return None
+    return hovered_polygon_id
 
 
 def _clip_bbox_to_scene(bbox: tuple[int, int, int, int], scene_rect: QRectF) -> tuple[int, int, int, int]:
@@ -284,6 +287,11 @@ def _polygon_depth_for_render(
 
 
 def _render_polygon_collection_on_mask(mask: np.ndarray, polygons: list[PolygonData], origin: tuple[int, int]) -> None:
+    from ..serializers import _stamp_cif_paint_ring_on_mask
+
+    cif_paint_parent_ids = {
+        polygon.id for polygon in polygons if _uses_cif_paint_parent(polygon)
+    }
     polygons_by_id = {polygon.id: polygon for polygon in polygons}
     depth_cache: dict[int, int] = {}
     ordered_polygons = sorted(
@@ -291,12 +299,23 @@ def _render_polygon_collection_on_mask(mask: np.ndarray, polygons: list[PolygonD
         key=lambda polygon: (_polygon_depth_for_render(polygon, polygons_by_id, depth_cache), polygon.id),
     )
     for polygon in ordered_polygons:
+        if _uses_cif_paint_parent(polygon):
+            _stamp_cif_paint_ring_on_mask(mask, polygon.cif_paint_ring, origin, value=255)
+            continue
         depth = _polygon_depth_for_render(polygon, polygons_by_id, depth_cache)
+        if polygon.is_hole and polygon.parent_id in cif_paint_parent_ids:
+            continue
         if depth % 2:
             _fill_polygon_on_mask(mask, polygon.points, origin, value=0)
             _draw_polygon_outline_on_mask(mask, polygon.points, origin, value=255)
         else:
             _fill_polygon_on_mask(mask, polygon.points, origin, value=255)
+
+
+def _uses_cif_paint_parent(polygon: PolygonData) -> bool:
+    from ..serializers import _polygon_uses_authored_cif_paint_ring
+
+    return _polygon_uses_authored_cif_paint_ring(polygon)
 
 
 def _contour_depth(contour_index: int, hierarchy: np.ndarray, cache: dict[int, int]) -> int:

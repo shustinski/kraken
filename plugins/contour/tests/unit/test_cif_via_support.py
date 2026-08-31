@@ -579,24 +579,31 @@ class CifViaSupportTests(unittest.TestCase):
         from PyQt6.QtCore import Qt
 
         from contour.graphics_items import _vector_display_path_for_polygon
-        from contour.serializers import _dedupe_closed_points, _has_duplicate_points
+        from contour.serializers import clear_cif_parse_cache, load_polygons_cif
 
-        cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0525.cif")
-        if not cif_path.exists():
-            self.skipTest("0525.cif fixture not available")
+        cif_path = self._artifact_path("repeated_keyhole_bridge.cif")
+        cif_path.write_text(
+            "\n".join(
+                [
+                    "DS 1 1 1;",
+                    "L NM;",
+                    "( R sample.png );",
+                    "( S 100 100 );",
+                    "P 90 50 90 50 40 50 40 40 20 40 20 60 40 60 40 50 90 50 90 10 10 10 10 90 90 90 90 50;",
+                    "DF;",
+                    "E",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
         clear_cif_parse_cache()
         _image_name, _image_size, loaded = load_polygons_cif(cif_path)
-        keyhole_outer = next(
-            polygon
-            for polygon in loaded
-            if not polygon.is_hole
-            and polygon.cif_paint_ring
-            and _has_duplicate_points(_dedupe_closed_points(polygon.cif_paint_ring))
-        )
+        keyhole_outer = next(polygon for polygon in loaded if not polygon.is_hole)
         holes = [polygon for polygon in loaded if polygon.parent_id == keyhole_outer.id]
         display_path = _vector_display_path_for_polygon(keyhole_outer, cutout_polygons=holes)
-        self.assertEqual(display_path.elementCount(), len(keyhole_outer.cif_paint_ring) + 1)
+        self.assertEqual(display_path.elementCount(), len(keyhole_outer.cif_paint_ring))
         self.assertEqual(display_path.fillRule(), Qt.FillRule.WindingFill)
 
     def test_cif_loader_recovers_unmarked_standard_keyhole(self) -> None:

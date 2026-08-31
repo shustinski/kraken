@@ -14,18 +14,32 @@ class EditorDisplaySignals(QObject):
 class EditorDisplayRunnable(QRunnable):
     """Convert a frame buffer to QImage off the UI thread."""
 
-    def __init__(self, request_id: int, image_path: str, image: object) -> None:
+    def __init__(
+        self,
+        request_id: int,
+        image_path: str,
+        image: object,
+        *,
+        profile_session: object | None = None,
+    ) -> None:
         super().__init__()
         self.request_id = int(request_id)
         self.image_path = str(image_path)
         self.image = image
+        self._profile_session = profile_session
         self.signals = EditorDisplaySignals()
 
     def run(self) -> None:
+        from ...infrastructure.frame_switch_profiler import profile_callable
+
+        def _convert() -> QImage:
+            if self.image is None:
+                return QImage()
+            return cv_to_qimage(self.image)
+
         qimage = QImage()
         try:
-            if self.image is not None:
-                qimage = cv_to_qimage(self.image)
+            qimage = profile_callable("editor_display", self._profile_session, _convert)
         except Exception:
             qimage = QImage()
         try:

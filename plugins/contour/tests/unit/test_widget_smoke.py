@@ -85,6 +85,26 @@ class WidgetSmokeTests(unittest.TestCase):
             widget.close()
             widget.deleteLater()
 
+    def test_contrasting_object_colors_text_is_localized(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            widget.set_ui_language("ru")
+            self.assertEqual(
+                widget.random_object_colors_checkbox.text(),
+                "Контрастные цвета соседних объектов",
+            )
+            self.assertIn("разрывы", widget.random_object_colors_checkbox.toolTip())
+
+            widget.set_ui_language("en")
+            self.assertEqual(
+                widget.random_object_colors_checkbox.text(),
+                "Contrasting colors for nearby objects",
+            )
+            self.assertIn("breaks", widget.random_object_colors_checkbox.toolTip())
+        finally:
+            widget.close()
+            widget.deleteLater()
+
     def test_widget_uses_compact_resizable_layout(self) -> None:
         widget = PolygonExtractionWidget()
         try:

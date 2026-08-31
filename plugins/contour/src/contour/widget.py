@@ -387,6 +387,8 @@ class PolygonExtractionWidget(
         self._editor_frame_pending_pixmap = None
         self._frame_switch_profile = None
         self._frame_switch_profile_generation = 0
+        self._prefetch_deferred_for_profile = False
+        self._pending_geometry_validation_path: str | None = None
         self._thumbnail_path_to_row: dict[str, int] = {}
         self._pending_frame_chrome_path: str | None = None
         self._thumbnail_generation = 0

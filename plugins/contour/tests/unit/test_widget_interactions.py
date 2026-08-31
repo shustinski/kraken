@@ -1547,6 +1547,50 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
 
             self.assertEqual(loaded_paths, [paths[2]])
 
+    def test_click_does_not_repeat_pending_current_change_request(self) -> None:
+        path = str(Path("frame_001.png"))
+        self.widget._image_list_model.set_paths([path])
+        self._app.processEvents()
+        index = self.widget._image_list_proxy.index(0, 0)
+        selection = self.widget.image_list.selectionModel()
+        self.assertIsNotNone(selection)
+        with QSignalBlocker(selection):
+            self.widget.image_list.setCurrentIndex(index)
+        timer = QTimer(self.widget)
+        timer.setSingleShot(True)
+        timer.start(1000)
+        self.widget._deferred_image_load_timers = [timer]
+        self.widget._desired_image_path = path
+
+        with patch.object(self.widget, "_on_image_list_current_changed") as current_changed:
+            self.widget._on_image_list_clicked(index)
+
+        current_changed.assert_not_called()
+        timer.stop()
+        self.widget._deferred_image_load_timers = []
+
+    def test_frame_switch_interactive_does_not_wait_for_background_geometry_validation(self) -> None:
+        path = str(Path("frame_001.png"))
+        self.widget._workspace._current_image_path = path
+        self.widget._loading_image_path = None
+        self.widget._frame_load_running_path = None
+        self.widget._pending_editor_frame_apply = None
+        self.widget._thumbnail_rebuild_in_progress = False
+        self.widget._frame_chrome_update_timer.stop()
+        self.widget._neighbor_sync_timer.stop()
+        self.widget._editor_display_thread_pool.waitForDone(1000)
+
+        class UnexpectedFramePoolAccess:
+            def activeThreadCount(self) -> int:
+                raise AssertionError("background geometry validation must not block interactivity")
+
+        frame_pool = self.widget._frame_load_thread_pool
+        self.widget._frame_load_thread_pool = UnexpectedFramePoolAccess()
+        try:
+            self.assertTrue(self.widget._frame_switch_profile_is_interactive(path))
+        finally:
+            self.widget._frame_load_thread_pool = frame_pool
+
     def test_completed_background_load_does_not_replace_newer_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             paths = []

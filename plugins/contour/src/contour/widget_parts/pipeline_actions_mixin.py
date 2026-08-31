@@ -357,6 +357,11 @@ class WidgetPipelineActionsMixin:
             str(Path(getattr(self, "_loading_image_path", "") or "")),
             str(Path(getattr(self, "_frame_load_running_path", "") or "")),
         }
+        request_pending = normalized == str(Path(getattr(self, "_desired_image_path", "") or "")) and any(
+            timer.isActive() for timer in getattr(self, "_deferred_image_load_timers", [])
+        )
+        if request_pending or load_active:
+            return
         if current_path == normalized and (state_matches or load_active):
             return
         self._on_image_list_current_changed(index, QModelIndex())

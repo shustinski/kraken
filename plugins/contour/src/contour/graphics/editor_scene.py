@@ -54,13 +54,12 @@ from ..commands import (
     ReplacePolygonsPatchCommand,
 )
 from ..domain import PolygonData, compute_polygon_metrics, integer_point, integer_points
+from ..domain.polygon_ring import collapse_redundant_polyline_vertices, is_valid_closed_polygon_ring
 from ..graphics_items import (
     EditablePolygonItem,
-    INVALID_POLYGON_DESCRIPTION_COLOR,
     VectorPolygonDisplayItem,
     VertexHandleItem,
     ZoomContactBatchItem,
-    _cutout_path_for_polygon,
     _display_path_for_polygon,
     _hole_display_hidden,
 )
@@ -73,25 +72,24 @@ from .brush_vector import (
     apply_boolean,
     bbox_intersects_geom_bounds,
     extract_polygonal_union,
+    geometry_area_components,
     polygon_equivalent_preserved,
     polygon_footprint_geom,
     polygon_paint_footprint_geom,
-    geometry_area_components,
     region_geometry,
     shapely_to_polygon_data_list,
     simplify_polygonal_geometry,
     tool_geometry,
 )
-from ..domain.polygon_ring import collapse_redundant_polyline_vertices, is_valid_closed_polygon_ring
 from .geometry import (
     _bbox_from_points,
     _bboxes_intersect,
     _centered_rect,
+    _contrasting_object_colors,
     _distance_to_segment,
     _measurement_label_position,
     _polygon_data_rect,
     _smallest_containing_polygon,
-    _stable_object_color,
     is_valid_open_polyline_last_edge,
     resolve_conductor_hover_target_id,
     resolve_hover_polygon_id,
@@ -296,6 +294,9 @@ class PolygonEditorScene(QGraphicsScene):
         self._gradient_arrows_has_content = False
         self._random_object_colors_enabled = False
         self._object_colors: dict[int, str] = {}
+        self._object_colors_cache_signature: tuple[object, ...] | None = None
+        self._object_colors_cache: dict[int, str] = {}
+        self._object_colors_refresh_pending = False
         self._hover_conductor_polygon_id: int | None = None
         self._vertex_preview_polygon_id: int | None = None
         self._move_target_preview: tuple[str, int, int] | None = None
@@ -418,8 +419,8 @@ class PolygonEditorScene(QGraphicsScene):
         if (
             not existing.isNull()
             and existing.size() == pixmap.size()
-            and int(round(self._image_rect.width())) == pixmap.width()
-            and int(round(self._image_rect.height())) == pixmap.height()
+            and round(self._image_rect.width()) == pixmap.width()
+            and round(self._image_rect.height()) == pixmap.height()
             and existing.cacheKey() == pixmap.cacheKey()
         ):
             return
@@ -1258,7 +1259,13 @@ class PolygonEditorScene(QGraphicsScene):
             self._remove_polygon_internal(polygon_id, emit_signal=False, refresh=False)
 
         for polygon in add_polygons:
-            self._add_polygon_internal(polygon, emit_signal=False, refresh=False, paint=False)
+            self._add_polygon_internal(
+                polygon,
+                emit_signal=False,
+                refresh=False,
+                paint=False,
+                defer_pick_z_rebuild=True,
+            )
             refresh_ids.update(self._polygon_edit_family_ids(polygon.id))
 
         for polygon_id in list(refresh_ids):
@@ -1283,6 +1290,7 @@ class PolygonEditorScene(QGraphicsScene):
         )
         self._schedule_overlap_repair_patch(overlap_check_roots)
         self._rebuild_outer_pick_z_ranks()
+        refresh_ids.update(self._rebuild_object_colors())
 
         if apply_selection and select_polygon_id is not None and select_polygon_id in self._polygons:
             self._selected_polygon_ids = {select_polygon_id}
@@ -1390,13 +1398,20 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygons.clear()
         self._hole_children_by_parent.clear()
         self._polygon_child_ids_by_parent.clear()
+        self._object_colors.clear()
         self._hover_conductor_polygon_id = None
         self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
         self._selected_polygon_ids.clear()
         self._next_polygon_id = 1
         for polygon in polygons:
-            self._add_polygon_internal(polygon, emit_signal=False, refresh=False, paint=False)
+            self._add_polygon_internal(
+                polygon,
+                emit_signal=False,
+                refresh=False,
+                paint=False,
+                defer_pick_z_rebuild=True,
+            )
         self._start_recycled_polygon_cleanup()
         if polygons:
             self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
@@ -1431,6 +1446,8 @@ class PolygonEditorScene(QGraphicsScene):
         emit_signal: bool = True,
         repair_reasons: dict[int, list[str]] | None = None,
         scan_repair: bool = True,
+        defer_hit_paths: bool = False,
+        defer_object_colors: bool = False,
     ) -> None:
         self.end_zoom_vector_render_mode()
         self.undo_stack.clear()
@@ -1438,6 +1455,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._polygons.clear()
         self._hole_children_by_parent.clear()
         self._polygon_child_ids_by_parent.clear()
+        self._object_colors.clear()
         self._hover_conductor_polygon_id = None
         self._vertex_preview_polygon_id = None
         self._selected_polygon_id = None
@@ -1453,20 +1471,34 @@ class PolygonEditorScene(QGraphicsScene):
             any(polygon.is_hole for polygon in polygons)
             or not all(_is_via_polygon(polygon) for polygon in polygons)
         )
-        for polygon in polygons:
-            self._add_polygon_internal(
-                polygon,
-                emit_signal=False,
-                refresh=False,
-                paint=not will_refresh,
-            )
-        self._start_recycled_polygon_cleanup()
-        if polygons:
-            self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
-        if will_refresh:
-            self._refresh_all_items(rebuild_repair_cache=scan_repair and repair_reasons is None)
-        elif scan_repair and repair_reasons is None and polygons:
-            self._rebuild_polygons_needing_repair_cache()
+        previous_index = self.itemIndexMethod()
+        self.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
+        try:
+            for polygon in polygons:
+                self._add_polygon_internal(
+                    polygon,
+                    emit_signal=False,
+                    refresh=False,
+                    paint=not will_refresh,
+                    defer_pick_z_rebuild=True,
+                )
+            self._start_recycled_polygon_cleanup()
+            if polygons:
+                self._next_polygon_id = max(polygon.id for polygon in polygons) + 1
+            if will_refresh:
+                self._refresh_all_items(
+                    rebuild_repair_cache=scan_repair and repair_reasons is None,
+                    defer_hit_paths=defer_hit_paths,
+                    defer_object_colors=defer_object_colors,
+                )
+            elif polygons:
+                if scan_repair and repair_reasons is None:
+                    self._rebuild_polygons_needing_repair_cache()
+                self._rebuild_outer_pick_z_ranks()
+                for polygon_id, item in self._polygon_items.items():
+                    item.setZValue(self._pick_z_value_for_polygon(self._polygons[polygon_id]))
+        finally:
+            self.setItemIndexMethod(previous_index)
         if emit_signal:
             self.polygonsChanged.emit()
             self.activePolygonChanged.emit(self._selected_polygon_id)
@@ -3392,13 +3424,76 @@ class PolygonEditorScene(QGraphicsScene):
             return _OUTER_POLYGON_ITEM_Z + _OUTER_PICK_Z_SPAN
         return _OUTER_POLYGON_ITEM_Z + _OUTER_PICK_Z_SPAN * (1.0 - rank / (count - 1))
 
-    def _refresh_all_items(self, *, rebuild_repair_cache: bool = True) -> None:
+    def _refresh_all_items(
+        self,
+        *,
+        rebuild_repair_cache: bool = True,
+        defer_hit_paths: bool = False,
+        defer_object_colors: bool = False,
+    ) -> None:
         if rebuild_repair_cache:
             self._rebuild_polygons_needing_repair_cache()
+        if defer_object_colors:
+            self._queue_deferred_object_colors()
+        else:
+            self._rebuild_object_colors()
         self._rebuild_outer_pick_z_ranks()
         editable_vertex_ids = self._editable_vertex_polygon_ids()
+        bulk_load = defer_hit_paths
         for polygon_id, item in self._polygon_items.items():
-            self._refresh_polygon_item(polygon_id, item, editable_vertex_ids=editable_vertex_ids)
+            self._refresh_polygon_item(
+                polygon_id,
+                item,
+                editable_vertex_ids=editable_vertex_ids,
+                defer_hit_path=defer_hit_paths,
+                bulk_load=bulk_load,
+            )
+
+    def _queue_deferred_object_colors(self) -> None:
+        if not self._random_object_colors_enabled:
+            return
+        self._object_colors_refresh_pending = True
+
+    def flush_deferred_object_colors(self) -> None:
+        if not self._object_colors_refresh_pending:
+            return
+        self._object_colors_refresh_pending = False
+        self._apply_deferred_object_colors()
+
+    def _schedule_deferred_object_colors(self) -> None:
+        if not self._random_object_colors_enabled:
+            return
+        timer = getattr(self, "_deferred_object_colors_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._apply_deferred_object_colors)
+            self._deferred_object_colors_timer = timer
+        timer.start(0)
+
+    def _object_colors_signature(self) -> tuple[object, ...]:
+        conductors = tuple(
+            (polygon_id, polygon.bbox)
+            for polygon_id, polygon in sorted(self._polygons.items())
+            if not polygon.is_hole and str(getattr(polygon, "category", "") or "") == "conductor"
+        )
+        return (
+            round(float(self._image_rect.width()), 3),
+            round(float(self._image_rect.height()), 3),
+            conductors,
+        )
+
+    def _apply_deferred_object_colors(self) -> None:
+        if not self._random_object_colors_enabled or not self._polygon_items:
+            return
+        changed_ids = self._rebuild_object_colors()
+        if not changed_ids:
+            return
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
+        for polygon_id in changed_ids:
+            item = self._polygon_items.get(polygon_id)
+            if item is not None:
+                self._refresh_polygon_appearance(polygon_id, item, editable_vertex_ids=editable_vertex_ids)
 
     def _refresh_polygon_items_by_id(self, *polygon_ids: int | None) -> None:
         editable_vertex_ids = self._editable_vertex_polygon_ids()
@@ -3438,6 +3533,8 @@ class PolygonEditorScene(QGraphicsScene):
         item: EditablePolygonItem | None = None,
         *,
         editable_vertex_ids: set[int] | None = None,
+        defer_hit_path: bool = False,
+        bulk_load: bool = False,
     ) -> None:
         polygon = self._polygons.get(polygon_id)
         if polygon is None:
@@ -3479,6 +3576,8 @@ class PolygonEditorScene(QGraphicsScene):
                 else None
             ),
             needs_repair=self.polygon_needs_repair(polygon_id),
+            defer_hit_path=defer_hit_path,
+            bulk_load=bulk_load,
         )
         item.setZValue(self._pick_z_value_for_polygon(polygon))
         cat = str(getattr(polygon, "category", "") or "")
@@ -3520,14 +3619,53 @@ class PolygonEditorScene(QGraphicsScene):
             for item in self._zoom_contact_composite_items:
                 item.setVisible(bool(visible) and self._polygon_overlays_visible)
 
+    def _refresh_polygon_appearance(
+        self,
+        polygon_id: int,
+        item: EditablePolygonItem,
+        *,
+        editable_vertex_ids: set[int] | None = None,
+    ) -> None:
+        polygon = self._polygons.get(polygon_id)
+        if polygon is None:
+            return
+        item.update_selection_appearance(
+            self._display_settings,
+            selected=polygon_id in self._selected_polygon_ids,
+            custom_color=self._via_score_color(polygon) or self._object_color_for(polygon_id),
+            needs_repair=self.polygon_needs_repair(polygon_id),
+        )
+
     def _object_color_for(self, polygon_id: int) -> str | None:
         if not self._random_object_colors_enabled:
             return None
-        if polygon_id not in self._object_colors:
-            self._object_colors[polygon_id] = _stable_object_color(polygon_id)
-        return self._object_colors[polygon_id]
+        return self._object_colors.get(polygon_id)
+
+    def _rebuild_object_colors(self) -> set[int]:
+        previous = self._object_colors
+        if self._random_object_colors_enabled:
+            signature = self._object_colors_signature()
+            if signature == self._object_colors_cache_signature:
+                current = dict(self._object_colors_cache)
+            else:
+                current = _contrasting_object_colors(
+                    self._polygons.values(),
+                    (self._image_rect.width(), self._image_rect.height()),
+                )
+                self._object_colors_cache_signature = signature
+                self._object_colors_cache = dict(current)
+        else:
+            current = {}
+        self._object_colors = current
+        return {
+            polygon_id
+            for polygon_id in previous.keys() | current.keys()
+            if previous.get(polygon_id) != current.get(polygon_id)
+        }
 
     def _cutout_polygons_for(self, polygon_id: int) -> list[PolygonData]:
+        if not self._hole_children_by_parent:
+            return []
         polygon = self._polygons.get(polygon_id)
         if polygon is None or polygon.is_hole:
             return []
@@ -3764,6 +3902,7 @@ class PolygonEditorScene(QGraphicsScene):
         refresh: bool = True,
         *,
         paint: bool | None = None,
+        defer_pick_z_rebuild: bool = False,
     ) -> None:
         if polygon.id in self._polygon_items:
             self._remove_polygon_internal(polygon.id, emit_signal=False, refresh=False)
@@ -3795,9 +3934,7 @@ class PolygonEditorScene(QGraphicsScene):
                 paint=should_paint,
             )
             self.addItem(item)
-        if refresh:
-            self._refresh_all_items()
-        else:
+        if not refresh and not defer_pick_z_rebuild:
             self._rebuild_outer_pick_z_ranks()
             item.setZValue(self._pick_z_value_for_polygon(self._polygons[polygon.id]))
         category = str(getattr(polygon, "category", "") or "")
@@ -3806,6 +3943,11 @@ class PolygonEditorScene(QGraphicsScene):
             and self._polygon_overlays_visible
         )
         self._polygon_items[polygon.id] = item
+        if refresh:
+            self._refresh_all_items()
+        elif not defer_pick_z_rebuild:
+            changed_color_ids = self._rebuild_object_colors()
+            self._refresh_polygon_items_by_id(*(changed_color_ids | {polygon.id}))
         if emit_signal:
             self.polygonsChanged.emit()
 
@@ -3875,9 +4017,15 @@ class PolygonEditorScene(QGraphicsScene):
                 emit_signal=False,
                 refresh=False,
                 paint=not refresh,
+                defer_pick_z_rebuild=True,
             )
         if refresh:
             self._refresh_all_items()
+        else:
+            self._rebuild_outer_pick_z_ranks()
+            changed_color_ids = self._rebuild_object_colors()
+            refresh_ids = changed_color_ids | {polygon.id for polygon in polygons}
+            self._refresh_polygon_items_by_id(*refresh_ids)
         if emit_signal:
             self.polygonsChanged.emit()
 
@@ -3894,6 +4042,7 @@ class PolygonEditorScene(QGraphicsScene):
             self._polygons[root_id].cif_paint_ring = []
         self._index_polygon_relationship(self._polygons[polygon_id])
         refresh_ids.update(self._polygon_edit_family_ids(polygon_id))
+        refresh_ids.update(self._rebuild_object_colors())
         self._refresh_polygon_items_by_id(*refresh_ids)
         if emit_signal:
             self.polygonsChanged.emit()

@@ -903,7 +903,9 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self.random_object_colors_checkbox.setText(
         self._tr(
             "random_object_colors_checkbox",
-            "Случайные цвета объектов" if self._ui_language == "ru" else "Random object colors",
+            "Контрастные цвета соседних объектов"
+            if self._ui_language == "ru"
+            else "Contrasting colors for nearby objects",
         )
     )
     if hasattr(self, "show_frame_matrix_checkbox"):
@@ -988,9 +990,11 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     for widget, tooltip in (
         (
             self.random_object_colors_checkbox,
-            "Раскрашивает каждый объект отдельным цветом. Это удобно, когда нужно видеть, какие контуры остались отдельными после правки."
+            "Близкие отдельные проводники получают максимально различимые цвета. "
+            "Это помогает замечать разрывы и лишние соединения."
             if self._ui_language == "ru"
-            else "Colors each object separately. Useful for seeing which contours remain separate after edits.",
+            else "Nearby separate conductors get maximally distinct colors. "
+            "This helps reveal breaks and unintended connections.",
         ),
         (
             self.show_neighbor_frames_checkbox,

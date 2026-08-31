@@ -554,12 +554,16 @@ class PolygonEditorView(QGraphicsView):
         emit_signal: bool = True,
         repair_reasons: dict[int, list[str]] | None = None,
         scan_repair: bool = True,
+        defer_hit_paths: bool = False,
+        defer_object_colors: bool = False,
     ) -> None:
         self._editor_scene.set_polygons(
             polygons,
             emit_signal=emit_signal,
             repair_reasons=repair_reasons,
             scan_repair=scan_repair,
+            defer_hit_paths=defer_hit_paths,
+            defer_object_colors=defer_object_colors,
         )
         self._refresh_available_tools_from_scene()
 
@@ -915,6 +919,9 @@ class PolygonEditorView(QGraphicsView):
 
     def set_random_object_colors_enabled(self, enabled: bool) -> None:
         self._editor_scene.set_random_object_colors_enabled(enabled)
+
+    def flush_deferred_object_colors(self) -> None:
+        self._editor_scene.flush_deferred_object_colors()
 
     def set_extra_layers(self, layers: list[dict[str, object]]) -> None:
         self._editor_scene.set_extra_layers(layers)

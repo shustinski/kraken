@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import itertools
+import math
+from collections import defaultdict
+from collections.abc import Iterable, Iterator
 from math import atan2, cos, hypot, pi, sin
 
 import cv2
@@ -11,7 +14,12 @@ from PyQt6.QtCore import QPointF, QRectF
 from PyQt6.QtGui import QColor, QPainterPath
 
 from ..domain import PolygonData, compute_polygon_metrics
-from ..domain.polygon_ring import is_valid_closed_polygon_ring, is_valid_open_polyline_last_edge
+from ..domain.polygon_ring import (
+    is_valid_closed_polygon_ring as is_valid_closed_polygon_ring,
+)
+from ..domain.polygon_ring import (
+    is_valid_open_polyline_last_edge as is_valid_open_polyline_last_edge,
+)
 
 
 def _distance_to_segment(point: tuple[float, float], start: tuple[float, float], end: tuple[float, float]) -> float:
@@ -83,11 +91,139 @@ def _path_for_polygon(polygon: PolygonData) -> QPainterPath:
     return path
 
 
-def _stable_object_color(polygon_id: int) -> str:
-    hue = (int(polygon_id) * 137) % 360
-    color = QColor()
-    color.setHsv(hue, 190, 245)
-    return color.name()
+_CONTRAST_OBJECT_PALETTE = (
+    "#e6194b",
+    "#3cb44b",
+    "#4363d8",
+    "#f58231",
+    "#911eb4",
+    "#42d4f4",
+    "#f032e6",
+    "#bfef45",
+    "#469990",
+    "#dcbeff",
+    "#9a6324",
+    "#ffe119",
+)
+
+
+def _bbox_distance_squared(
+    first: tuple[int, int, int, int],
+    second: tuple[int, int, int, int],
+) -> float:
+    first_left, first_top, first_width, first_height = first
+    second_left, second_top, second_width, second_height = second
+    first_right = first_left + first_width
+    first_bottom = first_top + first_height
+    second_right = second_left + second_width
+    second_bottom = second_top + second_height
+    dx = max(float(first_left - second_right), float(second_left - first_right), 0.0)
+    dy = max(float(first_top - second_bottom), float(second_top - first_bottom), 0.0)
+    return dx * dx + dy * dy
+
+
+def _color_distance_squared(first: str, second: str) -> int:
+    first_color = QColor(first)
+    second_color = QColor(second)
+    return sum(
+        (first_channel - second_channel) ** 2
+        for first_channel, second_channel in zip(
+            first_color.getRgb()[:3],
+            second_color.getRgb()[:3],
+            strict=True,
+        )
+    )
+
+
+_PALETTE_RGB_DISTANCES: dict[tuple[str, str], int] = {
+    (first, second): _color_distance_squared(first, second)
+    for first in _CONTRAST_OBJECT_PALETTE
+    for second in _CONTRAST_OBJECT_PALETTE
+}
+_PALETTE_INDICES = {color: index for index, color in enumerate(_CONTRAST_OBJECT_PALETTE)}
+
+
+def _grid_cells_for_bbox(
+    bbox: tuple[int, int, int, int],
+    cell_size: float,
+    *,
+    margin: float = 0.0,
+) -> Iterator[tuple[int, int]]:
+    left, top, width, height = bbox
+    right = float(left) + float(width)
+    bottom = float(top) + float(height)
+    x0 = int(math.floor((float(left) - margin) / cell_size))
+    x1 = int(math.floor((right + margin) / cell_size))
+    y0 = int(math.floor((float(top) - margin) / cell_size))
+    y1 = int(math.floor((bottom + margin) / cell_size))
+    for cx in range(x0, x1 + 1):
+        for cy in range(y0, y1 + 1):
+            yield cx, cy
+
+
+def _contrasting_object_colors(
+    polygons: Iterable[PolygonData],
+    frame_size: tuple[float, float],
+) -> dict[int, str]:
+    """Assign deterministic colors that contrast between nearby conductors."""
+
+    polygon_list = list(polygons)
+    conductors = {
+        polygon.id: polygon
+        for polygon in polygon_list
+        if not polygon.is_hole and str(polygon.category or "") == "conductor"
+    }
+    if not conductors:
+        return {}
+
+    frame_width, frame_height = frame_size
+    proximity = max(12.0, min(64.0, hypot(float(frame_width), float(frame_height)) * 0.01))
+    proximity_squared = proximity * proximity
+    neighbors = {polygon_id: set() for polygon_id in conductors}
+    cell_size = proximity
+    grid: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for polygon_id, polygon in conductors.items():
+        for cell in _grid_cells_for_bbox(polygon.bbox, cell_size, margin=proximity):
+            grid[cell].append(polygon_id)
+    for polygon_id, polygon in conductors.items():
+        candidate_ids: set[int] = set()
+        for cell in _grid_cells_for_bbox(polygon.bbox, cell_size, margin=proximity):
+            candidate_ids.update(grid[cell])
+        for other_id in candidate_ids:
+            if other_id == polygon_id:
+                continue
+            if _bbox_distance_squared(polygon.bbox, conductors[other_id].bbox) > proximity_squared:
+                continue
+            neighbors[polygon_id].add(other_id)
+            neighbors[other_id].add(polygon_id)
+
+    palette_rgb_distances = _PALETTE_RGB_DISTANCES
+    palette_indices = _PALETTE_INDICES
+    root_colors: dict[int, str] = {}
+    coloring_order = sorted(conductors, key=lambda polygon_id: (-len(neighbors[polygon_id]), polygon_id))
+    for polygon_id in coloring_order:
+        neighbor_colors = [
+            root_colors[neighbor_id]
+            for neighbor_id in neighbors[polygon_id]
+            if neighbor_id in root_colors
+        ]
+        preferred_index = (int(polygon_id) * 7) % len(_CONTRAST_OBJECT_PALETTE)
+        if not neighbor_colors:
+            root_colors[polygon_id] = _CONTRAST_OBJECT_PALETTE[preferred_index]
+            continue
+        root_colors[polygon_id] = max(
+            _CONTRAST_OBJECT_PALETTE,
+            key=lambda color: (
+                min(palette_rgb_distances[color, neighbor_color] for neighbor_color in neighbor_colors),
+                -((palette_indices[color] - preferred_index) % len(_CONTRAST_OBJECT_PALETTE)),
+            ),
+        )
+
+    result = dict(root_colors)
+    for polygon in polygon_list:
+        if polygon.is_hole and polygon.parent_id in root_colors:
+            result[polygon.id] = root_colors[polygon.parent_id]
+    return result
 
 
 def _stable_layer_color(layer_index: int) -> str:

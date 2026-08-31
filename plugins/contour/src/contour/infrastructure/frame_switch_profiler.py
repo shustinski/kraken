@@ -32,6 +32,7 @@ class FrameSwitchProfile:
     poll_count: int = 0
     profiling_active: bool = False
     main_stats_skipped: bool = False
+    finalization_claimed: bool = False
 
     @classmethod
     def begin(cls, image_path: str, *, generation: int) -> FrameSwitchProfile:
@@ -78,6 +79,14 @@ class FrameSwitchProfile:
     def attach_worker_profile(self, label: str, profiler: cProfile.Profile) -> None:
         self.worker_profilers.append((label, profiler))
 
+    def claim_finalization(self) -> bool:
+        """Reserve the report for one callback before processing nested Qt events."""
+
+        if self.finalization_claimed:
+            return False
+        self.finalization_claimed = True
+        return True
+
     def total_wall_ms(self) -> float:
         return (perf_counter() - self.started_at) * 1000.0
 
@@ -114,15 +123,9 @@ class FrameSwitchProfile:
 
 
 def profile_callable(label: str, profile: FrameSwitchProfile | None, fn, /):
-    """Profile background work; uses cProfile only when the main-thread slot is free."""
+    """Profile background work on the current thread; falls back to wall time if cProfile is busy here."""
     if profile is None:
         return fn()
-    if profile.profiling_active:
-        started = perf_counter()
-        try:
-            return fn()
-        finally:
-            profile.note_timing(f"worker_{label}_wall", (perf_counter() - started) * 1000.0)
     worker = cProfile.Profile()
     try:
         if try_enable_profiler(worker):

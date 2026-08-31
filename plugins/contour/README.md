@@ -27,7 +27,8 @@ editing, and export from microscope imagery and similar grayscale inputs.
 - Windows 10 or newer (for the installer build). The widget itself is
   cross-platform but only Windows is CI-tested.
 - Python 3.14 for development.
-- Optional: Inno Setup 6 (`iscc` on `PATH`) to build the installer.
+- Optional: Inno Setup 6+ (`iscc` on `PATH`, or installed under
+  `Program Files\Inno Setup 7`).
 
 ## Installation
 
@@ -40,6 +41,15 @@ The installer registers a Start Menu entry and optional desktop shortcut.
 Logs are written to `%LOCALAPPDATA%\ViaLaNet\Contour\logs\app.log`.
 
 ### Developer — editable install
+
+From the repo root with [uv](https://docs.astral.sh/uv/):
+
+```powershell
+uv sync --project plugins/contour --extra dev --extra build
+uv run --project plugins/contour python -m contour
+```
+
+Or with a classic venv:
 
 ```powershell
 python -m venv .venv
@@ -129,12 +139,30 @@ scripts/                 Build helpers (PowerShell)
 
 ## Building the Windows installer
 
+Requirements:
+
+- [uv](https://docs.astral.sh/uv/) workspace synced with build extras.
+- [Inno Setup 6+](https://jrsoftware.org/isinfo.php) (`iscc` on `PATH`, or the
+  default install path such as `C:\Program Files\Inno Setup 7`).
+
 ```powershell
-.\scripts\build_windows.ps1            # lint + tests + installer
-.\scripts\build_windows.ps1 -SkipTests # quick iteration
+cd D:\code\kraken\plugins\contour
+.\scripts\build_windows.ps1                 # uv sync + tests + PyInstaller + Inno Setup
+.\scripts\build_windows.ps1 -SkipTests      # quick iteration
+.\scripts\build_windows.ps1 -SkipSync       # reuse current uv env
+.\scripts\build_windows.ps1 -Clean          # remove previous dist/build output first
+.\scripts\build_windows.ps1 -PyInstallerOnly # bundle only, no installer
+.\scripts\build_windows.ps1 -InstallerOnly   # rebuild installer from existing dist
+.\scripts\build_windows.ps1 -Version 0.9.6  # override installer version label
 ```
 
-The script produces `packaging/Contour-setup-<version>.exe`.
+The script runs `uv sync --project plugins/contour --extra build --extra dev`
+from the repo root, then invokes pytest and PyInstaller through `uv run`.
+
+Outputs:
+
+- application bundle: `dist/Contour/`
+- installer: `dist/installer/Contour-setup-<version>.exe`
 
 ## License
 

@@ -859,6 +859,8 @@ def patch_polygons_needing_repair(
 def polygons_needing_repair(
     polygons: list[PolygonData],
     settings: VectorGeometrySettings,
+    *,
+    include_ring_reasons: bool = True,
 ) -> dict[int, list[str]]:
     """Map polygon id → ordered unique repair reason codes (topology + area + overlap).
 
@@ -879,12 +881,13 @@ def polygons_needing_repair(
         if reason not in existing:
             existing.append(reason)
 
-    for polygon in polygons:
-        ring_reason = polygon.description_invalid_reason()
-        # CIF keyhole bridges (repeated_vertex) are valid descriptions; keep them out of
-        # auto red-mark / repair-offer maps. Explicit repair still targets them via reason.
-        if ring_reason is not None and ring_reason != "repeated_vertex":
-            _add(polygon.id, ring_reason)
+    if include_ring_reasons:
+        for polygon in polygons:
+            ring_reason = polygon.description_invalid_reason()
+            # CIF keyhole bridges (repeated_vertex) are valid descriptions; keep them out of
+            # auto red-mark / repair-offer maps. Explicit repair still targets them via reason.
+            if ring_reason is not None and ring_reason != "repeated_vertex":
+                _add(polygon.id, ring_reason)
 
     overlapping_roots = overlapping_root_family_ids(polygons)
     for root_id in overlapping_roots:

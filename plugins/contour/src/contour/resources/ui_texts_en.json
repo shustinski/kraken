@@ -384,7 +384,7 @@
     "noisy_traces_via_preset_button": "Preset: bright contacts on traces",
     "perimeter_range_label": "Perimeter range",
     "pick_colors_button": "Pick from image",
-    "random_object_colors_checkbox": "Random object colors",
+    "random_object_colors_checkbox": "Contrasting colors for nearby objects",
     "remove_selected_color_button": "Remove selected",
     "remove_via_template_button": "Remove selected",
     "reset_via_search_button": "Reset contact search parameters",

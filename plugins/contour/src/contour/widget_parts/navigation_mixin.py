@@ -1182,6 +1182,8 @@ class WidgetNavigationMixin:
     def _resume_frame_matrix_thumbnail_loading(self: Any, *, radial_fill: bool = True) -> None:
         if not self._frame_matrix_thumbnails_enabled() or not hasattr(self, "thumbnail_grid"):
             return
+        if getattr(self, "_frame_switch_profile", None) is not None:
+            return
         if self._thumbnail_loading_blocked():
             return
         self._schedule_thumbnail_icon_apply()

@@ -119,3 +119,62 @@ def test_widget_prefetch_paths_follow_list_and_matrix_neighbors() -> None:
     finally:
         widget.close()
         widget.deleteLater()
+
+
+def test_widget_prefetch_is_deferred_while_frame_switch_profile_is_active() -> None:
+    from contour.infrastructure.frame_switch_profiler import FrameSwitchProfile
+    from contour.widget import PolygonExtractionWidget
+
+    widget = PolygonExtractionWidget()
+    try:
+        paths = [str(Path(f"frame_{index:02d}.png")) for index in range(8)]
+        widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
+        widget._set_image_list_paths(paths)
+        widget._workspace.apply_loaded_frame(paths[2], source_image="px-current", polygons=[], make_current=True)
+
+        enqueued: list[str] = []
+
+        def _enqueue(image_path: str, generation: int, **kwargs) -> None:
+            enqueued.append(str(Path(image_path)))
+
+        widget._enqueue_prefetch_frame = _enqueue  # type: ignore[method-assign]
+        widget._frame_switch_profile = FrameSwitchProfile.begin(paths[2], generation=1)
+        widget._schedule_frame_prefetch()
+        widget._prefetch_frame_neighborhood()
+        assert enqueued == []
+        assert widget._prefetch_deferred_for_profile is True
+
+        widget._frame_switch_profile = None
+        widget._prefetch_deferred_for_profile = True
+        widget._schedule_frame_prefetch()
+        widget._prefetch_frame_neighborhood()
+        assert len(enqueued) > 0
+        assert widget._prefetch_deferred_for_profile is False
+    finally:
+        widget.close()
+        widget.deleteLater()
+
+
+def test_schedule_frame_switch_profile_keeps_main_profiler_active() -> None:
+    from unittest.mock import patch
+
+    from contour.infrastructure.frame_switch_profiler import FrameSwitchProfile
+    from contour.widget import PolygonExtractionWidget
+
+    widget = PolygonExtractionWidget()
+    try:
+        image_path = str(Path("frame.png"))
+        session = FrameSwitchProfile.begin(image_path, generation=1)
+        session.enable_main_profiler()
+        widget._frame_switch_profile = session
+        with patch.object(session, "disable_main_profiler", wraps=session.disable_main_profiler) as disable_mock:
+            widget._schedule_frame_switch_profile_until_interactive(
+                image_path,
+                cif_path=None,
+                polygon_count=0,
+            )
+            disable_mock.assert_not_called()
+        assert session.profiling_active
+    finally:
+        widget.close()
+        widget.deleteLater()

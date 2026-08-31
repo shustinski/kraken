@@ -969,7 +969,11 @@ class WidgetProcessingMixin:
                     # Keep overlays in sync without rescanning repair geometry on frame switch.
                     scene = getattr(self.polygon_editor, "_editor_scene", None)
                     if scene is not None and hasattr(scene, "_refresh_all_items"):
-                        scene._refresh_all_items(rebuild_repair_cache=False)
+                        scene._refresh_all_items(
+                            rebuild_repair_cache=False,
+                            defer_hit_paths=True,
+                            defer_object_colors=True,
+                        )
                     else:
                         self.polygon_editor.refresh_polygon_overlays()
                 return
@@ -979,8 +983,14 @@ class WidgetProcessingMixin:
             emit_signal=False,
             repair_reasons=repair_reasons,
             scan_repair=False,
+            defer_hit_paths=True,
+            defer_object_colors=True,
         )
         self._editor_polygons_signature = signature
+        if self._frame_switch_profile_for_path(image_path) is None and hasattr(
+            self.polygon_editor, "flush_deferred_object_colors"
+        ):
+            QTimer.singleShot(0, self.polygon_editor.flush_deferred_object_colors)
 
     def _repair_reasons_for_image_path(self: Any, image_path: str) -> dict[int, list[str]] | None:
         state = self._workspace.cached_state(image_path)
@@ -991,7 +1001,7 @@ class WidgetProcessingMixin:
             return None
         return {int(polygon_id): list(codes) for polygon_id, codes in reasons.items()}
 
-    def _make_polygon_repair_scanner(self: Any):
+    def _make_polygon_repair_scanner(self: Any, *, include_ring_reasons: bool = False):
         settings = (
             self._vector_geometry_settings_from_widgets()
             if hasattr(self, "_vector_geometry_settings_from_widgets")
@@ -999,9 +1009,11 @@ class WidgetProcessingMixin:
         )
 
         def _scan(polygons: list) -> dict[int, list[str]]:
-            for polygon in polygons:
-                polygon.description_invalid_reason()
-            return polygons_needing_repair(list(polygons), settings)
+            return polygons_needing_repair(
+                list(polygons),
+                settings,
+                include_ring_reasons=include_ring_reasons,
+            )
 
         return _scan
 
@@ -1117,7 +1129,12 @@ class WidgetProcessingMixin:
             self._editor_display_request_serial = int(getattr(self, "_editor_display_request_serial", 0)) + 1
             request_id = self._editor_display_request_serial
         target_path = str(Path(image_path))
-        runnable = EditorDisplayRunnable(request_id, target_path, display_image)
+        runnable = EditorDisplayRunnable(
+            request_id,
+            target_path,
+            display_image,
+            profile_session=session,
+        )
 
         def _on_display_ready(req_id: int, path: str, qimage: object) -> None:
             if cache_only:
@@ -1301,6 +1318,9 @@ class WidgetProcessingMixin:
         self._sync_polygons_to_editor(image_path, visible_polygons)
         if defer_heavy_overlays:
             return
+        self._apply_deferred_editor_vector_overlays(state)
+
+    def _apply_deferred_editor_vector_overlays(self: Any, state) -> None:
         debug_candidates = list(state.debug_candidates)
         if (
             not hasattr(self, "debug_candidates_checkbox")
@@ -1323,6 +1343,21 @@ class WidgetProcessingMixin:
                 "via", self.via_show_detected_checkbox.isChecked()
             )
         self._apply_conductor_display_visibility(state)
+
+    def _schedule_deferred_frame_overlays(self: Any, image_path: str) -> None:
+        def _apply() -> None:
+            if bool(getattr(self, "_closing", False)):
+                return
+            if str(Path(self._workspace.current_image_path or "")) != str(Path(image_path)):
+                return
+            state = self._workspace.current_state
+            if state is None:
+                return
+            self._apply_deferred_editor_vector_overlays(state)
+            self._sync_extra_layers()
+            self._refresh_gradient_overlay()
+
+        QTimer.singleShot(0, _apply)
 
     def _conductor_display_filters_enabled(self: Any) -> bool:
         return (
@@ -1391,6 +1426,8 @@ class WidgetProcessingMixin:
         if not defer_heavy_overlays:
             self._sync_extra_layers()
             self._refresh_gradient_overlay()
+        else:
+            self._schedule_deferred_frame_overlays(pending_path)
         self._update_vector_edit_status_label()
         session = self._frame_switch_profile_for_path(image_path)
         if session is not None:
@@ -1471,6 +1508,8 @@ class WidgetProcessingMixin:
             if not defer_heavy_overlays:
                 self._sync_extra_layers()
                 self._refresh_gradient_overlay()
+            else:
+                self._schedule_deferred_frame_overlays(image_path)
             self._update_vector_edit_status_label()
             return
         # Keep the previous complete frame on screen until the new pixmap is ready,
@@ -3848,10 +3887,6 @@ class WidgetProcessingMixin:
             )
         else:
             self._append_log(self._tr("cif_overlay_loaded_log", file_name=Path(cif_path).name, count=len(polygons)))
-        # Warm topology caches on the loader thread (bool + reason). Full overlap
-        # repair scan runs via FrameLoadRunnable.scan_repair when provided.
-        for polygon in polygons:
-            polygon.description_invalid_reason()
         return polygons
 
     def load_image(
@@ -3986,7 +4021,7 @@ class WidgetProcessingMixin:
                 load_cif_overlay=load_cif_overlay_timed,
                 load_vectors=load_vectors,
                 vectors_only=False,
-                scan_repair=self._make_polygon_repair_scanner() if load_vectors else None,
+                scan_repair=None,
             )
 
             def _on_result(req_id: int, payload_obj: object) -> None:
@@ -4112,7 +4147,7 @@ class WidgetProcessingMixin:
             load_cif_overlay=load_cif_overlay_timed,
             load_vectors=True,
             vectors_only=True,
-            scan_repair=self._make_polygon_repair_scanner(),
+            scan_repair=None,
         )
 
         def _on_vectors(req_id: int, payload_obj: object) -> None:
@@ -4282,7 +4317,7 @@ class WidgetProcessingMixin:
                 step_start = perf_counter()
                 self._apply_frame_to_editor(
                     defer_neighbors=True,
-                    defer_heavy_overlays=False,
+                    defer_heavy_overlays=True,
                     preserve_view=preserve_editor_view_position,
                     clear_neighbors=True,
                     sync_neighbors=False,
@@ -4315,7 +4350,7 @@ class WidgetProcessingMixin:
                 step_start = perf_counter()
                 self._apply_frame_to_editor(
                     defer_neighbors=True,
-                    defer_heavy_overlays=False,
+                    defer_heavy_overlays=True,
                     preserve_view=preserve_editor_view_position,
                     clear_neighbors=True,
                     sync_neighbors=False,
@@ -4344,7 +4379,7 @@ class WidgetProcessingMixin:
                 step_start = perf_counter()
                 self._apply_frame_to_editor(
                     defer_neighbors=True,
-                    defer_heavy_overlays=False,
+                    defer_heavy_overlays=True,
                     preserve_view=preserve_editor_view_position,
                     clear_neighbors=True,
                     sync_neighbors=False,
@@ -4427,6 +4462,15 @@ class WidgetProcessingMixin:
 
         if bool(getattr(self, "_closing", False)):
             return
+        expected = str(Path(image_path))
+        if getattr(self, "_frame_switch_profile", None) is not None:
+            self._pending_geometry_validation_path = expected
+            return
+        self._start_deferred_geometry_validation(expected)
+
+    def _start_deferred_geometry_validation(self: Any, image_path: str) -> None:
+        if bool(getattr(self, "_closing", False)):
+            return
         if getattr(self, "_pending_editor_frame_apply", None) is not None:
             return
         if not self._editor_polygons_are_current_frame():
@@ -4450,11 +4494,13 @@ class WidgetProcessingMixin:
             if hasattr(self, "polygon_editor") and hasattr(self.polygon_editor, "apply_polygons_needing_repair"):
                 self.polygon_editor.apply_polygons_needing_repair({})
             return
+        profile_session = self._frame_switch_profile_for_path(expected)
         runnable = GeometryValidationRunnable(
             generation,
             expected,
             polygons,
-            self._make_polygon_repair_scanner(),
+            self._make_polygon_repair_scanner(include_ring_reasons=False),
+            profile_session=profile_session,
         )
 
         def _on_result(req_id: int, path: str, reasons_obj: object) -> None:
@@ -4682,6 +4728,13 @@ class WidgetProcessingMixin:
     def _schedule_frame_prefetch(self: Any) -> None:
         if bool(getattr(self, "_closing", False)):
             return
+        if getattr(self, "_frame_switch_profile", None) is not None:
+            self._prefetch_deferred_for_profile = True
+            timer = getattr(self, "_prefetch_timer", None)
+            if timer is not None:
+                timer.stop()
+            return
+        self._prefetch_deferred_for_profile = False
         timer = getattr(self, "_prefetch_timer", None)
         if timer is None:
             return
@@ -4713,6 +4766,9 @@ class WidgetProcessingMixin:
 
     def _prefetch_frame_neighborhood(self: Any) -> None:
         if bool(getattr(self, "_closing", False)):
+            return
+        if getattr(self, "_frame_switch_profile", None) is not None:
+            self._prefetch_deferred_for_profile = True
             return
         if getattr(self, "_frame_load_running_path", None) is not None:
             self._schedule_frame_prefetch()
@@ -4766,7 +4822,7 @@ class WidgetProcessingMixin:
             load_cif_overlay=self._load_cif_overlay_polygons,
             load_vectors=True,
             vectors_only=vectors_only,
-            scan_repair=self._make_polygon_repair_scanner(),
+            scan_repair=None,
         )
 
         def _on_result(_req_id: int, payload_obj: object) -> None:
@@ -4863,8 +4919,6 @@ class WidgetProcessingMixin:
             return False
         if self._editor_display_thread_pool.activeThreadCount() > 0:
             return False
-        if self._frame_load_thread_pool.activeThreadCount() > 0:
-            return False
         chrome_timer = getattr(self, "_frame_chrome_update_timer", None)
         if chrome_timer is not None and chrome_timer.isActive():
             return False
@@ -4914,6 +4968,7 @@ class WidgetProcessingMixin:
         session = getattr(self, "_frame_switch_profile", None)
         if session is None or session.generation != generation:
             return
+        session.enable_main_profiler()
         session.poll_count += 1
         interactive = failed or self._frame_switch_profile_is_interactive(image_path)
         if not interactive and session.poll_count < MAX_IDLE_POLLS:
@@ -4929,6 +4984,10 @@ class WidgetProcessingMixin:
                 ),
             )
             return
+        if not session.claim_finalization():
+            return
+        if getattr(self, "_frame_switch_profile", None) is session:
+            self._frame_switch_profile = None
         app = QApplication.instance()
         if app is not None:
             app.processEvents()
@@ -4951,8 +5010,6 @@ class WidgetProcessingMixin:
         failed: bool,
         interactive: bool,
     ) -> None:
-        if getattr(self, "_frame_switch_profile", None) is session:
-            self._frame_switch_profile = None
         session.timings_ms["total_wall"] = session.total_wall_ms()
         main_profiler = session.disable_main_profiler()
         summary = session.format_summary(
@@ -4965,18 +5022,27 @@ class WidgetProcessingMixin:
         print(summary)
         self._append_log(summary)
         if session.profiling_active or main_profiler.getstats():
-            print(session.format_stats(main_profiler, title="main_thread_until_interactive"))
+            print(session.format_stats(main_profiler, title="main_thread"))
         elif session.main_stats_skipped:
             print(
-                "[contour frame switch profiling stats] main_thread_until_interactive skipped "
+                "[contour frame switch profiling stats] main_thread skipped "
                 "(another cProfile session was active, e.g. contour processing extract)"
             )
         for label, worker_profiler in session.worker_profilers:
             print(session.format_stats(worker_profiler, title=f"worker_{label}"))
         self._append_log(
             "[contour frame switch profiling stats] printed to console "
-            "(main thread until interactive; see worker_* sections for background load)"
+            "(main thread through interactive; see worker_* sections for background load)"
         )
+        if getattr(self, "_prefetch_deferred_for_profile", False):
+            self._prefetch_deferred_for_profile = False
+            QTimer.singleShot(0, self._schedule_frame_prefetch)
+        pending_validation = getattr(self, "_pending_geometry_validation_path", None)
+        if pending_validation:
+            self._pending_geometry_validation_path = None
+            QTimer.singleShot(0, lambda: self._start_deferred_geometry_validation(pending_validation))
+        if hasattr(self, "polygon_editor") and hasattr(self.polygon_editor, "flush_deferred_object_colors"):
+            QTimer.singleShot(0, self.polygon_editor.flush_deferred_object_colors)
         QTimer.singleShot(100, self._resume_frame_matrix_thumbnail_loading)
 
     def _emit_cif_open_profile(

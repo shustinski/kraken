@@ -37,6 +37,12 @@ class FrameSwitchProfilerTests(unittest.TestCase):
         self.assertIn("editor_display_ready", session.timings_ms)
         self.assertGreater(session.timings_ms["editor_display_ready"], 0.0)
 
+    def test_finalization_can_only_be_claimed_once(self) -> None:
+        session = FrameSwitchProfile.begin("frame.png", generation=1)
+
+        self.assertTrue(session.claim_finalization())
+        self.assertFalse(session.claim_finalization())
+
     def test_profile_callable_uses_wall_time_when_main_profiler_active(self) -> None:
         session = FrameSwitchProfile.begin("frame.png", generation=1)
         session.enable_main_profiler()

@@ -23,10 +23,10 @@ if (LIBOPENCIF_DIR / "libopencif.cc").exists():
         Pybind11Extension(
             "contour._native.cif_loader",
             [
-                str(LIBOPENCIF_DIR / "cif_loader.cxx"),
-                str(LIBOPENCIF_DIR / "libopencif.cc"),
+                "third_party/libopencif/cif_loader.cxx",
+                "third_party/libopencif/libopencif.cc",
             ],
-            include_dirs=[str(LIBOPENCIF_DIR)],
+            include_dirs=["third_party/libopencif"],
             cxx_std=14,
         )
     )

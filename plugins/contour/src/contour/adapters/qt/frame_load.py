@@ -106,20 +106,28 @@ class GeometryValidationRunnable(QRunnable):
         image_path: str,
         polygons: list[PolygonData],
         scan_repair: Callable[[list[PolygonData]], Mapping[int, list[str]]],
+        *,
+        profile_session: object | None = None,
     ) -> None:
         super().__init__()
         self.request_id = int(request_id)
         self.image_path = str(image_path)
         self._polygons = [polygon.clone() for polygon in polygons]
         self._scan_repair = scan_repair
+        self._profile_session = profile_session
         self.signals = GeometryValidationSignals()
 
     def run(self) -> None:
-        try:
-            reasons = {
+        from ...infrastructure.frame_switch_profiler import profile_callable
+
+        def _scan() -> dict[int, list[str]]:
+            return {
                 int(polygon_id): list(codes)
                 for polygon_id, codes in self._scan_repair(self._polygons).items()
             }
+
+        try:
+            reasons = profile_callable("geometry_validation", self._profile_session, _scan)
             try:
                 self.signals.result.emit(self.request_id, self.image_path, reasons)
             except RuntimeError:

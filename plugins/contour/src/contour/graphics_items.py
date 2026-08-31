@@ -29,6 +29,19 @@ def _hole_display_hidden(polygon: PolygonData, polygons_by_id: dict[int, Polygon
     return _uses_cif_paint_display(parent)
 
 
+def _hide_keyhole_cut_locations(
+    polygon: PolygonData,
+    cutout_polygons: list[PolygonData] | None,
+) -> bool:
+    """True when the visible fill should use outer+holes instead of the authored bridge ring."""
+
+    if not cutout_polygons or not _uses_cif_paint_display(polygon):
+        return False
+    from .application.fix_internal_contours import _is_klayout_keyhole_slot
+
+    return not _is_klayout_keyhole_slot(polygon, cutout_polygons)
+
+
 def _vector_display_path_for_polygon(
     polygon: PolygonData,
     display_settings: DisplaySettings | None = None,
@@ -36,7 +49,7 @@ def _vector_display_path_for_polygon(
 ) -> QPainterPath:
     """Build the visible outline path for vector display."""
 
-    if _uses_cif_paint_display(polygon):
+    if _uses_cif_paint_display(polygon) and not _hide_keyhole_cut_locations(polygon, cutout_polygons):
         path = _closed_polygon_path(polygon.cif_paint_ring)
         path.setFillRule(Qt.FillRule.WindingFill)
         return path
@@ -229,6 +242,8 @@ class EditablePolygonItem(QGraphicsPathItem):
 
         self.polygon_id = polygon.id
         self._polygon = polygon
+        self._hit_path = None
+        self._cutout_polygons_for_hit = None
         for handle in self._handles:
             handle.setVisible(False)
 
@@ -245,12 +260,19 @@ class EditablePolygonItem(QGraphicsPathItem):
         highlight_vertex_index: int | None = None,
         highlight_edge_index: int | None = None,
         needs_repair: bool | None = None,
+        defer_hit_path: bool = False,
+        bulk_load: bool = False,
     ) -> None:
         self.polygon_id = polygon.id
         self._polygon = polygon
         outline_path = _vector_display_path_for_polygon(self._polygon, display_settings, cutout_polygons)
         self.setPath(outline_path)
-        self._hit_path = _hit_path_for_polygon(self._polygon, cutout_polygons=cutout_polygons)
+        if defer_hit_path:
+            self._hit_path = None
+            self._cutout_polygons_for_hit = cutout_polygons
+        else:
+            self._hit_path = _hit_path_for_polygon(self._polygon, cutout_polygons=cutout_polygons)
+            self._cutout_polygons_for_hit = None
 
         self._update_appearance(
             display_settings,
@@ -259,6 +281,19 @@ class EditablePolygonItem(QGraphicsPathItem):
             conductor_hover_highlight=conductor_hover_highlight,
             needs_repair=needs_repair,
         )
+
+        if bulk_load:
+            for handle in self._handles:
+                handle.setVisible(False)
+            self._edge_highlight_item.setPath(QPainterPath())
+            if display_settings.show_labels:
+                self._label_item.setText(str(polygon.id))
+                bbox = self.boundingRect()
+                self._label_item.setPos(bbox.left(), bbox.top() - 16.0)
+                self._label_item.setVisible(True)
+            else:
+                self._label_item.setVisible(False)
+            return
 
         self._label_item.setText(str(polygon.id))
         self._label_item.setVisible(display_settings.show_labels)
@@ -403,10 +438,30 @@ class EditablePolygonItem(QGraphicsPathItem):
     def polygon(self) -> PolygonData:
         return self._polygon.clone()
 
+    def ensure_accurate_hit_path(self) -> QPainterPath:
+        """Build precise pick geometry (make_valid); not used during bulk frame load."""
+
+        hit_path = getattr(self, "_hit_path", None)
+        if hit_path is not None:
+            return hit_path
+        cutout_polygons = getattr(self, "_cutout_polygons_for_hit", None)
+        self._hit_path = _hit_path_for_polygon(
+            self._polygon,
+            cutout_polygons=cutout_polygons,
+        )
+        self._cutout_polygons_for_hit = None
+        return self._hit_path
+
     def shape(self) -> QPainterPath:
         hit_path = getattr(self, "_hit_path", None)
-        if hit_path is not None and not hit_path.isEmpty():
-            return hit_path
+        if hit_path is not None:
+            if not hit_path.isEmpty():
+                return hit_path
+            return super().shape()
+        # Qt indexes items via shape() during bulk load; defer make_valid pick paths.
+        outline = self.path()
+        if not outline.isEmpty():
+            return outline
         return super().shape()
 
 def _iter_shapely_polygon_parts(geom: object) -> Iterator[object]:

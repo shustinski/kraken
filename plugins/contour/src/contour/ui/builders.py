@@ -2473,7 +2473,7 @@ def build_display_tab(self) -> QWidget:
     self.show_vertices_checkbox.setChecked(self._display_settings.show_vertices)
     self.show_labels_checkbox = QCheckBox("Show polygon IDs")
     self.show_labels_checkbox.setChecked(self._display_settings.show_labels)
-    self.random_object_colors_checkbox = QCheckBox("Random object colors")
+    self.random_object_colors_checkbox = QCheckBox("Contrasting colors for nearby objects")
     self.via_display_mode_combo = QComboBox()
     self.via_display_mode_combo.addItem("Circle", VIA_DISPLAY_MODE_CIRCLE)
     self.via_display_mode_combo.addItem("Rectangle", VIA_DISPLAY_MODE_RECTANGLE)

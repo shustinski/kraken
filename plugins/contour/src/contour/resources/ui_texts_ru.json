@@ -384,7 +384,7 @@
     "noisy_traces_via_preset_button": "Пресет: яркие контакты на дорожках",
     "perimeter_range_label": "Диапазон периметра",
     "pick_colors_button": "Выбор с изображения",
-    "random_object_colors_checkbox": "Случайные цвета объектов",
+    "random_object_colors_checkbox": "Контрастные цвета соседних объектов",
     "remove_selected_color_button": "Удалить выбранный",
     "remove_via_template_button": "Удалить выбранный",
     "reset_via_search_button": "Сбросить параметры поиска контактов",

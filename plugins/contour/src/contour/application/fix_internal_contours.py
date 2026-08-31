@@ -199,6 +199,13 @@ def should_use_cutout_display_for_keyhole_family(
     hole_rings: list[list[tuple[float, float]]],
     image_size: tuple[int, int],
 ) -> bool:
+    """Return whether CIF load should store cutout-friendly paint rings.
+
+    Non-KLayout keyhole families use cutout display immediately so bridge/cut
+    lines stay hidden without rasterizing paint-vs-cutout masks on every load.
+    """
+
+    del image_size
     if not hole_rings:
         return False
     outer_area, outer_perimeter, outer_bbox = _metrics_for_ring(outer_points)
@@ -232,8 +239,7 @@ def should_use_cutout_display_for_keyhole_family(
         )
     if _is_klayout_keyhole_slot(outer, holes, authored_ring=[(float(x), float(y)) for x, y in authored_ring]):
         return False
-    analysis = analyze_internal_contour_display([outer, *holes], image_size)
-    return analysis.needs_fix
+    return True
 
 
 def _metrics_for_ring(points: list[tuple[float, float]]) -> tuple[float, float, tuple[int, int, int, int]]:

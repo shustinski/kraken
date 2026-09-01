@@ -31,7 +31,7 @@ def test_quick_setup_is_visible_and_advanced_controls_start_collapsed(tmp_path, 
     ]
 
     assert widget.analysis_setup_panel.isVisibleTo(widget)
-    assert len(profile_buttons) == 4
+    assert len(profile_buttons) == 3
     assert widget.folders_info_label.isVisibleTo(widget)
     assert not widget.pair_matrix_group.isChecked()
     assert widget.pair_matrix_body.isHidden()

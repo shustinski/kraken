@@ -97,11 +97,11 @@
       "id": "karakal",
       "display_name": "Karakal",
       "description": "Validation gradient matrix viewer and metrics explorer.",
-      "version": "0.0.1",
+      "version": "1.0.0",
       "protocol_version": "1.0",
       "analysis_protocol_version": "1.0",
       "analysis_capabilities": [
-        {"profile": "model_comparison", "required_roles": ["model_output", "model_output"], "optional_roles": ["original", "confidence"], "modes": ["interactive"]},
+        {"profile": "model_comparison", "required_roles": ["model_output", "model_output"], "optional_roles": ["original", "confidence"], "modes": ["interactive", "headless"]},
         {"profile": "confidence_audit", "required_roles": ["model_output", "confidence"], "optional_roles": ["original"], "modes": ["interactive"]},
         {"profile": "grid_defects", "required_roles": [], "required_any_role_groups": [["original", "model_output"]], "optional_roles": ["reference", "confidence"], "modes": ["interactive"]}
       ],

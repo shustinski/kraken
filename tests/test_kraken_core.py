@@ -4,10 +4,16 @@ import json
 
 import kraken_hub.app as hub_app
 from kraken_core.ipc import ActionRegistry, ActionRequest
-from kraken_core.plugins import PluginMetadata, load_plugin_catalog, scan_plugin_directory
+from kraken_core.plugins import PluginMetadata, load_plugin_catalog
 from kraken_core.qt import resolve_icon_path
 from kraken_core.styles import load_shared_stylesheet, plugin_icon_path, shared_icon_path, shared_styles_root
-from kraken_core.updater import compare_versions, parse_update_payload, select_platform_release
+from kraken_core.updater import (
+    UpdateService,
+    compare_versions,
+    parse_update_payload,
+    resolve_source_reference,
+    select_platform_release,
+)
 
 
 def test_plugin_catalog_loads(tmp_path):

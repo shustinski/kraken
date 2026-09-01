@@ -84,7 +84,15 @@ def test_catalog_exposes_karakal_analysis_profiles() -> None:
         "confidence_audit",
         "grid_defects",
     }
-    assert all(capability.modes == ("interactive",) for capability in karakal.analysis_capabilities)
+    model_comparison = next(
+        capability for capability in karakal.analysis_capabilities if capability.profile == "model_comparison"
+    )
+    assert model_comparison.modes == ("interactive", "headless")
+    assert all(
+        capability.modes == ("interactive",)
+        for capability in karakal.analysis_capabilities
+        if capability.profile != "model_comparison"
+    )
     grid_capability = next(
         capability for capability in karakal.analysis_capabilities if capability.profile == "grid_defects"
     )

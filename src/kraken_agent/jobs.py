@@ -19,7 +19,9 @@ from pathlib import Path
 from contextlib import contextmanager
 from typing import Iterable, Iterator
 
-from kraken_core.plugin_protocol import PluginJobManifest, PluginResultManifest, safe_relative_path
+from kraken_core.analysis_bundle import stream_bundle_records
+from kraken_core.analysis_run_protocol import AnalysisPartitionJobManifest, AnalysisPartitionResultManifest
+from kraken_core.plugin_protocol import PluginResultManifest, safe_relative_path
 from kraken_core.safe_files import (
     UnsafeFilesystemPath,
     contained_path,
@@ -28,6 +30,15 @@ from kraken_core.safe_files import (
     make_contained_directories,
     open_exclusive_write,
     open_regular_read,
+)
+
+from .protocols import (
+    AgentManifest,
+    AgentResult,
+    manifest_to_json,
+    parse_manifest_json,
+    parse_result_json,
+    result_to_json,
 )
 
 
@@ -109,14 +120,19 @@ class AgentJob:
     updated_at: str
     revision: int
     error: str | None = None
+    progress_json: str | None = None
 
     @property
-    def manifest(self) -> PluginJobManifest:
-        return PluginJobManifest.from_json(self.manifest_json)
+    def manifest(self) -> AgentManifest:
+        return parse_manifest_json(self.manifest_json)
 
     @property
-    def result(self) -> PluginResultManifest | None:
-        return None if self.result_json is None else PluginResultManifest.from_json(self.result_json)
+    def result(self) -> AgentResult | None:
+        return None if self.result_json is None else parse_result_json(self.result_json)
+
+    @property
+    def progress(self) -> dict[str, object] | None:
+        return None if self.progress_json is None else json.loads(self.progress_json)
 
 
 def _utc_now() -> str:
@@ -156,7 +172,8 @@ class DurableJobStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     revision INTEGER NOT NULL,
-                    error TEXT
+                    error TEXT,
+                    progress_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS ix_jobs_state_updated
                     ON jobs(state, updated_at);
@@ -169,6 +186,9 @@ class DurableJobStore:
                 );
                 """
             )
+            columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(jobs)")}
+            if "progress_json" not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN progress_json TEXT")
 
     @staticmethod
     def _row(row: sqlite3.Row) -> AgentJob:
@@ -181,11 +201,12 @@ class DurableJobStore:
             updated_at=row["updated_at"],
             revision=int(row["revision"]),
             error=row["error"],
+            progress_json=row["progress_json"],
         )
 
-    def enqueue(self, manifest: PluginJobManifest) -> AgentJob:
+    def enqueue(self, manifest: AgentManifest) -> AgentJob:
         now = _utc_now()
-        canonical = manifest.to_json()
+        canonical = manifest_to_json(manifest)
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute("SELECT * FROM jobs WHERE job_id=?", (manifest.job_id,)).fetchone()
@@ -196,7 +217,11 @@ class DurableJobStore:
                 connection.commit()
                 return self._row(existing)
             connection.execute(
-                "INSERT INTO jobs VALUES (?, ?, ?, NULL, ?, ?, 0, NULL)",
+                """
+                INSERT INTO jobs(
+                    job_id, state, manifest_json, result_json, created_at, updated_at, revision, error, progress_json
+                ) VALUES (?, ?, ?, NULL, ?, ?, 0, NULL, NULL)
+                """,
                 (manifest.job_id, AgentJobState.QUEUED.value, canonical, now, now),
             )
             connection.commit()
@@ -256,14 +281,14 @@ class DurableJobStore:
 
     def record_result(
         self,
-        result: PluginResultManifest,
+        result: AgentResult,
         *,
         callback_key: str,
         expected_revision: int,
     ) -> tuple[AgentJob, bool]:
         """Record a callback once; return ``(job, was_duplicate)``."""
 
-        payload = result.to_json()
+        payload = result_to_json(result)
         payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -294,6 +319,14 @@ class DurableJobStore:
             )
             connection.commit()
         return self.get(result.job_id), False
+
+    def record_progress(self, job_id: str, payload: dict[str, object]) -> None:
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                "UPDATE jobs SET progress_json=?, updated_at=? WHERE job_id=?",
+                (canonical, _utc_now(), job_id),
+            )
 
     def recover_interrupted(self) -> int:
         """Mark jobs that cannot safely continue without operator inspection."""
@@ -357,12 +390,12 @@ class StagingWorkspace:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def write_manifest(self, manifest: PluginJobManifest) -> Path:
+    def write_manifest(self, manifest: AgentManifest) -> Path:
         self.create()
         destination = self.path / "job.json"
         temporary = destination.with_suffix(".tmp")
         with open_exclusive_write(temporary) as stream:
-            stream.write(manifest.to_json().encode("utf-8"))
+            stream.write(manifest_to_json(manifest).encode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, destination)
@@ -389,7 +422,31 @@ class StagingWorkspace:
         contained_path(self.path, tuple(normalized.split("/")))
         return destination
 
-    def verify_result(self, result: PluginResultManifest) -> None:
+    def verify_result(self, result: AgentResult, manifest: AgentManifest | None = None) -> None:
+        if isinstance(result, AnalysisPartitionResultManifest):
+            if not isinstance(manifest, AnalysisPartitionJobManifest):
+                raise ValueError("Analysis result requires its partition job manifest")
+            if result.bundle is None:
+                return
+            normalized = safe_relative_path(result.bundle.relative_path)
+            if not normalized.startswith("outputs/"):
+                raise ValueError("Analysis bundle must be placed below outputs/")
+            if self.digest(normalized) != result.bundle.sha256:
+                raise ValueError("Analysis bundle checksum mismatch")
+            candidate = self.resolve(normalized)
+            if candidate.stat().st_size != result.bundle.compressed_size:
+                raise ValueError("Analysis bundle compressed size does not match its manifest")
+            with open_regular_read(candidate, root=self.path) as stream:
+                tuple(
+                    stream_bundle_records(
+                        stream,
+                        result.bundle,
+                        expected_frame_ids=(frame.frame_id for frame in manifest.frames),
+                    )
+                )
+            return
+        if not isinstance(result, PluginResultManifest):
+            raise TypeError("Unsupported Agent result contract")
         seen: set[Path] = set()
         for output in result.outputs:
             normalized = safe_relative_path(output.relative_path)

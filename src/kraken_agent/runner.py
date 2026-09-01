@@ -11,9 +11,15 @@ from pathlib import Path
 from typing import Mapping
 
 from kraken_core.plugin_protocol import PluginJobManifest, PluginJobOutcome, PluginResultManifest
+from kraken_core.analysis_protocol import AnalysisOutcome
+from kraken_core.analysis_run_protocol import AnalysisPartitionJobManifest, AnalysisPartitionResultManifest
 from kraken_core.safe_files import open_regular_append, open_regular_read
 
 from .jobs import AgentJobState, DurableJobStore, JobStateError, StagingWorkspace, TERMINAL_STATES
+from .protocols import parse_result_json
+
+
+ANALYSIS_OPERATION = "karakal.analyze.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +138,30 @@ class SubprocessPluginRunner:
         if outcome in {PluginJobOutcome.FAILED, PluginJobOutcome.CANCELLED} and result.outputs:
             raise ValueError("Failed or cancelled plugin results cannot publish outputs")
 
+    @staticmethod
+    def _validate_analysis_result_contract(
+        manifest: AnalysisPartitionJobManifest,
+        result: AnalysisPartitionResultManifest,
+    ) -> None:
+        if result.job_id != manifest.job_id or result.run_id != manifest.run_id:
+            raise ValueError("Karakal Worker returned a result for another analysis run")
+        if result.partition_id != manifest.partition_id or result.project_id != manifest.project_id:
+            raise ValueError("Karakal Worker returned a result for another partition")
+        if result.bundle is not None and result.bundle.frame_count != len(manifest.frames):
+            raise ValueError("Analysis result bundle must contain exactly the partition frames")
+
+    def _capture_progress(self, workspace: StagingWorkspace, job_id: str) -> None:
+        progress_path = workspace.path / "progress.json"
+        if not progress_path.is_file():
+            return
+        try:
+            with open_regular_read(progress_path, root=workspace.path) as stream:
+                payload = json.loads(stream.read(1024 * 1024).decode("utf-8"))
+            if isinstance(payload, dict) and payload.get("job_id") == job_id:
+                self.store.record_progress(job_id, payload)
+        except (OSError, ValueError, json.JSONDecodeError):
+            return
+
     def run_once(self) -> bool:
         jobs = self.store.list(states=(AgentJobState.QUEUED,), limit=1)
         if not jobs:
@@ -142,12 +172,18 @@ class SubprocessPluginRunner:
             manifest = job.manifest
             workspace = StagingWorkspace(self.staging_root, job.job_id)
             workspace.write_manifest(manifest)
-            for item in manifest.inputs:
+            if isinstance(manifest, AnalysisPartitionJobManifest):
+                input_artifacts = tuple(artifact for frame in manifest.frames for artifact in frame.artifacts)
+                operation = ANALYSIS_OPERATION
+            else:
+                input_artifacts = manifest.inputs
+                operation = manifest.operation
+            for item in input_artifacts:
                 if workspace.digest(item.relative_path) != item.sha256:
                     raise ValueError(f"Missing or damaged staged input: {item.relative_path}")
-            spec = self.registry.get(manifest.operation)
+            spec = self.registry.get(operation)
             if spec is None:
-                raise ValueError(f"No plugin registered for {manifest.operation}")
+                raise ValueError(f"No plugin registered for {operation}")
             job = self.store.transition(job.job_id, AgentJobState.RUNNING, expected_revision=job.revision)
             result_path = workspace.path / "result.json"
             environment = self._plugin_environment()
@@ -156,6 +192,8 @@ class SubprocessPluginRunner:
                     "KRAKEN_JOB_MANIFEST": str(workspace.path / "job.json"),
                     "KRAKEN_RESULT_MANIFEST": str(result_path),
                     "KRAKEN_STAGING_ROOT": str(workspace.path),
+                    "KRAKEN_PROGRESS_PATH": str(workspace.path / "progress.json"),
+                    "KRAKEN_CANCEL_PATH": str(workspace.path / "cancel.request"),
                 }
             )
             log_path = workspace.path / "plugin.log"
@@ -169,6 +207,7 @@ class SubprocessPluginRunner:
                     stderr=subprocess.STDOUT,
                 )
                 while process.poll() is None:
+                    self._capture_progress(workspace, job.job_id)
                     if self._stop.wait(0.25):
                         self._terminate(process)
                         return True
@@ -176,28 +215,42 @@ class SubprocessPluginRunner:
                     if current.state is AgentJobState.CANCELLED:
                         self._terminate(process)
                         return True
-            if process.returncode != 0:
+            self._capture_progress(workspace, job.job_id)
+            allowed_return_codes = {0, 3, 130} if isinstance(manifest, AnalysisPartitionJobManifest) else {0}
+            if process.returncode not in allowed_return_codes:
                 raise RuntimeError(f"Plugin exited with code {process.returncode}")
             with open_regular_read(result_path, root=workspace.path) as result_stream:
                 raw_result = result_stream.read(self._MAX_RESULT_MANIFEST_BYTES + 1)
             if len(raw_result) > self._MAX_RESULT_MANIFEST_BYTES:
                 raise ValueError("Plugin result manifest is too large")
-            result = PluginResultManifest.from_json(raw_result.decode("utf-8"))
+            result = parse_result_json(raw_result.decode("utf-8"))
             if result.job_id != job.job_id:
                 raise ValueError("Plugin returned a result for another job")
-            self._validate_result_contract(manifest, result)
-            workspace.verify_result(result)
+            if isinstance(manifest, AnalysisPartitionJobManifest):
+                if not isinstance(result, AnalysisPartitionResultManifest):
+                    raise ValueError("Karakal Worker returned a legacy plugin result")
+                self._validate_analysis_result_contract(manifest, result)
+            else:
+                if not isinstance(result, PluginResultManifest):
+                    raise ValueError("Legacy plugin returned an analysis result")
+                self._validate_result_contract(manifest, result)
+            workspace.verify_result(result, manifest)
             current = self.store.get(job.job_id)
             current, _ = self.store.record_result(
                 result,
-                callback_key=f"process:{result.completed_at}",
+                callback_key=(
+                    f"analysis:{result.partition_id}:{result.bundle.sha256 if result.bundle else result.outcome.value}"
+                    if isinstance(result, AnalysisPartitionResultManifest)
+                    else f"process:{result.completed_at}"
+                ),
                 expected_revision=current.revision,
             )
-            if result.outcome == PluginJobOutcome.SUCCEEDED.value:
+            outcome_value = result.outcome.value if isinstance(result.outcome, AnalysisOutcome) else result.outcome
+            if outcome_value == PluginJobOutcome.SUCCEEDED.value:
                 target = AgentJobState.IMPORTING
-            elif result.outcome == PluginJobOutcome.PARTIAL.value:
+            elif outcome_value == PluginJobOutcome.PARTIAL.value:
                 target = AgentJobState.PARTIAL
-            elif result.outcome == PluginJobOutcome.CANCELLED.value:
+            elif outcome_value == PluginJobOutcome.CANCELLED.value:
                 target = AgentJobState.CANCELLED
             else:
                 target = AgentJobState.FAILED

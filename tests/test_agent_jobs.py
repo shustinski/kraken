@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import cv2
+import numpy as np
 import tempfile
 import unittest
-import json
 import sys
 from pathlib import Path
 
 from kraken_agent.jobs import AgentJobState, DurableJobStore, JobStateError, StagingWorkspace
 from kraken_agent.runner import PluginProcessSpec, PluginRegistry, SubprocessPluginRunner
+from kraken_agent.runner import ANALYSIS_OPERATION
+from kraken_core.analysis_protocol import AnalysisArtifactInput, AnalysisFrameInput, AnalysisSourceRole
+from kraken_core.analysis_run_protocol import (
+    AnalysisExpression,
+    AnalysisPartitionJobManifest,
+    AnalysisPartitionResultManifest,
+    AnalysisRecipe,
+)
 from kraken_core.plugin_protocol import (
     PluginFrameInput,
     PluginFrameOutput,
@@ -141,6 +150,62 @@ class AgentJobTests(unittest.TestCase):
             completed = store.get(job_manifest.job_id)
             self.assertEqual(AgentJobState.IMPORTING, completed.state)
             self.assertIsNotNone(completed.result)
+
+    def test_agent_runs_partitioned_karakal_worker_and_tracks_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = DurableJobStore(root / "jobs.sqlite3")
+            workspace = StagingWorkspace(root / "staging", "analysis-job-1")
+            workspace.create()
+            artifacts = []
+            for key, values in {"A": [[1, 0]], "B": [[0, 1]]}.items():
+                source = root / f"{key}.png"
+                self.assertTrue(cv2.imwrite(str(source), np.asarray(values, dtype=np.uint8) * 255))
+                digest = hashlib.sha256(source.read_bytes()).hexdigest()
+                relative_path = f"inputs/{key}.png"
+                workspace.stage_file(source, relative_path, expected_sha256=digest)
+                artifacts.append(
+                    AnalysisArtifactInput(
+                        key,
+                        AnalysisSourceRole.MODEL_OUTPUT,
+                        f"artifact-{key}",
+                        f"version-{key}",
+                        relative_path,
+                        "image/png",
+                        digest,
+                    )
+                )
+            job_manifest = AnalysisPartitionJobManifest(
+                "analysis-job-1",
+                "run-1",
+                "part-0",
+                "project-1",
+                0,
+                1,
+                "fingerprint",
+                AnalysisRecipe(
+                    AnalysisExpression.binary(
+                        "compare", AnalysisExpression.source("A"), AnalysisExpression.source("B")
+                    )
+                ),
+                (AnalysisFrameInput("frame-1", 1, 1, tuple(artifacts)),),
+            )
+            store.enqueue(job_manifest)
+            registry = PluginRegistry(
+                {
+                    ANALYSIS_OPERATION: PluginProcessSpec(
+                        ANALYSIS_OPERATION,
+                        (sys.executable, "-m", "karakal.worker"),
+                    )
+                }
+            )
+
+            self.assertTrue(SubprocessPluginRunner(store, root / "staging", registry).run_once())
+
+            completed = store.get(job_manifest.job_id)
+            self.assertEqual(AgentJobState.IMPORTING, completed.state)
+            self.assertIsInstance(completed.result, AnalysisPartitionResultManifest)
+            self.assertEqual(1, completed.progress["completed_frames"])
 
 
 if __name__ == "__main__":

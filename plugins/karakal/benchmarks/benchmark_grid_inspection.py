@@ -86,6 +86,9 @@ class BenchmarkResult:
     peak_child_rss_mb: float | None
     cache_hits: int
     failures: int
+    warmup_runs: int
+    measurement_runs: int
+    measurement_seconds: list[float]
     stages: dict[str, dict[str, float]] = field(default_factory=dict)
     resources: list[ResourceSample] = field(default_factory=list)
 
@@ -387,6 +390,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--chunk-size", type=int, default=1, help="Recorded for later chunked implementation comparisons.")
     parser.add_argument("--opencv-threads", type=int, default=1)
     parser.add_argument("--cache", choices=("off", "cold", "warm"), default="off")
+    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--clear-cache", action="store_true")
     parser.add_argument("--clear-cache-only", action="store_true")
     parser.add_argument("--output", type=Path, default=PLUGIN_ROOT / "build" / "grid-inspection-benchmark" / "latest.json")
@@ -417,30 +422,44 @@ def main(argv: list[str] | None = None) -> int:
     items = _build_items(paths, int(args.limit))
     config = GridDamageAnalysisConfig().normalized()
 
-    monitor = ResourceMonitor()
-    monitor.start()
-    cpu_started = process_time()
-    started = perf_counter()
-    rows = _run_frames(
-        items,
-        implementation=str(args.implementation),
-        workers=max(1, int(args.workers)),
-        chunk_size=max(1, int(args.chunk_size)),
-        opencv_threads=max(1, int(args.opencv_threads)),
-        config=config,
-        use_cache=args.cache != "off",
-    )
-    wall_time = perf_counter() - started
-    process_cpu_time = process_time() - cpu_started
-    monitor.stop()
+    run_kwargs = {
+        "implementation": str(args.implementation),
+        "workers": max(1, int(args.workers)),
+        "chunk_size": max(1, int(args.chunk_size)),
+        "opencv_threads": max(1, int(args.opencv_threads)),
+        "config": config,
+        "use_cache": args.cache != "off",
+    }
+    warmup_runs = max(0, int(args.warmup))
+    for _run_index in range(warmup_runs):
+        if args.cache == "cold":
+            _clear_cache()
+        _run_frames(items, **run_kwargs)
+
+    measurements: list[tuple[float, float, list[FrameTiming], list[ResourceSample]]] = []
+    for _run_index in range(max(3, int(args.repeats))):
+        if args.cache == "cold":
+            _clear_cache()
+        monitor = ResourceMonitor()
+        monitor.start()
+        cpu_started = process_time()
+        started = perf_counter()
+        measured_rows = _run_frames(items, **run_kwargs)
+        elapsed = perf_counter() - started
+        cpu_elapsed = process_time() - cpu_started
+        monitor.stop()
+        measurements.append((elapsed, cpu_elapsed, measured_rows, monitor.samples))
+
+    ordered_measurements = sorted(measurements, key=lambda item: item[0])
+    wall_time, process_cpu_time, rows, resource_samples = ordered_measurements[len(ordered_measurements) // 2]
 
     total_stage_time = sum(row.total_ms for row in rows)
     stage_names = ("cache_read_ms", "file_read_ms", "decode_ms", "analysis_ms", "cache_write_ms", "total_ms")
     stages = {name.removesuffix("_ms"): _stage_summary([getattr(row, name) for row in rows], total_stage_time) for name in stage_names}
-    rss_values = [sample.rss_mb for sample in monitor.samples]
-    child_rss_values = [sample.child_rss_mb for sample in monitor.samples]
+    rss_values = [sample.rss_mb for sample in resource_samples]
+    child_rss_values = [sample.child_rss_mb for sample in resource_samples]
     logical_cpu_count = max(1, int(os.cpu_count() or 1))
-    sampled_cpu_percent = [sample.cpu_percent / logical_cpu_count for sample in monitor.samples]
+    sampled_cpu_percent = [sample.cpu_percent / logical_cpu_count for sample in resource_samples]
     result = BenchmarkResult(
         schema_version=1,
         dataset=dataset_label,
@@ -464,8 +483,11 @@ def main(argv: list[str] | None = None) -> int:
         peak_child_rss_mb=max(child_rss_values) if child_rss_values else None,
         cache_hits=sum(1 for row in rows if row.cache_hit),
         failures=sum(1 for row in rows if row.status != "ok"),
+        warmup_runs=warmup_runs,
+        measurement_runs=len(measurements),
+        measurement_seconds=[float(item[0]) for item in measurements],
         stages=stages,
-        resources=monitor.samples,
+        resources=resource_samples,
     )
     payload = _result_payload(result)
     args.output.parent.mkdir(parents=True, exist_ok=True)

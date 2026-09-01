@@ -1,6 +1,8 @@
 """Details dialog for the extended validation gradient widget."""
+
 from __future__ import annotations
 
+import logging
 import numpy as np
 from pathlib import Path
 from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
@@ -23,26 +25,31 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ..core.analysis_modes import CONFIDENCE_COMPARISON_MODE, metric_level_key, metric_visual_ratio
-from ..core.backend_constants import BCE_SCORE_CAP, MODEL_CONFIDENCE_UNCERTAIN_DELTA, POINT_SUPPORT_THRESHOLD, POLYGON_SUPPORT_THRESHOLD
+from ..core.backend_constants import (
+    BCE_SCORE_CAP,
+    MODEL_CONFIDENCE_UNCERTAIN_DELTA,
+    POINT_SUPPORT_THRESHOLD,
+    POLYGON_SUPPORT_THRESHOLD,
+)
 from ..core.domain import BuildResult, ComparisonMode, FrameRecord
 from ..core.grid_anomaly import GridFrameAnalysisResult
-from ..core.repository import (
-    _boundary_mask,
-    _distance_transform,
-    _confidence_map_from_probability,
+from ..core.performance import PerformanceConfig
+from ..core.confidence_analysis import (
     _confidence_display_map_from_probability,
+    _confidence_map_from_probability,
     _frame_uncertainty_components_from_probability,
-    metric_higher_is_better,
-    load_grayscale_image,
-    _point_map_from_view,
     _support_weights_from_probability,
-    compute_comparison,
 )
+from ..core.image_io import load_grayscale_image
+from ..core.mask_metrics import _point_map_from_view, compute_comparison
+from ..core.mask_primitives import _boundary_mask, _distance_transform
+from ..core.metric_keys import metric_higher_is_better
 from ..core.confidence_maps import (
     DEFAULT_CONFIDENCE_BAD_AREA_THRESHOLD,
     build_algorithmic_uncertainty,
@@ -52,8 +59,16 @@ from ..core.confidence_maps import (
 )
 from ..core.workers import DetailConfidenceWorker, DetailPayloadWorker
 from ..ui.i18n import Translator
-from ..ui.ui_constants import GRID_INSPECTION_DEFAULT_ERROR_TYPES, GRID_INSPECTION_ERROR_TYPE_OPTIONS
+from ..ui.ui_constants import (
+    GRID_INSPECTION_DEFAULT_ERROR_TYPES,
+    GRID_INSPECTION_DAMAGE_METRIC_KEY,
+    GRID_INSPECTION_ERROR_TYPE_OPTIONS,
+    grid_inspection_error_type_color,
+    grid_inspection_error_type_icon,
+)
+
 DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
+_LOGGER = logging.getLogger(__name__)
 
 
 class _OverlayGraphicsView(QGraphicsView):
@@ -100,7 +115,11 @@ class _OverlayGraphicsView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if self._middle_pan_active and (event.buttons() & Qt.MouseButton.MiddleButton) and self._middle_pan_last_pos is not None:
+        if (
+            self._middle_pan_active
+            and (event.buttons() & Qt.MouseButton.MiddleButton)
+            and self._middle_pan_last_pos is not None
+        ):
             delta = event.position() - self._middle_pan_last_pos
             self._middle_pan_last_pos = event.position()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
@@ -161,8 +180,7 @@ class _ExpandableDetailScoreCard(QWidget):
         self.details_label = QLabel("", self)
         self.details_label.setWordWrap(True)
         self.details_label.setStyleSheet(
-            "padding: 6px 8px; color: #c9d3df; "
-            "background-color: #11161d; border-radius: 8px;"
+            "padding: 6px 8px; color: #c9d3df; background-color: #11161d; border-radius: 8px;"
         )
         self.details_label.hide()
         self.value_button.toggled.connect(self._on_toggled)
@@ -215,6 +233,7 @@ class ExtendFrameDetailsDialog(QDialog):
         allowed_result_kinds: tuple[str, ...] | None = None,
         grid_inspection_result: GridFrameAnalysisResult | None = None,
         grid_inspection_source_path: Path | str | None = None,
+        performance_config: PerformanceConfig | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -224,13 +243,16 @@ class ExtendFrameDetailsDialog(QDialog):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._record = record
         self._build_result = build_result
+        self._performance_config = performance_config
         self._translator = Translator()
         self._t = self._translator.tr
         self._payload: dict[str, object] = {}
         self._overlay_cache: dict[tuple[object, ...], QPixmap] = {}
         self._derived_cache: dict[tuple[object, ...], object] = {}
         self._comparison_score: float | None = None
-        self._preferred_metric_key = str(preferred_metric_key or build_result.selected_metric_key or "overall_frame_score")
+        self._preferred_metric_key = str(
+            preferred_metric_key or build_result.selected_metric_key or "overall_frame_score"
+        )
         self._preferred_model_id = str((session_view_state or {}).get("preferred_model_id") or "") or None
         self._pending_initial_fit = True
         self._detail_thread: QThread | None = None
@@ -344,6 +366,19 @@ class ExtendFrameDetailsDialog(QDialog):
         controls_layout.setSpacing(8)
         controls_scroll.setWidget(controls_host)
 
+        self.details_control_tabs = QTabWidget(controls_host)
+        overview_page = QWidget(self.details_control_tabs)
+        overview_layout = QVBoxLayout(overview_page)
+        overview_layout.setContentsMargins(8, 8, 8, 8)
+        overview_layout.setSpacing(8)
+        layers_page = QWidget(self.details_control_tabs)
+        layers_layout = QVBoxLayout(layers_page)
+        layers_layout.setContentsMargins(8, 8, 8, 8)
+        layers_layout.setSpacing(8)
+        self.details_control_tabs.addTab(overview_page, self._t("details.tab.overview"))
+        self.details_control_tabs.addTab(layers_page, self._t("details.tab.layers"))
+        controls_layout.addWidget(self.details_control_tabs)
+
         frame_summary_group = QGroupBox(self._t("details.frame_info"), controls_host)
         frame_summary_form = QFormLayout(frame_summary_group)
         frame_summary_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
@@ -352,7 +387,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.frame_id_value.show()
         frame_summary_form.addRow(self._t("matrix.preview.frame"), self.frame_name_value)
         frame_summary_form.addRow(self._t("details.frame_id"), self.frame_id_value)
-        controls_layout.addWidget(frame_summary_group)
+        overview_layout.addWidget(frame_summary_group)
 
         config_group = QGroupBox(self._t("details.display"), controls_host)
         config_form = QFormLayout(config_group)
@@ -383,7 +418,7 @@ class ExtendFrameDetailsDialog(QDialog):
         config_form.addRow(self._t("details.layer_view"), self.layer_view_combo)
         config_form.addRow(self._t("details.result_overlay"), self.result_kind_combo)
         config_form.addRow(self.operation_label, self.grayscale_diff_checkbox)
-        controls_layout.addWidget(config_group)
+        overview_layout.addWidget(config_group)
 
         layers_group = QGroupBox(self._t("details.layers"), controls_host)
         layers_form = QFormLayout(layers_group)
@@ -408,8 +443,12 @@ class ExtendFrameDetailsDialog(QDialog):
         self.second_mask_color_button = self._color_button()
         self.result_mask_color_button = self._color_button()
         self.original_layer_row = self._layer_row(self.original_visible, self.original_opacity)
-        self.first_source_layer_row = self._layer_row(self.first_source_visible, self.first_source_opacity, self.first_mask_color_button)
-        self.second_source_layer_row = self._layer_row(self.second_source_visible, self.second_source_opacity, self.second_mask_color_button)
+        self.first_source_layer_row = self._layer_row(
+            self.first_source_visible, self.first_source_opacity, self.first_mask_color_button
+        )
+        self.second_source_layer_row = self._layer_row(
+            self.second_source_visible, self.second_source_opacity, self.second_mask_color_button
+        )
         self.result_layer_row = self._layer_row(self.result_visible, self.result_opacity, self.result_mask_color_button)
         layers_form.addRow(self.original_layer_title, self.original_layer_row)
         layers_form.addRow(self.first_source_layer_title, self.first_source_layer_row)
@@ -430,6 +469,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.grid_error_type_checks: dict[str, QCheckBox] = {}
         for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             checkbox = QCheckBox(self._t(label_key), layers_group)
+            checkbox.setIcon(grid_inspection_error_type_icon(error_type))
             checkbox.setChecked(str(error_type) in self._grid_detail_enabled_error_types)
             self.grid_error_type_checks[str(error_type)] = checkbox
             layers_form.addRow(checkbox)
@@ -439,15 +479,15 @@ class ExtendFrameDetailsDialog(QDialog):
             if label is not None:
                 label.setVisible(False)
         self.grid_error_types_title.setVisible(False)
-        controls_layout.addWidget(layers_group)
+        layers_layout.addWidget(layers_group)
 
         comparison_score_group = QGroupBox(self._t("details.selected_comparison_score"), controls_host)
         comparison_score_layout = QVBoxLayout(comparison_score_group)
         self.comparison_score_card = _ExpandableDetailScoreCard(self._t("details.frame_score"), comparison_score_group)
         comparison_score_layout.addWidget(self.comparison_score_card)
-        controls_layout.addWidget(comparison_score_group)
+        overview_layout.addWidget(comparison_score_group)
 
-        comparison_result_group = QGroupBox("Inter-model comparison", controls_host)
+        comparison_result_group = QGroupBox(self._t("details.comparisons"), controls_host)
         comparison_result_layout = QVBoxLayout(comparison_result_group)
         self.comparison_metrics_label = QLabel("-", comparison_result_group)
         self.comparison_metrics_label.setWordWrap(True)
@@ -457,8 +497,9 @@ class ExtendFrameDetailsDialog(QDialog):
         self.comparison_events_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         comparison_result_layout.addWidget(self.comparison_metrics_label)
         comparison_result_layout.addWidget(self.comparison_events_label)
-        controls_layout.addWidget(comparison_result_group)
-        controls_layout.addStretch(1)
+        overview_layout.addWidget(comparison_result_group)
+        overview_layout.addStretch(1)
+        layers_layout.addStretch(1)
 
         splitter.addWidget(viewer_widget)
         splitter.addWidget(controls_scroll)
@@ -629,9 +670,6 @@ class ExtendFrameDetailsDialog(QDialog):
     def _schedule_reset_view(self) -> None:
         QTimer.singleShot(0, self.overlay_view.reset_view)
 
-    def _has_ground_truth(self) -> bool:
-        return self._payload.get("gt_mask") is not None
-
     def _model_display_name(self, model_id: str | None) -> str:
         if model_id is None:
             return "-"
@@ -674,129 +712,125 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _component_name_label(self, name: str) -> str:
         labels_en = {
-            'source': 'Source',
-            'formula': 'Formula',
-            'definition': 'Definition',
-            'value': 'Value',
-            'model': 'Model',
-            'hot_region_count': 'Hot region count',
-            'mean_object_confidence': 'Mean object confidence',
-            'mean_object_probability': 'Mean object probability',
-            'uncertain_fraction': 'Uncertain fraction',
-            'mean_transition_width': 'Mean transition width',
-            'transition_width': 'Transition width',
-            'object_area_fraction': 'Object area fraction',
-            'mean_point_confidence': 'Mean point confidence',
-            'mean_point_probability': 'Mean point probability',
-            'mean_point_contrast': 'Mean point contrast',
-            'point_count': 'Point count',
-            'soft_dice': 'Soft Dice',
-            'soft_iou': 'Soft IoU',
-            'ssim': 'SSIM',
-            'dice': 'Dice',
-            'iou': 'IoU',
-            'hausdorff_distance': 'Hausdorff distance',
-            'centroid_distance': 'Centroid distance',
-            'mae': 'MAE',
-            'rmse': 'RMSE',
-            'precision': 'Precision',
-            'recall': 'Recall',
-            'f1_at_r': 'F1@r',
-            'mean_localization_error': 'Mean localization error',
-            'localization_score': 'Localization score',
-            'localization_agreement': 'Localization agreement',
-            'count_error': 'Count error',
-            'count_agreement': 'Count agreement',
-            'connected_component_error': 'Connected-component error',
-            'chamfer_score': 'Chamfer score',
-            'hausdorff_score': 'Hausdorff score',
+            "source": "Source",
+            "formula": "Formula",
+            "definition": "Definition",
+            "value": "Value",
+            "model": "Model",
+            "hot_region_count": "Hot region count",
+            "mean_object_confidence": "Mean object confidence",
+            "mean_object_probability": "Mean object probability",
+            "uncertain_fraction": "Uncertain fraction",
+            "mean_transition_width": "Mean transition width",
+            "transition_width": "Transition width",
+            "object_area_fraction": "Object area fraction",
+            "mean_point_confidence": "Mean point confidence",
+            "mean_point_probability": "Mean point probability",
+            "mean_point_contrast": "Mean point contrast",
+            "point_count": "Point count",
+            "soft_dice": "Soft Dice",
+            "soft_iou": "Soft IoU",
+            "ssim": "SSIM",
+            "dice": "Dice",
+            "iou": "IoU",
+            "hausdorff_distance": "Hausdorff distance",
+            "centroid_distance": "Centroid distance",
+            "mae": "MAE",
+            "rmse": "RMSE",
+            "precision": "Precision",
+            "recall": "Recall",
+            "f1_at_r": "F1@r",
+            "mean_localization_error": "Mean localization error",
+            "localization_score": "Localization score",
+            "localization_agreement": "Localization agreement",
+            "count_error": "Count error",
+            "count_agreement": "Count agreement",
+            "connected_component_error": "Connected-component error",
+            "chamfer_score": "Chamfer score",
+            "hausdorff_score": "Hausdorff score",
         }
         labels_ru = {
-            'source': 'Источник',
-            'formula': 'Формула',
-            'definition': 'Определение',
-            'value': 'Значение',
-            'model': 'Модель',
-            'hot_region_count': 'Число горячих областей',
-            'summary_metric': 'Сводная метрика',
-            'mean_object_confidence': 'Средняя объектная уверенность',
-            'mean_core_confidence': 'Средняя уверенность ядра',
-            'mean_boundary_uncertainty': 'Средняя неуверенность границы',
-            'mean_weighted_confidence': 'Средняя взвешенная уверенность',
-            'mean_object_probability': 'Среднее значение grayscale внутри объекта',
-            'uncertain_fraction': 'Доля сомнительных пикселей',
-            'object_area_fraction': 'Доля площади объекта',
-            'polygon_count': 'Число полигонов',
-            'mean_point_confidence': 'Средняя уверенность точек',
-            'mean_center_confidence': 'Средняя уверенность в центре точки',
-            'mean_local_confidence': 'Средняя локальная уверенность точки',
-            'mean_point_probability': 'Среднее значение grayscale по точкам',
-            'mean_point_contrast': 'Средний контраст точек',
-            'point_count': 'Количество точек',
-            'soft_dice': 'Soft Dice',
-            'soft_iou': 'Soft IoU',
-            'ssim': 'SSIM',
-            'dice': 'Dice',
-            'iou': 'IoU',
-            'hausdorff_distance': 'Расстояние Хаусдорфа',
-            'centroid_distance': 'Расстояние между центроидами',
-            'mae': 'MAE',
-            'rmse': 'RMSE',
-            'precision': 'Precision',
-            'recall': 'Recall',
-            'f1_at_r': 'F1@r',
-            'mean_localization_error': 'Средняя ошибка локализации',
-            'localization_score': 'Оценка локализации',
-            'localization_agreement': 'Согласованность локализации',
-            'count_error': 'Ошибка количества',
-            'count_agreement': 'Согласованность количества',
-            'connected_component_error': 'Ошибка числа компонент',
-            'chamfer_score': 'Оценка Chamfer',
-            'hausdorff_score': 'Оценка Хаусдорфа',
+            "source": "Источник",
+            "formula": "Формула",
+            "definition": "Определение",
+            "value": "Значение",
+            "model": "Модель",
+            "hot_region_count": "Число горячих областей",
+            "summary_metric": "Сводная метрика",
+            "mean_object_confidence": "Средняя объектная уверенность",
+            "mean_core_confidence": "Средняя уверенность ядра",
+            "mean_boundary_uncertainty": "Средняя неуверенность границы",
+            "mean_weighted_confidence": "Средняя взвешенная уверенность",
+            "mean_object_probability": "Среднее значение grayscale внутри объекта",
+            "uncertain_fraction": "Доля сомнительных пикселей",
+            "object_area_fraction": "Доля площади объекта",
+            "polygon_count": "Число полигонов",
+            "mean_point_confidence": "Средняя уверенность точек",
+            "mean_center_confidence": "Средняя уверенность в центре точки",
+            "mean_local_confidence": "Средняя локальная уверенность точки",
+            "mean_point_probability": "Среднее значение grayscale по точкам",
+            "mean_point_contrast": "Средний контраст точек",
+            "point_count": "Количество точек",
+            "soft_dice": "Soft Dice",
+            "soft_iou": "Soft IoU",
+            "ssim": "SSIM",
+            "dice": "Dice",
+            "iou": "IoU",
+            "hausdorff_distance": "Расстояние Хаусдорфа",
+            "centroid_distance": "Расстояние между центроидами",
+            "mae": "MAE",
+            "rmse": "RMSE",
+            "precision": "Precision",
+            "recall": "Recall",
+            "f1_at_r": "F1@r",
+            "mean_localization_error": "Средняя ошибка локализации",
+            "localization_score": "Оценка локализации",
+            "localization_agreement": "Согласованность локализации",
+            "count_error": "Ошибка количества",
+            "count_agreement": "Согласованность количества",
+            "connected_component_error": "Ошибка числа компонент",
+            "chamfer_score": "Оценка Chamfer",
+            "hausdorff_score": "Оценка Хаусдорфа",
         }
-        labels = labels_ru if getattr(self._translator, 'language', 'en') == 'ru' else labels_en
+        labels = labels_ru if getattr(self._translator, "language", "en") == "ru" else labels_en
         if name in labels:
             return labels[name]
-        return name.replace('_', ' ')
+        return name.replace("_", " ")
 
     def _component_value_text(self, value: str) -> str:
         values_en = {
-            'labeled frame': 'labeled frame',
-            'unlabeled frame': 'unlabeled frame',
-            'supervised error map': 'supervised error map',
-            'variance/entropy risk map': 'variance / entropy risk map',
-            'mean entropy of consensus probability': 'mean entropy of consensus probability',
-            'mean variance over model probability maps': 'mean variance over model probability maps',
-            'acquisition_score': 'acquisition_score',
+            "variance/entropy risk map": "variance / entropy risk map",
+            "mean entropy of consensus probability": "mean entropy of consensus probability",
+            "mean variance over model probability maps": "mean variance over model probability maps",
+            "acquisition_score": "acquisition_score",
         }
         values_ru = {
-            'labeled frame': 'размеченный кадр',
-            'unlabeled frame': 'неразмеченный кадр',
-            'supervised error map': 'supervised-карта ошибки',
-            'variance/entropy risk map': 'карта риска по variance / entropy',
-            'mean entropy of consensus probability': 'средняя энтропия consensus probability',
-            'mean variance over model probability maps': 'средняя дисперсия probability maps моделей',
-            'acquisition_score': 'приоритет на разметку',
-            'weighted': 'взвешенная',
-            'core': 'ядро',
+            "variance/entropy risk map": "карта риска по variance / entropy",
+            "mean entropy of consensus probability": "средняя энтропия consensus probability",
+            "mean variance over model probability maps": "средняя дисперсия probability maps моделей",
+            "acquisition_score": "приоритет на разметку",
+            "weighted": "взвешенная",
+            "core": "ядро",
         }
-        values = values_ru if getattr(self._translator, 'language', 'en') == 'ru' else values_en
-        return values.get(value, value.replace(' vs ', ' против ') if getattr(self._translator, 'language', 'en') == 'ru' else value)
+        values = values_ru if getattr(self._translator, "language", "en") == "ru" else values_en
+        return values.get(
+            value, value.replace(" vs ", " против ") if getattr(self._translator, "language", "en") == "ru" else value
+        )
 
     def _localize_metric_lines(self, lines: list[str]) -> list[str]:
         localized: list[str] = []
         for line in lines:
             stripped = line.lstrip()
-            indent = line[:len(line) - len(stripped)]
-            status_prefix = ''
+            indent = line[: len(line) - len(stripped)]
+            status_prefix = ""
             for status in ("active", "auxiliary", "legacy"):
                 prefix = f"{status} "
                 if stripped.startswith(prefix):
                     status_prefix = f"{self._status_label(status)} "
-                    stripped = stripped[len(prefix):]
+                    stripped = stripped[len(prefix) :]
                     break
-            if ':' in stripped:
-                name, value = stripped.split(':', 1)
+            if ":" in stripped:
+                name, value = stripped.split(":", 1)
                 name = self._component_name_label(name.strip())
                 value = self._component_value_text(value.strip())
                 stripped = f"{status_prefix}{name}: {value}"
@@ -806,7 +840,7 @@ class ExtendFrameDetailsDialog(QDialog):
         return localized
 
     def _frame_type_label(self) -> str:
-        return self._t('frame_type.point') if self._is_point_geometry() else self._t('frame_type.polygon')
+        return self._t("frame_type.point") if self._is_point_geometry() else self._t("frame_type.polygon")
 
     def _result_kind_hint(self, result_kind: str) -> str | None:
         if self._is_point_geometry() and result_kind == "point_matches":
@@ -839,55 +873,52 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("hint.result_confidence_conflict")
         if result_kind == "result_confidence_transition_uncertainty":
             return self._t("hint.result_confidence_transition_uncertainty")
-        if result_kind == 'confidence_low_mask':
-            return self._t('hint.confidence_low_mask')
-        if result_kind == 'confidence_high_mask':
-            return self._t('hint.confidence_high_mask')
-        if result_kind == 'confidence_final_mask':
-            return self._t('hint.confidence_final_mask')
-        if result_kind == 'confidence_object_contours':
-            return self._t('hint.confidence_object_contours')
-        if result_kind == 'confidence_branch_debug':
-            return self._t('hint.confidence_branch_debug')
-        if result_kind == 'confidence_preprocessed':
-            return self._t('hint.confidence_preprocessed_probability')
-        if result_kind == 'confidence_boundary_cues':
-            return 'Raw boundary cues before thinning'
-        if result_kind == 'confidence_thin_barrier':
-            return 'Thin barrier map used to stop object growth'
-        if result_kind == 'confidence_core_seeds':
-            return 'High-confidence object cores used as instance seeds'
-        if result_kind == 'confidence_candidate_region':
-            return 'Candidate region allowed for object expansion'
-        if result_kind == 'confidence_bridge_cuts':
-            return 'Weak bridge cuts inserted between conflicting objects'
-        if result_kind == 'confidence_barrier_stops':
-            return 'Pixels blocked from growth by barriers and bridge cuts'
+        if result_kind == "confidence_low_mask":
+            return self._t("hint.confidence_low_mask")
+        if result_kind == "confidence_high_mask":
+            return self._t("hint.confidence_high_mask")
+        if result_kind == "confidence_final_mask":
+            return self._t("hint.confidence_final_mask")
+        if result_kind == "confidence_object_contours":
+            return self._t("hint.confidence_object_contours")
+        if result_kind == "confidence_branch_debug":
+            return self._t("hint.confidence_branch_debug")
+        if result_kind == "confidence_preprocessed":
+            return self._t("hint.confidence_preprocessed_probability")
+        if result_kind == "confidence_boundary_cues":
+            return "Raw boundary cues before thinning"
+        if result_kind == "confidence_thin_barrier":
+            return "Thin barrier map used to stop object growth"
+        if result_kind == "confidence_core_seeds":
+            return "High-confidence object cores used as instance seeds"
+        if result_kind == "confidence_candidate_region":
+            return "Candidate region allowed for object expansion"
+        if result_kind == "confidence_bridge_cuts":
+            return "Weak bridge cuts inserted between conflicting objects"
+        if result_kind == "confidence_barrier_stops":
+            return "Pixels blocked from growth by barriers and bridge cuts"
         return None
 
     def _selected_score_hint(self) -> str | None:
         preferred_confidence_model = self._preferred_confidence_model_id()
         if preferred_confidence_model is not None:
-            return self._t('hint.intra_model_point') if self._is_point_geometry() else self._t('hint.confidence_polygon')
+            return (
+                self._t("hint.intra_model_point") if self._is_point_geometry() else self._t("hint.confidence_polygon")
+            )
         group_key = self._current_comparison_group()
-        if group_key == 'confidence_model_model':
-            return self._t('hint.confidence_comparison')
-        if group_key == 'model_model':
-            return self._t('hint.model_model_point') if self._is_point_geometry() else self._t('hint.model_model_polygon')
-        if group_key == 'model_labeled':
-            return self._t('hint.model_labeled_point') if self._is_point_geometry() else self._t('hint.model_labeled_polygon')
+        if group_key == "confidence_model_model":
+            return self._t("hint.confidence_comparison")
+        if group_key == "model_model":
+            return (
+                self._t("hint.model_model_point") if self._is_point_geometry() else self._t("hint.model_model_polygon")
+            )
         return None
 
     def _preferred_group_from_metric(self) -> str:
-        metric_key = str(self._preferred_metric_key or "")
         if self._is_confidence_comparison_context():
             return "confidence_model_model"
-        if metric_key in {"model_labeled_score", "labeled_best_quality", "labeled_mean_quality"} and self._has_ground_truth():
-            return "model_labeled"
         if len(self._build_result.model_specs) >= 2:
             return "model_model"
-        if self._has_ground_truth():
-            return "model_labeled"
         return "fallback"
 
     def _prefer_confidence_output_comparison(self) -> bool:
@@ -906,7 +937,9 @@ class ExtendFrameDetailsDialog(QDialog):
         if metric_key.startswith("model_point_contrast::"):
             return True
         result_kind = self._selected_result_kind()
-        return result_kind in {"confidence", "confidence_bad_areas", "confidence_mix"} or result_kind.startswith("result_confidence_")
+        return result_kind in {"confidence", "confidence_bad_areas", "confidence_mix"} or result_kind.startswith(
+            "result_confidence_"
+        )
 
     def _is_confidence_comparison_context(self) -> bool:
         if str(self._session_view_state.get("analysis_mode") or "") == CONFIDENCE_COMPARISON_MODE:
@@ -921,7 +954,9 @@ class ExtendFrameDetailsDialog(QDialog):
     def _auto_model_model_tuple(self) -> tuple[str, str, str]:
         model_ids = self._ordered_model_ids_for_current_comparison()
         if self._is_confidence_comparison_context():
-            confidence_model_ids = [model_id for model_id in model_ids if self._model_confidence_output_available(model_id)]
+            confidence_model_ids = [
+                model_id for model_id in model_ids if self._model_confidence_output_available(model_id)
+            ]
             if len(confidence_model_ids) >= 2:
                 return (
                     f"confidence_vs_confidence::{confidence_model_ids[0]}::{confidence_model_ids[1]}",
@@ -933,15 +968,17 @@ class ExtendFrameDetailsDialog(QDialog):
         if model_ids:
             only_model_id = model_ids[0]
             if self._prefer_confidence_output_comparison():
-                return f"model_vs_confidence_output::{only_model_id}", f"model:{only_model_id}", f"model_prob:{only_model_id}"
-            return f"model_vs_model::{only_model_id}::{only_model_id}", f"model:{only_model_id}", f"model:{only_model_id}"
-        return "none", "gt", "gt"
-
-    def _auto_model_labeled_tuple(self) -> tuple[str, str, str]:
-        model_ids = self._ordered_model_ids_for_current_comparison()
-        if model_ids:
-            return f"gt_vs_model::{model_ids[0]}", "gt", f"model:{model_ids[0]}"
-        return "none", "gt", "gt"
+                return (
+                    f"model_vs_confidence_output::{only_model_id}",
+                    f"model:{only_model_id}",
+                    f"model_prob:{only_model_id}",
+                )
+            return (
+                f"model_vs_model::{only_model_id}::{only_model_id}",
+                f"model:{only_model_id}",
+                f"model:{only_model_id}",
+            )
+        return "none", "original", "original"
 
     def _current_comparison_group(self) -> str:
         return self._preferred_group_from_metric()
@@ -954,9 +991,6 @@ class ExtendFrameDetailsDialog(QDialog):
         return model_ids
 
     def _current_comparison_tuple(self) -> tuple[str, str, str]:
-        group_key = self._current_comparison_group()
-        if group_key == "model_labeled" and self._has_ground_truth():
-            return self._auto_model_labeled_tuple()
         return self._auto_model_model_tuple()
 
     def _start_loading_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
@@ -966,7 +1000,9 @@ class ExtendFrameDetailsDialog(QDialog):
         generation = int(self._detail_request_generation)
         self._payload_loading = True
         previous_result_kind = self._selected_result_kind() if preserve_selection else self._sticky_result_kind
-        default_model_id = self._preferred_confidence_model_id() or (self._build_result.model_specs[0].model_id if self._build_result.model_specs else None)
+        default_model_id = self._preferred_confidence_model_id() or (
+            self._build_result.model_specs[0].model_id if self._build_result.model_specs else None
+        )
         max_side = int(getattr(self._build_result.options, "analysis_max_side", 0) or 0) or None
         self.comparison_score_card.set_payload(
             self._t("details.frame_score"),
@@ -977,19 +1013,29 @@ class ExtendFrameDetailsDialog(QDialog):
         self._refresh_scene(reset_view=reset_view)
         self._refresh_info()
         self._detail_thread = QThread(self)
-        self._detail_worker = DetailPayloadWorker(self._record, self._build_result, default_model_id, max_side)
+        self._detail_worker = DetailPayloadWorker(
+            self._record,
+            self._build_result,
+            default_model_id,
+            max_side,
+            performance_config=self._performance_config,
+        )
         self._detail_worker.moveToThread(self._detail_thread)
         self._detail_thread.started.connect(self._detail_worker.run)
         self._detail_worker.finished.connect(
-            lambda payload, rv=reset_view, ps=preserve_selection, prk=previous_result_kind, g=generation: self._on_payload_loaded(
-                payload,
-                reset_view=rv,
-                preserve_selection=ps,
-                previous_result_kind=prk,
-                generation=g,
+            lambda payload, rv=reset_view, ps=preserve_selection, prk=previous_result_kind, g=generation: (
+                self._on_payload_loaded(
+                    payload,
+                    reset_view=rv,
+                    preserve_selection=ps,
+                    previous_result_kind=prk,
+                    generation=g,
+                )
             )
         )
-        self._detail_worker.failed.connect(lambda message, g=generation: self._on_detail_worker_failed(message, generation=g, worker_kind="detail"))
+        self._detail_worker.failed.connect(
+            lambda message, g=generation: self._on_detail_worker_failed(message, generation=g, worker_kind="detail")
+        )
         self._detail_worker.finished.connect(self._detail_thread.quit)
         self._detail_worker.failed.connect(self._detail_thread.quit)
         self._detail_thread.finished.connect(self._cleanup_detail_worker)
@@ -1011,7 +1057,9 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache.clear()
         self._derived_cache.clear()
         self._set_confidence_loading_state(False)
-        preferred_kind = previous_result_kind if preserve_selection else (self._sticky_result_kind or self._restored_result_kind)
+        preferred_kind = (
+            previous_result_kind if preserve_selection else (self._sticky_result_kind or self._restored_result_kind)
+        )
         self._refresh_result_kind_options(preferred_kind)
         self._restored_result_kind = None
         self._apply_selected_model(self._selected_model_for_current_comparison())
@@ -1038,10 +1086,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 request_cancel()
         thread = self._detail_thread
         if thread is not None:
-            try:
-                thread.quit()
-            except Exception:
-                pass
+            thread.quit()
             if thread.isRunning():
                 thread.wait(30000)
 
@@ -1090,10 +1135,7 @@ class ExtendFrameDetailsDialog(QDialog):
         for _worker, thread in active_pairs:
             if thread is None:
                 continue
-            try:
-                thread.quit()
-            except Exception:
-                pass
+            thread.quit()
             if thread.isRunning():
                 thread.wait(30000)
         self._retired_confidence_workers.clear()
@@ -1102,9 +1144,13 @@ class ExtendFrameDetailsDialog(QDialog):
         self._loading_confidence_model_id = None
         self._set_confidence_loading_state(False)
 
-    def _on_detail_worker_failed(self, message: str, *, generation: int | None = None, worker_kind: str = "detail") -> None:
+    def _on_detail_worker_failed(
+        self, message: str, *, generation: int | None = None, worker_kind: str = "detail"
+    ) -> None:
         if generation is not None:
-            active_generation = self._confidence_request_generation if worker_kind == "confidence" else self._detail_request_generation
+            active_generation = (
+                self._confidence_request_generation if worker_kind == "confidence" else self._detail_request_generation
+            )
             if int(generation) != int(active_generation):
                 return
         self._payload_loading = False
@@ -1123,8 +1169,8 @@ class ExtendFrameDetailsDialog(QDialog):
         if confidence_row is None:
             return False
         if self._is_point_geometry():
-            return hasattr(confidence_row, 'mean_point_confidence')
-        return hasattr(confidence_row, 'mean_object_confidence')
+            return hasattr(confidence_row, "mean_point_confidence")
+        return hasattr(confidence_row, "mean_object_confidence")
 
     def _result_kind_requires_confidence(self, kind: str | None = None) -> bool:
         result_kind = str(kind or self._selected_result_kind())
@@ -1146,15 +1192,26 @@ class ExtendFrameDetailsDialog(QDialog):
         generation = int(self._confidence_request_generation)
         max_side = int(getattr(self._build_result.options, "analysis_max_side", 0) or 0) or None
         thread = QThread(self)
-        worker = DetailConfidenceWorker(self._record, self._build_result, model_id, max_side, self._payload)
+        worker = DetailConfidenceWorker(
+            self._record,
+            self._build_result,
+            model_id,
+            max_side,
+            self._payload,
+            performance_config=self._performance_config,
+        )
         self._confidence_thread = thread
         self._confidence_worker = worker
         self._loading_confidence_model_id = model_id
         self._set_confidence_loading_state(True, model_id)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.finished.connect(lambda row, mid=model_id, g=generation: self._on_confidence_loaded(mid, row, generation=g))
-        worker.failed.connect(lambda message, g=generation: self._on_detail_worker_failed(message, generation=g, worker_kind="confidence"))
+        worker.finished.connect(
+            lambda row, mid=model_id, g=generation: self._on_confidence_loaded(mid, row, generation=g)
+        )
+        worker.failed.connect(
+            lambda message, g=generation: self._on_detail_worker_failed(message, generation=g, worker_kind="confidence")
+        )
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         thread.finished.connect(lambda w=worker, t=thread, g=generation: self._cleanup_confidence_worker(w, t, g))
@@ -1186,7 +1243,9 @@ class ExtendFrameDetailsDialog(QDialog):
         probabilities = self._payload.get("model_probabilities") or {}
         masks = self._payload.get("model_masks") or {}
         selected_model_id = model_id if model_id in probabilities else (next(iter(probabilities.keys()), None))
-        fallback_prob = np.zeros_like(next(iter(probabilities.values()))) if probabilities else np.zeros((1, 1), dtype=np.float32)
+        fallback_prob = (
+            np.zeros_like(next(iter(probabilities.values()))) if probabilities else np.zeros((1, 1), dtype=np.float32)
+        )
         selected_prob = probabilities.get(selected_model_id, fallback_prob)
         selected_mask = masks.get(selected_model_id, np.asarray(selected_prob >= 0.5, dtype=bool))
         self._payload["selected_model_id"] = selected_model_id
@@ -1209,10 +1268,15 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _preferred_confidence_model_id(self) -> str | None:
         metric_key = str(self._preferred_metric_key or "")
-        if '::' not in metric_key:
+        if "::" not in metric_key:
             return None
-        family, model_id = metric_key.split('::', 1)
-        if family in {"model_confidence", "model_output_confidence", "model_uncertain_fraction", "model_point_contrast"}:
+        family, model_id = metric_key.split("::", 1)
+        if family in {
+            "model_confidence",
+            "model_output_confidence",
+            "model_uncertain_fraction",
+            "model_point_contrast",
+        }:
             return model_id
         return None
 
@@ -1320,9 +1384,13 @@ class ExtendFrameDetailsDialog(QDialog):
         crop_rect = None
         if crop_rect is not None:
             values = np.asarray(self._crop_ndarray(values, crop_rect), dtype=np.float32)
-        return build_algorithmic_uncertainty(values, boundary_radius=float(self._payload.get("boundary_radius") or 1.0) + 2.0)
+        return build_algorithmic_uncertainty(
+            values, boundary_radius=float(self._payload.get("boundary_radius") or 1.0) + 2.0
+        )
 
-    def _bad_area_intensity_pixmap(self, intensity: np.ndarray, color: QColor, *, alpha_scale: float = 245.0) -> QPixmap:
+    def _bad_area_intensity_pixmap(
+        self, intensity: np.ndarray, color: QColor, *, alpha_scale: float = 245.0
+    ) -> QPixmap:
         alpha = np.clip(np.asarray(intensity, dtype=np.float32), 0.0, 1.0)
         if alpha.ndim != 2 or alpha.size == 0:
             return QPixmap()
@@ -1523,7 +1591,7 @@ class ExtendFrameDetailsDialog(QDialog):
         return red, green, blue
 
     def _point_object_confidence_overlay_pixmap(self, model_id: str | None) -> QPixmap:
-        cache_key = ('point_confidence', model_id, None)
+        cache_key = ("point_confidence", model_id, None)
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1532,7 +1600,7 @@ class ExtendFrameDetailsDialog(QDialog):
         confidence_row = self._confidence_metrics_for_model(model_id)
         if confidence_row is None:
             return QPixmap()
-        objects = tuple(getattr(confidence_row, 'objects', ()))
+        objects = tuple(getattr(confidence_row, "objects", ()))
         crop_rect = None
         x_offset = 0.0
         y_offset = 0.0
@@ -1544,8 +1612,9 @@ class ExtendFrameDetailsDialog(QDialog):
             x_offset = x0
             y_offset = y0
             objects = tuple(
-                point_row for point_row in objects
-                if x0 <= float(getattr(point_row, 'x', 0.0)) <= x1 and y0 <= float(getattr(point_row, 'y', 0.0)) <= y1
+                point_row
+                for point_row in objects
+                if x0 <= float(getattr(point_row, "x", 0.0)) <= x1 and y0 <= float(getattr(point_row, "y", 0.0)) <= y1
             )
         if not objects:
             return QPixmap()
@@ -1556,16 +1625,29 @@ class ExtendFrameDetailsDialog(QDialog):
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         for point_row in objects:
-            score = float(getattr(point_row, 'local_confidence', getattr(point_row, 'center_confidence', 0.0)))
+            score = float(getattr(point_row, "local_confidence", getattr(point_row, "center_confidence", 0.0)))
             red, green, blue = self._confidence_color(score)
-            point_probability = float(getattr(point_row, 'point_probability', 0.0))
-            support_weight = float(max(0.0, min(1.0, (point_probability - float(POINT_SUPPORT_THRESHOLD)) / max(1e-8, 1.0 - float(POINT_SUPPORT_THRESHOLD))))) if point_probability >= float(POINT_SUPPORT_THRESHOLD) else 0.0
+            point_probability = float(getattr(point_row, "point_probability", 0.0))
+            support_weight = (
+                float(
+                    max(
+                        0.0,
+                        min(
+                            1.0,
+                            (point_probability - float(POINT_SUPPORT_THRESHOLD))
+                            / max(1e-8, 1.0 - float(POINT_SUPPORT_THRESHOLD)),
+                        ),
+                    )
+                )
+                if point_probability >= float(POINT_SUPPORT_THRESHOLD)
+                else 0.0
+            )
             color = QColor(red, green, blue, int(round(80.0 + 175.0 * support_weight)))
-            radius = max(2, int(round(float(getattr(point_row, 'radius', 1.0)) + 1.0 + 1.5 * score)))
+            radius = max(2, int(round(float(getattr(point_row, "radius", 1.0)) + 1.0 + 1.5 * score)))
             painter.setPen(QPen(color, 1.4))
             painter.setBrush(color)
-            x = int(round(float(getattr(point_row, 'x', 0.0)) - x_offset))
-            y = int(round(float(getattr(point_row, 'y', 0.0)) - y_offset))
+            x = int(round(float(getattr(point_row, "x", 0.0)) - x_offset))
+            y = int(round(float(getattr(point_row, "y", 0.0)) - y_offset))
             painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
         painter.end()
         self._overlay_cache[cache_key] = pixmap
@@ -1573,7 +1655,7 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _confidence_overlay_pixmap(self, model_id: str | None) -> QPixmap:
         crop_rect = None
-        cache_key = ('confidence_frame_overlay', model_id, None)
+        cache_key = ("confidence_frame_overlay", model_id, None)
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1589,8 +1671,12 @@ class ExtendFrameDetailsDialog(QDialog):
             return QPixmap()
         confidence_map, support_weights, support_mask = render_data
         if crop_rect is not None:
-            confidence_map = np.asarray(self._crop_ndarray(np.asarray(confidence_map, dtype=np.float32), crop_rect), dtype=np.float32)
-            support_weights = np.asarray(self._crop_ndarray(np.asarray(support_weights, dtype=np.float32), crop_rect), dtype=np.float32)
+            confidence_map = np.asarray(
+                self._crop_ndarray(np.asarray(confidence_map, dtype=np.float32), crop_rect), dtype=np.float32
+            )
+            support_weights = np.asarray(
+                self._crop_ndarray(np.asarray(support_weights, dtype=np.float32), crop_rect), dtype=np.float32
+            )
             support_mask = np.asarray(self._crop_ndarray(np.asarray(support_mask, dtype=bool), crop_rect), dtype=bool)
         height, width = confidence_map.shape
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
@@ -1614,7 +1700,9 @@ class ExtendFrameDetailsDialog(QDialog):
                 result.append(model_id)
         return result
 
-    def _pairwise_comparison_entry(self, model_a_id: str | None, model_b_id: str | None) -> dict[str, float | str] | None:
+    def _pairwise_comparison_entry(
+        self, model_a_id: str | None, model_b_id: str | None
+    ) -> dict[str, float | str] | None:
         if not model_a_id or not model_b_id:
             return None
         pairwise = self._payload.get("pairwise_model_comparisons") or ()
@@ -1645,7 +1733,7 @@ class ExtendFrameDetailsDialog(QDialog):
         if preferred_confidence_model is not None:
             confidence_row = self._confidence_metrics_for_model(preferred_confidence_model)
             if confidence_row is not None:
-                if hasattr(confidence_row, 'mean_object_confidence'):
+                if hasattr(confidence_row, "mean_object_confidence"):
                     lines = [
                         f"frame_uncertainty_score: {float(getattr(confidence_row, 'frame_uncertainty_score', 0.0)):.4f}",
                         f"mean_uncertainty: {float(getattr(confidence_row, 'mean_uncertainty', 0.0)):.4f}",
@@ -1662,7 +1750,7 @@ class ExtendFrameDetailsDialog(QDialog):
                     ]
                     return (
                         self._t("details.frame_score"),
-                        float(getattr(confidence_row, 'frame_uncertainty_score', 0.0)),
+                        float(getattr(confidence_row, "frame_uncertainty_score", 0.0)),
                         lines,
                     )
                 lines = [
@@ -1683,7 +1771,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 ]
                 return (
                     self._t("details.frame_score"),
-                    float(getattr(confidence_row, 'frame_uncertainty_score', 0.0)),
+                    float(getattr(confidence_row, "frame_uncertainty_score", 0.0)),
                     lines,
                 )
             quick = self._quick_confidence_score(preferred_confidence_model)
@@ -1703,7 +1791,7 @@ class ExtendFrameDetailsDialog(QDialog):
                         f"largest_uncertain_region_fraction: {quick['largest_uncertain_region_fraction']:.4f}",
                         f"object_area_fraction: {quick['focus_fraction']:.4f}",
                     ]
-                    return self._t("details.frame_score"), float(quick['frame_uncertainty_score']), lines
+                    return self._t("details.frame_score"), float(quick["frame_uncertainty_score"]), lines
                 lines = [
                     f"frame_uncertainty_score: {quick['frame_uncertainty_score']:.4f}",
                     f"mean_uncertainty: {quick['mean_uncertainty']:.4f}",
@@ -1718,7 +1806,7 @@ class ExtendFrameDetailsDialog(QDialog):
                     f"largest_uncertain_region_fraction: {quick['largest_uncertain_region_fraction']:.4f}",
                     f"focus_area_fraction: {quick['focus_fraction']:.4f}",
                 ]
-                return self._t("details.frame_score"), float(quick['frame_uncertainty_score']), lines
+                return self._t("details.frame_score"), float(quick["frame_uncertainty_score"]), lines
         if group_key == "model_model":
             if len(model_ids) >= 2:
                 pairwise = self._pairwise_comparison_entry(model_ids[0], model_ids[1])
@@ -1773,47 +1861,6 @@ class ExtendFrameDetailsDialog(QDialog):
                             f"auxiliary count_agreement: {float(pairwise.get('count_agreement', 0.0)):.4f}",
                         ],
                     )
-            return self._t("details.frame_score"), None, [self._t("details.score_unavailable")]
-        if group_key == "model_labeled":
-            model_id = model_ids[0] if model_ids else None
-            model_metrics = self._payload.get("model_metrics") or {}
-            selected = model_metrics.get(model_id) if model_id is not None else None
-            if selected is not None:
-                score = float(selected.quality_score)
-                if hasattr(selected, "f1_at_radius"):
-                    return (
-                        self._t("details.frame_score"),
-                        score,
-                        [
-                            f"active precision: {float(selected.precision_at_radius):.4f}",
-                            f"active recall: {float(selected.recall_at_radius):.4f}",
-                            f"active f1_at_r: {float(selected.f1_at_radius):.4f}",
-                            f"active mean_localization_error: {float(selected.mean_localization_error):.4f}",
-                            f"active localization_score: {float(selected.localization_score):.4f}",
-                            f"active count_error: {float(selected.count_error):.4f}",
-                            f"auxiliary chamfer_score: {float(selected.chamfer_score):.4f}",
-                            f"auxiliary hausdorff_score: {float(selected.hausdorff_score):.4f}",
-                        ],
-                    )
-                return (
-                    self._t("details.frame_score"),
-                    score,
-                    [
-                        f"active soft_dice: {float(selected.soft_dice):.4f}",
-                        f"active soft_iou: {float(selected.soft_iou):.4f}",
-                        f"active ssim: {float(selected.ssim):.4f}",
-                        f"active dice: {float(selected.dice):.4f}",
-                        f"active iou: {float(selected.iou):.4f}",
-                        f"active hausdorff_distance: {float(selected.hausdorff_distance):.4f}",
-                        f"active centroid_distance: {float(selected.centroid_distance):.4f}",
-                        f"auxiliary mae: {float(selected.mae):.4f}",
-                        f"auxiliary rmse: {float(selected.rmse):.4f}",
-                        f"auxiliary precision: {float(selected.precision):.4f}",
-                        f"auxiliary recall: {float(selected.recall):.4f}",
-                        f"auxiliary count_error: {float(selected.count_error):.4f}",
-                        f"auxiliary connected_component_error: {float(selected.connected_component_error):.4f}",
-                    ],
-                )
             return self._t("details.frame_score"), None, [self._t("details.score_unavailable")]
         return self._t("details.frame_score"), None, []
 
@@ -1901,7 +1948,9 @@ class ExtendFrameDetailsDialog(QDialog):
             if path_text and Path(path_text).is_file():
                 return True
             result = self._grid_cell_analysis_result()
-            return bool(int(getattr(result, "image_width", 0) or 0) > 0 and int(getattr(result, "image_height", 0) or 0) > 0)
+            return bool(
+                int(getattr(result, "image_width", 0) or 0) > 0 and int(getattr(result, "image_height", 0) or 0) > 0
+            )
         return False
 
     def _source_mask(self, source_key: str | None) -> np.ndarray | None:
@@ -1912,12 +1961,6 @@ class ExtendFrameDetailsDialog(QDialog):
         if self._is_point_geometry():
             point_map = self._source_point_map(source_key)
             mask = np.asarray(point_map > 0.1, dtype=bool) if point_map is not None else None
-            if mask is not None:
-                self._derived_cache[cache_key] = mask
-            return self._crop_ndarray(mask, None) if mask is not None else None
-        if source_key == "gt":
-            gt_mask = self._payload.get("gt_mask")
-            mask = np.asarray(gt_mask, dtype=bool) if gt_mask is not None else None
             if mask is not None:
                 self._derived_cache[cache_key] = mask
             return self._crop_ndarray(mask, None) if mask is not None else None
@@ -1946,10 +1989,6 @@ class ExtendFrameDetailsDialog(QDialog):
             original = self._payload.get("original_gray")
             value = np.asarray(original, dtype=np.float32) / 255.0 if original is not None else None
             return self._crop_ndarray(value, None) if value is not None else None
-        if source_key == "gt":
-            gt_mask = self._payload.get("gt_mask")
-            value = np.asarray(gt_mask, dtype=np.float32) if gt_mask is not None else None
-            return self._crop_ndarray(value, None) if value is not None else None
         if model_id is not None and source_kind == "probability":
             probabilities = self._payload.get("model_output_probabilities") or {}
             model_prob = probabilities.get(model_id)
@@ -1973,10 +2012,6 @@ class ExtendFrameDetailsDialog(QDialog):
             original = self._payload.get("original_gray")
             value = np.asarray(original, dtype=np.float32) / 255.0 if original is not None else None
             return self._crop_ndarray(value, None) if value is not None else None
-        if source_key == "gt":
-            gt_mask = self._payload.get("gt_mask")
-            value = np.asarray(gt_mask, dtype=np.float32) if gt_mask is not None else None
-            return self._crop_ndarray(value, None) if value is not None else None
         if model_id is not None and source_kind == "probability":
             probabilities = self._payload.get("model_output_probabilities") or {}
             model_prob = probabilities.get(model_id)
@@ -1999,13 +2034,17 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _input_output_model_id(self) -> str | None:
         preferred_model_id = str(self._preferred_model_id or "")
-        if preferred_model_id and (self._model_has_output(preferred_model_id) or self._model_confidence_output_available(preferred_model_id)):
+        if preferred_model_id and (
+            self._model_has_output(preferred_model_id) or self._model_confidence_output_available(preferred_model_id)
+        ):
             return preferred_model_id
         preferred_model_id = self._selected_model_for_current_comparison()
         if self._model_has_output(preferred_model_id) or self._model_confidence_output_available(preferred_model_id):
             return preferred_model_id
         payload_model_id = str(self._payload.get("selected_model_id") or "")
-        if payload_model_id and (self._model_has_output(payload_model_id) or self._model_confidence_output_available(payload_model_id)):
+        if payload_model_id and (
+            self._model_has_output(payload_model_id) or self._model_confidence_output_available(payload_model_id)
+        ):
             return payload_model_id
         probabilities = self._payload.get("model_probabilities") or {}
         masks = self._payload.get("model_masks") or {}
@@ -2135,7 +2174,9 @@ class ExtendFrameDetailsDialog(QDialog):
         output_band = self._binary_dilate(output_boundary, 1)
         dist_to_input = np.asarray(_distance_transform(~input_band), dtype=np.float32)
         dist_to_output = np.asarray(_distance_transform(~output_band), dtype=np.float32)
-        output_mismatch = np.clip(dist_to_input / float(tolerance), 0.0, 1.0) * np.asarray(output_boundary, dtype=np.float32)
+        output_mismatch = np.clip(dist_to_input / float(tolerance), 0.0, 1.0) * np.asarray(
+            output_boundary, dtype=np.float32
+        )
         input_miss = np.clip(dist_to_output / float(tolerance), 0.0, 1.0) * np.asarray(input_edges, dtype=np.float32)
         intensity = np.clip(np.maximum(output_mismatch, input_miss), 0.0, 1.0)
         self._derived_cache[cache_key] = intensity
@@ -2239,8 +2280,8 @@ class ExtendFrameDetailsDialog(QDialog):
                 if values.ndim == 2 and values.size > 0 and tuple(values.shape) == (height, width):
                     self._derived_cache[cache_key] = values
                     return values
-            except Exception:
-                pass
+            except (OSError, TypeError, ValueError, RuntimeError) as error:
+                _LOGGER.warning("Could not load grid detail source %s: %s", path_text, error)
         fallback = np.zeros((height, width), dtype=np.uint8)
         self._derived_cache[cache_key] = fallback
         return fallback
@@ -2296,20 +2337,11 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _grid_cell_color(self, cell) -> QColor:
         reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
-        if "filled_cell" in reasons:
-            return QColor(235, 64, 82)
-        if "partial_filled_cell" in reasons:
-            return QColor(242, 153, 74)
-        if "small_artifact" in reasons:
-            return QColor(236, 72, 153)
-        if "broken_geometry" in reasons:
-            return QColor(56, 189, 248)
-        if "merged_contour" in reasons:
-            return QColor(168, 85, 247)
-        if "edge_clipped_cell" in reasons:
-            return QColor(250, 204, 21)
+        for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
+            if str(error_type) in reasons:
+                return grid_inspection_error_type_color(error_type)
         if str(getattr(cell, "status", "") or "") == "artifact":
-            return QColor(236, 72, 153)
+            return grid_inspection_error_type_color("small_artifact")
         if str(getattr(cell, "status", "") or "") == "suspicious":
             return QColor(251, 191, 36)
         return QColor(148, 163, 184)
@@ -2347,7 +2379,9 @@ class ExtendFrameDetailsDialog(QDialog):
             for kind in self._allowed_result_kinds:
                 self.result_kind_combo.addItem(labels_by_kind.get(kind, kind), kind)
                 combo_index = self.result_kind_combo.count() - 1
-                self.result_kind_combo.setItemData(combo_index, self._result_kind_hint(kind) or "", Qt.ItemDataRole.ToolTipRole)
+                self.result_kind_combo.setItemData(
+                    combo_index, self._result_kind_hint(kind) or "", Qt.ItemDataRole.ToolTipRole
+                )
             index = self.result_kind_combo.findData(current_kind)
             self.result_kind_combo.setCurrentIndex(index if index >= 0 else 0)
             self.result_kind_combo.setEnabled(self.result_kind_combo.count() > 1)
@@ -2356,12 +2390,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self.result_kind_combo.setToolTip(self._result_kind_hint(self._selected_result_kind()) or "")
             return
 
-        current_kind = str(
-            preferred_kind
-            or self._sticky_result_kind
-            or self.result_kind_combo.currentData()
-            or ""
-        )
+        current_kind = str(preferred_kind or self._sticky_result_kind or self.result_kind_combo.currentData() or "")
         if not current_kind:
             if self._preferred_confidence_model_id() is not None:
                 current_kind = "confidence"
@@ -2377,7 +2406,11 @@ class ExtendFrameDetailsDialog(QDialog):
             "result_confidence_conflict",
             "result_confidence_transition_uncertainty",
         }
-        if not confidence_output_available and current_kind in {"confidence_bad_areas", "confidence_mix", *result_confidence_kinds}:
+        if not confidence_output_available and current_kind in {
+            "confidence_bad_areas",
+            "confidence_mix",
+            *result_confidence_kinds,
+        }:
             current_kind = "point_matches" if self._is_point_geometry() else "diff"
         if not self._input_output_heatmap_available() and current_kind == "input_output":
             current_kind = "point_matches" if self._is_point_geometry() else "diff"
@@ -2441,7 +2474,9 @@ class ExtendFrameDetailsDialog(QDialog):
                     model_item.setForeground(QBrush(QColor("#9fb6cf")))
                 self.result_kind_combo.setItemData(combo_index, label, Qt.ItemDataRole.ToolTipRole)
             else:
-                self.result_kind_combo.setItemData(combo_index, self._result_kind_hint(str(key)) or "", Qt.ItemDataRole.ToolTipRole)
+                self.result_kind_combo.setItemData(
+                    combo_index, self._result_kind_hint(str(key)) or "", Qt.ItemDataRole.ToolTipRole
+                )
         index = self.result_kind_combo.findData(current_kind)
         if index < 0 and self._sticky_result_kind is not None:
             index = self.result_kind_combo.findData(self._sticky_result_kind)
@@ -2454,7 +2489,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.result_kind_combo.setEnabled(True)
         self.result_kind_combo.blockSignals(False)
         self._sticky_result_kind = self._selected_result_kind()
-        self.result_kind_combo.setToolTip(self._result_kind_hint(self._selected_result_kind()) or '')
+        self.result_kind_combo.setToolTip(self._result_kind_hint(self._selected_result_kind()) or "")
 
     def _selected_result_kind(self) -> str:
         return str(self.result_kind_combo.currentData() or "diff")
@@ -2510,11 +2545,15 @@ class ExtendFrameDetailsDialog(QDialog):
         layer = self._comparison_raster_layer(layer_id)
         if layer is None:
             return QPixmap()
-        image = np.asarray(getattr(layer, "image", np.zeros_like(self._base_array(), dtype=np.float32)), dtype=np.float32)
+        image = np.asarray(
+            getattr(layer, "image", np.zeros_like(self._base_array(), dtype=np.float32)), dtype=np.float32
+        )
         crop_rect = None
         if crop_rect is not None:
             image = np.asarray(self._crop_ndarray(image, crop_rect), dtype=np.float32)
-        pixmap = self._bad_area_intensity_pixmap(np.clip(image, 0.0, 1.0), self._named_color("difference_mask"), alpha_scale=250.0)
+        pixmap = self._bad_area_intensity_pixmap(
+            np.clip(image, 0.0, 1.0), self._named_color("difference_mask"), alpha_scale=250.0
+        )
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
@@ -2526,12 +2565,6 @@ class ExtendFrameDetailsDialog(QDialog):
         cached = self._derived_cache.get(cache_key)
         if isinstance(cached, np.ndarray):
             return cached
-        if source_key == "gt":
-            gt_view = self._payload.get("gt_point_view")
-            point_map = _point_map_from_view(gt_view) if gt_view is not None else None
-            if point_map is not None:
-                self._derived_cache[cache_key] = point_map
-            return point_map
         source_kind, model_id = self._decode_model_source_key(source_key)
         if model_id is not None and source_kind == "mask":
             model_views = self._payload.get("model_views") or {}
@@ -2543,11 +2576,9 @@ class ExtendFrameDetailsDialog(QDialog):
         return None
 
     def _source_point_view(self, source_key: str | None):
-        if source_key == 'gt':
-            return self._payload.get('gt_point_view')
         source_kind, model_id = self._decode_model_source_key(source_key)
         if model_id is not None and source_kind == "mask":
-            return (self._payload.get('model_views') or {}).get(model_id)
+            return (self._payload.get("model_views") or {}).get(model_id)
         return None
 
     def _boundary_input(self, source_key: str | None) -> np.ndarray:
@@ -2556,12 +2587,19 @@ class ExtendFrameDetailsDialog(QDialog):
             return np.zeros_like(self._base_array(), dtype=bool)
         return np.asarray(_boundary_mask(mask), dtype=bool)
 
-    def _point_match_pairs(self, first_points: tuple[object, ...], second_points: tuple[object, ...], radius: float) -> tuple[list[tuple[int, int, float]], set[int], set[int]]:
+    def _point_match_pairs(
+        self, first_points: tuple[object, ...], second_points: tuple[object, ...], radius: float
+    ) -> tuple[list[tuple[int, int, float]], set[int], set[int]]:
         threshold = max(0.0, float(radius))
         candidate_pairs: list[tuple[float, int, int]] = []
         for index_a, point_a in enumerate(first_points):
             for index_b, point_b in enumerate(second_points):
-                distance = float(np.hypot(float(getattr(point_a, 'x', 0.0)) - float(getattr(point_b, 'x', 0.0)), float(getattr(point_a, 'y', 0.0)) - float(getattr(point_b, 'y', 0.0))))
+                distance = float(
+                    np.hypot(
+                        float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)),
+                        float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0)),
+                    )
+                )
                 if distance <= threshold:
                     candidate_pairs.append((distance, index_a, index_b))
         candidate_pairs.sort(key=lambda item: (item[0], item[1], item[2]))
@@ -2596,8 +2634,8 @@ class ExtendFrameDetailsDialog(QDialog):
         pixmap.fill(Qt.GlobalColor.transparent)
         first_view = self._source_point_view(first_key)
         second_view = self._source_point_view(second_key)
-        first_points = tuple(getattr(first_view, 'points', ())) if first_view is not None else tuple()
-        second_points = tuple(getattr(second_view, 'points', ())) if second_view is not None else tuple()
+        first_points = tuple(getattr(first_view, "points", ())) if first_view is not None else tuple()
+        second_points = tuple(getattr(second_view, "points", ())) if second_view is not None else tuple()
         crop_rect = None
         x_offset = 0.0
         y_offset = 0.0
@@ -2609,14 +2647,18 @@ class ExtendFrameDetailsDialog(QDialog):
             x_offset = x0
             y_offset = y0
             first_points = tuple(
-                point for point in first_points
-                if x0 <= float(getattr(point, 'x', 0.0)) <= x1 and y0 <= float(getattr(point, 'y', 0.0)) <= y1
+                point
+                for point in first_points
+                if x0 <= float(getattr(point, "x", 0.0)) <= x1 and y0 <= float(getattr(point, "y", 0.0)) <= y1
             )
             second_points = tuple(
-                point for point in second_points
-                if x0 <= float(getattr(point, 'x', 0.0)) <= x1 and y0 <= float(getattr(point, 'y', 0.0)) <= y1
+                point
+                for point in second_points
+                if x0 <= float(getattr(point, "x", 0.0)) <= x1 and y0 <= float(getattr(point, "y", 0.0)) <= y1
             )
-        pairs, matched_first, matched_second = self._point_match_pairs(first_points, second_points, float(self._payload.get('point_match_radius') or 3.0))
+        pairs, matched_first, matched_second = self._point_match_pairs(
+            first_points, second_points, float(self._payload.get("point_match_radius") or 3.0)
+        )
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         line_pen = QPen(self._named_color("difference_mask"), 1.5)
@@ -2625,28 +2667,28 @@ class ExtendFrameDetailsDialog(QDialog):
             point_a = first_points[index_a]
             point_b = second_points[index_b]
             painter.drawLine(
-                int(round(float(getattr(point_a, 'x', 0.0)) - x_offset)),
-                int(round(float(getattr(point_a, 'y', 0.0)) - y_offset)),
-                int(round(float(getattr(point_b, 'x', 0.0)) - x_offset)),
-                int(round(float(getattr(point_b, 'y', 0.0)) - y_offset)),
+                int(round(float(getattr(point_a, "x", 0.0)) - x_offset)),
+                int(round(float(getattr(point_a, "y", 0.0)) - y_offset)),
+                int(round(float(getattr(point_b, "x", 0.0)) - x_offset)),
+                int(round(float(getattr(point_b, "y", 0.0)) - y_offset)),
             )
         for index, point in enumerate(first_points):
-            radius = max(2, int(round(float(getattr(point, 'radius', 0.0)) + 1.0)))
+            radius = max(2, int(round(float(getattr(point, "radius", 0.0)) + 1.0)))
             color = QColor(70, 220, 120, 240) if index in matched_first else self._named_color("first_mask")
             painter.setPen(QPen(color, 1.2))
             painter.setBrush(color)
-            x = int(round(float(getattr(point, 'x', 0.0)) - x_offset))
-            y = int(round(float(getattr(point, 'y', 0.0)) - y_offset))
+            x = int(round(float(getattr(point, "x", 0.0)) - x_offset))
+            y = int(round(float(getattr(point, "y", 0.0)) - y_offset))
             painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
         for index, point in enumerate(second_points):
             if index in matched_second:
                 continue
-            radius = max(2, int(round(float(getattr(point, 'radius', 0.0)) + 1.0)))
+            radius = max(2, int(round(float(getattr(point, "radius", 0.0)) + 1.0)))
             color = self._named_color("second_mask")
             painter.setPen(QPen(color, 1.2))
             painter.setBrush(color)
-            x = int(round(float(getattr(point, 'x', 0.0)) - x_offset))
-            y = int(round(float(getattr(point, 'y', 0.0)) - y_offset))
+            x = int(round(float(getattr(point, "x", 0.0)) - x_offset))
+            y = int(round(float(getattr(point, "y", 0.0)) - y_offset))
             painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
         painter.end()
         self._overlay_cache[cache_key] = pixmap
@@ -2656,9 +2698,15 @@ class ExtendFrameDetailsDialog(QDialog):
         stored_mode = self.operation_combo.currentData()
         if isinstance(stored_mode, ComparisonMode):
             if stored_mode in {ComparisonMode.DISAGREEMENT, ComparisonMode.GRAYSCALE_DIFF}:
-                return ComparisonMode.GRAYSCALE_DIFF if self.grayscale_diff_checkbox.isChecked() else ComparisonMode.DISAGREEMENT
+                return (
+                    ComparisonMode.GRAYSCALE_DIFF
+                    if self.grayscale_diff_checkbox.isChecked()
+                    else ComparisonMode.DISAGREEMENT
+                )
             return stored_mode
-        return ComparisonMode.GRAYSCALE_DIFF if self.grayscale_diff_checkbox.isChecked() else ComparisonMode.DISAGREEMENT
+        return (
+            ComparisonMode.GRAYSCALE_DIFF if self.grayscale_diff_checkbox.isChecked() else ComparisonMode.DISAGREEMENT
+        )
 
     def _update_result_controls(self) -> None:
         show_difference_controls = self._selected_result_kind() == "diff"
@@ -2689,7 +2737,11 @@ class ExtendFrameDetailsDialog(QDialog):
         )
 
     def _set_grid_layer_controls_visible(self, visible: bool) -> None:
-        layout = self.grid_normal_visible.parentWidget().layout() if self.grid_normal_visible.parentWidget() is not None else None
+        layout = (
+            self.grid_normal_visible.parentWidget().layout()
+            if self.grid_normal_visible.parentWidget() is not None
+            else None
+        )
         if hasattr(self, "grid_error_types_title"):
             self.grid_error_types_title.setVisible(bool(visible))
         for widget in self._grid_layer_controls():
@@ -2806,8 +2858,6 @@ class ExtendFrameDetailsDialog(QDialog):
     def _source_display_name(self, source_key: str | None) -> str:
         if source_key == "original":
             return self._t("details.original")
-        if source_key == "gt":
-            return self._t("details.ground_truth")
         source_kind, model_id = self._decode_model_source_key(source_key)
         if model_id is not None and source_kind == "probability":
             return self._model_output_display_name(model_id)
@@ -2896,7 +2946,9 @@ class ExtendFrameDetailsDialog(QDialog):
             values = values / 255.0
         return np.clip(values, 0.0, 1.0)
 
-    def _pairwise_comparison_inputs(self, first_key: str | None, second_key: str | None, mode: ComparisonMode) -> tuple[np.ndarray, np.ndarray]:
+    def _pairwise_comparison_inputs(
+        self, first_key: str | None, second_key: str | None, mode: ComparisonMode
+    ) -> tuple[np.ndarray, np.ndarray]:
         return self._comparison_input(first_key, mode), self._comparison_input(second_key, mode)
 
     def _comparison_overlay_result(
@@ -2962,7 +3014,11 @@ class ExtendFrameDetailsDialog(QDialog):
         intersection_area = int(np.count_nonzero(intersection))
         union_area = area_first + area_second - intersection_area
         if metric == "dice":
-            score = 1.0 if (area_first + area_second) <= 0 else float((2.0 * intersection_area) / max(1, area_first + area_second))
+            score = (
+                1.0
+                if (area_first + area_second) <= 0
+                else float((2.0 * intersection_area) / max(1, area_first + area_second))
+            )
         else:
             score = 1.0 if union_area <= 0 else float(intersection_area / max(1, union_area))
         height, width = first_bool.shape
@@ -3009,7 +3065,9 @@ class ExtendFrameDetailsDialog(QDialog):
         self._derived_cache[cache_key] = result
         return result
 
-    def _boundary_overlay_result(self, first_key: str | None, second_key: str | None, color: QColor) -> tuple[QPixmap, float]:
+    def _boundary_overlay_result(
+        self, first_key: str | None, second_key: str | None, color: QColor
+    ) -> tuple[QPixmap, float]:
         cache_key = (
             "boundary_overlay",
             first_key,
@@ -3045,11 +3103,15 @@ class ExtendFrameDetailsDialog(QDialog):
         assert scene is not None
         scene.setSceneRect(0.0, 0.0, float(width), float(height))
         base_pixmap_key = (
-            "grid_base_pixmap",
-            self._grid_inspection_source_path,
-            width,
-            height,
-        ) if grid_details else ("base_pixmap", str(self._payload.get("selected_model_id") or ""))
+            (
+                "grid_base_pixmap",
+                self._grid_inspection_source_path,
+                width,
+                height,
+            )
+            if grid_details
+            else ("base_pixmap", str(self._payload.get("selected_model_id") or ""))
+        )
         base_pixmap = self._overlay_cache.get(base_pixmap_key)
         if base_pixmap is None:
             base_pixmap = self._grayscale_to_pixmap(base_array)
@@ -3062,8 +3124,12 @@ class ExtendFrameDetailsDialog(QDialog):
             self.first_source_item.setPixmap(QPixmap())
             self.second_source_item.setPixmap(QPixmap())
         else:
-            self.first_source_item.setPixmap(self._source_pixmap(first_key, self._named_color("first_mask"), prefer_grayscale=prefer_grayscale))
-            self.second_source_item.setPixmap(self._source_pixmap(second_key, self._named_color("second_mask"), prefer_grayscale=prefer_grayscale))
+            self.first_source_item.setPixmap(
+                self._source_pixmap(first_key, self._named_color("first_mask"), prefer_grayscale=prefer_grayscale)
+            )
+            self.second_source_item.setPixmap(
+                self._source_pixmap(second_key, self._named_color("second_mask"), prefer_grayscale=prefer_grayscale)
+            )
         self._refresh_result_layer()
         self._refresh_dynamic_labels()
         self._update_result_controls()
@@ -3078,11 +3144,8 @@ class ExtendFrameDetailsDialog(QDialog):
             return
         scene = self.overlay_view.scene()
         for item in items:
-            try:
-                if scene is not None:
-                    scene.removeItem(item)
-            except Exception:
-                pass
+            if scene is not None:
+                scene.removeItem(item)
         self._selection_overlay_items = []
 
     def _sync_selection_overlay_items(self) -> None:
@@ -3106,7 +3169,12 @@ class ExtendFrameDetailsDialog(QDialog):
         if not isinstance(bbox_value, (tuple, list)) or len(bbox_value) < 4:
             return
         try:
-            x, y, width, height = (float(bbox_value[0]), float(bbox_value[1]), float(bbox_value[2]), float(bbox_value[3]))
+            x, y, width, height = (
+                float(bbox_value[0]),
+                float(bbox_value[1]),
+                float(bbox_value[2]),
+                float(bbox_value[3]),
+            )
         except Exception:
             return
         if width <= 0.0 or height <= 0.0:
@@ -3179,7 +3247,9 @@ class ExtendFrameDetailsDialog(QDialog):
             self._comparison_score = float(score)
             self.result_item.setPixmap(pixmap)
         else:
-            pixmap, score = self._comparison_overlay_result(first_key, second_key, mode, self._named_color("difference_mask"))
+            pixmap, score = self._comparison_overlay_result(
+                first_key, second_key, mode, self._named_color("difference_mask")
+            )
             self._comparison_score = float(score)
             self.result_item.setPixmap(pixmap)
         self._sync_selection_overlay_items()
@@ -3206,14 +3276,32 @@ class ExtendFrameDetailsDialog(QDialog):
         weight_total = float(np.sum(np.asarray(support_weights, dtype=np.float64), dtype=np.float64))
         delta = float(self._payload.get("confidence_uncertainty_delta") or MODEL_CONFIDENCE_UNCERTAIN_DELTA)
         uncertain = np.abs(probability - 0.5) <= max(0.0, delta)
-        frame_uncertainty_score, mean_uncertainty, low_conf_fraction, worst_tail_uncertainty, largest_low_conf_component = _frame_uncertainty_components_from_probability(
+        (
+            frame_uncertainty_score,
+            mean_uncertainty,
+            low_conf_fraction,
+            worst_tail_uncertainty,
+            largest_low_conf_component,
+        ) = _frame_uncertainty_components_from_probability(
             probability,
             support_threshold=POLYGON_SUPPORT_THRESHOLD,
         )
         return {
-            "mean_confidence": float(np.sum(np.asarray(support_weights * confidence, dtype=np.float64), dtype=np.float64) / max(1e-8, weight_total)) if weight_total > 0.0 else 0.0,
-            "mean_probability": float(np.sum(np.asarray(support_weights * probability, dtype=np.float64), dtype=np.float64) / max(1e-8, weight_total)) if weight_total > 0.0 else 0.0,
-            "uncertain_fraction": float(np.mean(uncertain[support_mask], dtype=np.float64)) if np.any(support_mask) else 0.0,
+            "mean_confidence": float(
+                np.sum(np.asarray(support_weights * confidence, dtype=np.float64), dtype=np.float64)
+                / max(1e-8, weight_total)
+            )
+            if weight_total > 0.0
+            else 0.0,
+            "mean_probability": float(
+                np.sum(np.asarray(support_weights * probability, dtype=np.float64), dtype=np.float64)
+                / max(1e-8, weight_total)
+            )
+            if weight_total > 0.0
+            else 0.0,
+            "uncertain_fraction": float(np.mean(uncertain[support_mask], dtype=np.float64))
+            if np.any(support_mask)
+            else 0.0,
             "frame_uncertainty_score": float(frame_uncertainty_score),
             "mean_uncertainty": float(mean_uncertainty),
             "low_conf_fraction": float(low_conf_fraction),
@@ -3226,6 +3314,8 @@ class ExtendFrameDetailsDialog(QDialog):
         }
 
     def _comparison_score_metric_key(self) -> str:
+        if self._selected_result_kind() == "grid_cell_defects":
+            return GRID_INSPECTION_DAMAGE_METRIC_KEY
         return str(self._preferred_metric_key or self._build_result.selected_metric_key or "overall_frame_score")
 
     def _comparison_score_style(self, value: float | None, metric_key: str | None = None) -> str:
@@ -3314,9 +3404,7 @@ class ExtendFrameDetailsDialog(QDialog):
                         f"severity_level: {getattr(result, 'severity_level', '-')}",
                         f"cells: {int(getattr(result, 'total_expected_cells', 0))}",
                         f"detected_cells: {int(getattr(result, 'detected_cells', 0))}",
-                        f"normal/bad: "
-                        f"{int(getattr(result, 'normal_cells', 0))}/"
-                        f"{bad_cells}",
+                        f"normal/bad: {int(getattr(result, 'normal_cells', 0))}/{bad_cells}",
                     ]
                 )
             )
@@ -3333,11 +3421,15 @@ class ExtendFrameDetailsDialog(QDialog):
                 bbox = tuple(getattr(cell, "bbox", (0, 0, 0, 0)) or (0, 0, 0, 0))
                 row = int(getattr(cell, "row", -1))
                 col = int(getattr(cell, "col", getattr(cell, "column", -1)))
-                reasons = ", ".join(self._grid_error_type_label(str(reason)) for reason in (getattr(cell, "reasons", ()) or ()))
+                reasons = ", ".join(
+                    self._grid_error_type_label(str(reason)) for reason in (getattr(cell, "reasons", ()) or ())
+                )
                 status = self._t(f"grid_status.{getattr(cell, 'status', '-')}")
+                cluster_label = str(getattr(cell, "feature_cluster_label", "") or "")
+                cluster_text = f", cluster {cluster_label}" if cluster_label else ""
                 lines.append(
                     f"r{row} c{col} {status}: "
-                    f"score {float(getattr(cell, 'score', 0.0)):.2f}, bbox {bbox}, {reasons or '-'}"
+                    f"score {float(getattr(cell, 'score', 0.0)):.2f}, bbox {bbox}, {reasons or '-'}{cluster_text}"
                 )
             events_label.setText("\n".join(lines))
             return
@@ -3347,11 +3439,7 @@ class ExtendFrameDetailsDialog(QDialog):
             events_label.setText("Events: -")
             return
         risk = dict(getattr(result, "risk", {}) or {})
-        risk_lines = [
-            f"risk.{key}: {float(value):.3f}"
-            for key, value in sorted(risk.items())
-            if value is not None
-        ]
+        risk_lines = [f"risk.{key}: {float(value):.3f}" for key, value in sorted(risk.items()) if value is not None]
         metrics = [
             metric
             for metric in tuple(getattr(result, "metrics", ()) or ())
@@ -3365,8 +3453,14 @@ class ExtendFrameDetailsDialog(QDialog):
             else:
                 value_text = str(value)
             unit = str(getattr(metric, "unit", "") or "")
-            metric_lines.append(f"{getattr(metric, 'group', '-')}.{getattr(metric, 'name', '-')}: {value_text}{(' ' + unit) if unit else ''}")
-        layer_ids = [str(getattr(layer, "layer_id", "") or "") for layer in tuple(getattr(result, "raster_layers", ()) or ()) if str(getattr(layer, "layer_id", "") or "")]
+            metric_lines.append(
+                f"{getattr(metric, 'group', '-')}.{getattr(metric, 'name', '-')}: {value_text}{(' ' + unit) if unit else ''}"
+            )
+        layer_ids = [
+            str(getattr(layer, "layer_id", "") or "")
+            for layer in tuple(getattr(result, "raster_layers", ()) or ())
+            if str(getattr(layer, "layer_id", "") or "")
+        ]
         metrics_label.setText("\n".join([*risk_lines, *metric_lines, f"layers: {', '.join(layer_ids[:12]) or '-'}"]))
 
         events = tuple(getattr(result, "events", ()) or ())
@@ -3420,7 +3514,6 @@ class ExtendFrameDetailsDialog(QDialog):
             self._selected_score_hint() or "",
         )
 
-
     def _update_layer_states(self) -> None:
         if self._legacy_base_hold_active:
             show_base = self._hold_preview_mode != "confidence_source"
@@ -3450,7 +3543,9 @@ class ExtendFrameDetailsDialog(QDialog):
     def _grayscale_to_pixmap(self, array: np.ndarray) -> QPixmap:
         contiguous = np.ascontiguousarray(np.asarray(array, dtype=np.uint8))
         height, width = contiguous.shape
-        image = QImage(contiguous.data, width, height, int(contiguous.strides[0]), QImage.Format.Format_Grayscale8).copy()
+        image = QImage(
+            contiguous.data, width, height, int(contiguous.strides[0]), QImage.Format.Format_Grayscale8
+        ).copy()
         return QPixmap.fromImage(image.convertToFormat(QImage.Format.Format_RGB888))
 
     def _mask_to_pixmap(self, mask: np.ndarray, color: QColor) -> QPixmap:
@@ -3598,7 +3693,9 @@ class ExtendFrameDetailsDialog(QDialog):
             except Exception:
                 comparison_mode_enum = None
         if comparison_mode_value:
-            index = self.operation_combo.findData(comparison_mode_enum if comparison_mode_enum is not None else comparison_mode_value)
+            index = self.operation_combo.findData(
+                comparison_mode_enum if comparison_mode_enum is not None else comparison_mode_value
+            )
             if index >= 0:
                 self.operation_combo.setCurrentIndex(index)
             self.grayscale_diff_checkbox.setChecked(comparison_mode_enum == ComparisonMode.GRAYSCALE_DIFF)
@@ -3616,12 +3713,15 @@ class ExtendFrameDetailsDialog(QDialog):
         self._sticky_result_kind = self._restored_result_kind
         self.original_visible.setChecked(bool(payload.get("original_visible", self.original_visible.isChecked())))
         self.first_source_visible.setChecked(bool(payload.get("first_visible", self.first_source_visible.isChecked())))
-        self.second_source_visible.setChecked(bool(payload.get("second_visible", self.second_source_visible.isChecked())))
+        self.second_source_visible.setChecked(
+            bool(payload.get("second_visible", self.second_source_visible.isChecked()))
+        )
         self.result_visible.setChecked(bool(payload.get("result_visible", self.result_visible.isChecked())))
         self.original_opacity.setValue(int(payload.get("original_opacity", self.original_opacity.value())))
         self.first_source_opacity.setValue(int(payload.get("first_opacity", self.first_source_opacity.value())))
         self.second_source_opacity.setValue(int(payload.get("second_opacity", self.second_source_opacity.value())))
         self.result_opacity.setValue(int(payload.get("result_opacity", self.result_opacity.value())))
+
     def set_preferred_model_id(self, model_id: str | None) -> None:
         normalized = str(model_id or "") or None
         if normalized == self._preferred_model_id:

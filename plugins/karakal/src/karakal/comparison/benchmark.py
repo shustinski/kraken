@@ -39,7 +39,7 @@ class BenchmarkCaseResult:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Benchmark Karakal inter-model comparison.")
     parser.add_argument("--output-dir", type=Path, default=Path("build") / "karakal-comparison-benchmark")
-    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--repeat", type=int, default=3, help="Measurements per case; values below three are clamped.")
     parser.add_argument("--sizes", default="small,medium,large")
     args = parser.parse_args(argv)
 
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     selected_sizes = {item.strip().lower() for item in str(args.sizes).split(",") if item.strip()}
 
     results: list[BenchmarkCaseResult] = []
-    for _ in range(max(1, int(args.repeat))):
+    for _ in range(max(3, int(args.repeat))):
         for case_name, shape in _case_shapes().items():
             if case_name not in selected_sizes:
                 continue

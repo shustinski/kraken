@@ -1,4 +1,5 @@
 """Helpers for parent-pixel and subpixel grid representation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -42,7 +43,9 @@ class SubpixelGridSpec:
         return self.normalized().mode == "tile"
 
     @classmethod
-    def from_tile_plan(cls, tile_width: int, tile_height: int, overlap: int, rows: int, columns: int) -> "SubpixelGridSpec":
+    def from_tile_plan(
+        cls, tile_width: int, tile_height: int, overlap: int, rows: int, columns: int
+    ) -> "SubpixelGridSpec":
         return cls(
             rows=int(rows),
             columns=int(columns),
@@ -106,7 +109,9 @@ def _partition_edges(total: int, parts: int) -> np.ndarray:
     return edges
 
 
-def _resolved_spec_for_shape(shape: tuple[int, int], spec: SubpixelGridSpec) -> tuple[SubpixelGridSpec, list[tuple[int, int, int, int]]]:
+def _resolved_spec_for_shape(
+    shape: tuple[int, int], spec: SubpixelGridSpec
+) -> tuple[SubpixelGridSpec, list[tuple[int, int, int, int]]]:
     normalized_spec = spec.normalized()
     source_height = max(0, int(shape[0]))
     source_width = max(0, int(shape[1]))
@@ -159,7 +164,7 @@ def build_subpixel_grid_from_array(
     for index, (left, top, width, height) in enumerate(bounds):
         row = index // int(resolved_spec.columns)
         column = index % int(resolved_spec.columns)
-        tile = source[top:top + height, left:left + width]
+        tile = source[top : top + height, left : left + width]
         if tile.size == 0:
             continue
         values[row, column] = float(np.clip(score_fn(tile), 0.0, 1.0))
@@ -195,8 +200,8 @@ def build_subpixel_grid_from_pair(
     for index, (left, top, width, height) in enumerate(bounds):
         row = index // int(resolved_spec.columns)
         column = index % int(resolved_spec.columns)
-        first_tile = first_array[top:top + height, left:left + width]
-        second_tile = second_array[top:top + height, left:left + width]
+        first_tile = first_array[top : top + height, left : left + width]
+        second_tile = second_array[top : top + height, left : left + width]
         if first_tile.size == 0 or second_tile.size == 0:
             continue
         values[row, column] = float(np.clip(score_fn(first_tile, second_tile), 0.0, 1.0))

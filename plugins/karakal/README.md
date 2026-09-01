@@ -1,6 +1,6 @@
 # Karakal
 
-Karakal is a Kraken Qt plugin and standalone development app for inspecting frame matrices, comparing model outputs, selecting validation samples, and checking regular cell-grid defects.
+Karakal is a Kraken Qt plugin and standalone development app for inspecting frame matrices, comparing model outputs, validating results, and checking regular cell-grid defects.
 
 The plugin is focused on image/model-result review workflows:
 
@@ -9,7 +9,7 @@ The plugin is focused on image/model-result review workflows:
 - inspect individual frames in a detailed viewer;
 - mark and export validation or defect-check results;
 - run a cell-defect inspection mode with percentile views and exportable check masks;
-- support manager workflows for primary-labeling sample selection.
+- profile validation, comparison, cache, worker, and cell-grid analysis stages.
 
 ## Status
 
@@ -17,7 +17,7 @@ Karakal is an internal Kraken plugin that can also be launched directly for deve
 
 ## Requirements
 
-- Python 3.13 or newer.
+- Python 3.14 or newer.
 - Windows or Linux.
 - Python dependencies from `pyproject.toml`:
   - `PyQt6`
@@ -60,13 +60,12 @@ python -m karakal
 
 ## Typical Workflow
 
-1. Add one or more model output folders.
-2. Optionally select source frames and ground-truth markup folders.
-3. Build the frame matrix.
-4. Compute analytics.
-5. Inspect frames in validation mode, manager mode, or cell-defect mode.
-6. Use percentile views, good/bad frame groups, or selected matrix regions to focus review/export.
-7. Export attached frame assets, result layers, or cell-defect check images.
+1. Choose a goal-oriented profile: model comparison, confidence audit, or cell-defect inspection.
+2. Assign folders to the displayed source roles. In a managed Kraken job these roles bind to pinned project representations instead of storage paths.
+3. Review the preflight coverage table. Duplicate frame keys and missing required roles block the run; partial coverage is reported explicitly.
+4. Select **Build and analyze**. Manual indexing and recomputation remain available in the advanced controls.
+5. Inspect the matrix with either an absolute/calibrated scale or the explicitly labelled within-run scale.
+6. Use the visible legend, distribution view, run history, and frame details to focus review/export.
 
 ## Input Data
 
@@ -77,7 +76,6 @@ Common inputs:
 - model mask folders;
 - optional model confidence folders;
 - optional original source frame folder;
-- optional ground-truth markup folder.
 
 Nested frame folders are ignored by default when building a matrix from a selected folder.
 
@@ -95,7 +93,11 @@ User exports and build artifacts should not be committed.
 
 ## Configuration
 
-Karakal stores UI settings through Qt `QSettings`.
+Karakal stores workstation UI preferences through Qt `QSettings`. The selected workflow is also represented by the versioned `karakal.analysis-profile.v1` contract in `core/project_profile.py`; managed integrations should persist that JSON as a Kraken project attachment and bind it to representation/version identifiers rather than absolute folders.
+
+The additive `kraken.analysis-job.v1` and `kraken.analysis-result.v1` contracts support multiple named artifacts per frame. They intentionally do not change the existing single-input plugin protocol v1. Karakal exposes its supported profiles through `analysis_capabilities` in the plugin catalog.
+
+Matrix results can be projected through `plugin/matrix_adapter.py` to the shared `kraken_core.frame_matrix` viewport API. The current specialized matrix remains available while interaction and detail-view parity is completed.
 
 Environment variables supported by the codebase:
 
@@ -184,7 +186,7 @@ iscc Karakal.iss
 ```text
 plugins/karakal/
   src/karakal/app/          Qt main window, presenter, UI state
-  src/karakal/core/         frame collection, analytics, workers, grid inspection
+  src/karakal/core/         image I/O, caches, metrics, analytics, exports, workers, grid inspection
   src/karakal/comparison/   pairwise and ensemble comparison engine
   src/karakal/ui/           reusable Qt widgets, details dialog, i18n
   src/karakal/plugin/       Kraken plugin adapter
@@ -198,6 +200,7 @@ plugins/karakal/
 
 - Keep UI orchestration in `app/` and reusable widgets in `ui/`.
 - Keep computational code in `core/` or `comparison/`.
+- Keep `core/repository.py` as a backwards-compatible import facade; add implementations to the owning core module.
 - Do not run long computations in the Qt UI thread.
 - Add focused regression tests for bug fixes and format-sensitive exports.
 - Avoid new heavy dependencies unless the existing NumPy/OpenCV/PyQt stack cannot solve the problem.
@@ -205,6 +208,7 @@ plugins/karakal/
 ## Known Limitations
 
 - Some long exports are still coordinated from the presenter and may require further worker extraction for very large datasets.
+- Kraken Agent job creation/import for the additive analysis protocol is not yet exposed by the project manager UI; the contracts, catalog discovery, project profile and shared-matrix projection are implemented without weakening the current storage isolation boundary.
 - PyQt dynamic widget access is noisy for strict static type checkers.
 - License is not declared in this repository yet: `[УКАЗАТЬ ЛИЦЕНЗИЮ]`.
 

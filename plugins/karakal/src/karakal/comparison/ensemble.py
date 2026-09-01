@@ -6,6 +6,8 @@ from time import perf_counter
 
 import numpy as np
 
+from karakal.core.profiling import profile_stage
+
 from .artifacts import PerModelArtifactCache
 from .cache import build_cache_key
 from .cache import ComparisonResultCache
@@ -45,16 +47,17 @@ def compare_ensemble(
     timings: dict[str, float] = {}
     started = perf_counter()
     active_artifact_cache = artifact_cache or PerModelArtifactCache(max_items=max(16, len(request.models) * 2))
-    artifacts = [
-        active_artifact_cache.get_or_build(
-            frame_id=request.frame_id,
-            model_result=model,
-            threshold=request.threshold,
-            connectivity=request.connectivity,
-            pruning_threshold=request.pruning_min_length_px,
-        )
-        for model in request.models
-    ]
+    with profile_stage("validation.ensemble.prepare_artifacts", frame_id=request.frame_id):
+        artifacts = [
+            active_artifact_cache.get_or_build(
+                frame_id=request.frame_id,
+                model_result=model,
+                threshold=request.threshold,
+                connectivity=request.connectivity,
+                pruning_threshold=request.pruning_min_length_px,
+            )
+            for model in request.models
+        ]
     timings["load_time"] = 1000.0 * (perf_counter() - started)
     for artifact in artifacts:
         for key, value in artifact.stage_timings_ms.items():
@@ -65,11 +68,12 @@ def compare_ensemble(
     if any(mask.shape != first_shape for mask in masks):
         raise ValueError("All ensemble masks must have the same shape")
     started = perf_counter()
-    stack = np.stack(masks, axis=0).astype(np.float32)
-    vote_map = np.mean(stack, axis=0, dtype=np.float32)
-    consensus_mask = vote_map >= float(request.consensus_threshold)
-    uncertainty = np.asarray(1.0 - np.abs(vote_map - 0.5) * 2.0, dtype=np.float32)
-    entropy = _binary_vote_entropy(vote_map)
+    with profile_stage("validation.ensemble.vote", frame_id=request.frame_id):
+        stack = np.stack(masks, axis=0).astype(np.float32)
+        vote_map = np.mean(stack, axis=0, dtype=np.float32)
+        consensus_mask = vote_map >= float(request.consensus_threshold)
+        uncertainty = np.asarray(1.0 - np.abs(vote_map - 0.5) * 2.0, dtype=np.float32)
+        entropy = _binary_vote_entropy(vote_map)
     timings["ensemble_vote_time"] = 1000.0 * (perf_counter() - started)
     metrics: list[MetricValue] = [
         MetricValue("model_count", len(request.models), "ensemble", "Number of models in the ensemble."),
@@ -81,23 +85,24 @@ def compare_ensemble(
 
     pairwise_started = perf_counter()
     pairwise_scores: list[tuple[tuple[str, str], float]] = []
-    for model_a, model_b in itertools.combinations(request.models, 2):
-        pair_result = compare_pairwise(
-            PairwiseComparisonRequest(
-                frame_id=request.frame_id,
-                model_a=model_a,
-                model_b=model_b,
-                profile=profile,
-                threshold=request.threshold,
-                connectivity=request.connectivity,
-                pruning_min_length_px=request.pruning_min_length_px,
-                evidence_provider_version=request.evidence_provider_version,
-                compute_level="fast",
-            ),
-            artifact_cache=active_artifact_cache,
-        ).frame
-        metric_map = {metric.name: metric.value for metric in pair_result.metrics}
-        pairwise_scores.append(((model_a.model_id, model_b.model_id), float(metric_map.get("foreground_disagreement_rate") or 0.0)))
+    with profile_stage("validation.ensemble.pair_matrix", frame_id=request.frame_id):
+        for model_a, model_b in itertools.combinations(request.models, 2):
+            pair_result = compare_pairwise(
+                PairwiseComparisonRequest(
+                    frame_id=request.frame_id,
+                    model_a=model_a,
+                    model_b=model_b,
+                    profile=profile,
+                    threshold=request.threshold,
+                    connectivity=request.connectivity,
+                    pruning_min_length_px=request.pruning_min_length_px,
+                    evidence_provider_version=request.evidence_provider_version,
+                    compute_level="fast",
+                ),
+                artifact_cache=active_artifact_cache,
+            ).frame
+            metric_map = {metric.name: metric.value for metric in pair_result.metrics}
+            pairwise_scores.append(((model_a.model_id, model_b.model_id), float(metric_map.get("foreground_disagreement_rate") or 0.0)))
     timings["pairwise_matrix_time"] = 1000.0 * (perf_counter() - pairwise_started)
     if pairwise_scores:
         metrics.append(MetricValue("pairwise_mean_foreground_disagreement", float(np.mean([score for _pair, score in pairwise_scores], dtype=np.float64)), "ensemble", "Mean pairwise foreground disagreement."))

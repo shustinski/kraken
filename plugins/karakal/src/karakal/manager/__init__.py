@@ -1,1 +1,0 @@
-"""Manager mode selection helpers."""

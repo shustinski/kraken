@@ -6,6 +6,8 @@ from time import perf_counter
 
 import numpy as np
 
+from karakal.core.profiling import profile_stage
+
 from .artifacts import ModelArtifacts, PerModelArtifactCache, prepare_model_artifacts
 from .cache import build_cache_key
 from .cache import ComparisonResultCache
@@ -43,43 +45,45 @@ def compare_pairwise(
         evidence_provider_version=request.evidence_provider_version,
     )
     if result_cache is not None:
-        cached = result_cache.get(cache_key)
+        with profile_stage("validation.cache.comparison.read", frame_id=request.frame_id):
+            cached = result_cache.get(cache_key)
         if cached is not None:
             cached.metadata.setdefault("stage_timings_ms", {})["cache_read_time"] = 0.0
             return PairwiseComparisonResult(cached)
 
     timings: dict[str, float] = {}
     started = perf_counter()
-    if artifact_cache is None:
-        artifact_a = prepare_model_artifacts(
-            frame_id=request.frame_id,
-            model_result=request.model_a,
-            threshold=request.threshold,
-            connectivity=request.connectivity,
-            pruning_threshold=request.pruning_min_length_px,
-        )
-        artifact_b = prepare_model_artifacts(
-            frame_id=request.frame_id,
-            model_result=request.model_b,
-            threshold=request.threshold,
-            connectivity=request.connectivity,
-            pruning_threshold=request.pruning_min_length_px,
-        )
-    else:
-        artifact_a = artifact_cache.get_or_build(
-            frame_id=request.frame_id,
-            model_result=request.model_a,
-            threshold=request.threshold,
-            connectivity=request.connectivity,
-            pruning_threshold=request.pruning_min_length_px,
-        )
-        artifact_b = artifact_cache.get_or_build(
-            frame_id=request.frame_id,
-            model_result=request.model_b,
-            threshold=request.threshold,
-            connectivity=request.connectivity,
-            pruning_threshold=request.pruning_min_length_px,
-        )
+    with profile_stage("validation.comparison.prepare_artifacts", frame_id=request.frame_id):
+        if artifact_cache is None:
+            artifact_a = prepare_model_artifacts(
+                frame_id=request.frame_id,
+                model_result=request.model_a,
+                threshold=request.threshold,
+                connectivity=request.connectivity,
+                pruning_threshold=request.pruning_min_length_px,
+            )
+            artifact_b = prepare_model_artifacts(
+                frame_id=request.frame_id,
+                model_result=request.model_b,
+                threshold=request.threshold,
+                connectivity=request.connectivity,
+                pruning_threshold=request.pruning_min_length_px,
+            )
+        else:
+            artifact_a = artifact_cache.get_or_build(
+                frame_id=request.frame_id,
+                model_result=request.model_a,
+                threshold=request.threshold,
+                connectivity=request.connectivity,
+                pruning_threshold=request.pruning_min_length_px,
+            )
+            artifact_b = artifact_cache.get_or_build(
+                frame_id=request.frame_id,
+                model_result=request.model_b,
+                threshold=request.threshold,
+                connectivity=request.connectivity,
+                pruning_threshold=request.pruning_min_length_px,
+            )
     timings["load_time"] = _elapsed_ms(started)
     _merge_timings(timings, artifact_a.stage_timings_ms)
     _merge_timings(timings, artifact_b.stage_timings_ms)
@@ -92,17 +96,18 @@ def compare_pairwise(
     prob_b = artifact_b.probability_map
 
     started = perf_counter()
-    common = mask_a & mask_b
-    a_only = mask_a & ~mask_b
-    b_only = mask_b & ~mask_a
-    xor = mask_a ^ mask_b
-    union = mask_a | mask_b
-    area_a = int(np.count_nonzero(mask_a))
-    area_b = int(np.count_nonzero(mask_b))
-    common_area = int(np.count_nonzero(common))
-    xor_area = int(np.count_nonzero(xor))
-    union_area = int(np.count_nonzero(union))
-    pixel_count = int(mask_a.size)
+    with profile_stage("validation.metrics.pixel", frame_id=request.frame_id):
+        common = mask_a & mask_b
+        a_only = mask_a & ~mask_b
+        b_only = mask_b & ~mask_a
+        xor = mask_a ^ mask_b
+        union = mask_a | mask_b
+        area_a = int(np.count_nonzero(mask_a))
+        area_b = int(np.count_nonzero(mask_b))
+        common_area = int(np.count_nonzero(common))
+        xor_area = int(np.count_nonzero(xor))
+        union_area = int(np.count_nonzero(union))
+        pixel_count = int(mask_a.size)
     timings["fast_pixel_time"] = _elapsed_ms(started)
 
     metrics: list[MetricValue] = [
@@ -123,23 +128,28 @@ def compare_pairwise(
 
     if SOFT_GROUP in profile.metric_groups and run_standard:
         started = perf_counter()
-        metrics.extend(_soft_metrics(prob_a, prob_b, threshold=request.threshold))
+        with profile_stage("validation.metrics.soft", frame_id=request.frame_id):
+            metrics.extend(_soft_metrics(prob_a, prob_b, threshold=request.threshold))
         timings["soft_metrics_time"] = _elapsed_ms(started)
     if GEOMETRY_GROUP in profile.metric_groups and run_standard:
         started = perf_counter()
-        metrics.extend(_geometry_metrics_prepared(artifact_a, artifact_b))
+        with profile_stage("validation.metrics.geometry", frame_id=request.frame_id):
+            metrics.extend(_geometry_metrics_prepared(artifact_a, artifact_b))
         timings["boundary_comparison_time"] = _elapsed_ms(started)
     if COMPONENTS_GROUP in profile.metric_groups and run_standard:
         started = perf_counter()
-        metrics.extend(_component_metrics_prepared(artifact_a, artifact_b))
+        with profile_stage("validation.metrics.connected_components", frame_id=request.frame_id):
+            metrics.extend(_component_metrics_prepared(artifact_a, artifact_b))
         timings["component_matching_time"] = _elapsed_ms(started)
     if SKELETON_GROUP in profile.metric_groups and run_standard:
         started = perf_counter()
-        metrics.extend(_skeleton_metrics_prepared(artifact_a, artifact_b))
+        with profile_stage("validation.metrics.skeleton", frame_id=request.frame_id):
+            metrics.extend(_skeleton_metrics_prepared(artifact_a, artifact_b))
         timings["skeleton_comparison_time"] = _elapsed_ms(started)
     if TOPOLOGY_GROUP in profile.metric_groups and run_deep:
         started = perf_counter()
-        metrics.extend(_topology_metrics_prepared(artifact_a, artifact_b))
+        with profile_stage("validation.metrics.topology", frame_id=request.frame_id):
+            metrics.extend(_topology_metrics_prepared(artifact_a, artifact_b))
         timings["topology_time"] = timings.get("topology_time", 0.0) + _elapsed_ms(started)
 
     started = perf_counter()
@@ -191,7 +201,8 @@ def compare_pairwise(
     )
     if result_cache is not None:
         started = perf_counter()
-        result_cache.put(cache_key, result.frame)
+        with profile_stage("validation.cache.comparison.write", frame_id=request.frame_id):
+            result_cache.put(cache_key, result.frame)
         result.frame.metadata.setdefault("stage_timings_ms", {})["cache_write_time"] = _elapsed_ms(started)
     return result
 

@@ -26,6 +26,15 @@ class PluginVersionEntry:
 
 
 @dataclass(frozen=True)
+class AnalysisCapabilityMetadata:
+    profile: str
+    required_roles: tuple[str, ...] = ()
+    required_any_role_groups: tuple[tuple[str, ...], ...] = ()
+    optional_roles: tuple[str, ...] = ()
+    modes: tuple[str, ...] = ("interactive", "headless")
+
+
+@dataclass(frozen=True)
 class PluginMetadata:
     id: str
     display_name: str
@@ -38,6 +47,8 @@ class PluginMetadata:
     actions: tuple[str, ...] = ()
     protocol_version: str = PLUGIN_PROTOCOL_VERSION
     capabilities: tuple[PluginCapability, ...] = ()
+    analysis_protocol_version: str = ""
+    analysis_capabilities: tuple[AnalysisCapabilityMetadata, ...] = ()
     deprecated_actions: tuple[str, ...] = ()
     source_dir: str = ""
     version_history: tuple[PluginVersionEntry, ...] = ()
@@ -94,6 +105,21 @@ def parse_plugin_metadata(payload: dict[str, Any]) -> PluginMetadata:
             capabilities.append(PluginCapability.from_dict(item))
         except (TypeError, ValueError):
             continue
+    analysis_capabilities = tuple(
+        AnalysisCapabilityMetadata(
+            profile=str(item.get("profile", "")),
+            required_roles=tuple(str(role) for role in item.get("required_roles", ())),
+            required_any_role_groups=tuple(
+                tuple(str(role) for role in group)
+                for group in item.get("required_any_role_groups", ())
+                if isinstance(group, (list, tuple))
+            ),
+            optional_roles=tuple(str(role) for role in item.get("optional_roles", ())),
+            modes=tuple(str(mode) for mode in item.get("modes", ("interactive", "headless"))),
+        )
+        for item in payload.get("analysis_capabilities", ())
+        if isinstance(item, dict) and str(item.get("profile", "")).strip()
+    )
     return PluginMetadata(
         id=str(payload["id"]),
         display_name=str(payload.get("display_name", payload["id"])),
@@ -106,6 +132,8 @@ def parse_plugin_metadata(payload: dict[str, Any]) -> PluginMetadata:
         actions=tuple(str(item) for item in payload.get("actions", ())),
         protocol_version=str(payload.get("protocol_version", PLUGIN_PROTOCOL_VERSION)),
         capabilities=tuple(capabilities),
+        analysis_protocol_version=str(payload.get("analysis_protocol_version", "") or ""),
+        analysis_capabilities=analysis_capabilities,
         deprecated_actions=tuple(str(item) for item in payload.get("deprecated_actions", ())),
         source_dir=str(payload.get("source_dir", "") or ""),
         version_history=parse_version_history(payload),
@@ -168,6 +196,8 @@ def load_plugin_metadata_from_directory(plugin_root: Path) -> PluginMetadata | N
         actions=plugin.actions,
         protocol_version=plugin.protocol_version,
         capabilities=plugin.capabilities,
+        analysis_protocol_version=plugin.analysis_protocol_version,
+        analysis_capabilities=plugin.analysis_capabilities,
         deprecated_actions=plugin.deprecated_actions,
         source_dir=plugin.source_dir,
         version_history=load_changelog_history(plugin_root),
@@ -206,6 +236,8 @@ def merge_plugin_metadata(primary: PluginMetadata, fallback: PluginMetadata | No
         actions=primary.actions or fallback.actions,
         protocol_version=primary.protocol_version or fallback.protocol_version,
         capabilities=primary.capabilities or fallback.capabilities,
+        analysis_protocol_version=primary.analysis_protocol_version or fallback.analysis_protocol_version,
+        analysis_capabilities=primary.analysis_capabilities or fallback.analysis_capabilities,
         deprecated_actions=primary.deprecated_actions or fallback.deprecated_actions,
         source_dir=primary.source_dir or fallback.source_dir,
         version_history=primary.version_history or fallback.version_history,

@@ -1,4 +1,5 @@
 """Centralize analysis-mode and object-type routing for Karakal."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -53,21 +54,23 @@ INTER_MODEL_POINT_PERCENTILE_KEYS: tuple[str, ...] = (
     "localization_score",
 )
 
-SCORE_100_METRIC_KEYS = frozenset({
-    "overall_polygon_score",
-    "iou_score",
-    "dice_score",
-    "polygon_bce_score",
-    "overall_point_score",
-    "precision_score",
-    "recall_score",
-    "f1_score",
-    "localization_score",
-    "confidence_model_score",
-    "confidence_difference_score",
-    "confidence_bce_score",
-    "confidence_threshold_crossing_score",
-})
+SCORE_100_METRIC_KEYS = frozenset(
+    {
+        "overall_polygon_score",
+        "iou_score",
+        "dice_score",
+        "polygon_bce_score",
+        "overall_point_score",
+        "precision_score",
+        "recall_score",
+        "f1_score",
+        "localization_score",
+        "confidence_model_score",
+        "confidence_difference_score",
+        "confidence_bce_score",
+        "confidence_threshold_crossing_score",
+    }
+)
 
 CONFIDENCE_COMPARISON_DISPLAY_KEYS: tuple[str, ...] = (
     "confidence_model_score",
@@ -76,16 +79,20 @@ CONFIDENCE_COMPARISON_DISPLAY_KEYS: tuple[str, ...] = (
     "confidence_threshold_crossing_score",
 )
 
-LOWER_IS_BETTER_METRIC_KEYS = frozenset({
-    "bce",
-    "mean_localization_distance",
-})
+LOWER_IS_BETTER_METRIC_KEYS = frozenset(
+    {
+        "bce",
+        "grid_inspection_damage_score",
+        "mean_localization_distance",
+    }
+)
 
 CONFIDENCE_QUALITY_THRESHOLDS: tuple[tuple[float, str], ...] = (
     (0.15, "score.level.low"),
     (0.35, "score.level.moderate"),
     (0.60, "score.level.elevated"),
 )
+
 
 @dataclass(frozen=True, slots=True)
 class AnalysisContext:
@@ -166,7 +173,11 @@ def available_model_output_confidence_model_ids(build_result: BuildResult | None
 
 
 def default_confidence_model_id(build_result: BuildResult | None, *, output_only: bool = False) -> str | None:
-    model_ids = available_model_output_confidence_model_ids(build_result) if output_only else available_confidence_model_ids(build_result)
+    model_ids = (
+        available_model_output_confidence_model_ids(build_result)
+        if output_only
+        else available_confidence_model_ids(build_result)
+    )
     return model_ids[0] if model_ids else None
 
 
@@ -181,8 +192,16 @@ def resolve_analysis_context(
     normalized_object_type = normalize_object_type(object_type)
     if normalized_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}:
         output_only = normalized_mode == MODEL_OUTPUT_CONFIDENCE_MODE
-        valid_ids = set(available_model_output_confidence_model_ids(build_result) if output_only else available_confidence_model_ids(build_result))
-        resolved_model_id = str(confidence_model_id) if confidence_model_id in valid_ids else default_confidence_model_id(build_result, output_only=output_only)
+        valid_ids = set(
+            available_model_output_confidence_model_ids(build_result)
+            if output_only
+            else available_confidence_model_ids(build_result)
+        )
+        resolved_model_id = (
+            str(confidence_model_id)
+            if confidence_model_id in valid_ids
+            else default_confidence_model_id(build_result, output_only=output_only)
+        )
         return AnalysisContext(normalized_mode, normalized_object_type, resolved_model_id)
     if normalized_mode == CONFIDENCE_COMPARISON_MODE:
         return AnalysisContext(normalized_mode, normalized_object_type, None)
@@ -274,6 +293,12 @@ def metric_level_key(
     family = str(metric_key or "").split("::", 1)[0]
     if family in {"model_confidence", "model_output_confidence"}:
         return confidence_quality_level_key(ratio)
+    if str(metric_key or "") == "grid_inspection_damage_score":
+        if ratio < 0.33:
+            return "score.level.good"
+        if ratio < 0.66:
+            return "score.level.fair"
+        return "score.level.poor"
     if not metric_is_lower_better(metric_key):
         if ratio < 0.33:
             return "score.level.poor"

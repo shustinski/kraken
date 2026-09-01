@@ -1,4 +1,5 @@
 """Domain models for the extended validation gradient widget."""
+
 from __future__ import annotations
 
 import os
@@ -6,6 +7,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 from pathlib import Path
+
+from .image_formats import SUPPORTED_IMAGE_EXTENSIONS
+
 
 class ComparisonMode(str, Enum):
     """Define supported overlay operations in the details dialog."""
@@ -95,7 +99,7 @@ class BuildOptions:
 
     thumbnail_size: int = 64
     recursive: bool = False
-    file_extensions: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+    file_extensions: tuple[str, ...] = SUPPORTED_IMAGE_EXTENSIONS
     max_workers: int = max(1, os.cpu_count() or 4)
     progress_update_interval: int = 32
     cache_enabled: bool = True
@@ -128,36 +132,8 @@ class FrameIdentity:
 
 
 @dataclass(slots=True)
-class LabeledModelMetrics:
-    """Store GT-based polygon metrics for one model on one frame."""
-
-    soft_dice: float
-    soft_iou: float
-    ssim: float
-    dice: float
-    iou: float
-    precision: float
-    recall: float
-    count_error: float
-    connected_component_error: float
-    hausdorff_distance: float
-    hausdorff_similarity: float
-    centroid_distance: float
-    centroid_similarity: float
-    mae: float
-    rmse: float
-    boundary_f1: float | None
-    delta_connected_components: float
-    break_count: int
-    false_bridge_count: int
-    skeleton_length_delta: float | None
-    quality_score: float
-    error_score: float
-
-
-@dataclass(slots=True)
 class ModelDiagnosticMetrics:
-    """Store non-GT diagnostics for one mask/polygon model on one frame."""
+    """Store diagnostics for one mask/polygon model on one frame."""
 
     area_fraction: float
     component_count: int
@@ -167,32 +143,13 @@ class ModelDiagnosticMetrics:
 
 @dataclass(slots=True)
 class PointDiagnosticMetrics:
-    """Store non-GT diagnostics for one point-based model on one frame."""
+    """Store diagnostics for one point-based model on one frame."""
 
     point_count: int
     mean_radius: float
     mean_peak_intensity: float
     false_spot_ratio: float
     proxy_score: float
-
-
-@dataclass(slots=True)
-class PointLabeledMetrics:
-    """Store GT-based point metrics for one model on one frame."""
-
-    precision_at_radius: float
-    recall_at_radius: float
-    f1_at_radius: float
-    mean_localization_error: float
-    localization_score: float
-    chamfer_score: float
-    hausdorff_score: float
-    count_error: float
-    matched_count: int
-    predicted_count: int
-    target_count: int
-    quality_score: float
-    error_score: float
 
 
 @dataclass(slots=True)
@@ -460,31 +417,15 @@ class ModelOutputConfidenceMetrics:
     max_confidence: float
 
 
-@dataclass(frozen=True, slots=True)
-class ModelAggregateScore:
-    """Store one model-level supervised aggregation over labeled frames."""
-
-    model_id: str
-    display_name: str
-    labeled_frame_count: int
-    mean_supervised_score: float
-    median_supervised_score: float
-    rank: int
-
-
 @dataclass(slots=True)
 class FrameAnalysisSummary:
     """Store the full analytics summary used by the matrix and export flows."""
 
-    is_labeled: bool
     disagreement_score: float
     temporal_instability: float
     structural_anomaly: float
-    labeled_best_quality: float | None
-    labeled_mean_quality: float | None
     export_priority_score: float
     metric_values: dict[str, float] = field(default_factory=dict)
-    model_metrics: dict[str, Any] = field(default_factory=dict)
     model_confidence: dict[str, Any] = field(default_factory=dict)
     model_confidence_output: dict[str, Any] = field(default_factory=dict)
     model_diagnostics: dict[str, Any] = field(default_factory=dict)
@@ -510,7 +451,6 @@ class FrameRecord:
     second_path: str = ""
     base_path: str | None = None
     original_path: str | None = None
-    gt_path: str | None = None
     model_mask_paths: dict[str, str] = field(default_factory=dict)
     model_prob_paths: dict[str, str] = field(default_factory=dict)
     summary: FrameAnalysisSummary | None = None
@@ -523,7 +463,6 @@ class BuildResult:
     records: tuple[FrameRecord, ...] = ()
     model_specs: tuple[ModelSpec, ...] = ()
     original_folder: FolderSpec | None = None
-    gt_folder: FolderSpec | None = None
     # Legacy lite aliases retained for compatibility with older call sites.
     first_folder: FolderSpec | None = None
     second_folder: FolderSpec | None = None
@@ -537,13 +476,9 @@ class BuildResult:
     min_absolute_score: float | None = None
     max_absolute_score: float | None = None
     selected_metric_key: str = "overall_frame_score"
-    model_ranking: tuple[ModelAggregateScore, ...] = ()
     available_metric_keys: tuple[str, ...] = (
         "overall_frame_score",
         "export_priority_score",
         "model_model_score",
-        "model_labeled_score",
         "disagreement_score",
-        "labeled_best_quality",
-        "labeled_mean_quality",
     )

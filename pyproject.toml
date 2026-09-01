@@ -90,6 +90,9 @@ environments = [
 
 [tool.pytest.ini_options]
 minversion = "8.0"
+markers = [
+    "performance: hardware-sensitive performance and regression tests",
+]
 testpaths = ["tests", "plugins"]
 pythonpath = [
     "src",

@@ -2381,7 +2381,10 @@ class PolygonEditorScene(QGraphicsScene):
         target.perimeter = float(perimeter)
         target.bbox = bbox
         after_delete = collapse_redundant_vertices_in_polygons(after_delete)
-        after_delete = dissolve_self_intersecting_polygons(after_delete)
+        after_delete = dissolve_self_intersecting_polygons(
+            after_delete,
+            changed_polygon_ids={polygon_id},
+        )
         after_delete = collapse_redundant_vertices_in_polygons(after_delete)
         self.undo_stack.push(ReplacePolygonSetCommand(self, before, after_delete, "Delete vertex"))
         focus_id = resolve_focus_id_after_geometry_pass(before, polygon_id, after_delete)
@@ -2535,24 +2538,25 @@ class PolygonEditorScene(QGraphicsScene):
         rect = QRectF(start, end).normalized()
         self.set_preview_rect(start, end)
         if rect.width() < 1.0 and rect.height() < 1.0:
-            if self._delete_area_highlight_ids:
-                self._delete_area_highlight_ids.clear()
-                self._refresh_all_items()
+            self._set_delete_area_highlight_ids(set())
             return
         highlighted = {
             polygon_id
             for polygon_id, polygon in self._polygons.items()
             if any(rect.contains(QPointF(x_coord, y_coord)) for x_coord, y_coord in polygon.points)
         }
-        if highlighted != self._delete_area_highlight_ids:
-            self._delete_area_highlight_ids = highlighted
-            self._refresh_all_items()
+        self._set_delete_area_highlight_ids(highlighted)
+
+    def _set_delete_area_highlight_ids(self, highlighted: set[int]) -> None:
+        changed_ids = self._delete_area_highlight_ids ^ highlighted
+        if not changed_ids:
+            return
+        self._delete_area_highlight_ids = set(highlighted)
+        self._refresh_polygon_items_by_id(*changed_ids)
 
     def clear_preview_rect(self) -> None:
         self._preview_rect_item.setPath(QPainterPath())
-        if self._delete_area_highlight_ids:
-            self._delete_area_highlight_ids.clear()
-            self._refresh_all_items()
+        self._set_delete_area_highlight_ids(set())
 
     def set_measurement(self, start: QPointF, end: QPointF, label_text: str = "") -> None:
         path = QPainterPath()
@@ -2990,11 +2994,26 @@ class PolygonEditorScene(QGraphicsScene):
                 remaining.append(clone)
             self._note_polygon_change_phase(profile, "collect", phase_started_at)
             phase_started_at = perf_counter()
-            remaining = dissolve_self_intersecting_polygons(remaining)
-            remaining = union_after_removing_polygon_ids(remaining, ids_to_delete)
+            changed_polygon_ids = set(remaining_lookup)
+            remaining = dissolve_self_intersecting_polygons(
+                remaining,
+                changed_polygon_ids=changed_polygon_ids,
+            )
+            if ids_to_delete:
+                remaining = union_after_removing_polygon_ids(remaining, ids_to_delete)
             self._note_polygon_change_phase(profile, "repair", phase_started_at)
             phase_started_at = perf_counter()
-            self.undo_stack.push(ReplacePolygonSetCommand(self, before, remaining, "Delete vertices in area"))
+            removed, added = self._compute_polygon_layer_patch(before, remaining)
+            if self._should_use_incremental_polygon_patch(before, removed):
+                command = ReplacePolygonsPatchCommand(
+                    self,
+                    removed,
+                    added,
+                    "Delete vertices in area",
+                )
+            else:
+                command = ReplacePolygonSetCommand(self, before, remaining, "Delete vertices in area")
+            self.undo_stack.push(command)
             self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
             if profile is not None:
                 profile.set_metadata(deleted_vertices=deleted, polygons_removed=len(ids_to_delete))

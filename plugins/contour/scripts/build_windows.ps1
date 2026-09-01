@@ -98,7 +98,8 @@ function Invoke-ContourUvRun {
 function Repair-BrokenNumpyDistInfo {
     param(
         [string]$Uv,
-        [string]$RepoRoot
+        [string]$RepoRoot,
+        [string]$ProjectPath
     )
 
     $python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
@@ -115,7 +116,12 @@ import shutil
 import sys
 from pathlib import Path
 
-if m.version("numpy") is not None:
+try:
+    numpy_version = m.version("numpy")
+except m.PackageNotFoundError:
+    numpy_version = None
+
+if numpy_version is not None:
     sys.exit(0)
 
 site = Path(sys.prefix) / "Lib" / "site-packages"
@@ -130,15 +136,20 @@ if removed:
 sys.exit(2 if removed else 1)
 '@
 
-    & $python -c $checkScript | Out-Host
+    $checkScript | & $python - | Out-Host
     if ($LASTEXITCODE -eq 0) {
         return
     }
 
     Write-Host "Repairing numpy package metadata for PyInstaller..."
     Invoke-Uv -Uv $Uv -Arguments @(
-        "pip", "install", "--reinstall", "numpy",
-        "--python", $python
+        "sync",
+        "--project", $ProjectPath,
+        "--extra", "build",
+        "--extra", "dev",
+        "--frozen",
+        "--reinstall-package", "numpy",
+        "--link-mode", "copy"
     )
 }
 
@@ -205,7 +216,8 @@ try {
             "sync",
             "--project", $ProjectPath,
             "--extra", "build",
-            "--extra", "dev"
+            "--extra", "dev",
+            "--link-mode", "copy"
         )
     }
     else {
@@ -236,9 +248,9 @@ try {
             }
 
             Write-Step "Building application bundle with PyInstaller"
-            Repair-BrokenNumpyDistInfo -Uv $Uv -RepoRoot $RepoRoot
+            Repair-BrokenNumpyDistInfo -Uv $Uv -RepoRoot $RepoRoot -ProjectPath $ProjectPath
             Invoke-ContourUvRun -Uv $Uv -ProjectPath $ProjectPath -Command @(
-                "python", "-m", "PyInstaller", "--noconfirm", $SpecFile
+                "python", "-m", "PyInstaller", "--noconfirm", "--clean", $SpecFile
             )
 
             $exePath = Join-Path $DistDir "Contour.exe"

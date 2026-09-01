@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from updater.client import fetch_update_info
@@ -18,6 +19,27 @@ def test_contour_update_app_id_matches_neuralimage_style() -> None:
     assert CONTOUR_UPDATE_APP_ID == "Contour"
     config = load_contour_update_client_config()
     assert config.get_manifest_url().replace("\\", "/") == "W:/ProgramStore/Contour"
+
+
+def test_contour_update_config_uses_pyinstaller_onedir_resources(tmp_path: Path, monkeypatch) -> None:
+    executable_dir = tmp_path / "Contour"
+    resources_dir = executable_dir / "_internal" / "resources"
+    resources_dir.mkdir(parents=True)
+    config_path = resources_dir / "update_client.json"
+    config_path.write_text('{"manifest_url": "W:/ProgramStore/Contour"}', encoding="utf-8")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable_dir / "Contour.exe"))
+
+    assert contour_update_client_config_path() == config_path
+    assert load_contour_update_client_config().get_manifest_url() == "W:/ProgramStore/Contour"
+
+
+def test_contour_pyinstaller_spec_bundles_update_client_config() -> None:
+    spec_path = Path(__file__).resolve().parents[2] / "packaging" / "Contour.spec"
+    spec_source = spec_path.read_text(encoding="utf-8")
+
+    assert '(str(PROJECT_ROOT / "resources" / "update_client.json"), "resources")' in spec_source
 
 
 def test_fetch_update_info_reads_version_json_from_directory(tmp_path: Path) -> None:

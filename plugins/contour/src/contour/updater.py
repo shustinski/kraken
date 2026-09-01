@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from updater.client import (
@@ -21,8 +22,24 @@ CONTOUR_UPDATE_SETTINGS_APP = "Updater"
 CONTOUR_UPDATE_CLIENT_FILENAME = "update_client.json"
 
 
+def contour_resources_root() -> Path:
+    if not bool(getattr(sys, "frozen", False)):
+        return Path(__file__).resolve().parents[2] / "resources"
+
+    executable_dir = Path(sys.executable).resolve().parent
+    internal_dir = executable_dir / "_internal"
+    if internal_dir.exists():
+        return internal_dir / "resources"
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "resources"
+
+    return executable_dir / "resources"
+
+
 def contour_update_client_config_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "resources" / CONTOUR_UPDATE_CLIENT_FILENAME
+    return contour_resources_root() / CONTOUR_UPDATE_CLIENT_FILENAME
 
 
 def load_contour_update_client_config() -> UpdateClientConfig:

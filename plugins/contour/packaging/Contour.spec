@@ -46,6 +46,7 @@ datas += collect_data_files(
 datas += [
     (str(PROJECT_ROOT / "resources" / "icons" / "contour.ico"), "plugins/contour/resources/icons"),
     (str(PROJECT_ROOT / "resources" / "icons" / "contour.png"), "plugins/contour/resources/icons"),
+    (str(PROJECT_ROOT / "resources" / "update_client.json"), "resources"),
 ]
 hiddenimports = list(
     dict.fromkeys(

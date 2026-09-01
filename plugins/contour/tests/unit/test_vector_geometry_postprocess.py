@@ -221,6 +221,39 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         filled_area = sum(abs(float(polygon.area)) for polygon in healed if not polygon.is_hole)
         self.assertGreater(filled_area, 1000.0)
 
+    def test_dissolve_scoped_to_changed_polygon_ids_skips_unchanged_roots(self) -> None:
+        invalid = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (30.0, 20.0),
+                (30.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 60.0),
+                (0.0, 60.0),
+            ],
+        )
+        valid = _rect(200.0, 200.0, 260.0, 260.0, 2)
+        after_delete = apply_vertex_delete_to_clone([invalid, valid], 1, 0)
+        healed = dissolve_self_intersecting_polygons(
+            after_delete,
+            changed_polygon_ids={1},
+        )
+        self.assertTrue(all(is_valid_closed_polygon_ring(polygon.points) for polygon in healed))
+        valid_after = next(polygon for polygon in healed if polygon.id == 2)
+        self.assertEqual(valid_after.points, valid.points)
+
+    def test_merge_after_removal_only_checks_promoted_roots(self) -> None:
+        outer = _rect(0.0, 0.0, 80.0, 80.0, 1)
+        island = _rect(30.0, 30.0, 50.0, 50.0, 3)
+        island.parent_id = 2
+        far = _rect(300.0, 300.0, 360.0, 360.0, 4)
+        remaining = union_after_removing_polygon_ids([outer, island, far], {2})
+        filled = [polygon for polygon in remaining if not polygon.is_hole]
+        self.assertEqual(len(filled), 2)
+
     def test_geometry_postprocess_with_no_changes_reports_clean(self) -> None:
         poly = _rect(5.0, 5.0, 35.0, 35.0, 1)
         out, changed = postprocess_polygons_for_frame_navigation(

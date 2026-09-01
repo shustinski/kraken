@@ -347,10 +347,21 @@ class FilesystemEventStore:
         )
 
     def last_global_position(self) -> int:
-        last = 0
-        for event in self._iter_stored_unlocked():
-            last = event.global_position
-        return last
+        """Return the position encoded by the contiguous immutable segment names.
+
+        Reading or verifying events validates their contents.  This metadata-only
+        lookup is used for inexpensive projection checkpoint comparisons.
+        """
+
+        last_position = 0
+        for first, last, path in self._segment_paths():
+            if first != last_position + 1:
+                raise CorruptEventLogError(
+                    f"event position gap or overlap before {path.name}: "
+                    f"expected {last_position + 1}, found {first}"
+                )
+            last_position = last
+        return last_position
 
     def _segment_paths(self) -> list[tuple[int, int, Path]]:
         result: list[tuple[int, int, Path]] = []

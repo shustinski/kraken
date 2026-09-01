@@ -4,10 +4,10 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import QBuffer, QIODevice, QPoint, QPointF, Qt
-from PyQt6.QtGui import QContextMenuEvent, QImage, QWheelEvent
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QBuffer, QEvent, QIODevice, QPoint, QPointF, Qt
+from PyQt6.QtGui import QContextMenuEvent, QImage, QKeyEvent, QPixmap, QWheelEvent
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication
 
 from kraken_core.frame_matrix import (
     MatrixAssetRef,
@@ -19,9 +19,9 @@ from kraken_core.frame_matrix import (
 )
 from kraken_core.frame_matrix.adapters.memory import MemoryThumbnailStore
 from kraken_hub.matrix_source import KrakenMatrixDataSource
-
 from kraken_manager.presentation.qt import (
     FrameCellData,
+    FrameMatrixMinimap,
     FrameMatrixView,
     FrameMatrixWidget,
     FrameRect,
@@ -59,6 +59,20 @@ def test_matrix_coordinates_follow_project_y_orientation(qapp):
     top_left = view.scene_rect_for_frame(1, 3).center()
     assert view.frame_at_scene_pos(top_left) == (1, 3)
     assert view.scene_rect_for_frame(1, 1).top() > top_left.y()
+
+
+def test_matrix_cells_are_adjacent_without_gaps(qapp):
+    view = FrameMatrixView(2, 2, GridOrientation.Y_DOWN)
+
+    first = view.scene_rect_for_frame(1, 1)
+    right = view.scene_rect_for_frame(2, 1)
+    below = view.scene_rect_for_frame(1, 2)
+
+    assert view.CELL_PITCH == view.CELL_SIZE
+    assert first.right() == right.left()
+    assert first.bottom() == below.top()
+    assert view.frame_at_scene_pos(right.center()) == (2, 1)
+    assert view.frame_at_scene_pos(below.center()) == (1, 2)
 
 
 def test_matrix_uses_sparse_presentation_data_and_compact_selection(qapp):
@@ -133,6 +147,10 @@ def test_shared_widget_loads_only_the_visible_viewport(qapp):
     assert requests
     assert requests[-1].bounds.width < 10_000_000
     assert view.materialized_cell_count() == 1
+    assert view.cell_data(
+        requests[-1].bounds.x1,
+        requests[-1].bounds.y1,
+    ).payload["request_lod"] == requests[-1].lod
 
 
 def _send_wheel(view, delta, modifiers=Qt.KeyboardModifier.NoModifier):
@@ -220,6 +238,81 @@ def test_shared_widget_deduplicates_viewport_and_loads_thumbnail(qapp):
     assert loading == [True, False]
 
 
+def test_cell_lod_paints_loaded_thumbnail_instead_of_status_fill(qapp):
+    view = FrameMatrixView(1, 1)
+    thumbnail = QPixmap(16, 16)
+    thumbnail.fill(Qt.GlobalColor.red)
+    view.set_cells(
+        (
+            FrameCellData(
+                1,
+                1,
+                status="image_ready",
+                thumbnail=thumbnail,
+            ),
+        )
+    )
+    view.resize(240, 240)
+    view.show()
+    view.set_zoom_factor(0.5)
+    view.centerOn(view.CELL_SIZE / 2, view.CELL_SIZE / 2)
+    qapp.processEvents()
+
+    center = view.mapFromScene(view.CELL_SIZE / 2, view.CELL_SIZE / 2)
+    pixel = view.grab().toImage().pixelColor(center)
+
+    assert pixel.red() > 200
+    assert pixel.red() > pixel.blue() * 2
+
+
+def test_fit_shortcut_accepts_english_and_russian_layout(qapp):
+    view = FrameMatrixView(100, 100)
+    view.resize(320, 240)
+    view.show()
+
+    view.set_zoom_factor(1.0)
+    QTest.keyClick(view, Qt.Key.Key_F)
+    english_zoom = view.zoom_factor()
+
+    view.set_zoom_factor(1.0)
+    russian_event = QKeyEvent(
+        QEvent.Type.KeyPress,
+        0,
+        Qt.KeyboardModifier.NoModifier,
+        "а",
+    )
+    QApplication.sendEvent(view, russian_event)
+
+    assert english_zoom < 1.0
+    assert view.zoom_factor() == pytest.approx(english_zoom)
+
+
+def test_minimap_overlays_viewport_and_navigates_on_click(qapp):
+    view = FrameMatrixView(100, 100)
+    view.resize(480, 320)
+    view.show()
+    minimap = FrameMatrixMinimap(view)
+    qapp.processEvents()
+
+    assert minimap.parentWidget() is view.viewport()
+    assert minimap.x() + minimap.width() <= view.viewport().width()
+    assert minimap.y() + minimap.height() <= view.viewport().height()
+
+    before = (
+        view.horizontalScrollBar().value(),
+        view.verticalScrollBar().value(),
+    )
+    QTest.mouseClick(
+        minimap,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(minimap.width() - 10, minimap.height() - 10),
+    )
+    qapp.processEvents()
+
+    assert view.horizontalScrollBar().value() > before[0]
+    assert view.verticalScrollBar().value() > before[1]
+
+
 def test_kraken_data_source_prefers_image_asset_over_vector_artifact():
     class Service:
         def matrix_viewport(self, *_args, **_kwargs):
@@ -252,3 +345,35 @@ def test_kraken_data_source_prefers_image_asset_over_vector_artifact():
     assert result.items[0].asset is not None
     assert result.items[0].asset.source_key == "image-artifact"
     assert result.items[0].asset.source_revision == "image-version"
+
+
+def test_kraken_data_source_does_not_decode_vector_artifact_as_image():
+    class Service:
+        def matrix_viewport(self, *_args, **_kwargs):
+            return {
+                "revision": "viewport-1",
+                "cells": (
+                    {
+                        "x": 1,
+                        "y": 1,
+                        "frame_id": "frame-1",
+                        "status": "vectorized",
+                        "sha256": "cif-artifact",
+                        "artifact_version_id": "vector-version",
+                    },
+                ),
+                "aggregates": (),
+            }
+
+    source = KrakenMatrixDataSource(
+        Service(),
+        project_id="project",
+        layer_id="layer",
+        representation_ids=("vector",),
+    )
+    request = MatrixViewportRequest(MatrixBounds(1, 1, 1, 1))
+
+    result = source.load_viewport(request)
+
+    assert result.items[0].asset is None
+    assert "SHA-256: cif-artifact" in result.items[0].tooltip

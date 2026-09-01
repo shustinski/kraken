@@ -52,6 +52,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output directory for exported results.",
     )
     parser.add_argument(
+        "--dataset-dir",
+        dest="dataset_dir",
+        help="Directory for the prepared training dataset.",
+    )
+    parser.add_argument(
         "--cif-dir",
         dest="cif_dir",
         help="Directory with CIF overlays.",
@@ -122,6 +127,7 @@ def _build_model(
         startup=StartupConfiguration.from_cli(
             input_dir=args.input_dir,
             output_dir=args.output_dir,
+            dataset_dir=args.dataset_dir,
             cif_dir=args.cif_dir,
             pipeline_json=args.pipeline_json,
             paths=args.paths,

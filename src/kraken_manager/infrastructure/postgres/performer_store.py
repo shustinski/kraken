@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any, Iterator
+from typing import Any
 
 from kraken_manager.application.errors import ConflictError, NotFoundError
 from kraken_manager.domain.common import PerformerId, PrincipalId
@@ -118,10 +119,11 @@ class PostgresPerformerStore:
                 updated_at=now,
             )
             .on_conflict_do_nothing()
+            .returning(self.performers.c.performer_id)
         )
         with self._scope(write=True) as connection:
-            result = connection.execute(statement)
-            if result.rowcount != 1:
+            inserted_id = connection.execute(statement).scalar_one_or_none()
+            if inserted_id is None:
                 raise ConflictError("performer id or principal link already exists")
         return performer
 

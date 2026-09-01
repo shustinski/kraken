@@ -2,5 +2,12 @@
 
 from .plugins import PluginMetadata, load_plugin_catalog
 from .runtime import current_platform
+from .external_model import ExternalModelLink, StagedExternalModel
 
-__all__ = ["PluginMetadata", "current_platform", "load_plugin_catalog"]
+__all__ = [
+    "ExternalModelLink",
+    "PluginMetadata",
+    "StagedExternalModel",
+    "current_platform",
+    "load_plugin_catalog",
+]

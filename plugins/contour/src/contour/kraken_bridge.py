@@ -20,6 +20,8 @@ from kraken_core.plugin_protocol import (
     PluginJobOutcome,
     PluginOperation,
     PluginResultManifest,
+    WorkspacePluginContextV1,
+    WorkspacePluginResultV1,
     safe_relative_path,
 )
 
@@ -135,7 +137,10 @@ class ContourKrakenSession:
             manifest = PluginJobManifest.from_json(manifest_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError) as exc:
             raise KrakenBridgeError(f"Invalid Kraken job manifest: {exc}") from exc
-        if manifest.operation != PluginOperation.VECTORIZE_FRAMES.value:
+        if manifest.operation not in {
+            PluginOperation.VECTORIZE_FRAMES.value,
+            PluginOperation.PREPARE_DATASET.value,
+        }:
             raise KrakenBridgeError(f"Contour does not support operation {manifest.operation!r}")
         if len(manifest.inputs) > 10_000:
             raise KrakenBridgeError("Contour protocol v1 accepts at most 10000 frames per job")
@@ -257,6 +262,137 @@ class ContourKrakenSession:
         setattr(window, "_kraken_return_action", action)
 
 
+@dataclass(frozen=True, slots=True)
+class ContourWorkspaceSession:
+    """Direct local-filesystem session using the two-root Kraken workspace."""
+
+    context: WorkspacePluginContextV1
+    context_path: Path
+    input_directory: Path
+    output_directory: Path
+    result_manifest_path: Path
+
+    @classmethod
+    def load(cls, path: str | os.PathLike[str]) -> "ContourWorkspaceSession":
+        raw = Path(path)
+        if raw.is_symlink():
+            raise KrakenBridgeError("Workspace context must not be a symbolic link")
+        try:
+            context_path = raw.resolve(strict=True)
+            context = WorkspacePluginContextV1.read(context_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise KrakenBridgeError(f"Invalid Kraken workspace context: {exc}") from exc
+        if context.plugin_id != "contour":
+            raise KrakenBridgeError("Workspace context is not intended for Contour")
+        if context.operation not in {
+            PluginOperation.VECTORIZE_FRAMES.value,
+            PluginOperation.PREPARE_DATASET.value,
+        }:
+            raise KrakenBridgeError(
+                f"Contour does not support operation {context.operation!r}"
+            )
+        try:
+            input_directory = Path(context.input_directories["images"]).resolve(
+                strict=True
+            )
+            output_directory = Path(context.proposed_output_directory).resolve(
+                strict=True
+            )
+        except (KeyError, OSError) as exc:
+            raise KrakenBridgeError("Workspace input or output directory is unavailable") from exc
+        if (
+            input_directory.is_symlink()
+            or output_directory.is_symlink()
+            or not input_directory.is_dir()
+            or not output_directory.is_dir()
+        ):
+            raise KrakenBridgeError("Workspace paths must be regular directories")
+        result_manifest_path = Path(context.result_manifest_path).resolve(strict=False)
+        if result_manifest_path.exists() or result_manifest_path.is_symlink():
+            raise KrakenBridgeError("Workspace result manifest already exists")
+        return cls(
+            context,
+            context_path,
+            input_directory,
+            output_directory,
+            result_manifest_path,
+        )
+
+    def _selected_output_directory(self, window: object) -> Path:
+        widget = getattr(window, "_widget", None)
+        edit_name = (
+            "dataset_dir_edit"
+            if self.context.operation == PluginOperation.PREPARE_DATASET.value
+            else "output_dir_edit"
+        )
+        edit = getattr(widget, edit_name, None)
+        value = str(edit.text()).strip() if edit is not None else str(self.output_directory)
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute() or candidate.is_symlink():
+            raise KrakenBridgeError("Result directory must be an absolute regular directory")
+        candidate.mkdir(parents=True, exist_ok=True)
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_dir():
+            raise KrakenBridgeError("Result directory is unavailable")
+        return resolved
+
+    def attach_return_action(self, window: object) -> None:
+        from PyQt6.QtGui import QAction, QKeySequence
+        from PyQt6.QtWidgets import QMainWindow, QMessageBox
+
+        if not isinstance(window, QMainWindow):
+            raise TypeError("Contour Kraken bridge requires a QMainWindow")
+        menu = window.menuBar().addMenu("Kraken")
+        action = QAction("Вернуть результаты в Kraken", window)
+        action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
+
+        def return_results() -> None:
+            try:
+                output = self._selected_output_directory(window)
+                if self.context.operation == PluginOperation.PREPARE_DATASET.value:
+                    outputs = tuple(
+                        path
+                        for directory in (output / "images", output / "cif")
+                        if directory.is_dir()
+                        for path in directory.iterdir()
+                        if path.is_file()
+                    )
+                else:
+                    outputs = tuple(output.glob("*.cif"))
+                if not outputs:
+                    raise KrakenBridgeError(
+                        "В выбранной папке нет результатов для возврата в Kraken"
+                    )
+                WorkspacePluginResultV1(
+                    run_id=self.context.run_id,
+                    plugin_id="contour",
+                    operation=self.context.operation,
+                    outcome=PluginJobOutcome.SUCCEEDED.value,
+                    output_directory=str(output),
+                    provenance={
+                        "plugin_version": __version__,
+                        "file_count": len(outputs),
+                    },
+                ).write(self.result_manifest_path)
+            except Exception as exc:
+                QMessageBox.critical(
+                    window,
+                    "Kraken",
+                    f"Не удалось вернуть результат:\n{exc}",
+                )
+                return
+            QMessageBox.information(
+                window,
+                "Kraken",
+                "Результаты переданы Kraken. Окно Contour можно закрыть.",
+            )
+            window.close()
+
+        action.triggered.connect(return_results)
+        menu.addAction(action)
+        setattr(window, "_kraken_return_action", action)
+
+
 def _validated_ui_arguments(arguments: Sequence[str]) -> list[str]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--language", choices=("ru", "en"))
@@ -289,12 +425,36 @@ def prepare_contour_launch(
     parser.add_argument("--kraken-job-manifest")
     parser.add_argument("--kraken-result-manifest")
     parser.add_argument("--kraken-staging-root")
+    parser.add_argument("--kraken-workspace-context")
     namespace, remaining = parser.parse_known_args(list(argv))
     values = {
         "job_manifest": namespace.kraken_job_manifest or environment.get(JOB_ENV),
         "result_manifest": namespace.kraken_result_manifest or environment.get(RESULT_ENV),
         "staging_root": namespace.kraken_staging_root or environment.get(STAGING_ENV),
     }
+    if namespace.kraken_workspace_context:
+        if any(values.values()):
+            raise KrakenBridgeError(
+                "Agent staging and direct workspace modes cannot be combined"
+            )
+        safe_ui_arguments = _validated_ui_arguments(remaining)
+        workspace_session = ContourWorkspaceSession.load(
+            namespace.kraken_workspace_context
+        )
+        destination_option = (
+            "--dataset-dir"
+            if workspace_session.context.operation
+            == PluginOperation.PREPARE_DATASET.value
+            else "--output-dir"
+        )
+        controlled = [
+            *safe_ui_arguments,
+            "--input-dir",
+            str(workspace_session.input_directory),
+            destination_option,
+            str(workspace_session.output_directory),
+        ]
+        return workspace_session, controlled
     if not any(values.values()):
         return None, list(argv)
     missing = [name for name, value in values.items() if not value]
@@ -306,13 +466,23 @@ def prepare_contour_launch(
         result_manifest=str(values["result_manifest"]),
         staging_root=str(values["staging_root"]),
     )
+    destination_option = (
+        "--dataset-dir"
+        if session.manifest.operation == PluginOperation.PREPARE_DATASET.value
+        else "--output-dir"
+    )
     controlled = [
         *safe_ui_arguments,
-        "--output-dir",
+        destination_option,
         str(session.output_directory),
         *(str(path) for path in session.input_paths),
     ]
     return session, controlled
 
 
-__all__ = ["ContourKrakenSession", "KrakenBridgeError", "prepare_contour_launch"]
+__all__ = [
+    "ContourKrakenSession",
+    "ContourWorkspaceSession",
+    "KrakenBridgeError",
+    "prepare_contour_launch",
+]

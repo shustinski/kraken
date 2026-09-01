@@ -9,21 +9,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 
 PLUGIN_PROTOCOL_VERSION = "1.0"
 PLUGIN_JOB_SCHEMA = "kraken.plugin-job.v1"
 PLUGIN_RESULT_SCHEMA = "kraken.plugin-result.v1"
+PLUGIN_JOB_SCHEMA_V2 = "kraken.plugin-job.v2"
+PLUGIN_RESULT_SCHEMA_V2 = "kraken.plugin-result.v2"
+WORKSPACE_PLUGIN_CONTEXT_SCHEMA = "kraken.workspace-plugin-context.v1"
+WORKSPACE_PLUGIN_RESULT_SCHEMA = "kraken.workspace-plugin-result.v1"
 
 
 class PluginOperation(StrEnum):
     VECTORIZE_FRAMES = "frames.vectorize.v1"
     BINARY_SEGMENT_FRAMES = "frames.binary-segment.v1"
+    PREPARE_DATASET = "frames.dataset.prepare.v1"
+    TRAIN_MODEL = "dataset.model.train.v1"
+    BINARY_SEGMENT_FRAMES_V2 = "frames.binary-segment.v2"
+    ANALYZE_LAYER_CONFIDENCE = "layer.confidence.analyze.v1"
 
 
 class PluginRunMode(StrEnum):
@@ -282,6 +291,248 @@ class PluginFrameOutput:
         )
 
 
+class PluginAssetScope(StrEnum):
+    FRAME = "frame"
+    LAYER = "layer"
+
+
+@dataclass(frozen=True, slots=True)
+class PluginAsset:
+    """Role-aware V2 asset; several roles may belong to the same frame."""
+
+    asset_id: str
+    role: str
+    scope: PluginAssetScope | str
+    relative_path: str
+    sha256: str
+    media_type: str
+    frame_id: str | None = None
+    representation_id: str | None = None
+    x: int | None = None
+    y: int | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in ("asset_id", "role", "media_type"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "scope", PluginAssetScope(str(self.scope)))
+        object.__setattr__(self, "relative_path", safe_relative_path(self.relative_path))
+        object.__setattr__(self, "sha256", _sha256(self.sha256))
+        if self.scope is PluginAssetScope.FRAME:
+            if not self.frame_id or self.x is None or self.y is None or self.x < 1 or self.y < 1:
+                raise ValueError("frame assets require frame_id and positive x/y")
+        elif self.frame_id is not None or self.x is not None or self.y is not None:
+            raise ValueError("layer assets cannot declare frame coordinates")
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "asset_id": self.asset_id,
+            "role": self.role,
+            "scope": self.scope.value,
+            "relative_path": self.relative_path,
+            "sha256": self.sha256,
+            "media_type": self.media_type,
+            "frame_id": self.frame_id,
+            "representation_id": self.representation_id,
+            "x": self.x,
+            "y": self.y,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "PluginAsset":
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, Mapping):
+            raise ValueError("asset metadata must be an object")
+        return cls(
+            asset_id=str(payload.get("asset_id", "")),
+            role=str(payload.get("role", "")),
+            scope=str(payload.get("scope", "")),
+            relative_path=str(payload.get("relative_path", "")),
+            sha256=str(payload.get("sha256", "")),
+            media_type=str(payload.get("media_type", "")),
+            frame_id=None if payload.get("frame_id") is None else str(payload["frame_id"]),
+            representation_id=None if payload.get("representation_id") is None else str(payload["representation_id"]),
+            x=None if payload.get("x") is None else int(payload["x"]),
+            y=None if payload.get("y") is None else int(payload["y"]),
+            metadata=dict(metadata),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PluginJobManifestV2:
+    job_id: str
+    operation: str
+    project_id: str
+    layer_id: str
+    actor_id: str
+    inputs: tuple[PluginAsset, ...]
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+    target_representation_ids: tuple[str, ...] = ()
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    schema: str = PLUGIN_JOB_SCHEMA_V2
+    protocol_version: str = "2.0"
+
+    def __post_init__(self) -> None:
+        for name in ("job_id", "operation", "project_id", "layer_id", "actor_id"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        if self.schema != PLUGIN_JOB_SCHEMA_V2 or self.protocol_version != "2.0":
+            raise ValueError("Unsupported V2 plugin manifest")
+        if not self.inputs:
+            raise ValueError("V2 plugin job requires at least one asset")
+        paths = [item.relative_path.casefold() for item in self.inputs]
+        if len(paths) != len(set(paths)):
+            raise ValueError("V2 input paths must be unique")
+        object.__setattr__(self, "parameters", dict(self.parameters))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema, "protocol_version": self.protocol_version,
+            "job_id": self.job_id, "operation": self.operation,
+            "project_id": self.project_id, "layer_id": self.layer_id,
+            "actor_id": self.actor_id, "created_at": self.created_at,
+            "parameters": dict(self.parameters),
+            "target_representation_ids": list(self.target_representation_ids),
+            "inputs": [item.to_dict() for item in self.inputs],
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def digest(self) -> str:
+        return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "PluginJobManifestV2":
+        raw_inputs = payload.get("inputs", ())
+        raw_parameters = payload.get("parameters", {})
+        if not isinstance(raw_inputs, (list, tuple)):
+            raise ValueError("inputs must be an array")
+        if not isinstance(raw_parameters, Mapping):
+            raise ValueError("parameters must be an object")
+        return cls(
+            schema=str(payload.get("schema", "")),
+            protocol_version=str(payload.get("protocol_version", "")),
+            job_id=str(payload.get("job_id", "")),
+            operation=str(payload.get("operation", "")),
+            project_id=str(payload.get("project_id", "")),
+            layer_id=str(payload.get("layer_id", "")),
+            actor_id=str(payload.get("actor_id", "")),
+            created_at=str(payload.get("created_at", "")),
+            parameters=dict(raw_parameters),
+            target_representation_ids=tuple(str(item) for item in payload.get("target_representation_ids", ())),
+            inputs=tuple(PluginAsset.from_dict(item) for item in raw_inputs if isinstance(item, Mapping)),
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> "PluginJobManifestV2":
+        payload = json.loads(raw)
+        if not isinstance(payload, Mapping):
+            raise ValueError("V2 plugin job manifest must be a JSON object")
+        return cls.from_dict(payload)
+
+
+@dataclass(frozen=True, slots=True)
+class PluginResultPublicationV2:
+    job_id: str
+    publication_id: str
+    sequence: int
+    plugin_id: str
+    plugin_version: str
+    outputs: tuple[PluginAsset, ...]
+    outcome: str = PluginJobOutcome.SUCCEEDED.value
+    applied_parameters: Mapping[str, Any] = field(default_factory=dict)
+    frame_values: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    report: Mapping[str, Any] = field(default_factory=dict)
+    final: bool = False
+    schema: str = PLUGIN_RESULT_SCHEMA_V2
+    protocol_version: str = "2.0"
+
+    def __post_init__(self) -> None:
+        for name in ("job_id", "publication_id", "plugin_id", "plugin_version"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        if self.sequence < 1:
+            raise ValueError("publication sequence starts at one")
+        if self.schema != PLUGIN_RESULT_SCHEMA_V2 or self.protocol_version != "2.0":
+            raise ValueError("Unsupported V2 result publication")
+        try:
+            PluginJobOutcome(self.outcome)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported plugin outcome: {self.outcome}") from exc
+        object.__setattr__(self, "applied_parameters", dict(self.applied_parameters))
+        normalized_values: dict[str, dict[str, float]] = {}
+        for frame_id, measurements in self.frame_values.items():
+            if not isinstance(measurements, Mapping):
+                raise ValueError("frame_values entries must be objects")
+            normalized_values[_required_text(frame_id, "frame_id")] = {
+                _required_text(name, "measurement"): float(value)
+                for name, value in measurements.items()
+            }
+        object.__setattr__(self, "frame_values", normalized_values)
+        object.__setattr__(self, "report", dict(self.report))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema, "protocol_version": self.protocol_version,
+            "job_id": self.job_id, "publication_id": self.publication_id,
+            "sequence": self.sequence, "plugin_id": self.plugin_id,
+            "plugin_version": self.plugin_version, "outcome": self.outcome,
+            "final": self.final,
+            "applied_parameters": dict(self.applied_parameters),
+            "frame_values": {
+                frame_id: dict(measurements)
+                for frame_id, measurements in self.frame_values.items()
+            },
+            "report": dict(self.report),
+            "outputs": [item.to_dict() for item in self.outputs],
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "PluginResultPublicationV2":
+        raw_outputs = payload.get("outputs", ())
+        parameters = payload.get("applied_parameters", {})
+        frame_values = payload.get("frame_values", {})
+        report = payload.get("report", {})
+        if not isinstance(raw_outputs, (list, tuple)):
+            raise ValueError("outputs must be an array")
+        if not all(isinstance(value, Mapping) for value in (parameters, frame_values, report)):
+            raise ValueError("publication parameters, frame_values and report must be objects")
+        return cls(
+            schema=str(payload.get("schema", "")),
+            protocol_version=str(payload.get("protocol_version", "")),
+            job_id=str(payload.get("job_id", "")),
+            publication_id=str(payload.get("publication_id", "")),
+            sequence=int(payload.get("sequence", 0)),
+            plugin_id=str(payload.get("plugin_id", "")),
+            plugin_version=str(payload.get("plugin_version", "")),
+            outcome=str(payload.get("outcome", PluginJobOutcome.SUCCEEDED.value)),
+            final=bool(payload.get("final", False)),
+            applied_parameters=dict(parameters),
+            frame_values={
+                str(frame_id): dict(measurements)
+                for frame_id, measurements in frame_values.items()
+                if isinstance(measurements, Mapping)
+            },
+            report=dict(report),
+            outputs=tuple(
+                PluginAsset.from_dict(item)
+                for item in raw_outputs
+                if isinstance(item, Mapping)
+            ),
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> "PluginResultPublicationV2":
+        payload = json.loads(raw)
+        if not isinstance(payload, Mapping):
+            raise ValueError("V2 plugin result publication must be a JSON object")
+        return cls.from_dict(payload)
+
+
 @dataclass(frozen=True, slots=True)
 class PluginResultManifest:
     job_id: str
@@ -357,6 +608,247 @@ class PluginResultManifest:
         return cls.from_dict(payload)
 
 
+def _absolute_directory_text(value: object, field_name: str) -> str:
+    text = _required_text(value, field_name)
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        raise ValueError(f"{field_name} must be an absolute filesystem path")
+    return str(path)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspacePluginContextV1:
+    """Local-filesystem contract for direct Contour/NeuralImage launches."""
+
+    project_id: str
+    project_name: str
+    layer_id: str
+    layer_name: str
+    operation: str
+    plugin_id: str
+    run_id: str
+    input_directories: Mapping[str, str]
+    proposed_output_directory: str
+    result_manifest_path: str
+    schema: str = WORKSPACE_PLUGIN_CONTEXT_SCHEMA
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "project_id",
+            "project_name",
+            "layer_id",
+            "layer_name",
+            "operation",
+            "plugin_id",
+            "run_id",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _required_text(getattr(self, field_name), field_name),
+            )
+        if self.schema != WORKSPACE_PLUGIN_CONTEXT_SCHEMA:
+            raise ValueError(f"Unsupported workspace context schema: {self.schema}")
+        directories = {
+            _required_text(name, "input directory role"): _absolute_directory_text(
+                value, f"input_directories.{name}"
+            )
+            for name, value in self.input_directories.items()
+        }
+        if not directories:
+            raise ValueError("input_directories must not be empty")
+        object.__setattr__(self, "input_directories", directories)
+        object.__setattr__(
+            self,
+            "proposed_output_directory",
+            _absolute_directory_text(
+                self.proposed_output_directory,
+                "proposed_output_directory",
+            ),
+        )
+        result_path = Path(
+            _required_text(self.result_manifest_path, "result_manifest_path")
+        ).expanduser()
+        if not result_path.is_absolute():
+            raise ValueError("result_manifest_path must be an absolute filesystem path")
+        object.__setattr__(self, "result_manifest_path", str(result_path))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "project_id": self.project_id,
+            "project_name": self.project_name,
+            "layer_id": self.layer_id,
+            "layer_name": self.layer_name,
+            "operation": self.operation,
+            "plugin_id": self.plugin_id,
+            "run_id": self.run_id,
+            "input_directories": dict(self.input_directories),
+            "proposed_output_directory": self.proposed_output_directory,
+            "result_manifest_path": self.result_manifest_path,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def write(self, path: str | os.PathLike[str]) -> Path:
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(
+            f".{destination.name}.{os.getpid()}.tmp"
+        )
+        try:
+            with temporary.open("x", encoding="utf-8") as stream:
+                stream.write(self.to_json())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return destination
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "WorkspacePluginContextV1":
+        raw_inputs = payload.get("input_directories", {})
+        if not isinstance(raw_inputs, Mapping):
+            raise ValueError("input_directories must be an object")
+        return cls(
+            schema=str(payload.get("schema", "")),
+            project_id=str(payload.get("project_id", "")),
+            project_name=str(payload.get("project_name", "")),
+            layer_id=str(payload.get("layer_id", "")),
+            layer_name=str(payload.get("layer_name", "")),
+            operation=str(payload.get("operation", "")),
+            plugin_id=str(payload.get("plugin_id", "")),
+            run_id=str(payload.get("run_id", "")),
+            input_directories={
+                str(name): str(value) for name, value in raw_inputs.items()
+            },
+            proposed_output_directory=str(
+                payload.get("proposed_output_directory", "")
+            ),
+            result_manifest_path=str(payload.get("result_manifest_path", "")),
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> "WorkspacePluginContextV1":
+        payload = json.loads(raw)
+        if not isinstance(payload, Mapping):
+            raise ValueError("Workspace plugin context must be a JSON object")
+        return cls.from_dict(payload)
+
+    @classmethod
+    def read(cls, path: str | os.PathLike[str]) -> "WorkspacePluginContextV1":
+        return cls.from_json(Path(path).read_text(encoding="utf-8"))
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspacePluginResultV1:
+    run_id: str
+    plugin_id: str
+    operation: str
+    outcome: str
+    output_directory: str
+    provenance: Mapping[str, Any] = field(default_factory=dict)
+    errors: tuple[str, ...] = ()
+    schema: str = WORKSPACE_PLUGIN_RESULT_SCHEMA
+
+    def __post_init__(self) -> None:
+        for field_name in ("run_id", "plugin_id", "operation"):
+            object.__setattr__(
+                self,
+                field_name,
+                _required_text(getattr(self, field_name), field_name),
+            )
+        if self.schema != WORKSPACE_PLUGIN_RESULT_SCHEMA:
+            raise ValueError(f"Unsupported workspace result schema: {self.schema}")
+        if self.outcome not in {
+            PluginJobOutcome.SUCCEEDED.value,
+            PluginJobOutcome.PARTIAL.value,
+            PluginJobOutcome.FAILED.value,
+            PluginJobOutcome.CANCELLED.value,
+        }:
+            raise ValueError(f"Unsupported workspace result outcome: {self.outcome}")
+        object.__setattr__(
+            self,
+            "output_directory",
+            _absolute_directory_text(self.output_directory, "output_directory"),
+        )
+        object.__setattr__(self, "provenance", dict(self.provenance))
+        object.__setattr__(
+            self,
+            "errors",
+            tuple(str(error) for error in self.errors),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "run_id": self.run_id,
+            "plugin_id": self.plugin_id,
+            "operation": self.operation,
+            "outcome": self.outcome,
+            "output_directory": self.output_directory,
+            "provenance": dict(self.provenance),
+            "errors": list(self.errors),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def write(self, path: str | os.PathLike[str]) -> Path:
+        destination = Path(path)
+        temporary = destination.with_name(
+            f".{destination.name}.{os.getpid()}.tmp"
+        )
+        try:
+            with temporary.open("x", encoding="utf-8") as stream:
+                stream.write(self.to_json())
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return destination
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "WorkspacePluginResultV1":
+        provenance = payload.get("provenance", {})
+        if not isinstance(provenance, Mapping):
+            raise ValueError("provenance must be an object")
+        return cls(
+            schema=str(payload.get("schema", "")),
+            run_id=str(payload.get("run_id", "")),
+            plugin_id=str(payload.get("plugin_id", "")),
+            operation=str(payload.get("operation", "")),
+            outcome=str(payload.get("outcome", "")),
+            output_directory=str(payload.get("output_directory", "")),
+            provenance=dict(provenance),
+            errors=tuple(str(value) for value in payload.get("errors", ())),
+        )
+
+    @classmethod
+    def from_json(cls, raw: str) -> "WorkspacePluginResultV1":
+        payload = json.loads(raw)
+        if not isinstance(payload, Mapping):
+            raise ValueError("Workspace plugin result must be a JSON object")
+        return cls.from_dict(payload)
+
+    @classmethod
+    def read(cls, path: str | os.PathLike[str]) -> "WorkspacePluginResultV1":
+        return cls.from_json(Path(path).read_text(encoding="utf-8"))
+
+
 def plugin_supports(
     capabilities: tuple[PluginCapability, ...] | list[PluginCapability],
     operation: str,
@@ -379,18 +871,59 @@ def plugin_supports(
     return False
 
 
+def parse_plugin_job(payload: Mapping[str, Any]) -> PluginJobManifest | PluginJobManifestV2:
+    schema = str(payload.get("schema", ""))
+    if schema == PLUGIN_JOB_SCHEMA:
+        return PluginJobManifest.from_dict(payload)
+    if schema == PLUGIN_JOB_SCHEMA_V2:
+        return PluginJobManifestV2.from_dict(payload)
+    raise ValueError(f"Unsupported job schema: {schema}")
+
+
+def parse_plugin_job_json(raw: str) -> PluginJobManifest | PluginJobManifestV2:
+    payload = json.loads(raw)
+    if not isinstance(payload, Mapping):
+        raise ValueError("Plugin job manifest must be a JSON object")
+    return parse_plugin_job(payload)
+
+
+def parse_plugin_result_json(raw: str) -> PluginResultManifest | PluginResultPublicationV2:
+    payload = json.loads(raw)
+    if not isinstance(payload, Mapping):
+        raise ValueError("Plugin result manifest must be a JSON object")
+    schema = str(payload.get("schema", ""))
+    if schema == PLUGIN_RESULT_SCHEMA:
+        return PluginResultManifest.from_dict(payload)
+    if schema == PLUGIN_RESULT_SCHEMA_V2:
+        return PluginResultPublicationV2.from_dict(payload)
+    raise ValueError(f"Unsupported result schema: {schema}")
+
+
 __all__ = [
     "PLUGIN_JOB_SCHEMA",
     "PLUGIN_PROTOCOL_VERSION",
     "PLUGIN_RESULT_SCHEMA",
+    "PLUGIN_JOB_SCHEMA_V2",
+    "PLUGIN_RESULT_SCHEMA_V2",
+    "WORKSPACE_PLUGIN_CONTEXT_SCHEMA",
+    "WORKSPACE_PLUGIN_RESULT_SCHEMA",
+    "PluginAsset",
+    "PluginAssetScope",
     "PluginCapability",
     "PluginFrameInput",
     "PluginFrameOutput",
     "PluginJobManifest",
+    "PluginJobManifestV2",
     "PluginJobOutcome",
     "PluginOperation",
     "PluginResultManifest",
+    "PluginResultPublicationV2",
     "PluginRunMode",
+    "WorkspacePluginContextV1",
+    "WorkspacePluginResultV1",
     "plugin_supports",
+    "parse_plugin_job",
+    "parse_plugin_job_json",
+    "parse_plugin_result_json",
     "safe_relative_path",
 ]

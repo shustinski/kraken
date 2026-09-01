@@ -106,6 +106,37 @@ class FilesystemEventStoreTests(unittest.TestCase):
                 with self.assertRaises(ProjectLockTimeout):
                     second.acquire(timeout=0.005)
 
+    def test_last_global_position_uses_segment_ranges_without_reading_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project_id = str(uuid4())
+            store = FilesystemEventStore(directory, project_id)
+            stream_id = f"project:{project_id}"
+            event = _event(
+                project_id,
+                stream_id,
+                1,
+                at=datetime.now(timezone.utc),
+                key="one",
+            )
+            store.append(stream_id, expected_revision=0, events=(event,))
+
+            segment = next(store.layout.events_dir.glob("*.jsonl"))
+            segment.write_text("not read by the position lookup", encoding="utf-8")
+
+            self.assertEqual(store.last_global_position(), 1)
+            with self.assertRaises(CorruptEventLogError):
+                list(store.iter_project())
+
+    def test_last_global_position_rejects_segment_range_gaps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project_id = str(uuid4())
+            store = FilesystemEventStore(directory, project_id)
+            segment = store.layout.events_dir / "00000000000000000002-00000000000000000002.jsonl"
+            segment.write_text("", encoding="utf-8")
+
+            with self.assertRaisesRegex(CorruptEventLogError, "expected 1, found 2"):
+                store.last_global_position()
+
 
 class SQLiteProjectionStoreTests(unittest.TestCase):
     def test_typed_crud_temporal_history_and_rebuildable_event_index(self) -> None:

@@ -14,6 +14,7 @@ from kraken_manager.application.dto import (
     CreateProjectCommand,
     CreateRepresentationCommand,
     ReturnedFileDigest,
+    StoredContent,
 )
 from kraken_manager.application.errors import ConcurrencyError, ConflictError, NotFoundError, StorageCapabilityError
 from kraken_manager.application.ports import Clock, StorageProfile, StorageProfileCatalog, UnitOfWork, UnitOfWorkFactory
@@ -34,6 +35,7 @@ from kraken_manager.domain.project import (
     ProjectState,
     Representation,
     RepresentationKind,
+    RepresentationPurpose,
     StructureState,
 )
 from kraken_manager.domain.workflows import (
@@ -219,6 +221,7 @@ class CreateLayerHandler(_ProjectHandler):
                 name=command.name,
                 type=command.type,
                 order=command.order,
+                layer_id=command.layer_id,
                 created_at=now,
             )
             next_project = replace(project, revision=project.revision + 1)
@@ -287,7 +290,11 @@ class CreateRepresentationHandler(_ProjectHandler):
             if any(item.name.casefold() == command.name.strip().casefold() for item in existing_representations):
                 raise ConflictError(f"Representation name {command.name!r} already exists in the layer")
             source_image_id = command.source_image_representation_id
-            if command.kind is RepresentationKind.VECTOR:
+            has_image_parent = (
+                command.kind is RepresentationKind.VECTOR
+                or command.purpose is RepresentationPurpose.BINARY
+            )
+            if has_image_parent:
                 if source_image_id is None:
                     active_images = [
                         item
@@ -305,9 +312,9 @@ class CreateRepresentationHandler(_ProjectHandler):
                     None,
                 )
                 if source_image_id is not None and source_image is None:
-                    raise ConflictError("A vector representation must belong to an image representation")
+                    raise ConflictError("A derived representation must belong to an image representation")
             elif source_image_id is not None:
-                raise ConflictError("An image representation cannot have a parent image")
+                raise ConflictError("A source image representation cannot have a parent image")
             now = self._clock.now()
             representation = Representation.create(
                 project_id=project.id,
@@ -318,6 +325,7 @@ class CreateRepresentationHandler(_ProjectHandler):
                 source=command.source,
                 source_image_representation_id=source_image_id,
                 active=command.active,
+                purpose=command.purpose,
                 created_at=now,
             )
             deactivated_ids: list[str] = []
@@ -345,6 +353,7 @@ class CreateRepresentationHandler(_ProjectHandler):
                     "layer_id": layer.id,
                     "name": representation.name,
                     "kind": representation.kind.value,
+                    "purpose": representation.purpose.value,
                     "note": representation.note,
                     "source": representation.source,
                     "source_image_representation_id": representation.source_image_representation_id,
@@ -374,45 +383,30 @@ class CreateRepresentationHandler(_ProjectHandler):
 class AddArtifactVersionHandler(_ProjectHandler):
     """Store content immutably and create a branch instead of stale overwrite."""
 
-    def __call__(self, command: AddArtifactVersionCommand, chunks: Iterable[bytes]) -> ArtifactVersion:
+    def preflight(self, command: AddArtifactVersionCommand) -> ArtifactVersion | None:
+        """Authorize and validate before a potentially very large direct upload."""
         with self._uow_factory() as uow:
-            project, _ = self._load_project_and_authorize(
-                uow,
-                project_id=command.project_id,
-                actor=command.context.actor,
-                permission=Permission.IMPORT_ARTIFACT,
-                gitlab_identity_verified=command.context.gitlab_identity_verified,
-            )
-            previous_id = _prior_entity_id(
-                uow,
-                project.id,
-                command.context.idempotency_key,
-                "ArtifactVersionCreated",
-                "artifact_version_id",
-            )
-            if previous_id is not None:
-                existing = uow.projections.get_artifact_version(ArtifactVersionId(previous_id))
-                if existing is not None:
-                    return existing
-            series = uow.projections.get_artifact_series(command.series_id)
-            if series is None or series.project_id != project.id:
-                raise NotFoundError("Artifact series was not found in the project")
-            stream_id = _series_stream(str(series.id))
-            actual_revision = uow.event_store.current_revision(stream_id)
-            if actual_revision != command.expected_series_revision:
-                raise ConcurrencyError(
-                    f"Expected artifact series revision {command.expected_series_revision}, found {actual_revision}"
-                )
-            active = uow.projections.get_active_artifact_version(series.id)
-            parent_id = command.parent_version_id or (active.id if active is not None else None)
-            if parent_id is not None:
-                parent = uow.projections.get_artifact_version(parent_id)
-                if parent is None or parent.series_id != series.id:
-                    raise ConflictError("Parent artifact version does not belong to this series")
-            for input_version_id in command.input_version_ids:
-                if uow.projections.get_artifact_version(input_version_id) is None:
-                    raise NotFoundError(f"Input artifact version {input_version_id} was not found")
-            stored = uow.blobs.put(chunks, expected_sha256=command.expected_sha256)
+            existing, *_ = self._prepare(uow, command)
+            return existing
+
+    def __call__(
+        self,
+        command: AddArtifactVersionCommand,
+        chunks: Iterable[bytes] | None = None,
+        *,
+        stored: StoredContent | None = None,
+    ) -> ArtifactVersion:
+        if (chunks is None) == (stored is None):
+            raise ValueError("Exactly one of chunks or stored content is required")
+        with self._uow_factory() as uow:
+            existing, project, series, active, parent_id, stream_id, actual_revision = self._prepare(uow, command)
+            if existing is not None:
+                return existing
+            if stored is None:
+                assert chunks is not None
+                stored = uow.blobs.put(chunks, expected_sha256=command.expected_sha256)
+            elif command.expected_sha256 is not None and stored.blob.sha256 != command.expected_sha256:
+                raise ConflictError("Stored blob digest does not match the artifact command")
             now = self._clock.now()
             version = ArtifactVersion.managed(
                 series_id=series.id,
@@ -468,6 +462,49 @@ class AddArtifactVersionHandler(_ProjectHandler):
             uow.projections.save_artifact_version(version, activate=activate)
             uow.commit()
             return version
+
+    def _prepare(
+        self,
+        uow: UnitOfWork,
+        command: AddArtifactVersionCommand,
+    ) -> tuple[ArtifactVersion | None, Project, ArtifactSeries, ArtifactVersion | None, ArtifactVersionId | None, str, int]:
+        project, _ = self._load_project_and_authorize(
+            uow,
+            project_id=command.project_id,
+            actor=command.context.actor,
+            permission=Permission.IMPORT_ARTIFACT,
+            gitlab_identity_verified=command.context.gitlab_identity_verified,
+        )
+        previous_id = _prior_entity_id(
+            uow,
+            project.id,
+            command.context.idempotency_key,
+            "ArtifactVersionCreated",
+            "artifact_version_id",
+        )
+        series = uow.projections.get_artifact_series(command.series_id)
+        if series is None or series.project_id != project.id:
+            raise NotFoundError("Artifact series was not found in the project")
+        stream_id = _series_stream(str(series.id))
+        actual_revision = uow.event_store.current_revision(stream_id)
+        active = uow.projections.get_active_artifact_version(series.id)
+        parent_id = command.parent_version_id or (active.id if active is not None else None)
+        if previous_id is not None:
+            existing = uow.projections.get_artifact_version(ArtifactVersionId(previous_id))
+            if existing is not None:
+                return existing, project, series, active, parent_id, stream_id, actual_revision
+        if actual_revision != command.expected_series_revision:
+            raise ConcurrencyError(
+                f"Expected artifact series revision {command.expected_series_revision}, found {actual_revision}"
+            )
+        if parent_id is not None:
+            parent = uow.projections.get_artifact_version(parent_id)
+            if parent is None or parent.series_id != series.id:
+                raise ConflictError("Parent artifact version does not belong to this series")
+        for input_version_id in command.input_version_ids:
+            if uow.projections.get_artifact_version(input_version_id) is None:
+                raise NotFoundError(f"Input artifact version {input_version_id} was not found")
+        return None, project, series, active, parent_id, stream_id, actual_revision
 
 
 class CreateArtifactSeriesHandler(_ProjectHandler):

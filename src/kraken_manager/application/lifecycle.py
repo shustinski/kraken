@@ -11,6 +11,7 @@ from kraken_manager.application.dto import (
     RenameLayerCommand,
     RenameProjectCommand,
     ReorderLayerCommand,
+    ReorderLayersCommand,
     RestoreProjectCommand,
 )
 from kraken_manager.application.errors import ConcurrencyError, ConflictError, NotFoundError
@@ -244,6 +245,58 @@ class ReorderLayerHandler(_LayerMutationHandler):
         return layer.reorder(command.order, expected_revision=command.expected_revision)
 
 
+class ReorderLayersHandler(_LifecycleHandler):
+    """Persist a complete normalized order in one unit-of-work transaction."""
+
+    event_type = "LayersReordered"
+
+    def __call__(self, command: ReorderLayersCommand) -> tuple[Layer, ...]:
+        with self._uow_factory() as uow:
+            project = uow.projections.get_project(command.project_id)
+            if project is None:
+                raise NotFoundError(f"Project {command.project_id} was not found")
+            current = tuple(uow.projections.list_layers(project.id))
+            if self._was_applied(uow, project, command.context.idempotency_key, self.event_type):
+                by_id = {layer.id: layer for layer in current}
+                return tuple(by_id[identifier] for identifier in command.layer_ids)
+            self._authorize(uow, project, command, Permission.MANAGE_STRUCTURE)
+            if project.state is ProjectState.ARCHIVED:
+                raise ConflictError("Archived project is read-only")
+            by_id = {layer.id: layer for layer in current}
+            if set(by_id) != set(command.layer_ids):
+                raise ConflictError("Layer order must contain every active project layer exactly once")
+            expected = dict(command.expected_revisions)
+            for identifier, layer in by_id.items():
+                if layer.revision != expected[identifier]:
+                    raise ConcurrencyError(
+                        f"Expected layer revision {expected[identifier]}, found {layer.revision}"
+                    )
+
+            reordered = tuple(
+                by_id[identifier].reorder(order, expected_revision=expected[identifier])
+                for order, identifier in enumerate(command.layer_ids)
+            )
+            events_by_stream: list[tuple[str, int, EventEnvelope]] = []
+            order_payload = [str(identifier) for identifier in command.layer_ids]
+            for layer in reordered:
+                stream = _layer_stream(by_id[layer.id])
+                event = self._event(
+                    command=command,
+                    project=project,
+                    stream_id=stream,
+                    revision=layer.revision,
+                    event_type=self.event_type,
+                    payload={"layer": _layer_payload(layer), "layer_ids": order_payload},
+                )
+                events_by_stream.append((stream, by_id[layer.id].revision, event))
+            for stream, revision, event in events_by_stream:
+                uow.event_store.append(stream, expected_revision=revision, events=(event,))
+            for layer in reordered:
+                uow.projections.save_layer(layer)
+            uow.commit()
+            return reordered
+
+
 class ArchiveLayerHandler(_LayerMutationHandler):
     event_type = "LayerArchived"
 
@@ -259,5 +312,6 @@ __all__ = [
     "RenameLayerHandler",
     "RenameProjectHandler",
     "ReorderLayerHandler",
+    "ReorderLayersHandler",
     "RestoreProjectHandler",
 ]

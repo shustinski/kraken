@@ -2,9 +2,7 @@ import argparse
 import importlib
 import multiprocessing as mp
 import os
-import platform
 import sys
-from importlib.util import find_spec
 from typing import Sequence
 
 
@@ -112,6 +110,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help='Kraken Agent staging workspace (managed headless mode).',
     )
+    parser.add_argument(
+        '--kraken-workspace-context',
+        default=None,
+        help='Kraken two-root local workspace context (interactive training).',
+    )
     return parser
 
 
@@ -125,10 +128,12 @@ def _run_web_ui(host: str, port: int) -> None:
     management.execute_from_command_line(['manage.py', 'runserver', f'{host}:{port}', '--noreload'])
 
 
-def _run_desktop_ui(*, ui_only: bool) -> None:
+def _run_desktop_ui(*, ui_only: bool, workspace_session=None) -> None:
     from neuralimage.controller import AppController
 
     controller = AppController(ui_only=ui_only)
+    if workspace_session is not None:
+        workspace_session.attach(controller)
     controller.exec()
 
 
@@ -136,7 +141,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     _configure_multiprocessing_start_method()
     parser = _build_parser()
     args = parser.parse_args(argv)
-    from neuralimage.kraken_bridge import load_session_from_values
+    from neuralimage.kraken_bridge import (
+        NeuralImageWorkspaceSession,
+        load_session_from_values,
+    )
 
     kraken_session = load_session_from_values(
         job_manifest=args.kraken_job_manifest,
@@ -144,14 +152,25 @@ def main(argv: Sequence[str] | None = None) -> None:
         staging_root=args.kraken_staging_root,
     )
     if kraken_session is not None:
+        if args.kraken_workspace_context:
+            parser.error('Agent and direct workspace modes cannot be combined.')
         if args.web or args.ui_only:
             parser.error('Kraken Agent mode is headless and cannot be combined with --web or --ui-only.')
         kraken_session.run_headless()
         return
+    workspace_session = (
+        NeuralImageWorkspaceSession.load(args.kraken_workspace_context)
+        if args.kraken_workspace_context
+        else None
+    )
     if args.web:
+        if workspace_session is not None:
+            parser.error('Kraken workspace mode is available only in the desktop UI.')
         _run_web_ui(args.host, args.port)
         return
-    _run_desktop_ui(ui_only=args.ui_only)
+    if args.ui_only and workspace_session is not None:
+        parser.error('Kraken workspace training cannot be combined with --ui-only.')
+    _run_desktop_ui(ui_only=args.ui_only, workspace_session=workspace_session)
 
 
 if __name__ == '__main__':

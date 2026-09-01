@@ -9,16 +9,23 @@ from __future__ import annotations
 
 import json
 import secrets
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from kraken_core.plugin_protocol import PluginJobManifest
+from kraken_core.plugin_protocol import PluginResultPublicationV2, parse_plugin_job
 
-from .jobs import AgentJob, AgentJobState, DurableJobStore, JobStateError
+from .jobs import (
+    AgentJob,
+    AgentJobState,
+    DuplicateCallbackError,
+    DurableJobStore,
+    JobStateError,
+)
 
 
 AGENT_API_VERSION = "v1"
@@ -41,6 +48,7 @@ class AgentControlServer:
     token: str
     host: str = "127.0.0.1"
     port: int = 0
+    _http_server: ThreadingHTTPServer = field(init=False, repr=False)
 
     @classmethod
     def create(cls, database: Path | str, *, token: str | None = None) -> "AgentControlServer":
@@ -49,6 +57,7 @@ class AgentControlServer:
     def build_http_server(self) -> ThreadingHTTPServer:
         store = self.store
         expected_token = self.token
+        control = self
 
         class Handler(BaseHTTPRequestHandler):
             server_version = "KrakenAgent/1"
@@ -89,8 +98,39 @@ class AgentControlServer:
                     return
                 prefix = f"/api/{AGENT_API_VERSION}/jobs/"
                 if path.startswith(prefix):
+                    relative = path.removeprefix(prefix)
+                    if relative.endswith("/result"):
+                        job_id = relative.removesuffix("/result")
+                        try:
+                            result = store.get(job_id).result
+                        except KeyError:
+                            self._send(HTTPStatus.NOT_FOUND, {"code": "agent.job_not_found"})
+                            return
+                        if result is None:
+                            self._send(HTTPStatus.NOT_FOUND, {"code": "agent.result_not_ready"})
+                            return
+                        self._send(HTTPStatus.OK, result.to_dict())
+                        return
+                    if relative.endswith("/publications"):
+                        job_id = relative.removesuffix("/publications")
+                        try:
+                            store.get(job_id)
+                        except KeyError:
+                            self._send(HTTPStatus.NOT_FOUND, {"code": "agent.job_not_found"})
+                            return
+                        self._send(
+                            HTTPStatus.OK,
+                            {
+                                "job_id": job_id,
+                                "publications": [
+                                    publication.to_dict()
+                                    for publication in store.list_publications(job_id)
+                                ],
+                            },
+                        )
+                        return
                     try:
-                        job = store.get(path.removeprefix(prefix))
+                        job = store.get(relative)
                     except KeyError:
                         self._send(HTTPStatus.NOT_FOUND, {"code": "agent.job_not_found"})
                         return
@@ -104,7 +144,69 @@ class AgentControlServer:
                     return
                 path = urlparse(self.path).path
                 jobs_path = f"/api/{AGENT_API_VERSION}/jobs"
+                if path == f"/api/{AGENT_API_VERSION}/shutdown":
+                    self._send(HTTPStatus.OK, {"status": "shutting_down"})
+                    threading.Thread(
+                        target=control._http_server.shutdown,
+                        name="kraken-agent-shutdown",
+                        daemon=True,
+                    ).start()
+                    return
                 if path != jobs_path:
+                    publication_suffix = "/publications"
+                    prefix = jobs_path + "/"
+                    if path.startswith(prefix) and path.endswith(publication_suffix):
+                        job_id = path[len(prefix) : -len(publication_suffix)]
+                        try:
+                            payload = self._body()
+                            publication = PluginResultPublicationV2.from_dict(payload)
+                            if publication.job_id != job_id:
+                                raise ValueError("Publication belongs to another job")
+                            current = store.get(job_id)
+                            if current.state not in {
+                                AgentJobState.RUNNING,
+                                AgentJobState.WAITING_FOR_USER,
+                                AgentJobState.PARTIAL,
+                            }:
+                                raise JobStateError(
+                                    f"Job cannot publish from {current.state.value}"
+                                )
+                            current, duplicate = store.record_result(
+                                publication,
+                                callback_key=f"publication:{publication.publication_id}",
+                                expected_revision=current.revision,
+                            )
+                            if publication.final:
+                                target = {
+                                    "succeeded": AgentJobState.IMPORTING,
+                                    "partial": AgentJobState.PARTIAL,
+                                    "failed": AgentJobState.FAILED,
+                                    "cancelled": AgentJobState.CANCELLED,
+                                }[publication.outcome]
+                                current = store.transition(
+                                    current.job_id,
+                                    target,
+                                    expected_revision=current.revision,
+                                )
+                        except KeyError:
+                            self._send(HTTPStatus.NOT_FOUND, {"code": "agent.job_not_found"})
+                            return
+                        except (
+                            ValueError,
+                            TypeError,
+                            DuplicateCallbackError,
+                            JobStateError,
+                            json.JSONDecodeError,
+                        ) as exc:
+                            self._send(
+                                HTTPStatus.CONFLICT,
+                                {"code": "agent.invalid_publication", "detail": str(exc)},
+                            )
+                            return
+                        response = _job_payload(current)
+                        response["duplicate"] = duplicate
+                        self._send(HTTPStatus.OK, response)
+                        return
                     suffixes = {
                         "/cancel": AgentJobState.CANCELLED,
                         "/confirm-partial": AgentJobState.IMPORTING,
@@ -135,7 +237,7 @@ class AgentControlServer:
                     self._send(HTTPStatus.NOT_FOUND, {"code": "agent.route_not_found"})
                     return
                 try:
-                    manifest = PluginJobManifest.from_dict(self._body())
+                    manifest = parse_plugin_job(self._body())
                     job = store.enqueue(manifest)
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
                     self._send(HTTPStatus.BAD_REQUEST, {"code": "agent.invalid_manifest", "detail": str(exc)})
@@ -143,6 +245,7 @@ class AgentControlServer:
                 self._send(HTTPStatus.ACCEPTED, _job_payload(job))
 
         server = ThreadingHTTPServer((self.host, self.port), Handler)
+        self._http_server = server
         self.port = int(server.server_address[1])
         return server
 

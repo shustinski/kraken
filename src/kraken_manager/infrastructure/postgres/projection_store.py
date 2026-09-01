@@ -69,7 +69,7 @@ class PostgresProjectionStore:
 
     @staticmethod
     def _class(kind: str) -> type[Any]:
-        from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion
+        from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, NoteRevision
         from kraken_manager.domain.project import Layer, Project, Representation
         from kraken_manager.domain.workflows import PluginJob, ReviewBatch
 
@@ -81,6 +81,7 @@ class PostgresProjectionStore:
             "artifact_version": ArtifactVersion,
             "plugin_job": PluginJob,
             "review_batch": ReviewBatch,
+            "note": NoteRevision,
         }[kind]
 
     @staticmethod
@@ -106,7 +107,7 @@ class PostgresProjectionStore:
             raise ValueError(f"{kind} projection has no project identity")
         return {
             "kind": kind,
-            "entity_id": str(model.id),
+            "entity_id": str(getattr(model, "id", getattr(model, "note_id", ""))),
             "project_id": str(project_id),
             "layer_id": None if layer_id is None else str(layer_id),
             "frame_id": None if getattr(model, "frame_id", None) is None else str(model.frame_id),
@@ -320,6 +321,17 @@ class PostgresProjectionStore:
             payload = connection.execute(statement).scalar_one_or_none()
         return None if payload is None else decode_model(self._class("artifact_version"), payload)
 
+    def list_artifact_versions(
+        self, series_id: Any, *, as_of: datetime | None = None
+    ) -> tuple[Any, ...]:
+        return self._list(
+            "artifact_version",
+            "parent_id",
+            series_id,
+            include_archived=True,
+            as_of=as_of,
+        )
+
     def save_artifact_version(self, version: Any, *, activate: bool) -> None:
         self._save("artifact_version", version, active=activate)
 
@@ -328,6 +340,17 @@ class PostgresProjectionStore:
 
     def get_plugin_job(self, job_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get("plugin_job", job_id, as_of=as_of)
+
+    def list_plugin_jobs(
+        self, project_id: Any, *, as_of: datetime | None = None
+    ) -> tuple[Any, ...]:
+        return self._list(
+            "plugin_job",
+            "project_id",
+            project_id,
+            include_archived=True,
+            as_of=as_of,
+        )
 
     def get_review_batch(self, batch_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get("review_batch", batch_id, as_of=as_of)
@@ -346,6 +369,52 @@ class PostgresProjectionStore:
             )
             if str(batch.layer_id) == str(layer_id) and batch.state.value not in terminal
         )
+
+    def list_review_batches(
+        self,
+        project_id: Any,
+        *,
+        layer_id: Any | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[Any, ...]:
+        return tuple(
+            batch
+            for batch in self._list(
+                "review_batch",
+                "project_id",
+                project_id,
+                include_archived=True,
+                as_of=as_of,
+            )
+            if layer_id is None or str(batch.layer_id) == str(layer_id)
+        )
+
+    def get_note(self, note_id: str, *, as_of: datetime | None = None) -> Any | None:
+        return self._get("note", note_id, as_of=as_of)
+
+    def list_notes(
+        self,
+        project_id: Any,
+        *,
+        layer_id: Any | None = None,
+        frame_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[Any, ...]:
+        return tuple(
+            note
+            for note in self._list(
+                "note",
+                "project_id",
+                project_id,
+                include_archived=True,
+                as_of=as_of,
+            )
+            if (layer_id is None or str(note.layer_id) == str(layer_id))
+            and (frame_id is None or str(note.frame_id) == str(frame_id))
+        )
+
+    def save_note(self, note: Any) -> None:
+        self._save("note", note)
 
 
 __all__ = ["PostgresProjectionStore"]

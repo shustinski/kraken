@@ -18,6 +18,7 @@ from kraken_core.plugins import (
     load_plugin_catalog,
     merge_plugin_sources,
     scan_plugin_directory,
+    scan_windows_plugin_registry,
 )
 from kraken_core.qt import configure_application_identity
 from kraken_core.runtime import current_platform, workspace_root
@@ -30,6 +31,19 @@ def bundled_catalog_path() -> Path:
 
 def default_plugins_dir() -> Path:
     return Path(os.getenv("KRAKEN_PLUGINS_DIR", "")).expanduser().resolve() if os.getenv("KRAKEN_PLUGINS_DIR") else workspace_root() / "plugins"
+
+
+def registered_plugins_dir() -> Path:
+    explicit = os.getenv("KRAKEN_REGISTERED_PLUGINS_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    if os.name == "nt":
+        base = os.getenv("LOCALAPPDATA", "").strip() or os.getenv("APPDATA", "").strip()
+        if base:
+            return Path(base).resolve() / "Kraken" / "plugins"
+    data_home = os.getenv("XDG_DATA_HOME", "").strip()
+    base = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
+    return base.resolve() / "Kraken" / "plugins"
 
 
 def application_version() -> str:
@@ -71,33 +85,55 @@ def discover_neuralimage_channel_catalog(root: Path) -> str:
     return str((Path(manifest).expanduser().resolve().parent / "plugins.json"))
 
 
-def build_launch_command(plugin: PluginMetadata, *, root: Path | None = None) -> list[str]:
+def build_launch_command(
+    plugin: PluginMetadata,
+    *,
+    root: Path | None = None,
+    arguments: tuple[str, ...] = (),
+) -> list[str]:
     platform = current_platform()
     executable = plugin.executable_for(platform)
     if executable.path:
-        return [str(Path(executable.path).expanduser())]
+        return [str(Path(executable.path).expanduser()), *arguments]
     plugin_root = (root or workspace_root()) / "plugins" / plugin.id
     if plugin_root.exists() and shutil.which("uv"):
         if (plugin_root / "__main__.py").is_file():
-            return ["uv", "run", "python", "__main__.py"]
-        return ["uv", "run", "python", "-m", plugin.id]
+            return ["uv", "run", "python", "__main__.py", *arguments]
+        return ["uv", "run", "python", "-m", plugin.id, *arguments]
     if plugin_root.exists() and (plugin_root / "__main__.py").is_file():
-        return [sys.executable, str(plugin_root / "__main__.py")]
+        return [sys.executable, str(plugin_root / "__main__.py"), *arguments]
     if executable.command:
-        return [part.format(workspace=str(root or workspace_root()), plugin_id=plugin.id) for part in executable.command]
-    return [sys.executable, "-m", plugin.id]
+        command = [
+            part.format(workspace=str(root or workspace_root()), plugin_id=plugin.id)
+            for part in executable.command
+        ]
+        return [*command, *arguments]
+    return [sys.executable, "-m", plugin.id, *arguments]
 
 
-def launch_plugin(plugin: PluginMetadata) -> None:
+def launch_plugin(
+    plugin: PluginMetadata,
+    *,
+    arguments: tuple[str, ...] = (),
+) -> subprocess.Popen:
     root = workspace_root()
     plugin_root = root / "plugins" / plugin.id
-    cwd = plugin_root if plugin_root.exists() and not plugin.executable_for().path else root
+    executable_path = plugin.executable_for().path
+    cwd = (
+        Path(executable_path).expanduser().resolve(strict=False).parent
+        if executable_path
+        else plugin_root if plugin_root.exists() else root
+    )
     env = None
     if not plugin.executable_for().path:
         env = dict(**os.environ)
         python_paths = [str(root / "src"), str(root / "plugins" / plugin.id / "src")]
         env["PYTHONPATH"] = os.pathsep.join(python_paths + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
-    subprocess.Popen(build_launch_command(plugin, root=root), cwd=str(cwd), env=env)
+    return subprocess.Popen(
+        build_launch_command(plugin, root=root, arguments=arguments),
+        cwd=str(cwd),
+        env=env,
+    )
 
 
 def build_install_command(plugin: PluginMetadata) -> list[str]:
@@ -308,7 +344,12 @@ def load_plugins(catalog_path: str, plugins_dir: Path) -> list[PluginMetadata]:
     if not catalog_plugins and catalog_path != str(bundled_catalog_path()):
         catalog_plugins = load_plugin_catalog(bundled_catalog_path())
     scanned_plugins = scan_plugin_directory(plugins_dir)
-    return merge_plugin_sources(scanned_plugins, catalog_plugins)
+    registered_plugins = merge_plugin_sources(
+        scan_plugin_directory(registered_plugins_dir()),
+        scan_windows_plugin_registry(),
+    )
+    discovered = merge_plugin_sources(scanned_plugins, catalog_plugins)
+    return merge_plugin_sources(registered_plugins, discovered)
 
 
 def main(argv: list[str] | None = None) -> None:

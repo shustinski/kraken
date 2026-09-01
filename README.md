@@ -15,6 +15,8 @@ src/
   kraken_agent/
   kraken_core/           # technical runtime and plugin wire protocol
 
+blob_gateway/            # Rust high-throughput immutable blob data plane
+
 plugins/
   neuralimage/
     pyproject.toml
@@ -87,6 +89,20 @@ If `uv` warns that hardlinks are unavailable, use copy mode:
 uv sync --link-mode=copy
 ```
 
+## Shared catalog (optional)
+
+To list/create shared PostgreSQL projects from Desktop, set:
+
+```powershell
+$env:KRAKEN_SERVER_URL = "http://127.0.0.1:8080"
+$env:KRAKEN_GITLAB_TOKEN = "<gitlab-access-token>"
+$env:KRAKEN_GITLAB_ISSUER = "https://gitlab.example.com"
+```
+
+The create-project dialog then offers **Kraken Server PostgreSQL**. Live updates
+arrive over `/api/v1/ws` (outbox wake + refetch). Local filesystem projects keep
+working without these variables.
+
 ## Plugin UV Setup
 
 Each plugin is also an independent Python project. Initialize a plugin
@@ -127,6 +143,20 @@ Production server startup is fail-closed. Run Alembic first and select the
 built-in composition as documented in
 [`docs/deployment/server.md`](docs/deployment/server.md). Ephemeral state is
 available only with an explicit `kraken-server --development`.
+
+Windows production packages are built with `packaging/build_windows.ps1`.
+The build script compiles the Rust Blob Gateway in release mode and includes
+`KrakenBlobGateway.exe` in the server package.
+`KrakenServerSetup` initializes migrations, a DPAPI-protected configuration,
+the first Server Administrator and the Windows service; workstation users only
+install `KrakenDesktopSetup` and enter the HTTPS server address and their
+Kraken credentials. Neither package requires Python or `uv` at runtime.
+
+For a local test, no SQL or connection URL is required: run
+`KrakenAdmin.exe init`. Ready-to-run PowerShell workflows and
+annotated local/production configuration examples are shipped in the
+`scripts` and `config` directories. `KrakenAdmin.exe --help` lists every
+operator command with arguments and examples.
 
 Kraken Agent uses a durable local SQLite queue and authenticated loopback
 channel. Start it with `kraken-agent`; its registry determines which V1 plugin

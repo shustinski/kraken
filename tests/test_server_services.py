@@ -45,6 +45,14 @@ class ServerServiceTests(unittest.TestCase):
         values = service.list_representations(project["project_id"], layer["layer_id"])
         self.assertEqual([False, True], [item["active"] for item in values])
         self.assertEqual("raw scan", representation["note"])
+        second = service.update_representation(
+            project["project_id"],
+            layer["layer_id"],
+            second["representation_id"],
+            {"active": False, "expected_representation_revision": second["revision"]},
+            CommandContext("actor", "representation-deactivate", 4),
+        )
+        self.assertFalse(second["active"])
 
     def test_create_is_idempotent_and_grid_is_sparse(self) -> None:
         service = InMemoryServerServices()
@@ -126,6 +134,43 @@ class ServerServiceTests(unittest.TestCase):
         self.assertIn("ProjectArchive", event_types)
         self.assertIn("LayerReorder", event_types)
         self.assertIn("ProjectRoleAssigned", event_types)
+
+    def test_bulk_layer_order_requires_complete_revision_map(self) -> None:
+        service = InMemoryServerServices()
+        project = service.create_project(
+            {"name": "Chip", "width": 2, "height": 2},
+            CommandContext("actor", "project", None),
+        )
+        first = service.create_layer(
+            project["project_id"],
+            {"name": "M1", "type": "metal"},
+            CommandContext("actor", "first", project["revision"]),
+        )
+        project = service.get_project(project["project_id"])
+        second = service.create_layer(
+            project["project_id"],
+            {"name": "M2", "type": "metal"},
+            CommandContext("actor", "second", project["revision"]),
+        )
+
+        result = service.reorder_layers(
+            project["project_id"],
+            {
+                "layer_ids": [second["layer_id"], first["layer_id"]],
+                "expected_revisions": {
+                    first["layer_id"]: first["revision"],
+                    second["layer_id"]: second["revision"],
+                },
+            },
+            CommandContext("actor", "bulk-order", None),
+        )
+
+        self.assertEqual([item["layer_id"] for item in result], [second["layer_id"], first["layer_id"]])
+        self.assertEqual([item["order"] for item in result], [0, 1])
+        self.assertEqual(
+            [item["layer_id"] for item in service.list_layers(project["project_id"])],
+            [second["layer_id"], first["layer_id"]],
+        )
 
 
 if __name__ == "__main__":

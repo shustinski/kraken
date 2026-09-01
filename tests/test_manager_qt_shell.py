@@ -52,6 +52,35 @@ def test_project_manager_shell_has_stable_navigation_and_replaceable_pages(qapp)
     assert shell.current_page_key() == "statistics"
 
 
+def test_project_manager_shell_can_hide_administration_navigation(qapp):
+    shell = ProjectManagerShell()
+    administration_item = shell._navigation_items["administration"]
+
+    shell.show_page("administration")
+    shell.set_page_visible("administration", False)
+
+    assert administration_item.isHidden()
+    assert shell.current_page_key() == "projects"
+    shell.set_page_visible("administration", True)
+    assert not administration_item.isHidden()
+
+
+def test_project_catalog_delete_action_emits_selected_project(qapp):
+    shell = ProjectManagerShell()
+    page = shell.page("projects")
+    assert page is not None
+    item = ProjectListItem("p-delete", "Delete me", 2, 2, "Local")
+    page.project_model.replace_items((item,))
+    page.project_list.setCurrentIndex(page.project_model.index(0, 0))
+    requested = []
+    page.deleteRequested.connect(requested.append)
+
+    page.delete_button.click()
+
+    assert page.delete_button.isEnabled()
+    assert requested == [item]
+
+
 def test_shell_opens_lightweight_project_workspace(qapp):
     shell = ProjectManagerShell()
     workspace = shell.open_project_workspace()
@@ -86,6 +115,14 @@ def test_workspace_uses_bottom_layer_tabs_and_status_bar_selection(qapp):
 
     assert workspace.layer_tabs.count() == 2
     assert not workspace.add_layer_button.icon().isNull()
+    assert workspace.findChild(QWidget, "matrixLodLabel") is None
+    assert workspace.findChild(QWidget, "matrixZoomOutButton") is None
+    assert workspace.findChild(QWidget, "matrixZoomInButton") is None
+    assert workspace.findChild(QWidget, "matrixZoomFitButton") is None
+    assert workspace.findChild(QWidget, "matrixZoomResetButton") is None
+    assert workspace.findChild(QWidget, "matrixMinimapCheck") is None
+    assert workspace.findChild(QWidget, "clearThumbnailCacheButton") is None
+    assert workspace.findChild(QWidget, "sendReviewButton") is None
+    assert workspace.matrix_minimap.parentWidget() is workspace.matrix_view.viewport()
     assert shell.statusBar().currentMessage() == "Выбрано кадров: 1"
     assert shell.windowTitle() == "Kraken"
-

@@ -47,6 +47,29 @@ class ImportPlannerTests(unittest.TestCase):
         )
         self.assertTrue(explicit.ready)
 
+    def test_row_major_suffix_accepts_zero_based_padded_sequences(self) -> None:
+        plan = ImportPlanner().plan(
+            width=2,
+            height=2,
+            sources=(
+                ImportSource("zero", "0000.cif", 1),
+                ImportSource("one", "0001.cif", 1),
+                ImportSource("two", "0002.cif", 1),
+            ),
+            mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
+        )
+
+        self.assertTrue(plan.ready)
+        self.assertEqual(
+            ((1, 1), (2, 1), (1, 2)),
+            tuple((item.x, item.y) for item in plan.items),
+        )
+        self.assertEqual(1, plan.missing_coordinates)
+        self.assertEqual(
+            {"sparse_coverage"},
+            {issue.code for issue in plan.issues},
+        )
+
     def test_conflicts_and_out_of_grid_block_commit(self) -> None:
         plan = ImportPlanner().plan(
             width=2,

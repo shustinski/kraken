@@ -9,11 +9,12 @@ import os
 import secrets
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Protocol
+from typing import Protocol
 from uuid import uuid4
 
 
@@ -127,6 +128,14 @@ class LocalAccountStore:
                     granted_at TEXT NOT NULL,
                     PRIMARY KEY(account_id, role)
                 );
+                CREATE TABLE IF NOT EXISTS administration_audit (
+                    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor_id TEXT,
+                    action TEXT NOT NULL,
+                    target_account_id TEXT,
+                    details_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -149,9 +158,18 @@ class LocalAccountStore:
 
     @staticmethod
     def _account(row: sqlite3.Row) -> LocalAccount:
-        return LocalAccount(row["account_id"], row["username"], row["display_name"], bool(row["enabled"]), row["created_at"])
+        return LocalAccount(
+            row["account_id"], row["username"], row["display_name"], bool(row["enabled"]), row["created_at"]
+        )
 
-    def create_account(self, username: str, display_name: str, password: str) -> LocalAccount:
+    def create_account(
+        self,
+        username: str,
+        display_name: str,
+        password: str,
+        *,
+        actor_id: str | None = None,
+    ) -> LocalAccount:
         username = self._normalize_username(username)
         display_name = display_name.strip()
         if not display_name:
@@ -160,10 +178,18 @@ class LocalAccountStore:
         created_at = datetime.now(UTC).isoformat()
         password_hash = self.hasher.hash(password)
         with self._lock, self._connect() as connection:
-            connection.execute(
-                "INSERT INTO accounts(account_id, username, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-                (account_id, username, display_name, password_hash, created_at),
-            )
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "INSERT INTO accounts(account_id, username, display_name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (account_id, username, display_name, password_hash, created_at),
+                )
+                if actor_id is not None:
+                    self._audit(connection, actor_id, "account.created", account_id)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
         return LocalAccount(account_id, username, display_name, True, created_at)
 
     def account_count(self) -> int:
@@ -175,7 +201,22 @@ class LocalAccountStore:
             row = connection.execute("SELECT * FROM accounts WHERE account_id=?", (account_id,)).fetchone()
         return None if row is None else self._account(row)
 
-    def reset_password(self, account_id: str, new_password: str) -> None:
+    def get_by_username(self, username: str) -> LocalAccount | None:
+        normalized = self._normalize_username(username)
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM accounts WHERE username=? COLLATE NOCASE", (normalized,)).fetchone()
+        return None if row is None else self._account(row)
+
+    def list_accounts(self, *, include_disabled: bool = True) -> tuple[LocalAccount, ...]:
+        statement = "SELECT * FROM accounts"
+        if not include_disabled:
+            statement += " WHERE enabled=1"
+        statement += " ORDER BY display_name COLLATE NOCASE, username COLLATE NOCASE"
+        with self._connect() as connection:
+            rows = connection.execute(statement).fetchall()
+        return tuple(self._account(row) for row in rows)
+
+    def reset_password(self, account_id: str, new_password: str, *, actor_id: str | None = None) -> None:
         password_hash = self.hasher.hash(new_password)
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -187,12 +228,16 @@ class LocalAccountStore:
                 if cursor.rowcount != 1:
                     raise KeyError(account_id)
                 connection.execute("DELETE FROM sessions WHERE account_id=?", (account_id,))
+                if actor_id is not None:
+                    self._audit(connection, actor_id, "account.password_reset", account_id)
                 connection.commit()
             except BaseException:
                 connection.rollback()
                 raise
 
-    def authenticate(self, username: str, password: str, *, lifetime: timedelta = timedelta(hours=12)) -> LocalSession | None:
+    def authenticate(
+        self, username: str, password: str, *, lifetime: timedelta = timedelta(hours=12)
+    ) -> LocalSession | None:
         now = datetime.now(UTC)
         normalized = self._normalize_username(username)
         with self._lock, self._connect() as connection:
@@ -207,7 +252,9 @@ class LocalAccountStore:
                 return None
             if not self.hasher.verify(row["password_hash"], password):
                 attempts = int(row["failed_attempts"]) + 1
-                blocked_until = (now + timedelta(minutes=min(60, 2 ** max(0, attempts - 5)))).isoformat() if attempts >= 5 else None
+                blocked_until = (
+                    (now + timedelta(minutes=min(60, 2 ** max(0, attempts - 5)))).isoformat() if attempts >= 5 else None
+                )
                 connection.execute(
                     "UPDATE accounts SET failed_attempts=?, blocked_until=? WHERE account_id=?",
                     (attempts, blocked_until, row["account_id"]),
@@ -244,20 +291,173 @@ class LocalAccountStore:
         with self._connect() as connection:
             connection.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
 
-    def grant_global_role(self, account_id: str, role: str) -> None:
+    def revoke_all_sessions(self, account_id: str, *, actor_id: str | None = None) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if connection.execute("SELECT 1 FROM accounts WHERE account_id=?", (account_id,)).fetchone() is None:
+                    raise KeyError(account_id)
+                connection.execute("DELETE FROM sessions WHERE account_id=?", (account_id,))
+                self._audit(connection, actor_id, "sessions.revoked", account_id)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def grant_global_role(self, account_id: str, role: str, *, actor_id: str | None = None) -> None:
         value = role.strip()
         if value not in {"server_admin"}:
             raise ValueError("Unsupported global role")
-        with self._connect() as connection:
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             try:
                 connection.execute(
-                    "INSERT INTO global_roles VALUES (?, ?, ?)",
+                    "INSERT OR IGNORE INTO global_roles VALUES (?, ?, ?)",
                     (account_id, value, datetime.now(UTC).isoformat()),
                 )
+                if connection.execute("SELECT 1 FROM accounts WHERE account_id=?", (account_id,)).fetchone() is None:
+                    raise KeyError(account_id)
+                self._audit(connection, actor_id, "global_role.granted", account_id, {"role": value})
+                connection.commit()
             except sqlite3.IntegrityError as exc:
-                account = connection.execute("SELECT 1 FROM accounts WHERE account_id=?", (account_id,)).fetchone()
-                if account is None:
-                    raise KeyError(account_id) from exc
+                connection.rollback()
+                raise KeyError(account_id) from exc
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def revoke_global_role(
+        self,
+        account_id: str,
+        role: str,
+        *,
+        actor_id: str | None = None,
+        preserve_last_enabled: bool = False,
+    ) -> None:
+        value = role.strip()
+        if value != "server_admin":
+            raise ValueError("Unsupported global role")
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if connection.execute("SELECT 1 FROM accounts WHERE account_id=?", (account_id,)).fetchone() is None:
+                    raise KeyError(account_id)
+                if preserve_last_enabled:
+                    target_is_enabled_admin = connection.execute(
+                        "SELECT 1 FROM accounts a JOIN global_roles r "
+                        "ON r.account_id=a.account_id "
+                        "WHERE a.account_id=? AND a.enabled=1 AND r.role=?",
+                        (account_id, value),
+                    ).fetchone()
+                    enabled_admin_count = connection.execute(
+                        "SELECT COUNT(*) FROM accounts a JOIN global_roles r "
+                        "ON r.account_id=a.account_id WHERE a.enabled=1 AND r.role=?",
+                        (value,),
+                    ).fetchone()[0]
+                    if target_is_enabled_admin is not None and enabled_admin_count <= 1:
+                        raise ValueError("The last active Server Administrator cannot be removed")
+                connection.execute(
+                    "DELETE FROM global_roles WHERE account_id=? AND role=?",
+                    (account_id, value),
+                )
+                self._audit(connection, actor_id, "global_role.revoked", account_id, {"role": value})
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
+    def global_roles_for(self, account_id: str) -> frozenset[str]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT role FROM global_roles WHERE account_id=?", (account_id,)).fetchall()
+        return frozenset(str(row["role"]) for row in rows)
+
+    def set_enabled(
+        self,
+        account_id: str,
+        enabled: bool,
+        *,
+        actor_id: str | None = None,
+        preserve_last_admin: bool = False,
+    ) -> LocalAccount:
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if not enabled and preserve_last_admin:
+                    target_is_admin = connection.execute(
+                        "SELECT 1 FROM global_roles WHERE account_id=? AND role='server_admin'",
+                        (account_id,),
+                    ).fetchone()
+                    enabled_admin_count = connection.execute(
+                        "SELECT COUNT(*) FROM accounts a JOIN global_roles r "
+                        "ON r.account_id=a.account_id "
+                        "WHERE a.enabled=1 AND r.role='server_admin'"
+                    ).fetchone()[0]
+                    if target_is_admin is not None and enabled_admin_count <= 1:
+                        raise ValueError("The last active Server Administrator cannot be disabled")
+                cursor = connection.execute(
+                    "UPDATE accounts SET enabled=? WHERE account_id=?",
+                    (int(bool(enabled)), account_id),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError(account_id)
+                if not enabled:
+                    connection.execute("DELETE FROM sessions WHERE account_id=?", (account_id,))
+                self._audit(
+                    connection,
+                    actor_id,
+                    "account.enabled" if enabled else "account.disabled",
+                    account_id,
+                )
+                row = connection.execute("SELECT * FROM accounts WHERE account_id=?", (account_id,)).fetchone()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        assert row is not None
+        return self._account(row)
+
+    @staticmethod
+    def _audit(
+        connection: sqlite3.Connection,
+        actor_id: str | None,
+        action: str,
+        target_account_id: str | None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        import json
+
+        connection.execute(
+            "INSERT INTO administration_audit(actor_id, action, target_account_id, details_json, recorded_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                actor_id,
+                action,
+                target_account_id,
+                json.dumps(details or {}, ensure_ascii=False, sort_keys=True),
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+
+    def administration_audit(self, *, limit: int = 500) -> tuple[dict[str, object], ...]:
+        import json
+
+        safe_limit = max(1, min(int(limit), 2_000))
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM administration_audit ORDER BY audit_id DESC LIMIT ?",
+                (safe_limit,),
+            ).fetchall()
+        return tuple(
+            {
+                "audit_id": int(row["audit_id"]),
+                "actor_id": row["actor_id"],
+                "action": str(row["action"]),
+                "target_account_id": row["target_account_id"],
+                "details": json.loads(str(row["details_json"])),
+                "recorded_at": str(row["recorded_at"]),
+            }
+            for row in rows
+        )
 
     def accounts_with_global_role(self, role: str) -> tuple[str, ...]:
         with self._connect() as connection:

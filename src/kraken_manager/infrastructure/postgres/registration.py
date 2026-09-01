@@ -14,7 +14,7 @@ POSTGRES_CAPABILITIES = StorageCapabilities(
     snapshots=True,
     streaming=True,
     external_references=True,
-    max_frames=1_000_000,
+    max_frames=None,
 )
 
 

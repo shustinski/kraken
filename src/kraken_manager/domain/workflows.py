@@ -313,6 +313,7 @@ class PluginInputV1:
     artifact_version_id: ArtifactVersionId
     sha256: str
     relative_path: str
+    external_uri: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "frame_id", FrameId(validate_uuid(str(self.frame_id), field="plugin_input.frame_id")))
@@ -323,6 +324,12 @@ class PluginInputV1:
         )
         object.__setattr__(self, "sha256", validate_sha256(self.sha256, field="plugin_input.sha256"))
         object.__setattr__(self, "relative_path", validate_relative_manifest_path(self.relative_path))
+        if self.external_uri is not None:
+            object.__setattr__(
+                self,
+                "external_uri",
+                require_non_empty(self.external_uri, field="plugin_input.external_uri"),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -506,7 +513,11 @@ REVIEW_BATCH_TRANSITIONS: Final = {
         {ReviewBatchState.AWAITING_ACCEPTANCE, ReviewBatchState.COMPLETED, ReviewBatchState.CANCELLED}
     ),
     ReviewBatchState.AWAITING_ACCEPTANCE: frozenset(
-        {ReviewBatchState.COMPLETED, ReviewBatchState.CHANGES_REQUESTED}
+        {
+            ReviewBatchState.COMPLETED,
+            ReviewBatchState.CHANGES_REQUESTED,
+            ReviewBatchState.CANCELLED,
+        }
     ),
     ReviewBatchState.CHANGES_REQUESTED: frozenset(
         {ReviewBatchState.ISSUED, ReviewBatchState.CANCELLED}

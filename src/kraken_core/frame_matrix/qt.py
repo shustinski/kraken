@@ -7,11 +7,12 @@ import logging
 from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QContextMenuEvent, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
+from PyQt6.QtGui import QColor, QContextMenuEvent, QKeyEvent, QMouseEvent, QPainter, QPen, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QGraphicsItem,
     QGraphicsScene,
@@ -244,7 +245,7 @@ class FrameMatrixView(QGraphicsView):
     lodChanged = pyqtSignal(str)
 
     CELL_SIZE = 48.0
-    CELL_GAP = 3.0
+    CELL_GAP = 0.0
     CELL_PITCH = CELL_SIZE + CELL_GAP
     BASE_TILE_CELLS = 16
     TILE_DEVICE_TARGET = 110.0
@@ -277,6 +278,8 @@ class FrameMatrixView(QGraphicsView):
         self._orientation = GridOrientation.Y_DOWN
         self._cells: dict[tuple[int, int], FrameCellData] = {}
         self._status_colors = dict(DEFAULT_STATUS_COLORS)
+        self._border_mode = "status"
+        self._fill_mode = "thumbnail"
         self._selection = FrameSelection()
         self._selection_anchor: tuple[int, int] | None = None
         self._drag_anchor: tuple[int, int] | None = None
@@ -658,31 +661,34 @@ class FrameMatrixView(QGraphicsView):
             for column in range(start_column, end_column):
                 x = column + 1
                 cell = self._cells.get((x, y), FrameCellData(x, y))
+                payload = cell.payload if isinstance(cell.payload, Mapping) else {}
                 rect = QRectF(
                     column * self.CELL_PITCH,
                     row * self.CELL_PITCH,
                     self.CELL_SIZE,
                     self.CELL_SIZE,
                 )
-                painter.fillRect(rect, self._status_color(cell.status))
-                if lod is MatrixLod.DETAILS and cell.thumbnail is not None and not cell.thumbnail.isNull():
+                fill_color = self._cell_visual_color(cell, self._fill_mode)
+                painter.fillRect(rect, fill_color)
+                if (
+                    self._fill_mode == "thumbnail"
+                    and lod in {MatrixLod.CELLS, MatrixLod.DETAILS}
+                    and cell.thumbnail is not None
+                    and not cell.thumbnail.isNull()
+                ):
                     painter.save()
                     painter.setOpacity(0.92)
                     painter.drawPixmap(rect.toRect(), cell.thumbnail)
                     painter.restore()
 
-                performer_pen: QPen | None = None
-                if cell.performer_color:
-                    performer_color = QColor(cell.performer_color)
-                    if performer_color.isValid():
-                        performer_pen = QPen(performer_color, 3.0)
-                        performer_pen.setCosmetic(True)
-                painter.setPen(
-                    selection_pen
-                    if self._selection.contains(x, y)
-                    else performer_pen or base_pen
-                )
+                border_color = self._cell_visual_color(cell, self._border_mode)
+                semantic_pen = QPen(border_color if border_color.isValid() else base_pen.color(), 3.0)
+                semantic_pen.setCosmetic(True)
+                painter.setPen(semantic_pen)
                 painter.drawRect(rect)
+                if self._selection.contains(x, y):
+                    painter.setPen(selection_pen)
+                    painter.drawRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5))
 
                 if lod is MatrixLod.DETAILS:
                     painter.setPen(QColor("#f8fafc"))
@@ -701,7 +707,6 @@ class FrameMatrixView(QGraphicsView):
                         )
                 renderers = getattr(self, "_renderers", ())
                 if renderers:
-                    payload = cell.payload if isinstance(cell.payload, Mapping) else {}
                     matrix_item = MatrixItem(
                         key=str(payload.get("key") or f"{x}:{y}"),
                         x=x,
@@ -734,6 +739,64 @@ class FrameMatrixView(QGraphicsView):
                             )
                             continue
 
+    def set_visual_modes(self, border: str, fill: str) -> None:
+        border_modes = {"time", "performer", "quality", "status"}
+        fill_modes = border_modes | {"thumbnail"}
+        if border not in border_modes or fill not in fill_modes:
+            raise ValueError("Unsupported matrix visual mode")
+        self._border_mode, self._fill_mode = border, fill
+        self.viewport().update()
+
+    def visual_modes(self) -> tuple[str, str]:
+        return self._border_mode, self._fill_mode
+
+    def _cell_visual_color(self, cell: FrameCellData, mode: str) -> QColor:
+        payload = cell.payload if isinstance(cell.payload, Mapping) else {}
+        neutral = QColor("#475569")
+        if mode == "thumbnail":
+            return self._status_color(cell.status)
+        if mode == "performer":
+            color = QColor(str(payload.get("performer_color") or cell.performer_color or ""))
+            return color if color.isValid() else neutral
+        if mode == "quality":
+            try:
+                value = max(0.0, min(1.0, float(payload["quality"])))
+            except (KeyError, TypeError, ValueError):
+                return neutral
+            return QColor.fromRgbF(1.0 - value, value, 0.10)
+        if mode == "status":
+            return {
+                "not_checked": QColor("#64748b"),
+                "in_review": QColor("#f59e0b"),
+                "checked": QColor("#22c55e"),
+            }.get(str(payload.get("review_status") or ""), self._status_color(cell.status))
+        if mode == "time":
+            stamp = self._timestamp(payload.get("modified_at"))
+            values = [
+                parsed
+                for value in self._cells.values()
+                if (parsed := self._timestamp(
+                    (value.payload if isinstance(value.payload, Mapping) else {}).get("modified_at")
+                )) is not None
+            ]
+            if stamp is None or not values:
+                return neutral
+            oldest, newest = min(values), max(values)
+            ratio = 1.0 if newest <= oldest else (stamp - oldest) / (newest - oldest)
+            return QColor.fromRgbF(1.0 - ratio, ratio, 0.08)
+        return neutral
+
+    @staticmethod
+    def _timestamp(value: object) -> float | None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+        return None
+
     def _after_transform(self) -> None:
         self._indexed_tile_cells = 0
         self._update_visible_tiles()
@@ -762,6 +825,21 @@ class FrameMatrixView(QGraphicsView):
             amount = pixel_delta.y() if not pixel_delta.isNull() else delta / 8.0
             scrollbar.setValue(scrollbar.value() - round(amount))
         event.accept()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
+        blocked_modifiers = (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.MetaModifier
+        )
+        if not event.modifiers() & blocked_modifiers and (
+            event.key() == Qt.Key.Key_F
+            or event.text().casefold() in {"f", "а"}
+        ):
+            self.zoom_to_fit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -857,6 +935,121 @@ class FrameMatrixView(QGraphicsView):
         context = FrameContext(x, y, self.cell_data(x, y), self._selection)
         self.contextMenuRequested.emit(context, event.globalPos())
         event.accept()
+
+
+class FrameMatrixMinimap(QWidget):
+    """Compact matrix overview with viewport indication and click navigation."""
+
+    WIDTH = 180
+    HEIGHT = 120
+    EDGE_MARGIN = 12
+    CONTENT_MARGIN = 8
+
+    def __init__(self, matrix_view: FrameMatrixView) -> None:
+        super().__init__(matrix_view.viewport())
+        self._matrix_view = matrix_view
+        self.setObjectName("matrixMinimap")
+        self.setFixedSize(self.WIDTH, self.HEIGHT)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Нажмите или перетащите, чтобы перейти к нужной области")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        matrix_view.viewportChanged.connect(self._viewport_changed)
+        self._reposition()
+        self.show()
+        self.raise_()
+
+    def _viewport_changed(self, _visible_rect: QRectF) -> None:
+        self._reposition()
+        self.update()
+        self.raise_()
+
+    def _reposition(self) -> None:
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        self.move(
+            max(0, parent.width() - self.width() - self.EDGE_MARGIN),
+            max(0, parent.height() - self.height() - self.EDGE_MARGIN),
+        )
+        self.raise_()
+
+    def _matrix_rect(self) -> QRectF:
+        scene = self._matrix_view.sceneRect()
+        content = QRectF(self.rect()).adjusted(
+            self.CONTENT_MARGIN,
+            self.CONTENT_MARGIN,
+            -self.CONTENT_MARGIN,
+            -self.CONTENT_MARGIN,
+        )
+        if scene.isEmpty():
+            return content
+        scale = min(content.width() / scene.width(), content.height() / scene.height())
+        width = scene.width() * scale
+        height = scene.height() * scale
+        return QRectF(
+            content.center().x() - width / 2,
+            content.center().y() - height / 2,
+            width,
+            height,
+        )
+
+    def _map_scene_rect(self, scene_rect: QRectF) -> QRectF:
+        scene = self._matrix_view.sceneRect()
+        matrix = self._matrix_rect()
+        if scene.isEmpty() or matrix.isEmpty():
+            return QRectF()
+        return QRectF(
+            matrix.left() + (scene_rect.left() - scene.left()) / scene.width() * matrix.width(),
+            matrix.top() + (scene_rect.top() - scene.top()) / scene.height() * matrix.height(),
+            scene_rect.width() / scene.width() * matrix.width(),
+            scene_rect.height() / scene.height() * matrix.height(),
+        ).intersected(matrix)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#475569"), 1.0))
+        painter.setBrush(QColor(11, 17, 32, 225))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
+
+        matrix = self._matrix_rect()
+        painter.setPen(QPen(QColor("#64748b"), 1.0))
+        painter.setBrush(QColor("#1e293b"))
+        painter.drawRect(matrix)
+
+        visible = self._map_scene_rect(self._matrix_view.visible_scene_rect())
+        if not visible.isEmpty():
+            painter.setPen(QPen(QColor("#60a5fa"), 1.5))
+            painter.setBrush(QColor(37, 99, 235, 75))
+            painter.drawRect(visible)
+        painter.end()
+
+    def _navigate(self, position: QPointF) -> None:
+        matrix = self._matrix_rect()
+        scene = self._matrix_view.sceneRect()
+        if matrix.isEmpty() or scene.isEmpty():
+            return
+        x = min(matrix.right(), max(matrix.left(), position.x()))
+        y = min(matrix.bottom(), max(matrix.top(), position.y()))
+        scene_x = scene.left() + (x - matrix.left()) / matrix.width() * scene.width()
+        scene_y = scene.top() + (y - matrix.top()) / matrix.height() * scene.height()
+        self._matrix_view.centerOn(scene_x, scene_y)
+        self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._navigate(event.position())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._navigate(event.position())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
 
 
 class FrameMatrixWidget(FrameMatrixView):
@@ -1125,7 +1318,11 @@ class FrameMatrixWidget(FrameMatrixView):
                 performer_initials=str(item.metadata.get("performer_initials") or ""),
                 label=item.label,
                 tooltip=item.tooltip,
-                payload={"key": item.key, **dict(item.metadata)},
+                payload={
+                    "key": item.key,
+                    "request_lod": result.request.lod,
+                    **dict(item.metadata),
+                },
             )
             for item in result.items
         ]
@@ -1178,6 +1375,7 @@ class FrameMatrixWidget(FrameMatrixView):
 __all__ = [
     "FrameCellData",
     "FrameContext",
+    "FrameMatrixMinimap",
     "FrameMatrixView",
     "FrameMatrixWidget",
     "FrameRect",

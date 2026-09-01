@@ -9,7 +9,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from kraken_manager.application.performers import ensure_gitlab_performer
 from kraken_manager.domain.common import PrincipalId
-from kraken_manager.domain.identity import Principal
+from kraken_manager.domain.identity import Principal, PrincipalProvider, SystemRole
 from kraken_manager.infrastructure.auth.gitlab import (
     GitLabAuthenticationError,
     GitLabOidcClient,
@@ -18,12 +18,13 @@ from kraken_manager.infrastructure.auth.gitlab import (
 from kraken_manager.infrastructure.auth.local import Argon2PasswordHasher
 from kraken_manager.infrastructure.blob import FilesystemBlobStore
 from kraken_manager.infrastructure.postgres import (
-    PostgresFederatedSessionCache,
     PostgresAccountStore,
+    PostgresFederatedSessionCache,
     PostgresIdentityAclStore,
     PostgresPerformerStore,
     PostgresUnitOfWorkFactory,
 )
+from kraken_manager.infrastructure.review.crypto import Ed25519KeyPair
 
 from .app import SessionPrincipal
 from .persistent_services import PostgresServerServices, ServerStorageProfiles
@@ -34,6 +35,33 @@ def _required(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is required for the PostgreSQL server composition")
     return value
+
+
+def _review_key_pair(blob_root: Path) -> Ed25519KeyPair:
+    key_dir = blob_root / ".server"
+    key_dir.mkdir(parents=True, exist_ok=True)
+    key_path = key_dir / "review-ed25519.key"
+    try:
+        raw = key_path.read_bytes()
+    except FileNotFoundError:
+        pair = Ed25519KeyPair.generate()
+        raw = pair.private_key + pair.public_key
+        try:
+            descriptor = os.open(
+                key_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            raw = key_path.read_bytes()
+        else:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+    if len(raw) != 64:
+        raise RuntimeError("Kraken review signing key file is invalid")
+    return Ed25519KeyPair(raw[:32], raw[32:])
 
 
 class HybridSessionResolver:
@@ -67,6 +95,15 @@ class HybridSessionResolver:
             return None
         local = self.accounts.resolve_session(token)
         if local is not None:
+            principal = Principal(
+                id=PrincipalId(local.account_id),
+                provider=PrincipalProvider.LOCAL,
+                subject=local.username,
+                display_name=local.display_name,
+                active=local.enabled,
+                system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(local.account_id)),
+            )
+            self.identities.save(principal)
             return SessionPrincipal(local.account_id, "local", token)
         if self.oidc is None:
             return None
@@ -119,19 +156,28 @@ def postgresql_composition() -> dict[str, Any]:
 
     database_url = _required("KRAKEN_DATABASE_URL")
     blob_root = Path(_required("KRAKEN_BLOB_ROOT"))
-    max_frames = int(os.environ.get("KRAKEN_SERVER_MAX_FRAMES", "1000000"))
-    if max_frames < 1:
-        raise RuntimeError("KRAKEN_SERVER_MAX_FRAMES must be positive")
-
     engine = create_engine(database_url, pool_pre_ping=True)
     blobs = FilesystemBlobStore(blob_root)
-    profiles = ServerStorageProfiles(max_frames=max_frames)
+    profiles = ServerStorageProfiles(max_frames=None)
     uow_factory = PostgresUnitOfWorkFactory(engine, blobs)
-    services = PostgresServerServices(engine, uow_factory, profiles=profiles)
+    from .agent_auth import PostgresAgentTokenStore
+    from .agent_gateway import PostgresAgentGateway
+
+    agent_tokens = PostgresAgentTokenStore(engine)
+    agent_gateway = PostgresAgentGateway(engine, agent_tokens, blobs)
+    performers = PostgresPerformerStore(engine)
+    review_keys = _review_key_pair(blob_root)
+    services = PostgresServerServices(
+        engine,
+        uow_factory,
+        profiles=profiles,
+        agent_gateway=agent_gateway,
+        performer_store=performers,
+        review_key_pair=review_keys,
+    )
 
     accounts = PostgresAccountStore(engine, Argon2PasswordHasher())
     identities = PostgresIdentityAclStore(engine)
-    performers = PostgresPerformerStore(engine)
     issuer = os.environ.get("KRAKEN_GITLAB_ISSUER", "").strip()
     oidc = None
     if issuer:
@@ -142,11 +188,35 @@ def postgresql_composition() -> dict[str, Any]:
         )
     federated_cache = PostgresFederatedSessionCache(engine)
     resolver = HybridSessionResolver(accounts, identities, oidc, federated_cache, performers)
+    from .outbox import ConnectionHub, OutboxPublisher
+
+    hub = ConnectionHub()
+    publisher = OutboxPublisher(engine, hub)
+    blob_gateway = None
+    if public_url := os.environ.get("KRAKEN_BLOB_GATEWAY_PUBLIC_URL", "").strip():
+        from .blob_gateway import BlobGatewayManager
+
+        blob_gateway = BlobGatewayManager(
+            public_url=public_url,
+            bind=_required("KRAKEN_BLOB_GATEWAY_BIND"),
+            blob_root=blob_root,
+            executable=Path(_required("KRAKEN_BLOB_GATEWAY_EXECUTABLE")),
+            secret=_required("KRAKEN_BLOB_GATEWAY_SECRET"),
+            ticket_lifetime_seconds=int(os.environ.get("KRAKEN_BLOB_TICKET_LIFETIME", "900")),
+            tls_cert_file=(Path(value) if (value := os.environ.get("KRAKEN_BLOB_GATEWAY_TLS_CERT")) else None),
+            tls_key_file=(Path(value) if (value := os.environ.get("KRAKEN_BLOB_GATEWAY_TLS_KEY")) else None),
+        )
     return {
         "services": services,
         "account_store": accounts,
         "session_resolver": resolver,
         "live_gitlab_verifier": resolver.verify_live,
+        "project_access_mode": os.environ.get("KRAKEN_PROJECT_ACCESS_MODE", "acl"),
+        "connection_hub": hub,
+        "outbox_publisher": publisher,
+        "blob_gateway": blob_gateway,
+        "agent_token_store": agent_tokens,
+        "agent_gateway": agent_gateway,
     }
 
 

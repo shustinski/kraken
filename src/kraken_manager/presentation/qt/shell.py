@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Callable
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -34,6 +36,10 @@ class ProjectManagerShell(QMainWindow):
 
     pageChanged = pyqtSignal(str)
     navigationRequested = pyqtSignal(str)
+    layersRequested = pyqtSignal()
+    cellVisualModeChanged = pyqtSignal(str, str)
+    reviewReturnRequested = pyqtSignal()
+    framePropertiesRequested = pyqtSignal()
 
     DEFAULT_NAVIGATION = (
         ("projects", "Проекты"),
@@ -51,6 +57,7 @@ class ProjectManagerShell(QMainWindow):
         self.resize(1280, 800)
         self._pages: dict[str, QWidget] = {}
         self._navigation_items: dict[str, QListWidgetItem] = {}
+        self.close_guard: Callable[[], bool] | None = None
 
         central = QWidget()
         root = QHBoxLayout(central)
@@ -62,10 +69,76 @@ class ProjectManagerShell(QMainWindow):
         root.addWidget(self.sidebar)
         root.addWidget(self.page_stack, 1)
         self.setCentralWidget(central)
+        self._build_workspace_menus()
 
         self._register_default_pages()
         self.navigation_list.currentRowChanged.connect(self._on_navigation_row_changed)
         self.show_page("projects")
+
+    def _build_workspace_menus(self) -> None:
+        self._ui_settings = QSettings("Kraken", "KrakenHub")
+        management = self.menuBar().addMenu("Управление")
+        self.layers_action = QAction("Слои…", self)
+        self.layers_action.setEnabled(False)
+        self.layers_action.triggered.connect(self.layersRequested)
+        management.addAction(self.layers_action)
+
+        self.actions_menu = self.menuBar().addMenu("Действия")
+        self.actions_menu.setEnabled(False)
+        self.review_return_action = QAction("Загрузить проверенные файлы…", self)
+        self.review_return_action.triggered.connect(self.reviewReturnRequested)
+        self.actions_menu.addAction(self.review_return_action)
+        self.frame_properties_action = QAction("Статистика выбранного кадра…", self)
+        self.frame_properties_action.setEnabled(False)
+        self.frame_properties_action.triggered.connect(self.framePropertiesRequested)
+        self.actions_menu.addAction(self.frame_properties_action)
+
+        self.view_menu = self.menuBar().addMenu("Вид")
+        self.view_menu.setEnabled(False)
+        self._visual_actions: dict[tuple[str, str], QAction] = {}
+        labels = {
+            "time": "Время",
+            "performer": "Исполнитель",
+            "quality": "Качество",
+            "status": "Статус",
+            "thumbnail": "Миниатюра",
+        }
+        defaults = {"border": "status", "fill": "thumbnail"}
+        for channel, title, modes in (
+            ("border", "Рамка ячейки", ("time", "performer", "quality", "status")),
+            ("fill", "Заполнение ячейки", ("time", "performer", "quality", "status", "thumbnail")),
+        ):
+            submenu = self.view_menu.addMenu(title)
+            group = QActionGroup(self)
+            group.setExclusive(True)
+            selected = str(self._ui_settings.value(f"matrix/{channel}-mode", defaults[channel]))
+            if selected not in modes:
+                selected = defaults[channel]
+            for mode in modes:
+                action = QAction(labels[mode], self, checkable=True)
+                action.setData(mode)
+                action.setChecked(mode == selected)
+                action.triggered.connect(
+                    lambda _checked=False, c=channel, m=mode: self._set_visual_mode(c, m)
+                )
+                group.addAction(action)
+                submenu.addAction(action)
+                self._visual_actions[(channel, mode)] = action
+
+    def _set_visual_mode(self, channel: str, mode: str) -> None:
+        self._ui_settings.setValue(f"matrix/{channel}-mode", mode)
+        self.cellVisualModeChanged.emit(channel, mode)
+
+    def visual_modes(self) -> tuple[str, str]:
+        border = next(
+            (mode for (channel, mode), action in self._visual_actions.items() if channel == "border" and action.isChecked()),
+            "status",
+        )
+        fill = next(
+            (mode for (channel, mode), action in self._visual_actions.items() if channel == "fill" and action.isChecked()),
+            "thumbnail",
+        )
+        return border, fill
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
@@ -88,6 +161,11 @@ class ProjectManagerShell(QMainWindow):
         self.session_label.setObjectName("sessionSummary")
         self.session_label.setWordWrap(True)
         layout.addWidget(self.session_label)
+        self.sync_status_label = QLabel("")
+        self.sync_status_label.setObjectName("syncStatus")
+        self.sync_status_label.setWordWrap(True)
+        self.sync_status_label.hide()
+        layout.addWidget(self.sync_status_label)
         return sidebar
 
     def _register_default_pages(self) -> None:
@@ -159,6 +237,20 @@ class ProjectManagerShell(QMainWindow):
             self.navigation_list.setCurrentItem(navigation_item)
         if changed:
             self.pageChanged.emit(normalized)
+        workspace_active = normalized == "workspace"
+        self.layers_action.setEnabled(workspace_active)
+        self.view_menu.setEnabled(workspace_active)
+        self.actions_menu.setEnabled(workspace_active)
+        if not workspace_active:
+            self.frame_properties_action.setEnabled(False)
+
+    def set_page_visible(self, key: str, visible: bool) -> None:
+        item = self._navigation_items.get(str(key))
+        if item is None:
+            raise KeyError(str(key))
+        item.setHidden(not bool(visible))
+        if not visible and self.current_page_key() == str(key):
+            self.show_page("projects")
 
     def open_project_workspace(self, workspace: ProjectWorkspacePage | None = None) -> ProjectWorkspacePage:
         """Register or replace the non-sidebar workspace and display it."""
@@ -170,12 +262,27 @@ class ProjectManagerShell(QMainWindow):
         page.selectionCountChanged.connect(
             lambda count: self.statusBar().showMessage(f"Выбрано кадров: {count:n}")
         )
+        page.selectionCountChanged.connect(
+            lambda count: self.frame_properties_action.setEnabled(count == 1)
+        )
         self.statusBar().showMessage("Выбрано кадров: 0")
         self.show_page("workspace")
         return page
 
     def set_session_summary(self, text: str) -> None:
         self.session_label.setText(str(text) or "Нет активной сессии")
+
+    def set_sync_status(self, status: str) -> None:
+        labels = {
+            "synchronized": "● Синхронизировано",
+            "reconnecting": "● Переподключение…",
+            "offline": "● Офлайн",
+        }
+        self.sync_status_label.setText(labels.get(str(status), str(status)))
+        self.sync_status_label.setProperty("status", str(status))
+        self.sync_status_label.setVisible(bool(status))
+        self.sync_status_label.style().unpolish(self.sync_status_label)
+        self.sync_status_label.style().polish(self.sync_status_label)
 
     def _on_navigation_row_changed(self, row: int) -> None:
         item = self.navigation_list.item(row)
@@ -186,6 +293,12 @@ class ProjectManagerShell(QMainWindow):
             return
         self.navigationRequested.emit(key)
         self.show_page(key)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.close_guard is not None and not self.close_guard():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 __all__ = ["ProjectManagerShell"]

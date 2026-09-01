@@ -517,6 +517,9 @@ class ContourMainView(QMainWindow):
     def set_output_directory(self, path: str) -> None:
         self._widget.set_output_directory(path)
 
+    def set_dataset_directory(self, path: str) -> None:
+        self._widget.set_dataset_directory(path)
+
     def set_cif_directory(self, path: str) -> None:
         self._widget.set_cif_directory(path)
 

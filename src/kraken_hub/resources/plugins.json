@@ -5,7 +5,7 @@
       "display_name": "NeuralImage",
       "description": "Neural IC image segmentation, training, and recognition.",
       "version": "6.3.0",
-      "protocol_version": "1.0",
+      "protocol_version": "2.0",
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
@@ -21,6 +21,19 @@
           "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
           "output_media_types": ["image/png"],
           "maximum_batch_size": 10000
+        },
+        {
+          "operation": "frames.binary-segment.v2",
+          "modes": ["headless"],
+          "input_media_types": ["image/png", "image/tiff", "image/jpeg", "application/x-pytorch"],
+          "output_media_types": ["image/png"],
+          "maximum_batch_size": 10000
+        },
+        {
+          "operation": "dataset.model.train.v1",
+          "modes": ["interactive"],
+          "input_media_types": ["application/vnd.kraken.dataset+zip"],
+          "output_media_types": ["application/x-pytorch", "application/json"]
         }
       ]
     },
@@ -44,6 +57,13 @@
           "modes": ["interactive"],
           "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
           "output_media_types": ["application/x-cif"],
+          "maximum_batch_size": 10000
+        },
+        {
+          "operation": "frames.dataset.prepare.v1",
+          "modes": ["interactive"],
+          "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
+          "output_media_types": ["application/vnd.kraken.dataset+zip"],
           "maximum_batch_size": 10000
         }
       ]
@@ -98,20 +118,23 @@
       "display_name": "Karakal",
       "description": "Validation gradient matrix viewer and metrics explorer.",
       "version": "0.0.1",
-      "protocol_version": "1.0",
-      "analysis_protocol_version": "1.0",
-      "analysis_capabilities": [
-        {"profile": "model_comparison", "required_roles": ["model_output", "model_output"], "optional_roles": ["original", "confidence"], "modes": ["interactive"]},
-        {"profile": "confidence_audit", "required_roles": ["model_output", "confidence"], "optional_roles": ["original"], "modes": ["interactive"]},
-        {"profile": "grid_defects", "required_roles": [], "required_any_role_groups": [["original", "model_output"]], "optional_roles": ["reference", "confidence"], "modes": ["interactive"]}
-      ],
+      "protocol_version": "2.0",
       "enabled": true,
       "platforms": ["windows", "linux"],
       "executables": {
         "windows": {"command": ["python", "__main__.py"]},
         "linux": {"command": ["python", "__main__.py"]}
       },
-      "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+      "actions": ["get_capabilities", "open_path", "open_folder", "run_action"],
+      "capabilities": [
+        {
+          "operation": "layer.confidence.analyze.v1",
+          "modes": ["interactive"],
+          "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
+          "output_media_types": ["application/vnd.kraken.confidence+json"],
+          "maximum_batch_size": 10000
+        }
+      ]
     }
   ]
 }

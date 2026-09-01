@@ -4,6 +4,7 @@ from .clickable_label import ClickableLabel
 from .frame_matrix import (
     FrameCellData,
     FrameContext,
+    FrameMatrixMinimap,
     FrameMatrixView,
     FrameMatrixWidget,
     FrameRect,
@@ -16,6 +17,7 @@ __all__ = [
     "ClickableLabel",
     "FrameCellData",
     "FrameContext",
+    "FrameMatrixMinimap",
     "FrameMatrixView",
     "FrameMatrixWidget",
     "FrameRect",

@@ -22,6 +22,9 @@ class KarakalPlugin:
         self._host = host
         settings = host.settings() if host is not None else None
         self._widget = KarakalWidget(parent, settings=settings)
+        if host is not None and callable(getattr(host, "publish_quality", None)):
+            self._widget.qualityPublicationRequested.connect(host.publish_quality)
+            self._widget.set_kraken_publish_available(True)
         return self._widget
 
     def shutdown(self) -> None:

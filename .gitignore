@@ -3,11 +3,13 @@ __pycache__/
 *.py[cod]
 *.pyd
 *.so
+*.sqlite3
 .Python
 .venv/
 venv/
 build/
 dist/
+blob_gateway/target/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
@@ -21,6 +23,7 @@ htmlcov/
 *.tmp
 *.bak
 *.ini
+!alembic.ini
 *.AppImage
 *.tar.gz
 *.exe
@@ -30,4 +33,5 @@ htmlcov/
 *.png
 plugins/*/dist/
 plugins/*/build/
+.test_runtime/vscode-project-manager/accounts.sqlite3
 blob_gateway/

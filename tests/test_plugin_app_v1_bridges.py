@@ -94,6 +94,28 @@ class ContourBridgeV1Tests(unittest.TestCase):
             self.assertEqual(_digest(cif_payload), restored.outputs[0].sha256)
             self.assertEqual("outputs/staged-frame.cif", restored.outputs[0].relative_path)
 
+    def test_dataset_preparation_fills_dataset_path_instead_of_result_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = b"image-payload"
+            manifest = _manifest(operation="frames.dataset.prepare.v1", payload=payload)
+            job_path, result_path = _workspace(root, manifest, payload)
+
+            session, argv = prepare_contour_launch(
+                [],
+                environ={
+                    "KRAKEN_JOB_MANIFEST": str(job_path),
+                    "KRAKEN_RESULT_MANIFEST": str(result_path),
+                    "KRAKEN_STAGING_ROOT": str(root),
+                },
+            )
+
+            self.assertIsNotNone(session)
+            self.assertIn("--dataset-dir", argv)
+            self.assertNotIn("--output-dir", argv)
+            self.assertEqual(str(root / "outputs"), argv[argv.index("--dataset-dir") + 1])
+            self.assertEqual(str(root / "inputs" / "staged-frame.png"), argv[-1])
+
     def test_managed_mode_rejects_arbitrary_cli_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

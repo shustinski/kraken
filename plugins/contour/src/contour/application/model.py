@@ -9,6 +9,7 @@ from pathlib import Path
 class StartupConfiguration:
     input_dir: str | None = None
     output_dir: str | None = None
+    dataset_dir: str | None = None
     cif_dir: str | None = None
     pipeline_json: str | None = None
     file_paths: list[str] = field(default_factory=list)
@@ -20,6 +21,7 @@ class StartupConfiguration:
         *,
         input_dir: str | None = None,
         output_dir: str | None = None,
+        dataset_dir: str | None = None,
         cif_dir: str | None = None,
         pipeline_json: str | None = None,
         paths: Sequence[str] | None = None,
@@ -28,6 +30,7 @@ class StartupConfiguration:
         return cls(
             input_dir=input_dir,
             output_dir=output_dir,
+            dataset_dir=dataset_dir,
             cif_dir=cif_dir,
             pipeline_json=pipeline_json,
             file_paths=[path for path in normalized_paths if Path(path).is_file()],

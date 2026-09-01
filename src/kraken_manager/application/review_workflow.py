@@ -9,6 +9,7 @@ import json
 
 from kraken_manager.application.dto import (
     AcceptReviewCommand,
+    CancelReviewBatchCommand,
     CommitReviewReturnCommand,
     CreateReviewBatchCommand,
     DryRunReviewReturnCommand,
@@ -467,17 +468,21 @@ class ExportReviewPackageHandler(_ReviewPackagePlanner):
                 context=command.context,
                 permission=Permission.MANAGE_REVIEW,
             )
-            if _prior_command_event(
-                uow,
-                project_id=batch.project_id,
-                idempotency_key=command.context.idempotency_key,
-                event_type="ReviewBatchIssued",
-                batch_id=batch.id,
-            ) is not None:
+            prior_events = uow.event_store.find_by_idempotency_key(
+                batch.project_id,
+                command.context.idempotency_key,
+            )
+            if any(
+                event.event_type in {"ReviewBatchIssued", "ReviewBatchReexported"}
+                and str(event.payload.get("review_batch_id")) == str(batch.id)
+                for event in prior_events
+            ):
                 return batch
+            if prior_events:
+                raise ConflictError("Idempotency key was already used by another command")
             self._require_revision(uow, batch, command.expected_batch_revision)
-            if batch.state not in {ReviewBatchState.DRAFT, ReviewBatchState.CHANGES_REQUESTED}:
-                raise ConflictError("Only a draft or changes-requested batch can be exported")
+            if batch.state in {ReviewBatchState.COMPLETED, ReviewBatchState.CANCELLED}:
+                raise ConflictError("A closed review batch cannot be exported")
             now = self._clock.now()
             plan, readers = self._build_plan(
                 uow,
@@ -493,12 +498,25 @@ class ExportReviewPackageHandler(_ReviewPackagePlanner):
             # This side effect deliberately happens before the domain state
             # changes. A failed/partial writer must never mark frames issued.
             self._writer.write(command.destination, plan.manifest, readers)
-            issued = batch.issue(at=now)
+            first_issue = batch.state in {
+                ReviewBatchState.DRAFT,
+                ReviewBatchState.CHANGES_REQUESTED,
+            }
+            issued = (
+                batch.issue(at=now)
+                if first_issue
+                else replace(
+                    batch,
+                    revision=batch.revision + 1,
+                    updated_at=now,
+                )
+            )
+            event_type = "ReviewBatchIssued" if first_issue else "ReviewBatchReexported"
             event = EventEnvelope.create(
                 stream_id=_review_stream(batch.id),
                 project_id=batch.project_id,
                 revision=issued.revision,
-                event_type="ReviewBatchIssued",
+                event_type=event_type,
                 payload={
                     "review_batch_id": batch.id,
                     "package_id": plan.manifest.package_id,
@@ -993,8 +1011,60 @@ class RequestReviewChangesHandler(_ReviewHandler):
             return changed
 
 
+class CancelReviewBatchHandler(_ReviewHandler):
+    def __call__(self, command: CancelReviewBatchCommand) -> ReviewBatch:
+        with self._uow_factory() as uow:
+            batch = self._load_batch(
+                uow,
+                project_id=command.project_id,
+                batch_id=command.batch_id,
+                context=command.context,
+                permission=Permission.MANAGE_REVIEW,
+            )
+            if _prior_command_event(
+                uow,
+                project_id=batch.project_id,
+                idempotency_key=command.context.idempotency_key,
+                event_type="ReviewBatchCancelled",
+                batch_id=batch.id,
+            ) is not None:
+                return batch
+            self._require_revision(uow, batch, command.expected_batch_revision)
+            if batch.state in {ReviewBatchState.COMPLETED, ReviewBatchState.CANCELLED}:
+                raise ConflictError("Review batch is already closed")
+            now = self._clock.now()
+            cancelled = batch.transition(ReviewBatchState.CANCELLED, at=now)
+            event = EventEnvelope.create(
+                stream_id=_review_stream(batch.id),
+                project_id=batch.project_id,
+                revision=cancelled.revision,
+                event_type="ReviewBatchCancelled",
+                payload={
+                    "review_batch_id": batch.id,
+                    "state": cancelled.state.value,
+                    "batch_revision": cancelled.revision,
+                    "updated_at": cancelled.updated_at.isoformat(),
+                },
+                actor=ActorSnapshot.from_principal(command.context.actor),
+                recorded_at=now,
+                effective_at=command.context.effective_at,
+                performer_id=batch.assignee_id,
+                correlation_id=command.context.correlation_id,
+                idempotency_key=command.context.idempotency_key,
+            )
+            uow.event_store.append(
+                _review_stream(batch.id),
+                expected_revision=batch.revision,
+                events=(event,),
+            )
+            uow.projections.save_review_batch(cancelled)
+            uow.commit()
+            return cancelled
+
+
 __all__ = [
     "AcceptReviewHandler",
+    "CancelReviewBatchHandler",
     "CommitReviewReturnHandler",
     "CreateReviewBatchHandler",
     "DryRunReviewReturnHandler",

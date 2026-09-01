@@ -5,12 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import (
+    CancelPluginJobCommand,
     ImportPluginResultCommand,
     PluginResultImport,
+    RetryPluginJobCommand,
     SubmitPluginJobCommand,
+    SynchronizePluginJobCommand,
 )
 from kraken_manager.application.errors import AuthorizationError, ConflictError, NotFoundError
 from kraken_manager.application.ports import (
@@ -737,4 +741,281 @@ class ImportPluginResultHandler:
             return PluginResultImport(job, tuple(versions))
 
 
-__all__ = ["ImportPluginResultHandler", "SubmitPluginJobHandler"]
+class CancelPluginJobHandler:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        storage_profiles: StorageProfileCatalog,
+        clock: Clock,
+        gateway: PluginJobGateway,
+        authorization: AuthorizationPolicy | None = None,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._storage_profiles = storage_profiles
+        self._clock = clock
+        self._gateway = gateway
+        self._authorization = authorization or AuthorizationPolicy()
+
+    def __call__(self, command: CancelPluginJobCommand) -> PluginJob:
+        with self._uow_factory() as uow:
+            project = uow.projections.get_project(command.project_id)
+            job = uow.projections.get_plugin_job(command.job_id)
+            if project is None or job is None or job.project_id != project.id:
+                raise NotFoundError("Plugin job was not found")
+            profile = self._storage_profiles.get(project.storage_profile)
+            if profile is None:
+                raise NotFoundError("Project storage profile was not found")
+            self._authorization.require(
+                principal=command.context.actor,
+                storage=profile,
+                permission=Permission.RUN_PLUGIN,
+                roles=uow.acl.roles_for(project.id, command.context.actor.id),
+                gitlab_identity_verified=command.context.gitlab_identity_verified,
+            )
+            prior = [
+                event
+                for event in uow.event_store.find_by_idempotency_key(
+                    project.id,
+                    command.context.idempotency_key,
+                )
+                if event.event_type == "PluginJobCancelled"
+            ]
+            if prior:
+                return job
+            if job.revision != command.expected_revision:
+                raise ConflictError("Plugin job revision changed")
+            if job.state in {
+                PluginJobState.SUCCEEDED,
+                PluginJobState.FAILED,
+                PluginJobState.CANCELLED,
+            }:
+                raise ConflictError("Plugin job is already terminal")
+        self._gateway.cancel(job.id)
+        with self._uow_factory() as uow:
+            current = uow.projections.get_plugin_job(command.job_id)
+            if current is None or current.revision != command.expected_revision:
+                raise ConflictError("Plugin job revision changed while cancelling")
+            now = self._clock.now()
+            cancelled = current.transition(PluginJobState.CANCELLED, at=now)
+            stream = _job_stream(cancelled.id)
+            stream_revision = uow.event_store.current_revision(stream)
+            event = EventEnvelope.create(
+                stream_id=stream,
+                project_id=cancelled.project_id,
+                revision=stream_revision + 1,
+                event_type="PluginJobCancelled",
+                payload={
+                    "plugin_job_id": str(cancelled.id),
+                    "job": _job_payload(cancelled),
+                },
+                actor=ActorSnapshot.from_principal(command.context.actor),
+                recorded_at=now,
+                effective_at=command.context.effective_at,
+                performer_id=command.context.performer_id,
+                correlation_id=command.context.correlation_id,
+                idempotency_key=command.context.idempotency_key,
+            )
+            uow.event_store.append(
+                stream,
+                expected_revision=stream_revision,
+                events=(event,),
+            )
+            uow.projections.save_plugin_job(cancelled)
+            uow.commit()
+            return cancelled
+
+
+class RetryPluginJobHandler:
+    """Re-enqueue the immutable original manifest after Agent state loss."""
+
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        storage_profiles: StorageProfileCatalog,
+        clock: Clock,
+        gateway: PluginJobGateway,
+        authorization: AuthorizationPolicy | None = None,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._storage_profiles = storage_profiles
+        self._clock = clock
+        self._gateway = gateway
+        self._authorization = authorization or AuthorizationPolicy()
+
+    def __call__(self, command: RetryPluginJobCommand) -> PluginJob:
+        with self._uow_factory() as uow:
+            project = uow.projections.get_project(command.project_id)
+            job = uow.projections.get_plugin_job(command.job_id)
+            if project is None or job is None or job.project_id != project.id:
+                raise NotFoundError("Plugin job was not found")
+            profile = self._storage_profiles.get(project.storage_profile)
+            if profile is None:
+                raise NotFoundError("Project storage profile was not found")
+            self._authorization.require(
+                principal=command.context.actor,
+                storage=profile,
+                permission=Permission.RUN_PLUGIN,
+                roles=uow.acl.roles_for(project.id, command.context.actor.id),
+                gitlab_identity_verified=command.context.gitlab_identity_verified,
+            )
+            if job.revision != command.expected_revision:
+                raise ConflictError("Plugin job revision changed")
+            if job.state is not PluginJobState.RECOVERY_REQUIRED:
+                raise ConflictError("Only a recovery-required plugin job can be retried")
+            created = [
+                event
+                for event in uow.event_store.load_stream(_job_stream(job.id))
+                if event.event_type == "PluginJobCreated"
+            ]
+            if len(created) != 1 or not isinstance(
+                created[0].payload.get("manifest"),
+                Mapping,
+            ):
+                raise ConflictError("Authoritative plugin job manifest is missing")
+            manifest = _manifest_from_payload(created[0].payload["manifest"])  # type: ignore[arg-type]
+
+        if not self._gateway.is_available(
+            manifest.capability,
+            manifest.protocol_version,
+        ):
+            raise ConflictError("No compatible Kraken Agent/plugin capability is available")
+        self._gateway.submit(manifest)
+
+        with self._uow_factory() as uow:
+            current = uow.projections.get_plugin_job(command.job_id)
+            if current is None or current.revision != command.expected_revision:
+                raise ConflictError("Plugin job revision changed while retrying")
+            now = self._clock.now()
+            retried = current.transition(
+                PluginJobState.QUEUED,
+                at=now,
+                progress=0,
+            )
+            stream = _job_stream(retried.id)
+            stream_revision = uow.event_store.current_revision(stream)
+            event = EventEnvelope.create(
+                stream_id=stream,
+                project_id=retried.project_id,
+                revision=stream_revision + 1,
+                event_type="PluginJobRetried",
+                payload={
+                    "plugin_job_id": str(retried.id),
+                    "job": _job_payload(retried),
+                },
+                actor=ActorSnapshot.from_principal(command.context.actor),
+                recorded_at=now,
+                effective_at=command.context.effective_at,
+                performer_id=command.context.performer_id,
+                correlation_id=command.context.correlation_id,
+                idempotency_key=command.context.idempotency_key,
+            )
+            uow.event_store.append(
+                stream,
+                expected_revision=stream_revision,
+                events=(event,),
+            )
+            uow.projections.save_plugin_job(retried)
+            uow.commit()
+            return retried
+
+
+class SynchronizePluginJobHandler:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        storage_profiles: StorageProfileCatalog,
+        clock: Clock,
+        authorization: AuthorizationPolicy | None = None,
+    ) -> None:
+        self._uow_factory = uow_factory
+        self._storage_profiles = storage_profiles
+        self._clock = clock
+        self._authorization = authorization or AuthorizationPolicy()
+
+    def __call__(self, command: SynchronizePluginJobCommand) -> PluginJob:
+        target = PluginJobState(command.state)
+        with self._uow_factory() as uow:
+            project = uow.projections.get_project(command.project_id)
+            job = uow.projections.get_plugin_job(command.job_id)
+            if project is None or job is None or job.project_id != project.id:
+                raise NotFoundError("Plugin job was not found")
+            profile = self._storage_profiles.get(project.storage_profile)
+            if profile is None:
+                raise NotFoundError("Project storage profile was not found")
+            self._authorization.require(
+                principal=command.context.actor,
+                storage=profile,
+                permission=Permission.RUN_PLUGIN,
+                roles=uow.acl.roles_for(project.id, command.context.actor.id),
+                gitlab_identity_verified=command.context.gitlab_identity_verified,
+            )
+            if job.revision != command.expected_revision:
+                raise ConflictError("Plugin job revision changed")
+            if job.state is target:
+                return job
+            now = self._clock.now()
+            changed = job
+            if target in {PluginJobState.STAGING, PluginJobState.RUNNING}:
+                if changed.state is PluginJobState.QUEUED:
+                    changed = changed.transition(PluginJobState.STAGING, at=now)
+                if target is PluginJobState.RUNNING and changed.state is PluginJobState.STAGING:
+                    changed = changed.transition(PluginJobState.RUNNING, at=now)
+            elif target is PluginJobState.WAITING_FOR_USER:
+                if changed.state is PluginJobState.QUEUED:
+                    changed = changed.transition(PluginJobState.STAGING, at=now)
+                if changed.state is PluginJobState.STAGING:
+                    changed = changed.transition(PluginJobState.RUNNING, at=now)
+                if changed.state is PluginJobState.RUNNING:
+                    changed = changed.transition(PluginJobState.WAITING_FOR_USER, at=now)
+                if changed.state is not PluginJobState.WAITING_FOR_USER:
+                    raise ConflictError(
+                        f"Plugin job cannot wait for user from {changed.state.value}"
+                    )
+            else:
+                changed = _move_job(
+                    changed,
+                    target,
+                    at=now,
+                    progress=command.progress,
+                )
+            if command.error and target in {
+                PluginJobState.FAILED,
+                PluginJobState.RECOVERY_REQUIRED,
+            }:
+                changed = replace(changed, error=command.error[:10_000])
+            stream = _job_stream(changed.id)
+            stream_revision = uow.event_store.current_revision(stream)
+            event = EventEnvelope.create(
+                stream_id=stream,
+                project_id=changed.project_id,
+                revision=stream_revision + 1,
+                event_type="PluginJobSynchronized",
+                payload={
+                    "plugin_job_id": str(changed.id),
+                    "job": _job_payload(changed),
+                    "agent_state": target.value,
+                },
+                actor=ActorSnapshot.from_principal(command.context.actor),
+                recorded_at=now,
+                effective_at=command.context.effective_at,
+                performer_id=command.context.performer_id,
+                correlation_id=command.context.correlation_id,
+                idempotency_key=command.context.idempotency_key,
+            )
+            uow.event_store.append(
+                stream,
+                expected_revision=stream_revision,
+                events=(event,),
+            )
+            uow.projections.save_plugin_job(changed)
+            uow.commit()
+            return changed
+
+
+__all__ = [
+    "CancelPluginJobHandler",
+    "ImportPluginResultHandler",
+    "RetryPluginJobHandler",
+    "SubmitPluginJobHandler",
+    "SynchronizePluginJobHandler",
+]

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any, Iterator
+from typing import Any
 
 from kraken_manager.domain.common import PrincipalId, ProjectId
 from kraken_manager.domain.identity import (
@@ -92,6 +93,19 @@ class PostgresIdentityAclStore:
                 sa.select(self.principals).where(self.principals.c.external_key == external_key)
             ).mappings().first()
         return None if row is None else self._principal(row)
+
+    def list(self, *, include_inactive: bool = False) -> tuple[Principal, ...]:
+        sa, _ = _sqlalchemy()
+        statement = sa.select(self.principals)
+        if not include_inactive:
+            statement = statement.where(self.principals.c.enabled.is_(True))
+        statement = statement.order_by(
+            self.principals.c.display_name,
+            self.principals.c.principal_id,
+        )
+        with self._scope() as connection:
+            rows = connection.execute(statement).mappings().all()
+        return tuple(self._principal(row) for row in rows)
 
     def save(self, principal: Principal) -> None:
         _, pg_insert = _sqlalchemy()

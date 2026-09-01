@@ -15,13 +15,21 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from kraken_core.plugin_protocol import (
+    PluginAsset,
+    PluginAssetScope,
     PluginFrameOutput,
     PluginJobManifest,
+    PluginJobManifestV2,
     PluginJobOutcome,
     PluginOperation,
     PluginResultManifest,
+    PluginResultPublicationV2,
+    WorkspacePluginContextV1,
+    WorkspacePluginResultV1,
+    parse_plugin_job_json,
     safe_relative_path,
 )
 
@@ -247,9 +255,10 @@ class HeadlessOptions:
 
 @dataclass(frozen=True, slots=True)
 class NeuralImageKrakenSession:
-    manifest: PluginJobManifest
+    manifest: PluginJobManifest | PluginJobManifestV2
     staging_root: Path
     result_manifest_path: Path
+    frame_inputs: tuple[object, ...]
     input_paths: tuple[Path, ...]
     output_directory: Path
 
@@ -269,16 +278,30 @@ class NeuralImageKrakenSession:
         if not job_path.is_file() or job_path.stat().st_size > _MAX_MANIFEST_BYTES:
             raise KrakenBridgeError("Kraken job manifest is not a regular, reasonably sized file")
         try:
-            manifest = PluginJobManifest.from_json(job_path.read_text(encoding="utf-8"))
+            manifest = parse_plugin_job_json(job_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError) as exc:
             raise KrakenBridgeError(f"Invalid Kraken job manifest: {exc}") from exc
-        if manifest.operation != PluginOperation.BINARY_SEGMENT_FRAMES.value:
+        if manifest.operation not in {
+            PluginOperation.BINARY_SEGMENT_FRAMES.value,
+            PluginOperation.BINARY_SEGMENT_FRAMES_V2.value,
+        }:
             raise KrakenBridgeError(f"NeuralImage does not support operation {manifest.operation!r}")
-        if len(manifest.inputs) > 10_000:
-            raise KrakenBridgeError("NeuralImage protocol v1 accepts at most 10000 frames per job")
+        frame_inputs = (
+            tuple(manifest.inputs)
+            if isinstance(manifest, PluginJobManifest)
+            else tuple(
+                item
+                for item in manifest.inputs
+                if item.scope is PluginAssetScope.FRAME and item.role == "source"
+            )
+        )
+        if not frame_inputs:
+            raise KrakenBridgeError("NeuralImage requires source frame inputs")
+        if len(frame_inputs) > 10_000:
+            raise KrakenBridgeError("NeuralImage accepts at most 10000 frames per job")
         inputs: list[Path] = []
         stems: set[str] = set()
-        for item in manifest.inputs:
+        for item in frame_inputs:
             if item.media_type not in {"image/png", "image/tiff", "image/jpeg"}:
                 raise KrakenBridgeError(f"Unsupported NeuralImage input media type: {item.media_type}")
             path = _contained_file(root, item.relative_path)
@@ -297,9 +320,12 @@ class NeuralImageKrakenSession:
         output_directory = output_directory.resolve(strict=True)
         if output_directory.parent != root or not output_directory.is_dir():
             raise KrakenBridgeError("Kraken output directory escapes staging")
-        return cls(manifest, root, result_path, tuple(inputs), output_directory)
+        return cls(manifest, root, result_path, frame_inputs, tuple(inputs), output_directory)
 
-    def write_result(self, result: PluginResultManifest) -> PluginResultManifest:
+    def write_result(
+        self,
+        result: PluginResultManifest | PluginResultPublicationV2,
+    ) -> PluginResultManifest | PluginResultPublicationV2:
         if result.job_id != self.manifest.job_id:
             raise KrakenBridgeError("Refusing to write a result for another Kraken job")
         if self.result_manifest_path.exists() or self.result_manifest_path.is_symlink():
@@ -307,8 +333,23 @@ class NeuralImageKrakenSession:
         _atomic_text(self.result_manifest_path, result.to_json())
         return result
 
-    def failed_result(self, error: Exception | str) -> PluginResultManifest:
+    def failed_result(
+        self,
+        error: Exception | str,
+    ) -> PluginResultManifest | PluginResultPublicationV2:
         message = str(error).strip() or type(error).__name__
+        if isinstance(self.manifest, PluginJobManifestV2):
+            return PluginResultPublicationV2(
+                job_id=self.manifest.job_id,
+                publication_id=str(uuid4()),
+                sequence=1,
+                plugin_id="neuralimage",
+                plugin_version=APP_VERSION,
+                outputs=(),
+                outcome=PluginJobOutcome.FAILED.value,
+                report={"errors": [message[:10_000]]},
+                final=True,
+            )
         return PluginResultManifest(
             job_id=self.manifest.job_id,
             outcome=PluginJobOutcome.FAILED.value,
@@ -317,20 +358,57 @@ class NeuralImageKrakenSession:
             errors=(message[:10_000],),
         )
 
-    def run_headless(self) -> PluginResultManifest:
+    def run_headless(
+        self,
+    ) -> PluginResultManifest | PluginResultPublicationV2:
         try:
             options = HeadlessOptions.from_session(self)
             outputs, applied_threshold = _run_recognition(self, options)
             provenance = options.provenance()
             provenance["applied_threshold"] = applied_threshold
-            result = PluginResultManifest(
-                job_id=self.manifest.job_id,
-                outcome=PluginJobOutcome.SUCCEEDED.value,
-                plugin_id="neuralimage",
-                plugin_version=APP_VERSION,
-                outputs=tuple(outputs),
-                applied_parameters=provenance,
-            )
+            if isinstance(self.manifest, PluginJobManifestV2):
+                by_frame = {
+                    str(item.frame_id): item
+                    for item in self.frame_inputs
+                    if isinstance(item, PluginAsset) and item.frame_id is not None
+                }
+                result = PluginResultPublicationV2(
+                    job_id=self.manifest.job_id,
+                    publication_id=str(uuid4()),
+                    sequence=1,
+                    plugin_id="neuralimage",
+                    plugin_version=APP_VERSION,
+                    outputs=tuple(
+                        PluginAsset(
+                            asset_id=output.output_id,
+                            role="binary",
+                            scope=PluginAssetScope.FRAME,
+                            relative_path=output.relative_path,
+                            sha256=output.sha256,
+                            media_type=output.media_type,
+                            frame_id=output.frame_id,
+                            representation_id=(
+                                self.manifest.target_representation_ids[0]
+                                if self.manifest.target_representation_ids
+                                else None
+                            ),
+                            x=by_frame[output.frame_id].x,
+                            y=by_frame[output.frame_id].y,
+                        )
+                        for output in outputs
+                    ),
+                    applied_parameters=provenance,
+                    final=True,
+                )
+            else:
+                result = PluginResultManifest(
+                    job_id=self.manifest.job_id,
+                    outcome=PluginJobOutcome.SUCCEEDED.value,
+                    plugin_id="neuralimage",
+                    plugin_version=APP_VERSION,
+                    outputs=tuple(outputs),
+                    applied_parameters=provenance,
+                )
         except Exception as exc:
             result = self.failed_result(exc)
         return self.write_result(result)
@@ -404,14 +482,25 @@ def _run_recognition(
     recognizer.run(multithreading=False)
 
     outputs: list[PluginFrameOutput] = []
-    for index, (frame, source) in enumerate(zip(session.manifest.inputs, session.input_paths, strict=True), start=1):
+    frame_positions = dict(session.manifest.parameters.get("frame_positions", {}))
+    for index, (frame, source) in enumerate(zip(session.frame_inputs, session.input_paths, strict=True), start=1):
         native = completed.get(source.resolve(strict=True))
         if native is None:
             raise KrakenBridgeError(f"Inference did not produce a result for frame {frame.frame_id}")
         if native_directory not in native.parents:
             raise KrakenBridgeError("Inference returned an output outside its staging directory")
         _validate_binary_png(native)
-        destination = session.output_directory / f"{index:06d}_{frame.x}_{frame.y}.png"
+        try:
+            position = int(frame_positions.get(frame.frame_id, index - 1))
+        except (TypeError, ValueError):
+            position = index - 1
+        if position < 0:
+            raise KrakenBridgeError(
+                f"Frame {frame.frame_id} has an invalid negative filename position"
+            )
+        destination = session.output_directory / (
+            f"{index:06d}_{frame.x}_{frame.y}_{position}.png"
+        )
         _atomic_copy(native, destination)
         _validate_binary_png(destination)
         outputs.append(
@@ -426,6 +515,110 @@ def _run_recognition(
         )
     applied_threshold = getattr(recognizer, "_resolved_output_threshold", options.threshold)
     return outputs, None if applied_threshold is None else float(applied_threshold)
+
+
+@dataclass(frozen=True, slots=True)
+class NeuralImageWorkspaceSession:
+    context: WorkspacePluginContextV1
+    images_directory: Path
+    cif_directory: Path
+    output_directory: Path
+    result_manifest_path: Path
+
+    @classmethod
+    def load(
+        cls, context_path: str | os.PathLike[str]
+    ) -> "NeuralImageWorkspaceSession":
+        raw = Path(context_path)
+        if raw.is_symlink():
+            raise KrakenBridgeError("Workspace context must not be a symbolic link")
+        try:
+            context = WorkspacePluginContextV1.read(raw.resolve(strict=True))
+            images = Path(context.input_directories["images"]).resolve(strict=True)
+            cif = Path(context.input_directories["cif"]).resolve(strict=True)
+            output = Path(context.proposed_output_directory).resolve(strict=True)
+        except (KeyError, OSError, UnicodeError, ValueError) as exc:
+            raise KrakenBridgeError(f"Invalid NeuralImage workspace context: {exc}") from exc
+        if context.plugin_id != "neuralimage":
+            raise KrakenBridgeError("Workspace context is not intended for NeuralImage")
+        if context.operation != PluginOperation.TRAIN_MODEL.value:
+            raise KrakenBridgeError(
+                f"Interactive NeuralImage does not support {context.operation!r}"
+            )
+        if not images.is_dir() or not cif.is_dir() or not output.is_dir():
+            raise KrakenBridgeError("NeuralImage workspace directories are unavailable")
+        result_path = Path(context.result_manifest_path).resolve(strict=False)
+        if result_path.exists() or result_path.is_symlink():
+            raise KrakenBridgeError("Workspace result manifest already exists")
+        return cls(context, images, cif, output, result_path)
+
+    def attach(self, controller: object) -> None:
+        from PyQt6.QtGui import QAction, QKeySequence
+        from PyQt6.QtWidgets import QMainWindow, QMessageBox
+
+        presenter = getattr(controller, "main_window_presenter", None)
+        window = getattr(presenter, "view", None)
+        state = getattr(presenter, "main_window_state", None)
+        if not isinstance(window, QMainWindow) or state is None:
+            raise KrakenBridgeError(
+                "NeuralImage workspace mode requires the full desktop presenter"
+            )
+        window.set_jpg_path(str(self.images_directory))
+        window.set_label_path(str(self.cif_directory))
+        window.set_result_path(str(self.output_directory))
+        state.sample_folder = str(self.images_directory)
+        state.label_folder = str(self.cif_directory)
+        state.result_folder = str(self.output_directory)
+        menu = window.menuBar().addMenu("Kraken")
+        action = QAction("Вернуть результаты в Kraken", window)
+        action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
+
+        def return_results() -> None:
+            try:
+                selected_text = str(window.lbl_result.text()).strip()
+                selected = Path(selected_text).expanduser()
+                if not selected.is_absolute() or selected.is_symlink():
+                    raise KrakenBridgeError(
+                        "Папка результата должна быть абсолютным обычным каталогом"
+                    )
+                selected = selected.resolve(strict=True)
+                outputs = tuple(
+                    path
+                    for path in selected.rglob("*")
+                    if path.is_file() and not path.is_symlink()
+                )
+                if not outputs:
+                    raise KrakenBridgeError(
+                        "В папке результата нет модели, checkpoint или отчёта"
+                    )
+                WorkspacePluginResultV1(
+                    run_id=self.context.run_id,
+                    plugin_id="neuralimage",
+                    operation=self.context.operation,
+                    outcome=PluginJobOutcome.SUCCEEDED.value,
+                    output_directory=str(selected),
+                    provenance={
+                        "plugin_version": APP_VERSION,
+                        "file_count": len(outputs),
+                    },
+                ).write(self.result_manifest_path)
+            except Exception as exc:
+                QMessageBox.critical(
+                    window,
+                    "Kraken",
+                    f"Не удалось вернуть результат:\n{exc}",
+                )
+                return
+            QMessageBox.information(
+                window,
+                "Kraken",
+                "Модель и отчёты переданы Kraken. NeuralImage можно закрыть.",
+            )
+            window.close()
+
+        action.triggered.connect(return_results)
+        menu.addAction(action)
+        setattr(window, "_kraken_return_action", action)
 
 
 def load_session_from_values(
@@ -457,5 +650,6 @@ __all__ = [
     "HeadlessOptions",
     "KrakenBridgeError",
     "NeuralImageKrakenSession",
+    "NeuralImageWorkspaceSession",
     "load_session_from_values",
 ]

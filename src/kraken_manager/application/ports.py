@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import ContextManager, Protocol, Self, runtime_checkable
 
 from kraken_manager.application.dto import StorageBackendKind, StorageScope, StoredContent
-from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, BlobRef
+from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, BlobRef, NoteRevision
 from kraken_manager.domain.common import (
     ArtifactSeriesId,
     ArtifactVersionId,
@@ -175,11 +175,19 @@ class ProjectionStore(Protocol):
         self, series_id: ArtifactSeriesId, *, as_of: datetime | None = None
     ) -> ArtifactVersion | None: ...
 
+    def list_artifact_versions(
+        self, series_id: ArtifactSeriesId, *, as_of: datetime | None = None
+    ) -> tuple[ArtifactVersion, ...]: ...
+
     def save_artifact_version(self, version: ArtifactVersion, *, activate: bool) -> None: ...
 
     def save_plugin_job(self, job: PluginJob) -> None: ...
 
     def get_plugin_job(self, job_id: PluginJobId, *, as_of: datetime | None = None) -> PluginJob | None: ...
+
+    def list_plugin_jobs(
+        self, project_id: ProjectId, *, as_of: datetime | None = None
+    ) -> tuple[PluginJob, ...]: ...
 
     def get_review_batch(
         self, batch_id: ReviewBatchId, *, as_of: datetime | None = None
@@ -194,6 +202,29 @@ class ProjectionStore(Protocol):
         *,
         as_of: datetime | None = None,
     ) -> tuple[ReviewBatch, ...]: ...
+
+    def list_review_batches(
+        self,
+        project_id: ProjectId,
+        *,
+        layer_id: LayerId | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[ReviewBatch, ...]: ...
+
+    def get_note(
+        self, note_id: str, *, as_of: datetime | None = None
+    ) -> NoteRevision | None: ...
+
+    def list_notes(
+        self,
+        project_id: ProjectId,
+        *,
+        layer_id: LayerId | None = None,
+        frame_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[NoteRevision, ...]: ...
+
+    def save_note(self, note: NoteRevision) -> None: ...
 
 
 @runtime_checkable
@@ -215,6 +246,8 @@ class IdentityStore(Protocol):
     def get(self, principal_id: PrincipalId) -> Principal | None: ...
 
     def get_by_external_key(self, external_key: str) -> Principal | None: ...
+
+    def list(self, *, include_inactive: bool = False) -> tuple[Principal, ...]: ...
 
     def save(self, principal: Principal) -> None: ...
 

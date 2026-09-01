@@ -1,0 +1,31 @@
+# Справочная конфигурация локального тестового сервера.
+#
+# Не записывайте пароль PostgreSQL в этот файл. Выполните:
+#   KrakenAdmin init
+# Команда создаст рабочую конфигурацию и защищённый database-url.secret.
+
+[server]
+# Принимать подключения только на этом компьютере. Адрес Desktop: http://127.0.0.1:8080.
+host = "127.0.0.1"
+port = 8080
+
+# Каждое изменение проверяется по ролям проекта Kraken.
+project_access_mode = "acl"
+
+[database]
+# Защищённые на уровне компьютера данные подключения, созданные KrakenAdmin.
+url_secret = "database-url.secret"
+
+[storage]
+# Неизменяемые файлы Kraken Server. Desktop не открывает этот каталог напрямую.
+blob_root = "blobs"
+
+[blob_gateway]
+# Rust-шлюз принимает гигабайтные файлы напрямую, не пропуская их через Python API.
+enabled = true
+public_url = "http://127.0.0.1:8081"
+bind = "127.0.0.1:8081"
+executable = "KrakenBlobGateway.exe"
+# Создаётся KrakenAdmin и защищается DPAPI так же, как секрет подключения к БД.
+secret = "blob-gateway.secret"
+ticket_lifetime_seconds = 900

@@ -10,7 +10,13 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
-from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, BlobRef
+from kraken_manager.domain.artifacts import (
+    ArtifactSeries,
+    ArtifactVersion,
+    BlobRef,
+    ExternalReference,
+    NoteRevision,
+)
 from kraken_manager.domain.common import ArtifactSeriesId, ArtifactVersionId, FrameId, LayerId, PerformerId, PluginJobId, PrincipalId, ProjectId, RepresentationId, ReviewBatchId
 from kraken_manager.domain.events import EventEnvelope
 from kraken_manager.domain.project import (
@@ -21,6 +27,7 @@ from kraken_manager.domain.project import (
     ProjectState,
     Representation,
     RepresentationKind,
+    RepresentationPurpose,
     StructureState,
 )
 from kraken_manager.domain.artifacts import ArtifactScope
@@ -173,7 +180,7 @@ class ProjectionRebuilder:
             if project is not None:
                 self._save("project", replace(project, revision=event.revision), event)
             return True
-        if event.event_type in {"LayerRenamed", "LayerReordered", "LayerArchived"}:
+        if event.event_type in {"LayerRenamed", "LayerReordered", "LayersReordered", "LayerArchived"}:
             raw = payload.get("layer")
             if not isinstance(raw, Mapping):
                 raise ValueError("Layer lifecycle event has no aggregate snapshot")
@@ -196,6 +203,9 @@ class ProjectionRebuilder:
                 layer_id=LayerId(str(payload["layer_id"])),
                 name=str(payload["name"]),
                 kind=RepresentationKind(str(payload["kind"])),
+                purpose=RepresentationPurpose(
+                    str(payload.get("purpose", "vector" if str(payload["kind"]) == "vector" else "source"))
+                ),
                 note=str(payload.get("note", "")),
                 source=None if payload.get("source") is None else str(payload["source"]),
                 source_image_representation_id=(
@@ -221,6 +231,7 @@ class ProjectionRebuilder:
             "RepresentationRenamed",
             "RepresentationNoteUpdated",
             "RepresentationActivated",
+            "RepresentationDeactivated",
             "RepresentationArchived",
         }:
             raw = payload.get("representation")
@@ -234,6 +245,9 @@ class ProjectionRebuilder:
                     layer_id=LayerId(str(item["layer_id"])),
                     name=str(item["name"]),
                     kind=RepresentationKind(str(item["kind"])),
+                    purpose=RepresentationPurpose(
+                        str(item.get("purpose", "vector" if str(item["kind"]) == "vector" else "source"))
+                    ),
                     note=str(item.get("note", "")),
                     source=None if item.get("source") is None else str(item["source"]),
                     source_image_representation_id=(
@@ -271,6 +285,20 @@ class ProjectionRebuilder:
             )
             self._save("artifact_series", series, event)
             return True
+        if event.event_type in {"ArtifactSeriesRenamed", "ArtifactSeriesArchived"}:
+            series = self.store.get_artifact_series(
+                ArtifactSeriesId(str(payload["artifact_series_id"]))
+            )
+            if series is None:
+                raise ValueError("Artifact series lifecycle event references an unknown series")
+            changed = replace(
+                series,
+                name=str(payload.get("name", series.name)),
+                archived=bool(payload.get("archived", series.archived)),
+                revision=int(payload.get("series_revision", series.revision + 1)),
+            )
+            self._save("artifact_series", changed, event)
+            return True
         if event.event_type == "ArtifactVersionCreated":
             blob_payload = payload.get("blob")
             if not isinstance(blob_payload, Mapping):
@@ -294,6 +322,39 @@ class ProjectionRebuilder:
             )
             self._save("artifact_version", version, event, active=bool(payload.get("activated", False)))
             return True
+        if event.event_type == "ExternalArtifactVersionAdded":
+            external_payload = payload.get("external")
+            if not isinstance(external_payload, Mapping):
+                raise ValueError("External artifact event has no external reference")
+            reference = ExternalReference(
+                uri=str(external_payload["uri"]),
+                fingerprint_sha256=str(external_payload["fingerprint_sha256"]),
+                observed_size_bytes=int(external_payload["observed_size_bytes"]),
+            )
+            version = ArtifactVersion.external_link(
+                version_id=ArtifactVersionId(str(payload["artifact_version_id"])),
+                series_id=ArtifactSeriesId(str(payload["series_id"])),
+                reference=reference,
+                media_type=str(payload["media_type"]),
+                filename=str(payload["filename"]),
+                author_principal_id=PrincipalId(
+                    str(payload.get("author_principal_id", event.actor.principal_id))
+                ),
+                created_at=self._time(payload, "created_at", event.recorded_at),
+                parent_version_id=(
+                    None
+                    if payload.get("parent_version_id") is None
+                    else ArtifactVersionId(str(payload["parent_version_id"]))
+                ),
+                parameters=dict(payload.get("parameters", {})),
+            )
+            self._save(
+                "artifact_version",
+                version,
+                event,
+                active=bool(payload.get("activated", False)),
+            )
+            return True
         if event.event_type == "ArtifactVersionActivated":
             version = self.store.get_artifact_version(
                 ArtifactVersionId(str(payload["artifact_version_id"]))
@@ -302,6 +363,29 @@ class ProjectionRebuilder:
                 raise ValueError("Artifact activation references an unknown version")
             self._save("artifact_version", version, event, active=True)
             return True
+        if event.event_type in {"NoteCreated", "NoteRevised"}:
+            note = NoteRevision(
+                note_id=str(payload["note_id"]),
+                revision=int(payload["revision"]),
+                project_id=event.project_id,
+                author_principal_id=PrincipalId(
+                    str(payload.get("author_principal_id", event.actor.principal_id))
+                ),
+                body=str(payload["body"]),
+                recorded_at=self._time(payload, "recorded_at", event.recorded_at),
+                layer_id=(
+                    None
+                    if payload.get("layer_id") is None
+                    else LayerId(str(payload["layer_id"]))
+                ),
+                frame_id=(
+                    None
+                    if payload.get("frame_id") is None
+                    else FrameId(str(payload["frame_id"]))
+                ),
+            )
+            self._save("note", note, event)
+            return True
         if event.event_type in {
             "PluginJobCreated",
             "PluginResultAwaitingAuthorization",
@@ -309,6 +393,8 @@ class ProjectionRebuilder:
             "PluginResultImported",
             "PluginJobFailed",
             "PluginJobCancelled",
+            "PluginJobRetried",
+            "PluginJobSynchronized",
         }:
             raw_job = payload.get("job")
             if not isinstance(raw_job, Mapping):
@@ -379,8 +465,10 @@ class ProjectionRebuilder:
             return True
         if event.event_type in {
             "ReviewBatchIssued",
+            "ReviewBatchReexported",
             "ReviewReturnCommitted",
             "ReviewBatchAccepted",
+            "ReviewBatchCancelled",
             "ReviewChangesRequested",
         }:
             batch = self.store.get_review_batch(ReviewBatchId(str(payload["review_batch_id"])))

@@ -18,6 +18,8 @@ from kraken_manager.application import (
     CreateProjectHandler,
     CreateRepresentationCommand,
     CreateRepresentationHandler,
+    ReorderLayersCommand,
+    ReorderLayersHandler,
     ReturnedFileDigest,
     ReviewReturnComparator,
     StorageBackendKind,
@@ -42,7 +44,7 @@ from kraken_manager.domain import (
     ReviewPackageFileV1,
     ReviewPackageManifestV1,
 )
-from kraken_manager.domain.common import ArtifactSeriesId, ArtifactVersionId, RepresentationId
+from kraken_manager.domain.common import ArtifactVersionId
 
 
 NOW = datetime(2026, 4, 5, 8, tzinfo=timezone.utc)
@@ -254,16 +256,15 @@ def profile(scope: StorageScope, *, profile_id: str) -> StorageProfile:
 
 
 class AuthorizationPolicyTests(unittest.TestCase):
-    def test_local_account_is_hard_denied_shared_mutation_even_as_owner(self) -> None:
-        decision = AuthorizationPolicy().decide(
+    def test_local_account_uses_kraken_acl_for_shared_mutation(self) -> None:
+        decision = AuthorizationPolicy("acl").decide(
             principal=Principal.local(subject="alice", display_name="Alice"),
             storage=profile(StorageScope.SHARED, profile_id="shared"),
             permission=Permission.MANAGE_STRUCTURE,
             roles={ProjectRole.OWNER},
         )
 
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.code, "local_shared_mutation_denied")
+        self.assertTrue(decision.allowed)
 
     def test_authenticated_read_is_global_but_gitlab_shared_write_needs_live_check(self) -> None:
         principal = Principal.gitlab(
@@ -291,6 +292,57 @@ class AuthorizationPolicyTests(unittest.TestCase):
 
 
 class CommandHandlerTests(unittest.TestCase):
+    def test_complete_layer_order_is_atomic_and_checks_every_revision(self) -> None:
+        actor = Principal.local(subject="alice", display_name="Alice")
+        local = profile(StorageScope.LOCAL, profile_id="local")
+        profiles = FakeProfiles(local)
+        factory = FakeUowFactory()
+        common = (factory, profiles, FakeClock())
+        project = CreateProjectHandler(*common)(
+            CreateProjectCommand(
+                context=CommandContext(actor=actor, idempotency_key="project"),
+                name="Chip",
+                width=2,
+                height=2,
+                orientation=GridOrientation.Y_DOWN,
+                storage_profile_id="local",
+                project_id=ProjectId(str(uuid4())),
+            )
+        )
+        first = CreateLayerHandler(*common)(
+            CreateLayerCommand(
+                context=CommandContext(actor=actor, idempotency_key="layer-1"),
+                project_id=project.id,
+                name="One",
+                type=LayerType.METAL,
+                order=0,
+                expected_project_revision=project.revision,
+            )
+        )
+        project = factory.uow.projections.get_project(project.id)
+        second = CreateLayerHandler(*common)(
+            CreateLayerCommand(
+                context=CommandContext(actor=actor, idempotency_key="layer-2"),
+                project_id=project.id,
+                name="Two",
+                type=LayerType.GATE,
+                order=1,
+                expected_project_revision=project.revision,
+            )
+        )
+        reordered = ReorderLayersHandler(*common)(
+            ReorderLayersCommand(
+                context=CommandContext(actor=actor, idempotency_key="reorder-all"),
+                project_id=project.id,
+                layer_ids=(second.id, first.id),
+                expected_revisions=((first.id, first.revision), (second.id, second.revision)),
+            )
+        )
+
+        self.assertEqual([item.id for item in reordered], [second.id, first.id])
+        self.assertEqual([item.order for item in reordered], [0, 1])
+        self.assertEqual(factory.uow.commits, 4)
+
     def test_local_vertical_slice_creates_structure_and_immutable_artifact(self) -> None:
         actor = Principal.local(subject="alice", display_name="Alice")
         local = profile(StorageScope.LOCAL, profile_id="local")
@@ -356,6 +408,27 @@ class CommandHandlerTests(unittest.TestCase):
 
         self.assertEqual(version.sha256, hashlib.sha256(content).hexdigest())
         self.assertEqual(factory.uow.projections.get_active_artifact_version(series.id), version)
+
+        direct_content = b"stored by rust gateway"
+        direct_digest = hashlib.sha256(direct_content).hexdigest()
+        factory.uow.blobs.values[direct_digest] = direct_content
+        direct_command = AddArtifactVersionCommand(
+            context=CommandContext(actor=actor, idempotency_key="add-direct-version"),
+            project_id=project.id,
+            series_id=series.id,
+            filename="1_1-direct.cif",
+            media_type="application/x-cif",
+            expected_series_revision=1,
+            expected_sha256=direct_digest,
+        )
+        handler = AddArtifactVersionHandler(*common)
+        self.assertIsNone(handler.preflight(direct_command))
+        direct = handler(
+            direct_command,
+            stored=StoredContent(BlobRef(direct_digest, len(direct_content)), already_existed=True),
+        )
+        self.assertEqual(direct.sha256, direct_digest)
+        self.assertEqual(factory.uow.projections.get_active_artifact_version(series.id), direct)
 
 
 class ReviewComparatorTests(unittest.TestCase):

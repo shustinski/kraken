@@ -89,6 +89,14 @@ class LocalIdentityAclStore:
             ).fetchone()
         return None if row is None else self._principal(row)
 
+    def list(self, *, include_inactive: bool = False) -> tuple[Principal, ...]:
+        clause = "" if include_inactive else "WHERE active = 1"
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM principals {clause} ORDER BY display_name COLLATE NOCASE, principal_id"
+            ).fetchall()
+        return tuple(self._principal(row) for row in rows)
+
     def save(self, principal: Principal) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -150,6 +158,15 @@ class LocalIdentityAclStore:
             connection.execute(
                 "UPDATE project_acl SET revoked_at=? WHERE project_id=? AND principal_id=? AND role=? AND revoked_at IS NULL",
                 (datetime.now(UTC).isoformat(), str(project_id), str(principal_id), role.value),
+            )
+
+    def remove_project(self, project_id: ProjectId) -> None:
+        """Remove orphaned ACL rows after a local project is permanently deleted."""
+
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM project_acl WHERE project_id=?",
+                (str(project_id),),
             )
 
 

@@ -46,11 +46,13 @@ from ..updater import (
     save_karakal_update_channel,
 )
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
+from ..core.domain import BuildResult
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
 from ..core.domain import BuildResult
 from ..core.performance import PerformanceConfig
 from ..ui.app_icon import apply_karakal_icon
 from ..version import __version__
+from ..ui.app_icon import apply_karakal_icon
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
@@ -433,6 +435,8 @@ class _CorrelationColumnWidget(QFrame):
 class KarakalWidget(QWidget):
 
     """Embeddable widget for multi-model segmentation quality evaluation."""
+
+    qualityPublicationRequested = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None, *, settings: QSettings | None = None) -> None:
         super().__init__(parent)
@@ -867,12 +871,153 @@ class KarakalWidget(QWidget):
         top_corner_layout = QHBoxLayout(self._top_corner_widget)
         top_corner_layout.setContentsMargins(0, 0, 0, 0)
         top_corner_layout.setSpacing(4)
+        self.kraken_publish_button = QPushButton("Отправить в Kraken", self._top_corner_widget)
+        self.kraken_publish_button.setObjectName("sendQualityToKrakenButton")
+        self.kraken_publish_button.setEnabled(False)
+        self.kraken_publish_button.setToolTip("Доступно в управляемом запуске из Kraken")
+        self.kraken_publish_button.clicked.connect(self._publish_quality_to_kraken)
+        top_corner_layout.addWidget(self.kraken_publish_button)
         top_corner_layout.addWidget(self.mode_toggle_button)
         top_corner_layout.addWidget(self.update_tool_button)
         top_corner_layout.addWidget(self.language_toggle_button)
         self._update_language_toggle_button()
         self._rebuild_mode_menu()
         self._update_mode_toggle_button()
+
+    def set_kraken_publish_available(self, available: bool) -> None:
+        self.kraken_publish_button.setEnabled(bool(available))
+        self.kraken_publish_button.setToolTip(
+            "Опубликовать текущую матрицу качества, не закрывая Karakal"
+            if available else "Доступно в управляемом запуске из Kraken"
+        )
+
+    def _publish_quality_to_kraken(self) -> None:
+        state = self._presenter._current_tab_state()
+        if state is None or state.build_result is None:
+            return
+        result = state.build_result
+        metric = str(result.selected_metric_key or "overall_frame_score")
+        frames = []
+        for record in result.records:
+            value = None
+            if record.summary is not None:
+                value = record.summary.metric_values.get(metric)
+            if value is None and record.score_ready:
+                value = record.score
+            if value is None:
+                continue
+            frames.append(
+                {
+                    "frame_key": record.key,
+                    "confidence": max(0.0, min(1.0, float(value))),
+                }
+            )
+        self.qualityPublicationRequested.emit(
+            {
+                "metric": metric,
+                "frames": frames,
+                "parameters": {
+                    "geometry_mode": result.options.geometry_mode.value,
+                    "comparison_mode": result.options.comparison_mode.value,
+                },
+            }
+        )
+
+    def _build_management_mode_controls_panel(self, parent: QWidget) -> QWidget:
+        controls_host = QWidget(parent)
+        controls_layout = QVBoxLayout(controls_host)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+
+        self.management_scenario_combo = _NoWheelComboBox(controls_host)
+        self._populate_management_scenario_combo("primary_labeling_selection")
+        self.management_target_ratio_spin = _NoWheelDoubleSpinBox(controls_host)
+        self.management_target_ratio_spin.setRange(5.0, 25.0)
+        self.management_target_ratio_spin.setSingleStep(1.0)
+        self.management_target_ratio_spin.setDecimals(0)
+        self.management_target_ratio_spin.setSuffix("%")
+        self.management_target_ratio_spin.setValue(10.0)
+        self.management_diversity_check = QCheckBox(self._t("management.primary.diversity"), controls_host)
+        self.management_diversity_check.setChecked(True)
+
+        self._management_highlight_mode_row = self._build_setting_row(self._t("management.highlight_mode"), self.management_scenario_combo, compact=True)
+        self._management_target_ratio_row = self._build_setting_row(self._t("management.primary.target_ratio"), self.management_target_ratio_spin, compact=True)
+        self._management_diversity_row = self._build_setting_row(self._t("management.primary.enable_diversity_filter"), self.management_diversity_check, compact=True)
+        controls_layout.addWidget(self._management_highlight_mode_row)
+        controls_layout.addWidget(self._management_target_ratio_row)
+        controls_layout.addWidget(self._management_diversity_row)
+
+        self.management_assignee_colors_button = QPushButton(self._t("management.button.assignee_colors"), controls_host)
+        controls_layout.addWidget(self.management_assignee_colors_button)
+        controls_layout.addStretch(1)
+        return controls_host
+
+    def _build_management_mode_panel(self, parent: QWidget) -> QWidget:
+        host = QWidget(parent)
+        root_layout = QVBoxLayout(host)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(6)
+
+        self.management_main_splitter = QSplitter(Qt.Orientation.Horizontal, host)
+        root_layout.addWidget(self.management_main_splitter, stretch=1)
+        matrix_host = QWidget(self.management_main_splitter)
+        matrix_layout = QVBoxLayout(matrix_host)
+        matrix_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_layout.setSpacing(6)
+        matrix_header = QWidget(matrix_host)
+        matrix_header_layout = QHBoxLayout(matrix_header)
+        matrix_header_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_header_layout.setSpacing(8)
+        matrix_title_host = QWidget(matrix_header)
+        matrix_title_layout = QVBoxLayout(matrix_title_host)
+        matrix_title_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_title_layout.setSpacing(2)
+        self.management_matrix_title = QLabel(self._t("management.matrix.title"), matrix_title_host)
+        self.management_matrix_legend = QLabel(self._t("management.matrix.legend"), matrix_title_host)
+        self.management_matrix_legend.setWordWrap(True)
+        matrix_title_layout.addWidget(self.management_matrix_title)
+        matrix_title_layout.addWidget(self.management_matrix_legend)
+        matrix_header_layout.addWidget(matrix_title_host, stretch=1)
+        matrix_layout.addWidget(matrix_header)
+
+        matrix_row = QWidget(matrix_host)
+        matrix_row_layout = QHBoxLayout(matrix_row)
+        matrix_row_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_row_layout.setSpacing(8)
+
+        self.management_matrix_view = MatrixListWidget(matrix_row)
+        self.management_matrix_view.set_management_visual_mode(True)
+        matrix_row_layout.addWidget(self.management_matrix_view, stretch=1)
+
+        management_overview = QWidget(matrix_row)
+        management_overview_layout = QVBoxLayout(management_overview)
+        management_overview_layout.setContentsMargins(0, 0, 0, 0)
+        management_overview_layout.setSpacing(6)
+        self.management_matrix_minimap = MatrixMiniMapWidget(management_overview)
+        self.management_matrix_minimap.setMinimumHeight(150)
+        self.management_matrix_minimap.setMaximumHeight(220)
+        management_overview_layout.addWidget(self.management_matrix_minimap)
+        management_overview.setMinimumWidth(240)
+        management_overview.setMaximumWidth(240)
+        management_overview.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        matrix_row_layout.addWidget(management_overview)
+
+        matrix_layout.addWidget(matrix_row, stretch=1)
+
+        self.management_matrix_view.overviewChanged.connect(
+            lambda image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position: self.management_matrix_minimap.set_overview(
+                image,
+                visible_rect,
+                selected_position,
+                selected_blink_on,
+                processing_positions,
+                reference_position,
+            )
+        )
+        self.management_main_splitter.setStretchFactor(0, 4)
+        self.management_main_splitter.setStretchFactor(1, 1)
+        self.management_main_splitter.setSizes([1700, 300])
+        return host
 
     def _build_grid_inspection_mode_panel(self, parent: QWidget) -> QWidget:
         host = QWidget(parent)
@@ -1008,8 +1153,31 @@ class KarakalWidget(QWidget):
             self.left_mode_stack.setCurrentIndex(0)
         if hasattr(self, "_analysis_task_group"):
             self._analysis_task_group.setVisible(not is_grid_inspection)
+
         if hasattr(self, "_mode_menu"):
             self._update_mode_toggle_button()
+
+    def _rebuild_mode_menu(self) -> None:
+        self._mode_menu.clear()
+        current = str(self.app_mode_combo.currentData() or "validation")
+        for index in range(self.app_mode_combo.count()):
+            action = self._mode_menu.addAction(self.app_mode_combo.itemText(index))
+            action.setData(str(self.app_mode_combo.itemData(index)))
+            action.setCheckable(True)
+            action.setChecked(str(action.data()) == current)
+
+    def _update_mode_toggle_button(self) -> None:
+        current = self.app_mode_combo.currentText().strip()
+        self.mode_toggle_button.setText(current or "⋯")
+        self.mode_toggle_button.setToolTip(self._t("management.current_mode"))
+
+    def _on_mode_menu_triggered(self, action) -> None:
+        index = self.app_mode_combo.findData(str(action.data() or "validation"))
+        if index >= 0:
+            self.app_mode_combo.setCurrentIndex(index)
+        self._rebuild_mode_menu()
+        self._update_mode_toggle_button()
+
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()

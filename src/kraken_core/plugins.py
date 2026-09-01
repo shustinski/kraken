@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -180,6 +181,12 @@ def load_plugin_metadata_from_directory(plugin_root: Path) -> PluginMetadata | N
     if isinstance(version, str) and version:
         payload.setdefault("version", version)
     payload["source_dir"] = str(plugin_root)
+    raw_executables = payload.get("executables")
+    if isinstance(raw_executables, dict):
+        payload["executables"] = _resolve_executable_paths(
+            raw_executables,
+            base_directory=plugin_root,
+        )
 
     plugin = parse_plugin_metadata(payload)
     if plugin.version_history:
@@ -249,6 +256,11 @@ def build_plugin_inventory(plugins: list[PluginMetadata]) -> list[PluginInventor
 
 
 def is_plugin_installed(plugin: PluginMetadata) -> bool:
+    executable = plugin.executable_for()
+    if executable.path:
+        candidate = Path(executable.path).expanduser()
+        if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+            return True
     candidates = {plugin.id, normalize_distribution_name(plugin.id), normalize_distribution_name(plugin.display_name)}
     for candidate in candidates:
         if not candidate:
@@ -259,6 +271,82 @@ def is_plugin_installed(plugin: PluginMetadata) -> bool:
             continue
         return True
     return False
+
+
+def _resolve_executable_paths(
+    executables: dict[str, Any],
+    *,
+    base_directory: Path,
+) -> dict[str, Any]:
+    resolved: dict[str, Any] = {}
+    for platform, raw_value in executables.items():
+        if not isinstance(raw_value, dict):
+            resolved[str(platform)] = raw_value
+            continue
+        entry = dict(raw_value)
+        raw_path = str(entry.get("path", "") or "").strip()
+        if raw_path:
+            candidate = Path(raw_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = base_directory / candidate
+            entry["path"] = str(candidate.resolve(strict=False))
+        resolved[str(platform)] = entry
+    return resolved
+
+
+def scan_windows_plugin_registry() -> list[PluginMetadata]:
+    """Read standalone plugin registrations written by Windows installers."""
+
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    registrations: dict[str, PluginMetadata] = {}
+    registry_path = r"Software\Kraken\Plugins"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            root = winreg.OpenKey(hive, registry_path)
+        except OSError:
+            continue
+        with root:
+            index = 0
+            while True:
+                try:
+                    plugin_id = winreg.EnumKey(root, index)
+                except OSError:
+                    break
+                index += 1
+                try:
+                    key = winreg.OpenKey(root, plugin_id)
+                except OSError:
+                    continue
+                with key:
+                    executable = _registry_text(winreg, key, "Executable")
+                    if not executable:
+                        continue
+                    payload = {
+                        "id": plugin_id,
+                        "display_name": _registry_text(winreg, key, "DisplayName") or plugin_id,
+                        "version": _registry_text(winreg, key, "Version") or "0.0.0",
+                        "protocol_version": (
+                            _registry_text(winreg, key, "ProtocolVersion")
+                            or PLUGIN_PROTOCOL_VERSION
+                        ),
+                        "executables": {"windows": {"path": executable}},
+                    }
+                    registrations[plugin_id] = parse_plugin_metadata(payload)
+    return sorted(registrations.values(), key=lambda item: item.display_name.casefold())
+
+
+def _registry_text(winreg: Any, key: Any, name: str) -> str:
+    try:
+        value, _kind = winreg.QueryValueEx(key, name)
+    except OSError:
+        return ""
+    return str(value or "").strip()
 
 
 def parse_version_history(payload: dict[str, Any]) -> tuple[PluginVersionEntry, ...]:

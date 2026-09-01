@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -13,9 +14,9 @@ from kraken_manager.domain.identity import (
     Principal,
     PrincipalProvider,
     ProjectRole,
+    SystemRole,
     permissions_for_roles,
 )
-
 
 _IMPLICIT_READ_PERMISSIONS = frozenset(
     {Permission.VIEW_PROJECT, Permission.VIEW_HISTORY, Permission.EXPORT_STATISTICS}
@@ -39,9 +40,18 @@ class AuthorizationPolicy:
     """Apply global visibility, storage-provider, live-identity, and ACL rules.
 
     GitLab supplies identity only. Project roles passed here must come from the
-    Kraken ``AclStore``. A local principal is hard-denied for every mutation of
-    a shared project even if a corrupted ACL grants it ``OWNER``.
+    Kraken ``AclStore``. In strict ``acl`` mode, server-local and GitLab
+    identities receive the same project-scoped permissions; GitLab identities
+    additionally require a live identity check before a mutation.
     """
+
+    def __init__(self, access_mode: str | None = None) -> None:
+        mode = (
+            access_mode or os.environ.get("KRAKEN_PROJECT_ACCESS_MODE", "acl")
+        ).strip().lower()
+        if mode not in {"acl", "trusted_network"}:
+            raise ValueError("KRAKEN_PROJECT_ACCESS_MODE must be 'acl' or 'trusted_network'")
+        self.access_mode = mode
 
     def decide(
         self,
@@ -54,15 +64,18 @@ class AuthorizationPolicy:
     ) -> AuthorizationDecision:
         if not principal.active:
             return AuthorizationDecision(False, "principal_inactive", "The account is inactive")
-        if permission in _IMPLICIT_READ_PERMISSIONS:
-            return AuthorizationDecision(True, "allowed", "Every authenticated account may read projects")
-        if storage.scope is StorageScope.SHARED:
-            if principal.provider is PrincipalProvider.LOCAL:
+        if storage.scope is StorageScope.SHARED and self.access_mode == "trusted_network":
+            if permission is Permission.MANAGE_ACL and SystemRole.SERVER_ADMIN not in principal.system_roles:
                 return AuthorizationDecision(
                     False,
-                    "local_shared_mutation_denied",
-                    "A local account cannot modify a shared project",
+                    "server_admin_required",
+                    "Only a Server Administrator may change project access",
                 )
+            return AuthorizationDecision(True, "allowed", "Trusted-network access is enabled")
+        if permission in _IMPLICIT_READ_PERMISSIONS:
+            return AuthorizationDecision(True, "allowed", "Every authenticated account may read projects")
+        if permission is Permission.MANAGE_ACL and SystemRole.SERVER_ADMIN in principal.system_roles:
+            return AuthorizationDecision(True, "allowed", "Server Administrator override")
         if principal.provider is PrincipalProvider.GITLAB and not gitlab_identity_verified:
             return AuthorizationDecision(
                 False,
@@ -106,13 +119,18 @@ class AuthorizationPolicy:
     ) -> AuthorizationDecision:
         if not principal.active:
             return AuthorizationDecision(False, "principal_inactive", "The account is inactive")
-        if storage.scope is StorageScope.SHARED:
-            if principal.provider is PrincipalProvider.LOCAL:
-                return AuthorizationDecision(
-                    False,
-                    "local_shared_mutation_denied",
-                    "A local account cannot create a shared project",
-                )
+        if storage.scope is StorageScope.SHARED and self.access_mode == "trusted_network":
+            return AuthorizationDecision(True, "allowed", "Trusted-network access is enabled")
+        if (
+            storage.scope is StorageScope.SHARED
+            and principal.provider is PrincipalProvider.LOCAL
+            and SystemRole.SERVER_ADMIN not in principal.system_roles
+        ):
+            return AuthorizationDecision(
+                False,
+                "server_admin_required",
+                "Only a Server Administrator may create a shared project with a local account",
+            )
         if principal.provider is PrincipalProvider.GITLAB and not gitlab_identity_verified:
             return AuthorizationDecision(
                 False,

@@ -24,15 +24,39 @@ class AuthorizationMatrixTests(unittest.TestCase):
         capabilities=StorageCapabilities(True, True, True, True, True, 1_000_000),
     )
 
-    def test_local_principal_is_hard_denied_on_shared_mutation(self) -> None:
-        decision = AuthorizationPolicy().decide(
+    def test_local_principal_uses_project_acl_on_shared_mutation(self) -> None:
+        allowed = AuthorizationPolicy("acl").decide(
             principal=Principal.local(subject="operator", display_name="Operator"),
             storage=self.SHARED,
             roles={ProjectRole.OWNER},
             permission=Permission.MANAGE_STRUCTURE,
         )
-        self.assertFalse(decision.allowed)
-        self.assertEqual("local_shared_mutation_denied", decision.code)
+        denied = AuthorizationPolicy("acl").decide(
+            principal=Principal.local(subject="viewer", display_name="Viewer"),
+            storage=self.SHARED,
+            roles={ProjectRole.VIEWER},
+            permission=Permission.MANAGE_STRUCTURE,
+        )
+        self.assertTrue(allowed.allowed)
+        self.assertFalse(denied.allowed)
+        self.assertEqual("project_permission_missing", denied.code)
+
+    def test_local_server_admin_can_create_shared_project_and_manage_acl(self) -> None:
+        principal = replace(
+            Principal.local(subject="admin", display_name="Admin"),
+            system_roles=frozenset({SystemRole.SERVER_ADMIN}),
+        )
+        policy = AuthorizationPolicy("acl")
+        self.assertTrue(
+            policy.decide_create_project(principal=principal, storage=self.SHARED).allowed
+        )
+        self.assertTrue(
+            policy.decide(
+                principal=principal,
+                storage=self.SHARED,
+                permission=Permission.MANAGE_ACL,
+            ).allowed
+        )
 
     def test_gitlab_mutation_requires_live_check_and_role(self) -> None:
         principal = Principal.gitlab(

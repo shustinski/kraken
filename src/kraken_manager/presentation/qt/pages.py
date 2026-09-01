@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .models import LayerListItem, LayerListModel, ProjectListItem, ProjectListModel
-from .widgets import FrameMatrixView, FrameMatrixWidget
+from .widgets import FrameMatrixMinimap, FrameMatrixView, FrameMatrixWidget
 
 
 class _TitledPage(QWidget):
@@ -51,6 +51,9 @@ class ProjectCatalogPage(_TitledPage):
     renameRequested = pyqtSignal(object)
     archiveRequested = pyqtSignal(object)
     restoreRequested = pyqtSignal(object)
+    deleteRequested = pyqtSignal(object)
+    participantsRequested = pyqtSignal(object)
+    propertiesRequested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -63,14 +66,24 @@ class ProjectCatalogPage(_TitledPage):
         self.create_button.setObjectName("primaryAction")
         self.refresh_button = QPushButton("Обновить")
         self.rename_button = QPushButton("Переименовать")
+        self.participants_button = QPushButton("Участники и роли")
+        self.properties_button = QPushButton("Свойства")
         self.archive_button = QPushButton("В архив")
         self.restore_button = QPushButton("Восстановить")
+        self.delete_button = QPushButton("Удалить")
+        self.delete_button.setObjectName("deleteProjectButton")
+        self.delete_button.setToolTip(
+            "Удалить проект из Kraken, сохранив папки исходных и производных данных"
+        )
         self.show_archived_check = QCheckBox("Показывать архивные")
         actions.addWidget(self.create_button)
         actions.addWidget(self.refresh_button)
         actions.addWidget(self.rename_button)
+        actions.addWidget(self.participants_button)
+        actions.addWidget(self.properties_button)
         actions.addWidget(self.archive_button)
         actions.addWidget(self.restore_button)
+        actions.addWidget(self.delete_button)
         actions.addWidget(self.show_archived_check)
         actions.addStretch(1)
         self.root_layout.addLayout(actions)
@@ -96,6 +109,13 @@ class ProjectCatalogPage(_TitledPage):
         self.rename_button.clicked.connect(lambda: self.renameRequested.emit(self.selected_project()))
         self.archive_button.clicked.connect(lambda: self.archiveRequested.emit(self.selected_project()))
         self.restore_button.clicked.connect(lambda: self.restoreRequested.emit(self.selected_project()))
+        self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self.selected_project()))
+        self.participants_button.clicked.connect(
+            lambda: self.participantsRequested.emit(self.selected_project())
+        )
+        self.properties_button.clicked.connect(
+            lambda: self.propertiesRequested.emit(self.selected_project())
+        )
         self.project_list.doubleClicked.connect(self._activate_index)
         self.project_list.selectionModel().currentChanged.connect(self._selection_changed)
         self.project_model.modelReset.connect(self._sync_empty_state)
@@ -115,6 +135,17 @@ class ProjectCatalogPage(_TitledPage):
     def selected_project(self) -> ProjectListItem | None:
         return self.project_model.item_for_index(self.project_list.currentIndex())
 
+    def set_project_permissions(self, permissions: frozenset[str]) -> None:
+        for button, permission in (
+            (self.rename_button, "rename_project"),
+            (self.participants_button, "manage_acl"),
+            (self.archive_button, "archive_project"),
+            (self.restore_button, "archive_project"),
+            (self.delete_button, "archive_project"),
+            (self.properties_button, "view_project"),
+        ):
+            button.setVisible(permission in permissions)
+
     def _activate_index(self, index: QModelIndex) -> None:
         item = self.project_model.item_for_index(index)
         if item is not None:
@@ -131,6 +162,9 @@ class ProjectCatalogPage(_TitledPage):
         self.rename_button.setEnabled(selected and not archived)
         self.archive_button.setEnabled(selected and not archived)
         self.restore_button.setEnabled(selected and archived)
+        self.delete_button.setEnabled(selected)
+        self.participants_button.setEnabled(selected)
+        self.properties_button.setEnabled(selected)
 
     def _sync_empty_state(self, *_args: object) -> None:
         empty = self.project_model.rowCount() == 0
@@ -148,6 +182,7 @@ class ProjectWorkspacePage(_TitledPage):
     imageRepresentationChanged = pyqtSignal(str)
     vectorRepresentationChanged = pyqtSignal(str)
     selectionCountChanged = pyqtSignal(int)
+    reviewRequested = pyqtSignal()
 
     def __init__(
         self,
@@ -159,59 +194,25 @@ class ProjectWorkspacePage(_TitledPage):
         self.title_label.hide()
         self.description_label.hide()
 
-        representation_row = QHBoxLayout()
-        representation_row.addWidget(QLabel("Изображения:"))
-        self.image_representation_combo = QComboBox()
+        self.image_representation_combo = QComboBox(self)
         self.image_representation_combo.setObjectName("imageRepresentationCombo")
-        representation_row.addWidget(self.image_representation_combo, 1)
-        self.add_image_representation_button = QPushButton("Добавить")
+        self.add_image_representation_button = QPushButton("Добавить", self)
         self.add_image_representation_button.setObjectName("addImageRepresentationButton")
-        representation_row.addWidget(self.add_image_representation_button)
-        representation_row.addWidget(QLabel("Векторы:"))
-        self.vector_representation_combo = QComboBox()
+        self.vector_representation_combo = QComboBox(self)
         self.vector_representation_combo.setObjectName("vectorRepresentationCombo")
-        representation_row.addWidget(self.vector_representation_combo, 1)
-        self.add_vector_representation_button = QPushButton("Добавить")
+        self.add_vector_representation_button = QPushButton("Добавить", self)
         self.add_vector_representation_button.setObjectName("addVectorRepresentationButton")
-        representation_row.addWidget(self.add_vector_representation_button)
-        self.root_layout.addLayout(representation_row)
+        # Compatibility controls remain alive for older automation, but
+        # representation selection now lives in the modeless layer manager.
+        for compatibility_control in (
+            self.image_representation_combo,
+            self.add_image_representation_button,
+            self.vector_representation_combo,
+            self.add_vector_representation_button,
+        ):
+            compatibility_control.hide()
 
         self.layer_model = layer_model or LayerListModel(parent=self)
-        matrix_toolbar = QHBoxLayout()
-        matrix_toolbar.setContentsMargins(0, 0, 0, 0)
-        self.zoom_out_button = QPushButton("−")
-        self.zoom_out_button.setObjectName("matrixZoomOutButton")
-        self.zoom_out_button.setToolTip("Уменьшить")
-        self.zoom_in_button = QPushButton("+")
-        self.zoom_in_button.setObjectName("matrixZoomInButton")
-        self.zoom_in_button.setToolTip("Увеличить")
-        self.zoom_fit_button = QPushButton("Вписать")
-        self.zoom_fit_button.setObjectName("matrixZoomFitButton")
-        self.zoom_reset_button = QPushButton("1:1")
-        self.zoom_reset_button.setObjectName("matrixZoomResetButton")
-        self.matrix_lod_label = QLabel("LOD: cells")
-        self.matrix_lod_label.setObjectName("matrixLodLabel")
-        self.minimap_checkbox = QCheckBox("Мини-карта")
-        self.minimap_checkbox.setObjectName("matrixMinimapCheck")
-        self.minimap_checkbox.setChecked(True)
-        self.clear_thumbnail_cache_button = QPushButton("Очистить миниатюры")
-        self.clear_thumbnail_cache_button.setObjectName("clearThumbnailCacheButton")
-        self.matrix_loading_label = QLabel("")
-        self.matrix_loading_label.setObjectName("matrixLoadingLabel")
-        for control in (
-            self.zoom_out_button,
-            self.zoom_in_button,
-            self.zoom_fit_button,
-            self.zoom_reset_button,
-            self.matrix_lod_label,
-            self.minimap_checkbox,
-            self.clear_thumbnail_cache_button,
-        ):
-            matrix_toolbar.addWidget(control)
-        matrix_toolbar.addStretch(1)
-        matrix_toolbar.addWidget(self.matrix_loading_label)
-        self.root_layout.addLayout(matrix_toolbar)
-
         self.matrix_view = matrix_view or FrameMatrixWidget()
         self.matrix_view.setMinimumSize(320, 240)
         matrix_host = QFrame()
@@ -219,12 +220,10 @@ class ProjectWorkspacePage(_TitledPage):
         matrix_host_layout = QHBoxLayout(matrix_host)
         matrix_host_layout.setContentsMargins(0, 0, 0, 0)
         matrix_host_layout.addWidget(self.matrix_view, 1)
-        self.matrix_minimap = QLabel("Мини-карта")
-        self.matrix_minimap.setObjectName("matrixMinimap")
-        self.matrix_minimap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.matrix_minimap.setFixedWidth(150)
-        self.matrix_minimap.setStyleSheet("background:#111827; border:1px solid #475569; color:#94a3b8;")
-        matrix_host_layout.addWidget(self.matrix_minimap)
+        self.matrix_minimap = FrameMatrixMinimap(self.matrix_view)
+        self.matrix_loading_label = QLabel("", self.matrix_view.viewport())
+        self.matrix_loading_label.setObjectName("matrixLoadingLabel")
+        self.matrix_loading_label.move(12, 12)
         self.root_layout.addWidget(matrix_host, 1)
 
         layer_row = QHBoxLayout()
@@ -276,30 +275,23 @@ class ProjectWorkspacePage(_TitledPage):
             )
         )
         self.matrix_view.selectionChanged.connect(self._show_selection_summary)
-        self.zoom_out_button.clicked.connect(
-            lambda: self.matrix_view.set_zoom_factor(max(self.matrix_view.MIN_ZOOM, self.matrix_view.zoom_factor() / 1.25))
-        )
-        self.zoom_in_button.clicked.connect(
-            lambda: self.matrix_view.set_zoom_factor(min(self.matrix_view.MAX_ZOOM, self.matrix_view.zoom_factor() * 1.25))
-        )
-        self.zoom_fit_button.clicked.connect(self.matrix_view.zoom_to_fit)
-        self.zoom_reset_button.clicked.connect(self.matrix_view.reset_zoom)
-        self.matrix_view.lodChanged.connect(lambda lod: self.matrix_lod_label.setText(f"LOD: {lod}"))
-        self.minimap_checkbox.toggled.connect(self.matrix_minimap.setVisible)
         if isinstance(self.matrix_view, FrameMatrixWidget):
-            self.clear_thumbnail_cache_button.clicked.connect(self.matrix_view.clear_thumbnail_cache)
             self.matrix_view.loadingChanged.connect(
-                lambda loading: self.matrix_loading_label.setText("Загрузка…" if loading else "")
+                lambda loading: self._set_matrix_message("Загрузка…" if loading else "")
             )
             self.matrix_view.errorOccurred.connect(
-                lambda message: self.matrix_loading_label.setText(f"Ошибка: {message}")
+                lambda message: self._set_matrix_message(f"Ошибка: {message}")
             )
-            self.matrix_view.viewportChanged.connect(self._update_minimap_summary)
 
     def set_project_title(self, name: str) -> None:
         project_name = str(name).strip()
         window = self.window()
         window.setWindowTitle(f"Kraken — {project_name}" if project_name else "Kraken")
+
+    def _set_matrix_message(self, message: str) -> None:
+        self.matrix_loading_label.setText(message)
+        self.matrix_loading_label.adjustSize()
+        self.matrix_loading_label.raise_()
 
     def set_layer_model(self, model: LayerListModel) -> None:
         self.layer_model = model
@@ -329,16 +321,35 @@ class ProjectWorkspacePage(_TitledPage):
         *,
         images: list[tuple[str, str]] = (),
         vectors: list[tuple[str, str]] = (),
+        selected_image_id: str = "",
+        selected_vector_id: str = "",
     ) -> None:
-        self._replace_combo_items(self.image_representation_combo, images)
-        self._replace_combo_items(self.vector_representation_combo, vectors)
+        self._replace_combo_items(
+            self.image_representation_combo,
+            images,
+            selected_id=selected_image_id,
+        )
+        self._replace_combo_items(
+            self.vector_representation_combo,
+            vectors,
+            selected_id=selected_vector_id,
+        )
 
     @staticmethod
-    def _replace_combo_items(combo: QComboBox, items: list[tuple[str, str]]) -> None:
+    def _replace_combo_items(
+        combo: QComboBox,
+        items: list[tuple[str, str]],
+        *,
+        selected_id: str = "",
+    ) -> None:
+        previous_id = selected_id or str(combo.currentData() or "")
         combo.blockSignals(True)
         combo.clear()
         for identifier, name in items:
             combo.addItem(name, identifier)
+        selected = combo.findData(previous_id)
+        if selected >= 0:
+            combo.setCurrentIndex(selected)
         combo.blockSignals(False)
 
     def _activate_layer_tab(self, tab_index: int) -> None:
@@ -348,13 +359,8 @@ class ProjectWorkspacePage(_TitledPage):
             self.layerActivated.emit(item)
 
     def _show_selection_summary(self, selection) -> None:
-        self.selectionCountChanged.emit(sum(1 for _ in selection.coordinates()))
-
-    def _update_minimap_summary(self, _visible_rect) -> None:
-        width, height = self.matrix_view.matrix_size()
-        self.matrix_minimap.setText(
-            f"{width:n} × {height:n}\n{self.matrix_view.lod_level().value}"
-        )
+        count = sum(1 for _ in selection.coordinates())
+        self.selectionCountChanged.emit(count)
 
 
 class _PlaceholderPage(_TitledPage):

@@ -352,7 +352,7 @@ class SQLiteProjectionStore:
 
     @staticmethod
     def _model_class(model_type: str) -> type[Any]:
-        from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion
+        from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, NoteRevision
         from kraken_manager.domain.project import Layer, Project, Representation
         from kraken_manager.domain.workflows import PluginJob, ReviewBatch
 
@@ -364,6 +364,7 @@ class SQLiteProjectionStore:
             "artifact_version": ArtifactVersion,
             "plugin_job": PluginJob,
             "review_batch": ReviewBatch,
+            "note": NoteRevision,
         }
         return classes[model_type]
 
@@ -382,7 +383,9 @@ class SQLiteProjectionStore:
         active: bool | None = None,
         recorded_at: datetime | None = None,
     ) -> None:
-        entity_id = str(model.id)
+        entity_id = str(getattr(model, "id", getattr(model, "note_id", "")))
+        if not entity_id:
+            raise ValueError(f"{model_type} projection has no identity")
         project_id = getattr(model, "project_id", None)
         layer_id = getattr(model, "layer_id", None)
         parent_id = getattr(model, "series_id", None)
@@ -587,6 +590,17 @@ class SQLiteProjectionStore:
             return None
         return decode_model(self._model_class("artifact_version"), json.loads(row["value_json"]))
 
+    def list_artifact_versions(
+        self, series_id: Any, *, as_of: datetime | None = None
+    ) -> tuple[Any, ...]:
+        return self._list_typed(
+            "artifact_version",
+            "parent_id",
+            series_id,
+            include_archived=True,
+            as_of=as_of,
+        )
+
     def save_artifact_version(self, version: Any, *, activate: bool) -> None:
         self._save_typed("artifact_version", version, active=activate)
 
@@ -595,6 +609,17 @@ class SQLiteProjectionStore:
 
     def get_plugin_job(self, job_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get_typed("plugin_job", job_id, as_of=as_of)
+
+    def list_plugin_jobs(
+        self, project_id: Any, *, as_of: datetime | None = None
+    ) -> tuple[Any, ...]:
+        return self._list_typed(
+            "plugin_job",
+            "project_id",
+            project_id,
+            include_archived=True,
+            as_of=as_of,
+        )
 
     def get_review_batch(self, batch_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get_typed("review_batch", batch_id, as_of=as_of)
@@ -614,6 +639,52 @@ class SQLiteProjectionStore:
             if str(batch.layer_id) == str(layer_id)
             and getattr(batch.state, "value", batch.state) not in terminal_states
         )
+
+    def list_review_batches(
+        self,
+        project_id: Any,
+        *,
+        layer_id: Any | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[Any, ...]:
+        return tuple(
+            batch
+            for batch in self._list_typed(
+                "review_batch",
+                "project_id",
+                project_id,
+                include_archived=True,
+                as_of=as_of,
+            )
+            if layer_id is None or str(batch.layer_id) == str(layer_id)
+        )
+
+    def get_note(self, note_id: str, *, as_of: datetime | None = None) -> Any | None:
+        return self._get_typed("note", note_id, as_of=as_of)
+
+    def list_notes(
+        self,
+        project_id: Any,
+        *,
+        layer_id: Any | None = None,
+        frame_id: str | None = None,
+        as_of: datetime | None = None,
+    ) -> tuple[Any, ...]:
+        return tuple(
+            note
+            for note in self._list_typed(
+                "note",
+                "project_id",
+                project_id,
+                include_archived=True,
+                as_of=as_of,
+            )
+            if (layer_id is None or str(note.layer_id) == str(layer_id))
+            and (frame_id is None or str(note.frame_id) == str(frame_id))
+        )
+
+    def save_note(self, note: Any) -> None:
+        self._save_typed("note", note)
 
     @property
     def checkpoint(self) -> int:

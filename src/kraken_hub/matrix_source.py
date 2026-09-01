@@ -75,10 +75,10 @@ class KrakenMatrixDataSource:
         for cell in payload.get("cells", ()):
             x, y = int(cell["x"]), int(cell["y"])
             number = (y - 1) * matrix_width + x
-            sha256 = str(
+            artifact_sha256 = str(cell.get("sha256") or "")
+            asset_source_key = str(
                 cell.get("asset_sha256")
                 or cell.get("asset_source_key")
-                or cell.get("sha256")
                 or ""
             )
             version = str(cell.get("artifact_version_id") or payload.get("revision") or "")
@@ -88,7 +88,7 @@ class KrakenMatrixDataSource:
                 if cell.get("missing")
                 else (
                     f"Кадр ({x}, {y})\nСтатус: {cell.get('status', 'empty')}\n"
-                    f"SHA-256: {sha256}\nВерсия: {version}"
+                    f"SHA-256: {artifact_sha256}\nВерсия: {version}"
                 )
             )
             items.append(
@@ -101,20 +101,31 @@ class KrakenMatrixDataSource:
                     tooltip=tooltip,
                     asset=(
                         MatrixAssetRef(
-                            source_key=sha256,
+                            source_key=asset_source_key,
                             source_revision=asset_revision,
                             media_type=str(cell.get("asset_media_type") or "image/*"),
                             metadata={
                                 "external_path": str(cell.get("asset_path") or ""),
                             },
                         )
-                        if sha256
+                        if asset_source_key
                         else None
                     ),
                     metadata={
                         "artifact_version_id": version,
+                        "asset_sha256": str(cell.get("asset_sha256") or ""),
+                        "asset_revision": asset_revision,
                         "frame_id": str(cell.get("frame_id") or ""),
                         "missing": bool(cell.get("missing")),
+                        "missing_representation_ids": tuple(
+                            str(value)
+                            for value in cell.get("missing_representation_ids", ())
+                        ),
+                        "modified_at": str(cell.get("modified_at") or ""),
+                        "performer_color": str(cell.get("performer_color") or ""),
+                        "performer_initials": str(cell.get("performer_initials") or ""),
+                        "review_status": str(cell.get("review_status") or "not_checked"),
+                        "quality": cell.get("quality"),
                     },
                 )
             )
@@ -176,7 +187,7 @@ class KrakenMatrixAssetSource:
         output.open(QIODevice.OpenModeFlag.WriteOnly)
         if not scaled.save(output, "PNG"):
             raise ValueError("could not encode thumbnail")
-        return bytes(output.data())
+        return output.data().data()
 
 
 __all__ = ["KrakenMatrixAssetSource", "KrakenMatrixDataSource"]

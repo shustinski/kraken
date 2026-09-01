@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .analysis_ui import AnalysisRunsPanel, AnalysisSetupDialog
 from .models import LayerListItem, LayerListModel, ProjectListItem, ProjectListModel
 from .widgets import FrameMatrixView, FrameMatrixWidget
 
@@ -148,6 +149,7 @@ class ProjectWorkspacePage(_TitledPage):
     imageRepresentationChanged = pyqtSignal(str)
     vectorRepresentationChanged = pyqtSignal(str)
     selectionCountChanged = pyqtSignal(int)
+    analysisRequested = pyqtSignal(object)
 
     def __init__(
         self,
@@ -174,6 +176,12 @@ class ProjectWorkspacePage(_TitledPage):
         self.add_vector_representation_button = QPushButton("Добавить")
         self.add_vector_representation_button.setObjectName("addVectorRepresentationButton")
         representation_row.addWidget(self.add_vector_representation_button)
+        self.evaluate_result_button = QPushButton("Оценить результат")
+        self.evaluate_result_button.setObjectName("evaluateResultButton")
+        representation_row.addWidget(self.evaluate_result_button)
+        self.analysis_history_button = QPushButton("История анализа")
+        self.analysis_history_button.setObjectName("analysisHistoryButton")
+        representation_row.addWidget(self.analysis_history_button)
         self.root_layout.addLayout(representation_row)
 
         self.layer_model = layer_model or LayerListModel(parent=self)
@@ -227,6 +235,10 @@ class ProjectWorkspacePage(_TitledPage):
         matrix_host_layout.addWidget(self.matrix_minimap)
         self.root_layout.addWidget(matrix_host, 1)
 
+        self.analysis_runs_panel = AnalysisRunsPanel()
+        self.analysis_runs_panel.setVisible(False)
+        self.root_layout.addWidget(self.analysis_runs_panel, 1)
+
         layer_row = QHBoxLayout()
         layer_row.setContentsMargins(0, 0, 0, 0)
         self.layer_tabs = QTabBar()
@@ -265,6 +277,10 @@ class ProjectWorkspacePage(_TitledPage):
         self.add_layer_button.clicked.connect(self.addLayerRequested)
         self.add_image_representation_button.clicked.connect(self.addImageRepresentationRequested)
         self.add_vector_representation_button.clicked.connect(self.addVectorRepresentationRequested)
+        self.evaluate_result_button.clicked.connect(self.open_analysis_setup)
+        self.analysis_history_button.clicked.connect(
+            lambda: self.analysis_runs_panel.setVisible(not self.analysis_runs_panel.isVisible())
+        )
         self.image_representation_combo.currentIndexChanged.connect(
             lambda: self.imageRepresentationChanged.emit(
                 str(self.image_representation_combo.currentData() or "")
@@ -295,6 +311,17 @@ class ProjectWorkspacePage(_TitledPage):
                 lambda message: self.matrix_loading_label.setText(f"Ошибка: {message}")
             )
             self.matrix_view.viewportChanged.connect(self._update_minimap_summary)
+        self._selected_frame_count = 0
+
+    def open_analysis_setup(self) -> AnalysisSetupDialog:
+        sources = [
+            (str(self.image_representation_combo.itemData(index) or ""), self.image_representation_combo.itemText(index))
+            for index in range(self.image_representation_combo.count())
+        ]
+        dialog = AnalysisSetupDialog(sources, selected_frame_count=self._selected_frame_count, parent=self)
+        if dialog.exec() == dialog.DialogCode.Accepted:
+            self.analysisRequested.emit(dialog.configuration())
+        return dialog
 
     def set_project_title(self, name: str) -> None:
         project_name = str(name).strip()
@@ -348,7 +375,8 @@ class ProjectWorkspacePage(_TitledPage):
             self.layerActivated.emit(item)
 
     def _show_selection_summary(self, selection) -> None:
-        self.selectionCountChanged.emit(sum(1 for _ in selection.coordinates()))
+        self._selected_frame_count = sum(1 for _ in selection.coordinates())
+        self.selectionCountChanged.emit(self._selected_frame_count)
 
     def _update_minimap_summary(self, _visible_rect) -> None:
         width, height = self.matrix_view.matrix_size()

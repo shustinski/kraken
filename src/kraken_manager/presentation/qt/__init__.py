@@ -1,5 +1,6 @@
 """PyQt6 presentation components for Kraken Project Manager."""
 
+from .analysis_ui import AnalysisRunsPanel, AnalysisSetupDialog
 from .models import LayerListItem, LayerListModel, ProjectListItem, ProjectListModel
 from .pages import (
     AdministrationPage,
@@ -26,6 +27,8 @@ from .widgets import (
 
 __all__ = [
     "AdministrationPage",
+    "AnalysisRunsPanel",
+    "AnalysisSetupDialog",
     "FrameCellData",
     "FrameContext",
     "FrameMatrixView",

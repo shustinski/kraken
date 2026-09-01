@@ -42,7 +42,7 @@ from kraken_manager.domain import (
     ReviewPackageFileV1,
     ReviewPackageManifestV1,
 )
-from kraken_manager.domain.common import ArtifactSeriesId, ArtifactVersionId, RepresentationId
+from kraken_manager.domain.common import ArtifactVersionId
 
 
 NOW = datetime(2026, 4, 5, 8, tzinfo=timezone.utc)

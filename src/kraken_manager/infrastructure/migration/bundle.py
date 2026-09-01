@@ -7,14 +7,14 @@ import os
 import tempfile
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from kraken_manager.infrastructure.blob import BlobRef, FilesystemBlobStore
 from kraken_manager.infrastructure.filesystem._atomic import atomic_write_json, fsync_directory
-from kraken_manager.infrastructure.filesystem.event_store import FilesystemEventStore, StoredEvent
+from kraken_manager.infrastructure.filesystem.event_store import FilesystemEventStore
 
 from .safe_paths import UnsafeBundlePath, iter_regular_files, portable_relative, safe_join, validate_bundle_path
 

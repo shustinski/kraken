@@ -20,3 +20,6 @@ __all__ = [
     "PostgresUnitOfWork",
     "PostgresUnitOfWorkFactory",
 ]
+from .analysis_store import PostgresAnalysisProjectionStore
+
+__all__ = ["PostgresAnalysisProjectionStore"]

@@ -180,7 +180,7 @@ class StatisticsReportTests(unittest.TestCase):
         self.assertEqual("'=1+1", values[0])
         self.assertNotEqual("f", data_types[0])
         self.assertEqual("'+project", values[3])
-        self.assertEqual("'@tool", values[8])
+        self.assertEqual("'@tool", values[9])
 
 
 if __name__ == "__main__":

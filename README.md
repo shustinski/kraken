@@ -132,6 +132,11 @@ Kraken Agent uses a durable local SQLite queue and authenticated loopback
 channel. Start it with `kraken-agent`; its registry determines which V1 plugin
 operations may run.
 
+Karakal can also run as a partitioned headless analysis Worker while retaining
+its autonomous standalone SQLite history. Setup, Agent registry, result
+contracts and reproducibility are described in
+[`docs/karakal-analysis.md`](docs/karakal-analysis.md).
+
 The Desktop project catalog supports audited rename/archive/restore, managed
 directory imports with `<x>_<y>`, row-major or regex mapping, sparse matrix
 statuses, representation switching, activity reports, integrity scans and

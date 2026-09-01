@@ -41,7 +41,7 @@ from kraken_manager.domain import (
     Representation,
     RepresentationKind,
 )
-from kraken_manager.domain.common import ArtifactVersionId, FrameId, ProjectId
+from kraken_manager.domain.common import FrameId, ProjectId
 from kraken_manager.domain.identity import ProjectRoleAssignment
 from kraken_manager.infrastructure.projections.rebuild import ProjectionRebuilder
 

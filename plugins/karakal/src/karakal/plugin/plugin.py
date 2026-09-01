@@ -20,7 +20,8 @@ class KarakalPlugin:
 
     def create_widget(self, host: PluginHost | None = None, parent: QWidget | None = None) -> KarakalWidget:
         self._host = host
-        self._widget = KarakalWidget(parent)
+        settings = host.settings() if host is not None else None
+        self._widget = KarakalWidget(parent, settings=settings)
         return self._widget
 
     def shutdown(self) -> None:

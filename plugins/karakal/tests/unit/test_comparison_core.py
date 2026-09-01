@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import uuid
 
 import numpy as np
+from PyQt6.QtGui import QImage
 from PyQt6.QtWidgets import QApplication
 
 from karakal.core.domain import BuildResult, BuildOptions, ComparisonPairSelection, FrameRecord, ModelSpec
@@ -18,6 +19,7 @@ from karakal.core.repository import (
     combined_pair_metric_key,
     collect_frame_records,
     compute_build_result_analytics,
+    export_grid_cell_defect_canvas,
     export_grid_cell_defect_bmps,
     export_result_layer_jpgs,
     export_result_layers_jpgs,
@@ -515,6 +517,152 @@ def test_export_grid_cell_defect_bmps_blacks_unselected_records(tmp_path) -> Non
     unselected_jpg_mask = load_grayscale_image(tmp_path / "export_jpg_selected" / "check_frame_jpg" / "frame_002.jpg")
     assert np.count_nonzero(selected_jpg_mask) > 0
     assert np.count_nonzero(unselected_jpg_mask) == 0
+
+
+def test_export_grid_cell_defect_canvas_writes_one_exact_binary_bmp(tmp_path) -> None:
+    records = tuple(
+        FrameRecord(key=f"frame_{index:03d}", display_name=f"frame_{index:03d}")
+        for index in range(1, 4)
+    )
+    build_result = BuildResult(records=records, options=BuildOptions())
+
+    def make_result(record: FrameRecord) -> GridFrameAnalysisResult:
+        return GridFrameAnalysisResult(
+            frame_id=record.key,
+            frame_path="",
+            image_width=4,
+            image_height=4,
+            grid_rows=1,
+            grid_cols=1,
+            total_expected_cells=1,
+            detected_cells=1,
+            normal_cells=0,
+            suspicious_cells=0,
+            broken_cells=1,
+            missing_cells=0,
+            artifact_cells=0,
+            damage_score=1.0,
+            severity_level="HIGH",
+            grid_detected=True,
+            per_cell_results=(
+                GridCellAnalysisResult(0, 0, (0, 0, 4, 4), (2.0, 2.0), None, "broken", 1.0, ("broken_geometry",)),
+            ),
+        )
+
+    results = {record.key: make_result(record) for record in records}
+    export = export_grid_cell_defect_canvas(
+        build_result,
+        results,
+        tmp_path,
+        canvas_width=10,
+        canvas_height=8,
+        frames_per_row=2,
+        records=records,
+        render_record_keys=("frame_001", "frame_003"),
+        preserve_aspect_ratio=False,
+    )
+
+    canvas_path = tmp_path / "check_matrix.bmp"
+    assert export["exported_count"] == 1
+    assert export["rendered_count"] == 2
+    assert export["canvas_size"] == (10, 8)
+    assert export["destination"] == str(canvas_path)
+    canvas = load_grayscale_image(canvas_path)
+    assert canvas.shape == (8, 10)
+    assert set(np.unique(canvas).tolist()) == {0, 255}
+    assert np.all(canvas[:4, :5] == 255)
+    assert np.all(canvas[:4, 5:] == 0)
+    assert np.all(canvas[4:, :5] == 255)
+    assert np.all(canvas[4:, 5:] == 0)
+
+
+def test_export_grid_cell_defect_canvas_preserves_frame_aspect_ratio(tmp_path) -> None:
+    record = FrameRecord(key="frame_001", display_name="frame_001")
+    build_result = BuildResult(records=(record,), options=BuildOptions())
+    result = GridFrameAnalysisResult(
+        frame_id=record.key,
+        frame_path="",
+        image_width=4,
+        image_height=2,
+        grid_rows=1,
+        grid_cols=1,
+        total_expected_cells=1,
+        detected_cells=1,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=1,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=1.0,
+        severity_level="HIGH",
+        grid_detected=True,
+        per_cell_results=(
+            GridCellAnalysisResult(0, 0, (0, 0, 4, 2), (2.0, 1.0), None, "broken", 1.0, ("broken_geometry",)),
+        ),
+    )
+
+    export_grid_cell_defect_canvas(
+        build_result,
+        {record.key: result},
+        tmp_path,
+        canvas_width=4,
+        canvas_height=4,
+        frames_per_row=1,
+    )
+
+    canvas = load_grayscale_image(tmp_path / "check_matrix.bmp")
+    assert np.all(canvas[:1, :] == 0)
+    assert np.all(canvas[1:3, :] == 255)
+    assert np.all(canvas[3:, :] == 0)
+
+
+def test_export_grid_cell_defect_canvas_renders_white_cells_with_red_errors(tmp_path) -> None:
+    record = FrameRecord(key="frame_001", display_name="frame_001")
+    build_result = BuildResult(records=(record,), options=BuildOptions())
+    result = GridFrameAnalysisResult(
+        frame_id=record.key,
+        frame_path="",
+        image_width=16,
+        image_height=4,
+        grid_rows=1,
+        grid_cols=2,
+        total_expected_cells=2,
+        detected_cells=2,
+        normal_cells=1,
+        suspicious_cells=0,
+        broken_cells=1,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.5,
+        severity_level="HIGH",
+        grid_detected=True,
+        per_cell_results=(
+            GridCellAnalysisResult(0, 0, (1, 0, 5, 4), (3.5, 2.0), None, "normal", 0.0, ()),
+            GridCellAnalysisResult(0, 1, (10, 0, 5, 4), (12.5, 2.0), None, "broken", 1.0, ("broken_geometry",)),
+        ),
+    )
+
+    export = export_grid_cell_defect_canvas(
+        build_result,
+        {record.key: result},
+        tmp_path,
+        canvas_width=16,
+        canvas_height=16,
+        frames_per_row=1,
+        overlay_errors_on_source_mask=True,
+        file_name="check_matrix_errors.bmp",
+    )
+
+    canvas_path = tmp_path / "check_matrix_errors.bmp"
+    assert export["destination"] == str(canvas_path)
+    canvas = QImage(str(canvas_path)).convertToFormat(QImage.Format.Format_RGB888)
+    assert not canvas.isNull()
+    assert canvas.pixelColor(0, 0).getRgb()[:3] == (0, 0, 0)
+    assert canvas.pixelColor(1, 0).getRgb()[:3] == (255, 255, 255)
+    assert canvas.pixelColor(1, 15).getRgb()[:3] == (255, 255, 255)
+    assert canvas.pixelColor(10, 0).getRgb()[:3] == (255, 0, 0)
+    assert canvas.pixelColor(10, 15).getRgb()[:3] == (255, 0, 0)
+    assert canvas.pixelColor(15, 15).getRgb()[:3] == (0, 0, 0)
 
 
 def test_collect_frame_records_ignores_nested_frames_by_default(tmp_path) -> None:

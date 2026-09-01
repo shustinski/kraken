@@ -1,4 +1,5 @@
 """Store backend-related constants used by the extended validation widget."""
+
 from __future__ import annotations
 
 import os
@@ -33,22 +34,6 @@ METRIC_STATUS_ACTIVE = "active"
 METRIC_STATUS_AUXILIARY = "auxiliary"
 METRIC_STATUS_LEGACY = "legacy"
 
-MASK_SUPERVISED_SCORE_WEIGHTS = {
-    "soft_dice": 0.20,
-    "soft_iou": 0.15,
-    "ssim": 0.15,
-    "dice": 0.20,
-    "iou": 0.10,
-    "hausdorff_term": 0.12,
-    "centroid_term": 0.08,
-}
-
-POINT_SUPERVISED_SCORE_WEIGHTS = {
-    "f1": 0.40,
-    "localization": 0.30,
-    "count_term": 0.30,
-}
-
 MASK_AGREEMENT_SCORE_WEIGHTS = {
     "soft_dice": 0.20,
     "soft_iou": 0.15,
@@ -79,7 +64,6 @@ INTER_MODEL_POINT_SCORE_WEIGHTS = {
     "f1": 0.40,
     "localization": 0.20,
 }
-
 
 
 MODEL_CONFIDENCE_UNCERTAIN_DELTA = 0.10
@@ -219,15 +203,11 @@ FRAME_LEVEL_METRIC_AUDIT = {
     "export_priority_score": METRIC_STATUS_AUXILIARY,
     "model_model_score": METRIC_STATUS_ACTIVE,
     "disagreement_score": METRIC_STATUS_AUXILIARY,
-    "model_labeled_score": METRIC_STATUS_ACTIVE,
-    "labeled_best_quality": METRIC_STATUS_AUXILIARY,
-    "labeled_mean_quality": METRIC_STATUS_AUXILIARY,
     "model_confidence": METRIC_STATUS_ACTIVE,
     "model_uncertain_fraction": METRIC_STATUS_ACTIVE,
     "model_point_contrast": METRIC_STATUS_AUXILIARY,
 }
 
-USE_STRICT_SUPERVISED_HEATMAP = False
 
 EXPORT_SELECTION_MODE_COUNT = "count"
 EXPORT_SELECTION_MODE_PERCENT = "percent"

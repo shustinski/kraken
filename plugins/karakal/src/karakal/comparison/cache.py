@@ -1,29 +1,29 @@
 """Small LRU cache for comparison results."""
 from __future__ import annotations
 
-from collections import OrderedDict
-
 from .models import ComparisonCacheKey, FrameComparisonResult
+from ..core.cache_utils import ByteLruCache
+from ..core.performance import load_performance_config
 
 ALGORITHM_VERSION = "karakal-comparison-v1"
 
 
 class ComparisonResultCache:
-    def __init__(self, max_items: int = 256) -> None:
+    def __init__(self, max_items: int = 256, *, max_bytes: int | None = None) -> None:
         self.max_items = max(1, int(max_items))
-        self._items: OrderedDict[ComparisonCacheKey, FrameComparisonResult] = OrderedDict()
+        limit = max_bytes
+        if limit is None:
+            limit = int(load_performance_config().ram_cache_limit_mb) * 1024 * 1024
+        self._items: ByteLruCache[ComparisonCacheKey, FrameComparisonResult] = ByteLruCache(
+            limit,
+            max_items=self.max_items,
+        )
 
     def get(self, key: ComparisonCacheKey) -> FrameComparisonResult | None:
-        value = self._items.get(key)
-        if value is not None:
-            self._items.move_to_end(key)
-        return value
+        return self._items.get(key)
 
     def put(self, key: ComparisonCacheKey, value: FrameComparisonResult) -> None:
-        self._items[key] = value
-        self._items.move_to_end(key)
-        while len(self._items) > self.max_items:
-            self._items.popitem(last=False)
+        self._items.put(key, value)
 
     def clear(self) -> None:
         self._items.clear()

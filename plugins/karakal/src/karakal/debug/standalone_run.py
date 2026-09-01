@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import faulthandler
+import logging
 import multiprocessing as mp
 import os
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 
 
 _FAULT_LOG_HANDLE = None
+_LOGGER = logging.getLogger(__name__)
 
 
 def ensure_package_parent_on_sys_path(module_file: str | Path, package_name: str = "karakal") -> Path | None:
@@ -50,8 +52,8 @@ def _set_windows_app_user_model_id(app_id: str = "kraken.karakal") -> None:
         return
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(str(app_id))
-    except Exception:
-        pass
+    except (AttributeError, OSError, TypeError, ValueError) as error:
+        _LOGGER.debug("Could not set Windows AppUserModelID: %s", error)
 
 
 def _install_crash_logging() -> Path | None:
@@ -64,7 +66,8 @@ def _install_crash_logging() -> Path | None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _FAULT_LOG_HANDLE = log_path.open("a", encoding="utf-8", buffering=1)
         faulthandler.enable(file=_FAULT_LOG_HANDLE, all_threads=True)
-    except Exception:
+    except (OSError, RuntimeError, ValueError) as error:
+        _LOGGER.warning("Could not enable Karakal crash logging: %s", error)
         return None
 
     previous_hook = sys.excepthook
@@ -74,8 +77,8 @@ def _install_crash_logging() -> Path | None:
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] Unhandled exception\n")
                 handle.writelines(traceback.format_exception(exc_type, exc_value, exc_traceback))
-        except Exception:
-            pass
+        except OSError as error:
+            _LOGGER.error("Could not append to Karakal crash log %s: %s", log_path, error)
         previous_hook(exc_type, exc_value, exc_traceback)
 
     sys.excepthook = log_unhandled_exception

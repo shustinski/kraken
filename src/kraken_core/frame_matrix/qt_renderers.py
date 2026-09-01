@@ -11,14 +11,39 @@ from .models import MatrixItem
 
 
 class HeatmapLayerRenderer:
-    fingerprint = "heatmap-v1"
+    fingerprint = "heatmap-v2"
 
     def render(self, item: MatrixItem, context) -> None:
         value = item.metadata.get("heatmap_value")
         if not isinstance(value, (int, float)):
             return
         normalized = max(0.0, min(1.0, float(value)))
-        color = QColor.fromHsvF((1.0 - normalized) * 0.34, 0.85, 0.95, 0.30)
+        explicit_color = QColor(str(item.metadata.get("heatmap_color") or ""))
+        if explicit_color.isValid():
+            color = explicit_color
+            color.setAlphaF(max(0.0, min(1.0, float(item.metadata.get("heatmap_alpha", 0.72)))))
+        else:
+            # Accessible purple/blue/teal/amber fallback instead of red/green hue rotation.
+            stops = (
+                (0.0, QColor("#4d2d73")),
+                (0.33, QColor("#365c8d")),
+                (0.66, QColor("#2d8b8e")),
+                (1.0, QColor("#f4be4a")),
+            )
+            left_position, left_color = stops[0]
+            right_position, right_color = stops[-1]
+            for index in range(1, len(stops)):
+                if normalized <= stops[index][0]:
+                    left_position, left_color = stops[index - 1]
+                    right_position, right_color = stops[index]
+                    break
+            ratio = (normalized - left_position) / max(0.000001, right_position - left_position)
+            color = QColor(
+                int(left_color.red() + (right_color.red() - left_color.red()) * ratio),
+                int(left_color.green() + (right_color.green() - left_color.green()) * ratio),
+                int(left_color.blue() + (right_color.blue() - left_color.blue()) * ratio),
+            )
+            color.setAlphaF(0.58)
         context["painter"].fillRect(context["rect"], color)
 
 

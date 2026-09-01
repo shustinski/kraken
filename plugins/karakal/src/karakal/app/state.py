@@ -7,8 +7,14 @@ from PyQt6.QtWidgets import QCheckBox, QGroupBox, QLabel, QSpinBox, QTabWidget, 
 
 from ..core.analysis_modes import INTER_MODEL_ANALYSIS_MODE, POLYGON_OBJECT_TYPE
 from ..core.domain import BuildResult
-from ..ui.matrix_view import MatrixLayoutConfig, MatrixListWidget, MatrixMiniMapWidget
-from ..ui.ui_constants import DEFAULT_CELL_SIZE, DEFAULT_MATRIX_METRIC_KEY, DEFAULT_METRIC_SCOPE, DEFAULT_MATRIX_SCORE_VIEW_MODE
+from ..ui.matrix_view import MatrixLayoutConfig, MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
+from ..ui.ui_constants import (
+    DEFAULT_CELL_SIZE,
+    DEFAULT_GRADIENT_NAME,
+    DEFAULT_MATRIX_METRIC_KEY,
+    DEFAULT_METRIC_SCOPE,
+    DEFAULT_MATRIX_SCORE_VIEW_MODE,
+)
 
 
 @dataclass(slots=True)
@@ -32,10 +38,12 @@ class ExtendMatrixTabState:
     matrix_view: MatrixListWidget
     mini_map: MatrixMiniMapWidget
     build_result: BuildResult
+    legend: MatrixLegendWidget | None = None
     content_tabs: QTabWidget | None = None
     cell_size: int = DEFAULT_CELL_SIZE
     layout_config: MatrixLayoutConfig = field(default_factory=MatrixLayoutConfig)
     matrix_score_view_mode: str = DEFAULT_MATRIX_SCORE_VIEW_MODE
+    gradient_name: str = DEFAULT_GRADIENT_NAME
     metric_key: str = DEFAULT_MATRIX_METRIC_KEY
     metric_scope: str = DEFAULT_METRIC_SCOPE
     analysis_mode: str = INTER_MODEL_ANALYSIS_MODE
@@ -60,12 +68,11 @@ class ExtendMatrixTabState:
     processing_state_by_key: dict[str, str] = field(default_factory=dict)
     repeated_bad_column: QWidget | None = None
     repeated_good_column: QWidget | None = None
-    management_payload_by_key: dict[str, dict[str, str]] = field(default_factory=dict)
-    management_scenario_id: str = ""
-    management_scenario_payload_by_key: dict[str, dict[str, str]] = field(default_factory=dict)
-    management_scenario_summary: str = ""
     grid_inspection_results_ready: bool = False
     grid_inspection_payload_by_key: dict[str, object] = field(default_factory=dict)
+    grid_inspection_payloads_by_layer: dict[str, dict[str, object]] = field(default_factory=dict)
+    grid_inspection_layer: str = "confidence"
+    grid_inspection_model_id: str | None = None
     grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
     grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)
     grid_inspection_reference_record_key: str | None = None

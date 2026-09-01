@@ -1,4 +1,5 @@
 """Placeholder interfaces for future graph and GNN scoring extensions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

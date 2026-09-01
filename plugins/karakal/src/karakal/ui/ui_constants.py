@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QIcon, QPixmap
 
 from ..core.analysis_modes import INTER_MODEL_ANALYSIS_MODE
 from ..core.domain import ComparisonMode, ComparisonTarget, GeometryMode
@@ -14,10 +14,10 @@ SETTINGS_FOLDERS_KEY = "ui/model_folders"
 SETTINGS_BUILD_KEY = "ui/build_settings"
 SETTINGS_DETAILS_VIEW_KEY = "ui/details_view_settings"
 SETTINGS_LANGUAGE_KEY = "ui/language"
-SETTINGS_MANAGEMENT_KEY = "ui/management_settings"
+SETTINGS_PERFORMANCE_KEY = "performance/settings_v1"
 SETTINGS_VALIDATION_MASK_KEY = "ui/validation_mask"
+SETTINGS_ANALYSIS_PROFILE_KEY = "analysis/profile_v1"
 SETTINGS_ORIGINAL_FOLDER_KEY = "ui/original_folder"
-SETTINGS_GT_FOLDER_KEY = "ui/gt_folder"
 
 FOLDER_CHECKED_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 FOLDER_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 2
@@ -26,18 +26,58 @@ FOLDER_CONFIDENCE_EXPANDED_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 
 DEFAULT_COMPARISON_MODE = ComparisonMode.DISAGREEMENT
 DEFAULT_CELL_SIZE = 15
-DEFAULT_GRADIENT_NAME = "traffic_lights"
+DEFAULT_GRADIENT_NAME = "accessible_blue_amber"
 DEFAULT_ERROR_WINDOW = (0.0, 1.0)
 DEFAULT_MATRIX_METRIC_KEY = "overall_frame_score"
 GRID_INSPECTION_DAMAGE_METRIC_KEY = "grid_inspection_damage_score"
+# Cell analysis always uses the approved maximum-accuracy profile; operators only
+# choose the reference frame and which defect types are relevant.
+GRID_INSPECTION_FIXED_TUNING: tuple[tuple[str, int], ...] = (
+    ("strictness", 100),
+    ("defect_threshold", 100),
+    ("fill_sensitivity", 100),
+    ("merge_sensitivity", 100),
+    ("noise_filter", 100),
+)
 GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.filled_cell", "filled_cell"),
     ("grid_error.partial_filled_cell", "partial_filled_cell"),
     ("grid_error.small_artifact", "small_artifact"),
+    ("grid_error.conductor_residue", "conductor_residue"),
     ("grid_error.broken_geometry", "broken_geometry"),
     ("grid_error.merged_contour", "merged_contour"),
     ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
+    ("grid_error.confidence_only_cell", "confidence_only_cell"),
+    ("grid_error.binary_only_cell", "binary_only_cell"),
+    ("grid_error.geometry_mismatch", "geometry_mismatch"),
+    ("grid_error.defect_disagreement", "defect_disagreement"),
 )
+GRID_INSPECTION_ERROR_TYPE_COLORS = {
+    "filled_cell": "#eb4052",
+    "partial_filled_cell": "#f2994a",
+    "small_artifact": "#ec4899",
+    "conductor_residue": "#f97316",
+    "broken_geometry": "#38bdf8",
+    "merged_contour": "#a855f7",
+    "edge_clipped_cell": "#facc15",
+    "confidence_only_cell": "#14b8a6",
+    "binary_only_cell": "#84cc16",
+    "geometry_mismatch": "#6366f1",
+    "defect_disagreement": "#f43f5e",
+}
+
+
+def grid_inspection_error_type_color(error_type: str) -> QColor:
+    return QColor(GRID_INSPECTION_ERROR_TYPE_COLORS.get(str(error_type), "#94a3b8"))
+
+
+def grid_inspection_error_type_icon(error_type: str, *, size: int = 12) -> QIcon:
+    side = max(8, int(size))
+    pixmap = QPixmap(side, side)
+    pixmap.fill(grid_inspection_error_type_color(error_type))
+    return QIcon(pixmap)
+
+
 GRID_INSPECTION_DEFAULT_ERROR_TYPES = tuple(
     reason for reason in GRID_DAMAGE_REASON_TYPES if reason in {value for _label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
 )
@@ -152,12 +192,19 @@ HOVER_BORDER = QColor(255, 220, 120)
 PROCESSING_BORDER = QColor(255, 170, 0)
 PROCESSING_FILL = QColor(255, 170, 0)
 REFERENCE_BORDER = QColor(80, 210, 255)
-GROUND_TRUTH_BORDER = QColor(80, 245, 185)
 SELECTED_BLINK_COLOR = QColor(255, 255, 255)
 MINIMAP_SELECTED_COLOR = QColor(255, 255, 255)
 
 GRADIENT_PRESETS = {
-    # One standardized matrix palette: bad -> red, good -> bright green.
+    # Default sequential palette remains readable with common color-vision deficiencies.
+    "accessible_blue_amber": (
+        (0.0, (77, 45, 115)),
+        (0.22, (54, 92, 141)),
+        (0.48, (45, 139, 142)),
+        (0.72, (132, 171, 103)),
+        (1.0, (244, 190, 74)),
+    ),
+    # Retained for backward-compatible persisted settings.
     "traffic_lights": (
         (0.0, (186, 0, 0)),
         (0.18, (233, 74, 0)),
@@ -165,8 +212,26 @@ GRADIENT_PRESETS = {
         (0.68, (168, 228, 0)),
         (1.0, (0, 255, 96)),
     ),
+    "red_white_blue": (
+        (0.0, (142, 30, 45)),
+        (0.25, (207, 79, 83)),
+        (0.5, (238, 232, 220)),
+        (0.75, (86, 151, 197)),
+        (1.0, (31, 78, 121)),
+    ),
+    "grayscale": (
+        (0.0, (38, 43, 49)),
+        (0.35, (91, 101, 111)),
+        (0.7, (173, 181, 189)),
+        (1.0, (245, 247, 250)),
+    ),
 }
-GRADIENT_LABELS = {"traffic_lights": "Standard"}
+GRADIENT_LABELS = {
+    "accessible_blue_amber": "matrix.gradient.accessible",
+    "traffic_lights": "matrix.gradient.traffic",
+    "red_white_blue": "matrix.gradient.diverging",
+    "grayscale": "matrix.gradient.grayscale",
+}
 
 GEOMETRY_MODE_OPTIONS = (
     (GeometryMode.MASK.label, GeometryMode.MASK.value),
@@ -200,7 +265,6 @@ EXPORT_SELECTION_MODE_OPTIONS = (
 MATRIX_METRIC_GROUP_OPTIONS = (
     ("metric.group.overall", "overall"),
     ("metric.group.model_model", "model_model"),
-    ("metric.group.model_labeled", "model_labeled"),
 )
 
 MATRIX_METRIC_OPTIONS = (
@@ -208,9 +272,6 @@ MATRIX_METRIC_OPTIONS = (
     ("metric.export_priority_score", "export_priority_score", "overall"),
     ("metric.model_model_score", "model_model_score", "model_model"),
     ("metric.disagreement_score", "disagreement_score", "model_model"),
-    ("metric.model_labeled_score", "model_labeled_score", "model_labeled"),
-    ("metric.labeled_best_quality", "labeled_best_quality", "model_labeled"),
-    ("metric.labeled_mean_quality", "labeled_mean_quality", "model_labeled"),
 )
 
 MATRIX_SCORE_VIEW_OPTIONS = (

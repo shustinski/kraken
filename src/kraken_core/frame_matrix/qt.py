@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import logging
 from collections.abc import Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -36,6 +37,8 @@ from .storage import StoreNamespace, StorePolicy, ThumbnailKey, ThumbnailStore
 
 
 GridOrientation = MatrixOrientation
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MatrixLod(StrEnum):
@@ -723,6 +726,12 @@ class FrameMatrixView(QGraphicsView):
                         try:
                             renderer.render(matrix_item, context)
                         except Exception:
+                            _LOGGER.exception(
+                                "Matrix renderer %r failed for cell (%s, %s)",
+                                renderer,
+                                x,
+                                y,
+                            )
                             continue
 
     def _after_transform(self) -> None:

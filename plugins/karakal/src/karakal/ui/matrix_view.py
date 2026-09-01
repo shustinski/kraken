@@ -1,11 +1,12 @@
-﻿"""Implement mismatch-only matrix layout, rendering and overview widgets for the lite tool."""
+"""Implement mismatch-only matrix layout, rendering and overview widgets for the lite tool."""
+
 from __future__ import annotations
 
 import math
 import hashlib
+import logging
 import pickle
 import time
-import uuid
 from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -31,18 +32,19 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..core.backend_constants import CACHE_DIR, FRAME_NUMBER_PATTERN
+from ..core.backend_constants import CACHE_DIR, FRAME_NUMBER_PATTERN, POLYGON_SUPPORT_THRESHOLD
+from ..core.cache_utils import atomic_pickle_dump, estimate_size_bytes, trim_directory_by_bytes
 from ..core.analysis_modes import confidence_metric_family, metric_level_key, metric_visual_ratio
 from ..core.confidence_maps import build_model_uncertainty
 from ..core.domain import FrameRecord
 from ..core.grid_anomaly import GridCellAnomalyResult, detect_grid_cell_anomalies
-from ..core.repository import (
-    POLYGON_SUPPORT_THRESHOLD,
-    _frame_uncertainty_components_from_probability,
-    compute_comparison_score,
-    load_frame_layers,
-    load_grayscale_image,
-)
+from ..core.profiling import ProfilerRun
+from ..core.performance import load_performance_config
+from ..core.analytics import load_frame_layers
+from ..core.confidence_analysis import _frame_uncertainty_components_from_probability
+from ..core.image_io import load_grayscale_image, natural_sort_key
+from ..core.mask_metrics import compute_comparison_score
+from ..core.metric_keys import metric_higher_is_better
 from ..core.domain import ComparisonMode
 from ..core.subpixel_grid import (
     SubpixelGrid,
@@ -51,7 +53,6 @@ from ..core.subpixel_grid import (
     build_subpixel_grid_from_pair,
 )
 from .i18n import Translator
-from ..core.repository import metric_higher_is_better, natural_sort_key
 from .ui_constants import (
     CARD_CONTENT_SPACING,
     DEFAULT_BORDER,
@@ -62,7 +63,6 @@ from .ui_constants import (
     GRADIENT_PRESETS,
     GRADIENT_PREVIEW_MIN_HEIGHT,
     GRADIENT_RANGE_SELECTOR_MIN_HEIGHT,
-    GROUND_TRUTH_BORDER,
     HOVER_BORDER,
     MATRIX_BACKGROUND,
     MATRIX_BACKGROUND_ALT,
@@ -97,6 +97,9 @@ from .ui_constants import (
     SUBDUED_TEXT_COLOR,
     VISIBLE_RECT_MIN_SIZE,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,7 +189,9 @@ def _tile_rect_for_cell(cell_rect: QRectF, tile_row: int, tile_column: int, spec
     return QRectF(origin_x + left, origin_y + top, tile_width, tile_height)
 
 
-def _display_tile_index_for_cell(local_x: float, local_y: float, cell_rect: QRectF, spec: SubpixelGridSpec) -> tuple[int, int] | None:
+def _display_tile_index_for_cell(
+    local_x: float, local_y: float, cell_rect: QRectF, spec: SubpixelGridSpec
+) -> tuple[int, int] | None:
     """Map one local point inside a matrix cell to the displayed subpixel index."""
 
     rows = max(1, int(spec.rows))
@@ -242,16 +247,23 @@ def _path_cache_identity(path_text: str | None) -> tuple[str, int, int]:
         path = Path(text)
         stat = path.stat()
         return str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size)
-    except Exception:
+    except OSError as error:
+        _LOGGER.debug("Could not resolve matrix cache identity for %s: %s", text, error)
         return text, 0, 0
 
 
 def _record_path_signature(record: FrameRecord) -> tuple[object, ...]:
     model_masks = tuple(
-        sorted((str(key), _path_cache_identity(str(value))) for key, value in (getattr(record, "model_mask_paths", {}) or {}).items())
+        sorted(
+            (str(key), _path_cache_identity(str(value)))
+            for key, value in (getattr(record, "model_mask_paths", {}) or {}).items()
+        )
     )
     model_probs = tuple(
-        sorted((str(key), _path_cache_identity(str(value))) for key, value in (getattr(record, "model_prob_paths", {}) or {}).items())
+        sorted(
+            (str(key), _path_cache_identity(str(value)))
+            for key, value in (getattr(record, "model_prob_paths", {}) or {}).items()
+        )
     )
     return (
         _path_cache_identity(getattr(record, "first_path", None)),
@@ -268,7 +280,8 @@ def _build_grid_inspection_payload_for_path(path_text: str) -> tuple[np.ndarray,
         return None
     try:
         gray = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
-    except Exception:
+    except (OSError, TypeError, ValueError, RuntimeError) as error:
+        _LOGGER.warning("Could not build grid inspection payload for %s: %s", path_text, error)
         return None
     if gray.ndim != 2 or gray.size <= 0:
         return None
@@ -315,43 +328,42 @@ def _load_subpixel_grid_from_disk(cache_key: tuple[object, ...]) -> SubpixelGrid
         return SubpixelGrid(
             spec=spec,
             values=np.asarray(payload["values"], dtype=np.float32),
-            confidences=None if payload.get("confidences") is None else np.asarray(payload["confidences"], dtype=np.float32),
+            confidences=None
+            if payload.get("confidences") is None
+            else np.asarray(payload["confidences"], dtype=np.float32),
             aggregation=str(payload.get("aggregation") or "mean"),
             value_kind=str(payload.get("value_kind") or "value"),
         )
-    except Exception:
+    except (OSError, pickle.PickleError, EOFError, KeyError, TypeError, ValueError) as error:
+        _LOGGER.warning("Ignoring corrupt matrix tile cache entry %s: %s", cache_path, error)
         return None
 
 
-def _trim_subpixel_grid_disk_cache() -> None:
+def _trim_subpixel_grid_disk_cache(max_bytes: int | None = None) -> None:
     global _subpixel_grid_disk_cache_last_trim
     now = time.monotonic()
     if now - _subpixel_grid_disk_cache_last_trim < SUBPIXEL_GRID_DISK_CACHE_TRIM_INTERVAL_SECONDS:
         return
     _subpixel_grid_disk_cache_last_trim = now
-    try:
-        cache_files = list(SUBPIXEL_GRID_DISK_CACHE_DIR.glob("*.pickle"))
-    except Exception:
-        return
-    extra_count = len(cache_files) - int(SUBPIXEL_GRID_DISK_CACHE_MAX_FILES)
-    if extra_count <= 0:
-        return
-    try:
-        removable = sorted(cache_files, key=lambda path: path.stat().st_mtime_ns)[:extra_count]
-    except Exception:
-        return
-    for path in removable:
-        try:
-            path.unlink()
-        except Exception:
-            continue
+    limit = max_bytes
+    if limit is None:
+        limit = int(load_performance_config().tile_cache_limit_mb) * 1024 * 1024
+    trim_directory_by_bytes(
+        SUBPIXEL_GRID_DISK_CACHE_DIR,
+        max_bytes=limit,
+        max_files=SUBPIXEL_GRID_DISK_CACHE_MAX_FILES,
+    )
 
 
-def _store_subpixel_grid_to_disk(cache_key: tuple[object, ...], grid: SubpixelGrid) -> None:
+def _store_subpixel_grid_to_disk(
+    cache_key: tuple[object, ...],
+    grid: SubpixelGrid,
+    *,
+    max_bytes: int | None = None,
+) -> None:
     try:
         SUBPIXEL_GRID_DISK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_path = _subpixel_disk_cache_path(cache_key)
-        tmp_path = cache_path.with_name(f"{cache_path.name}.{uuid.uuid4().hex}.tmp")
         payload = {
             "spec": {
                 "rows": int(grid.spec.rows),
@@ -366,16 +378,10 @@ def _store_subpixel_grid_to_disk(cache_key: tuple[object, ...], grid: SubpixelGr
             "aggregation": str(grid.aggregation),
             "value_kind": str(grid.value_kind),
         }
-        with tmp_path.open("wb") as handle:
-            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        tmp_path.replace(cache_path)
-        _trim_subpixel_grid_disk_cache()
-    except Exception:
-        try:
-            if "tmp_path" in locals() and tmp_path.exists():
-                tmp_path.unlink()
-        except Exception:
-            pass
+        atomic_pickle_dump(cache_path, payload)
+        _trim_subpixel_grid_disk_cache(max_bytes)
+    except (OSError, pickle.PickleError, TypeError, ValueError) as error:
+        _LOGGER.warning("Could not store matrix tile cache entry %s: %s", cache_path, error)
         return
 
 
@@ -395,7 +401,11 @@ def _build_subpixel_grid_for_record(
         try:
             if probability_path:
                 probability_array = np.asarray(load_grayscale_image(Path(probability_path)), dtype=np.float32) / 255.0
-            elif family != "model_output_confidence" and model_id and model_id in (getattr(record, "model_mask_paths", {}) or {}):
+            elif (
+                family != "model_output_confidence"
+                and model_id
+                and model_id in (getattr(record, "model_mask_paths", {}) or {})
+            ):
                 mask_path = str((getattr(record, "model_mask_paths", {}) or {}).get(model_id) or "")
                 if mask_path:
                     probability_array = np.asarray(load_grayscale_image(Path(mask_path)), dtype=np.float32) / 255.0
@@ -429,12 +439,14 @@ def _build_subpixel_grid_for_record(
                     return build_subpixel_grid_from_array(
                         probability_array,
                         spec,
-                        score_fn=lambda prob_tile: float(np.mean(build_model_uncertainty(np.asarray(prob_tile, dtype=np.float32)), dtype=np.float64)),
+                        score_fn=lambda prob_tile: float(
+                            np.mean(build_model_uncertainty(np.asarray(prob_tile, dtype=np.float32)), dtype=np.float64)
+                        ),
                         aggregation=aggregation,
                         value_kind="risk",
                     )
-            except Exception:
-                pass
+            except (OSError, TypeError, ValueError, RuntimeError) as error:
+                _LOGGER.debug("Could not build metric-specific subpixel grid for %s: %s", record.key, error)
     try:
         layers = load_frame_layers(record)
         first_layer = np.asarray(layers.get("first_binary"), dtype=bool)
@@ -444,16 +456,20 @@ def _build_subpixel_grid_for_record(
                 first_layer,
                 second_layer,
                 spec,
-                score_fn=lambda first_tile, second_tile: compute_comparison_score(first_tile, second_tile, comparison_mode),
+                score_fn=lambda first_tile, second_tile: compute_comparison_score(
+                    first_tile, second_tile, comparison_mode
+                ),
                 aggregation=aggregation,
                 value_kind="risk",
             )
-    except Exception:
-        pass
+    except (OSError, TypeError, ValueError, RuntimeError) as error:
+        _LOGGER.debug("Could not build pairwise subpixel grid for %s: %s", record.key, error)
     parent_score = float(record.score if bool(getattr(record, "score_ready", False)) else 0.0)
     values = np.full((max(1, int(spec.rows)), max(1, int(spec.columns))), parent_score, dtype=np.float32)
     confidences = np.ones_like(values, dtype=np.float32)
-    return SubpixelGrid(spec=spec.normalized(), values=values, confidences=confidences, aggregation=aggregation, value_kind="score")
+    return SubpixelGrid(
+        spec=spec.normalized(), values=values, confidences=confidences, aggregation=aggregation, value_kind="score"
+    )
 
 
 class _MatrixCellItem(QGraphicsRectItem):
@@ -481,9 +497,6 @@ class _MatrixCellItem(QGraphicsRectItem):
         self.grid_result: GridCellAnomalyResult | None = None
         self._tile_rect_cache_key: tuple[float, float, float, float, int, int, str, int, int, int] | None = None
         self._tile_rect_cache: tuple[QRectF, ...] = ()
-
-    def _has_ground_truth(self) -> bool:
-        return bool(str(getattr(self.record, "gt_path", "") or "").strip())
 
     def set_tile_state(
         self,
@@ -560,7 +573,11 @@ class _MatrixCellItem(QGraphicsRectItem):
         hovered_tile = self.hovered_subpixel_selection
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        parent_fill = QColor(self.brush().color()) if self.brush().style() != Qt.BrushStyle.NoBrush else QColor(MATRIX_BACKGROUND_ALT)
+        parent_fill = (
+            QColor(self.brush().color())
+            if self.brush().style() != Qt.BrushStyle.NoBrush
+            else QColor(MATRIX_BACKGROUND_ALT)
+        )
         painter.fillRect(rect, parent_fill)
         painter.setPen(self.pen())
         painter.drawRect(rect)
@@ -605,7 +622,11 @@ class _MatrixCellItem(QGraphicsRectItem):
                     fill = None
                     pen = hovered_pen
                 else:
-                    fill = color_fn(value) if callable(color_fn) else interpolate_gradient_color(DEFAULT_GRADIENT_NAME, max(0.0, min(value, 1.0)))
+                    fill = (
+                        color_fn(value)
+                        if callable(color_fn)
+                        else interpolate_gradient_color(DEFAULT_GRADIENT_NAME, max(0.0, min(value, 1.0)))
+                    )
                     fill.setAlpha(220)
                     pen = grid_pen
                 if fill is not None:
@@ -615,14 +636,15 @@ class _MatrixCellItem(QGraphicsRectItem):
         if rows * columns > 1:
             painter.setPen(QPen(QColor(255, 255, 255, 60), 0.0))
             painter.drawRect(rect)
-        self._paint_ground_truth_marker(painter)
         self._paint_attention_marker(painter)
         painter.restore()
 
     def _paint_grid_inspection_cell(self, painter: QPainter) -> None:
         rect = self.rect()
         painter.save()
-        base_color = QColor(self.brush().color()) if self.brush().style() != Qt.BrushStyle.NoBrush else QColor(42, 46, 52)
+        base_color = (
+            QColor(self.brush().color()) if self.brush().style() != Qt.BrushStyle.NoBrush else QColor(42, 46, 52)
+        )
         painter.fillRect(rect, base_color)
         if self._excluded:
             painter.fillRect(rect, QColor(0, 0, 0, 120))
@@ -631,7 +653,6 @@ class _MatrixCellItem(QGraphicsRectItem):
         painter.setPen(self.pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect)
-        self._paint_ground_truth_marker(painter)
         self._paint_attention_marker(painter)
         painter.restore()
 
@@ -641,24 +662,8 @@ class _MatrixCellItem(QGraphicsRectItem):
         painter.fillRect(rect, self.brush())
         painter.setPen(self.pen())
         painter.drawRect(rect)
-        self._paint_ground_truth_marker(painter)
         self._paint_attention_marker(painter)
         painter.restore()
-
-    def _paint_ground_truth_marker(self, painter: QPainter) -> None:
-        if not self._has_ground_truth():
-            return
-        rect = self.rect()
-        if rect.width() < 5.0 or rect.height() < 5.0:
-            return
-        inset = max(1.0, min(rect.width(), rect.height()) * 0.08)
-        width = max(1.4, min(3.2, min(rect.width(), rect.height()) * 0.10))
-        pen = QPen(GROUND_TRUTH_BORDER, width)
-        pen.setCosmetic(True)
-        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(rect.adjusted(inset, inset, -inset, -inset))
 
     def _paint_attention_marker(self, painter: QPainter) -> None:
         kind = self._attention_marker_kind
@@ -765,6 +770,24 @@ def error_palette_color(position: float, gradient_name: str = DEFAULT_GRADIENT_N
     return interpolate_gradient_color(gradient_name, position)
 
 
+@dataclass(frozen=True, slots=True)
+class MatrixColorScaleInfo:
+    gradient_name: str
+    score_view_mode: str
+    metric_key: str
+    low: float
+    high: float
+    p05: float | None
+    p50: float | None
+    p95: float | None
+    raw_low: float | None
+    raw_high: float | None
+    clipped_low: int
+    clipped_high: int
+    sample_count: int
+    higher_is_better: bool
+
+
 def map_score_to_palette_position(score: float, low_bound: float, high_bound: float) -> float:
     """Map a score to the displayed gradient range, including inverted windows."""
     value = max(0.0, min(float(score), 1.0))
@@ -822,7 +845,9 @@ def enhance_palette_position(position: float) -> float:
     return 1.0 - 0.5 * math.pow((1.0 - value) * 2.0, 0.82)
 
 
-def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutConfig) -> tuple[list[tuple[FrameRecord, int, int]], int, int]:
+def build_matrix_layout(
+    records: list[FrameRecord], layout_config: MatrixLayoutConfig
+) -> tuple[list[tuple[FrameRecord, int, int]], int, int]:
     """Place frame records into one indexed or custom matrix layout."""
     if not records:
         return [], 0, 0
@@ -872,6 +897,7 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
         column = dense_index % columns
         placements.append((record, row, column))
     return placements, columns, rows
+
 
 class _GradientPreviewBar(QWidget):
     """Render a compact horizontal preview for one gradient preset."""
@@ -946,10 +972,17 @@ class _GradientWindowBar(QWidget):
         high_x = self._position_to_x(self._high_bound, bar_rect)
         excluded_color = QColor(0, 0, 0, 110)
         if low_x < high_x:
-            painter.fillRect(QRectF(bar_rect.left(), bar_rect.top(), max(0.0, low_x - bar_rect.left()), bar_rect.height()), excluded_color)
-            painter.fillRect(QRectF(high_x, bar_rect.top(), max(0.0, bar_rect.right() - high_x), bar_rect.height()), excluded_color)
+            painter.fillRect(
+                QRectF(bar_rect.left(), bar_rect.top(), max(0.0, low_x - bar_rect.left()), bar_rect.height()),
+                excluded_color,
+            )
+            painter.fillRect(
+                QRectF(high_x, bar_rect.top(), max(0.0, bar_rect.right() - high_x), bar_rect.height()), excluded_color
+            )
         elif low_x > high_x:
-            painter.fillRect(QRectF(high_x, bar_rect.top(), max(0.0, low_x - high_x), bar_rect.height()), excluded_color)
+            painter.fillRect(
+                QRectF(high_x, bar_rect.top(), max(0.0, low_x - high_x), bar_rect.height()), excluded_color
+            )
 
         painter.setPen(QPen(PANEL_TEXT, 1.0))
         painter.drawRect(bar_rect.adjusted(0, 0, -1, -1))
@@ -965,7 +998,9 @@ class _GradientWindowBar(QWidget):
         bar_rect = self.rect().adjusted(0, 6, 0, -8)
         low_x = self._position_to_x(self._low_bound, bar_rect)
         high_x = self._position_to_x(self._high_bound, bar_rect)
-        self._active_handle = 'low' if abs(event.position().x() - low_x) <= abs(event.position().x() - high_x) else 'high'
+        self._active_handle = (
+            "low" if abs(event.position().x() - low_x) <= abs(event.position().x() - high_x) else "high"
+        )
         self._update_active_handle(event.position().x(), bar_rect)
         event.accept()
 
@@ -1004,9 +1039,9 @@ class _GradientWindowBar(QWidget):
     def _update_active_handle(self, x_pos: float, bar_rect: QRectF) -> None:
         """Update the active handle and emit the new selected range."""
         position = self._x_to_position(x_pos, bar_rect)
-        if self._active_handle == 'low':
+        if self._active_handle == "low":
             self._low_bound = position
-        elif self._active_handle == 'high':
+        elif self._active_handle == "high":
             self._high_bound = position
         self.update()
         self.rangeEdited.emit(self._low_bound, self._high_bound)
@@ -1054,10 +1089,10 @@ class _GradientPresetCard(QFrame):
     def _refresh_style(self) -> None:
         """Refresh the card border according to the selected state."""
         border_color = PANEL_TEXT if self._selected else SUBDUED_TEXT_COLOR
-        background_color = '#2f2f31' if self._selected else '#262628'
+        background_color = "#2f2f31" if self._selected else "#262628"
         self.setStyleSheet(
-            f'QFrame {{ border: 1px solid {border_color.name()}; border-radius: 4px; background: {background_color}; }}'
-            'QLabel { border: none; background: transparent; color: #f0f0f0; }'
+            f"QFrame {{ border: 1px solid {border_color.name()}; border-radius: 4px; background: {background_color}; }}"
+            "QLabel { border: none; background: transparent; color: #f0f0f0; }"
         )
 
 
@@ -1207,7 +1242,9 @@ class MatrixMiniMapWidget(QWidget):
         self._reference_position: tuple[int, int] | None = None
         self.setMinimumSize(*MINIMAP_MIN_SIZE)
 
-    def set_overview(self, image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position) -> None:
+    def set_overview(
+        self, image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position
+    ) -> None:
         self._image = image
         self._visible_rect = QRectF(visible_rect)
         self._selected_position = selected_position
@@ -1225,7 +1262,9 @@ class MatrixMiniMapWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._t("matrix.no_matrix"))
             painter.end()
             return
-        target = self.rect().adjusted(MINIMAP_FRAME_MARGIN, MINIMAP_FRAME_MARGIN, -MINIMAP_FRAME_MARGIN, -MINIMAP_FRAME_MARGIN)
+        target = self.rect().adjusted(
+            MINIMAP_FRAME_MARGIN, MINIMAP_FRAME_MARGIN, -MINIMAP_FRAME_MARGIN, -MINIMAP_FRAME_MARGIN
+        )
         painter.drawImage(target, self._image)
         width = max(1, self._image.width())
         height = max(1, self._image.height())
@@ -1273,14 +1312,121 @@ class MatrixMiniMapWidget(QWidget):
         painter.end()
 
 
+class _MatrixLegendBar(QWidget):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._gradient_name = DEFAULT_GRADIENT_NAME
+        self.setMinimumHeight(18)
+        self.setMaximumHeight(22)
+
+    def set_gradient_name(self, gradient_name: str) -> None:
+        self._gradient_name = gradient_name if gradient_name in GRADIENT_PRESETS else DEFAULT_GRADIENT_NAME
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        for x in range(max(1, rect.width())):
+            position = x / max(1, rect.width() - 1)
+            painter.setPen(interpolate_gradient_color(self._gradient_name, position))
+            painter.drawLine(rect.left() + x, rect.top(), rect.left() + x, rect.bottom())
+        painter.setPen(QPen(QColor("#77879a"), 1))
+        painter.drawRoundedRect(QRectF(rect), 4, 4)
+        painter.end()
+
+
+class MatrixLegendWidget(QFrame):
+    """Explain the palette domain and categorical matrix states."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._i18n = Translator()
+        self._info: MatrixColorScaleInfo | None = None
+        self.setFrameShape(QFrame.Shape.StyledPanel)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(3)
+        self.title_label = QLabel(self)
+        self.title_label.setStyleSheet("font-weight: 700;")
+        self.bar = _MatrixLegendBar(self)
+        self.range_label = QLabel(self)
+        self.range_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stats_label = QLabel(self)
+        self.stats_label.setWordWrap(True)
+        self.states_label = QLabel(self)
+        self.states_label.setWordWrap(True)
+        self.states_label.setStyleSheet("color: #9eacbd;")
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.range_label)
+        layout.addWidget(self.stats_label)
+        layout.addWidget(self.states_label)
+        self.set_scale_info(None)
+
+    @staticmethod
+    def _format_value(value: float | None) -> str:
+        if value is None:
+            return "—"
+        if 0.0 <= float(value) <= 1.0:
+            return f"{float(value) * 100.0:.1f}%"
+        return f"{float(value):.3f}"
+
+    def retranslate(self) -> None:
+        self._i18n = Translator()
+        self.set_scale_info(self._info)
+
+    def set_scale_info(self, info: MatrixColorScaleInfo | None) -> None:
+        self._info = info
+        if info is None:
+            self.title_label.setText(self._i18n.tr("matrix.legend.within_run"))
+            self.range_label.setText(self._i18n.tr("matrix.legend.direction"))
+            self.stats_label.setText("—")
+            self.states_label.setText(self._state_text())
+            return
+        self.bar.set_gradient_name(info.gradient_name)
+        mode_key = "matrix.legend.absolute" if info.score_view_mode == "absolute" else "matrix.legend.within_run"
+        self.title_label.setText(f"{self._i18n.tr(mode_key)} · {info.metric_key or 'score'}")
+        self.range_label.setText(
+            f"{self._format_value(info.low)}  ·  {self._i18n.tr('matrix.legend.direction')}  ·  {self._format_value(info.high)}"
+        )
+        clipped = int(info.clipped_low) + int(info.clipped_high)
+        distribution = self._i18n.tr(
+            "matrix.legend.distribution",
+            p05=self._format_value(info.p05),
+            p50=self._format_value(info.p50),
+            p95=self._format_value(info.p95),
+            clipped=clipped,
+        )
+        raw_range = self._i18n.tr(
+            "matrix.legend.raw_range",
+            low=self._format_value(info.raw_low),
+            high=self._format_value(info.raw_high),
+        )
+        self.stats_label.setText(f"{distribution}\n{raw_range}")
+        self.states_label.setText(self._state_text())
+
+    def _state_text(self) -> str:
+        return " · ".join(
+            (
+                f"□ {self._i18n.tr('matrix.legend.no_data')}",
+                f"▧ {self._i18n.tr('matrix.legend.excluded')}",
+                f"● {self._i18n.tr('matrix.legend.processing')}",
+                f"▣ {self._i18n.tr('matrix.legend.reference')}",
+            )
+        )
+
+
 class MatrixListWidget(QGraphicsView):
     """Render the frame matrix and provide navigation, selection and overview data."""
+
     recordActivated = pyqtSignal(object)
     recordSelected = pyqtSignal(object)
     tileSelected = pyqtSignal(object)
     tileActivated = pyqtSignal(object)
     contextMenuRequested = pyqtSignal(object, object)
     overviewChanged = pyqtSignal(object, object, object, object, object, object)
+    colorScaleChanged = pyqtSignal(object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1325,21 +1471,17 @@ class MatrixListWidget(QGraphicsView):
         self._subpixel_aggregation = "mean"
         self._subpixel_comparison_mode = ComparisonMode.DISAGREEMENT
         self._subpixel_grid_cache: OrderedDict[tuple[object, ...], SubpixelGrid] = OrderedDict()
+        self._subpixel_grid_cache_bytes = 0
         self._item_by_key: dict[str, _MatrixCellItem] = {}
         self._record_by_position: dict[tuple[int, int], FrameRecord] = {}
         self._record_positions: dict[str, tuple[int, int]] = {}
         self._record_index_by_key: dict[str, int] = {}
-        self._management_payload_by_key: dict[str, dict[str, str]] = {}
-        self._management_recommended_keys: set[str] = set()
         self._excluded_record_keys: set[str] = set()
-        self._management_assignee_colors: dict[str, str] = {}
-        self._management_recommended_priority_min: float | None = None
-        self._management_recommended_priority_max: float | None = None
-        self._management_priority_min: float | None = None
-        self._management_priority_max: float | None = None
-        self._management_visual_mode = False
         self._grid_inspection_visual_mode = False
-        self._grid_inspection_cache: OrderedDict[tuple[object, ...], tuple[QPixmap, GridCellAnomalyResult]] = OrderedDict()
+        self._grid_inspection_cache: OrderedDict[tuple[object, ...], tuple[QPixmap, GridCellAnomalyResult]] = (
+            OrderedDict()
+        )
+        self._grid_inspection_cache_bytes = 0
         self._grid_inspection_payload_by_key: dict[str, tuple[QPixmap, GridCellAnomalyResult]] = {}
         self._grid_inspection_score_low = 0.0
         self._grid_inspection_score_high = 1.0
@@ -1380,14 +1522,18 @@ class MatrixListWidget(QGraphicsView):
         self._tile_result_timer = QTimer(self)
         self._tile_result_timer.setInterval(30)
         self._tile_result_timer.timeout.connect(self._poll_tile_futures)
-        self._tile_executor = ThreadPoolExecutor(max_workers=max(1, int(SUBPIXEL_GRID_WORKER_COUNT)), thread_name_prefix="matrix-tile")
+        self._tile_executor = ThreadPoolExecutor(
+            max_workers=max(1, int(SUBPIXEL_GRID_WORKER_COUNT)), thread_name_prefix="matrix-tile"
+        )
         self._grid_inspection_load_timer = QTimer(self)
         self._grid_inspection_load_timer.setSingleShot(True)
         self._grid_inspection_load_timer.timeout.connect(self._process_pending_grid_inspection_queue)
         self._grid_inspection_result_timer = QTimer(self)
         self._grid_inspection_result_timer.setInterval(GRID_INSPECTION_POLL_INTERVAL_MS)
         self._grid_inspection_result_timer.timeout.connect(self._poll_grid_inspection_futures)
-        self._grid_inspection_executor = ThreadPoolExecutor(max_workers=GRID_INSPECTION_LOAD_MAX_IN_FLIGHT, thread_name_prefix="matrix-grid")
+        self._grid_inspection_executor = ThreadPoolExecutor(
+            max_workers=GRID_INSPECTION_LOAD_MAX_IN_FLIGHT, thread_name_prefix="matrix-grid"
+        )
         self._tile_futures: dict[str, tuple[int, tuple[object, ...], Future]] = {}
         self._tile_cache_hits = 0
         self._tile_disk_cache_hits = 0
@@ -1395,6 +1541,7 @@ class MatrixListWidget(QGraphicsView):
         self._tile_jobs_submitted = 0
         self._tile_jobs_completed = 0
         self._tile_jobs_discarded = 0
+        self._profiler: ProfilerRun | None = None
         self._pan_active = False
         self._pan_start = None
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -1411,28 +1558,58 @@ class MatrixListWidget(QGraphicsView):
         self.horizontalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
         self.verticalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
 
+    def set_profiler(self, profiler: ProfilerRun | None) -> None:
+        """Attach the active worker run so UI work appears in one snapshot."""
+
+        self._profiler = profiler
+
+    def _tile_cache_limit_bytes(self) -> int:
+        config = self._profiler.config if self._profiler is not None else load_performance_config()
+        return int(config.tile_cache_limit_mb) * 1024 * 1024
+
+    def _record_ui_duration(
+        self,
+        name: str,
+        started_ns: int,
+        *,
+        frame_count: int = 0,
+        error: bool = False,
+        cancelled: bool = False,
+    ) -> None:
+        profiler = self._profiler
+        if profiler is not None:
+            profiler.record_duration(
+                name,
+                time.perf_counter_ns() - started_ns,
+                frame_count=frame_count,
+                error=error,
+                cancelled=cancelled,
+            )
+
     def _clear_visible_record_key_cache(self) -> None:
         self._visible_record_key_cache_signature = None
         self._visible_record_key_cache = tuple()
 
     def _request_full_viewport_update(self) -> None:
-        rect = self.mapToScene(self.viewport().rect()).boundingRect() if self._grid_inspection_visual_mode else self._scene.sceneRect()
+        rect = (
+            self.mapToScene(self.viewport().rect()).boundingRect()
+            if self._grid_inspection_visual_mode
+            else self._scene.sceneRect()
+        )
         self._scene.invalidate(rect, QGraphicsScene.SceneLayer.AllLayers)
         self._scene.update(rect)
         self.viewport().update()
 
     def _clear_subpixel_grid_cache(self) -> None:
         self._subpixel_grid_cache.clear()
+        self._subpixel_grid_cache_bytes = 0
         self._tile_cache_hits = 0
         self._tile_disk_cache_hits = 0
         self._tile_cache_misses = 0
 
     def _clear_record_subpixel_grids(self) -> None:
         for record in self._records:
-            try:
-                record.subpixel_grid = None
-            except Exception:
-                pass
+            record.subpixel_grid = None
 
     def _invalidate_grid_inspection_requests(self, *, clear_cache: bool = False) -> None:
         self._grid_inspection_request_generation += 1
@@ -1444,6 +1621,7 @@ class MatrixListWidget(QGraphicsView):
         if clear_cache:
             self._grid_inspection_cache.clear()
             self._grid_inspection_payload_by_key.clear()
+            self._grid_inspection_cache_bytes = 0
 
     def _subpixel_cache_get(self, cache_key: tuple[object, ...]) -> SubpixelGrid | None:
         cached = self._subpixel_grid_cache.get(cache_key)
@@ -1453,10 +1631,19 @@ class MatrixListWidget(QGraphicsView):
         return cached
 
     def _subpixel_cache_put(self, cache_key: tuple[object, ...], grid: SubpixelGrid) -> None:
+        previous = self._subpixel_grid_cache.get(cache_key)
+        if previous is not None:
+            self._subpixel_grid_cache_bytes -= estimate_size_bytes(previous)
         self._subpixel_grid_cache[cache_key] = grid
+        self._subpixel_grid_cache_bytes += estimate_size_bytes(grid)
         self._subpixel_grid_cache.move_to_end(cache_key)
-        while len(self._subpixel_grid_cache) > SUBPIXEL_GRID_CACHE_MAX_ITEMS:
-            self._subpixel_grid_cache.popitem(last=False)
+        limit_bytes = self._tile_cache_limit_bytes()
+        while self._subpixel_grid_cache and (
+            len(self._subpixel_grid_cache) > SUBPIXEL_GRID_CACHE_MAX_ITEMS
+            or self._subpixel_grid_cache_bytes > limit_bytes
+        ):
+            _evicted_key, evicted = self._subpixel_grid_cache.popitem(last=False)
+            self._subpixel_grid_cache_bytes = max(0, self._subpixel_grid_cache_bytes - estimate_size_bytes(evicted))
 
     def _subpixel_cache_key_for_record(self, record: FrameRecord, spec: SubpixelGridSpec) -> tuple[object, ...]:
         return _subpixel_cache_key_for_record(
@@ -1506,7 +1693,12 @@ class MatrixListWidget(QGraphicsView):
         self._clear_visible_record_key_cache()
 
     def set_gradient_preset(self, gradient_name: str) -> None:
-        self._gradient_name = gradient_name if gradient_name in GRADIENT_PRESETS else DEFAULT_GRADIENT_NAME
+        normalized = gradient_name if gradient_name in GRADIENT_PRESETS else DEFAULT_GRADIENT_NAME
+        if normalized == self._gradient_name:
+            return
+        self._gradient_name = normalized
+        self.refresh_scene()
+        self.colorScaleChanged.emit(self.color_scale_info())
 
     def set_error_window(self, low_bound: float, high_bound: float) -> None:
         self._error_window_low = max(0.0, min(float(low_bound), 1.0))
@@ -1518,8 +1710,8 @@ class MatrixListWidget(QGraphicsView):
         if self._score_view_mode == next_mode:
             return
         self._score_view_mode = next_mode
-        if self._grid_inspection_visual_mode:
-            self.refresh_scene()
+        self.refresh_scene()
+        self.colorScaleChanged.emit(self.color_scale_info())
 
     def set_metric_context(self, metric_key: str | None, *, point_match_radius: float, bce_score_cap: float) -> None:
         previous_metric_key = self._metric_key
@@ -1535,6 +1727,62 @@ class MatrixListWidget(QGraphicsView):
             if self._metric_key != previous_metric_key:
                 item.subpixel_grid = None
                 item.update()
+        self.colorScaleChanged.emit(self.color_scale_info())
+
+    def color_scale_info(self) -> MatrixColorScaleInfo:
+        if self._grid_inspection_visual_mode and self._grid_inspection_payload_by_key:
+            scores = [
+                1.0 - max(0.0, min(1.0, float(getattr(result, "score", 0.0) or 0.0)))
+                for _pixmap, result in self._grid_inspection_payload_by_key.values()
+            ]
+            raw_values = [
+                float(getattr(result, "score", 0.0) or 0.0)
+                for _pixmap, result in self._grid_inspection_payload_by_key.values()
+            ]
+            metric_key = "grid_damage_quality"
+            higher_is_better = True
+        else:
+            scores = [
+                float(score)
+                for record in self._records
+                if not self._is_record_excluded(record)
+                for score in [self._display_score(record)]
+                if score is not None and math.isfinite(float(score))
+            ]
+            raw_values = [
+                float(record.absolute_score)
+                for record in self._records
+                if not self._is_record_excluded(record)
+                and record.absolute_score is not None
+                and math.isfinite(float(record.absolute_score))
+            ]
+            metric_key = str(self._metric_key or "score")
+            higher_is_better = metric_higher_is_better(metric_key)
+        normalized_scores = [max(0.0, min(1.0, score)) for score in scores]
+        if normalized_scores:
+            p05, p50, p95 = (float(value) for value in np.percentile(normalized_scores, (5, 50, 95)))
+        else:
+            p05 = p50 = p95 = None
+        if self._score_view_mode == "absolute":
+            low, high = 0.0, 1.0
+        else:
+            low, high = self._auto_color_window_low, self._auto_color_window_high
+        return MatrixColorScaleInfo(
+            gradient_name=self._gradient_name,
+            score_view_mode=self._score_view_mode,
+            metric_key=metric_key,
+            low=float(low),
+            high=float(high),
+            p05=p05,
+            p50=p50,
+            p95=p95,
+            raw_low=min(raw_values) if raw_values else None,
+            raw_high=max(raw_values) if raw_values else None,
+            clipped_low=sum(1 for score in normalized_scores if score < low),
+            clipped_high=sum(1 for score in normalized_scores if score > high),
+            sample_count=len(normalized_scores),
+            higher_is_better=higher_is_better,
+        )
 
     def set_layout_config(self, layout_config: MatrixLayoutConfig) -> None:
         self._layout_config = layout_config
@@ -1612,10 +1860,7 @@ class MatrixListWidget(QGraphicsView):
         if disk_cached is not None:
             self._tile_disk_cache_hits += 1
             self._subpixel_cache_put(cache_key, disk_cached)
-            try:
-                record.subpixel_grid = disk_cached
-            except Exception:
-                pass
+            record.subpixel_grid = disk_cached
             return disk_cached
         self._tile_cache_misses += 1
         grid = _build_subpixel_grid_for_record(
@@ -1626,13 +1871,9 @@ class MatrixListWidget(QGraphicsView):
             comparison_mode=self._subpixel_comparison_mode,
         )
         self._subpixel_cache_put(cache_key, grid)
-        _store_subpixel_grid_to_disk(cache_key, grid)
-        try:
-            record.subpixel_grid = grid
-        except Exception:
-            pass
+        _store_subpixel_grid_to_disk(cache_key, grid, max_bytes=self._tile_cache_limit_bytes())
+        record.subpixel_grid = grid
         return grid
-
 
     def set_processing_keys(self, processing_keys) -> None:
         previous = set(self._processing_keys)
@@ -1663,7 +1904,13 @@ class MatrixListWidget(QGraphicsView):
         previous = self._reference_key
         self._reference_key = str(reference_key) if reference_key else None
         for key in {previous, self._reference_key}:
-            item = self._ensure_item_for_key(key) if key == self._reference_key else self._item_by_key.get(str(key)) if key else None
+            item = (
+                self._ensure_item_for_key(key)
+                if key == self._reference_key
+                else self._item_by_key.get(str(key))
+                if key
+                else None
+            )
             if item is not None:
                 self._apply_item_style(item)
         self._sync_visible_matrix_items()
@@ -1678,7 +1925,10 @@ class MatrixListWidget(QGraphicsView):
         reset_view: bool = False,
         prefer_complete: bool = False,
     ) -> None:
-        if sort_mode == "name" and str(getattr(self._layout_config, "mode", "indexed_grid") or "indexed_grid") == "indexed_grid":
+        if (
+            sort_mode == "name"
+            and str(getattr(self._layout_config, "mode", "indexed_grid") or "indexed_grid") == "indexed_grid"
+        ):
             ordered = list(records)
         else:
             ordered = self._sort_records(list(records), sort_mode)
@@ -1686,58 +1936,13 @@ class MatrixListWidget(QGraphicsView):
         if reset_view:
             self.resetTransform()
         self._rebuild_scene(ordered)
-
-    def set_management_payload(self, payload_by_key: dict[str, dict[str, str]] | None) -> None:
-        """Attach task-management metadata for matrix overlays and tooltips."""
-
-        normalized: dict[str, dict[str, str]] = {}
-        recommended: set[str] = set()
-        recommended_scores: list[float] = []
-        all_priority_scores: list[float] = []
-        for key, payload in (payload_by_key or {}).items():
-            key_text = str(key or "").strip()
-            if not key_text:
-                continue
-            normalized_payload = {str(k): str(v) for k, v in dict(payload or {}).items()}
-            normalized[key_text] = normalized_payload
-            any_score = self._management_priority_value_from_payload(normalized_payload)
-            if any_score is not None and math.isfinite(float(any_score)):
-                all_priority_scores.append(float(any_score))
-            if str(normalized_payload.get("recommended", "")).strip().lower() in {"1", "true", "yes"}:
-                recommended.add(key_text)
-                score = any_score if any_score is not None else self._management_priority_value_from_payload(normalized_payload)
-                if score is not None and math.isfinite(float(score)):
-                    recommended_scores.append(float(score))
-        self._management_payload_by_key = normalized
-        self._management_recommended_keys = recommended
-        if all_priority_scores:
-            self._management_priority_min = float(min(all_priority_scores))
-            self._management_priority_max = float(max(all_priority_scores))
-        else:
-            self._management_priority_min = None
-            self._management_priority_max = None
-        if recommended_scores:
-            self._management_recommended_priority_min = float(min(recommended_scores))
-            self._management_recommended_priority_max = float(max(recommended_scores))
-        else:
-            self._management_recommended_priority_min = None
-            self._management_recommended_priority_max = None
-        self.refresh_scene()
+        self.colorScaleChanged.emit(self.color_scale_info())
 
     def set_excluded_record_keys(self, excluded_keys: set[str] | None) -> None:
         normalized = {str(key) for key in (excluded_keys or set()) if str(key)}
         if normalized == self._excluded_record_keys:
             return
         self._excluded_record_keys = normalized
-        self.refresh_scene()
-
-    def set_management_visual_mode(self, enabled: bool) -> None:
-        """Enable management-specific cluster fill and recommendation border rendering."""
-
-        normalized = bool(enabled)
-        if self._management_visual_mode == normalized:
-            return
-        self._management_visual_mode = normalized
         self.refresh_scene()
 
     def set_grid_inspection_visual_mode(self, enabled: bool) -> None:
@@ -1765,6 +1970,7 @@ class MatrixListWidget(QGraphicsView):
             self.set_grid_inspection_visual_mode(False)
             self._grid_inspection_payload_by_key.clear()
             self._grid_inspection_cache.clear()
+            self._grid_inspection_cache_bytes = 0
             for item in self._item_by_key.values():
                 item.grid_inspection_enabled = False
                 item.grid_thumbnail = None
@@ -1788,13 +1994,9 @@ class MatrixListWidget(QGraphicsView):
                 continue
             normalized_payloads[key_text] = (thumbnail, result)
 
-        payloads_unchanged = (
-            len(normalized_payloads) == len(self._grid_inspection_payload_by_key)
-            and all(
-                key in self._grid_inspection_payload_by_key
-                and self._grid_inspection_payload_by_key[key][1] == result
-                for key, (_thumbnail, result) in normalized_payloads.items()
-            )
+        payloads_unchanged = len(normalized_payloads) == len(self._grid_inspection_payload_by_key) and all(
+            key in self._grid_inspection_payload_by_key and self._grid_inspection_payload_by_key[key][1] == result
+            for key, (_thumbnail, result) in normalized_payloads.items()
         )
         self.set_grid_inspection_visual_mode(True)
         if payloads_unchanged:
@@ -1802,6 +2004,7 @@ class MatrixListWidget(QGraphicsView):
         self._grid_inspection_payload_by_key = normalized_payloads
         self._update_grid_inspection_score_window()
         self.refresh_scene()
+        self.colorScaleChanged.emit(self.color_scale_info())
 
     def update_grid_inspection_payloads(self, payload_by_key: dict[str, object] | None) -> None:
         """Apply a completed result batch without rebuilding the matrix scene."""
@@ -1850,6 +2053,7 @@ class MatrixListWidget(QGraphicsView):
         self._sync_overview_layer_visibility(force=True)
         self._request_full_viewport_update()
         self._emit_overview_state()
+        self.colorScaleChanged.emit(self.color_scale_info())
 
     def _update_grid_inspection_score_window(self) -> None:
         scores = [
@@ -1866,30 +2070,13 @@ class MatrixListWidget(QGraphicsView):
         self._grid_inspection_score_high = max(scores)
         self._auto_color_window_low, self._auto_color_window_high = compute_auto_color_window(scores)
 
-    def set_management_assignee_colors(self, assignee_colors: dict[str, str] | None) -> None:
-        """Attach assignee color preferences used by management-mode rendering."""
-
-        normalized: dict[str, str] = {}
-        for assignee, color in (assignee_colors or {}).items():
-            assignee_text = str(assignee or "").strip()
-            color_text = str(color or "").strip()
-            if not assignee_text or not color_text:
-                continue
-            normalized[assignee_text.lower()] = color_text
-        self._management_assignee_colors = normalized
-        if self._management_visual_mode:
-            self.refresh_scene()
-
     def _is_record_excluded(self, record: FrameRecord) -> bool:
         return str(record.key) in self._excluded_record_keys
-
-    @staticmethod
-    def _record_has_ground_truth(record: FrameRecord) -> bool:
-        return bool(str(getattr(record, "gt_path", "") or "").strip())
 
     def refresh_scene(self) -> None:
         if not self._records:
             return
+        started_ns = time.perf_counter_ns()
         for item in sorted(self._item_by_key.values(), key=lambda item: item.index):
             item.setToolTip(self._tooltip_for_record(item.record))
             self._apply_item_style(item, sync_tile_state=False)
@@ -1908,6 +2095,7 @@ class MatrixListWidget(QGraphicsView):
         self._update_tile_lod(force=True)
         if self._grid_inspection_visual_mode:
             self._schedule_visible_grid_inspection_request(immediate=True)
+        self._record_ui_duration("ui.matrix.refresh", started_ns, frame_count=len(self._records))
 
     def current_record(self) -> FrameRecord | None:
         return self._selected_item.record if self._selected_item is not None else None
@@ -1956,14 +2144,18 @@ class MatrixListWidget(QGraphicsView):
                 if candidate_col > column:
                     return self._record_by_position.get((row, candidate_col))
             for candidate_row in sorted({item_row for (item_row, _col) in self._record_by_position if item_row > row}):
-                candidate_cols = sorted(col for (item_row, col) in self._record_by_position if item_row == candidate_row)
+                candidate_cols = sorted(
+                    col for (item_row, col) in self._record_by_position if item_row == candidate_row
+                )
                 if candidate_cols:
                     return self._record_by_position.get((candidate_row, candidate_cols[0]))
             return None
         for candidate_col in reversed(row_columns):
             if candidate_col < column:
                 return self._record_by_position.get((row, candidate_col))
-        for candidate_row in sorted({item_row for (item_row, _col) in self._record_by_position if item_row < row}, reverse=True):
+        for candidate_row in sorted(
+            {item_row for (item_row, _col) in self._record_by_position if item_row < row}, reverse=True
+        ):
             candidate_cols = sorted(col for (item_row, col) in self._record_by_position if item_row == candidate_row)
             if candidate_cols:
                 return self._record_by_position.get((candidate_row, candidate_cols[-1]))
@@ -2075,7 +2267,9 @@ class MatrixListWidget(QGraphicsView):
             return resolved
         return max(0.0, (self._rows - 1) * 0.5), max(0.0, (self._columns - 1) * 0.5)
 
-    def _prioritized_record_keys(self, *, margin_cells: int = TILE_PREFETCH_MARGIN_CELLS) -> tuple[tuple[tuple[float, float, float, float, tuple[object, ...]], str], ...]:
+    def _prioritized_record_keys(
+        self, *, margin_cells: int = TILE_PREFETCH_MARGIN_CELLS
+    ) -> tuple[tuple[tuple[float, float, float, float, tuple[object, ...]], str], ...]:
         if not self._record_by_position or self._columns <= 0 or self._rows <= 0:
             return tuple()
         visible_scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
@@ -2107,14 +2301,18 @@ class MatrixListWidget(QGraphicsView):
                 record = self._record_by_position.get((row, column))
                 if record is None:
                     continue
-                inside_viewport = visible_min_row <= row <= visible_max_row and visible_min_column <= column <= visible_max_column
+                inside_viewport = (
+                    visible_min_row <= row <= visible_max_row and visible_min_column <= column <= visible_max_column
+                )
                 d_row = float(row) - float(focus_row)
                 d_col = float(column) - float(focus_column)
                 ring = max(abs(d_row), abs(d_col))
                 distance = abs(d_row) + abs(d_col)
                 direction_bias = 0.0
                 if abs(pan_dx) > 0.01 or abs(pan_dy) > 0.01:
-                    direction_bias = -0.01 * ((float(column) - float(focus_column)) * pan_dx + (float(row) - float(focus_row)) * pan_dy)
+                    direction_bias = -0.01 * (
+                        (float(column) - float(focus_column)) * pan_dx + (float(row) - float(focus_row)) * pan_dy
+                    )
                 priority = (
                     0.0 if inside_viewport else 1.0,
                     float(ring),
@@ -2139,10 +2337,7 @@ class MatrixListWidget(QGraphicsView):
     @staticmethod
     def _apply_subpixel_grid_to_item(item: _MatrixCellItem, grid: SubpixelGrid, *, update: bool = True) -> None:
         item.subpixel_grid = grid
-        try:
-            item.record.subpixel_grid = grid
-        except Exception:
-            pass
+        item.record.subpixel_grid = grid
         if update:
             item.update()
 
@@ -2156,9 +2351,7 @@ class MatrixListWidget(QGraphicsView):
 
     def _grid_inspection_pixel_overview_active(self) -> bool:
         return bool(
-            self._grid_inspection_visual_mode
-            and self._overview_image is not None
-            and not self._overview_image.isNull()
+            self._grid_inspection_visual_mode and self._overview_image is not None and not self._overview_image.isNull()
         )
 
     def _create_matrix_item(self, record: FrameRecord, row: int, column: int, index: int) -> _MatrixCellItem:
@@ -2185,13 +2378,20 @@ class MatrixListWidget(QGraphicsView):
         model_masks = getattr(record, "model_mask_paths", {}) or {}
         if model_masks:
             return str(next(iter(model_masks.values())) or "")
-        return str(getattr(record, "first_path", "") or getattr(record, "base_path", "") or getattr(record, "original_path", "") or "")
+        return str(
+            getattr(record, "first_path", "")
+            or getattr(record, "base_path", "")
+            or getattr(record, "original_path", "")
+            or ""
+        )
 
     def _grid_inspection_cache_key(self, record: FrameRecord) -> tuple[object, ...]:
         path_text = self._grid_inspection_source_path(record)
         return (str(record.key), _path_cache_identity(path_text), int(self._cell_size))
 
-    def _cached_grid_inspection_payload_for_record(self, record: FrameRecord) -> tuple[QPixmap, GridCellAnomalyResult] | None:
+    def _cached_grid_inspection_payload_for_record(
+        self, record: FrameRecord
+    ) -> tuple[QPixmap, GridCellAnomalyResult] | None:
         return self._grid_inspection_payload_by_key.get(str(record.key))
 
     def _store_grid_inspection_payload(
@@ -2202,11 +2402,21 @@ class MatrixListWidget(QGraphicsView):
     ) -> tuple[QPixmap, GridCellAnomalyResult]:
         _ = gray
         payload = (QPixmap(), result)
+        previous = self._grid_inspection_cache.get(cache_key)
+        if previous is not None:
+            self._grid_inspection_cache_bytes -= estimate_size_bytes(previous)
         self._grid_inspection_cache[cache_key] = payload
         self._grid_inspection_payload_by_key[str(cache_key[0])] = payload
+        self._grid_inspection_cache_bytes += estimate_size_bytes(payload)
         self._grid_inspection_cache.move_to_end(cache_key)
-        while len(self._grid_inspection_cache) > 512:
-            evicted_key, _evicted_payload = self._grid_inspection_cache.popitem(last=False)
+        while self._grid_inspection_cache and (
+            len(self._grid_inspection_cache) > 512 or self._grid_inspection_cache_bytes > self._tile_cache_limit_bytes()
+        ):
+            evicted_key, evicted_payload = self._grid_inspection_cache.popitem(last=False)
+            self._grid_inspection_cache_bytes = max(
+                0,
+                self._grid_inspection_cache_bytes - estimate_size_bytes(evicted_payload),
+            )
             self._grid_inspection_payload_by_key.pop(str(evicted_key[0]), None)
         self._update_grid_inspection_score_window()
         return payload
@@ -2239,7 +2449,9 @@ class MatrixListWidget(QGraphicsView):
         record = None if position is None else self._record_by_position.get(position)
         if record is None or position is None:
             return None
-        return self._create_matrix_item(record, position[0], position[1], self._record_index_by_key.get(normalized_key, 0))
+        return self._create_matrix_item(
+            record, position[0], position[1], self._record_index_by_key.get(normalized_key, 0)
+        )
 
     def _remove_matrix_item(self, key: str) -> None:
         item = self._item_by_key.pop(str(key), None)
@@ -2295,9 +2507,7 @@ class MatrixListWidget(QGraphicsView):
         if not self._grid_inspection_visual_mode:
             return set()
         return {
-            str(key)
-            for key in self._grid_inspection_payload_by_key
-            if str(key) and str(key) in self._record_positions
+            str(key) for key in self._grid_inspection_payload_by_key if str(key) and str(key) in self._record_positions
         }
 
     def _is_grid_inspection_target_key(self, key: str | None) -> bool:
@@ -2387,7 +2597,11 @@ class MatrixListWidget(QGraphicsView):
                 continue
             pending.append(key)
             pending_set.add(key)
-        existing_pending = [key for key in self._pending_grid_inspection_keys if key not in pending_set and key in target_keys and key in self._item_by_key]
+        existing_pending = [
+            key
+            for key in self._pending_grid_inspection_keys
+            if key not in pending_set and key in target_keys and key in self._item_by_key
+        ]
         self._pending_grid_inspection_keys = deque(pending + existing_pending)
         self._pending_grid_inspection_key_set = set(self._pending_grid_inspection_keys)
         if self._pending_grid_inspection_keys:
@@ -2484,6 +2698,7 @@ class MatrixListWidget(QGraphicsView):
     def _prepare_visible_tile_queue(self) -> None:
         if self._subpixel_spec is None or not self._tile_overlay_visible:
             return
+        started_ns = time.perf_counter_ns()
         generation = self._tile_request_generation
         pending: list[str] = []
         pending_set: set[str] = set()
@@ -2497,14 +2712,18 @@ class MatrixListWidget(QGraphicsView):
                 continue
             pending.append(key)
             pending_set.add(key)
-        existing_pending = [key for key in self._pending_tile_keys if key not in pending_set and key in self._item_by_key]
+        existing_pending = [
+            key for key in self._pending_tile_keys if key not in pending_set and key in self._item_by_key
+        ]
         self._pending_tile_keys = deque(pending + existing_pending)
         self._pending_tile_key_set = set(self._pending_tile_keys)
         self._tile_load_generation = generation
         if self._pending_tile_keys:
             self._tile_load_timer.start(0)
+        self._record_ui_duration("ui.matrix.tile_queue.prepare", started_ns, frame_count=len(pending))
 
     def _process_pending_tile_queue(self) -> None:
+        started_ns = time.perf_counter_ns()
         if (
             self._subpixel_spec is None
             or not self._tile_overlay_visible
@@ -2512,6 +2731,7 @@ class MatrixListWidget(QGraphicsView):
         ):
             self._pending_tile_keys.clear()
             self._pending_tile_key_set.clear()
+            self._record_ui_duration("ui.matrix.tile_queue.process", started_ns, cancelled=True)
             return
         visible_keys = set(self._visible_record_keys(margin_cells=TILE_PREFETCH_MARGIN_CELLS))
         submitted = 0
@@ -2557,11 +2777,20 @@ class MatrixListWidget(QGraphicsView):
             self._tile_result_timer.start()
         if self._pending_tile_keys:
             self._tile_load_timer.start(0)
+        profiler = self._profiler
+        if profiler is not None:
+            profiler.set_counter("ui.tile.pending", len(self._pending_tile_keys))
+            profiler.set_counter("ui.tile.in_flight", len(self._tile_futures))
+            profiler.increment("ui.tile.submitted", submitted)
+        self._record_ui_duration("ui.matrix.tile_queue.process", started_ns, frame_count=processed)
 
     def _poll_tile_futures(self) -> None:
         if not self._tile_futures:
             self._tile_result_timer.stop()
             return
+        started_ns = time.perf_counter_ns()
+        completed = 0
+        errors = 0
         for key, (generation, cache_key, future) in list(self._tile_futures.items()):
             if not future.done():
                 continue
@@ -2571,24 +2800,42 @@ class MatrixListWidget(QGraphicsView):
                 continue
             try:
                 grid = future.result()
-            except Exception:
+            except Exception as error:
+                _LOGGER.warning("Matrix tile worker failed for %s: %s", key, error)
                 self._tile_jobs_discarded += 1
+                errors += 1
                 continue
             if not isinstance(grid, SubpixelGrid):
                 self._tile_jobs_discarded += 1
                 continue
             self._subpixel_cache_put(cache_key, grid)
-            _store_subpixel_grid_to_disk(cache_key, grid)
+            _store_subpixel_grid_to_disk(cache_key, grid, max_bytes=self._tile_cache_limit_bytes())
             item = self._item_by_key.get(key)
             if item is None:
                 self._tile_jobs_discarded += 1
                 continue
             self._apply_subpixel_grid_to_item(item, grid)
             self._tile_jobs_completed += 1
+            completed += 1
         if not self._tile_futures:
             self._tile_result_timer.stop()
         if self._pending_tile_keys and self._tile_load_generation == self._tile_request_generation:
             self._tile_load_timer.start(0)
+        profiler = self._profiler
+        if profiler is not None:
+            profiler.set_counter("ui.tile.pending", len(self._pending_tile_keys))
+            profiler.set_counter("ui.tile.in_flight", len(self._tile_futures))
+            profiler.set_counter("ui.tile.ram_cache_items", len(self._subpixel_grid_cache))
+            profiler.set_counter("ui.tile.cache_hits", self._tile_cache_hits + self._tile_disk_cache_hits)
+            profiler.set_counter("ui.tile.cache_misses", self._tile_cache_misses)
+            profiler.increment("ui.tile.completed", completed)
+            profiler.increment("ui.tile.errors", errors)
+        self._record_ui_duration(
+            "ui.matrix.tile_results",
+            started_ns,
+            frame_count=completed,
+            error=errors > 0,
+        )
 
     def tile_debug_stats(self) -> dict[str, int | str]:
         return {
@@ -2653,12 +2900,12 @@ class MatrixListWidget(QGraphicsView):
         self._invalidate_grid_inspection_requests(clear_cache=True)
         try:
             self._tile_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
+        except RuntimeError as error:
+            _LOGGER.warning("Could not stop matrix tile executor cleanly: %s", error)
         try:
             self._grid_inspection_executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            pass
+        except RuntimeError as error:
+            _LOGGER.warning("Could not stop grid inspection executor cleanly: %s", error)
         super().closeEvent(event)
 
     def mousePressEvent(self, event) -> None:
@@ -2719,7 +2966,10 @@ class MatrixListWidget(QGraphicsView):
         if self._pan_active and self._pan_start is not None:
             delta = event.position() - self._pan_start
             self._pan_start = event.position()
-            self._pan_bias = (-float(delta.x()) / max(1.0, float(self.transform().m11())), -float(delta.y()) / max(1.0, float(self.transform().m11())))
+            self._pan_bias = (
+                -float(delta.x()) / max(1.0, float(self.transform().m11())),
+                -float(delta.y()) / max(1.0, float(self.transform().m11())),
+            )
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
             self._emit_overview_state()
@@ -2730,7 +2980,10 @@ class MatrixListWidget(QGraphicsView):
             self._selection_drag_current_scene = current_scene
             view_origin = self.mapFromScene(self._selection_drag_origin_scene)
             distance = event.pos() - view_origin
-            if not self._selection_drag_active and (abs(distance.x()) >= QApplication.startDragDistance() or abs(distance.y()) >= QApplication.startDragDistance()):
+            if not self._selection_drag_active and (
+                abs(distance.x()) >= QApplication.startDragDistance()
+                or abs(distance.y()) >= QApplication.startDragDistance()
+            ):
                 self._selection_drag_active = True
                 self._set_hover_tile_selection(None)
                 self._set_hover_item(None)
@@ -2770,7 +3023,9 @@ class MatrixListWidget(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton and self._selection_drag_origin_scene is not None:
             if self._selection_drag_active:
                 selected = self._records_in_scene_rect(self._selection_drag_rect())
-                ctrl_pressed = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier)
+                ctrl_pressed = bool(
+                    (event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier
+                )
                 if ctrl_pressed:
                     self._add_range_selected_records(selected)
                 else:
@@ -2783,7 +3038,9 @@ class MatrixListWidget(QGraphicsView):
             item = self._item_for_view_pos(event.pos())
             if item is not None:
                 selection = self._tile_selection_for_cell(item, event.pos(), allow_build=True)
-                ctrl_pressed = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier)
+                ctrl_pressed = bool(
+                    (event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier
+                )
                 if selection is not None:
                     if ctrl_pressed:
                         self._toggle_range_selected_record(item.record)
@@ -2801,7 +3058,9 @@ class MatrixListWidget(QGraphicsView):
                     self._select_item(item)
                     self.recordSelected.emit(item.record)
             else:
-                ctrl_pressed = bool((event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier)
+                ctrl_pressed = bool(
+                    (event.modifiers() | QApplication.keyboardModifiers()) & Qt.KeyboardModifier.ControlModifier
+                )
                 if not ctrl_pressed:
                     self._set_range_selected_records(())
                     self._clear_tile_selection()
@@ -2834,10 +3093,7 @@ class MatrixListWidget(QGraphicsView):
             self._update_grid_inspection_score_window()
         else:
             ready_scores = [
-                float(score)
-                for record in self._records
-                for score in [self._display_score(record)]
-                if score is not None
+                float(score) for record in self._records for score in [self._display_score(record)] if score is not None
             ]
             self._auto_color_window_low, self._auto_color_window_high = compute_auto_color_window(ready_scores)
         selected_key = self._selected_item.record.key if self._selected_item is not None else None
@@ -2878,23 +3134,27 @@ class MatrixListWidget(QGraphicsView):
         self._matrix_frame_item.setZValue(-5.0)
         rubber_band_pen = QPen(QColor(245, 232, 140, 245), 2.0, Qt.PenStyle.DashLine)
         rubber_band_pen.setCosmetic(True)
-        self._selection_rubber_band_item = self._scene.addRect(QRectF(), rubber_band_pen, QBrush(QColor(92, 180, 255, 28)))
+        self._selection_rubber_band_item = self._scene.addRect(
+            QRectF(), rubber_band_pen, QBrush(QColor(92, 180, 255, 28))
+        )
         self._selection_rubber_band_item.setZValue(20.0)
         self._selection_rubber_band_item.setVisible(False)
         selection_pen = QPen(QColor(255, 235, 120, 245), 2.5, Qt.PenStyle.SolidLine)
         selection_pen.setCosmetic(True)
-        self._range_selection_overlay_item = self._scene.addRect(QRectF(), selection_pen, QBrush(QColor(255, 235, 120, 28)))
+        self._range_selection_overlay_item = self._scene.addRect(
+            QRectF(), selection_pen, QBrush(QColor(255, 235, 120, 28))
+        )
         self._range_selection_overlay_item.setZValue(19.0)
         self._range_selection_overlay_item.setVisible(False)
         complete_materialization = (
-            self._complete_filtered_view_active
-            and len(placements) <= MATRIX_FILTERED_MATERIALIZE_RECORD_LIMIT
+            self._complete_filtered_view_active and len(placements) <= MATRIX_FILTERED_MATERIALIZE_RECORD_LIMIT
         )
         grid_inspection_pixel_mode = (
-            self._grid_inspection_visual_mode
-            and len(placements) >= GRID_INSPECTION_OVERVIEW_RECORD_THRESHOLD
+            self._grid_inspection_visual_mode and len(placements) >= GRID_INSPECTION_OVERVIEW_RECORD_THRESHOLD
         )
-        self._virtualized_items_enabled = grid_inspection_pixel_mode or ((not complete_materialization) and len(placements) >= MATRIX_VIRTUALIZE_RECORD_THRESHOLD)
+        self._virtualized_items_enabled = grid_inspection_pixel_mode or (
+            (not complete_materialization) and len(placements) >= MATRIX_VIRTUALIZE_RECORD_THRESHOLD
+        )
         for index, (record, row, column) in enumerate(placements):
             self._record_positions[record.key] = (row, column)
             self._record_by_position[(row, column)] = record
@@ -2998,7 +3258,9 @@ class MatrixListWidget(QGraphicsView):
         use_overview = self._overview_layer_should_be_active()
         previous = self._overview_layer_visible
         self._overview_layer_visible = use_overview
-        if self._overview_layer_item is not None and (force or use_overview != previous or self._overview_layer_item.isVisible() != use_overview):
+        if self._overview_layer_item is not None and (
+            force or use_overview != previous or self._overview_layer_item.isVisible() != use_overview
+        ):
             self._overview_layer_item.setVisible(use_overview)
         if force or use_overview != previous:
             overlay_keys = self._overview_overlay_keys() if use_overview else set()
@@ -3163,13 +3425,21 @@ class MatrixListWidget(QGraphicsView):
             selected_keys.discard(key)
         else:
             selected_keys.add(key)
-        self._set_range_selected_records(tuple(records_by_key[item_key] for item_key in selected_keys if item_key in records_by_key))
+        self._set_range_selected_records(
+            tuple(records_by_key[item_key] for item_key in selected_keys if item_key in records_by_key)
+        )
 
     def _add_range_selected_records(self, records) -> None:
         records_by_key = {str(item.key): item for item in self._records}
         selected_keys = set(self._range_selected_keys)
         selected_keys.update(str(record.key) for record in records if record is not None)
-        self._set_range_selected_records(tuple(record for record in self._records if str(record.key) in selected_keys and str(record.key) in records_by_key))
+        self._set_range_selected_records(
+            tuple(
+                record
+                for record in self._records
+                if str(record.key) in selected_keys and str(record.key) in records_by_key
+            )
+        )
 
     def _emit_overview_state(self) -> None:
         if self._overview_image is None or self._columns <= 0 or self._rows <= 0:
@@ -3177,23 +3447,56 @@ class MatrixListWidget(QGraphicsView):
             return
         scene_rect = self._scene.sceneRect()
         visible_scene_rect = self.mapToScene(self.viewport().rect()).boundingRect()
-        selected_position = None if self._selected_item is None else (self._selected_item.row, self._selected_item.column)
-        processing_positions = tuple(self._record_positions[key] for key in self._processing_keys if key in self._record_positions)
-        reference_position = self._record_positions.get(self._reference_key) if self._reference_key in self._record_positions else None
+        selected_position = (
+            None if self._selected_item is None else (self._selected_item.row, self._selected_item.column)
+        )
+        processing_positions = tuple(
+            self._record_positions[key] for key in self._processing_keys if key in self._record_positions
+        )
+        reference_position = (
+            self._record_positions.get(self._reference_key) if self._reference_key in self._record_positions else None
+        )
         if scene_rect.width() <= 0 or scene_rect.height() <= 0:
-            self.overviewChanged.emit(self._overview_image, QRectF(), selected_position, self._selection_blink_on, processing_positions, reference_position)
+            self.overviewChanged.emit(
+                self._overview_image,
+                QRectF(),
+                selected_position,
+                self._selection_blink_on,
+                processing_positions,
+                reference_position,
+            )
             return
         left_padding = self._scene_padding / max(1.0, scene_rect.width())
         top_padding = self._scene_padding / max(1.0, scene_rect.height())
         width_padding = (self._scene_padding * 2) / max(1.0, scene_rect.width())
         height_padding = (self._scene_padding * 2) / max(1.0, scene_rect.height())
         normalized = QRectF(
-            max(0.0, (visible_scene_rect.left() / scene_rect.width() - left_padding) / max(NORMALIZATION_EPSILON, 1.0 - width_padding)),
-            max(0.0, (visible_scene_rect.top() / scene_rect.height() - top_padding) / max(NORMALIZATION_EPSILON, 1.0 - height_padding)),
-            min(1.0, (visible_scene_rect.width() / scene_rect.width()) / max(NORMALIZATION_EPSILON, 1.0 - width_padding)),
-            min(1.0, (visible_scene_rect.height() / scene_rect.height()) / max(NORMALIZATION_EPSILON, 1.0 - height_padding)),
+            max(
+                0.0,
+                (visible_scene_rect.left() / scene_rect.width() - left_padding)
+                / max(NORMALIZATION_EPSILON, 1.0 - width_padding),
+            ),
+            max(
+                0.0,
+                (visible_scene_rect.top() / scene_rect.height() - top_padding)
+                / max(NORMALIZATION_EPSILON, 1.0 - height_padding),
+            ),
+            min(
+                1.0, (visible_scene_rect.width() / scene_rect.width()) / max(NORMALIZATION_EPSILON, 1.0 - width_padding)
+            ),
+            min(
+                1.0,
+                (visible_scene_rect.height() / scene_rect.height()) / max(NORMALIZATION_EPSILON, 1.0 - height_padding),
+            ),
         )
-        self.overviewChanged.emit(self._overview_image, normalized, selected_position, self._selection_blink_on, processing_positions, reference_position)
+        self.overviewChanged.emit(
+            self._overview_image,
+            normalized,
+            selected_position,
+            self._selection_blink_on,
+            processing_positions,
+            reference_position,
+        )
 
     def _select_item(self, item: _MatrixCellItem) -> None:
         if self._selected_item is item:
@@ -3326,10 +3629,6 @@ class MatrixListWidget(QGraphicsView):
 
     def _apply_item_style(self, item: _MatrixCellItem, *, sync_tile_state: bool = True) -> None:
         excluded = self._is_record_excluded(item.record)
-        management_payload = self._management_payload_for_record(item.record) if self._management_visual_mode else None
-        is_recommended = str(item.record.key) in self._management_recommended_keys
-        assigned_for_work = self._management_has_active_assignment(management_payload) if management_payload is not None else False
-        assignee_color = self._management_assignee_color_for_payload(management_payload) if management_payload is not None else None
         marker_kind: str | None = None
         marker_color: QColor | None = None
         if item is self._hovered_item:
@@ -3340,25 +3639,6 @@ class MatrixListWidget(QGraphicsView):
             pen = QPen(PROCESSING_BORDER, MATRIX_PROCESSING_PEN_WIDTH)
         elif self._reference_key is not None and item.record.key == self._reference_key:
             pen = QPen(REFERENCE_BORDER, MATRIX_REFERENCE_PEN_WIDTH)
-        elif self._management_visual_mode:
-            if assigned_for_work:
-                pen_color = assignee_color if assignee_color is not None else QColor(70, 196, 255, 245)
-                pen = QPen(pen_color, max(MATRIX_DEFAULT_PEN_WIDTH + 0.9, 1.7))
-                marker_kind = "assigned"
-                marker_color = pen_color
-            elif is_recommended:
-                recommendation_color = self._management_recommendation_overlay_color(management_payload)
-                marker_color = recommendation_color if recommendation_color is not None else QColor(186, 104, 200, 245)
-                pen = QPen(marker_color, max(MATRIX_DEFAULT_PEN_WIDTH + 0.8, 1.7))
-                marker_kind = "recommended"
-            else:
-                pen = QPen(DEFAULT_BORDER, MATRIX_DEFAULT_PEN_WIDTH)
-        elif is_recommended:
-            recommendation_payload = self._management_payload_for_record(item.record)
-            recommendation_color = self._management_recommendation_overlay_color(recommendation_payload)
-            pen = QPen(recommendation_color if recommendation_color is not None else QColor(186, 104, 200, 245), max(MATRIX_DEFAULT_PEN_WIDTH + 0.7, 1.6))
-            marker_kind = "recommended"
-            marker_color = recommendation_color if recommendation_color is not None else QColor(186, 104, 200, 245)
         else:
             pen = QPen(DEFAULT_BORDER, MATRIX_DEFAULT_PEN_WIDTH)
         brush_color = self._background_color_for_record(item.record)
@@ -3391,14 +3671,24 @@ class MatrixListWidget(QGraphicsView):
             item = self._item_by_key.get(key)
             if item is None:
                 continue
-            selected_tile = self._selected_subpixel_selection if self._selected_subpixel_selection is not None and self._selected_subpixel_selection.record.key == key else None
-            hovered_tile = self._hovered_subpixel_selection if self._hovered_subpixel_selection is not None and self._hovered_subpixel_selection.record.key == key else None
+            selected_tile = (
+                self._selected_subpixel_selection
+                if self._selected_subpixel_selection is not None and self._selected_subpixel_selection.record.key == key
+                else None
+            )
+            hovered_tile = (
+                self._hovered_subpixel_selection
+                if self._hovered_subpixel_selection is not None and self._hovered_subpixel_selection.record.key == key
+                else None
+            )
             item.set_tile_state(selected_tile, hovered_tile)
 
     def _tile_overlay_active(self) -> bool:
         return self._tile_overlay_visible
 
-    def _tile_selection_for_cell(self, item: _MatrixCellItem, view_pos, *, allow_build: bool = False) -> MatrixTileSelection | None:
+    def _tile_selection_for_cell(
+        self, item: _MatrixCellItem, view_pos, *, allow_build: bool = False
+    ) -> MatrixTileSelection | None:
         spec = self._subpixel_spec
         if self._is_record_excluded(item.record):
             return None
@@ -3566,21 +3856,6 @@ class MatrixListWidget(QGraphicsView):
             return QColor(64, 68, 74)
         score = self._display_score(record)
         base_color = QColor(MATRIX_BACKGROUND_ALT) if score is None else self._background_color(score)
-        if self._management_visual_mode:
-            neutral = QColor(MATRIX_BACKGROUND_ALT)
-            management_payload = self._management_payload_for_record(record)
-            if management_payload is None:
-                return neutral
-            cluster_color = self._management_cluster_color_for_payload(management_payload)
-            priority_overlay = self._management_priority_map_overlay_color(management_payload)
-            result = cluster_color if cluster_color is not None else neutral
-            if self._management_has_active_assignment(management_payload):
-                assignee_color = self._management_assignee_color_for_payload(management_payload)
-                assignment_overlay = assignee_color if assignee_color is not None else QColor(70, 196, 255, 215)
-                return blend_colors(result, assignment_overlay, 0.18)
-            if priority_overlay is not None and cluster_color is None:
-                return blend_colors(neutral, priority_overlay, 0.46)
-            return result
         if self._grid_inspection_visual_mode:
             if not self._is_grid_inspection_target_record(record):
                 return QColor(64, 68, 74)
@@ -3589,23 +3864,7 @@ class MatrixListWidget(QGraphicsView):
                 return self._background_color_for_grid_result(None)
             _pixmap, result = payload
             return self._background_color_for_grid_result(result)
-        management = self._management_payload_for_record(record)
-        if not management:
-            return base_color
-        status = str(management.get("status", "")).lower()
-        status_colors = {
-            "queued": QColor(111, 122, 24, 220),
-            "issued": QColor(47, 96, 156, 220),
-            "in_progress": QColor(47, 96, 156, 220),
-            "returned": QColor(31, 95, 59, 220),
-            "done": QColor(31, 95, 59, 220),
-            "conflict": QColor(167, 93, 18, 220),
-            "overdue": QColor(140, 47, 57, 220),
-        }
-        overlay = status_colors.get(status)
-        if overlay is None:
-            return base_color
-        return blend_colors(base_color, overlay, 0.28)
+        return base_color
 
     def _tooltip_for_record(self, record: FrameRecord) -> str:
         if self._grid_inspection_visual_mode:
@@ -3633,25 +3892,13 @@ class MatrixListWidget(QGraphicsView):
                 f"Cell defects: {bad_cells}",
                 score_line,
             ]
-            if self._record_has_ground_truth(record):
-                lines.append(self._t("matrix.ground_truth_frame"))
             return "\n".join(lines)
         if self._is_record_excluded(record):
             base_text = f"{record.display_name}\n{self._t('matrix.validation_na_excluded')}"
-            if self._record_has_ground_truth(record):
-                base_text = f"{base_text}\n{self._t('matrix.ground_truth_frame')}"
-            management_lines = self._management_tooltip_lines(record)
-            if management_lines:
-                return "\n".join([base_text, "", *management_lines])
             return base_text
         if not bool(getattr(record, "score_ready", False)):
             suffix = f"\n{self._t('matrix.reference_frame')}" if self._reference_key == record.key else ""
             base_text = f"{record.display_name}\n{self._t('matrix.mismatch_not_computed')}{suffix}"
-            if self._record_has_ground_truth(record):
-                base_text = f"{base_text}\n{self._t('matrix.ground_truth_frame')}"
-            management_lines = self._management_tooltip_lines(record)
-            if management_lines:
-                return "\n".join([base_text, "", *management_lines])
             return base_text
         lines = [record.display_name]
         if record.absolute_score is not None:
@@ -3661,10 +3908,7 @@ class MatrixListWidget(QGraphicsView):
         if record.score_percentile is not None:
             lines.append(f"Score percentile: P{float(record.score_percentile):.1f}")
         if self._reference_key == record.key:
-            lines.append(self._t('matrix.reference_frame'))
-        if self._record_has_ground_truth(record):
-            lines.append(self._t("matrix.ground_truth_frame"))
-        lines.extend(self._management_tooltip_lines(record))
+            lines.append(self._t("matrix.reference_frame"))
         return "\n".join(lines)
 
     def _hover_text(self, record: FrameRecord) -> str:
@@ -3677,257 +3921,23 @@ class MatrixListWidget(QGraphicsView):
                 return f"{record.display_name} | grid loading..."
             _pixmap, result = payload
             parts = [record.display_name, f"defects {len(result.cells)}", f"score {float(result.score):.3f}"]
-            if self._record_has_ground_truth(record):
-                parts.append(self._t("matrix.ground_truth_short"))
             return " | ".join(parts)
         if self._is_record_excluded(record):
-            parts = [record.display_name, self._t('matrix.validation_na_excluded').lower()]
-            if self._record_has_ground_truth(record):
-                parts.append(self._t("matrix.ground_truth_short"))
-            management = self._management_payload_for_record(record)
-            if management:
-                parts.append(self._t("management.short.task", value=management.get("status", "")))
-                assignee = str(management.get("assignee", "")).strip()
-                if assignee:
-                    parts.append(self._t("management.short.owner", value=assignee))
-                recommended = str(management.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
-                if recommended:
-                    risk = str(management.get("risk_score", "")).strip()
-                    parts.append(self._t("management.short.suggested_with_risk", value=risk) if risk else self._t("management.short.suggested"))
+            parts = [record.display_name, self._t("matrix.validation_na_excluded").lower()]
             return " | ".join(parts)
         if not bool(getattr(record, "score_ready", False)):
-            parts = [record.display_name, self._t('matrix.mismatch_not_computed').lower()]
-            if self._record_has_ground_truth(record):
-                parts.append(self._t("matrix.ground_truth_short"))
-            management = self._management_payload_for_record(record)
-            if management:
-                parts.append(self._t("management.short.task", value=management.get("status", "")))
-                assignee = str(management.get("assignee", "")).strip()
-                if assignee:
-                    parts.append(self._t("management.short.owner", value=assignee))
-                recommended = str(management.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
-                if recommended:
-                    risk = str(management.get("risk_score", "")).strip()
-                    parts.append(self._t("management.short.suggested_with_risk", value=risk) if risk else self._t("management.short.suggested"))
+            parts = [record.display_name, self._t("matrix.mismatch_not_computed").lower()]
             return " | ".join(parts)
         parts = [record.display_name]
         if self._reference_key == record.key:
-            parts.append(self._t('matrix.reference_short'))
-        if self._record_has_ground_truth(record):
-            parts.append(self._t("matrix.ground_truth_short"))
+            parts.append(self._t("matrix.reference_short"))
         if record.absolute_score is not None:
             parts.append(f"{self._t('matrix.absolute_short')} {self._format_metric_value(record.absolute_score)}")
         if record.relative_score is not None:
             parts.append(f"{self._t('matrix.relative_short')} {record.relative_score * 100.0:.3f}%")
         if record.score_percentile is not None:
             parts.append(f"P{float(record.score_percentile):.1f}")
-        management = self._management_payload_for_record(record)
-        if management:
-            parts.append(self._t("management.short.task", value=management.get("status", "")))
-            assignee = str(management.get("assignee", "")).strip()
-            if assignee:
-                parts.append(self._t("management.short.owner", value=assignee))
-            recommended = str(management.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
-            if recommended:
-                risk = str(management.get("risk_score", "")).strip()
-                parts.append(self._t("management.short.suggested_with_risk", value=risk) if risk else self._t("management.short.suggested"))
         return " | ".join(parts)
-
-    def _management_payload_for_record(self, record: FrameRecord) -> dict[str, str] | None:
-        if not self._management_payload_by_key:
-            return None
-        key_variants = (
-            str(record.key),
-            str(record.display_name or ""),
-            str(Path(str(record.key)).name),
-            str(Path(str(record.key)).stem),
-            str(Path(str(record.display_name or "")).stem),
-        )
-        for key in key_variants:
-            normalized = key.strip()
-            if not normalized:
-                continue
-            payload = self._management_payload_by_key.get(normalized)
-            if payload is not None:
-                return payload
-        return None
-
-    def _management_tooltip_lines(self, record: FrameRecord) -> list[str]:
-        payload = self._management_payload_for_record(record)
-        if not payload:
-            return []
-        lines = ["", self._t("management.tooltip.section")]
-        lines.append(self._t("management.tooltip.status", value=payload.get("status", "")))
-        assignee = str(payload.get("assignee", "")).strip()
-        if assignee:
-            lines.append(self._t("management.tooltip.assignee", value=assignee))
-        issued_at = str(payload.get("issued_at", "")).strip()
-        if issued_at:
-            lines.append(self._t("management.tooltip.issued", value=issued_at))
-        returned_at = str(payload.get("returned_at", "")).strip()
-        if returned_at:
-            lines.append(self._t("management.tooltip.returned", value=returned_at))
-        task_type = str(payload.get("task_type", "")).strip()
-        if task_type:
-            lines.append(self._t("management.tooltip.type", value=task_type))
-        cluster_id = str(payload.get("cluster_id", "")).strip()
-        if cluster_id:
-            cluster_size = str(payload.get("cluster_size", "")).strip()
-            if cluster_size:
-                lines.append(f"cluster: {cluster_id} (size: {cluster_size})")
-            else:
-                lines.append(f"cluster: {cluster_id}")
-        pattern_group = str(payload.get("pattern_group", "")).strip()
-        pattern_cluster_id = str(payload.get("pattern_cluster_id", "")).strip()
-        if pattern_group:
-            lines.append(f"pattern group: {pattern_group}")
-        if pattern_cluster_id:
-            lines.append(f"pattern cluster: {pattern_cluster_id}")
-        recommended = str(payload.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
-        if recommended:
-            lines.append(self._t("management.tooltip.suggested"))
-            risk_score = str(payload.get("risk_score", "")).strip()
-            if risk_score:
-                lines.append(self._t("management.tooltip.risk", value=risk_score))
-        scenario_label = str(payload.get("scenario_label", "")).strip()
-        if scenario_label:
-            lines.append(f"scenario: {scenario_label}")
-        scenario_rank = str(payload.get("scenario_rank", "")).strip()
-        if scenario_rank:
-            lines.append(f"scenario rank: {scenario_rank}")
-        priority_score = str(payload.get("priority_score", "")).strip()
-        if priority_score and not str(payload.get("risk_score", "")).strip():
-            lines.append(f"priority: {priority_score}")
-        labeling_percent = str(payload.get("labeling_priority_percent", "")).strip()
-        labeling_category = str(payload.get("labeling_priority_category", "")).strip()
-        labeling_reasons = str(payload.get("labeling_priority_reasons", "")).strip()
-        if labeling_percent:
-            lines.append(f"labeling priority: {labeling_percent}/100")
-        if labeling_category:
-            lines.append(f"category: {labeling_category}")
-        if labeling_reasons:
-            lines.append(f"reasons: {labeling_reasons}")
-        return lines
-
-    @staticmethod
-    def _management_has_active_assignment(payload: dict[str, str] | None) -> bool:
-        if not payload:
-            return False
-        assignee = str(payload.get("assignee", "")).strip()
-        if not assignee:
-            return False
-        status = str(payload.get("status", "")).strip().lower()
-        return status not in {"returned", "done", "cancelled"}
-
-    def _management_assignee_color_for_payload(self, payload: dict[str, str] | None) -> QColor | None:
-        if not payload:
-            return None
-        assignee = str(payload.get("assignee", "")).strip()
-        if not assignee:
-            return None
-        configured_color = self._management_assignee_colors.get(assignee.lower())
-        color = self._color_from_text(configured_color)
-        if color is not None:
-            return color
-        # Stable fallback per assignee if no custom color was configured yet.
-        digest = hashlib.sha1(assignee.lower().encode("utf-8", errors="ignore")).digest()
-        red = 70 + (digest[0] % 150)
-        green = 80 + (digest[1] % 130)
-        blue = 90 + (digest[2] % 140)
-        return QColor(int(red), int(green), int(blue), 235)
-
-    def _management_cluster_color_for_payload(self, payload: dict[str, str] | None) -> QColor | None:
-        if not payload:
-            return None
-        cluster_id_text = str(payload.get("cluster_id", "")).strip()
-        if not cluster_id_text:
-            cluster_id_text = str(payload.get("pattern_cluster_id", "")).strip()
-        if not cluster_id_text:
-            return None
-        try:
-            cluster_id = int(float(cluster_id_text))
-        except Exception:
-            cluster_id = int.from_bytes(cluster_id_text.encode("utf-8", errors="ignore"), "little", signed=False) % 9973
-        hue = int((cluster_id * 47) % 360)
-        color = QColor.fromHsv(hue, 195, 250, 240)
-        return color if color.isValid() else None
-
-    @staticmethod
-    def _management_priority_value_from_payload(payload: dict[str, str] | None) -> float | None:
-        if not payload:
-            return None
-        for key in ("labeling_priority_score", "risk_score", "priority_score"):
-            raw = str(payload.get(key, "")).strip()
-            if not raw:
-                continue
-            try:
-                value = float(raw)
-            except Exception:
-                continue
-            if math.isfinite(value):
-                return float(value)
-        return None
-
-    @staticmethod
-    def _mix_colors(left: QColor, right: QColor, ratio: float, *, alpha: int = 230) -> QColor:
-        clamped = max(0.0, min(float(ratio), 1.0))
-        inv = 1.0 - clamped
-        return QColor(
-            int(left.red() * inv + right.red() * clamped),
-            int(left.green() * inv + right.green() * clamped),
-            int(left.blue() * inv + right.blue() * clamped),
-            int(alpha),
-        )
-
-    def _management_recommendation_overlay_color(self, payload: dict[str, str] | None) -> QColor | None:
-        if not payload:
-            return None
-        recommended = str(payload.get("recommended", "")).strip().lower() in {"1", "true", "yes"}
-        if not recommended:
-            return None
-        value = self._management_priority_value_from_payload(payload)
-        if value is None:
-            return QColor(186, 104, 200, 232)
-        low = self._management_recommended_priority_min
-        high = self._management_recommended_priority_max
-        if low is None or high is None or not math.isfinite(low) or not math.isfinite(high):
-            ratio = 1.0
-        elif abs(float(high) - float(low)) <= 1e-9:
-            ratio = 1.0
-        else:
-            ratio = (float(value) - float(low)) / max(1e-9, float(high) - float(low))
-        ratio = max(0.0, min(ratio, 1.0))
-        low_color = QColor(74, 156, 83, 230)
-        mid_color = QColor(221, 186, 74, 230)
-        high_color = QColor(214, 78, 71, 230)
-        if ratio <= 0.5:
-            return self._mix_colors(low_color, mid_color, ratio * 2.0, alpha=232)
-        return self._mix_colors(mid_color, high_color, (ratio - 0.5) * 2.0, alpha=232)
-
-    def _management_priority_map_overlay_color(self, payload: dict[str, str] | None) -> QColor | None:
-        if not payload:
-            return None
-        scenario = str(payload.get("scenario", "")).strip().lower()
-        if scenario not in {"labeling_priority_hard_cases", "primary_labeling_selection"}:
-            return None
-        value = self._management_priority_value_from_payload(payload)
-        if value is None:
-            return None
-        low = self._management_priority_min
-        high = self._management_priority_max
-        if low is None or high is None or not math.isfinite(low) or not math.isfinite(high):
-            ratio = 1.0
-        elif abs(float(high) - float(low)) <= 1e-9:
-            ratio = 1.0
-        else:
-            ratio = (float(value) - float(low)) / max(1e-9, float(high) - float(low))
-        ratio = max(0.0, min(ratio, 1.0))
-        low_color = QColor(96, 107, 118, 220)
-        mid_color = QColor(227, 187, 87, 225)
-        high_color = QColor(214, 81, 70, 232)
-        if ratio <= 0.5:
-            return self._mix_colors(low_color, mid_color, ratio * 2.0, alpha=228)
-        return self._mix_colors(mid_color, high_color, (ratio - 0.5) * 2.0, alpha=232)
 
     @staticmethod
     def _color_from_text(value: str | None) -> QColor | None:
@@ -3945,6 +3955,8 @@ __all__ = [
     "GradientPresetSelectorWidget",
     "GradientRangeSelectorWidget",
     "compute_auto_color_window",
+    "MatrixColorScaleInfo",
+    "MatrixLegendWidget",
     "enhance_palette_position",
     "MatrixLayoutConfig",
     "MatrixTileSelection",
@@ -3957,8 +3969,3 @@ __all__ = [
     "interpolate_gradient_color",
     "map_score_to_palette_position",
 ]
-
-
-
-
-

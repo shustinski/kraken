@@ -1,4 +1,5 @@
 """Tile-grid planning helpers for the validation gradient widget."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

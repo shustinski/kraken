@@ -55,6 +55,7 @@ from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.profiling_dialog import ProfilingDialog
+from ..ui.history_dialog import StandaloneHistoryDialog
 from ..ui.ui_constants import (
     BOUNDARY_RADIUS_RANGE,
     COMPARISON_TARGET_OPTIONS,
@@ -434,6 +435,8 @@ class KarakalWidget(QWidget):
 
     """Embeddable widget for multi-model segmentation quality evaluation."""
 
+    standaloneAnalysisRepeatRequested = pyqtSignal(object)
+
     def __init__(self, parent: QWidget | None = None, *, settings: QSettings | None = None) -> None:
         super().__init__(parent)
         self.setObjectName(EXTEND_ROOT_OBJECT_NAME)
@@ -584,6 +587,10 @@ class KarakalWidget(QWidget):
         self.analysis_setup_panel = AnalysisSetupPanel(self._t, control_host)
         self.analysis_setup_panel.set_profile(DEFAULT_ANALYSIS_PROFILE)
         control_layout.addWidget(self.analysis_setup_panel)
+
+        self.persistent_history_button = QPushButton("История анализов в БД", control_host)
+        self.persistent_history_button.setObjectName("persistentAnalysisHistoryButton")
+        control_layout.addWidget(self.persistent_history_button)
 
         self.run_history_group = QGroupBox(self._t("run_history.group"), control_host)
         run_history_layout = QVBoxLayout(self.run_history_group)
@@ -1923,6 +1930,7 @@ class KarakalWidget(QWidget):
         self.matrix_gradient_combo.currentIndexChanged.connect(self._presenter._on_matrix_gradient_changed)
         self.analysis_setup_panel.profileChanged.connect(self._presenter._on_analysis_profile_changed)
         self.analysis_setup_panel.runRequested.connect(self._presenter._on_primary_run_requested)
+        self.persistent_history_button.clicked.connect(self._open_persistent_analysis_history)
         self.run_history_list.itemClicked.connect(self._presenter._on_run_history_selected)
         self.thumbnail_size_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
         self.analysis_mode_combo.currentIndexChanged.connect(self._presenter._on_analysis_mode_changed)
@@ -1941,6 +1949,12 @@ class KarakalWidget(QWidget):
         self.language_toggle_button.clicked.connect(self._toggle_language)
         self.matrix_tabs.currentChanged.connect(self._presenter._on_current_tab_changed)
         self.matrix_tabs.tabCloseRequested.connect(self._presenter._close_matrix_tab)
+
+    def _open_persistent_analysis_history(self) -> StandaloneHistoryDialog:
+        dialog = StandaloneHistoryDialog(parent=self)
+        dialog.repeatRequested.connect(self.standaloneAnalysisRepeatRequested)
+        dialog.exec()
+        return dialog
 
     def set_workflow_summary(self, payload: dict[str, tuple[str, str, str]]) -> None:
         self.analysis_setup_panel.set_workflow_summary(payload)

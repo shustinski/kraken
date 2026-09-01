@@ -10,7 +10,6 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, get_worker_info
-from torchvision.transforms import ToTensor
 
 from neuralimage.augmentations import (
     ICDefectAugmentor,
@@ -25,7 +24,6 @@ from neuralimage.lib.data_interfaces import (
     build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
 )
-from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.lib.images import ImagePreparator, SampleCalculator, SampleFastCutter
 from neuralimage.lib.rare_patch_masks import resolve_rare_patch_mask_path
 from neuralimage.model.NeuralNetwork.context_utils import (
@@ -1103,135 +1101,3 @@ def index_in_list(index: int, datalist: list[int]):
         return frame, index - datalist[frame - 1]
 
     raise IndexError('dataset index out of range')
-
-
-class CustomDataset(Dataset):
-    def __init__(
-        self,
-        samples,
-        channels: int,
-        transform=None,
-        *,
-        pcb_defects=None,
-        apply_train_only_transforms: bool = True,
-        tech_aug=None,
-        preprocessing=None,
-        sem_augmentation=None,
-    ):
-        self.samples: list[tuple[Path, Path]] = samples
-        self.channels = channels
-        self.transform = transform
-        self._epoch_index: int = 0
-        self._tech_aug_config = build_tech_augmentation_config(tech_aug)
-        self._tech_aug_binary_tolerance = float(
-            getattr(self._tech_aug_config, 'binary_tolerance', 0.15)
-        )
-        self._tech_augmentor = (
-            TechVariationAugmentor(self._tech_aug_config)
-            if bool(apply_train_only_transforms) and self._tech_aug_config.enabled
-            else None
-        )
-        self._pcb_defects = build_pcb_defect_parameters(pcb_defects)
-        self._defect_augmentor = (
-            PCBDefectAugmentor(self._pcb_defects)
-            if bool(apply_train_only_transforms) and self._pcb_defects.enabled
-            else None
-        )
-        self._use_defect_mask_as_label = bool(self._pcb_defects.use_defect_mask_as_label)
-        self._preprocessing = preprocessing
-        self._sem_augmentation = sem_augmentation
-        self._apply_train_only_transforms = bool(apply_train_only_transforms)
-
-    def __len__(self):
-        return len(self.samples)
-
-    def describe_sample(self, idx: int) -> str:
-        image_path, _label_path = self.samples[int(idx)]
-        return str(image_path.stem)
-
-    def frame_key(self, idx: int) -> str:
-        image_path, _label_path = self.samples[int(idx)]
-        return str(image_path.resolve())
-
-    def sample_key(self, idx: int) -> str:
-        return self.frame_key(idx)
-
-    def set_epoch(self) -> None:
-        self._epoch_index += 1
-
-    def __getitem__(self, idx):
-        if self._defect_augmentor is not None:
-            image_path = self.samples[idx][0]
-            label_path = self.samples[idx][1]
-            image_pil = retry_file_read(lambda: Image.open(image_path).copy(), path=image_path)
-            label_pil = retry_file_read(
-                lambda: Image.open(label_path).convert("L"),
-                path=label_path,
-            )
-            image_array = image_to_channel_first_float01(image_pil, self.channels)
-            label_array = (np.asarray(label_pil, dtype=np.float32) / 255.0)[None, :, :]
-            image_array, label_array = _apply_binary_tech_augmentation_to_pair_with_seed(
-                image_array,
-                label_array,
-                self._tech_augmentor,
-                binary_tolerance=self._tech_aug_binary_tolerance,
-                seed=self._sample_seed(idx),
-            )
-            augmented_image, defect_mask, augmented_mask = self._defect_augmentor(
-                image_array,
-                label_array,
-                seed=self._sample_seed(idx),
-                return_augmented_mask=True,
-            )
-            target_array = defect_mask if self._use_defect_mask_as_label else augmented_mask
-            augmented_image = apply_dataset_preprocessing(augmented_image, self._preprocessing)
-            return (
-                torch.from_numpy(np.asarray(augmented_image, dtype=np.float32)).float(),
-                torch.from_numpy(np.asarray(target_array, dtype=np.float32)).float(),
-            )
-
-        image_path = self.samples[idx][0]
-        label_path = self.samples[idx][1]
-        image = retry_file_read(lambda: Image.open(image_path).copy(), path=image_path)
-        image_tensor = torch.from_numpy(image_to_channel_first_float01(image, self.channels)).float()
-
-        label = retry_file_read(
-            lambda: Image.open(label_path).convert("L"),
-            path=label_path,
-        )
-
-        # Convert to tensor and normalize to [0., 1.]
-        label_tensor = ToTensor()(label)
-
-        # If needed, ensure the data type is float32
-        label_tensor = label_tensor.float()
-        if self._tech_augmentor is not None:
-            augmented_image, augmented_label = _apply_binary_tech_augmentation_to_pair_with_seed(
-                image_tensor.numpy(),
-                label_tensor.numpy(),
-                self._tech_augmentor,
-                binary_tolerance=self._tech_aug_binary_tolerance,
-                seed=self._sample_seed(idx),
-            )
-            image_tensor = torch.from_numpy(np.ascontiguousarray(augmented_image)).float()
-            label_tensor = torch.from_numpy(np.ascontiguousarray(augmented_label)).float()
-
-        image_value: np.ndarray | torch.Tensor = image_tensor
-        label_value: np.ndarray | torch.Tensor = label_tensor
-        if self._apply_train_only_transforms:
-            image_value, label_value = apply_dataset_sem_augmentation(
-                image_value,
-                label_value,
-                self._sem_augmentation,
-            )
-        image_tensor = apply_dataset_preprocessing(image_value, self._preprocessing).float()
-        label_tensor = label_value if torch.is_tensor(label_value) else torch.from_numpy(label_value).float()
-
-        # if self.transform:
-        #     image = self.transform(image)
-        #     label = self.transform(label)
-
-        return image_tensor, label_tensor
-
-    def _sample_seed(self, idx: int) -> int:
-        return hash((self._epoch_index, int(idx), len(self.samples), 2741)) & 0xFFFFFFFF

@@ -45,6 +45,49 @@ def test_typed_legacy_defaults_keep_compact_compatibility_payload():
     assert sem_config_from_form_values(values, preset='legacy_v1') == {}
 
 
+@pytest.mark.parametrize(
+    'method, training_enabled',
+    [
+        ('confidence_head', True),
+        ('mc_dropout', False),
+        ('tta_variance', False),
+        ('combined', True),
+        ('auto', True),
+    ],
+)
+def test_v1_uncertainty_migrates_to_independent_training_and_inference(method, training_enabled):
+    config = build_sem_segmentation_config(
+        {
+            'version': 1,
+            'uncertainty': {
+                'enabled': True,
+                'method': method,
+                'confidence_loss_weight': 0.25,
+            },
+        }
+    )
+
+    assert config.version == 2
+    assert config.confidence_training.enabled is training_enabled
+    assert config.confidence_training.loss_weight == pytest.approx(0.25)
+    assert config.inference_uncertainty.enabled
+    assert config.inference_uncertainty.method == method
+    assert 'uncertainty' not in config.to_dict()
+
+
+def test_v2_confidence_training_does_not_enable_inference_uncertainty():
+    config = build_sem_segmentation_config(
+        {
+            'version': 2,
+            'confidence_training': {'enabled': True, 'loss_weight': 0.2},
+            'inference_uncertainty': {'enabled': False, 'method': 'mc_dropout'},
+        }
+    )
+
+    assert config.uncertainty.uses_confidence_head()
+    assert not config.uncertainty.uses_mc_dropout()
+
+
 def test_typed_ui_clears_distance_boundary_weight_when_sdf_is_disabled():
     values = sem_config_to_form_values(get_sem_preset('sem_topology_experimental_v1').to_dict())
     values['sem__target_sdf'] = False

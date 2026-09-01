@@ -81,6 +81,38 @@ def apply_dataset_sem_augmentation(
     return augmented.astype(np.float32), label
 
 
+def apply_dataset_sem_augmentation_preview(
+    image: Any,
+    label: Any,
+    config: SemAugmentationConfig | None,
+) -> tuple[Any, Any]:
+    if config is None or not config.enabled:
+        return image, label
+    augmentor = SemAugmentor(config)
+    if torch.is_tensor(image):
+        array = image.detach().cpu().numpy()
+        label_array = _to_numpy_label(label)
+        if array.ndim == 3:
+            augmented_planes = []
+            for plane in array:
+                augmented_plane, _ = augmentor.apply_preview(plane, label_array)
+                augmented_planes.append(augmented_plane)
+            augmented = np.stack(augmented_planes, axis=0)
+        else:
+            augmented, _ = augmentor.apply_preview(array, label_array)
+        return torch.from_numpy(augmented.astype(np.float32)), label
+    array = np.asarray(image)
+    label_array = _to_numpy_label(label)
+    if array.ndim == 3 and array.shape[0] in {1, 3}:
+        augmented = np.stack(
+            [augmentor.apply_preview(plane, label_array)[0] for plane in array],
+            axis=0,
+        )
+    else:
+        augmented, _ = augmentor.apply_preview(array, label_array)
+    return augmented.astype(np.float32), label
+
+
 def maybe_build_supervision_target(
     label: Any,
     config: SupervisionTargetsParameters | None,

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List, Tuple, Union
 
-SUPPORTED_IMAGES = ('.jpg', '.bmp', '.png')
+SUPPORTED_IMAGES = ('.jpg', '.jpeg', '.bmp', '.png', '.tif', '.tiff', '.webp')
 
 def filter_images(folder: Union[str, Path], *, recursive: bool = False) -> List[Path]:
     return filter_files(folder, SUPPORTED_IMAGES, recursive=recursive)

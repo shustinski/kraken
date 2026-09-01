@@ -28,6 +28,7 @@ from neuralimage.lib.data_interfaces import (
 )
 from neuralimage.lib.file_func import filter_files, filter_images
 from neuralimage.lib.func import get_input_channels
+from neuralimage.lib.images import ImagePreparator
 from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.model.NeuralNetwork import create_model, model_supports_init_kwarg
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
@@ -39,7 +40,7 @@ from neuralimage.model.NeuralNetwork.dataset import (
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
 from neuralimage.model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, ModelTrainer
 from neuralimage.model.image_workers import ConvertCifThread
-from neuralimage.preprocessing.config import PreprocessingConfig
+from neuralimage.preprocessing.config import PreprocessingConfig, build_preprocessing_config
 from neuralimage.preprocessing.pipeline import image_to_channel_first_float01
 from neuralimage.preprocessing.statistics import compute_dataset_statistics
 from neuralimage.training.hard_mining import compute_geometry_difficulty_score
@@ -715,6 +716,7 @@ class GeneralNeuralHandler:
         else:
             model = load_model_artifact(self.recognition_parameters.model, map_location='cpu')
             self._validate_loaded_model_input_channels(model)
+            self._apply_artifact_preprocessing_for_training(model)
             if self.work_mode in (WorkMode.further_training, WorkMode.continue_training) and hasattr(model, 'deep_supervision'):
                 deep_supervision_enabled = bool(getattr(self.tranining_parameters, 'deep_supervision', True))
                 setattr(model, 'deep_supervision', deep_supervision_enabled)
@@ -726,6 +728,21 @@ class GeneralNeuralHandler:
                 setattr(model, '_neuralimage_model_kwargs', model_kwargs)
             model_save_path = artifact_dir / Path(self.recognition_parameters.model).name
         return model, model_save_path
+
+    def _apply_artifact_preprocessing_for_training(self, model: Any) -> None:
+        metadata = getattr(model, '_neuralimage_artifact_metadata', {})
+        payload = metadata.get('preprocessing') if isinstance(metadata, dict) else None
+        if not isinstance(payload, dict) or not isinstance(payload.get('config'), dict):
+            return
+        artifact_config = build_preprocessing_config(payload['config'])
+        artifact_hash = str(payload.get('hash') or artifact_config.stable_hash())
+        requested = getattr(self.tranining_parameters, 'preprocessing', None) or PreprocessingConfig()
+        if requested.any_enabled() and requested.stable_hash() != artifact_hash:
+            raise ValueError(
+                'Training preprocessing is incompatible with the loaded model artifact. '
+                'Use the preprocessing stored with the model or select a compatible checkpoint.'
+            )
+        self.tranining_parameters.preprocessing = artifact_config
 
     def _resolve_loaded_model_input_channels(self, model: Any) -> int:
         declared_channels = getattr(model, '_neuralimage_input_channels', None)
@@ -1300,6 +1317,14 @@ class GeneralNeuralHandler:
             mask_loss_weight_floor=float(
                 getattr(self.tranining_parameters, 'mask_loss_weight_floor', 0.25)
             ),
+            topograph_enabled=bool(getattr(self.tranining_parameters, 'topograph_enabled', False)),
+            topograph_loss_weight=float(getattr(self.tranining_parameters, 'topograph_loss_weight', 0.1)),
+            topograph_debug_viz=bool(getattr(self.tranining_parameters, 'topograph_debug_viz', False)),
+            topograph_num_processes=max(
+                1,
+                int(getattr(self.tranining_parameters, 'topograph_num_processes', 1)),
+            ),
+            topograph_use_c=bool(getattr(self.tranining_parameters, 'topograph_use_c', False)),
         )
         self.current_thread.daemon = False
         self.current_thread.start()

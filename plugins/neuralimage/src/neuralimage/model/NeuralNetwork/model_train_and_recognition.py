@@ -35,7 +35,7 @@ from torch.utils.data.distributed import DistributedSampler
 from PIL import Image, ImageDraw, ImageFont
 
 from neuralimage.lib import System
-from neuralimage.model.NeuralNetwork.dataset import CustomDataset, NoCutDataset, index_in_list
+from neuralimage.model.NeuralNetwork.dataset import NoCutDataset, index_in_list
 from neuralimage.lib.data_interfaces import (
     CutoutParameters,
     RecognitionParameters,
@@ -70,6 +70,12 @@ from neuralimage.losses.composite import (
     resolve_auxiliary_head_weights,
 )
 from neuralimage.losses.distance_boundary import compute_distance_boundary_loss
+from neuralimage.losses.topograph import (
+    build_topograph_loss,
+    compute_topograph_loss_per_sample,
+    extract_critical_region_mask,
+)
+from neuralimage.losses.topograph_viz import render_critical_regions_overlay
 from neuralimage.metrics.segmentation import compute_segmentation_metrics
 from neuralimage.preprocessing.config import build_preprocessing_config
 from neuralimage.model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
@@ -585,6 +591,7 @@ class _TrainStepResult:
     per_sample_loss: torch.Tensor
     metric_loss: torch.Tensor | float | None = None
     batch_loss: torch.Tensor | float | None = None
+    loss_components: dict[str, float] | None = None
     batch_samples: int = 0
     forward_ms: float = 0.0
     backward_ms: float = 0.0
@@ -799,7 +806,6 @@ class _ValidationNoCutFrameExportCache:
 class _ValidationExportCache:
     mode: str
     dataset: Any
-    sample_predictions: dict[int, np.ndarray] | None = None
     frame_predictions: dict[int, _ValidationNoCutFrameExportCache] | None = None
 
 
@@ -1002,7 +1008,12 @@ class ModelTrainer(threading.Thread):
                  save_validation_binary_images: bool = False,
                  control_dataloader: DataLoader | None = None,
                  loss_weighting_strategy: str = 'static',
-                 mask_loss_weight_floor: float = 0.25):
+                 mask_loss_weight_floor: float = 0.25,
+                 topograph_enabled: bool = False,
+                 topograph_loss_weight: float = 0.1,
+                 topograph_debug_viz: bool = False,
+                 topograph_num_processes: int = 1,
+                 topograph_use_c: bool = False):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -1044,6 +1055,11 @@ class ModelTrainer(threading.Thread):
         self._recommended_inference_threshold = 0.5
         self._loss_weighting_strategy = str(loss_weighting_strategy).strip().lower()
         self._mask_loss_weight_floor = float(mask_loss_weight_floor)
+        self._topograph_enabled = bool(topograph_enabled)
+        self._topograph_loss_weight = max(0.0, float(topograph_loss_weight))
+        self._topograph_debug_viz = bool(topograph_debug_viz)
+        self._topograph_num_processes = max(1, int(topograph_num_processes))
+        self._topograph_use_c = bool(topograph_use_c)
 
 
     def _validate_training_inputs(self) -> bool:
@@ -1089,6 +1105,11 @@ class ModelTrainer(threading.Thread):
             pause_event=self._pause_event,
             loss_weighting_strategy=self._loss_weighting_strategy,
             mask_loss_weight_floor=self._mask_loss_weight_floor,
+            topograph_enabled=self._topograph_enabled,
+            topograph_loss_weight=self._topograph_loss_weight,
+            topograph_debug_viz=self._topograph_debug_viz,
+            topograph_num_processes=self._topograph_num_processes,
+            topograph_use_c=self._topograph_use_c,
         )
 
     @staticmethod
@@ -1239,7 +1260,12 @@ class TrainerProcess(mp.Process):
                  pause_event: Any | None = None,
                  control_dataloader: DataLoader | None = None,
                  loss_weighting_strategy: str = 'static',
-                 mask_loss_weight_floor: float = 0.25):
+                 mask_loss_weight_floor: float = 0.25,
+                 topograph_enabled: bool = False,
+                 topograph_loss_weight: float = 0.1,
+                 topograph_debug_viz: bool = False,
+                 topograph_num_processes: int = 1,
+                 topograph_use_c: bool = False):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -1285,6 +1311,14 @@ class TrainerProcess(mp.Process):
         self._recommended_inference_threshold = 0.5
         self._loss_weighting_strategy = str(loss_weighting_strategy).strip().lower()
         self._mask_loss_weight_floor = float(mask_loss_weight_floor)
+        self._topograph_enabled = bool(topograph_enabled)
+        self._topograph_loss_weight = max(0.0, float(topograph_loss_weight))
+        self._topograph_debug_viz = bool(topograph_debug_viz)
+        self._topograph_num_processes = max(1, int(topograph_num_processes))
+        self._topograph_use_c = bool(topograph_use_c)
+        self._topograph_loss_module = None
+        self._topograph_binary_skip_logged = False
+        self._last_batch_loss_components: dict[str, float] = {}
         self._loss_weighter: HomoscedasticLossWeighter | None = None
         self._train_epoch_history: list[tuple[float, float]] = []
         self._val_epoch_history: list[tuple[float, float]] = []
@@ -1744,6 +1778,15 @@ class TrainerProcess(mp.Process):
             sampler = wrapped_sampler
         sampler_state_fn = getattr(sampler, 'state_dict', None)
         sampler_state = sampler_state_fn() if callable(sampler_state_fn) else None
+        preprocessing = self._resolve_dataset_attribute(train_dataloader, '_preprocessing')
+        preprocessing_payload = (
+            {
+                'config': asdict(preprocessing),
+                'hash': preprocessing.stable_hash(),
+            }
+            if preprocessing is not None
+            else None
+        )
         checkpoint = {
             'version': 2,
             'completed_epoch': completed_epoch,
@@ -1777,6 +1820,7 @@ class TrainerProcess(mp.Process):
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state_all': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             'sampler_state_dict': sampler_state,
+            'preprocessing': preprocessing_payload,
             'epoch_start_torch_rng_state': getattr(self, '_epoch_start_torch_rng_state', None),
             'global_batch': int(getattr(self, '_global_batch', 0)),
             'automatic_early_stopping_state': (
@@ -1840,6 +1884,25 @@ class TrainerProcess(mp.Process):
                 lambda: torch.load(checkpoint_path, map_location='cpu', weights_only=False),
                 path=checkpoint_path,
             )
+            checkpoint_preprocessing = checkpoint.get('preprocessing')
+            current_preprocessing = self._resolve_dataset_attribute(
+                getattr(self, '_train_dataloader', None),
+                '_preprocessing',
+            )
+            if (
+                isinstance(checkpoint_preprocessing, dict)
+                and isinstance(checkpoint_preprocessing.get('config'), dict)
+                and current_preprocessing is not None
+            ):
+                saved_config = build_preprocessing_config(checkpoint_preprocessing['config'])
+                saved_hash = str(checkpoint_preprocessing.get('hash') or saved_config.stable_hash())
+                if saved_hash != current_preprocessing.stable_hash():
+                    self._bus.put([
+                        'logging',
+                        'Checkpoint preprocessing does not match the current training dataset. '
+                        'The checkpoint will not be resumed.',
+                    ])
+                    return 0, {}
             model_state = checkpoint.get('model_state_dict')
             optimizer_state = checkpoint.get('optimizer_state_dict')
             loss_weighter_state = checkpoint.get('loss_weighter_state_dict')
@@ -2106,6 +2169,75 @@ class TrainerProcess(mp.Process):
 
     def _loss_supports_hard_pixel_mining(self, loss_mode: str) -> bool:
         return loss_mode not in ('dice', 'cldice', 'iou', 'boundary', 'focal_tversky')
+
+    def _topograph_is_active(self) -> bool:
+        return bool(
+            getattr(self, '_topograph_enabled', False)
+            and float(getattr(self, '_topograph_loss_weight', 0.0)) > 0.0
+        )
+
+    def _ensure_topograph_loss(self) -> Any:
+        if getattr(self, '_topograph_loss_module', None) is None:
+            self._topograph_loss_module = build_topograph_loss(
+                num_processes=max(1, int(getattr(self, '_topograph_num_processes', 1))),
+                use_c=bool(getattr(self, '_topograph_use_c', False)),
+            )
+        return self._topograph_loss_module
+
+    def _compute_topograph_component_loss(
+        self,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not self._topograph_is_active():
+            return None
+        if int(outputs.shape[1]) != 1:
+            if not getattr(self, '_topograph_binary_skip_logged', False):
+                self._bus.put([
+                    'logging',
+                    'Topograph loss skipped: binary single-channel outputs are required.',
+                ])
+                self._topograph_binary_skip_logged = True
+            return None
+        return compute_topograph_loss_per_sample(
+            outputs,
+            label,
+            self._ensure_topograph_loss(),
+        )
+
+    def _update_batch_loss_components(
+        self,
+        *,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+        bce_criterion: nn.Module,
+        combined_loss: torch.Tensor,
+        topograph_loss: torch.Tensor | None,
+        apply_pixel_mining: bool,
+    ) -> dict[str, float]:
+        components: dict[str, float] = {'bce': 0.0, 'dice': 0.0, 'topograph': 0.0, 'total': 0.0}
+        sanitized_outputs = self._sanitize_outputs_for_loss(outputs)
+        sanitized_label = self._sanitize_labels_for_loss(label)
+        for loss_mode, coefficient in self._resolved_loss_term_weights().items():
+            if coefficient <= 0.0:
+                continue
+            single_loss = self._compute_single_per_sample_loss(
+                loss_mode,
+                sanitized_outputs,
+                sanitized_label,
+                bce_criterion,
+                apply_pixel_mining=apply_pixel_mining,
+            )
+            value = self._loss_value_to_float(single_loss.mean())
+            if loss_mode in ('bce', 'focal_bce'):
+                components['bce'] = value
+            elif loss_mode == 'dice':
+                components['dice'] = value
+        if topograph_loss is not None:
+            components['topograph'] = self._loss_value_to_float(topograph_loss.mean())
+        components['total'] = self._loss_value_to_float(combined_loss.mean())
+        self._last_batch_loss_components = components
+        return components
 
     @staticmethod
     def _is_finite_tensor(value: Any) -> bool:
@@ -2841,6 +2973,21 @@ class TrainerProcess(mp.Process):
                 min=0.0,
                 max=50.0,
             )
+        topograph_loss = self._compute_topograph_component_loss(primary_output, label)
+        if topograph_loss is not None:
+            combined_loss = torch.clamp(
+                combined_loss + (float(getattr(self, '_topograph_loss_weight', 0.0)) * topograph_loss),
+                min=0.0,
+                max=50.0,
+            )
+        self._update_batch_loss_components(
+            outputs=primary_output,
+            label=label,
+            bce_criterion=bce_criterion,
+            combined_loss=combined_loss,
+            topograph_loss=topograph_loss,
+            apply_pixel_mining=apply_pixel_mining,
+        )
         return combined_loss
 
     @staticmethod
@@ -2937,29 +3084,6 @@ class TrainerProcess(mp.Process):
                 for image_path, _label_path in getattr(base_dataset, 'samples', [])
             ]
 
-        if isinstance(base_dataset, CustomDataset):
-            export_items: list[dict[str, Any]] = []
-            channels = int(getattr(base_dataset, 'channels', 1))
-            for image_path, _label_path in getattr(base_dataset, 'samples', []):
-                image_file = Path(image_path)
-                try:
-                    with retry_file_read(lambda: Image.open(image_file), path=image_file) as source_image:
-                        width, height = source_image.size
-                except OSError:
-                    continue
-                export_items.append(
-                    {
-                        'image_path': image_file,
-                        'segment_shape': (channels, int(width), int(height)),
-                        'overlap': 0,
-                        'use_context_branch': False,
-                        'use_cross_attention': False,
-                        'context_crop_size': None,
-                        'context_input_size': None,
-                    }
-                )
-            return export_items
-
         return []
 
     @staticmethod
@@ -3043,24 +3167,6 @@ class TrainerProcess(mp.Process):
         base_dataset = self._unwrap_validation_dataset(dataset)
         if dataset is None or base_dataset is None:
             return None
-
-        if isinstance(base_dataset, CustomDataset):
-            estimated_bytes = 0
-            for image_path, _label_path in getattr(base_dataset, 'samples', []):
-                image_file = Path(image_path)
-                try:
-                    with retry_file_read(lambda: Image.open(image_file), path=image_file) as source_image:
-                        width, height = source_image.size
-                except OSError:
-                    return None
-                estimated_bytes += int(width) * int(height) * 2
-                if estimated_bytes > VALIDATION_EXPORT_CACHE_MAX_BYTES:
-                    return None
-            return _ValidationExportCache(
-                mode='custom',
-                dataset=dataset,
-                sample_predictions={},
-            )
 
         if not isinstance(base_dataset, NoCutDataset):
             return None
@@ -3250,16 +3356,6 @@ class TrainerProcess(mp.Process):
             return
 
         cpu_probs = probs.detach().cpu().to(dtype=torch.float16).numpy()
-        if export_cache.mode == 'custom':
-            sample_predictions = export_cache.sample_predictions
-            if sample_predictions is None:
-                return
-            for batch_offset, sample_index in enumerate(resolved_indices):
-                if batch_offset >= int(cpu_probs.shape[0]):
-                    break
-                sample_predictions[int(sample_index)] = np.ascontiguousarray(cpu_probs[batch_offset])
-            return
-
         if export_cache.mode != 'no_cut':
             return
 
@@ -3310,26 +3406,6 @@ class TrainerProcess(mp.Process):
     ) -> int | None:
         if export_cache is None:
             return None
-
-        dataset = export_cache.dataset
-        if export_cache.mode == 'custom':
-            sample_predictions = export_cache.sample_predictions or {}
-            if not sample_predictions:
-                return None
-            if isinstance(dataset, Sized) and len(sample_predictions) < int(len(dataset)):
-                return None
-
-            saved_images = 0
-            for sample_index in sorted(sample_predictions):
-                sample_name = self._describe_validation_sample(dataset, int(sample_index), saved_images)
-                sample_path = epoch_dir / f'{saved_images:06d}_{sample_name}.png'
-                sample_tensor = np.asarray(sample_predictions[int(sample_index)], dtype=np.float32)
-                if sample_tensor.ndim == 3:
-                    sample_tensor = sample_tensor[0]
-                sample_array = (sample_tensor >= float(threshold)).astype(np.uint8) * 255
-                Image.fromarray(sample_array, mode='L').save(sample_path)
-                saved_images += 1
-            return int(saved_images)
 
         if export_cache.mode != 'no_cut':
             return None
@@ -4439,6 +4515,17 @@ class TrainerProcess(mp.Process):
                     ),
                 ])
         self._bus.put(['logging', 'Loss normalization: per-sample mean (batch-size invariant).'])
+        if self._topograph_is_active():
+            self._bus.put([
+                'logging',
+                (
+                    f'Topograph loss enabled: weight={self._topograph_loss_weight:.2f}, '
+                    f'connectivity=4, use_c={self._topograph_use_c}, '
+                    f'num_processes={self._topograph_num_processes}.'
+                ),
+            ])
+            if self._topograph_debug_viz:
+                self._bus.put(['logging', 'Topograph debug visualization is enabled for batch previews.'])
 
     def _log_sampling_configuration(self, *, train_sampler: Any, supports_loss_aware_sampling: bool) -> None:
         if self._skip_uniform_labels:
@@ -5100,18 +5187,30 @@ class TrainerProcess(mp.Process):
         preview_label = self._tensor_to_preview_array(preview_target[0])
         primary_outputs = self._sanitize_outputs_for_loss(outputs)
         preview_outputs = self._tensor_to_preview_array(torch.sigmoid(primary_outputs[0].detach()))
-        self._bus.put([
-            'metrics',
-            {
-                'type': 'train_batch_preview',
-                'epoch': int(epoch + 1),
-                'batch_index': int(batch_index + 1),
-                'sample_name': self._describe_train_preview_sample(sample_indices, batch_index),
-                'image': preview_image,
-                'label': preview_label,
-                'outputs': preview_outputs,
-            },
-        ])
+        preview_payload: dict[str, Any] = {
+            'type': 'train_batch_preview',
+            'epoch': int(epoch + 1),
+            'batch_index': int(batch_index + 1),
+            'sample_name': self._describe_train_preview_sample(sample_indices, batch_index),
+            'image': preview_image,
+            'label': preview_label,
+            'outputs': preview_outputs,
+        }
+        if self._topograph_is_active() and bool(getattr(self, '_topograph_debug_viz', False)):
+            preview_label_tensor = preview_target[0:1]
+            if preview_label_tensor.ndim == 3:
+                preview_label_tensor = preview_label_tensor.unsqueeze(1)
+            with torch.no_grad():
+                critical_mask = extract_critical_region_mask(
+                    primary_outputs[0:1],
+                    preview_label_tensor,
+                    use_c=bool(getattr(self, '_topograph_use_c', False)),
+                )
+            preview_payload['topograph_overlay'] = render_critical_regions_overlay(
+                preview_outputs,
+                critical_mask.cpu().numpy(),
+            )
+        self._bus.put(['metrics', preview_payload])
 
     def _update_loss_aware_sampling(
         self,
@@ -5446,6 +5545,7 @@ class TrainerProcess(mp.Process):
                 outputs=outputs,
                 per_sample_loss=per_sample_loss,
                 metric_loss=metric_loss.detach(),
+                loss_components=dict(getattr(self, '_last_batch_loss_components', {})),
                 batch_samples=int(batch.image.size(0)),
                 forward_ms=forward_ms,
                 backward_ms=backward_ms,
@@ -5475,6 +5575,7 @@ class TrainerProcess(mp.Process):
             outputs=outputs,
             per_sample_loss=per_sample_loss,
             metric_loss=metric_loss.detach(),
+            loss_components=dict(getattr(self, '_last_batch_loss_components', {})),
             batch_samples=int(batch.image.size(0)),
             forward_ms=forward_ms,
             backward_ms=backward_ms,
@@ -5504,17 +5605,29 @@ class TrainerProcess(mp.Process):
 
         if (batch_index % run_context.strides.metric == 0) or (batch_index == run_context.train_size - 1):
             batch_loss = self._loss_value_to_float(cast(torch.Tensor | float, step_result.metric_loss))
+            loss_components = dict(step_result.loss_components or getattr(self, '_last_batch_loss_components', {}))
             epoch_points = self._batch_points_by_epoch.setdefault(int(epoch + 1), [])
             epoch_points.append((float(batch_index + 1), batch_loss))
-            self._bus.put([
-                'metrics',
-                {
-                    'type': 'train_batch',
-                    'epoch': epoch + 1,
-                    'batch_index': batch_index + 1,
-                    'loss': batch_loss,
-                },
-            ])
+            train_batch_metric: dict[str, Any] = {
+                'type': 'train_batch',
+                'epoch': epoch + 1,
+                'batch_index': batch_index + 1,
+                'loss': batch_loss,
+            }
+            if loss_components:
+                train_batch_metric['loss_components'] = loss_components
+            self._bus.put(['metrics', train_batch_metric])
+            if loss_components:
+                self._bus.put([
+                    'logging',
+                    (
+                        'Loss components: '
+                        f'BCE={loss_components.get("bce", 0.0):.4f} '
+                        f'Dice={loss_components.get("dice", 0.0):.4f} '
+                        f'Topograph={loss_components.get("topograph", 0.0):.4f} '
+                        f'Total={loss_components.get("total", batch_loss):.4f}'
+                    ),
+                ])
             self._bus.put([
                 'metrics',
                 {

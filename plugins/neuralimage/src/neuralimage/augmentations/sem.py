@@ -23,6 +23,51 @@ class SemAugmentor:
     def __call__(self, image: np.ndarray, label: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None]:
         return self.apply(image, label)
 
+    def apply_preview(self, image: np.ndarray, label: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None]:
+        """Apply all enabled SEM effects for UI preview (no probability gating)."""
+        if not self.config.enabled:
+            array = np.asarray(image, dtype=np.float32)
+            if array.max() > 1.0:
+                array = array / 255.0
+            return array, label
+        augmented = np.asarray(image, dtype=np.float32)
+        if self.config.plan == 'sem_v2':
+            if augmented.max(initial=0.0) > 1.0:
+                augmented = augmented / (65535.0 if augmented.max() > 255.0 else 255.0)
+            if self.config.charging_artifacts:
+                augmented = self._charging_bloom(augmented)
+            if self.config.scan_drift:
+                augmented = self._row_dependent_drift(augmented)
+            if self.config.local_focus_variation:
+                augmented = self._continuous_focus_variation(augmented)
+            if self.config.detector_noise:
+                augmented = self._poisson_read_noise(augmented)
+            if self.config.brightness_gradients:
+                augmented = self._smooth_gain_field(augmented)
+            if self.config.realistic_defects:
+                augmented = self._contamination_and_scan_defects(augmented)
+            return np.clip(augmented, 0.0, 1.0).astype(np.float32), label
+        if augmented.max() <= 1.0:
+            augmented = augmented * 255.0
+        augmented = augmented.astype(np.uint8)
+        if self.config.charging_artifacts:
+            augmented = self._charging_artifacts(augmented)
+        if self.config.scan_drift:
+            augmented = self._scan_drift(augmented)
+        if self.config.local_focus_variation:
+            augmented = self._local_focus_variation(augmented)
+        if self.config.detector_noise:
+            augmented = self._detector_noise(augmented)
+        if self.config.brightness_gradients:
+            augmented = self._brightness_gradients(augmented)
+        if self.config.realistic_defects:
+            augmented = self._realistic_defects(augmented)
+        if augmented.max() > 1.0:
+            augmented = augmented.astype(np.float32) / 255.0
+        else:
+            augmented = augmented.astype(np.float32)
+        return augmented, label
+
     def apply(self, image: np.ndarray, label: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray | None]:
         if not self.config.enabled:
             array = np.asarray(image, dtype=np.float32)

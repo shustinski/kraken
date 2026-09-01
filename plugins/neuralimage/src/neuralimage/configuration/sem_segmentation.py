@@ -11,10 +11,19 @@ from neuralimage.active_learning.config import ActiveLearningConfig, build_activ
 from neuralimage.augmentations.sem_config import SemAugmentationConfig, build_sem_augmentation_config
 from neuralimage.preprocessing.config import PreprocessingConfig, build_preprocessing_config
 from neuralimage.targets.config import SupervisionTargetsParameters, build_supervision_targets_parameters
-from neuralimage.uncertainty.config import UncertaintyConfig, build_uncertainty_config
+from neuralimage.uncertainty.config import (
+    ConfidenceTrainingConfig,
+    InferenceUncertaintyConfig,
+    UncertaintyConfig,
+    build_confidence_training_config,
+    build_inference_uncertainty_config,
+    combine_uncertainty_config,
+    migrate_legacy_uncertainty_config,
+)
 
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
+LEGACY_CONFIG_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -87,7 +96,8 @@ class SemSegmentationConfig:
     losses: LossesConfig = field(default_factory=LossesConfig)
     hard_mining: HardMiningConfig = field(default_factory=HardMiningConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
-    uncertainty: UncertaintyConfig = field(default_factory=UncertaintyConfig)
+    confidence_training: ConfidenceTrainingConfig = field(default_factory=ConfidenceTrainingConfig)
+    inference_uncertainty: InferenceUncertaintyConfig = field(default_factory=InferenceUncertaintyConfig)
     active_learning: ActiveLearningConfig = field(default_factory=ActiveLearningConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
@@ -139,11 +149,14 @@ class SemSegmentationConfig:
             raise ValueError('Boundary tolerance cannot be negative.')
         if self.validation.confidence_bins < 2:
             raise ValueError('Validation confidence_bins must be at least 2.')
-        if self.uncertainty.method not in {
+        if self.inference_uncertainty.method not in {
             'confidence_head', 'mc_dropout', 'tta_variance', 'combined', 'auto'
         }:
             raise ValueError('Unsupported uncertainty method.')
-        if self.uncertainty.mc_dropout_samples < 2 or not 0.0 <= self.uncertainty.mc_dropout_rate < 1.0:
+        if (
+            self.inference_uncertainty.mc_dropout_samples < 2
+            or not 0.0 <= self.inference_uncertainty.mc_dropout_rate < 1.0
+        ):
             raise ValueError('MC Dropout requires at least two samples and a rate in [0, 1).')
         for name in (
             'low_confidence_threshold', 'high_entropy_threshold',
@@ -173,6 +186,11 @@ class SemSegmentationConfig:
         payload = json.dumps(self.to_dict(), sort_keys=True, separators=(',', ':'), ensure_ascii=True)
         return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
+    @property
+    def uncertainty(self) -> UncertaintyConfig:
+        """Compatibility view used by the existing trainer and recognizer."""
+        return combine_uncertainty_config(self.confidence_training, self.inference_uncertainty)
+
 
 def _mapping(raw: Any, key: str) -> Mapping[str, Any]:
     value = raw.get(key, {}) if isinstance(raw, Mapping) else {}
@@ -182,6 +200,9 @@ def _mapping(raw: Any, key: str) -> Mapping[str, Any]:
 def build_sem_segmentation_config(raw: Mapping[str, Any] | None) -> SemSegmentationConfig:
     if not isinstance(raw, Mapping):
         return SemSegmentationConfig()
+    raw_version = int(raw.get('version', LEGACY_CONFIG_VERSION))
+    if raw_version not in {LEGACY_CONFIG_VERSION, CONFIG_VERSION}:
+        raise ValueError(f'Unsupported SEM segmentation config version: {raw_version}.')
     targets = build_supervision_targets_parameters(_mapping(raw, 'targets'))
     heads_raw = _mapping(raw, 'heads')
     head_values = heads_raw.get('enabled', targets.enabled_targets())
@@ -193,8 +214,17 @@ def build_sem_segmentation_config(raw: Mapping[str, Any] | None) -> SemSegmentat
     experiment_raw = _mapping(raw, 'experiment')
     manifest = hard_raw.get('offline_manifest')
     dataset_manifest = experiment_raw.get('dataset_manifest')
+    if raw_version == LEGACY_CONFIG_VERSION or (
+        'confidence_training' not in raw and 'inference_uncertainty' not in raw
+    ):
+        confidence_training, inference_uncertainty = migrate_legacy_uncertainty_config(
+            _mapping(raw, 'uncertainty')
+        )
+    else:
+        confidence_training = build_confidence_training_config(_mapping(raw, 'confidence_training'))
+        inference_uncertainty = build_inference_uncertainty_config(_mapping(raw, 'inference_uncertainty'))
     return SemSegmentationConfig(
-        version=int(raw.get('version', CONFIG_VERSION)),
+        version=CONFIG_VERSION,
         preset=str(raw.get('preset', 'custom')),
         preprocessing=build_preprocessing_config(_mapping(raw, 'preprocessing')),
         augmentation=build_sem_augmentation_config(_mapping(raw, 'augmentation')),
@@ -222,7 +252,8 @@ def build_sem_segmentation_config(raw: Mapping[str, Any] | None) -> SemSegmentat
             attention_heads=int(context_raw.get('attention_heads', 4)),
             max_global_tokens=int(context_raw.get('max_global_tokens', 1024)),
         ),
-        uncertainty=build_uncertainty_config(_mapping(raw, 'uncertainty')),
+        confidence_training=confidence_training,
+        inference_uncertainty=inference_uncertainty,
         active_learning=build_active_learning_config(_mapping(raw, 'active_learning')),
         validation=ValidationConfig(
             enabled=bool(validation_raw.get('enabled', True)),
@@ -270,7 +301,8 @@ def get_sem_preset(name: str) -> SemSegmentationConfig:
             'heads': {'enabled': ['boundary', 'skeleton', 'sdf']},
             'losses': {'weighting_strategy': 'static', 'mask_weight_floor': 0.4},
             'hard_mining': {'mode': 'online', 'exploration_floor': 0.15},
-            'uncertainty': {'enabled': True, 'method': 'confidence_head', 'confidence_loss_weight': 0.1},
+            'confidence_training': {'enabled': True, 'loss_weight': 0.1},
+            'inference_uncertainty': {'enabled': True, 'method': 'confidence_head'},
             'validation': {'enabled': True, 'full_frame': True, 'boundary_tolerance': 2, 'include_hd95': True},
             'experiment': {'seeds': [17, 29, 43], 'topology_first': True},
         }

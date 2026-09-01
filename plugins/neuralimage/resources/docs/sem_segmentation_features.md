@@ -4,6 +4,18 @@ This guide describes the experimental neural-network features in `plugins/neural
 
 No real SEM dataset was available while this implementation was built. Consequently, this document makes no claim of improved real-world quality and `sem_topology_recommended_v1` remains unavailable until the three-seed acceptance experiment succeeds.
 
+## Qt settings workflow
+
+The desktop settings dock is organized by responsibility rather than implementation module:
+
+- **Data** owns online patch preparation, normalization, augmentation, sampling, and validation input.
+- **Model and training** owns architecture, topology supervision, losses, optimization, confidence-head training, metrics, and runtime.
+- **Recognition** owns mask prediction, inference uncertainty, and `NeedsAnnotation` export.
+
+Cards are collapsible and show a short status summary. Expert mode hides uncommon or expensive controls in place without resetting them. `Ctrl+F` searches localized labels and English aliases, opens the owning card, and scrolls to the selected control. Invalid dependencies are reported immediately beside the related field and in the dock header; backend validation remains authoritative when a run starts. SEM presets and raw JSON are not exposed in Qt, while old workflow and checkpoint payloads remain readable.
+
+Configuration version 2 separates `confidence_training` (`enabled`, `loss_weight`) from `inference_uncertainty` (method, MC Dropout, TTA, and confidence export). Version 1 `uncertainty` payloads migrate automatically. This prevents an inference choice from silently changing the training objective.
+
 ## Contents
 
 1. Configuration and compatibility
@@ -31,7 +43,11 @@ Available presets:
 - `sem_topology_experimental_v1`: basic heads, shared preprocessing, SEM v2 augmentation, topology validation and confidence infrastructure are enabled for ablation.
 - `sem_topology_recommended_v1`: unavailable until the acceptance gate passes on real data.
 
-The Qt desktop interface exposes the complete configuration through the existing preprocessing, augmentation, loss, hard-mining, recognition/confidence and validation groups. Only mask-derived supervision and geometry keep a dedicated SEM group. Every new control has a localized tooltip; JSON is not shown or edited in the user interface. The internal dictionary contract remains versioned so old workflow snapshots still load and round-trip. Model artifacts contain model/head kwargs plus the preprocessing config and hash; the run manifest contains the complete training configuration. The former Django Web UI has been removed; remote integration belongs to the Kraken Server HTTPS API and is not implemented as a second NeuralImage interface.
+The Qt desktop interface exposes normalization in a separate checkable **Preprocessing** group on the Training page. Training augmentations use one hierarchical four-column table: enable, operation, probability and value. Its three top-level blocks are spatial, photometric and SEM acquisition augmentations; a block or an individual operation can be switched independently. The same editor instance is temporarily shown in the augmentation preview, so preview and training cannot diverge. The local **Defaults** button resets augmentation values only. Patch placement is a separate **Patch layout** group with mutually exclusive grid/step and random/crops-per-frame modes. Every new control has a localized tooltip; JSON is not shown or edited in the user interface. The internal dictionary contract remains versioned so old workflow snapshots still load and round-trip. Model artifacts and resumable checkpoints contain the preprocessing config and its stable hash. The former Django Web UI has been removed; remote integration belongs to the Kraken Server HTTPS API and is not implemented as a second NeuralImage interface.
+
+Per-operation probabilities for rotations, flips, scale, brightness, contrast and gamma are persisted in `training_augmentation`. Missing fields load with legacy effective probabilities (`1.0` for deterministic operations and the established noise/blur values). Probabilities are evaluated by the online `SampleFastCutter`; they are not presentation-only settings. Label-aware topology variations retain their own probabilities and operation-enable flags. Synthetic topology generation remains in dataset preparation because it creates samples rather than augmenting an existing frame.
+
+Training uses online patch generation exclusively. The former disk-cut dataset, its Qt selector and its worker are not supported; legacy persisted values are never routed into training.
 
 CLI configurations now use `training_parameters` and `recognition_parameters`. Historical `tranining_parameters` and `recogniton_parameters` spellings remain accepted as read aliases.
 
@@ -44,11 +60,9 @@ CLI configurations now use `training_parameters` and `recognition_parameters`. H
       "version": 1,
       "preset": "custom",
       "preprocessing": {
-        "percentile_normalization": true,
-        "percentile_low": 0.5,
-        "percentile_high": 99.5,
-        "scan_line_suppression": true,
-        "scan_axis": "rows"
+        "mode": "per_image_percentile",
+        "percentile_low": 1.0,
+        "percentile_high": 99.0
       },
       "augmentation": {"enabled": true, "plan": "sem_v2"},
       "targets": {
@@ -107,11 +121,17 @@ Static weights remain the default. `homoscedastic_uncertainty` learns log varian
 
 ## 5. Shared SEM preprocessing
 
-Preprocessing is deterministic and runs once on the full frame before local and context crops. Recognition reads it from the model artifact; an enabled override with a different hash is rejected.
+Normalization is deterministic and runs once on the full frame before local and context crops. The same code path is used for training, validation and recognition. Recognition reads the exact configuration from the model artifact; an enabled override with a different hash is rejected. Further training also inherits the artifact configuration unless the user explicitly supplies an identical one.
 
-Operations are percentile normalization, CLAHE, illumination correction, background subtraction, scan-line residual suppression and optional bilateral denoising. Ordering and parameters are validated.
+The checkable Qt group supports three modes:
 
-The pipeline uses float32 normalized space while preserving uint8, uint16 and float input precision. CLAHE uses 16-bit data. Scan suppression removes high-frequency row/column profile residuals rather than subtracting long conductors. Cost is linear for normalization/profile correction; CLAHE, large kernels and denoising cost more.
+- `none`: dtype-aware conversion to float32 in the model input domain; no contrast statistics are estimated;
+- `per_image_percentile`: P1 and P99 are calculated independently for every prepared frame, outliers are clipped and the result is mapped to `[0, 1]`;
+- `dataset_zscore`: one scalar mean and population standard deviation are calculated after the frame-level split from train frames only. Validation, test and inference reuse those fixed values.
+
+Statistics are accumulated in float64 with a stable streaming combination formula and are stored as part of the preprocessing config and hash. A nearly constant training dataset uses a safe scale of `1.0`; a nearly constant per-image percentile frame becomes zeros. Input conversion preserves distinct uint8, uint16 and float values without an intermediate uint8 conversion. Z-score output remains float32 and is not clipped or divided by 255 in patch or context preparation.
+
+The preprocessing module remains outside the model architecture. Its explicit mode dispatch allows later additions such as histogram matching, CLAHE and per-image z-score without changing model classes or the checkpoint tensor format. Current normalization costs `O(number of frame pixels)` and requires no additional inference passes.
 
 ## 6. SEM augmentation
 

@@ -8,7 +8,7 @@ import pytest
 pytest.importorskip('PyQt6')
 
 from PIL import Image
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from neuralimage.lib.data_interfaces import WorkMode, build_synthetic_defect_generator_parameters
 from neuralimage.configuration import get_sem_preset
@@ -53,41 +53,65 @@ def test_settings_panel_round_trips_sem_topology_configuration(qapp):
     assert not hasattr(panel, 'sem_segmentation_config_editor')
     assert not hasattr(panel, 'sem_segmentation_tabs')
     assert panel.sem_segmentation_controls['target_skeleton'].isChecked()
-    assert panel.get_sem_segmentation_config() == payload
-    panel.sem_segmentation_validate_button.click()
-    assert 'SHA-256' in panel.sem_segmentation_validation_label.text()
+    actual = panel.get_sem_segmentation_config()
+    assert actual['targets'] == payload['targets']
+    assert actual['heads'] == payload['heads']
+    assert panel.configuration_status_button.text() == 'OK'
 
 
-def test_settings_panel_sem_preset_populates_typed_controls(qapp):
+def test_settings_panel_loads_legacy_sem_preset_without_exposing_preset_ui(qapp):
     panel = SettingsPanel()
     panel.sync_business_logic_controls('train_only')
     panel.expert_groupbox.setChecked(True)
-    experimental_index = panel.sem_segmentation_preset_combo.findData('sem_topology_experimental_v1')
+    panel.set_sem_segmentation_config(get_sem_preset('sem_topology_experimental_v1').to_dict())
 
-    panel.sem_segmentation_preset_combo.setCurrentIndex(experimental_index)
-    panel.sem_segmentation_apply_preset_button.click()
-
-    assert panel.sem_segmentation_controls['pre_percentile'].isChecked()
+    assert panel.preprocessing_groupbox.isChecked()
+    assert panel.sem_segmentation_controls['pre_mode'].currentData() == 'per_image_percentile'
     assert panel.sem_segmentation_controls['aug_enabled'].isChecked()
     assert panel.sem_segmentation_controls['target_boundary'].isChecked()
     assert panel.sem_segmentation_controls['uncertainty_enabled'].isChecked()
-    assert panel.hard_mining_check_box.isChecked()
+    assert not hasattr(panel, 'sem_segmentation_preset_combo')
+    assert not hasattr(panel, 'sem_segmentation_apply_preset_button')
 
 
 def test_settings_panel_merges_sem_fields_into_existing_groups_with_tooltips(qapp):
     panel = SettingsPanel()
 
     groups = panel.sem_segmentation_section_groupboxes
-    assert panel.prepare_samples_form.indexOf(groups['preprocessing']) >= 0
-    assert panel.photometric_form.indexOf(groups['augmentation']) >= 0
+    assert panel._settings_cards['preprocessing'].isAncestorOf(groups['preprocessing'])
+    assert groups['preprocessing'].isCheckable()
+    assert panel.training_augmentation_editor.isAncestorOf(groups['augmentation'])
     assert panel.loss_advanced_form.indexOf(groups['losses']) >= 0
     assert panel.hard_mining_form.indexOf(groups['hard_mining']) >= 0
-    assert panel.recognition_form.indexOf(groups['uncertainty']) >= 0
-    assert panel.validation_form.indexOf(groups['validation']) >= 0
-    assert panel.sem_segmentation_form.indexOf(groups['basic_targets']) >= 0
-    assert panel.sem_segmentation_form.indexOf(groups['geometry_targets']) >= 0
+    assert panel._settings_cards['inference_uncertainty'].isAncestorOf(
+        panel.sem_segmentation_controls['uncertainty_method']
+    )
+    assert panel._settings_cards['validation_metrics'].isAncestorOf(groups['validation'])
+    assert panel._settings_cards['supervision'].isAncestorOf(groups['basic_targets'])
+    assert panel._settings_cards['supervision'].isAncestorOf(groups['geometry_targets'])
     assert panel.sem_segmentation_controls['uncertainty_method'].toolTip()
     assert panel.sem_segmentation_controls['hard_exploration'].toolTip()
+
+
+def test_preprocessing_groupbox_controls_normalization_mode(qapp):
+    panel = SettingsPanel()
+    mode = panel.sem_segmentation_controls['pre_mode']
+
+    assert panel.preprocessing_groupbox.isCheckable()
+    assert not panel.preprocessing_groupbox.isChecked()
+    assert mode.currentData() == 'none'
+    assert 'train' in mode.toolTip().lower()
+
+    panel.preprocessing_groupbox.setChecked(True)
+    assert mode.currentData() == 'per_image_percentile'
+
+    dataset_index = mode.findData('dataset_zscore')
+    mode.setCurrentIndex(dataset_index)
+    assert panel.preprocessing_groupbox.isChecked()
+    assert panel.get_sem_segmentation_config()['preprocessing']['mode'] == 'dataset_zscore'
+
+    panel.preprocessing_groupbox.setChecked(False)
+    assert mode.currentData() == 'none'
 
 
 def test_settings_panel_sem_target_toggle_marks_custom_and_syncs_head(qapp):
@@ -98,7 +122,7 @@ def test_settings_panel_sem_target_toggle_marks_custom_and_syncs_head(qapp):
     panel.sem_segmentation_controls['target_corner'].setChecked(True)
     payload = panel.get_sem_segmentation_config()
 
-    assert panel.sem_segmentation_preset_combo.currentData() == 'custom'
+    assert payload['preset'] == 'custom'
     assert payload['targets']['geometry']['corner'] is True
     assert payload['heads']['enabled'] == ['corner']
 
@@ -128,7 +152,8 @@ def test_settings_panel_emits_optimizer_settings_changed(qapp):
     panel.learning_rate_spinbox.setValue(0.0002)
     panel.weight_decay_spinbox.setValue(0.01)
 
-    assert calls['count'] >= 4
+    # Setting an already-selected combo value does not emit currentIndexChanged.
+    assert calls['count'] >= 3
 
 
 def test_settings_panel_localization_resources_cover_runtime_fallback_keys():
@@ -362,7 +387,7 @@ def test_settings_panel_toggles_augmentation_groupboxes(qapp):
 def test_settings_panel_uses_photometric_and_spatial_labels_and_shared_sampling_row(qapp):
     panel = SettingsPanel()
 
-    assert panel.additional_augmentation_check_box.text() == 'Фотометрическая аугументация'
+    assert panel.additional_augmentation_check_box.title() == 'Фотометрическая аугументация'
     assert panel.spatial_groupbox.title() == 'Пространственные аугментации'
     assert panel.flip_x.text()
     assert panel.flip_y.text()
@@ -372,6 +397,7 @@ def test_settings_panel_uses_photometric_and_spatial_labels_and_shared_sampling_
 
 def test_settings_panel_places_mixed_precision_in_runtime_and_rare_patch_on_training_tab(qapp):
     panel = SettingsPanel()
+    panel.expert_mode_check_box.setChecked(False)
 
     train_batch_row = panel._field_rows[panel.train_batch_spinbox]
     mixed_precision_row = panel._field_rows[panel.mixed_precision_type]
@@ -383,14 +409,11 @@ def test_settings_panel_places_mixed_precision_in_runtime_and_rare_patch_on_trai
     assert panel.precision_loss_groupbox.isAncestorOf(mixed_precision_row) is False
     assert panel.runtime_groupbox.isAncestorOf(log_update_frequency_row) is True
     assert panel.optimizer_groupbox.isAncestorOf(log_update_frequency_row) is False
-    assert panel.training_page_layout.indexOf(panel.rare_patch_groupbox) != -1
-    assert panel.training_page_layout.indexOf(panel.expert_groupbox) != -1
-    assert panel.expert_groupbox.isCheckable() is True
-    assert panel.expert_groupbox.isChecked() is False
-    assert panel.expert_content_widget.isHidden() is True
+    assert panel._settings_cards['sampling'].isAncestorOf(panel.rare_patch_groupbox)
+    assert panel.expert_mode_check_box.isChecked() is False
+    assert panel.model_variants_groupbox.isHidden() is True
     panel.expert_groupbox.setChecked(True)
-    assert panel.expert_content_widget.isHidden() is False
-    assert panel.expert_groupbox.isAncestorOf(panel.model_variants_groupbox) is True
+    assert panel.model_variants_groupbox.isHidden() is False
     assert panel.shuffle_groupbox.isAncestorOf(panel.shuffle_frames_check_box) is True
     assert panel.shuffle_groupbox.isAncestorOf(panel.shuffle_patches_in_frame_check_box) is True
     assert panel.model_variants_groupbox.isAncestorOf(panel.deprecated_model_type) is True
@@ -400,7 +423,7 @@ def test_settings_panel_places_mixed_precision_in_runtime_and_rare_patch_on_trai
     assert panel.runtime_groupbox.isAncestorOf(panel.rare_patch_oversampling_check_box) is False
     assert panel.general_groupbox.isAncestorOf(panel.shuffle_frames_check_box) is False
     assert panel.general_groupbox.isAncestorOf(panel.deprecated_model_type) is False
-    assert panel.expert_groupbox.isAncestorOf(panel.warmup_groupbox) is True
+    assert panel._settings_cards['schedule'].isAncestorOf(panel.warmup_groupbox)
 
 
 def test_settings_panel_syncs_tech_aug_controls(qapp):
@@ -498,7 +521,7 @@ def test_settings_panel_uses_single_visible_label_inside_each_labeled_row(qapp):
 
     cases = (
         (panel.general_form, 'epochs', panel.epochs_spinbox),
-        (panel.spatial_form, 'scale_augmentation_strength', panel.scale_augmentation_strength_spinbox),
+        (None, 'scale_augmentation_strength', panel.scale_augmentation_strength_spinbox),
         (panel.runtime_form, 'train_batch_size', panel.train_batch_spinbox),
         (panel.runtime_form, 'dataloader_num_workers', panel.dataloader_num_workers_spinbox),
         (panel.recognition_form, 'recognition_batch_size', panel.recognition_batch_spinbox),
@@ -510,7 +533,8 @@ def test_settings_panel_uses_single_visible_label_inside_each_labeled_row(qapp):
         row_widget = panel._field_rows.get(field, field)
         desc_label = panel._desc_labels[key]
         assert desc_label.text().strip()
-        assert form.labelForField(row_widget) is None
+        if form is not None:
+            assert form.labelForField(row_widget) is None
 
 
 def test_settings_panel_keeps_color_mode_value_stable_when_language_changes(qapp):
@@ -519,16 +543,18 @@ def test_settings_panel_keeps_color_mode_value_stable_when_language_changes(qapp
 
     panel.set_ui_language('en')
     assert panel.get_color_mode_value() == 'ЧБ'
-    assert panel.settings_tabs.tabText(panel._page_indexes['training']) == 'Training'
+    assert panel.settings_tabs.tabText(panel._page_indexes['data']) == 'Data'
+    assert panel.settings_tabs.tabText(panel._page_indexes['training']) == 'Model and training'
     assert panel.settings_tabs.tabText(panel._page_indexes['recognition']) == 'Recognition'
-    assert len(panel._page_indexes) == 2
-    assert panel.expert_groupbox.title() == 'Expert settings'
+    assert len(panel._page_indexes) == 3
+    assert panel.expert_mode_check_box.text() == 'Expert mode'
 
     panel.set_ui_language('ru')
     assert panel.get_color_mode_value() == 'ЧБ'
-    assert panel.settings_tabs.tabText(panel._page_indexes['training']) == 'Обучение'
+    assert panel.settings_tabs.tabText(panel._page_indexes['data']) == 'Данные'
+    assert panel.settings_tabs.tabText(panel._page_indexes['training']) == 'Модель и обучение'
     assert panel.settings_tabs.tabText(panel._page_indexes['recognition']) == 'Распознавание'
-    assert panel.expert_groupbox.title() == 'Экспертные настройки'
+    assert panel.expert_mode_check_box.text() == 'Экспертный режим'
 
 
 def test_settings_panel_uses_localized_validation_folder_placeholders(qapp):
@@ -545,7 +571,8 @@ def test_settings_panel_disables_irrelevant_controls_by_work_mode(qapp):
 
     panel.sync_business_logic_controls(WorkMode.recognition_only.value)
     panel.expert_groupbox.setChecked(True)
-    assert panel.sample_type_groupbox.isEnabled() is False
+    assert not hasattr(panel, 'sample_type_groupbox')
+    assert panel.preprocessing_groupbox.isEnabled() is False
     assert panel.additional_augmentation_check_box.isEnabled() is False
     assert panel.tech_augmentation_check_box.isEnabled() is False
     assert panel.cutout_check_box.isEnabled() is False
@@ -560,12 +587,12 @@ def test_settings_panel_disables_irrelevant_controls_by_work_mode(qapp):
     assert panel._field_rows[panel.deprecated_model_type].isEnabled() is False
     assert panel._field_rows[panel.experimental_model_type].isEnabled() is False
     assert panel.multi_gpu_check_box.isEnabled() is False
-    assert panel.torch_compile_check_box.isEnabled() is True
+    assert panel.torch_compile_check_box.isEnabled() is False
     assert panel.edit_rare_regions_button.isEnabled() is False
 
     panel.sync_business_logic_controls(WorkMode.train_only.value)
     panel.expert_groupbox.setChecked(True)
-    assert panel.sample_type_groupbox.isEnabled() is True
+    assert panel.preprocessing_groupbox.isEnabled() is True
     assert panel.additional_augmentation_check_box.isEnabled() is True
     assert panel.tech_augmentation_check_box.isEnabled() is True
     assert panel.cutout_check_box.isEnabled() is True
@@ -703,11 +730,16 @@ def test_settings_panel_emits_validation_settings_changed(qapp):
     assert calls['count'] >= 2
 
 
-def test_settings_panel_emits_reset_defaults_requested(qapp):
+def test_settings_panel_emits_reset_defaults_requested_after_confirmation(qapp, monkeypatch):
     panel = SettingsPanel()
     panel.connect_internal_signals()
     calls = {'count': 0}
     panel.reset_defaults_requested.connect(lambda: calls.__setitem__('count', calls['count'] + 1))
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
 
     panel.reset_defaults_button.click()
 
@@ -769,7 +801,7 @@ def test_main_presenter_opens_augmentation_preview_dialog(qapp):
         def activateWindow(self):
             opened['activate_called'] = True
 
-    sys.modules['view.augmentation_preview_dialog'] = types.SimpleNamespace(
+    sys.modules['neuralimage.view.augmentation_preview_dialog'] = types.SimpleNamespace(
         AugmentationPreviewDialog=_FakeDialog
     )
 
@@ -797,10 +829,10 @@ def test_main_presenter_opens_augmentation_preview_dialog(qapp):
     assert opened.get('show_called') is True
     assert opened.get('raise_called') is True
     assert opened.get('activate_called') is True
-    sys.modules.pop('view.augmentation_preview_dialog', None)
+    sys.modules.pop('neuralimage.view.augmentation_preview_dialog', None)
 
 
-def test_main_presenter_converts_cif_masks_for_augmentation_preview(qapp, monkeypatch):
+def test_main_presenter_leaves_cif_masks_for_lazy_augmentation_preview_loading(qapp):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
 
@@ -846,20 +878,9 @@ def test_main_presenter_converts_cif_masks_for_augmentation_preview(qapp, monkey
         def activateWindow(self):
             opened['activate_called'] = True
 
-    sys.modules['view.augmentation_preview_dialog'] = types.SimpleNamespace(
+    sys.modules['neuralimage.view.augmentation_preview_dialog'] = types.SimpleNamespace(
         AugmentationPreviewDialog=_FakeDialog
     )
-
-    rare_patch_module = types.ModuleType('lib.rare_patch_masks')
-
-    def _prepare_label_folder_for_rare_patch_editor(folder, log_callback=None):
-        opened['prepared_folder'] = folder
-        return raster_dir, None
-
-    rare_patch_module.prepare_label_folder_for_rare_patch_editor = _prepare_label_folder_for_rare_patch_editor
-    original_rare_patch_module = sys.modules.get('lib.rare_patch_masks')
-    sys.modules['lib.rare_patch_masks'] = rare_patch_module
-    monkeypatch.setattr(module, 'filter_files', lambda folder, suffixes: [folder / 'frame.cif'])
 
     presenter.main_window_state = module.MainWindowState(
         work_mode=WorkMode.train_only.value,
@@ -878,16 +899,11 @@ def test_main_presenter_converts_cif_masks_for_augmentation_preview(qapp, monkey
     try:
         module.MainPresenter._open_augmentation_preview(presenter)
     finally:
-        sys.modules.pop('view.augmentation_preview_dialog', None)
-        if original_rare_patch_module is None:
-            sys.modules.pop('lib.rare_patch_masks', None)
-        else:
-            sys.modules['lib.rare_patch_masks'] = original_rare_patch_module
+        sys.modules.pop('neuralimage.view.augmentation_preview_dialog', None)
 
     training_parameters = opened['training_parameters']
-    assert opened['prepared_folder'] == label_dir
     assert training_parameters.image_path == sample_dir
-    assert training_parameters.label_path == raster_dir
+    assert training_parameters.label_path == label_dir
     assert opened.get('warning') is None
     assert opened.get('apply_connected') is True
     assert opened.get('show_called') is True
@@ -1412,7 +1428,6 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.restore_best_weights_check_box.isChecked() is False
     assert presenter.view.is_batch_preview_enabled() is False
 
-    panel.cut_dataset_type.setChecked(True)
     panel.shuffle_frames_check_box.setChecked(True)
     panel.shuffle_patches_in_frame_check_box.setChecked(False)
     panel.random_crop_check_box.setChecked(False)

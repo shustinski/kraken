@@ -8,6 +8,7 @@ from neuralimage.configuration.sem_segmentation import (
 )
 from neuralimage.configuration.sem_ui_schema import (
     SEM_UI_FIELDS,
+    SEM_UI_FIELDS_BY_KEY,
     SEM_UI_SECTIONS,
     SemUiField,
     fields_for_section,
@@ -26,6 +27,7 @@ __all__ = [
     'build_sem_segmentation_config',
     'get_sem_preset',
     'SEM_UI_FIELDS',
+    'SEM_UI_FIELDS_BY_KEY',
     'SEM_UI_SECTIONS',
     'SemUiField',
     'fields_for_section',

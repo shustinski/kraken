@@ -22,7 +22,7 @@ from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.lib.image_processing import cut_image, sew_image
 from neuralimage.preprocessing.config import PreprocessingConfig
 from neuralimage.uncertainty.config import UncertaintyConfig
-from neuralimage.preprocessing.pipeline import SemPreprocessingPipeline
+from neuralimage.preprocessing.pipeline import SemPreprocessingPipeline, image_to_channel_first_float01
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
 from neuralimage.model.NeuralNetwork.context_utils import (
     build_context_batch,
@@ -829,8 +829,6 @@ def _apply_preprocessing_to_channel_first(
     work_image: np.ndarray,
     preprocessing: PreprocessingConfig | None,
 ) -> np.ndarray:
-    if preprocessing is None or not preprocessing.any_enabled():
-        return work_image
     pipeline = SemPreprocessingPipeline(preprocessing)
     if work_image.shape[0] == 1:
         processed = pipeline.apply(work_image[0])
@@ -870,8 +868,6 @@ def cut_image_prepare(
     Image.MAX_IMAGE_PIXELS = None
     channels = segment_size[0]
     with retry_file_read(lambda: Image.open(img_path), path=img_path) as source_image:
-        if source_image.mode != 'L' and channels == 1:
-            source_image = source_image.convert('L')
         payload['baseim_size'] = source_image.size
         compression_factor = max(1, int(compression_factor))
         if compression_factor > 1:
@@ -882,23 +878,17 @@ def cut_image_prepare(
             )
             source_image = source_image.resize(compressed_size, resample=Image.Resampling.BILINEAR)
             source_image = source_image.resize(original_size, resample=Image.Resampling.BILINEAR)
-        work_image = np.array(source_image).astype('float32')
+        work_image = image_to_channel_first_float01(source_image, channels)
 
-    work_image = _to_channel_first(work_image, channels=channels)
     work_image = _apply_preprocessing_to_channel_first(work_image, preprocessing)
-    if work_image.max() <= 1.0:
-        work_image = work_image * 255.0
-    payload['cutted_image'] = cut_image(work_image, segment_size, overlap)
+    payload['cutted_image'] = cut_image(work_image, segment_size, overlap, normalize=False)
     if use_context_branch and context_crop_size is not None and context_input_size is not None:
         base_shape_hw = (int(work_image.shape[1]), int(work_image.shape[2]))
         if bool(use_cross_attention):
-            global_image = (
-                build_global_context_image(
-                    work_image,
-                    output_size_xy=tuple(context_input_size),
-                    interpolation_mode='bilinear',
-                )
-                / 255.0
+            global_image = build_global_context_image(
+                work_image,
+                output_size_xy=tuple(context_input_size),
+                interpolation_mode='bilinear',
             ).astype(np.float32, copy=False)
             coords_px, coords_norm = build_patch_coordinate_batch(
                 base_shape_hw,
@@ -912,15 +902,12 @@ def cut_image_prepare(
             payload['patch_coords_norm'] = coords_norm.astype(np.float32, copy=False)
             payload['source_size_hw'] = np.asarray(base_shape_hw, dtype=np.float32)
         else:
-            payload['context_image'] = (
-                build_context_batch(
-                    work_image,
-                    local_patch_size_xy=(int(segment_size[1]), int(segment_size[2])),
-                    overlap=overlap,
-                    context_crop_size_xy=tuple(context_crop_size),
-                    context_input_size_xy=tuple(context_input_size),
-                )
-                / 255.0
+            payload['context_image'] = build_context_batch(
+                work_image,
+                local_patch_size_xy=(int(segment_size[1]), int(segment_size[2])),
+                overlap=overlap,
+                context_crop_size_xy=tuple(context_crop_size),
+                context_input_size_xy=tuple(context_input_size),
             ).astype(np.float32, copy=False)
     return payload
 

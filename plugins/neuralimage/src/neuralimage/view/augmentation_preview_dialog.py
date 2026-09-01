@@ -3,13 +3,15 @@ from __future__ import annotations
 import copy
 import random
 import zlib
+from collections import OrderedDict
 from contextlib import contextmanager
+from dataclasses import asdict
 from dataclasses import replace
 
 import numpy as np
 import torch
 from PIL import Image
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -18,7 +20,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QListWidget,
-    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -41,12 +42,27 @@ from neuralimage.lib.data_interfaces import (
     build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
 )
-from neuralimage.lib.images import ImagePreparator, SampleFastCutter
+from neuralimage.lib.images import ImagePreparator, SampleFastCutter, resolved_augmentation_variant_count
 from neuralimage.lib.random_artifacts import generate_random_artifact_patch
-from neuralimage.lib.rare_patch_masks import collect_matching_sample_label_pairs
+from neuralimage.lib.rare_patch_masks import (
+    collect_matching_sample_label_pairs,
+    prepare_cif_label_raster,
+)
 from neuralimage.lib.ui_texts import get_ui_section
 from neuralimage.model.NeuralNetwork.dataset import _apply_binary_tech_augmentation_to_pair
-from neuralimage.view.settings_panel_widgets import NoWheelComboBox, create_double_spinbox, create_size_widget, create_slider, create_spinbox
+from neuralimage.preprocessing.pipeline import image_to_channel_first_float01
+from neuralimage.targets.dataset_hooks import (
+    apply_dataset_preprocessing,
+    apply_dataset_sem_augmentation_preview,
+)
+from neuralimage.configuration import (
+    build_sem_segmentation_config,
+    sem_config_from_form_values,
+    sem_config_to_form_values,
+)
+from neuralimage.view.sem_compact_section_editor import CompactSemSectionEditor
+from neuralimage.view.settings_panel import SettingsPanel
+from neuralimage.view.settings_panel_widgets import NoWheelComboBox
 
 MIN_AUG_STRENGTH = 0.0
 MAX_AUG_STRENGTH = 1.0
@@ -60,6 +76,10 @@ MIN_CROPS_PER_IMAGE = 1
 MAX_CROPS_PER_IMAGE = 5000
 MIN_TECH_AUG_OPERATIONS = 1
 MAX_TECH_AUG_OPERATIONS = 6
+SHIFT_RANGE_MIN = 4
+SHIFT_RANGE_MAX = 2000
+MIN_SYNTHETIC_DATASET_FACTOR = 0.0
+MAX_SYNTHETIC_DATASET_FACTOR = 10.0
 MIN_CUTOUT_HOLES = 1
 MAX_CUTOUT_HOLES = 32
 MIN_RANDOM_ARTIFACTS_COUNT = 1
@@ -82,6 +102,8 @@ MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA = 0.0
 MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA = 0.2
 MIN_SYNTHETIC_TRACE_NOISE_SIGMA = 0.0
 MAX_SYNTHETIC_TRACE_NOISE_SIGMA = 0.2
+MIN_AUGMENTATION_MULTIPLIER = 0.0
+MAX_AUGMENTATION_MULTIPLIER = 20.0
 IC_DEFECT_WEIGHT_FIELDS: tuple[tuple[str, str], ...] = (
     ('line_break', 'ic_line_break_severity'),
     ('bridge', 'ic_bridge_severity'),
@@ -94,6 +116,7 @@ IC_DEFECT_WEIGHT_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 PREVIEW_VALUE_LABELS_EN = {
+    'shift': 'Patch shift',
     'crops_per_image': 'Crops per image',
     'scale_augmentation_strength': 'Scale strength',
     'augmentation_brightness_strength': 'Brightness change',
@@ -105,6 +128,8 @@ PREVIEW_VALUE_LABELS_EN = {
     'augmentation_blur_radius': 'Blur radius',
     'tech_aug_min_operations': 'Min operations',
     'tech_aug_max_operations': 'Max operations',
+    'tech_aug_max_changed_pixels_ratio': 'Changed pixels limit',
+    'tech_aug_max_foreground_ratio_delta': 'Foreground ratio limit',
     'tech_aug_global_width_probability': 'Width variation probability',
     'tech_aug_scale_rethreshold_probability': 'Scale + rethreshold probability',
     'tech_aug_blur_threshold_probability': 'Blur + threshold probability',
@@ -123,6 +148,7 @@ PREVIEW_VALUE_LABELS_EN = {
     'pcb_defects_min_count': 'Min defects',
     'pcb_defects_max_count': 'Max defects',
     'synthetic_image_size': 'Synthetic image size',
+    'synthetic_dataset_factor': 'Synthetic epoch factor',
     'synthetic_trace_count': 'Trace count',
     'synthetic_segment_count': 'Segments per trace',
     'synthetic_trace_half_width': 'Trace half-width',
@@ -138,6 +164,7 @@ PREVIEW_VALUE_LABELS_EN = {
     'pcb_misalignment_severity': 'Misalignment severity',
 }
 PREVIEW_VALUE_LABELS_RU = {
+    'shift': 'Шаг нарезки',
     'crops_per_image': 'Фрагментов на изображение',
     'scale_augmentation_strength': 'Сила масштабирования',
     'augmentation_brightness_strength': 'Изменение яркости',
@@ -149,6 +176,8 @@ PREVIEW_VALUE_LABELS_RU = {
     'augmentation_blur_radius': 'Радиус размытия',
     'tech_aug_min_operations': 'Минимум операций',
     'tech_aug_max_operations': 'Максимум операций',
+    'tech_aug_max_changed_pixels_ratio': 'Лимит изменённых пикселей',
+    'tech_aug_max_foreground_ratio_delta': 'Лимит изменения foreground',
     'tech_aug_global_width_probability': 'Вероятность вариации ширины',
     'tech_aug_scale_rethreshold_probability': 'Вероятность scale + threshold',
     'tech_aug_blur_threshold_probability': 'Вероятность blur + threshold',
@@ -166,6 +195,7 @@ PREVIEW_VALUE_LABELS_RU = {
     'pcb_defects_probability': 'Вероятность дефектов',
     'pcb_defects_min_count': 'Минимум дефектов',
     'pcb_defects_max_count': 'Максимум дефектов',
+    'synthetic_dataset_factor': 'Коэффициент synthetic-эпохи',
 }
 
 
@@ -207,9 +237,22 @@ class _PreviewLabel(QLabel):
 class AugmentationPreviewDialog(QDialog):
     apply_to_main_requested = pyqtSignal(object)
 
-    def __init__(self, training_parameters: TrainingParameters, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+    def __init__(
+        self,
+        training_parameters: TrainingParameters,
+        settings_panel: SettingsPanel,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(None)
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowMinimizeButtonHint
+            | Qt.WindowType.WindowMaximizeButtonHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._parent_window = parent
+        self._panel = settings_panel
         self._training_parameters = training_parameters
         self._texts = get_ui_section('augmentation_preview_dialog')
         self._settings_texts = get_ui_section('settings_panel')
@@ -221,29 +264,60 @@ class AugmentationPreviewDialog(QDialog):
             training_parameters.image_path,
             training_parameters.label_path,
             strict=False,
+            allow_cif_labels=True,
+            recursive=bool(getattr(training_parameters, 'recursive_file_search', False)),
         )
         self._current_sample_index = 0
+        self._current_frame_index = 0
+        self._frame_plan: list[tuple[int, int, int]] = []
+        self._cutter_length_cache: dict[int, int] = {}
         self._variant_serial = 0
+        self._cutter_item_index = 0
+        self._resample_salt = 0
         self._show_augmented = True
         self._sample_list_updating = False
-        self._toggle_boxes: dict[str, QCheckBox] = {}
-        self._value_widgets: dict[str, list[QWidget]] = {}
-        self._value_rows: dict[str, list[QWidget]] = {}
+        self._sidebar_restore: list[tuple[QWidget, QWidget | None, object, int | None]] = []
         self._original_image_array: np.ndarray | None = None
         self._augmented_image_array: np.ndarray | None = None
         self._original_label_array: np.ndarray | None = None
         self._augmented_label_array: np.ndarray | None = None
+        self._prepared_arrays_cache: OrderedDict[int, tuple[np.ndarray, np.ndarray]] = OrderedDict()
 
-        self._create_value_controls()
+        self.sem_normalization_editor = self._panel.sem_segmentation_section_editors['preprocessing']
+        self.sem_augmentation_editor = self._panel.training_augmentation_editor
         self._build_ui()
-        self._initialize_toggle_states()
+        self.sample_list_widget.installEventFilter(self)
         self._connect_signals()
         self._sync_group_boxes()
-        self._refresh_preview()
+        self._show_loading_state()
+        # Paint the window before reading and augmenting a potentially large
+        # SEM frame. The work still starts immediately on the next event turn.
+        QTimer.singleShot(0, self._refresh_preview)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._update_visible_preview()
+
+    def keyPressEvent(self, event) -> None:
+        key = event.key()
+        if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            if self._navigate_frame(-1 if key == Qt.Key.Key_Up else 1):
+                event.accept()
+                return
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.sample_list_widget and event.type() == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                if self._navigate_frame(-1 if key == Qt.Key.Key_Up else 1):
+                    return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                return True
+        return super().eventFilter(watched, event)
 
     def _build_ui(self) -> None:
         self.setWindowTitle(str(self._texts.get('window_title', 'Augmentation preview')))
@@ -280,6 +354,7 @@ class AugmentationPreviewDialog(QDialog):
                 )
             )
         )
+        self.full_image_check_box.setChecked(True)
         self.sample_label = QLabel('')
         self.sample_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         nav_row.addWidget(self.prev_button)
@@ -351,10 +426,9 @@ class AugmentationPreviewDialog(QDialog):
         right_layout = QVBoxLayout(right_content)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
-        right_layout.addWidget(self._build_synthetic_group())
-        right_layout.addWidget(self._build_spatial_group())
-        right_layout.addWidget(self._build_photometric_group())
-        right_layout.addWidget(self._build_batch_group())
+        normalization_group, augmentation_group = self._build_shared_training_transform_groups()
+        self._attach_sidebar_widget(normalization_group, right_layout)
+        self._attach_sidebar_widget(augmentation_group, right_layout)
         right_layout.addStretch(1)
         right_scroll.setWidget(right_content)
 
@@ -362,1138 +436,53 @@ class AugmentationPreviewDialog(QDialog):
         root_layout.addWidget(left_widget, 1)
         root_layout.addWidget(right_scroll, 0)
 
-    def _create_value_controls(self) -> None:
-        generation = self._training_parameters.generation
-        tech_aug = build_tech_augmentation_config(getattr(generation, 'tech_aug', None))
-        cutout = getattr(self._training_parameters, 'cutout', None)
-        random_artifacts = getattr(self._training_parameters, 'random_artifacts', None)
-        mixup = getattr(self._training_parameters, 'mixup', None)
-        synthetic_generator = build_synthetic_defect_generator_parameters(
-            getattr(self._training_parameters, 'synthetic_defect_generator', None)
-        )
-        pcb_defects = synthetic_generator.pcb_defects
-        ic_defects = synthetic_generator.ic_defects
+    def _build_shared_training_transform_groups(self) -> tuple[QGroupBox, QGroupBox]:
+        return self._panel.sem_normalization_editor, self._panel.training_augmentation_editor
 
-        self.crops_per_image_spinbox = create_spinbox(
-            (MIN_CROPS_PER_IMAGE, MAX_CROPS_PER_IMAGE),
-            default_value=self._bounded_int(getattr(generation, 'crops_per_image', 64), MIN_CROPS_PER_IMAGE, MAX_CROPS_PER_IMAGE),
-            step=1,
-        )
-        self.scale_augmentation_strength_spinbox = create_double_spinbox(
-            (MIN_AUG_STRENGTH, MAX_AUG_STRENGTH),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(generation, 'scale_augmentation_strength', 0.2),
-                MIN_AUG_STRENGTH,
-                MAX_AUG_STRENGTH,
-            ),
-            decimals=2,
-        )
-        self.augmentation_brightness_spinbox = create_double_spinbox(
-            (MIN_AUG_STRENGTH, MAX_AUG_STRENGTH),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(generation, 'augmentation_brightness_strength', 0.1),
-                MIN_AUG_STRENGTH,
-                MAX_AUG_STRENGTH,
-            ),
-            decimals=2,
-        )
-        self.augmentation_contrast_spinbox = create_double_spinbox(
-            (MIN_AUG_STRENGTH, MAX_AUG_STRENGTH),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(generation, 'augmentation_contrast_strength', 0.1),
-                MIN_AUG_STRENGTH,
-                MAX_AUG_STRENGTH,
-            ),
-            decimals=2,
-        )
-        self.augmentation_gamma_spinbox = create_double_spinbox(
-            (MIN_AUG_STRENGTH, MAX_AUG_STRENGTH),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(generation, 'augmentation_gamma_strength', 0.15),
-                MIN_AUG_STRENGTH,
-                MAX_AUG_STRENGTH,
-            ),
-            decimals=2,
-        )
-        self.augmentation_noise_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(generation, 'augmentation_noise_probability', 0.5),
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.augmentation_noise_sigma_spinbox = create_double_spinbox(
-            (MIN_AUG_NOISE_SIGMA, MAX_AUG_NOISE_SIGMA),
-            step=0.005,
-            default_value=self._bounded_float(
-                getattr(generation, 'augmentation_noise_sigma', 0.01),
-                MIN_AUG_NOISE_SIGMA,
-                MAX_AUG_NOISE_SIGMA,
-            ),
-            decimals=3,
-        )
-        self.augmentation_blur_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(generation, 'augmentation_blur_probability', 0.25),
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.augmentation_blur_radius_spinbox = create_double_spinbox(
-            (MIN_AUG_BLUR_RADIUS, MAX_AUG_BLUR_RADIUS),
-            step=0.1,
-            default_value=self._bounded_float(
-                getattr(generation, 'augmentation_blur_radius', 1.0),
-                MIN_AUG_BLUR_RADIUS,
-                MAX_AUG_BLUR_RADIUS,
-            ),
-            decimals=2,
-        )
-        self.tech_aug_min_operations_spinbox = create_spinbox(
-            (MIN_TECH_AUG_OPERATIONS, MAX_TECH_AUG_OPERATIONS),
-            default_value=self._bounded_int(tech_aug.min_operations, MIN_TECH_AUG_OPERATIONS, MAX_TECH_AUG_OPERATIONS),
-            step=1,
-        )
-        self.tech_aug_max_operations_spinbox = create_spinbox(
-            (MIN_TECH_AUG_OPERATIONS, MAX_TECH_AUG_OPERATIONS),
-            default_value=self._bounded_int(tech_aug.max_operations, MIN_TECH_AUG_OPERATIONS, MAX_TECH_AUG_OPERATIONS),
-            step=1,
-        )
-        self.tech_aug_global_width_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                tech_aug.global_width.probability,
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.tech_aug_scale_rethreshold_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                tech_aug.scale_rethreshold.probability,
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.tech_aug_blur_threshold_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                tech_aug.blur_threshold.probability,
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.tech_aug_boundary_aware_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                tech_aug.boundary_aware.probability,
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.tech_aug_local_morphology_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                tech_aug.local_morphology.probability,
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.tech_aug_gap_variation_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                tech_aug.gap_variation.probability,
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.cutout_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(cutout, 'probability', 1.0),
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.cutout_holes_spinbox = create_spinbox(
-            (MIN_CUTOUT_HOLES, MAX_CUTOUT_HOLES),
-            default_value=self._bounded_int(getattr(cutout, 'holes', 1), MIN_CUTOUT_HOLES, MAX_CUTOUT_HOLES),
-            step=1,
-        )
-        self.cutout_size_ratio_spinbox = create_double_spinbox(
-            (MIN_AUG_STRENGTH, MAX_AUG_STRENGTH),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(cutout, 'size_ratio', 0.25),
-                MIN_AUG_STRENGTH,
-                MAX_AUG_STRENGTH,
-            ),
-            decimals=2,
-        )
-        self.random_artifacts_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(random_artifacts, 'probability', 1.0),
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.random_artifacts_count_spinbox = create_spinbox(
-            (MIN_RANDOM_ARTIFACTS_COUNT, MAX_RANDOM_ARTIFACTS_COUNT),
-            default_value=self._bounded_int(
-                getattr(random_artifacts, 'count', 1),
-                MIN_RANDOM_ARTIFACTS_COUNT,
-                MAX_RANDOM_ARTIFACTS_COUNT,
-            ),
-            step=1,
-        )
-        self.random_artifacts_size_ratio_spinbox = create_double_spinbox(
-            (MIN_AUG_STRENGTH, MAX_AUG_STRENGTH),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(random_artifacts, 'size_ratio', 0.25),
-                MIN_AUG_STRENGTH,
-                MAX_AUG_STRENGTH,
-            ),
-            decimals=2,
-        )
-        self.mixup_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                getattr(mixup, 'probability', 1.0),
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.mixup_alpha_spinbox = create_double_spinbox(
-            (MIN_MIXUP_ALPHA, MAX_MIXUP_ALPHA),
-            step=0.05,
-            default_value=self._bounded_float(getattr(mixup, 'alpha', 0.2), MIN_MIXUP_ALPHA, MAX_MIXUP_ALPHA),
-            decimals=2,
-        )
-        self.pcb_defects_probability_spinbox = create_double_spinbox(
-            (MIN_AUGMENTATION_PROBABILITY, MAX_AUGMENTATION_PROBABILITY),
-            step=0.05,
-            default_value=self._bounded_float(
-                pcb_defects.defect_probability,
-                MIN_AUGMENTATION_PROBABILITY,
-                MAX_AUGMENTATION_PROBABILITY,
-            ),
-            decimals=2,
-        )
-        self.pcb_defects_min_count_spinbox = create_spinbox(
-            (MIN_PCB_DEFECT_COUNT, MAX_PCB_DEFECT_COUNT),
-            default_value=self._bounded_int(pcb_defects.min_defects, MIN_PCB_DEFECT_COUNT, MAX_PCB_DEFECT_COUNT),
-            step=1,
-        )
-        self.pcb_defects_max_count_spinbox = create_spinbox(
-            (MIN_PCB_DEFECT_COUNT, MAX_PCB_DEFECT_COUNT),
-            default_value=self._bounded_int(pcb_defects.max_defects, MIN_PCB_DEFECT_COUNT, MAX_PCB_DEFECT_COUNT),
-            step=1,
-        )
-        self.pcb_defect_type_spinboxes = {
-            defect_name: create_slider(
-                (0, 100),
-                default_value=self._bounded_int(
-                    int(round(float(pcb_defects.defect_severities.get(defect_name, 0.5)) * 100.0)),
-                    0,
-                    100,
-                ),
-            )
-            for defect_name in (
-                'break',
-                'short',
-                'missing_copper',
-                'excess_copper',
-                'pinhole',
-                'spurious_copper',
-                'via',
-                'misalignment',
-            )
-        }
-        self.ic_defect_type_spinboxes = {
-            defect_name: create_slider(
-                (0, 100),
-                default_value=self._bounded_int(
-                    int(round(float(ic_defects.defect_severities.get(defect_name, 0.5)) * 100.0)),
-                    0,
-                    100,
-                ),
-            )
-            for defect_name, _label_key in IC_DEFECT_WEIGHT_FIELDS
-        }
-        self.synthetic_topology_domain_combo = NoWheelComboBox()
-        self.synthetic_topology_domain_combo.addItem('PCB', 'pcb')
-        self.synthetic_topology_domain_combo.addItem('IC', 'ic')
-        self.pcb_topology_family_combo = NoWheelComboBox()
-        for family in PCB_TOPOLOGY_FAMILIES:
-            self.pcb_topology_family_combo.addItem(family, family)
-        self.ic_topology_family_combo = NoWheelComboBox()
-        for family in IC_TOPOLOGY_FAMILIES:
-            self.ic_topology_family_combo.addItem(family, family)
-        self._set_combo_value(self.synthetic_topology_domain_combo, str(synthetic_generator.topology_domain))
-        self._set_combo_value(
-            self.pcb_topology_family_combo,
-            str(getattr(synthetic_generator, 'topology_family', PCB_TOPOLOGY_FAMILIES[0])),
-        )
-        self._set_combo_value(
-            self.ic_topology_family_combo,
-            str(getattr(synthetic_generator, 'topology_family', IC_TOPOLOGY_FAMILIES[0])),
-        )
-        self.synthetic_trace_count_min_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_TRACE_COUNT, MAX_SYNTHETIC_TRACE_COUNT),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'trace_count_range', (5, 5))[0],
-                MIN_SYNTHETIC_TRACE_COUNT,
-                MAX_SYNTHETIC_TRACE_COUNT,
-            ),
-            step=1,
-        )
-        self.synthetic_image_width_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_IMAGE_SIZE, MAX_SYNTHETIC_IMAGE_SIZE),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'image_size_xy', (1024, 1024))[0],
-                MIN_SYNTHETIC_IMAGE_SIZE,
-                MAX_SYNTHETIC_IMAGE_SIZE,
-            ),
-            step=32,
-        )
-        self.synthetic_image_height_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_IMAGE_SIZE, MAX_SYNTHETIC_IMAGE_SIZE),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'image_size_xy', (1024, 1024))[1],
-                MIN_SYNTHETIC_IMAGE_SIZE,
-                MAX_SYNTHETIC_IMAGE_SIZE,
-            ),
-            step=32,
-        )
-        self.synthetic_image_size_widget = create_size_widget(
-            self.synthetic_image_width_spinbox,
-            self.synthetic_image_height_spinbox,
-        )
-        self.synthetic_trace_count_max_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_TRACE_COUNT, MAX_SYNTHETIC_TRACE_COUNT),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'trace_count_range', (5, 5))[1],
-                MIN_SYNTHETIC_TRACE_COUNT,
-                MAX_SYNTHETIC_TRACE_COUNT,
-            ),
-            step=1,
-        )
-        self.synthetic_segment_count_min_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_SEGMENT_COUNT, MAX_SYNTHETIC_SEGMENT_COUNT),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'segment_count_range', (4, 4))[0],
-                MIN_SYNTHETIC_SEGMENT_COUNT,
-                MAX_SYNTHETIC_SEGMENT_COUNT,
-            ),
-            step=1,
-        )
-        self.synthetic_segment_count_max_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_SEGMENT_COUNT, MAX_SYNTHETIC_SEGMENT_COUNT),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'segment_count_range', (4, 4))[1],
-                MIN_SYNTHETIC_SEGMENT_COUNT,
-                MAX_SYNTHETIC_SEGMENT_COUNT,
-            ),
-            step=1,
-        )
-        self.synthetic_trace_half_width_min_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_TRACE_HALF_WIDTH, MAX_SYNTHETIC_TRACE_HALF_WIDTH),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'trace_half_width_range', (2, 2))[0],
-                MIN_SYNTHETIC_TRACE_HALF_WIDTH,
-                MAX_SYNTHETIC_TRACE_HALF_WIDTH,
-            ),
-            step=1,
-        )
-        self.synthetic_trace_half_width_max_spinbox = create_spinbox(
-            (MIN_SYNTHETIC_TRACE_HALF_WIDTH, MAX_SYNTHETIC_TRACE_HALF_WIDTH),
-            default_value=self._bounded_int(
-                getattr(synthetic_generator, 'trace_half_width_range', (2, 2))[1],
-                MIN_SYNTHETIC_TRACE_HALF_WIDTH,
-                MAX_SYNTHETIC_TRACE_HALF_WIDTH,
-            ),
-            step=1,
-        )
-        self.synthetic_background_noise_sigma_min_spinbox = create_double_spinbox(
-            (MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA, MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA),
-            step=0.005,
-            default_value=self._bounded_float(
-                getattr(synthetic_generator, 'background_noise_sigma_range', (0.02, 0.02))[0],
-                MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA,
-                MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA,
-            ),
-            decimals=3,
-        )
-        self.synthetic_background_noise_sigma_max_spinbox = create_double_spinbox(
-            (MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA, MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA),
-            step=0.005,
-            default_value=self._bounded_float(
-                getattr(synthetic_generator, 'background_noise_sigma_range', (0.02, 0.02))[1],
-                MIN_SYNTHETIC_BACKGROUND_NOISE_SIGMA,
-                MAX_SYNTHETIC_BACKGROUND_NOISE_SIGMA,
-            ),
-            decimals=3,
-        )
-        self.synthetic_trace_noise_sigma_min_spinbox = create_double_spinbox(
-            (MIN_SYNTHETIC_TRACE_NOISE_SIGMA, MAX_SYNTHETIC_TRACE_NOISE_SIGMA),
-            step=0.005,
-            default_value=self._bounded_float(
-                getattr(synthetic_generator, 'trace_noise_sigma_range', (0.01, 0.01))[0],
-                MIN_SYNTHETIC_TRACE_NOISE_SIGMA,
-                MAX_SYNTHETIC_TRACE_NOISE_SIGMA,
-            ),
-            decimals=3,
-        )
-        self.synthetic_trace_noise_sigma_max_spinbox = create_double_spinbox(
-            (MIN_SYNTHETIC_TRACE_NOISE_SIGMA, MAX_SYNTHETIC_TRACE_NOISE_SIGMA),
-            step=0.005,
-            default_value=self._bounded_float(
-                getattr(synthetic_generator, 'trace_noise_sigma_range', (0.01, 0.01))[1],
-                MIN_SYNTHETIC_TRACE_NOISE_SIGMA,
-                MAX_SYNTHETIC_TRACE_NOISE_SIGMA,
-            ),
-            decimals=3,
-        )
-
-    def _build_synthetic_group(self) -> QGroupBox:
-        group = QGroupBox(
-            str(
-                self._texts.get(
-                    'synthetic_group',
-                    'Синтетическая топология' if self._is_russian_ui else 'Synthetic topology',
-                )
-            )
-        )
-        layout = QVBoxLayout(group)
-        layout.addWidget(
-            self._create_toggle(
-                'synthetic_topology',
-                'synthetic_topology',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'synthetic_topology_domain',
-                self.synthetic_topology_domain_combo,
-                parent_key='synthetic_topology_domain',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'pcb_topology_family',
-                self.pcb_topology_family_combo,
-                parent_key='pcb_topology_family',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'ic_topology_family',
-                self.ic_topology_family_combo,
-                parent_key='ic_topology_family',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'synthetic_image_size',
-                self.synthetic_image_size_widget,
-                parent_key='synthetic_topology',
-            )
-        )
-        layout.addWidget(
-            self._create_range_row(
-                'synthetic_trace_count',
-                self.synthetic_trace_count_min_spinbox,
-                self.synthetic_trace_count_max_spinbox,
-                parent_key='synthetic_topology',
-            )
-        )
-        layout.addWidget(
-            self._create_range_row(
-                'synthetic_segment_count',
-                self.synthetic_segment_count_min_spinbox,
-                self.synthetic_segment_count_max_spinbox,
-                parent_key='synthetic_topology',
-            )
-        )
-        layout.addWidget(
-            self._create_range_row(
-                'synthetic_trace_half_width',
-                self.synthetic_trace_half_width_min_spinbox,
-                self.synthetic_trace_half_width_max_spinbox,
-                parent_key='synthetic_topology',
-            )
-        )
-        layout.addWidget(
-            self._create_range_row(
-                'synthetic_background_noise_sigma',
-                self.synthetic_background_noise_sigma_min_spinbox,
-                self.synthetic_background_noise_sigma_max_spinbox,
-                parent_key='synthetic_topology',
-            )
-        )
-        layout.addWidget(
-            self._create_range_row(
-                'synthetic_trace_noise_sigma',
-                self.synthetic_trace_noise_sigma_min_spinbox,
-                self.synthetic_trace_noise_sigma_max_spinbox,
-                parent_key='synthetic_topology',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_defects', 'pcb_group'))
-        layout.addWidget(
-            self._create_value_row(
-                'pcb_defects_probability',
-                self.pcb_defects_probability_spinbox,
-                parent_key='pcb_defects',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'pcb_defects_min_count',
-                self.pcb_defects_min_count_spinbox,
-                parent_key='pcb_defects',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'pcb_defects_max_count',
-                self.pcb_defects_max_count_spinbox,
-                parent_key='pcb_defects',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_break', 'pcb_break', indent=16))
-        layout.addWidget(
-            self._create_weight_row('pcb_break', self.pcb_defect_type_spinboxes['break'], parent_key='pcb_break')
-        )
-        layout.addWidget(self._create_toggle('pcb_short', 'pcb_short', indent=16))
-        layout.addWidget(
-            self._create_weight_row('pcb_short', self.pcb_defect_type_spinboxes['short'], parent_key='pcb_short')
-        )
-        layout.addWidget(self._create_toggle('pcb_missing_copper', 'pcb_missing_copper', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_missing_copper',
-                self.pcb_defect_type_spinboxes['missing_copper'],
-                parent_key='pcb_missing_copper',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_excess_copper', 'pcb_excess_copper', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_excess_copper',
-                self.pcb_defect_type_spinboxes['excess_copper'],
-                parent_key='pcb_excess_copper',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_pinhole', 'pcb_pinhole', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_pinhole',
-                self.pcb_defect_type_spinboxes['pinhole'],
-                parent_key='pcb_pinhole',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_spurious_copper', 'pcb_spurious_copper', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_spurious_copper',
-                self.pcb_defect_type_spinboxes['spurious_copper'],
-                parent_key='pcb_spurious_copper',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_via', 'pcb_via', indent=16))
-        layout.addWidget(
-            self._create_weight_row('pcb_via', self.pcb_defect_type_spinboxes['via'], parent_key='pcb_via')
-        )
-        layout.addWidget(self._create_toggle('pcb_misalignment', 'pcb_misalignment', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_misalignment',
-                self.pcb_defect_type_spinboxes['misalignment'],
-                parent_key='pcb_misalignment',
-            )
-        )
-        layout.addWidget(self._create_toggle('ic_line_break', 'ic_line_break', indent=16))
-        layout.addWidget(
-            self._create_weight_row('ic_line_break', self.ic_defect_type_spinboxes['line_break'], parent_key='ic_line_break')
-        )
-        layout.addWidget(self._create_toggle('ic_bridge', 'ic_bridge', indent=16))
-        layout.addWidget(
-            self._create_weight_row('ic_bridge', self.ic_defect_type_spinboxes['bridge'], parent_key='ic_bridge')
-        )
-        layout.addWidget(self._create_toggle('ic_necking', 'ic_necking', indent=16))
-        layout.addWidget(
-            self._create_weight_row('ic_necking', self.ic_defect_type_spinboxes['necking'], parent_key='ic_necking')
-        )
-        layout.addWidget(self._create_toggle('ic_missing_metal', 'ic_missing_metal', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'ic_missing_metal',
-                self.ic_defect_type_spinboxes['missing_metal'],
-                parent_key='ic_missing_metal',
-            )
-        )
-        layout.addWidget(self._create_toggle('ic_spur', 'ic_spur', indent=16))
-        layout.addWidget(
-            self._create_weight_row('ic_spur', self.ic_defect_type_spinboxes['spur'], parent_key='ic_spur')
-        )
-        layout.addWidget(self._create_toggle('ic_pinhole', 'ic_pinhole', indent=16))
-        layout.addWidget(
-            self._create_weight_row('ic_pinhole', self.ic_defect_type_spinboxes['pinhole'], parent_key='ic_pinhole')
-        )
-        layout.addWidget(self._create_toggle('ic_via_open', 'ic_via_open', indent=16))
-        layout.addWidget(
-            self._create_weight_row('ic_via_open', self.ic_defect_type_spinboxes['via_open'], parent_key='ic_via_open')
-        )
-        layout.addWidget(self._create_toggle('ic_line_shift', 'ic_line_shift', indent=16))
-        layout.addWidget(
-            self._create_weight_row('ic_line_shift', self.ic_defect_type_spinboxes['line_shift'], parent_key='ic_line_shift')
-        )
-        return group
-
-    def _build_spatial_group(self) -> QGroupBox:
-        group = QGroupBox(str(self._texts.get('spatial_group', 'Spatial augmentations')))
-        layout = QVBoxLayout(group)
-        layout.addWidget(self._create_toggle('rotate_90', 'rotate_90'))
-        layout.addWidget(self._create_toggle('rotate_180', 'rotate_180'))
-        layout.addWidget(self._create_toggle('flip_x', 'flip_x'))
-        layout.addWidget(self._create_toggle('flip_y', 'flip_y'))
-        layout.addWidget(self._create_toggle('random_crop', 'random_crop'))
-        layout.addWidget(
-            self._create_value_row('crops_per_image', self.crops_per_image_spinbox, parent_key='random_crop')
-        )
-        layout.addWidget(self._create_toggle('scale', 'scale'))
-        layout.addWidget(
-            self._create_value_row(
-                'scale_augmentation_strength',
-                self.scale_augmentation_strength_spinbox,
-                parent_key='scale',
-            )
-        )
-        return group
-
-    def _build_photometric_group(self) -> QGroupBox:
-        group = QGroupBox(str(self._texts.get('photometric_group', 'Photometric augmentations')))
-        layout = QVBoxLayout(group)
-        layout.addWidget(self._create_toggle('brightness', 'brightness'))
-        layout.addWidget(
-            self._create_value_row(
-                'augmentation_brightness_strength',
-                self.augmentation_brightness_spinbox,
-                parent_key='brightness',
-            )
-        )
-        layout.addWidget(self._create_toggle('contrast', 'contrast'))
-        layout.addWidget(
-            self._create_value_row(
-                'augmentation_contrast_strength',
-                self.augmentation_contrast_spinbox,
-                parent_key='contrast',
-            )
-        )
-        layout.addWidget(self._create_toggle('gamma', 'gamma'))
-        layout.addWidget(
-            self._create_value_row(
-                'augmentation_gamma_strength',
-                self.augmentation_gamma_spinbox,
-                parent_key='gamma',
-            )
-        )
-        layout.addWidget(self._create_toggle('noise', 'noise'))
-        layout.addWidget(
-            self._create_value_row(
-                'augmentation_noise_probability',
-                self.augmentation_noise_probability_spinbox,
-                parent_key='noise',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'augmentation_noise_sigma',
-                self.augmentation_noise_sigma_spinbox,
-                parent_key='noise',
-            )
-        )
-        layout.addWidget(self._create_toggle('blur', 'blur'))
-        layout.addWidget(
-            self._create_value_row(
-                'augmentation_blur_probability',
-                self.augmentation_blur_probability_spinbox,
-                parent_key='blur',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'augmentation_blur_radius',
-                self.augmentation_blur_radius_spinbox,
-                parent_key='blur',
-            )
-        )
-        return group
-
-    def _build_mask_variation_group(self) -> QGroupBox:
-        group = QGroupBox(str(self._texts.get('mask_variation_group', 'Mask variations')))
-        layout = QVBoxLayout(group)
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_min_operations',
-                self.tech_aug_min_operations_spinbox,
-                parent_key='tech_config',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_max_operations',
-                self.tech_aug_max_operations_spinbox,
-                parent_key='tech_config',
-            )
-        )
-        layout.addWidget(self._create_toggle('tech_global_width', 'tech_global_width'))
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_global_width_probability',
-                self.tech_aug_global_width_probability_spinbox,
-                parent_key='tech_global_width',
-            )
-        )
-        layout.addWidget(self._create_toggle('tech_scale_rethreshold', 'tech_scale_rethreshold'))
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_scale_rethreshold_probability',
-                self.tech_aug_scale_rethreshold_probability_spinbox,
-                parent_key='tech_scale_rethreshold',
-            )
-        )
-        layout.addWidget(self._create_toggle('tech_blur_threshold', 'tech_blur_threshold'))
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_blur_threshold_probability',
-                self.tech_aug_blur_threshold_probability_spinbox,
-                parent_key='tech_blur_threshold',
-            )
-        )
-        layout.addWidget(self._create_toggle('tech_boundary_aware', 'tech_boundary_aware'))
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_boundary_aware_probability',
-                self.tech_aug_boundary_aware_probability_spinbox,
-                parent_key='tech_boundary_aware',
-            )
-        )
-        layout.addWidget(self._create_toggle('tech_local_morphology', 'tech_local_morphology'))
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_local_morphology_probability',
-                self.tech_aug_local_morphology_probability_spinbox,
-                parent_key='tech_local_morphology',
-            )
-        )
-        layout.addWidget(self._create_toggle('tech_gap_variation', 'tech_gap_variation'))
-        layout.addWidget(
-            self._create_value_row(
-                'tech_aug_gap_variation_probability',
-                self.tech_aug_gap_variation_probability_spinbox,
-                parent_key='tech_gap_variation',
-            )
-        )
-        return group
-
-    def _build_batch_group(self) -> QGroupBox:
-        group = QGroupBox(str(self._texts.get('batch_group', 'Batch augmentations')))
-        layout = QVBoxLayout(group)
-        layout.addWidget(self._create_toggle('cutout', 'cutout'))
-        layout.addWidget(
-            self._create_value_row('cutout_probability', self.cutout_probability_spinbox, parent_key='cutout')
-        )
-        layout.addWidget(
-            self._create_value_row('cutout_holes', self.cutout_holes_spinbox, parent_key='cutout')
-        )
-        layout.addWidget(
-            self._create_value_row('cutout_size_ratio', self.cutout_size_ratio_spinbox, parent_key='cutout')
-        )
-        layout.addWidget(self._create_toggle('random_artifacts', 'random_artifacts'))
-        layout.addWidget(
-            self._create_value_row(
-                'random_artifacts_probability',
-                self.random_artifacts_probability_spinbox,
-                parent_key='random_artifacts',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'random_artifacts_count',
-                self.random_artifacts_count_spinbox,
-                parent_key='random_artifacts',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'random_artifacts_size_ratio',
-                self.random_artifacts_size_ratio_spinbox,
-                parent_key='random_artifacts',
-            )
-        )
-        layout.addWidget(self._create_toggle('artifact_dust', 'artifact_dust', indent=16))
-        layout.addWidget(self._create_toggle('artifact_resist_residue', 'artifact_resist_residue', indent=16))
-        layout.addWidget(self._create_toggle('artifact_etch_residue', 'artifact_etch_residue', indent=16))
-        layout.addWidget(self._create_toggle('artifact_particle_cluster', 'artifact_particle_cluster', indent=16))
-        layout.addWidget(self._create_toggle('artifact_flake', 'artifact_flake', indent=16))
-        layout.addWidget(self._create_toggle('mixup', 'mixup'))
-        layout.addWidget(
-            self._create_value_row('mixup_probability', self.mixup_probability_spinbox, parent_key='mixup')
-        )
-        layout.addWidget(
-            self._create_value_row('mixup_alpha', self.mixup_alpha_spinbox, parent_key='mixup')
-        )
-        return group
-
-    def _build_pcb_defects_group(self) -> QGroupBox:
-        group = QGroupBox(str(self._texts.get('pcb_group', 'Synthetic PCB defects')))
-        layout = QVBoxLayout(group)
-        layout.addWidget(self._create_toggle('pcb_defects', 'pcb_group'))
-        layout.addWidget(
-            self._create_value_row(
-                'pcb_defects_probability',
-                self.pcb_defects_probability_spinbox,
-                parent_key='pcb_defects',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'pcb_defects_min_count',
-                self.pcb_defects_min_count_spinbox,
-                parent_key='pcb_defects',
-            )
-        )
-        layout.addWidget(
-            self._create_value_row(
-                'pcb_defects_max_count',
-                self.pcb_defects_max_count_spinbox,
-                parent_key='pcb_defects',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_break', 'pcb_break', indent=16))
-        layout.addWidget(
-            self._create_weight_row('pcb_break', self.pcb_defect_type_spinboxes['break'], parent_key='pcb_break')
-        )
-        layout.addWidget(self._create_toggle('pcb_short', 'pcb_short', indent=16))
-        layout.addWidget(
-            self._create_weight_row('pcb_short', self.pcb_defect_type_spinboxes['short'], parent_key='pcb_short')
-        )
-        layout.addWidget(self._create_toggle('pcb_missing_copper', 'pcb_missing_copper', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_missing_copper',
-                self.pcb_defect_type_spinboxes['missing_copper'],
-                parent_key='pcb_missing_copper',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_excess_copper', 'pcb_excess_copper', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_excess_copper',
-                self.pcb_defect_type_spinboxes['excess_copper'],
-                parent_key='pcb_excess_copper',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_pinhole', 'pcb_pinhole', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_pinhole',
-                self.pcb_defect_type_spinboxes['pinhole'],
-                parent_key='pcb_pinhole',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_spurious_copper', 'pcb_spurious_copper', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_spurious_copper',
-                self.pcb_defect_type_spinboxes['spurious_copper'],
-                parent_key='pcb_spurious_copper',
-            )
-        )
-        layout.addWidget(self._create_toggle('pcb_via', 'pcb_via', indent=16))
-        layout.addWidget(
-            self._create_weight_row('pcb_via', self.pcb_defect_type_spinboxes['via'], parent_key='pcb_via')
-        )
-        layout.addWidget(self._create_toggle('pcb_misalignment', 'pcb_misalignment', indent=16))
-        layout.addWidget(
-            self._create_weight_row(
-                'pcb_misalignment',
-                self.pcb_defect_type_spinboxes['misalignment'],
-                parent_key='pcb_misalignment',
-            )
-        )
-        return group
-
-    def _create_toggle(
-        self,
-        key: str,
-        text_key: str,
-        *,
-        indent: int = 0,
-    ) -> QWidget:
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(indent, 0, 0, 0)
-        layout.setSpacing(6)
-        checkbox = QCheckBox('')
-        tooltip = self._resolve_tip(text_key)
-        checkbox.setToolTip(tooltip)
-        self._toggle_boxes[key] = checkbox
-        layout.addWidget(checkbox)
-        label = QLabel(self._resolve_text(text_key))
-        label.setToolTip(tooltip)
-        label.setWordWrap(True)
-        layout.addWidget(label, 1)
-        layout.addStretch(1)
-        return container
-
-    def _create_value_row(
-        self,
-        text_key: str,
-        *widgets: QWidget,
-        parent_key: str | None = None,
-        indent: int = 16,
-    ) -> QWidget:
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(indent, 0, 0, 0)
-        layout.setSpacing(6)
-        tooltip = self._resolve_tip(text_key)
-        label = QLabel(self._resolve_setting_text(text_key))
-        label.setToolTip(tooltip)
-        label.setWordWrap(True)
-        layout.addWidget(label, 1)
-        for widget in widgets:
-            widget.setToolTip(widget.toolTip() or tooltip)
-            layout.addWidget(widget)
-        if parent_key is not None:
-            self._register_value_row(parent_key, container, *widgets)
-        return container
-
-    def _create_range_row(
-        self,
-        text_key: str,
-        min_widget: QWidget,
-        max_widget: QWidget,
-        *,
-        parent_key: str | None = None,
-        indent: int = 16,
-    ) -> QWidget:
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(indent, 0, 0, 0)
-        layout.setSpacing(6)
-        tooltip = self._resolve_tip(text_key)
-        label = QLabel(self._resolve_setting_text(text_key))
-        label.setToolTip(tooltip)
-        label.setWordWrap(True)
-        min_label = QLabel('Min' if not self._is_russian_ui else 'Мин')
-        max_label = QLabel('Max' if not self._is_russian_ui else 'Макс')
-        min_label.setToolTip(tooltip)
-        max_label.setToolTip(tooltip)
-        layout.addWidget(label, 1)
-        min_widget.setToolTip(min_widget.toolTip() or tooltip)
-        max_widget.setToolTip(max_widget.toolTip() or tooltip)
-        layout.addWidget(min_label)
-        layout.addWidget(min_widget)
-        layout.addWidget(max_label)
-        layout.addWidget(max_widget)
-        if parent_key is not None:
-            self._register_value_row(parent_key, container, min_widget, max_widget)
-        return container
-
-    def _create_weight_row(
-        self,
-        base_text_key: str,
-        widget: QWidget,
-        *,
-        parent_key: str,
-        indent: int = 32,
-    ) -> QWidget:
-        container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(indent, 0, 0, 0)
-        layout.setSpacing(6)
-        severity_key = f'{base_text_key}_severity'
-        tooltip = self._resolve_tip(severity_key)
-        label = QLabel(self._resolve_setting_text(severity_key))
-        label.setToolTip(tooltip)
-        label.setWordWrap(True)
-        layout.addWidget(label, 1)
-        widget.setToolTip(widget.toolTip() or tooltip)
+    def _attach_sidebar_widget(self, widget: QGroupBox, layout: QVBoxLayout) -> None:
+        old_parent = widget.parentWidget()
+        old_layout = old_parent.layout() if old_parent is not None else None
+        index: int | None = None
+        if old_layout is not None:
+            index = old_layout.indexOf(widget)
+            if index >= 0:
+                old_layout.removeWidget(widget)
         layout.addWidget(widget)
-        self._register_value_row(parent_key, container, widget)
-        return container
+        self._sidebar_restore.append((widget, old_parent, old_layout, index))
 
-    def _register_value_row(self, parent_key: str, container: QWidget, *widgets: QWidget) -> None:
-        self._value_rows.setdefault(parent_key, []).append(container)
-        self._value_widgets.setdefault(parent_key, []).extend(widgets)
+    def closeEvent(self, event) -> None:
+        for widget, old_parent, old_layout, index in reversed(self._sidebar_restore):
+            current_parent = widget.parentWidget()
+            if current_parent is not None:
+                current_layout = current_parent.layout()
+                if current_layout is not None:
+                    current_layout.removeWidget(widget)
+            if old_layout is not None and index is not None and index >= 0:
+                widget.setParent(old_parent)
+                if isinstance(old_layout, QVBoxLayout):
+                    old_layout.insertWidget(index, widget)
+                else:
+                    old_layout.addWidget(widget)
+            elif old_parent is not None:
+                widget.setParent(old_parent)
+        self._sidebar_restore.clear()
+        super().closeEvent(event)
 
-    def _initialize_toggle_states(self) -> None:
-        generation = self._training_parameters.generation
-        tech_aug = build_tech_augmentation_config(getattr(generation, 'tech_aug', None))
-        synthetic_generator = build_synthetic_defect_generator_parameters(
-            getattr(self._training_parameters, 'synthetic_defect_generator', None)
-        )
-        pcb_defects = synthetic_generator.pcb_defects
-        ic_defects = synthetic_generator.ic_defects
-        self._toggle_boxes['rotate_90'].setChecked(bool(getattr(generation, 'horizontal_rotation', False)))
-        self._toggle_boxes['rotate_180'].setChecked(bool(getattr(generation, 'vertical_rotation', False)))
-        self._toggle_boxes['flip_x'].setChecked(bool(getattr(generation, 'flip_x', False)))
-        self._toggle_boxes['flip_y'].setChecked(bool(getattr(generation, 'flip_y', False)))
-        self._toggle_boxes['random_crop'].setChecked(bool(getattr(generation, 'random_crop', False)))
-        self._toggle_boxes['scale'].setChecked(bool(getattr(generation, 'scale_augmentation', False)))
-        self._toggle_boxes['synthetic_topology'].setChecked(bool(synthetic_generator.enabled))
-        photo_enabled = bool(getattr(generation, 'additional_augmentation', False))
-        self._toggle_boxes['brightness'].setChecked(
-            photo_enabled and float(getattr(generation, 'augmentation_brightness_strength', 0.0)) > 0.0
-        )
-        self._toggle_boxes['contrast'].setChecked(
-            photo_enabled and float(getattr(generation, 'augmentation_contrast_strength', 0.0)) > 0.0
-        )
-        self._toggle_boxes['gamma'].setChecked(
-            photo_enabled and float(getattr(generation, 'augmentation_gamma_strength', 0.0)) > 0.0
-        )
-        self._toggle_boxes['noise'].setChecked(
-            photo_enabled
-            and float(getattr(generation, 'augmentation_noise_probability', 0.0)) > 0.0
-            and float(getattr(generation, 'augmentation_noise_sigma', 0.0)) > 0.0
-        )
-        self._toggle_boxes['blur'].setChecked(
-            photo_enabled
-            and float(getattr(generation, 'augmentation_blur_probability', 0.0)) > 0.0
-            and float(getattr(generation, 'augmentation_blur_radius', 0.0)) > 0.0
-        )
-        if 'tech_global_width' in self._toggle_boxes:
-            self._toggle_boxes['tech_global_width'].setChecked(
-                bool(tech_aug.enabled) and float(tech_aug.global_width.probability) > 0.0
-            )
-            self._toggle_boxes['tech_scale_rethreshold'].setChecked(
-                bool(tech_aug.enabled) and float(tech_aug.scale_rethreshold.probability) > 0.0
-            )
-            self._toggle_boxes['tech_blur_threshold'].setChecked(
-                bool(tech_aug.enabled) and float(tech_aug.blur_threshold.probability) > 0.0
-            )
-            self._toggle_boxes['tech_boundary_aware'].setChecked(
-                bool(tech_aug.enabled) and float(tech_aug.boundary_aware.probability) > 0.0
-            )
-            self._toggle_boxes['tech_local_morphology'].setChecked(
-                bool(tech_aug.enabled) and float(tech_aug.local_morphology.probability) > 0.0
-            )
-            self._toggle_boxes['tech_gap_variation'].setChecked(
-                bool(tech_aug.enabled) and float(tech_aug.gap_variation.probability) > 0.0
-            )
-        cutout = getattr(self._training_parameters, 'cutout', None)
-        self._toggle_boxes['cutout'].setChecked(
-            bool(getattr(cutout, 'enabled', False))
-            and float(getattr(cutout, 'probability', 0.0)) > 0.0
-            and float(getattr(cutout, 'size_ratio', 0.0)) > 0.0
-        )
-        random_artifacts = getattr(self._training_parameters, 'random_artifacts', None)
-        random_artifacts_enabled = (
-            bool(getattr(random_artifacts, 'enabled', False))
-            and float(getattr(random_artifacts, 'probability', 0.0)) > 0.0
-            and float(getattr(random_artifacts, 'size_ratio', 0.0)) > 0.0
-        )
-        self._toggle_boxes['random_artifacts'].setChecked(random_artifacts_enabled)
-        self._toggle_boxes['artifact_dust'].setChecked(
-            random_artifacts_enabled and bool(getattr(random_artifacts, 'dust_enabled', True))
-        )
-        self._toggle_boxes['artifact_resist_residue'].setChecked(
-            random_artifacts_enabled and bool(getattr(random_artifacts, 'resist_residue_enabled', True))
-        )
-        self._toggle_boxes['artifact_etch_residue'].setChecked(
-            random_artifacts_enabled and bool(getattr(random_artifacts, 'etch_residue_enabled', True))
-        )
-        self._toggle_boxes['artifact_particle_cluster'].setChecked(
-            random_artifacts_enabled and bool(getattr(random_artifacts, 'particle_cluster_enabled', True))
-        )
-        self._toggle_boxes['artifact_flake'].setChecked(
-            random_artifacts_enabled and bool(getattr(random_artifacts, 'flake_enabled', True))
-        )
-        mixup = getattr(self._training_parameters, 'mixup', None)
-        self._toggle_boxes['mixup'].setChecked(
-            bool(getattr(mixup, 'enabled', False))
-            and float(getattr(mixup, 'probability', 0.0)) > 0.0
-            and float(getattr(mixup, 'alpha', 0.0)) > 0.0
-        )
-        active_defects = ic_defects if synthetic_generator.topology_domain == 'ic' else pcb_defects
-        defect_probabilities = dict(getattr(pcb_defects, 'defect_probabilities', {}))
-        ic_defect_probabilities = dict(getattr(ic_defects, 'defect_probabilities', {}))
-        self._toggle_boxes['pcb_defects'].setChecked(
-            bool(active_defects.enabled) and float(getattr(active_defects, 'defect_probability', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_break'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('break', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_short'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('short', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_missing_copper'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('missing_copper', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_excess_copper'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('excess_copper', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_pinhole'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('pinhole', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_spurious_copper'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('spurious_copper', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_via'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('via', 0.0)) > 0.0
-        )
-        self._toggle_boxes['pcb_misalignment'].setChecked(
-            bool(pcb_defects.enabled) and float(defect_probabilities.get('misalignment', 0.0)) > 0.0
-        )
-        for defect_name, toggle_key in (
-            ('line_break', 'ic_line_break'),
-            ('bridge', 'ic_bridge'),
-            ('necking', 'ic_necking'),
-            ('missing_metal', 'ic_missing_metal'),
-            ('spur', 'ic_spur'),
-            ('pinhole', 'ic_pinhole'),
-            ('via_open', 'ic_via_open'),
-            ('line_shift', 'ic_line_shift'),
-        ):
-            self._toggle_boxes[toggle_key].setChecked(
-                bool(ic_defects.enabled) and float(ic_defect_probabilities.get(defect_name, 0.0)) > 0.0
-            )
+    def _current_sem_config(self):
+        return build_sem_segmentation_config(self._panel.get_sem_segmentation_config())
+
+    def _on_sem_pipeline_changed(self) -> None:
+        self._prepared_arrays_cache.clear()
+        self._cutter_length_cache.clear()
+        self._sync_sem_pipeline_editor_visibility()
+        self._rebuild_frame_plan()
+        self._refresh_preview()
+
+    def _sync_sem_pipeline_editor_visibility(self) -> None:
+        self._panel._sync_sem_segmentation_controls()
 
     def _connect_signals(self) -> None:
+        panel = self._panel
         self.prev_button.clicked.connect(self._show_previous_sample)
         self.next_button.clicked.connect(self._show_next_sample)
         self.resample_button.clicked.connect(self._resample_current_sample)
@@ -1504,122 +493,97 @@ class AugmentationPreviewDialog(QDialog):
         self.label_preview.middle_pressed.connect(self._show_original_preview)
         self.label_preview.middle_released.connect(self._restore_augmented_preview)
         self.full_image_check_box.toggled.connect(self._on_full_image_toggled)
-        self.synthetic_topology_domain_combo.currentIndexChanged.connect(self._on_value_changed)
-        self.pcb_topology_family_combo.currentIndexChanged.connect(self._on_value_changed)
-        self.ic_topology_family_combo.currentIndexChanged.connect(self._on_value_changed)
-        for checkbox in self._toggle_boxes.values():
-            checkbox.toggled.connect(self._on_toggle_changed)
-        connected_widgets: set[int] = set()
-        for widgets in self._value_widgets.values():
-            for widget in widgets:
-                widget_id = id(widget)
-                if widget_id in connected_widgets:
-                    continue
-                connected_widgets.add(widget_id)
-                if hasattr(widget, 'valueChanged'):
-                    widget.valueChanged.connect(self._on_value_changed)
-                elif hasattr(widget, 'currentIndexChanged'):
-                    widget.currentIndexChanged.connect(self._on_value_changed)
-        self.tech_aug_min_operations_spinbox.valueChanged.connect(self._on_value_changed)
-        self.tech_aug_max_operations_spinbox.valueChanged.connect(self._on_value_changed)
-        self.synthetic_image_width_spinbox.valueChanged.connect(self._on_value_changed)
-        self.synthetic_image_height_spinbox.valueChanged.connect(self._on_value_changed)
-        self.pcb_defects_min_count_spinbox.valueChanged.connect(self._on_pcb_defect_count_changed)
-        self.pcb_defects_max_count_spinbox.valueChanged.connect(self._on_pcb_defect_count_changed)
+        self.sem_normalization_editor.changed.connect(self._on_sem_pipeline_changed)
+        self.sem_augmentation_editor.changed.connect(self._on_sem_pipeline_changed)
+        for checkbox in (
+            panel.horizontal_rotation,
+            panel.vertical_rotation,
+            panel.flip_x,
+            panel.flip_y,
+            panel.random_crop_check_box,
+            panel.scale_augmentation_check_box,
+            panel.photometric_groupbox,
+            panel.tech_augmentation_check_box,
+            panel.cutout_check_box,
+            panel.random_artifacts_check_box,
+            panel.mixup_check_box,
+            panel.synthetic_defect_generator_check_box,
+            panel.pcb_defects_check_box,
+            *panel.random_artifact_type_checkboxes.values(),
+            *panel.pcb_defect_type_checkboxes.values(),
+            *panel.ic_defect_type_checkboxes.values(),
+        ):
+            checkbox.toggled.connect(self._on_settings_changed)
+        for widget in (
+            panel.shift_spinbox,
+            panel.crops_per_image_spinbox,
+            panel.augmentation_multiplier_spinbox,
+            panel.scale_augmentation_strength_spinbox,
+            panel.augmentation_brightness_spinbox,
+            panel.augmentation_contrast_spinbox,
+            panel.augmentation_gamma_spinbox,
+            panel.augmentation_noise_probability_spinbox,
+            panel.augmentation_noise_sigma_spinbox,
+            panel.augmentation_blur_probability_spinbox,
+            panel.augmentation_blur_radius_spinbox,
+            panel.tech_aug_min_operations_spinbox,
+            panel.tech_aug_max_operations_spinbox,
+            panel.tech_aug_max_changed_pixels_ratio_spinbox,
+            panel.tech_aug_max_foreground_ratio_delta_spinbox,
+            panel.tech_aug_global_width_probability_spinbox,
+            panel.tech_aug_scale_rethreshold_probability_spinbox,
+            panel.tech_aug_blur_threshold_probability_spinbox,
+            panel.tech_aug_boundary_aware_probability_spinbox,
+            panel.tech_aug_local_morphology_probability_spinbox,
+            panel.tech_aug_gap_variation_probability_spinbox,
+            panel.cutout_probability_spinbox,
+            panel.cutout_holes_spinbox,
+            panel.cutout_size_ratio_spinbox,
+            panel.random_artifacts_probability_spinbox,
+            panel.random_artifacts_count_spinbox,
+            panel.random_artifacts_size_ratio_spinbox,
+            panel.mixup_probability_spinbox,
+            panel.mixup_alpha_spinbox,
+            panel.synthetic_dataset_factor_spinbox,
+            panel.synthetic_image_width_spinbox,
+            panel.synthetic_image_height_spinbox,
+            panel.synthetic_trace_count_min_spinbox,
+            panel.synthetic_trace_count_max_spinbox,
+            panel.synthetic_segment_count_min_spinbox,
+            panel.synthetic_segment_count_max_spinbox,
+            panel.synthetic_trace_half_width_min_spinbox,
+            panel.synthetic_trace_half_width_max_spinbox,
+            panel.synthetic_background_noise_sigma_min_spinbox,
+            panel.synthetic_background_noise_sigma_max_spinbox,
+            panel.synthetic_trace_noise_sigma_min_spinbox,
+            panel.synthetic_trace_noise_sigma_max_spinbox,
+            panel.pcb_defects_probability_spinbox,
+            panel.pcb_defects_min_count_spinbox,
+            panel.pcb_defects_max_count_spinbox,
+            panel.synthetic_topology_domain_combo,
+            panel.pcb_topology_family_combo,
+            panel.ic_topology_family_combo,
+            *panel.pcb_defect_type_spinboxes.values(),
+            *panel.ic_defect_type_spinboxes.values(),
+        ):
+            if hasattr(widget, 'valueChanged'):
+                widget.valueChanged.connect(self._on_settings_changed)
+            elif hasattr(widget, 'currentIndexChanged'):
+                widget.currentIndexChanged.connect(self._on_settings_changed)
 
     def _sync_group_boxes(self) -> None:
-        self._set_value_widgets_enabled('synthetic_topology', self._toggle_boxes['synthetic_topology'].isChecked())
-        self._set_value_widgets_enabled('random_crop', self._toggle_boxes['random_crop'].isChecked())
-        self._set_value_widgets_enabled('scale', self._toggle_boxes['scale'].isChecked())
-        self._set_value_widgets_enabled('brightness', self._toggle_boxes['brightness'].isChecked())
-        self._set_value_widgets_enabled('contrast', self._toggle_boxes['contrast'].isChecked())
-        self._set_value_widgets_enabled('gamma', self._toggle_boxes['gamma'].isChecked())
-        self._set_value_widgets_enabled('noise', self._toggle_boxes['noise'].isChecked())
-        self._set_value_widgets_enabled('blur', self._toggle_boxes['blur'].isChecked())
+        panel = self._panel
+        panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
+        panel._sync_training_augmentation_controls()
+        panel._sync_synthetic_defect_generator_controls(panel.synthetic_defect_generator_check_box.isChecked())
+        panel._sync_sem_segmentation_controls()
 
-        if 'tech_global_width' in self._toggle_boxes:
-            tech_enabled = self._has_selected_tech_variations()
-            self._set_value_widgets_enabled('tech_config', tech_enabled)
-            for key in (
-                'tech_global_width',
-                'tech_scale_rethreshold',
-                'tech_blur_threshold',
-                'tech_boundary_aware',
-                'tech_local_morphology',
-                'tech_gap_variation',
-            ):
-                self._set_value_widgets_enabled(key, self._toggle_boxes[key].isChecked())
-
-        self._set_value_widgets_enabled('cutout', self._toggle_boxes['cutout'].isChecked())
-        self._set_value_widgets_enabled('mixup', self._toggle_boxes['mixup'].isChecked())
-        artifacts_enabled = self._toggle_boxes['random_artifacts'].isChecked()
-        self._set_value_widgets_enabled('random_artifacts', artifacts_enabled)
-        for key in (
-            'artifact_dust',
-            'artifact_resist_residue',
-            'artifact_etch_residue',
-            'artifact_particle_cluster',
-            'artifact_flake',
-        ):
-            self._toggle_boxes[key].setEnabled(artifacts_enabled)
-
-        pcb_enabled = self._toggle_boxes['pcb_defects'].isChecked()
-        self._set_value_widgets_enabled('pcb_defects', pcb_enabled)
-        current_domain = self._get_synthetic_topology_domain()
-        self._set_value_widgets_enabled('synthetic_topology', self._toggle_boxes['synthetic_topology'].isChecked())
-        self._set_value_widgets_enabled('pcb_topology_family', current_domain == 'pcb')
-        self._set_value_widgets_enabled('ic_topology_family', current_domain == 'ic')
-        self._set_value_widgets_visible('pcb_topology_family', current_domain == 'pcb')
-        self._set_value_widgets_visible('ic_topology_family', current_domain == 'ic')
-        for key in (
-            'pcb_break',
-            'pcb_short',
-            'pcb_missing_copper',
-            'pcb_excess_copper',
-            'pcb_pinhole',
-            'pcb_spurious_copper',
-            'pcb_via',
-            'pcb_misalignment',
-        ):
-            visible = current_domain == 'pcb'
-            self._toggle_boxes[key].setVisible(visible)
-            self._toggle_boxes[key].setEnabled(pcb_enabled and visible)
-            self._set_value_widgets_visible(key, visible)
-            self._set_value_widgets_enabled(key, pcb_enabled and visible and self._toggle_boxes[key].isChecked())
-        for key in (
-            'ic_line_break',
-            'ic_bridge',
-            'ic_necking',
-            'ic_missing_metal',
-            'ic_spur',
-            'ic_pinhole',
-            'ic_via_open',
-            'ic_line_shift',
-        ):
-            visible = current_domain == 'ic'
-            self._toggle_boxes[key].setVisible(visible)
-            self._toggle_boxes[key].setEnabled(pcb_enabled and visible)
-            self._set_value_widgets_visible(key, visible)
-            self._set_value_widgets_enabled(key, pcb_enabled and visible and self._toggle_boxes[key].isChecked())
-
-    def _on_toggle_changed(self, _checked: bool) -> None:
+    def _on_settings_changed(self, *_args: object) -> None:
+        self._prepared_arrays_cache.clear()
+        self._cutter_length_cache.clear()
         self._sync_group_boxes()
+        self._rebuild_frame_plan()
         self._refresh_preview()
-
-    def _on_value_changed(self, _value: object) -> None:
-        self._sync_group_boxes()
-        self._refresh_preview()
-
-    def _on_pcb_defect_count_changed(self, _value: int) -> None:
-        min_count = int(self.pcb_defects_min_count_spinbox.value())
-        max_count = int(self.pcb_defects_max_count_spinbox.value())
-        if min_count > max_count:
-            if self.sender() is self.pcb_defects_min_count_spinbox:
-                self.pcb_defects_max_count_spinbox.setValue(min_count)
-            else:
-                self.pcb_defects_min_count_spinbox.setValue(max_count)
-            return
-        self._on_value_changed(_value)
 
     def _on_full_image_toggled(self, _checked: bool) -> None:
         self._refresh_preview()
@@ -1629,23 +593,31 @@ class AugmentationPreviewDialog(QDialog):
 
     def _populate_sample_list(self) -> None:
         self._sample_list_updating = True
+        self.sample_list_widget.setUpdatesEnabled(False)
         self.sample_list_widget.clear()
-        for sample_path, _label_path in self._sample_pairs:
-            item = QListWidgetItem(sample_path.name)
-            item.setToolTip(str(sample_path))
-            self.sample_list_widget.addItem(item)
-        synthetic_enabled = bool(self._toggle_boxes.get('synthetic_topology') and self._toggle_boxes['synthetic_topology'].isChecked())
+        self.sample_list_widget.addItems(
+            [sample_path.name for sample_path, _label_path in self._sample_pairs]
+        )
+        self.sample_list_widget.setToolTip(str(self._training_parameters.image_path))
+        synthetic_enabled = bool(self._panel.synthetic_defect_generator_check_box.isChecked())
         self.sample_list_widget.setEnabled(bool(self._sample_pairs) and not synthetic_enabled)
         if self._sample_pairs:
             self.sample_list_widget.setCurrentRow(self._current_sample_index)
+        self.sample_list_widget.setUpdatesEnabled(True)
         self._sample_list_updating = False
+
+    def _show_loading_state(self) -> None:
+        loading_text = str(self._texts.get('loading', 'Loading preview...'))
+        self.image_preview.setText(loading_text)
+        self.label_preview.setText(loading_text)
+        self.status_label.setText(loading_text)
 
     def _sync_sample_list_selection(self) -> None:
         if self.sample_list_widget.count() != len(self._sample_pairs):
             self._populate_sample_list()
             return
         self._sample_list_updating = True
-        self.sample_list_widget.setEnabled(bool(self._sample_pairs) and not self._toggle_boxes['synthetic_topology'].isChecked())
+        self.sample_list_widget.setEnabled(bool(self._sample_pairs) and not self._panel.synthetic_defect_generator_check_box.isChecked())
         if self._sample_pairs and self.sample_list_widget.currentRow() != self._current_sample_index:
             self.sample_list_widget.setCurrentRow(self._current_sample_index)
         elif not self._sample_pairs and self.sample_list_widget.currentRow() != -1:
@@ -1658,25 +630,32 @@ class AugmentationPreviewDialog(QDialog):
         if row < 0 or row >= len(self._sample_pairs) or row == self._current_sample_index:
             return
         self._current_sample_index = row
-        self._variant_serial = 0
+        self._rebuild_frame_plan()
+        for frame_index, (source_index, _cutter_item, _aug_variant) in enumerate(self._frame_plan):
+            if source_index == row:
+                self._current_frame_index = frame_index
+                break
         self._refresh_preview()
 
     def _build_apply_payload(self) -> dict[str, object]:
-        brightness_enabled = self._toggle_boxes['brightness'].isChecked()
-        contrast_enabled = self._toggle_boxes['contrast'].isChecked()
-        gamma_enabled = self._toggle_boxes['gamma'].isChecked()
-        noise_enabled = self._toggle_boxes['noise'].isChecked()
-        blur_enabled = self._toggle_boxes['blur'].isChecked()
+        brightness_enabled = self._photometric_effect_enabled(self._panel.augmentation_brightness_spinbox)
+        contrast_enabled = self._photometric_effect_enabled(self._panel.augmentation_contrast_spinbox)
+        gamma_enabled = self._photometric_effect_enabled(self._panel.augmentation_gamma_spinbox)
+        noise_enabled = self._photometric_effect_enabled(self._panel.augmentation_noise_probability_spinbox)
+        blur_enabled = self._photometric_effect_enabled(self._panel.augmentation_blur_probability_spinbox)
 
+        sem_config = self._current_sem_config()
         return {
-            'horizontal_rotation': self._toggle_boxes['rotate_90'].isChecked(),
-            'vertical_rotation': self._toggle_boxes['rotate_180'].isChecked(),
-            'flip_x': self._toggle_boxes['flip_x'].isChecked(),
-            'flip_y': self._toggle_boxes['flip_y'].isChecked(),
-            'random_crop': self._toggle_boxes['random_crop'].isChecked(),
-            'crops_per_image': int(self.crops_per_image_spinbox.value()),
-            'scale_augmentation': self._toggle_boxes['scale'].isChecked(),
-            'scale_augmentation_strength': float(self.scale_augmentation_strength_spinbox.value()),
+            'horizontal_rotation': self._panel.horizontal_rotation.isChecked(),
+            'vertical_rotation': self._panel.vertical_rotation.isChecked(),
+            'flip_x': self._panel.flip_x.isChecked(),
+            'flip_y': self._panel.flip_y.isChecked(),
+            'random_crop': self._panel.random_crop_check_box.isChecked(),
+            'step': int(self._panel.shift_spinbox.value()),
+            'crops_per_image': int(self._panel.crops_per_image_spinbox.value()),
+            'augmentation_multiplier': float(self._augmentation_multiplier_value()),
+            'scale_augmentation': self._panel.scale_augmentation_check_box.isChecked(),
+            'scale_augmentation_strength': float(self._panel.scale_augmentation_strength_spinbox.value()),
             'additional_augmentation': any(
                 (
                     brightness_enabled,
@@ -1687,44 +666,47 @@ class AugmentationPreviewDialog(QDialog):
                 )
             ),
             'augmentation_brightness_strength': (
-                float(self.augmentation_brightness_spinbox.value()) if brightness_enabled else 0.0
+                float(self._panel.augmentation_brightness_spinbox.value()) if brightness_enabled else 0.0
             ),
             'augmentation_contrast_strength': (
-                float(self.augmentation_contrast_spinbox.value()) if contrast_enabled else 0.0
+                float(self._panel.augmentation_contrast_spinbox.value()) if contrast_enabled else 0.0
             ),
             'augmentation_gamma_strength': (
-                float(self.augmentation_gamma_spinbox.value()) if gamma_enabled else 0.0
+                float(self._panel.augmentation_gamma_spinbox.value()) if gamma_enabled else 0.0
             ),
             'augmentation_noise_probability': (
-                float(self.augmentation_noise_probability_spinbox.value()) if noise_enabled else 0.0
+                float(self._panel.augmentation_noise_probability_spinbox.value()) if noise_enabled else 0.0
             ),
             'augmentation_noise_sigma': (
-                float(self.augmentation_noise_sigma_spinbox.value()) if noise_enabled else 0.0
+                float(self._panel.augmentation_noise_sigma_spinbox.value()) if noise_enabled else 0.0
             ),
             'augmentation_blur_probability': (
-                float(self.augmentation_blur_probability_spinbox.value()) if blur_enabled else 0.0
+                float(self._panel.augmentation_blur_probability_spinbox.value()) if blur_enabled else 0.0
             ),
             'augmentation_blur_radius': (
-                float(self.augmentation_blur_radius_spinbox.value()) if blur_enabled else 0.0
+                float(self._panel.augmentation_blur_radius_spinbox.value()) if blur_enabled else 0.0
             ),
             'synthetic_defect_generator': self._build_apply_synthetic_defect_generator_config(),
-            'tech_aug': build_tech_augmentation_config(None),
-            'cutout_enabled': self._toggle_boxes['cutout'].isChecked(),
-            'cutout_probability': float(self.cutout_probability_spinbox.value()),
-            'cutout_holes': int(self.cutout_holes_spinbox.value()),
-            'cutout_size_ratio': float(self.cutout_size_ratio_spinbox.value()),
-            'random_artifacts_enabled': self._toggle_boxes['random_artifacts'].isChecked(),
-            'random_artifacts_probability': float(self.random_artifacts_probability_spinbox.value()),
-            'random_artifacts_count': int(self.random_artifacts_count_spinbox.value()),
-            'random_artifacts_size_ratio': float(self.random_artifacts_size_ratio_spinbox.value()),
-            'random_artifacts_dust_enabled': self._toggle_boxes['artifact_dust'].isChecked(),
-            'random_artifacts_resist_residue_enabled': self._toggle_boxes['artifact_resist_residue'].isChecked(),
-            'random_artifacts_etch_residue_enabled': self._toggle_boxes['artifact_etch_residue'].isChecked(),
-            'random_artifacts_particle_cluster_enabled': self._toggle_boxes['artifact_particle_cluster'].isChecked(),
-            'random_artifacts_flake_enabled': self._toggle_boxes['artifact_flake'].isChecked(),
-            'mixup_enabled': self._toggle_boxes['mixup'].isChecked(),
-            'mixup_probability': float(self.mixup_probability_spinbox.value()),
-            'mixup_alpha': float(self.mixup_alpha_spinbox.value()),
+            'tech_aug': self._build_apply_tech_aug_config(),
+            'preprocessing': asdict(sem_config.preprocessing),
+            'sem_augmentation': asdict(sem_config.augmentation),
+            'training_augmentation': self._panel.get_training_augmentation_config(),
+            'cutout_enabled': self._panel.cutout_check_box.isChecked(),
+            'cutout_probability': float(self._panel.cutout_probability_spinbox.value()),
+            'cutout_holes': int(self._panel.cutout_holes_spinbox.value()),
+            'cutout_size_ratio': float(self._panel.cutout_size_ratio_spinbox.value()),
+            'random_artifacts_enabled': self._panel.random_artifacts_check_box.isChecked(),
+            'random_artifacts_probability': float(self._panel.random_artifacts_probability_spinbox.value()),
+            'random_artifacts_count': int(self._panel.random_artifacts_count_spinbox.value()),
+            'random_artifacts_size_ratio': float(self._panel.random_artifacts_size_ratio_spinbox.value()),
+            'random_artifacts_dust_enabled': self._panel.random_artifact_type_checkboxes["dust"].isChecked(),
+            'random_artifacts_resist_residue_enabled': self._panel.random_artifact_type_checkboxes["resist_residue"].isChecked(),
+            'random_artifacts_etch_residue_enabled': self._panel.random_artifact_type_checkboxes["etch_residue"].isChecked(),
+            'random_artifacts_particle_cluster_enabled': self._panel.random_artifact_type_checkboxes["particle_cluster"].isChecked(),
+            'random_artifacts_flake_enabled': self._panel.random_artifact_type_checkboxes["flake"].isChecked(),
+            'mixup_enabled': self._panel.mixup_check_box.isChecked(),
+            'mixup_probability': float(self._panel.mixup_probability_spinbox.value()),
+            'mixup_alpha': float(self._panel.mixup_alpha_spinbox.value()),
             'pcb_defects': build_pcb_defect_parameters(None),
         }
 
@@ -1734,50 +716,51 @@ class AugmentationPreviewDialog(QDialog):
                 getattr(self._training_parameters, 'synthetic_defect_generator', None)
             )
         )
-        config.enabled = self._toggle_boxes['synthetic_topology'].isChecked()
+        config.enabled = self._panel.synthetic_defect_generator_check_box.isChecked()
+        config.epoch_size_factor = float(self._panel.synthetic_dataset_factor_spinbox.value())
         config.topology_domain = self._get_synthetic_topology_domain()
         config.topology_family = self._get_synthetic_topology_family()
         config.image_size_xy = (
-            int(self.synthetic_image_width_spinbox.value()),
-            int(self.synthetic_image_height_spinbox.value()),
+            int(self._panel.synthetic_image_width_spinbox.value()),
+            int(self._panel.synthetic_image_height_spinbox.value()),
         )
         config.trace_count_range = tuple(
             sorted(
                 (
-                    int(self.synthetic_trace_count_min_spinbox.value()),
-                    int(self.synthetic_trace_count_max_spinbox.value()),
+                    int(self._panel.synthetic_trace_count_min_spinbox.value()),
+                    int(self._panel.synthetic_trace_count_max_spinbox.value()),
                 )
             )
         )
         config.segment_count_range = tuple(
             sorted(
                 (
-                    int(self.synthetic_segment_count_min_spinbox.value()),
-                    int(self.synthetic_segment_count_max_spinbox.value()),
+                    int(self._panel.synthetic_segment_count_min_spinbox.value()),
+                    int(self._panel.synthetic_segment_count_max_spinbox.value()),
                 )
             )
         )
         config.trace_half_width_range = tuple(
             sorted(
                 (
-                    int(self.synthetic_trace_half_width_min_spinbox.value()),
-                    int(self.synthetic_trace_half_width_max_spinbox.value()),
+                    int(self._panel.synthetic_trace_half_width_min_spinbox.value()),
+                    int(self._panel.synthetic_trace_half_width_max_spinbox.value()),
                 )
             )
         )
         config.background_noise_sigma_range = tuple(
             sorted(
                 (
-                    float(self.synthetic_background_noise_sigma_min_spinbox.value()),
-                    float(self.synthetic_background_noise_sigma_max_spinbox.value()),
+                    float(self._panel.synthetic_background_noise_sigma_min_spinbox.value()),
+                    float(self._panel.synthetic_background_noise_sigma_max_spinbox.value()),
                 )
             )
         )
         config.trace_noise_sigma_range = tuple(
             sorted(
                 (
-                    float(self.synthetic_trace_noise_sigma_min_spinbox.value()),
-                    float(self.synthetic_trace_noise_sigma_max_spinbox.value()),
+                    float(self._panel.synthetic_trace_noise_sigma_min_spinbox.value()),
+                    float(self._panel.synthetic_trace_noise_sigma_max_spinbox.value()),
                 )
             )
         )
@@ -1786,49 +769,51 @@ class AugmentationPreviewDialog(QDialog):
         config.defects = config.ic_defects if config.topology_domain == 'ic' else config.pcb_defects
         return config
 
-    def _build_apply_tech_aug_config(self):
+    def _build_apply_tech_aug_config(self, *, preview: bool = False):
         config = copy.deepcopy(build_tech_augmentation_config(getattr(self._training_parameters.generation, 'tech_aug', None)))
-        min_operations = int(self.tech_aug_min_operations_spinbox.value())
-        max_operations = int(self.tech_aug_max_operations_spinbox.value())
+        min_operations = int(self._panel.tech_aug_min_operations_spinbox.value())
+        max_operations = int(self._panel.tech_aug_max_operations_spinbox.value())
         if min_operations > max_operations:
             min_operations, max_operations = max_operations, min_operations
         config.enabled = self._has_selected_tech_variations()
         config.min_operations = min_operations
         config.max_operations = max_operations
+        config.max_changed_pixels_ratio = float(self._panel.tech_aug_max_changed_pixels_ratio_spinbox.value())
+        config.max_foreground_ratio_delta = float(self._panel.tech_aug_max_foreground_ratio_delta_spinbox.value())
         config.global_width.probability = (
-            float(self.tech_aug_global_width_probability_spinbox.value())
-            if self._toggle_boxes['tech_global_width'].isChecked()
+            (1.0 if preview else float(self._panel.tech_aug_global_width_probability_spinbox.value()))
+            if self._tech_effect_enabled(self._panel.tech_aug_global_width_probability_spinbox)
             else 0.0
         )
         config.scale_rethreshold.probability = (
-            float(self.tech_aug_scale_rethreshold_probability_spinbox.value())
-            if self._toggle_boxes['tech_scale_rethreshold'].isChecked()
+            (1.0 if preview else float(self._panel.tech_aug_scale_rethreshold_probability_spinbox.value()))
+            if self._tech_effect_enabled(self._panel.tech_aug_scale_rethreshold_probability_spinbox)
             else 0.0
         )
         config.blur_threshold.probability = (
-            float(self.tech_aug_blur_threshold_probability_spinbox.value())
-            if self._toggle_boxes['tech_blur_threshold'].isChecked()
+            (1.0 if preview else float(self._panel.tech_aug_blur_threshold_probability_spinbox.value()))
+            if self._tech_effect_enabled(self._panel.tech_aug_blur_threshold_probability_spinbox)
             else 0.0
         )
         config.boundary_aware.probability = (
-            float(self.tech_aug_boundary_aware_probability_spinbox.value())
-            if self._toggle_boxes['tech_boundary_aware'].isChecked()
+            (1.0 if preview else float(self._panel.tech_aug_boundary_aware_probability_spinbox.value()))
+            if self._tech_effect_enabled(self._panel.tech_aug_boundary_aware_probability_spinbox)
             else 0.0
         )
         config.local_morphology.probability = (
-            float(self.tech_aug_local_morphology_probability_spinbox.value())
-            if self._toggle_boxes['tech_local_morphology'].isChecked()
+            (1.0 if preview else float(self._panel.tech_aug_local_morphology_probability_spinbox.value()))
+            if self._tech_effect_enabled(self._panel.tech_aug_local_morphology_probability_spinbox)
             else 0.0
         )
         config.gap_variation.probability = (
-            float(self.tech_aug_gap_variation_probability_spinbox.value())
-            if self._toggle_boxes['tech_gap_variation'].isChecked()
+            (1.0 if preview else float(self._panel.tech_aug_gap_variation_probability_spinbox.value()))
+            if self._tech_effect_enabled(self._panel.tech_aug_gap_variation_probability_spinbox)
             else 0.0
         )
         return config
 
     def _build_apply_pcb_defects_config(self):
-        if not self._toggle_boxes['synthetic_topology'].isChecked():
+        if not self._panel.synthetic_defect_generator_check_box.isChecked():
             config = build_pcb_defect_parameters(None)
             config.enabled = False
             return config
@@ -1836,32 +821,23 @@ class AugmentationPreviewDialog(QDialog):
             getattr(self._training_parameters, 'synthetic_defect_generator', None)
         )
         config = copy.deepcopy(synthetic_generator.pcb_defects)
-        min_defects = int(self.pcb_defects_min_count_spinbox.value())
-        max_defects = int(self.pcb_defects_max_count_spinbox.value())
+        min_defects = int(self._panel.pcb_defects_min_count_spinbox.value())
+        max_defects = int(self._panel.pcb_defects_max_count_spinbox.value())
         if min_defects > max_defects:
             min_defects, max_defects = max_defects, min_defects
-        config.enabled = self._toggle_boxes['pcb_defects'].isChecked()
-        config.defect_probability = float(self.pcb_defects_probability_spinbox.value())
+        config.enabled = self._panel.pcb_defects_check_box.isChecked()
+        config.defect_probability = float(self._panel.pcb_defects_probability_spinbox.value())
         config.min_defects = min_defects
         config.max_defects = max_defects
-        for defect_name, checkbox_key in (
-            ('break', 'pcb_break'),
-            ('short', 'pcb_short'),
-            ('missing_copper', 'pcb_missing_copper'),
-            ('excess_copper', 'pcb_excess_copper'),
-            ('pinhole', 'pcb_pinhole'),
-            ('spurious_copper', 'pcb_spurious_copper'),
-            ('via', 'pcb_via'),
-            ('misalignment', 'pcb_misalignment'),
-        ):
+        for defect_name in self._panel.pcb_defect_type_checkboxes:
             config.defect_probabilities[defect_name] = (
-                1.0 if self._toggle_boxes[checkbox_key].isChecked() else 0.0
+                1.0 if self._panel.pcb_defect_type_checkboxes[defect_name].isChecked() else 0.0
             )
-            config.defect_severities[defect_name] = float(self.pcb_defect_type_spinboxes[defect_name].value()) / 100.0
+            config.defect_severities[defect_name] = float(self._panel.pcb_defect_type_spinboxes[defect_name].value()) / 100.0
         return config
 
     def _build_apply_ic_defects_config(self):
-        if not self._toggle_boxes['synthetic_topology'].isChecked():
+        if not self._panel.synthetic_defect_generator_check_box.isChecked():
             config = build_ic_defect_parameters(None)
             config.enabled = False
             return config
@@ -1869,47 +845,146 @@ class AugmentationPreviewDialog(QDialog):
             getattr(self._training_parameters, 'synthetic_defect_generator', None)
         )
         config = copy.deepcopy(synthetic_generator.ic_defects)
-        min_defects = int(self.pcb_defects_min_count_spinbox.value())
-        max_defects = int(self.pcb_defects_max_count_spinbox.value())
+        min_defects = int(self._panel.pcb_defects_min_count_spinbox.value())
+        max_defects = int(self._panel.pcb_defects_max_count_spinbox.value())
         if min_defects > max_defects:
             min_defects, max_defects = max_defects, min_defects
-        config.enabled = self._toggle_boxes['pcb_defects'].isChecked()
-        config.defect_probability = float(self.pcb_defects_probability_spinbox.value())
+        config.enabled = self._panel.pcb_defects_check_box.isChecked()
+        config.defect_probability = float(self._panel.pcb_defects_probability_spinbox.value())
         config.min_defects = min_defects
         config.max_defects = max_defects
-        for defect_name, checkbox_key in (
-            ('line_break', 'ic_line_break'),
-            ('bridge', 'ic_bridge'),
-            ('necking', 'ic_necking'),
-            ('missing_metal', 'ic_missing_metal'),
-            ('spur', 'ic_spur'),
-            ('pinhole', 'ic_pinhole'),
-            ('via_open', 'ic_via_open'),
-            ('line_shift', 'ic_line_shift'),
-        ):
+        for defect_name in self._panel.ic_defect_type_checkboxes:
             config.defect_probabilities[defect_name] = (
-                1.0 if self._toggle_boxes[checkbox_key].isChecked() else 0.0
+                1.0 if self._panel.ic_defect_type_checkboxes[defect_name].isChecked() else 0.0
             )
-            config.defect_severities[defect_name] = float(self.ic_defect_type_spinboxes[defect_name].value()) / 100.0
+            config.defect_severities[defect_name] = float(self._panel.ic_defect_type_spinboxes[defect_name].value()) / 100.0
         return config
 
     def _show_previous_sample(self) -> None:
-        if not self._sample_pairs:
-            return
-        self._current_sample_index = (self._current_sample_index - 1) % len(self._sample_pairs)
-        self._variant_serial = 0
-        self._refresh_preview()
+        self._navigate_frame(-1)
 
     def _show_next_sample(self) -> None:
-        if not self._sample_pairs:
-            return
-        self._current_sample_index = (self._current_sample_index + 1) % len(self._sample_pairs)
-        self._variant_serial = 0
-        self._refresh_preview()
+        self._navigate_frame(1)
 
     def _resample_current_sample(self) -> None:
-        self._variant_serial += 1
+        self._resample_salt += 1
         self._refresh_preview()
+
+    def _augmentation_multiplier_value(self) -> float:
+        return max(
+            MIN_AUGMENTATION_MULTIPLIER,
+            min(MAX_AUGMENTATION_MULTIPLIER, float(self._panel.augmentation_multiplier_spinbox.value())),
+        )
+
+    def _augmentation_slots(self) -> int:
+        multiplier = self._augmentation_multiplier_value()
+        if multiplier <= 0.0:
+            return 1
+        return int(round(multiplier)) + 1
+
+    def _generation_settings_for_cutter(self) -> object:
+        generation = self._training_parameters.generation
+        operations = self._panel.get_training_augmentation_config()
+        return replace(
+            generation,
+            horizontal_rotation=False,
+            vertical_rotation=False,
+            flip_x=False,
+            flip_y=False,
+            additional_augmentation=False,
+            augmentation_multiplier=0.0,
+            augmentation_brightness_strength=float(self._panel.augmentation_brightness_spinbox.value()),
+            augmentation_brightness_enabled=bool(operations['brightness']['enabled']),
+            augmentation_brightness_probability=float(operations['brightness']['probability']),
+            augmentation_contrast_strength=float(self._panel.augmentation_contrast_spinbox.value()),
+            augmentation_contrast_enabled=bool(operations['contrast']['enabled']),
+            augmentation_contrast_probability=float(operations['contrast']['probability']),
+            augmentation_gamma_strength=float(self._panel.augmentation_gamma_spinbox.value()),
+            augmentation_gamma_enabled=bool(operations['gamma']['enabled']),
+            augmentation_gamma_probability=float(operations['gamma']['probability']),
+            augmentation_noise_enabled=bool(operations['noise']['enabled']),
+            augmentation_noise_probability=float(self._panel.augmentation_noise_probability_spinbox.value()),
+            augmentation_noise_sigma=float(self._panel.augmentation_noise_sigma_spinbox.value()),
+            augmentation_blur_probability=float(self._panel.augmentation_blur_probability_spinbox.value()),
+            augmentation_blur_enabled=bool(operations['blur']['enabled']),
+            augmentation_blur_radius=float(self._panel.augmentation_blur_radius_spinbox.value()),
+            random_crop=bool(self._panel.random_crop_check_box.isChecked()),
+            crops_per_image=int(self._panel.crops_per_image_spinbox.value()),
+            scale_augmentation=bool(self._panel.scale_augmentation_check_box.isChecked()),
+            scale_augmentation_probability=float(operations['scale']['probability']),
+            scale_augmentation_strength=float(self._panel.scale_augmentation_strength_spinbox.value()),
+        )
+
+    def _cutter_length_for_source(self, sample_index: int) -> int:
+        cached = self._cutter_length_cache.get(sample_index)
+        if cached is not None:
+            return cached
+        if self.full_image_check_box.isChecked():
+            length = 1
+        else:
+            raw_image, raw_label = self._load_prepared_arrays(sample_index)
+            cutter = SampleFastCutter(
+                (raw_image, raw_label),
+                self._generation_settings_for_cutter(),
+                shuffle=False,
+            )
+            length = max(1, len(cutter))
+        self._cutter_length_cache[sample_index] = length
+        return length
+
+    def _rebuild_frame_plan(self) -> None:
+        previous_coords = self._frame_plan[self._current_frame_index] if self._frame_plan else None
+        self._frame_plan = []
+        if not self._sample_pairs:
+            self._current_frame_index = 0
+            return
+        aug_slots = self._augmentation_slots()
+        for source_index in range(len(self._sample_pairs)):
+            cutter_length = self._cutter_length_for_source(source_index)
+            for cutter_item in range(cutter_length):
+                for aug_variant in range(aug_slots):
+                    self._frame_plan.append((source_index, cutter_item, aug_variant))
+        if not self._frame_plan:
+            self._current_frame_index = 0
+            return
+        if previous_coords is not None and previous_coords in self._frame_plan:
+            self._current_frame_index = self._frame_plan.index(previous_coords)
+        else:
+            self._current_frame_index = min(self._current_frame_index, len(self._frame_plan) - 1)
+
+    def _apply_frame_coords(self, source_index: int, cutter_item: int, aug_variant: int) -> None:
+        self._current_sample_index = int(source_index)
+        self._variant_serial = int(aug_variant)
+        self._cutter_item_index = int(cutter_item)
+
+    def _current_frame_coords(self) -> tuple[int, int, int]:
+        if not self._frame_plan:
+            return self._current_sample_index, 0, self._variant_serial
+        source_index, cutter_item, aug_variant = self._frame_plan[self._current_frame_index]
+        self._apply_frame_coords(source_index, cutter_item, aug_variant)
+        return source_index, cutter_item, aug_variant
+
+    def _navigate_frame(self, delta: int) -> bool:
+        if self._panel.synthetic_defect_generator_check_box.isChecked():
+            return False
+        self._rebuild_frame_plan()
+        if not self._frame_plan:
+            return False
+        self._current_frame_index = (self._current_frame_index + int(delta)) % len(self._frame_plan)
+        source_index, _cutter_item, _aug_variant = self._current_frame_coords()
+        self._sync_sample_list_selection()
+        self._refresh_preview()
+        return True
+
+    def _photometric_effect_enabled(self, spinbox: QWidget) -> bool:
+        if not self._panel.photometric_groupbox.isChecked():
+            return False
+        return float(spinbox.value()) > 0.0
+
+    def _tech_effect_enabled(self, spinbox: QWidget) -> bool:
+        if not self._panel.tech_augmentation_check_box.isChecked():
+            return False
+        return float(spinbox.value()) > 0.0
 
     def _show_original_preview(self) -> None:
         self._show_augmented = False
@@ -1922,7 +997,11 @@ class AugmentationPreviewDialog(QDialog):
         self._update_visible_preview()
 
     def _refresh_preview(self) -> None:
-        synthetic_enabled = self._toggle_boxes['synthetic_topology'].isChecked()
+        synthetic_enabled = self._panel.synthetic_defect_generator_check_box.isChecked()
+        if not synthetic_enabled:
+            self._rebuild_frame_plan()
+            if self._frame_plan:
+                self._current_frame_coords()
         if not self._sample_pairs and not synthetic_enabled:
             self._sync_sample_list_selection()
             error_text = str(
@@ -1955,8 +1034,8 @@ class AugmentationPreviewDialog(QDialog):
                 str(
                     self._texts.get('sample_label_template', '{index}/{total}: {name}')
                 ).format(
-                    index=self._current_sample_index + 1,
-                    total=len(self._sample_pairs),
+                    index=self._current_frame_index + 1,
+                    total=max(1, len(self._frame_plan)),
                     name=sample_path.name,
                 )
             )
@@ -1971,15 +1050,24 @@ class AugmentationPreviewDialog(QDialog):
                 preview_mode=self._preview_mode_text(),
             )
         )
-        original_image, original_label, augmented_image, augmented_label = self._build_preview_arrays(
-            self._current_sample_index
-        )
+        try:
+            original_image, original_label, augmented_image, augmented_label = self._build_preview_arrays(
+                self._current_sample_index
+            )
+        except Exception as exc:
+            error_text = str(
+                self._texts.get('preview_error', 'Unable to build preview: {error}')
+            ).format(error=exc)
+            self.status_label.setText(error_text)
+            self.image_preview.setText(error_text)
+            self.label_preview.setText(error_text)
+            return
         self._original_image_array = original_image
         self._original_label_array = original_label
         self._augmented_image_array = augmented_image
         self._augmented_label_array = augmented_label
-        self.prev_button.setEnabled((not synthetic_enabled) and len(self._sample_pairs) > 1)
-        self.next_button.setEnabled((not synthetic_enabled) and len(self._sample_pairs) > 1)
+        self.prev_button.setEnabled((not synthetic_enabled) and len(self._frame_plan) > 1)
+        self.next_button.setEnabled((not synthetic_enabled) and len(self._frame_plan) > 1)
         self.resample_button.setEnabled(True)
         self._update_preview_mode_label()
         self._update_visible_preview()
@@ -2014,50 +1102,49 @@ class AugmentationPreviewDialog(QDialog):
         self,
         sample_index: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        if self._toggle_boxes['synthetic_topology'].isChecked():
-            base_image, base_label = self._build_synthetic_base_arrays()
-            if self.full_image_check_box.isChecked():
-                original_image, original_label = self._build_original_full_image(base_image, base_label)
-                augmented_image, augmented_label = self._build_augmented_synthetic_pair(
-                    sample_index,
-                    base_image,
-                    base_label,
-                    full_image=True,
-                )
-            else:
-                original_image, original_label = self._build_original_patch(
-                    sample_index,
-                    base_image,
-                    base_label,
-                )
-                augmented_image, augmented_label = self._build_augmented_synthetic_pair(
-                    sample_index,
-                    base_image,
-                    base_label,
-                    full_image=False,
-                )
+        synthetic = self._panel.synthetic_defect_generator_check_box.isChecked()
+        raw_image, raw_label = (
+            self._build_synthetic_base_arrays()
+            if synthetic
+            else self._load_prepared_arrays(sample_index)
+        )
+        sem_config = self._current_sem_config()
+        original_base = apply_dataset_preprocessing(raw_image, sem_config.preprocessing)
+        with _seeded_random(self._seed_for(sample_index, f'sem:{self._variant_serial}')):
+            augmented_base, augmented_base_label = apply_dataset_sem_augmentation_preview(
+                raw_image,
+                raw_label,
+                sem_config.augmentation,
+            )
+        augmented_base = apply_dataset_preprocessing(
+            augmented_base,
+            sem_config.preprocessing,
+        )
+
+        full_image = self.full_image_check_box.isChecked()
+        if full_image:
+            original_image, original_label = self._build_original_full_image(
+                original_base,
+                raw_label,
+            )
+            augmented_image, augmented_label = self._build_augmented_full_image(
+                sample_index,
+                augmented_base,
+                augmented_base_label,
+                include_mixup=not synthetic,
+            )
         else:
-            base_image, base_label = self._load_prepared_arrays(sample_index)
-            if self.full_image_check_box.isChecked():
-                original_image, original_label = self._build_original_full_image(base_image, base_label)
-                augmented_image, augmented_label = self._build_augmented_full_image(
-                    sample_index,
-                    base_image,
-                    base_label,
-                    include_mixup=True,
-                )
-            else:
-                original_image, original_label = self._build_original_patch(
-                    sample_index,
-                    base_image,
-                    base_label,
-                )
-                augmented_image, augmented_label = self._build_augmented_patch(
-                    sample_index,
-                    base_image,
-                    base_label,
-                    include_mixup=True,
-                )
+            original_image, original_label = self._build_original_patch(
+                sample_index,
+                original_base,
+                raw_label,
+            )
+            augmented_image, augmented_label = self._build_augmented_patch(
+                sample_index,
+                augmented_base,
+                augmented_base_label,
+                include_mixup=not synthetic,
+            )
         return (
             self._to_display_array(original_image),
             self._to_display_array(original_label),
@@ -2068,22 +1155,22 @@ class AugmentationPreviewDialog(QDialog):
     def _build_synthetic_base_arrays(self) -> tuple[np.ndarray, np.ndarray]:
         patch_height, patch_width = tuple(getattr(self._training_parameters.generation, 'segment_size', (256, 256)))
         size_hw = (
-            max(int(patch_height), int(self.synthetic_image_height_spinbox.value())),
-            max(int(patch_width), int(self.synthetic_image_width_spinbox.value())),
+            max(int(patch_height), int(self._panel.synthetic_image_height_spinbox.value())),
+            max(int(patch_width), int(self._panel.synthetic_image_width_spinbox.value())),
         )
         trace_count = self._sample_preview_int_range(
-            self.synthetic_trace_count_min_spinbox,
-            self.synthetic_trace_count_max_spinbox,
+            self._panel.synthetic_trace_count_min_spinbox,
+            self._panel.synthetic_trace_count_max_spinbox,
             salt='synthetic_trace_count',
         )
         background_noise_sigma = self._sample_preview_float_range(
-            self.synthetic_background_noise_sigma_min_spinbox,
-            self.synthetic_background_noise_sigma_max_spinbox,
+            self._panel.synthetic_background_noise_sigma_min_spinbox,
+            self._panel.synthetic_background_noise_sigma_max_spinbox,
             salt='synthetic_background_noise_sigma',
         )
         trace_noise_sigma = self._sample_preview_float_range(
-            self.synthetic_trace_noise_sigma_min_spinbox,
-            self.synthetic_trace_noise_sigma_max_spinbox,
+            self._panel.synthetic_trace_noise_sigma_min_spinbox,
+            self._panel.synthetic_trace_noise_sigma_max_spinbox,
             salt='synthetic_trace_noise_sigma',
         )
         params = SyntheticTopologyParameters(
@@ -2091,16 +1178,16 @@ class AugmentationPreviewDialog(QDialog):
             segment_count_range=tuple(
                 sorted(
                     (
-                        int(self.synthetic_segment_count_min_spinbox.value()),
-                        int(self.synthetic_segment_count_max_spinbox.value()),
+                        int(self._panel.synthetic_segment_count_min_spinbox.value()),
+                        int(self._panel.synthetic_segment_count_max_spinbox.value()),
                     )
                 )
             ),
             trace_half_width_range=tuple(
                 sorted(
                     (
-                        int(self.synthetic_trace_half_width_min_spinbox.value()),
-                        int(self.synthetic_trace_half_width_max_spinbox.value()),
+                        int(self._panel.synthetic_trace_half_width_min_spinbox.value()),
+                        int(self._panel.synthetic_trace_half_width_max_spinbox.value()),
                     )
                 )
             ),
@@ -2142,20 +1229,31 @@ class AugmentationPreviewDialog(QDialog):
         )
 
     def _load_prepared_arrays(self, sample_index: int) -> tuple[np.ndarray, np.ndarray]:
+        cached = self._prepared_arrays_cache.get(sample_index)
+        if cached is not None:
+            self._prepared_arrays_cache.move_to_end(sample_index)
+            return cached
+
         sample_path, label_path = self._sample_pairs[sample_index]
         prepared_image = ImagePreparator(sample_path, self._training_parameters.prepare).image
+        if label_path.suffix.lower() == '.cif':
+            raster_path, error_message = prepare_cif_label_raster(label_path)
+            if raster_path is None:
+                raise ValueError(error_message or f'Unable to rasterize {label_path.name}.')
+            label_path = raster_path
         prepared_label = ImagePreparator(label_path, self._training_parameters.prepare).image
-        if self._training_parameters.colors == 1:
-            prepared_image = prepared_image.convert('L')
-        else:
-            prepared_image = prepared_image.convert('RGB')
         prepared_label = prepared_label.convert('L')
         if prepared_label.size != prepared_image.size:
             prepared_label = prepared_label.resize(prepared_image.size, resample=Image.Resampling.NEAREST)
-        return (
-            SampleFastCutter.get_matrix_from_image(prepared_image, self._training_parameters.colors),
+        prepared = (
+            image_to_channel_first_float01(prepared_image, self._training_parameters.colors),
             SampleFastCutter.get_matrix_from_image(prepared_label, 1),
         )
+        self._prepared_arrays_cache[sample_index] = prepared
+        self._prepared_arrays_cache.move_to_end(sample_index)
+        while len(self._prepared_arrays_cache) > 2:
+            self._prepared_arrays_cache.popitem(last=False)
+        return prepared
 
     def _build_original_patch(
         self,
@@ -2194,7 +1292,7 @@ class AugmentationPreviewDialog(QDialog):
             image_matrix,
             label_matrix,
         )
-        if include_mixup and self._toggle_boxes['mixup'].isChecked():
+        if include_mixup and self._panel.mixup_check_box.isChecked():
             image_patch, label_patch = self._apply_mixup(sample_index, image_patch, label_patch)
         image_patch = self._apply_cutout(sample_index, image_patch)
         image_patch = self._apply_random_artifacts(sample_index, image_patch)
@@ -2213,7 +1311,7 @@ class AugmentationPreviewDialog(QDialog):
             image_matrix,
             label_matrix,
         )
-        if include_mixup and self._toggle_boxes['mixup'].isChecked():
+        if include_mixup and self._panel.mixup_check_box.isChecked():
             image_full, label_full = self._apply_mixup(
                 sample_index,
                 image_full,
@@ -2236,8 +1334,8 @@ class AugmentationPreviewDialog(QDialog):
             sample_index,
             augmented_image,
             augmented_label,
-            random_crop=self._toggle_boxes['random_crop'].isChecked(),
-            scale=self._toggle_boxes['scale'].isChecked(),
+            random_crop=self._panel.random_crop_check_box.isChecked(),
+            scale=self._panel.scale_augmentation_check_box.isChecked(),
         )
         image_patch, label_patch = self._apply_rotations(image_patch, label_patch)
         image_patch = self._apply_photometric_augmentations(sample_index, image_patch)
@@ -2266,29 +1364,12 @@ class AugmentationPreviewDialog(QDialog):
         random_crop: bool,
         scale: bool,
     ) -> tuple[np.ndarray, np.ndarray]:
-        generation = replace(
-            self._training_parameters.generation,
-            horizontal_rotation=False,
-            vertical_rotation=False,
-            flip_x=False,
-            flip_y=False,
-            additional_augmentation=False,
-            random_crop=bool(random_crop),
-            crops_per_image=int(self.crops_per_image_spinbox.value()),
-            scale_augmentation=bool(scale),
-            scale_augmentation_strength=float(self.scale_augmentation_strength_spinbox.value()),
-        )
+        generation = self._generation_settings_for_cutter()
         with _seeded_random(self._seed_for(sample_index, f'extract:{int(random_crop)}:{int(scale)}')):
             cutter = SampleFastCutter((image_matrix, label_matrix), generation, shuffle=False)
         if len(cutter) <= 0:
             return image_matrix.copy(), label_matrix.copy()
-        base_locations = max(1, int(getattr(cutter, '_base_locations', len(cutter))))
-        scale_variants = max(1, int(getattr(cutter, '_scale_variants', 1)))
-        location_index = min(base_locations - 1, max(0, base_locations // 2))
-        item_index = location_index * scale_variants
-        if scale and scale_variants > 1:
-            item_index += 1
-        item_index = min(len(cutter) - 1, item_index)
+        item_index = min(max(0, int(getattr(self, '_cutter_item_index', 0))), len(cutter) - 1)
         image_patch, label_patch = cutter[item_index]
         return (
             np.asarray(image_patch, dtype=np.float32).copy(),
@@ -2302,65 +1383,74 @@ class AugmentationPreviewDialog(QDialog):
     ) -> tuple[np.ndarray, np.ndarray]:
         image = image_patch.copy()
         label = label_patch.copy()
-        if self._toggle_boxes['rotate_90'].isChecked() and image.shape[1] == image.shape[2]:
+        operations = self._panel.get_training_augmentation_config()
+
+        def selected(key: str) -> bool:
+            item = operations[key]
+            return bool(item['enabled']) and random.random() < float(item['probability'])
+
+        if selected('rotate_90') and image.shape[1] == image.shape[2]:
             image = np.rot90(image, k=-1, axes=(1, 2)).copy()
             label = np.rot90(label, k=-1, axes=(1, 2)).copy()
-        if self._toggle_boxes['rotate_180'].isChecked():
+        if selected('rotate_180'):
             image = image[:, ::-1, ::-1].copy()
             label = label[:, ::-1, ::-1].copy()
-        if self._toggle_boxes['flip_x'].isChecked():
+        if selected('flip_x'):
             image = image[:, ::-1, :].copy()
             label = label[:, ::-1, :].copy()
-        if self._toggle_boxes['flip_y'].isChecked():
+        if selected('flip_y'):
             image = image[:, :, ::-1].copy()
             label = label[:, :, ::-1].copy()
         return image, label
 
     def _apply_photometric_augmentations(self, sample_index: int, image_patch: np.ndarray) -> np.ndarray:
+        multiplier = self._augmentation_multiplier_value()
+        if multiplier > 0.0 and self._variant_serial <= 0:
+            return image_patch.astype(np.float32, copy=False)
         image = image_patch.astype(np.float32, copy=True)
         with _seeded_random(self._seed_for(sample_index, 'photometric')):
-            if self._toggle_boxes['blur'].isChecked() and self._passes_probability(
-                sample_index,
-                'blur_probability',
-                float(self.augmentation_blur_probability_spinbox.value()),
-            ):
-                blur_radius = max(0.0, float(self.augmentation_blur_radius_spinbox.value()))
+            operations = self._panel.get_training_augmentation_config()
+
+            def selected(key: str) -> bool:
+                item = operations[key]
+                return bool(item['enabled']) and random.random() < float(item['probability'])
+
+            if selected('blur'):
+                blur_radius = max(0.0, float(self._panel.augmentation_blur_radius_spinbox.value()))
                 if blur_radius > 0.0:
                     image = SampleFastCutter._apply_gaussian_blur(image, blur_radius)
-            if self._toggle_boxes['brightness'].isChecked():
-                strength = max(0.0, float(self.augmentation_brightness_spinbox.value()))
+            if selected('brightness'):
+                strength = max(0.0, float(self._panel.augmentation_brightness_spinbox.value()))
                 brightness = 1.0 + strength
                 image *= float(brightness)
-            if self._toggle_boxes['contrast'].isChecked():
-                strength = max(0.0, float(self.augmentation_contrast_spinbox.value()))
+            if selected('contrast'):
+                strength = max(0.0, float(self._panel.augmentation_contrast_spinbox.value()))
                 contrast = 1.0 + strength
                 mean = image.mean(axis=(1, 2), keepdims=True)
                 image = (image - mean) * float(contrast) + mean
-            if self._toggle_boxes['gamma'].isChecked():
-                gamma_strength = max(0.0, float(self.augmentation_gamma_spinbox.value()))
+            if selected('gamma'):
+                gamma_strength = max(0.0, float(self._panel.augmentation_gamma_spinbox.value()))
                 gamma = max(0.1, 1.0 - min(gamma_strength, 0.9))
                 image = np.power(np.clip(image, 0.0, 1.0), float(gamma)).astype(np.float32, copy=False)
-            if self._toggle_boxes['noise'].isChecked() and self._passes_probability(
-                sample_index,
-                'noise_probability',
-                float(self.augmentation_noise_probability_spinbox.value()),
-            ):
-                sigma = max(0.0, float(self.augmentation_noise_sigma_spinbox.value()))
+            if selected('noise'):
+                sigma = max(0.0, float(self._panel.augmentation_noise_sigma_spinbox.value()))
                 if sigma > 0.0:
                     image += np.random.normal(0.0, sigma, size=image.shape).astype(np.float32)
         np.clip(image, 0.0, 1.0, out=image)
         return image.astype(np.float32, copy=False)
 
     def _has_selected_tech_variations(self) -> bool:
+        if not self._panel.tech_augmentation_check_box.isChecked():
+            return False
         return any(
-            self._toggle_boxes[key].isChecked()
-            for key in (
-                'tech_global_width',
-                'tech_scale_rethreshold',
-                'tech_blur_threshold',
-                'tech_boundary_aware',
-                'tech_local_morphology',
-                'tech_gap_variation',
+            self._tech_effect_enabled(spinbox)
+            for spinbox in (
+                self._panel.tech_aug_global_width_probability_spinbox,
+                self._panel.tech_aug_scale_rethreshold_probability_spinbox,
+                self._panel.tech_aug_blur_threshold_probability_spinbox,
+                self._panel.tech_aug_boundary_aware_probability_spinbox,
+                self._panel.tech_aug_local_morphology_probability_spinbox,
+                self._panel.tech_aug_gap_variation_probability_spinbox,
             )
         )
 
@@ -2370,54 +1460,23 @@ class AugmentationPreviewDialog(QDialog):
         image_matrix: np.ndarray,
         label_matrix: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        config = copy.deepcopy(build_tech_augmentation_config(getattr(self._training_parameters.generation, 'tech_aug', None)))
+        config = self._build_apply_tech_aug_config(preview=True)
+        if not config.enabled:
+            return image_matrix, label_matrix
         selected_count = sum(
             1
-            for key in (
-                'tech_global_width',
-                'tech_scale_rethreshold',
-                'tech_blur_threshold',
-                'tech_boundary_aware',
-                'tech_local_morphology',
-                'tech_gap_variation',
+            for spinbox in (
+                self._panel.tech_aug_global_width_probability_spinbox,
+                self._panel.tech_aug_scale_rethreshold_probability_spinbox,
+                self._panel.tech_aug_blur_threshold_probability_spinbox,
+                self._panel.tech_aug_boundary_aware_probability_spinbox,
+                self._panel.tech_aug_local_morphology_probability_spinbox,
+                self._panel.tech_aug_gap_variation_probability_spinbox,
             )
-            if self._toggle_boxes[key].isChecked()
+            if self._tech_effect_enabled(spinbox)
         )
         if selected_count <= 0:
             return image_matrix, label_matrix
-        config.enabled = True
-        config.min_operations = min(selected_count, max(1, int(self.tech_aug_min_operations_spinbox.value())))
-        config.max_operations = min(selected_count, max(config.min_operations, int(self.tech_aug_max_operations_spinbox.value())))
-        config.global_width.probability = (
-            float(self.tech_aug_global_width_probability_spinbox.value())
-            if self._toggle_boxes['tech_global_width'].isChecked()
-            else 0.0
-        )
-        config.scale_rethreshold.probability = (
-            float(self.tech_aug_scale_rethreshold_probability_spinbox.value())
-            if self._toggle_boxes['tech_scale_rethreshold'].isChecked()
-            else 0.0
-        )
-        config.blur_threshold.probability = (
-            float(self.tech_aug_blur_threshold_probability_spinbox.value())
-            if self._toggle_boxes['tech_blur_threshold'].isChecked()
-            else 0.0
-        )
-        config.boundary_aware.probability = (
-            float(self.tech_aug_boundary_aware_probability_spinbox.value())
-            if self._toggle_boxes['tech_boundary_aware'].isChecked()
-            else 0.0
-        )
-        config.local_morphology.probability = (
-            float(self.tech_aug_local_morphology_probability_spinbox.value())
-            if self._toggle_boxes['tech_local_morphology'].isChecked()
-            else 0.0
-        )
-        config.gap_variation.probability = (
-            float(self.tech_aug_gap_variation_probability_spinbox.value())
-            if self._toggle_boxes['tech_gap_variation'].isChecked()
-            else 0.0
-        )
         augmentor = TechVariationAugmentor(config)
         source_image = image_matrix.astype(np.float32, copy=False)
         source_label = label_matrix.astype(np.float32, copy=False)
@@ -2441,41 +1500,41 @@ class AugmentationPreviewDialog(QDialog):
         image_patch: np.ndarray,
         label_patch: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        if not self._toggle_boxes['synthetic_topology'].isChecked():
+        if not self._panel.synthetic_defect_generator_check_box.isChecked():
             return image_patch, label_patch
-        if not self._toggle_boxes['pcb_defects'].isChecked():
+        if not self._panel.pcb_defects_check_box.isChecked():
             return image_patch, label_patch
         current_domain = self._get_synthetic_topology_domain()
         if current_domain == 'ic':
             selected_probabilities = {
-                'line_break': 1.0 if self._toggle_boxes['ic_line_break'].isChecked() else 0.0,
-                'bridge': 1.0 if self._toggle_boxes['ic_bridge'].isChecked() else 0.0,
-                'necking': 1.0 if self._toggle_boxes['ic_necking'].isChecked() else 0.0,
-                'missing_metal': 1.0 if self._toggle_boxes['ic_missing_metal'].isChecked() else 0.0,
-                'spur': 1.0 if self._toggle_boxes['ic_spur'].isChecked() else 0.0,
-                'pinhole': 1.0 if self._toggle_boxes['ic_pinhole'].isChecked() else 0.0,
-                'via_open': 1.0 if self._toggle_boxes['ic_via_open'].isChecked() else 0.0,
-                'line_shift': 1.0 if self._toggle_boxes['ic_line_shift'].isChecked() else 0.0,
+                'line_break': 1.0 if self._panel.ic_defect_type_checkboxes["line_break"].isChecked() else 0.0,
+                'bridge': 1.0 if self._panel.ic_defect_type_checkboxes["bridge"].isChecked() else 0.0,
+                'necking': 1.0 if self._panel.ic_defect_type_checkboxes["necking"].isChecked() else 0.0,
+                'missing_metal': 1.0 if self._panel.ic_defect_type_checkboxes["missing_metal"].isChecked() else 0.0,
+                'spur': 1.0 if self._panel.ic_defect_type_checkboxes["spur"].isChecked() else 0.0,
+                'pinhole': 1.0 if self._panel.ic_defect_type_checkboxes["pinhole"].isChecked() else 0.0,
+                'via_open': 1.0 if self._panel.ic_defect_type_checkboxes["via_open"].isChecked() else 0.0,
+                'line_shift': 1.0 if self._panel.ic_defect_type_checkboxes["line_shift"].isChecked() else 0.0,
             }
             selected_severities = {
-                defect_name: float(self.ic_defect_type_spinboxes[defect_name].value()) / 100.0
+                defect_name: float(self._panel.ic_defect_type_spinboxes[defect_name].value()) / 100.0
                 for defect_name in selected_probabilities
             }
             config = self._build_apply_ic_defects_config()
             augmentor_cls = ICDefectAugmentor
         else:
             selected_probabilities = {
-                'break': 1.0 if self._toggle_boxes['pcb_break'].isChecked() else 0.0,
-                'short': 1.0 if self._toggle_boxes['pcb_short'].isChecked() else 0.0,
-                'missing_copper': 1.0 if self._toggle_boxes['pcb_missing_copper'].isChecked() else 0.0,
-                'excess_copper': 1.0 if self._toggle_boxes['pcb_excess_copper'].isChecked() else 0.0,
-                'pinhole': 1.0 if self._toggle_boxes['pcb_pinhole'].isChecked() else 0.0,
-                'spurious_copper': 1.0 if self._toggle_boxes['pcb_spurious_copper'].isChecked() else 0.0,
-                'via': 1.0 if self._toggle_boxes['pcb_via'].isChecked() else 0.0,
-                'misalignment': 1.0 if self._toggle_boxes['pcb_misalignment'].isChecked() else 0.0,
+                'break': 1.0 if self._panel.pcb_defect_type_checkboxes["break"].isChecked() else 0.0,
+                'short': 1.0 if self._panel.pcb_defect_type_checkboxes["short"].isChecked() else 0.0,
+                'missing_copper': 1.0 if self._panel.pcb_defect_type_checkboxes["missing_copper"].isChecked() else 0.0,
+                'excess_copper': 1.0 if self._panel.pcb_defect_type_checkboxes["excess_copper"].isChecked() else 0.0,
+                'pinhole': 1.0 if self._panel.pcb_defect_type_checkboxes["pinhole"].isChecked() else 0.0,
+                'spurious_copper': 1.0 if self._panel.pcb_defect_type_checkboxes["spurious_copper"].isChecked() else 0.0,
+                'via': 1.0 if self._panel.pcb_defect_type_checkboxes["via"].isChecked() else 0.0,
+                'misalignment': 1.0 if self._panel.pcb_defect_type_checkboxes["misalignment"].isChecked() else 0.0,
             }
             selected_severities = {
-                defect_name: float(self.pcb_defect_type_spinboxes[defect_name].value()) / 100.0
+                defect_name: float(self._panel.pcb_defect_type_spinboxes[defect_name].value()) / 100.0
                 for defect_name in selected_probabilities
             }
             config = self._build_apply_pcb_defects_config()
@@ -2483,15 +1542,9 @@ class AugmentationPreviewDialog(QDialog):
         active_count = sum(1 for probability in selected_probabilities.values() if probability > 0.0)
         if active_count <= 0:
             return image_patch, label_patch
-        if not self._passes_probability(
-            sample_index,
-            'pcb_defects_probability',
-            float(self.pcb_defects_probability_spinbox.value()),
-        ):
-            return image_patch, label_patch
         config.defect_probability = 1.0
-        config.min_defects = min(active_count, max(1, int(self.pcb_defects_min_count_spinbox.value())))
-        config.max_defects = min(active_count, max(config.min_defects, int(self.pcb_defects_max_count_spinbox.value())))
+        config.min_defects = min(active_count, max(1, int(self._panel.pcb_defects_min_count_spinbox.value())))
+        config.max_defects = min(active_count, max(config.min_defects, int(self._panel.pcb_defects_max_count_spinbox.value())))
         for defect_name in tuple(config.defect_probabilities.keys()):
             config.defect_probabilities[defect_name] = float(selected_probabilities.get(defect_name, 0.0))
             config.defect_severities[defect_name] = float(selected_severities.get(defect_name, 0.5))
@@ -2525,13 +1578,7 @@ class AugmentationPreviewDialog(QDialog):
     ) -> tuple[np.ndarray, np.ndarray]:
         if len(self._sample_pairs) <= 1:
             return image_patch, label_patch
-        if not self._passes_probability(
-            sample_index,
-            'mixup_probability',
-            float(self.mixup_probability_spinbox.value()),
-        ):
-            return image_patch, label_patch
-        alpha = max(0.0, float(self.mixup_alpha_spinbox.value()))
+        alpha = max(0.0, float(self._panel.mixup_alpha_spinbox.value()))
         if alpha <= 0.0:
             return image_patch, label_patch
         partner_index = (sample_index + 1 + self._variant_serial) % len(self._sample_pairs)
@@ -2563,16 +1610,10 @@ class AugmentationPreviewDialog(QDialog):
         )
 
     def _apply_cutout(self, sample_index: int, image_patch: np.ndarray) -> np.ndarray:
-        if not self._toggle_boxes['cutout'].isChecked():
+        if not self._panel.cutout_check_box.isChecked():
             return image_patch
-        if not self._passes_probability(
-            sample_index,
-            'cutout_probability',
-            float(self.cutout_probability_spinbox.value()),
-        ):
-            return image_patch
-        holes = max(1, int(self.cutout_holes_spinbox.value()))
-        size_ratio = float(self.cutout_size_ratio_spinbox.value())
+        holes = max(1, int(self._panel.cutout_holes_spinbox.value()))
+        size_ratio = float(self._panel.cutout_size_ratio_spinbox.value())
         if size_ratio <= 0.0:
             return image_patch
         image = torch.from_numpy(np.ascontiguousarray(image_patch[None, ...])).float()
@@ -2598,19 +1639,13 @@ class AugmentationPreviewDialog(QDialog):
         return image[0].numpy().astype(np.float32, copy=False)
 
     def _apply_random_artifacts(self, sample_index: int, image_patch: np.ndarray) -> np.ndarray:
-        if not self._toggle_boxes['random_artifacts'].isChecked():
+        if not self._panel.random_artifacts_check_box.isChecked():
             return image_patch
         artifact_types = self._selected_artifact_types()
         if not artifact_types:
             return image_patch
-        if not self._passes_probability(
-            sample_index,
-            'random_artifacts_probability',
-            float(self.random_artifacts_probability_spinbox.value()),
-        ):
-            return image_patch
-        count = max(1, int(self.random_artifacts_count_spinbox.value()))
-        size_ratio = float(self.random_artifacts_size_ratio_spinbox.value())
+        count = max(1, int(self._panel.random_artifacts_count_spinbox.value()))
+        size_ratio = float(self._panel.random_artifacts_size_ratio_spinbox.value())
         if size_ratio <= 0.0:
             return image_patch
         image = torch.from_numpy(np.ascontiguousarray(image_patch[None, ...])).float()
@@ -2641,28 +1676,11 @@ class AugmentationPreviewDialog(QDialog):
         return image[0].numpy().astype(np.float32, copy=False)
 
     def _selected_artifact_types(self) -> tuple[str, ...]:
-        mapping = {
-            'artifact_dust': 'dust',
-            'artifact_resist_residue': 'resist_residue',
-            'artifact_etch_residue': 'etch_residue',
-            'artifact_particle_cluster': 'particle_cluster',
-            'artifact_flake': 'flake',
-        }
-        selected: list[str] = []
-        for key, artifact_name in mapping.items():
-            if self._toggle_boxes[key].isChecked():
-                selected.append(artifact_name)
-        return tuple(selected)
-
-    def _set_value_widgets_enabled(self, key: str, enabled: bool) -> None:
-        for row in self._value_rows.get(key, ()):
-            row.setEnabled(bool(enabled))
-        for widget in self._value_widgets.get(key, ()):
-            widget.setEnabled(bool(enabled))
-
-    def _set_value_widgets_visible(self, key: str, visible: bool) -> None:
-        for row in self._value_rows.get(key, ()):
-            row.setVisible(bool(visible))
+        return tuple(
+            artifact_name
+            for artifact_name, checkbox in self._panel.random_artifact_type_checkboxes.items()
+            if checkbox.isChecked()
+        )
 
     def _preview_mode_text(self) -> str:
         if self.full_image_check_box.isChecked():
@@ -2694,12 +1712,7 @@ class AugmentationPreviewDialog(QDialog):
             return float(np.random.uniform(lower, upper))
 
     def _passes_probability(self, sample_index: int, salt: str, probability: float) -> bool:
-        if probability <= 0.0:
-            return False
-        if probability >= 1.0:
-            return True
-        with _seeded_random(self._seed_for(sample_index, salt)):
-            return bool(random.random() <= float(probability))
+        return float(probability) > 0.0
 
     @staticmethod
     def _set_combo_value(combo: NoWheelComboBox, value: str) -> None:
@@ -2713,13 +1726,13 @@ class AugmentationPreviewDialog(QDialog):
 
     def _get_synthetic_topology_domain(self) -> str:
         return str(
-            self.synthetic_topology_domain_combo.currentData()
-            or self.synthetic_topology_domain_combo.currentText()
+            self._panel.synthetic_topology_domain_combo.currentData()
+            or self._panel.synthetic_topology_domain_combo.currentText()
             or 'pcb'
         ).strip().lower()
 
     def _get_synthetic_topology_family(self) -> str:
-        combo = self.ic_topology_family_combo if self._get_synthetic_topology_domain() == 'ic' else self.pcb_topology_family_combo
+        combo = self._panel.ic_topology_family_combo if self._get_synthetic_topology_domain() == 'ic' else self._panel.pcb_topology_family_combo
         return str(combo.currentData() or combo.currentText() or '').strip().lower()
 
     def _resolve_text(self, key: str) -> str:
@@ -2844,12 +1857,23 @@ class AugmentationPreviewDialog(QDialog):
             sample_key = self._sample_pairs[sample_index][0].as_posix()
         else:
             sample_key = 'synthetic'
-        payload = f'{sample_key}|{sample_index}|{self._variant_serial}|{salt}'
+        payload = (
+            f'{sample_key}|{sample_index}|{getattr(self, "_cutter_item_index", 0)}|'
+            f'{self._variant_serial}|{self._resample_salt}|{salt}'
+        )
         return int(zlib.crc32(payload.encode('utf-8')) & 0xFFFFFFFF)
 
     @staticmethod
     def _to_display_array(image_array: np.ndarray) -> np.ndarray:
         array = np.asarray(image_array, dtype=np.float32)
+        finite = array[np.isfinite(array)]
+        if finite.size and (float(finite.min()) < 0.0 or float(finite.max()) > 1.0):
+            low, high = np.percentile(finite, (1.0, 99.0))
+            if float(high - low) > 1e-6:
+                array = (array - float(low)) / float(high - low)
+            else:
+                array = np.zeros_like(array, dtype=np.float32)
+        array = np.nan_to_num(array, nan=0.0, posinf=1.0, neginf=0.0)
         if array.ndim == 2:
             return np.clip(np.round(array * 255.0), 0.0, 255.0).astype(np.uint8)
         if array.ndim == 3 and array.shape[0] == 1:

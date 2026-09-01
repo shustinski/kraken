@@ -148,6 +148,7 @@ def _build_settings_state(
         flip_x=read_bool('flip_x', getattr(defaults, 'flip_x', False)),
         flip_y=read_bool('flip_y', getattr(defaults, 'flip_y', False)),
         additional_augmentation=read_bool('additional_augmentation', defaults.additional_augmentation),
+        augmentation_multiplier=read_float('augmentation_multiplier', getattr(defaults, 'augmentation_multiplier', 0.0)),
         augmentation_brightness_strength=read_float(
             'augmentation_brightness_strength', defaults.augmentation_brightness_strength
         ),
@@ -524,6 +525,7 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'flip_x': bool(getattr(state, 'flip_x', False)),
         'flip_y': bool(getattr(state, 'flip_y', False)),
         'additional_augmentation': bool(state.additional_augmentation),
+        'augmentation_multiplier': float(getattr(state, 'augmentation_multiplier', 0.0)),
         'augmentation_brightness_strength': float(state.augmentation_brightness_strength),
         'augmentation_contrast_strength': float(state.augmentation_contrast_strength),
         'augmentation_gamma_strength': float(getattr(state, 'augmentation_gamma_strength', 0.15)),

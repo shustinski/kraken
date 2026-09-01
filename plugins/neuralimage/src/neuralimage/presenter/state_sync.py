@@ -165,6 +165,7 @@ def apply_settings_to_panel(presenter) -> None:
     panel.flip_x.setChecked(bool(getattr(state, 'flip_x', False)))
     panel.flip_y.setChecked(bool(getattr(state, 'flip_y', False)))
     panel.additional_augmentation_check_box.setChecked(state.additional_augmentation)
+    panel.augmentation_multiplier_spinbox.setValue(float(getattr(state, 'augmentation_multiplier', 0.0)))
     panel.augmentation_brightness_spinbox.setValue(state.augmentation_brightness_strength)
     panel.augmentation_contrast_spinbox.setValue(state.augmentation_contrast_strength)
     panel.augmentation_gamma_spinbox.setValue(float(getattr(state, 'augmentation_gamma_strength', 0.15)))
@@ -174,6 +175,7 @@ def apply_settings_to_panel(presenter) -> None:
         float(getattr(state, 'augmentation_blur_probability', 0.25))
     )
     panel.augmentation_blur_radius_spinbox.setValue(float(getattr(state, 'augmentation_blur_radius', 1.0)))
+    panel.set_training_augmentation_config(getattr(state, 'training_augmentation', {}))
     if hasattr(panel, '_sync_augmentation_controls'):
         panel._sync_augmentation_controls(state.additional_augmentation)
 
@@ -287,6 +289,10 @@ def apply_settings_to_panel(presenter) -> None:
     panel.optimizer_type.setCurrentText(state.optimizer_name)
     panel.mixed_precision_type.setCurrentText(state.mixed_precision)
     panel.deep_supervision_check_box.setChecked(bool(getattr(state, 'deep_supervision', False)))
+    panel.topograph_enabled_check_box.setChecked(bool(getattr(state, 'topograph_enabled', False)))
+    panel.topograph_loss_weight_spinbox.setValue(float(getattr(state, 'topograph_loss_weight', 0.1)))
+    panel.topograph_debug_viz_check_box.setChecked(bool(getattr(state, 'topograph_debug_viz', False)))
+    panel._on_topograph_enabled_toggled(panel.topograph_enabled_check_box.isChecked())
     if hasattr(panel, 'set_loss_term_weights'):
         panel.set_loss_term_weights(
             resolve_loss_term_weights(
@@ -412,6 +418,7 @@ def update_settings_window_state(presenter) -> None:
     flip_x = panel.flip_x.isChecked()
     flip_y = panel.flip_y.isChecked()
     additional_augmentation = panel.additional_augmentation_check_box.isChecked()
+    augmentation_multiplier = float(panel.augmentation_multiplier_spinbox.value())
     augmentation_brightness_strength = panel.augmentation_brightness_spinbox.value()
     augmentation_contrast_strength = panel.augmentation_contrast_spinbox.value()
     augmentation_gamma_strength = panel.augmentation_gamma_spinbox.value()
@@ -419,6 +426,7 @@ def update_settings_window_state(presenter) -> None:
     augmentation_noise_sigma = panel.augmentation_noise_sigma_spinbox.value()
     augmentation_blur_probability = panel.augmentation_blur_probability_spinbox.value()
     augmentation_blur_radius = panel.augmentation_blur_radius_spinbox.value()
+    training_augmentation = panel.get_training_augmentation_config()
     step = panel.shift_spinbox.value()
     train_patch_size = (panel.train_patch_x_size.value(), panel.train_patch_y_size.value())
     random_patch_size_enabled = panel.random_patch_size_check_box.isChecked()
@@ -494,6 +502,9 @@ def update_settings_window_state(presenter) -> None:
     optimizer_name = panel.optimizer_type.currentText()
     mixed_precision = panel.mixed_precision_type.currentText()
     deep_supervision = panel.deep_supervision_check_box.isChecked()
+    topograph_enabled = panel.topograph_enabled_check_box.isChecked()
+    topograph_loss_weight = float(panel.topograph_loss_weight_spinbox.value())
+    topograph_debug_viz = panel.topograph_debug_viz_check_box.isChecked()
     current_state = getattr(presenter, 'settings_state', SettingsState())
     loss_term_weights = (
         panel.get_loss_term_weights()
@@ -560,6 +571,7 @@ def update_settings_window_state(presenter) -> None:
         flip_x=flip_x,
         flip_y=flip_y,
         additional_augmentation=additional_augmentation,
+        augmentation_multiplier=augmentation_multiplier,
         augmentation_brightness_strength=augmentation_brightness_strength,
         augmentation_contrast_strength=augmentation_contrast_strength,
         augmentation_gamma_strength=augmentation_gamma_strength,
@@ -567,6 +579,7 @@ def update_settings_window_state(presenter) -> None:
         augmentation_noise_sigma=augmentation_noise_sigma,
         augmentation_blur_probability=augmentation_blur_probability,
         augmentation_blur_radius=augmentation_blur_radius,
+        training_augmentation=training_augmentation,
         sample_size=train_patch_size,
         train_patch_size=train_patch_size,
         random_patch_size_enabled=random_patch_size_enabled,
@@ -640,6 +653,9 @@ def update_settings_window_state(presenter) -> None:
         loss_term_weights=loss_term_weights,
         dice_loss_weight=dice_loss_weight,
         iou_loss_weight=iou_loss_weight,
+        topograph_enabled=topograph_enabled,
+        topograph_loss_weight=topograph_loss_weight,
+        topograph_debug_viz=topograph_debug_viz,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
         early_stopping_enabled=early_stopping_enabled,

@@ -126,6 +126,10 @@ def test_state_store_roundtrip_settings(monkeypatch):
         augmentation_noise_sigma=0.015,
         augmentation_blur_probability=0.4,
         augmentation_blur_radius=1.7,
+        training_augmentation={
+            'rotate_90': {'enabled': True, 'probability': 0.4},
+            'brightness': {'enabled': False, 'probability': 0.75},
+        },
         recognition_binarize_output=False,
         recognition_use_auto_threshold=False,
         recognition_threshold=0.63,
@@ -209,6 +213,10 @@ def test_state_store_roundtrip_settings(monkeypatch):
     assert loaded.augmentation_noise_sigma == 0.015
     assert loaded.augmentation_blur_probability == pytest.approx(0.4)
     assert loaded.augmentation_blur_radius == pytest.approx(1.7)
+    assert loaded.training_augmentation == {
+        'brightness': {'enabled': False, 'probability': 0.75},
+        'rotate_90': {'enabled': True, 'probability': 0.4},
+    }
     assert loaded.recognition_binarize_output is False
     assert loaded.recognition_use_auto_threshold is False
     assert loaded.recognition_threshold == pytest.approx(0.63)

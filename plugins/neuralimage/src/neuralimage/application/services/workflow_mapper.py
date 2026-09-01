@@ -87,6 +87,12 @@ def build_workflow_parameters(
         compression_factor=max(1, int(getattr(settings, 'compression_factor', 1))),
     )
 
+    augmentation_operations = getattr(settings, 'training_augmentation', {}) or {}
+
+    def _operation(name: str, field: str, default):
+        raw = augmentation_operations.get(name, {})
+        return raw.get(field, default) if isinstance(raw, dict) else default
+
     generation = SampleGenerationSettings(
         step=settings.step,
         segment_size=train_patch_size,
@@ -95,13 +101,26 @@ def build_workflow_parameters(
         channels=channels,
         flip_x=bool(getattr(settings, 'flip_x', False)),
         flip_y=bool(getattr(settings, 'flip_y', False)),
+        horizontal_rotation_probability=float(_operation('rotate_90', 'probability', 1.0)),
+        vertical_rotation_probability=float(_operation('rotate_180', 'probability', 1.0)),
+        flip_x_probability=float(_operation('flip_x', 'probability', 1.0)),
+        flip_y_probability=float(_operation('flip_y', 'probability', 1.0)),
         additional_augmentation=settings.additional_augmentation,
+        augmentation_multiplier=float(getattr(settings, 'augmentation_multiplier', 0.0)),
         augmentation_brightness_strength=settings.augmentation_brightness_strength,
+        augmentation_brightness_enabled=bool(_operation('brightness', 'enabled', True)),
+        augmentation_brightness_probability=float(_operation('brightness', 'probability', 1.0)),
         augmentation_contrast_strength=settings.augmentation_contrast_strength,
+        augmentation_contrast_enabled=bool(_operation('contrast', 'enabled', True)),
+        augmentation_contrast_probability=float(_operation('contrast', 'probability', 1.0)),
         augmentation_gamma_strength=float(getattr(settings, 'augmentation_gamma_strength', 0.15)),
+        augmentation_gamma_enabled=bool(_operation('gamma', 'enabled', True)),
+        augmentation_gamma_probability=float(_operation('gamma', 'probability', 1.0)),
+        augmentation_noise_enabled=bool(_operation('noise', 'enabled', True)),
         augmentation_noise_probability=settings.augmentation_noise_probability,
         augmentation_noise_sigma=settings.augmentation_noise_sigma,
         augmentation_blur_probability=float(getattr(settings, 'augmentation_blur_probability', 0.25)),
+        augmentation_blur_enabled=bool(_operation('blur', 'enabled', True)),
         augmentation_blur_radius=float(getattr(settings, 'augmentation_blur_radius', 1.0)),
         shuffle_patches_in_frame=bool(
             getattr(settings, 'shuffle_patches_in_frame', getattr(settings, 'shuffle', True))
@@ -109,6 +128,7 @@ def build_workflow_parameters(
         random_crop=bool(getattr(settings, 'random_crop', False)),
         crops_per_image=int(getattr(settings, 'crops_per_image', 64)),
         scale_augmentation=bool(getattr(settings, 'scale_augmentation', False)),
+        scale_augmentation_probability=float(_operation('scale', 'probability', 1.0)),
         scale_augmentation_strength=float(getattr(settings, 'scale_augmentation_strength', 0.2)),
         tech_aug=build_tech_augmentation_config(getattr(settings, 'tech_aug', None)),
     )
@@ -184,6 +204,11 @@ def build_workflow_parameters(
         ),
         dice_loss_weight=settings.dice_loss_weight,
         iou_loss_weight=settings.iou_loss_weight,
+        topograph_enabled=bool(getattr(settings, 'topograph_enabled', False)),
+        topograph_loss_weight=float(getattr(settings, 'topograph_loss_weight', 0.1)),
+        topograph_debug_viz=bool(getattr(settings, 'topograph_debug_viz', False)),
+        topograph_num_processes=max(1, int(getattr(settings, 'topograph_num_processes', 1))),
+        topograph_use_c=bool(getattr(settings, 'topograph_use_c', False)),
         early_stopping=EarlyStoppingParameters(
             enabled=settings.early_stopping_enabled,
             patience=int(getattr(settings, 'early_stopping_patience', 10)),

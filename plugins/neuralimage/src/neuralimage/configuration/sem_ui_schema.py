@@ -41,7 +41,8 @@ SEM_UI_SECTIONS: tuple[tuple[str, str], ...] = (
     ('losses', 'Loss weighting'),
     ('hard_mining', 'Hard example mining'),
     ('context', 'Context branch'),
-    ('uncertainty', 'Confidence and uncertainty'),
+    ('confidence_training', 'Confidence head training'),
+    ('inference_uncertainty', 'Inference uncertainty'),
     ('active_learning', 'Active Learning export'),
     ('validation', 'Validation'),
     ('experiment', 'Experiment'),
@@ -143,14 +144,15 @@ SEM_UI_FIELDS: tuple[SemUiField, ...] = (
     _field('context_heads', ('context', 'attention_heads'), 'context', 'int', 'Attention heads', 4, 1, 1024, 1),
     _field('context_tokens', ('context', 'max_global_tokens'), 'context', 'int', 'Maximum global tokens', 1024, 1, 1000000, 1),
     # Confidence, AL and validation.
-    _field('uncertainty_enabled', ('uncertainty', 'enabled'), 'uncertainty', 'bool', 'Enable uncertainty estimation', False),
-    _field('uncertainty_method', ('uncertainty', 'method'), 'uncertainty', 'choice', 'Uncertainty method', 'confidence_head', choices=(('confidence_head', 'Confidence head'), ('mc_dropout', 'MC Dropout'), ('tta_variance', 'TTA variance'), ('combined', 'Combined'), ('auto', 'Automatic'))),
-    _field('uncertainty_samples', ('uncertainty', 'mc_dropout_samples'), 'uncertainty', 'int', 'MC Dropout samples', 8, 2, 1000, 1),
-    _field('uncertainty_rate', ('uncertainty', 'mc_dropout_rate'), 'uncertainty', 'float', 'MC Dropout rate', 0.1, 0.0, 0.999, 0.01, 3),
-    _field('uncertainty_tta_flips', ('uncertainty', 'tta_flips'), 'uncertainty', 'bool', 'TTA flips', True),
-    _field('uncertainty_tta_rotations', ('uncertainty', 'tta_rotations'), 'uncertainty', 'bool', 'TTA rotations', False),
-    _field('uncertainty_export', ('uncertainty', 'export_confidence_map'), 'uncertainty', 'bool', 'Export confidence map', True),
-    _field('uncertainty_loss_weight', ('uncertainty', 'confidence_loss_weight'), 'uncertainty', 'float', 'Confidence loss weight', 0.1, 0.0, 100.0, 0.05, 3),
+    _field('confidence_training_enabled', ('confidence_training', 'enabled'), 'confidence_training', 'bool', 'Train confidence head', False),
+    _field('confidence_training_loss_weight', ('confidence_training', 'loss_weight'), 'confidence_training', 'float', 'Confidence loss weight', 0.1, 0.0, 100.0, 0.05, 3),
+    _field('uncertainty_enabled', ('inference_uncertainty', 'enabled'), 'inference_uncertainty', 'bool', 'Enable uncertainty estimation', False),
+    _field('uncertainty_method', ('inference_uncertainty', 'method'), 'inference_uncertainty', 'choice', 'Uncertainty method', 'confidence_head', choices=(('confidence_head', 'Confidence head'), ('mc_dropout', 'MC Dropout'), ('tta_variance', 'TTA variance'), ('combined', 'Combined'), ('auto', 'Automatic'))),
+    _field('uncertainty_samples', ('inference_uncertainty', 'mc_dropout_samples'), 'inference_uncertainty', 'int', 'MC Dropout samples', 8, 2, 1000, 1),
+    _field('uncertainty_rate', ('inference_uncertainty', 'mc_dropout_rate'), 'inference_uncertainty', 'float', 'MC Dropout rate', 0.1, 0.0, 0.999, 0.01, 3),
+    _field('uncertainty_tta_flips', ('inference_uncertainty', 'tta_flips'), 'inference_uncertainty', 'bool', 'TTA flips', True),
+    _field('uncertainty_tta_rotations', ('inference_uncertainty', 'tta_rotations'), 'inference_uncertainty', 'bool', 'TTA rotations', False),
+    _field('uncertainty_export', ('inference_uncertainty', 'export_confidence_map'), 'inference_uncertainty', 'bool', 'Export confidence map', True),
     _field('al_enabled', ('active_learning', 'enabled'), 'active_learning', 'bool', 'Export NeedsAnnotation samples', False),
     _field('al_export_dir', ('active_learning', 'export_dir'), 'active_learning', 'text', 'NeedsAnnotation directory', ''),
     _field('al_low_confidence', ('active_learning', 'low_confidence_threshold'), 'active_learning', 'float', 'Low-confidence threshold', 0.35, 0.0, 1.0, 0.01, 3),
@@ -185,7 +187,8 @@ SEM_UI_SECTION_LABELS_RU = {
     'losses': 'Взвешивание потерь',
     'hard_mining': 'Сложные примеры',
     'context': 'Контекстная ветвь',
-    'uncertainty': 'Уверенность',
+    'confidence_training': 'Обучение уверенности',
+    'inference_uncertainty': 'Неопределённость при распознавании',
     'active_learning': 'Active Learning',
     'validation': 'Валидация',
     'experiment': 'Эксперимент',
@@ -199,7 +202,8 @@ SEM_UI_SECTION_HELP_EN = {
     'losses': 'Controls how the main mask loss and auxiliary training tasks are balanced.',
     'hard_mining': 'Prioritizes geometrically important or previously difficult training patches while retaining random exploration.',
     'context': 'Controls the model branch that combines a local patch with a larger image context.',
-    'uncertainty': 'Estimates prediction uncertainty and optionally exports a confidence map; it does not replace the binary mask.',
+    'confidence_training': 'Adds a training-only confidence head and its loss. It does not enable stochastic inference.',
+    'inference_uncertainty': 'Estimates prediction uncertainty during recognition and optionally exports a confidence map.',
     'active_learning': 'Exports the most uncertain full-frame regions to NeedsAnnotation for later expert review.',
     'validation': 'Adds topology- and boundary-aware metrics to the existing validation dataset.',
     'experiment': 'Makes topology-first comparison runs reproducible. These settings do not change inference output.',
@@ -213,7 +217,8 @@ SEM_UI_SECTION_HELP_RU = {
     'losses': 'Настраивает баланс основной ошибки маски и вспомогательных обучающих задач.',
     'hard_mining': 'Чаще выбирает геометрически важные или ранее сложные патчи, сохраняя долю случайных примеров.',
     'context': 'Настраивает ветвь модели, объединяющую локальный патч с более крупным контекстом изображения.',
-    'uncertainty': 'Оценивает неопределённость прогноза и при необходимости сохраняет карту уверенности; бинарную маску не заменяет.',
+    'confidence_training': 'Обучает отдельную голову уверенности и задаёт вес её функции потерь. Не включает стохастический инференс.',
+    'inference_uncertainty': 'Оценивает неопределённость при распознавании и при необходимости сохраняет карту уверенности.',
     'active_learning': 'Экспортирует наиболее неопределённые области целого кадра в NeedsAnnotation для последующей проверки экспертом.',
     'validation': 'Добавляет к существующей валидации метрики границ и сохранения топологии.',
     'experiment': 'Обеспечивает воспроизводимое topology-first сравнение запусков и не изменяет результат распознавания.',
@@ -295,6 +300,8 @@ SEM_UI_LABELS_RU = {
     'context_dim': 'Размерность attention',
     'context_heads': 'Количество attention heads',
     'context_tokens': 'Максимум глобальных токенов',
+    'confidence_training_enabled': 'Обучать голову уверенности',
+    'confidence_training_loss_weight': 'Вес confidence loss',
     'uncertainty_enabled': 'Оценивать неопределённость',
     'uncertainty_method': 'Метод неопределённости',
     'uncertainty_samples': 'Число проходов MC Dropout',
@@ -357,6 +364,17 @@ def sem_ui_section_help(section: str, language: str) -> str:
 
 
 def sem_ui_field_help(field: SemUiField, language: str) -> str:
+    if field.key == 'pre_mode':
+        if str(language).startswith('ru'):
+            return (
+                'Без нормализации: только float32 в диапазоне исходного типа. '
+                'P1-P99: диапазон рассчитывается отдельно для каждого кадра. '
+                'Dataset z-score: mean/std рассчитываются только по train-части и сохраняются с моделью.'
+            )
+        return (
+            'None only converts the native image range to float32. P1-P99 is calculated per frame. '
+            'Dataset z-score calculates mean/std from the training split only and stores them with the model.'
+        )
     section_help = sem_ui_section_help(field.section, language)
     label = sem_ui_field_label(field, language)
     if field.kind in {'int', 'float'} and field.minimum is not None and field.maximum is not None:

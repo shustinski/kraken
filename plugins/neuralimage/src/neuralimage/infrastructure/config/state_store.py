@@ -140,6 +140,7 @@ def _build_settings_state(
         flip_x=read_bool('flip_x', getattr(defaults, 'flip_x', False)),
         flip_y=read_bool('flip_y', getattr(defaults, 'flip_y', False)),
         additional_augmentation=read_bool('additional_augmentation', defaults.additional_augmentation),
+        augmentation_multiplier=read_float('augmentation_multiplier', getattr(defaults, 'augmentation_multiplier', 0.0)),
         augmentation_brightness_strength=read_float(
             'augmentation_brightness_strength', defaults.augmentation_brightness_strength
         ),
@@ -161,6 +162,10 @@ def _build_settings_state(
         augmentation_blur_radius=read_float(
             'augmentation_blur_radius',
             getattr(defaults, 'augmentation_blur_radius', 1.0),
+        ),
+        training_augmentation=_coerce_json_object(
+            read_str('training_augmentation_json', ''),
+            default=getattr(defaults, 'training_augmentation', {}),
         ),
         sample_size=(
             legacy_sample_x,
@@ -278,6 +283,20 @@ def _build_settings_state(
         loss_term_weights=loss_term_weights,
         dice_loss_weight=dice_loss_weight,
         iou_loss_weight=iou_loss_weight,
+        topograph_enabled=read_bool('topograph_enabled', getattr(defaults, 'topograph_enabled', False)),
+        topograph_loss_weight=read_float(
+            'topograph_loss_weight',
+            getattr(defaults, 'topograph_loss_weight', 0.1),
+        ),
+        topograph_debug_viz=read_bool(
+            'topograph_debug_viz',
+            getattr(defaults, 'topograph_debug_viz', False),
+        ),
+        topograph_num_processes=read_int(
+            'topograph_num_processes',
+            getattr(defaults, 'topograph_num_processes', 1),
+        ),
+        topograph_use_c=read_bool('topograph_use_c', getattr(defaults, 'topograph_use_c', False)),
         learning_rate=read_float('learning_rate', defaults.learning_rate),
         weight_decay=read_float('weight_decay', defaults.weight_decay),
         early_stopping_enabled=read_bool('early_stopping_enabled', defaults.early_stopping_enabled),
@@ -516,6 +535,7 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'flip_x': bool(getattr(state, 'flip_x', False)),
         'flip_y': bool(getattr(state, 'flip_y', False)),
         'additional_augmentation': bool(state.additional_augmentation),
+        'augmentation_multiplier': float(getattr(state, 'augmentation_multiplier', 0.0)),
         'augmentation_brightness_strength': float(state.augmentation_brightness_strength),
         'augmentation_contrast_strength': float(state.augmentation_contrast_strength),
         'augmentation_gamma_strength': float(getattr(state, 'augmentation_gamma_strength', 0.15)),
@@ -523,6 +543,9 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'augmentation_noise_sigma': float(state.augmentation_noise_sigma),
         'augmentation_blur_probability': float(getattr(state, 'augmentation_blur_probability', 0.25)),
         'augmentation_blur_radius': float(getattr(state, 'augmentation_blur_radius', 1.0)),
+        'training_augmentation_json': json.dumps(
+            getattr(state, 'training_augmentation', {}), ensure_ascii=False, sort_keys=True
+        ),
         'model': state.model,
         'color_mode': state.color_mode,
         'shuffle': bool(state.shuffle),
@@ -588,6 +611,11 @@ def _settings_state_to_storage_dict(state: SettingsState) -> dict[str, str | int
         'loss_term_weights_json': serialize_loss_term_weights(getattr(state, 'loss_term_weights', None)),
         'dice_loss_weight': float(state.dice_loss_weight),
         'iou_loss_weight': float(state.iou_loss_weight),
+        'topograph_enabled': bool(getattr(state, 'topograph_enabled', False)),
+        'topograph_loss_weight': float(getattr(state, 'topograph_loss_weight', 0.1)),
+        'topograph_debug_viz': bool(getattr(state, 'topograph_debug_viz', False)),
+        'topograph_num_processes': int(getattr(state, 'topograph_num_processes', 1)),
+        'topograph_use_c': bool(getattr(state, 'topograph_use_c', False)),
         'learning_rate': float(state.learning_rate),
         'weight_decay': float(state.weight_decay),
         'early_stopping_enabled': bool(state.early_stopping_enabled),

@@ -1,0 +1,6 @@
+{
+  "schema": "neuralimage_training_run",
+  "version": 1,
+  "model_path": "model.pth",
+  "training": "namespace(multi_gpu_mode='distributeddataparallel', use_multi_gpu=True, epochs=1, optimizer=namespace(), mixed_precision='bf16', loss_function='bce', loss_term_weights={}, dice_loss_weight=0.5, iou_loss_weight=0.5, hard_mining=namespace(), early_stopping=namespace(), warmup=namespace(), skip_uniform_labels=False, show_batch_preview=True, log_update_frequency=0)"
+}

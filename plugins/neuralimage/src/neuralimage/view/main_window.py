@@ -1445,11 +1445,13 @@ class MainView(QMainWindow):
             image = data.get("image")
             label = data.get("label")
             outputs = data.get("outputs", data.get("output"))
+            topograph_overlay = data.get("topograph_overlay")
             sample_name = str(data.get("sample_name", data.get("frame_name", ""))).strip()
             self._set_preview_mode("train")
             self._set_preview_image(self.preview_image_label, image)
             self._set_preview_image(self.preview_label_label, label)
-            self._set_preview_image(self.preview_output_label, outputs)
+            preview_output = topograph_overlay if topograph_overlay is not None else outputs
+            self._set_preview_image(self.preview_output_label, preview_output)
             self._set_preview_frame_name(sample_name)
             return
 

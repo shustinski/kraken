@@ -44,14 +44,36 @@ def prepare_label_folder_for_rare_patch_editor(
     for cif_path in cif_files:
         if log_callback is not None:
             log_callback(f'Преобразую в jpg файл {cif_path.stem}')
-
-        converted = backend.cif_to_jpg(cif_path)
-        if isinstance(converted, tuple) and converted[0] == 0:
-            return binary_label_root, f'Ошибка в {cif_path.name}: {converted[1]}'
-
-        converted.save(binary_label_root / f'{cif_path.stem}.jpg')
+        _target_path, error_message = prepare_cif_label_raster(cif_path, binary_label_root)
+        if error_message is not None:
+            return binary_label_root, error_message
 
     return binary_label_root, None
+
+
+def prepare_cif_label_raster(
+    cif_path: str | Path,
+    output_folder: str | Path | None = None,
+) -> tuple[Path | None, str | None]:
+    source_path = Path(cif_path)
+    target_root = (
+        Path(output_folder)
+        if output_folder is not None
+        else source_path.parent.parent / 'binary_cif'
+    )
+    target_root.mkdir(parents=True, exist_ok=True)
+    target_path = target_root / f'{source_path.stem}.jpg'
+    try:
+        if target_path.stat().st_mtime_ns >= source_path.stat().st_mtime_ns:
+            return target_path, None
+    except (FileNotFoundError, OSError):
+        pass
+
+    converted = backend.cif_to_jpg(source_path)
+    if isinstance(converted, tuple) and converted[0] == 0:
+        return None, f'Ошибка в {source_path.name}: {converted[1]}'
+    converted.save(target_path)
+    return target_path, None
 
 
 def collect_matching_sample_label_pairs(
@@ -59,6 +81,8 @@ def collect_matching_sample_label_pairs(
     label_folder: str | Path,
     *,
     strict: bool = True,
+    allow_cif_labels: bool = False,
+    recursive: bool = False,
 ) -> tuple[list[tuple[Path, Path]], str | None]:
     sample_root = Path(sample_folder)
     label_root = Path(label_folder)
@@ -67,17 +91,43 @@ def collect_matching_sample_label_pairs(
     if not label_root.is_dir():
         return [], f'Label folder does not exist: {label_root}'
 
-    sample_files = sorted(filter_images(sample_root))
-    label_files = sorted(filter_images(label_root))
+    sample_files = sorted(filter_images(sample_root, recursive=recursive))
+    label_files = sorted(filter_images(label_root, recursive=recursive))
+    if allow_cif_labels:
+        raster_stems = {
+            (
+                path.relative_to(label_root).with_suffix('').as_posix()
+                if recursive
+                else path.stem
+            )
+            for path in label_files
+        }
+        label_files.extend(
+            path
+            for path in sorted(filter_files(label_root, ('.cif',), recursive=recursive))
+            if (
+                path.relative_to(label_root).with_suffix('').as_posix()
+                if recursive
+                else path.stem
+            ) not in raster_stems
+        )
     if not sample_files:
         return [], 'No sample images were found.'
     if not label_files:
         return [], 'No label images were found.'
 
-    sample_map, sample_error = _build_stem_map(sample_files, 'sample')
+    sample_map, sample_error = _build_stem_map(
+        sample_files,
+        'sample',
+        root=sample_root if recursive else None,
+    )
     if sample_error is not None:
         return [], sample_error
-    label_map, label_error = _build_stem_map(label_files, 'label')
+    label_map, label_error = _build_stem_map(
+        label_files,
+        'label',
+        root=label_root if recursive else None,
+    )
     if label_error is not None:
         return [], label_error
 
@@ -139,11 +189,20 @@ def save_rare_patch_mask(
     return mask_path
 
 
-def _build_stem_map(files: list[Path], kind: str) -> tuple[dict[str, Path], str | None]:
+def _build_stem_map(
+    files: list[Path],
+    kind: str,
+    *,
+    root: Path | None = None,
+) -> tuple[dict[str, Path], str | None]:
     mapping: dict[str, Path] = {}
     duplicates: list[str] = []
     for file_path in files:
-        stem = file_path.stem
+        stem = (
+            file_path.relative_to(root).with_suffix('').as_posix()
+            if root is not None
+            else file_path.stem
+        )
         if stem in mapping:
             duplicates.append(stem)
             continue

@@ -17,7 +17,12 @@ from neuralimage.lib.data_interfaces import (
 )
 from tests.helpers import make_test_dir
 from neuralimage.view.augmentation_preview_dialog import AugmentationPreviewDialog
+from neuralimage.view.sem_compact_section_editor import CompactSemSectionEditor
+from neuralimage.view.settings_panel import SettingsPanel
+from neuralimage.view.training_transform_editors import SemNormalizationEditor, TrainingAugmentationEditor
 import neuralimage.view.augmentation_preview_dialog as augmentation_preview_module
+
+
 @pytest.fixture(scope='module')
 def qapp():
     app = QApplication.instance()
@@ -50,6 +55,12 @@ def _build_training_parameters(sample_dir, label_dir) -> TrainingParameters:
     )
 
 
+def _build_preview_dialog(training_parameters):
+    panel = SettingsPanel()
+    dialog = AugmentationPreviewDialog(training_parameters, panel)
+    return dialog, panel
+
+
 def test_augmentation_preview_dialog_middle_button_shows_original_only_while_held(qapp):
     root = make_test_dir('augmentation_preview_dialog_middle_click')
     sample_dir = root / 'samples'
@@ -65,7 +76,7 @@ def test_augmentation_preview_dialog_middle_button_shows_original_only_while_hel
     Image.fromarray(image, mode='L').save(sample_dir / 'frame_a.png')
     Image.fromarray(label, mode='L').save(label_dir / 'frame_a.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
@@ -104,12 +115,12 @@ def test_augmentation_preview_dialog_updates_preview_when_toggle_changes(qapp):
     Image.fromarray(image_b, mode='L').save(sample_dir / 'frame_b.png')
     Image.fromarray(label_b, mode='L').save(label_dir / 'frame_b.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
     before = dialog._augmented_image_array.copy()
-    dialog._toggle_boxes['rotate_90'].setChecked(True)
+    panel.horizontal_rotation.setChecked(True)
     qapp.processEvents()
 
     assert dialog._augmented_image_array is not None
@@ -131,17 +142,17 @@ def test_augmentation_preview_dialog_uses_runtime_spinbox_values(qapp):
     Image.fromarray(image, mode='L').save(sample_dir / 'frame_a.png')
     Image.fromarray(label, mode='L').save(label_dir / 'frame_a.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
-    assert dialog.crops_per_image_spinbox.value() == 64
-    assert dialog.cutout_holes_spinbox.value() == 1
-    assert dialog.pcb_defects_max_count_spinbox.value() == 3
+    assert panel.crops_per_image_spinbox.value() == 64
+    assert panel.cutout_holes_spinbox.value() == 1
+    assert panel.pcb_defects_max_count_spinbox.value() == 3
 
     before = dialog._augmented_image_array.copy()
-    dialog._toggle_boxes['brightness'].setChecked(True)
-    dialog.augmentation_brightness_spinbox.setValue(1.0)
+    panel.photometric_groupbox.setChecked(True)
+    panel.augmentation_brightness_spinbox.setValue(1.0)
     qapp.processEvents()
 
     assert dialog._augmented_image_array is not None
@@ -169,7 +180,7 @@ def test_augmentation_preview_dialog_selects_sample_from_left_list(qapp):
     Image.fromarray(image_b, mode='L').save(sample_dir / 'frame_b.png')
     Image.fromarray(label_b, mode='L').save(label_dir / 'frame_b.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
@@ -199,11 +210,11 @@ def test_augmentation_preview_dialog_generates_synthetic_pair_without_dataset(qa
     sample_dir.mkdir()
     label_dir.mkdir()
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
-    dialog._toggle_boxes['synthetic_topology'].setChecked(True)
+    panel.synthetic_defect_generator_check_box.setChecked(True)
     qapp.processEvents()
 
     assert dialog._augmented_image_array is not None
@@ -223,11 +234,11 @@ def test_augmentation_preview_dialog_resamples_synthetic_topology(qapp):
     sample_dir.mkdir()
     label_dir.mkdir()
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
-    dialog._toggle_boxes['synthetic_topology'].setChecked(True)
+    panel.synthetic_defect_generator_check_box.setChecked(True)
     qapp.processEvents()
     before_label = dialog._augmented_label_array.copy()
 
@@ -238,7 +249,7 @@ def test_augmentation_preview_dialog_resamples_synthetic_topology(qapp):
     dialog.close()
 
 
-def test_augmentation_preview_dialog_creates_separate_labeled_rows_for_noise_controls(qapp):
+def test_augmentation_preview_dialog_uses_shared_noise_controls_from_settings_panel(qapp):
     root = make_test_dir('augmentation_preview_dialog_noise_rows')
     sample_dir = root / 'samples'
     label_dir = root / 'labels'
@@ -251,19 +262,13 @@ def test_augmentation_preview_dialog_creates_separate_labeled_rows_for_noise_con
     Image.fromarray(image, mode='L').save(sample_dir / 'frame_a.png')
     Image.fromarray(label, mode='L').save(label_dir / 'frame_a.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
-    noise_rows = dialog._value_rows['noise']
-    noise_row_texts = []
-    for row in noise_rows:
-        labels = row.findChildren(type(dialog.sample_label))
-        noise_row_texts.extend(label.text() for label in labels if label.text())
-
-    assert len(noise_rows) == 2
-    assert any('Noise probability' in text or 'Вероятность шума' in text for text in noise_row_texts)
-    assert any('Noise strength' in text or 'Сигма шума' in text or 'Сила шума' in text for text in noise_row_texts)
+    assert panel.augmentation_noise_probability_spinbox.isVisible()
+    assert panel.augmentation_noise_sigma_spinbox.isVisible()
+    assert panel.augmentation_noise_probability_spinbox.parentWidget() is not None
     dialog.close()
 
 
@@ -288,7 +293,7 @@ def test_augmentation_preview_dialog_uses_only_matching_pairs_without_missing_fi
     Image.fromarray(label_a, mode='L').save(label_dir / 'frame_a.png')
     Image.fromarray(label_extra, mode='L').save(label_dir / 'frame_extra.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
@@ -314,7 +319,7 @@ def test_augmentation_preview_dialog_renders_image_and_label_with_same_display_s
     Image.fromarray(image, mode='L').save(sample_dir / 'frame_a.png')
     Image.fromarray(label, mode='L').save(label_dir / 'frame_a.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
@@ -341,11 +346,17 @@ def test_augmentation_preview_dialog_can_switch_to_full_image_preview(qapp):
     Image.fromarray(image, mode='L').save(sample_dir / 'frame_a.png')
     Image.fromarray(label, mode='L').save(label_dir / 'frame_a.png')
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
+    assert dialog._augmented_image_array.shape == (48, 64)
+
+    dialog.full_image_check_box.setChecked(False)
+    qapp.processEvents()
+
     assert dialog._augmented_image_array.shape == (32, 32)
+    assert dialog._augmented_label_array.shape == (32, 32)
 
     dialog.full_image_check_box.setChecked(True)
     qapp.processEvents()
@@ -392,45 +403,44 @@ def test_augmentation_preview_dialog_builds_apply_payload_from_current_preview_c
         },
     }
 
-    dialog = AugmentationPreviewDialog(training_parameters)
+    dialog, panel = _build_preview_dialog(training_parameters)
     dialog.show()
     qapp.processEvents()
 
-    assert dialog.synthetic_background_noise_sigma_min_spinbox.value() == pytest.approx(0.05)
-    assert dialog.synthetic_background_noise_sigma_max_spinbox.value() == pytest.approx(0.07)
-    assert dialog.synthetic_image_width_spinbox.value() == 896
-    assert dialog.synthetic_image_height_spinbox.value() == 640
+    assert panel.synthetic_background_noise_sigma_min_spinbox.value() == pytest.approx(0.05)
+    assert panel.synthetic_background_noise_sigma_max_spinbox.value() == pytest.approx(0.07)
+    assert panel.synthetic_image_width_spinbox.value() == 896
+    assert panel.synthetic_image_height_spinbox.value() == 640
 
-    dialog._toggle_boxes['rotate_90'].setChecked(True)
-    dialog._toggle_boxes['flip_x'].setChecked(True)
-    dialog._toggle_boxes['random_crop'].setChecked(True)
-    dialog.crops_per_image_spinbox.setValue(17)
-    dialog._toggle_boxes['brightness'].setChecked(True)
-    dialog.augmentation_brightness_spinbox.setValue(0.33)
-    dialog._toggle_boxes['noise'].setChecked(True)
-    dialog.augmentation_noise_probability_spinbox.setValue(0.42)
-    dialog.augmentation_noise_sigma_spinbox.setValue(0.015)
-    dialog._toggle_boxes['synthetic_topology'].setChecked(True)
-    dialog.synthetic_image_width_spinbox.setValue(1024)
-    dialog.synthetic_image_height_spinbox.setValue(768)
-    dialog.synthetic_trace_count_min_spinbox.setValue(6)
-    dialog.synthetic_trace_count_max_spinbox.setValue(7)
-    dialog.synthetic_segment_count_min_spinbox.setValue(5)
-    dialog.synthetic_segment_count_max_spinbox.setValue(6)
-    dialog.synthetic_trace_half_width_min_spinbox.setValue(3)
-    dialog.synthetic_trace_half_width_max_spinbox.setValue(4)
-    dialog.synthetic_background_noise_sigma_min_spinbox.setValue(0.08)
-    dialog.synthetic_background_noise_sigma_max_spinbox.setValue(0.091)
-    dialog.synthetic_trace_noise_sigma_min_spinbox.setValue(0.02)
-    dialog.synthetic_trace_noise_sigma_max_spinbox.setValue(0.035)
-    dialog._toggle_boxes['random_artifacts'].setChecked(True)
-    dialog.random_artifacts_probability_spinbox.setValue(0.66)
-    dialog._toggle_boxes['artifact_flake'].setChecked(False)
-    dialog._toggle_boxes['pcb_defects'].setChecked(True)
-    dialog.pcb_defects_probability_spinbox.setValue(0.55)
-    dialog._toggle_boxes['pcb_break'].setChecked(True)
-    dialog.pcb_defect_type_spinboxes['break'].setValue(80)
-    dialog._toggle_boxes['pcb_via'].setChecked(False)
+    panel.horizontal_rotation.setChecked(True)
+    panel.flip_x.setChecked(True)
+    panel.random_crop_check_box.setChecked(True)
+    panel.crops_per_image_spinbox.setValue(17)
+    panel.photometric_groupbox.setChecked(True)
+    panel.augmentation_brightness_spinbox.setValue(0.33)
+    panel.augmentation_noise_probability_spinbox.setValue(0.42)
+    panel.augmentation_noise_sigma_spinbox.setValue(0.015)
+    panel.synthetic_defect_generator_check_box.setChecked(True)
+    panel.synthetic_image_width_spinbox.setValue(1024)
+    panel.synthetic_image_height_spinbox.setValue(768)
+    panel.synthetic_trace_count_min_spinbox.setValue(6)
+    panel.synthetic_trace_count_max_spinbox.setValue(7)
+    panel.synthetic_segment_count_min_spinbox.setValue(5)
+    panel.synthetic_segment_count_max_spinbox.setValue(6)
+    panel.synthetic_trace_half_width_min_spinbox.setValue(3)
+    panel.synthetic_trace_half_width_max_spinbox.setValue(4)
+    panel.synthetic_background_noise_sigma_min_spinbox.setValue(0.08)
+    panel.synthetic_background_noise_sigma_max_spinbox.setValue(0.091)
+    panel.synthetic_trace_noise_sigma_min_spinbox.setValue(0.02)
+    panel.synthetic_trace_noise_sigma_max_spinbox.setValue(0.035)
+    panel.random_artifacts_check_box.setChecked(True)
+    panel.random_artifacts_probability_spinbox.setValue(0.66)
+    panel.random_artifact_type_checkboxes["flake"].setChecked(False)
+    panel.pcb_defects_check_box.setChecked(True)
+    panel.pcb_defects_probability_spinbox.setValue(0.55)
+    panel.pcb_defect_type_checkboxes["break"].setChecked(True)
+    panel.pcb_defect_type_spinboxes['break'].setValue(80)
+    panel.pcb_defect_type_checkboxes["via"].setChecked(False)
     qapp.processEvents()
 
     payload = dialog._build_apply_payload()
@@ -495,18 +505,18 @@ def test_augmentation_preview_dialog_builds_ic_domain_payload(qapp):
         },
     }
 
-    dialog = AugmentationPreviewDialog(training_parameters)
+    dialog, panel = _build_preview_dialog(training_parameters)
     dialog.show()
     qapp.processEvents()
 
-    dialog._toggle_boxes['synthetic_topology'].setChecked(True)
-    dialog.synthetic_topology_domain_combo.setCurrentIndex(1)
-    dialog._toggle_boxes['pcb_defects'].setChecked(True)
-    dialog._toggle_boxes['ic_line_break'].setChecked(True)
-    dialog._toggle_boxes['ic_bridge'].setChecked(False)
-    dialog._toggle_boxes['ic_via_open'].setChecked(True)
-    dialog.ic_defect_type_spinboxes['line_break'].setValue(77)
-    dialog.ic_defect_type_spinboxes['via_open'].setValue(88)
+    panel.synthetic_defect_generator_check_box.setChecked(True)
+    panel.synthetic_topology_domain_combo.setCurrentIndex(1)
+    panel.pcb_defects_check_box.setChecked(True)
+    panel.ic_defect_type_checkboxes["line_break"].setChecked(True)
+    panel.ic_defect_type_checkboxes["bridge"].setChecked(False)
+    panel.ic_defect_type_checkboxes["via_open"].setChecked(True)
+    panel.ic_defect_type_spinboxes['line_break'].setValue(77)
+    panel.ic_defect_type_spinboxes['via_open'].setValue(88)
     qapp.processEvents()
 
     payload = dialog._build_apply_payload()
@@ -563,16 +573,16 @@ def test_augmentation_preview_dialog_retries_pcb_defects_until_visible_change(qa
 
     monkeypatch.setattr(augmentation_preview_module.PCBDefectAugmentor, '__call__', _fake_call)
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
     before = dialog._augmented_image_array.copy()
-    dialog._toggle_boxes['synthetic_topology'].setChecked(True)
-    dialog._toggle_boxes['pcb_defects'].setChecked(True)
-    dialog._toggle_boxes['pcb_break'].setChecked(True)
-    dialog.pcb_defects_probability_spinbox.setValue(1.0)
-    dialog.pcb_defect_type_spinboxes['break'].setValue(100)
+    panel.synthetic_defect_generator_check_box.setChecked(True)
+    panel.pcb_defects_check_box.setChecked(True)
+    panel.pcb_defect_type_checkboxes["break"].setChecked(True)
+    panel.pcb_defects_probability_spinbox.setValue(1.0)
+    panel.pcb_defect_type_spinboxes['break'].setValue(100)
     qapp.processEvents()
 
     assert len(calls) >= 2
@@ -613,21 +623,59 @@ def test_augmentation_preview_dialog_keeps_original_label_when_synthetic_defects
 
     monkeypatch.setattr(augmentation_preview_module.PCBDefectAugmentor, '__call__', _fake_call)
 
-    dialog = AugmentationPreviewDialog(_build_training_parameters(sample_dir, label_dir))
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
     dialog.show()
     qapp.processEvents()
 
-    dialog._toggle_boxes['synthetic_topology'].setChecked(True)
+    panel.synthetic_defect_generator_check_box.setChecked(True)
     qapp.processEvents()
     original_label = dialog._augmented_label_array.copy()
-    dialog._toggle_boxes['pcb_defects'].setChecked(True)
-    dialog._toggle_boxes['pcb_break'].setChecked(True)
-    dialog.pcb_defects_probability_spinbox.setValue(1.0)
-    dialog.pcb_defect_type_spinboxes['break'].setValue(100)
+    panel.pcb_defects_check_box.setChecked(True)
+    panel.pcb_defect_type_checkboxes["break"].setChecked(True)
+    panel.pcb_defects_probability_spinbox.setValue(1.0)
+    panel.pcb_defect_type_spinboxes['break'].setValue(100)
     qapp.processEvents()
 
     assert dialog._augmented_label_array is not None
     assert np.array_equal(dialog._augmented_label_array, original_label)
     assert dialog._augmented_image_array is not None
     assert int(dialog._augmented_image_array.flat[0]) > 0
+    dialog.close()
+
+
+def test_augmentation_preview_dialog_sidebar_uses_shared_training_transform_editors(qapp):
+    root = make_test_dir('augmentation_preview_dialog_shared_sidebar')
+    sample_dir = root / 'samples'
+    label_dir = root / 'labels'
+    sample_dir.mkdir()
+    label_dir.mkdir()
+
+    image = np.zeros((32, 32), dtype=np.uint8)
+    Image.fromarray(image, mode='L').save(sample_dir / 'frame_a.png')
+    Image.fromarray(image, mode='L').save(label_dir / 'frame_a.png')
+
+    dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
+    dialog.show()
+    qapp.processEvents()
+
+    assert dialog.sem_normalization_editor is panel.sem_segmentation_section_editors['preprocessing']
+    assert dialog.sem_augmentation_editor is panel.training_augmentation_editor
+    assert isinstance(dialog.sem_normalization_editor, CompactSemSectionEditor)
+    assert isinstance(dialog.sem_augmentation_editor, TrainingAugmentationEditor)
+    assert dialog.sem_normalization_editor.section == 'preprocessing'
+
+    training_editor = panel.training_augmentation_editor
+    assert training_editor is panel.training_augmentation_editor
+    assert training_editor.tree.columnCount() == 4
+    assert training_editor.tree.topLevelItemCount() == 3
+
+    normalization_editor = next(
+        widget
+        for widget in dialog.findChildren(SemNormalizationEditor)
+        if widget.title() in {'SEM normalization', 'Нормализация SEM'}
+    )
+    assert normalization_editor is panel.sem_normalization_editor
+    assert normalization_editor.layout().count() == 1
+
+    assert panel.augmentation_noise_probability_spinbox.isVisible()
     dialog.close()

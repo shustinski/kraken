@@ -4,7 +4,7 @@ from neuralimage.lib.data_interfaces import SampleCutMode
 from neuralimage.model.general_neural_handler import GeneralNeuralHandler
 
 
-def _build_handler(dataloader_num_workers: int = -1, *, batch_size: int = 8, cut_mode: str = 'disk') -> GeneralNeuralHandler:
+def _build_handler(dataloader_num_workers: int = -1, *, batch_size: int = 8, cut_mode: str = 'online') -> GeneralNeuralHandler:
     handler = GeneralNeuralHandler.__new__(GeneralNeuralHandler)
     handler.tranining_parameters = SimpleNamespace(
         dataloader_num_workers=dataloader_num_workers,
@@ -27,7 +27,7 @@ def test_resolve_dataloader_workers_keeps_auto_mode_when_override_is_negative(mo
     monkeypatch.setattr('neuralimage.model.general_neural_handler.os.cpu_count', lambda: 12)
     monkeypatch.setattr('neuralimage.model.general_neural_handler.sys.platform', 'linux')
 
-    handler = _build_handler(dataloader_num_workers=-1, batch_size=8, cut_mode='disk')
+    handler = _build_handler(dataloader_num_workers=-1, batch_size=8, cut_mode='online')
 
     assert handler._resolve_dataloader_workers() == 11
 
@@ -37,7 +37,7 @@ def test_resolve_dataloader_workers_uses_safe_auto_mode_on_windows(monkeypatch):
     monkeypatch.setattr('neuralimage.model.general_neural_handler.os.cpu_count', lambda: 32)
     monkeypatch.setattr('neuralimage.model.general_neural_handler.sys.platform', 'win32')
 
-    handler = _build_handler(dataloader_num_workers=-1, batch_size=8, cut_mode='disk')
+    handler = _build_handler(dataloader_num_workers=-1, batch_size=8, cut_mode='online')
 
     assert handler._resolve_dataloader_workers() == 0
 

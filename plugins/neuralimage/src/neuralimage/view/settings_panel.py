@@ -1,25 +1,33 @@
+import os
+from pathlib import Path
 from typing import Any, Iterable
 from collections.abc import Mapping
 from copy import deepcopy
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QSettings, QStringListModel, QTimer, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget,
     QDockWidget,
     QCheckBox,
     QFormLayout,
     QGridLayout,
+    QButtonGroup,
     QLabel,
     QPushButton,
     QApplication,
     QScrollArea,
     QSizePolicy,
     QGroupBox,
-    QRadioButton,
     QTabWidget,
     QVBoxLayout,
     QHBoxLayout,
     QLineEdit,
+    QCompleter,
+    QMessageBox,
+    QToolButton,
+    QFrame,
+    QRadioButton,
 )
 
 from neuralimage.UI import ClickableLabel
@@ -27,7 +35,6 @@ from neuralimage.lib.data_interfaces import (
     IC_TOPOLOGY_FAMILIES,
     PCB_TOPOLOGY_FAMILIES,
     RANDOM_ARTIFACT_TYPES,
-    SampleCutMode,
     build_pcb_defect_parameters,
     build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
@@ -42,7 +49,7 @@ from neuralimage.lib.loss_config import (
     loss_term_weight_sum,
     sanitize_loss_term_weights,
 )
-from neuralimage.lib.ui_texts import get_ui_section, set_ui_language as set_global_ui_language
+from neuralimage.lib.ui_texts import get_ui_language, get_ui_section, set_ui_language as set_global_ui_language
 from neuralimage.view.axis_resize_widget import AxisResizeWidget
 from neuralimage.view.settings_panel_bindings import connect_settings_panel_signals
 from neuralimage.view.settings_panel_i18n import apply_settings_panel_texts
@@ -51,11 +58,20 @@ from neuralimage.view.settings_panel_policy import (
 )
 from neuralimage.view.settings_panel_widgets import (
     NoWheelComboBox,
+    SettingsCard,
     SlidingPanel,  # noqa: F401 - compatibility re-export from neuralimage.view
     create_double_spinbox,
     create_min_max_widget,
     create_slider,
     create_spinbox,
+)
+from neuralimage.view.compact_settings_row import add_compact_row
+from neuralimage.view.sem_compact_section_editor import CompactSemSectionEditor
+from neuralimage.view.training_transform_editors import (
+    AugmentationBlock,
+    AugmentationRow,
+    SemNormalizationEditor,
+    TrainingAugmentationEditor,
 )
 from neuralimage.configuration import (
     SEM_UI_FIELDS,
@@ -63,10 +79,10 @@ from neuralimage.configuration import (
     SemUiField,
     build_sem_segmentation_config,
     fields_for_section,
-    get_sem_preset,
     sem_config_from_form_values,
     sem_config_to_form_values,
     sem_ui_field_help,
+    sem_ui_field_label,
     sem_ui_section_help,
 )
 
@@ -159,6 +175,8 @@ MIN_RANDOM_ARTIFACTS_COUNT = 1
 MAX_RANDOM_ARTIFACTS_COUNT = 16
 MIN_AUGMENTATION_PROBABILITY = 0.0
 MAX_AUGMENTATION_PROBABILITY = 1.0
+MIN_AUGMENTATION_MULTIPLIER = 0.0
+MAX_AUGMENTATION_MULTIPLIER = 20.0
 MIN_SYNTHETIC_DATASET_FACTOR = 0.0
 MAX_SYNTHETIC_DATASET_FACTOR = 10.0
 MIN_SYNTHETIC_IMAGE_SIZE = 64
@@ -188,6 +206,8 @@ MAX_POSTPROCESS_KERNEL_SIZE = 31
 OPTIMIZERS = ('adam', 'adamw', 'adamw_muon')
 MIXED_PRECISION_MODES = ('off', 'fp16', 'bf16')
 LOSS_FUNCTIONS = LOSS_SELECTION_NAMES
+MAX_TOPOGRAPH_LOSS_WEIGHT = 5.0
+TOPOGRAPH_LOSS_DISPLAY_NAME = 'Topograph'
 MULTI_GPU_MODES = ('off', 'dataparallel', 'distributeddataparallel')
 SCHEDULER_NAMES = ('off', 'reduce_on_plateau', 'cosine_annealing', 'one_cycle', 'step_lr')
 ONE_CYCLE_ANNEAL_STRATEGIES = ('cos', 'linear')
@@ -224,6 +244,18 @@ IC_DEFECT_WEIGHT_FIELDS = (
 )
 
 
+def _settings_panel_qsettings() -> QSettings:
+    root = os.getenv('NEURALIMAGE_SETTINGS_DIR')
+    if root:
+        settings_root = Path(root)
+        settings_root.mkdir(parents=True, exist_ok=True)
+        return QSettings(
+            str(settings_root / 'NeuralImage_SettingsPanel.ini'),
+            QSettings.Format.IniFormat,
+        )
+    return QSettings('NeuralImage', 'SettingsPanel')
+
+
 class SettingsPanel(QDockWidget):
     cut_slider_shifted: pyqtSignal = pyqtSignal()
     horisontal_rotate_clicked: pyqtSignal = pyqtSignal()
@@ -239,6 +271,7 @@ class SettingsPanel(QDockWidget):
     augmentation_preview_requested: pyqtSignal = pyqtSignal()
     ui_language_changed: pyqtSignal = pyqtSignal(str)
     rare_patch_editor_requested: pyqtSignal = pyqtSignal()
+    configuration_validity_changed: pyqtSignal = pyqtSignal(bool, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -248,6 +281,7 @@ class SettingsPanel(QDockWidget):
         self._content_widget = QWidget()
         self._scroll_area = QScrollArea(self)
         self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll_area.setWidget(self._content_widget)
         self.setWidget(self._scroll_area)
         self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
@@ -270,6 +304,12 @@ class SettingsPanel(QDockWidget):
         self._patch_batch_sync_guard = False
         self._loss_terms_guard = False
         self._model_combo_guard = False
+        self._legacy_uncertainty_sync_guard = False
+        self._legacy_uncertainty_pending = False
+        self._settings_cards: dict[str, SettingsCard] = {}
+        self._settings_registry: dict[str, dict[str, Any]] = {}
+        self._expert_widgets: list[QWidget] = []
+        self._configuration_errors: list[tuple[str | None, str]] = []
 
         self._sample_count_value = 0
         self._sample_count_pending = False
@@ -285,20 +325,34 @@ class SettingsPanel(QDockWidget):
         self.vertical_rotation = QCheckBox('')
         self.flip_x = QCheckBox('')
         self.flip_y = QCheckBox('')
-        self.additional_augmentation_check_box = QCheckBox('')
+        self.brightness_augmentation_check_box = QCheckBox('')
+        self.contrast_augmentation_check_box = QCheckBox('')
+        self.gamma_augmentation_check_box = QCheckBox('')
+        self.noise_augmentation_check_box = QCheckBox('')
+        self.blur_augmentation_check_box = QCheckBox('')
+        for checkbox in (
+            self.brightness_augmentation_check_box,
+            self.contrast_augmentation_check_box,
+            self.gamma_augmentation_check_box,
+            self.noise_augmentation_check_box,
+            self.blur_augmentation_check_box,
+        ):
+            checkbox.setChecked(False)
         self.random_crop_check_box = QCheckBox('')
         self.scale_augmentation_check_box = QCheckBox('')
-        self.synthetic_defect_generator_check_box = QCheckBox('')
-        self.tech_augmentation_check_box = QCheckBox('')
         self.tech_augmentation_debug_pair_check_box = QCheckBox('')
-        self.cutout_check_box = QCheckBox('')
-        self.random_artifacts_check_box = QCheckBox('')
+        self.tech_augmentation_operation_checkboxes = {
+            key: QCheckBox('')
+            for key in (
+                'global_width', 'scale_rethreshold', 'blur_threshold',
+                'boundary_aware', 'local_morphology', 'gap_variation',
+            )
+        }
         self.random_artifact_type_checkboxes: dict[str, QCheckBox] = {
             artifact_name: QCheckBox('') for artifact_name in RANDOM_ARTIFACT_TYPES
         }
         for checkbox in self.random_artifact_type_checkboxes.values():
             checkbox.setChecked(True)
-        self.mixup_check_box = QCheckBox('')
         self.pcb_defects_check_box = QCheckBox('')
         self.pcb_defects_use_input_mask_check_box = QCheckBox('')
         self.pcb_defects_use_defect_mask_as_label_check_box = QCheckBox('')
@@ -333,6 +387,36 @@ class SettingsPanel(QDockWidget):
             (MIN_CROPS_PER_IMAGE, MAX_CROPS_PER_IMAGE),
             default_value=64,
             step=1,
+        )
+        self.augmentation_multiplier_spinbox = create_double_spinbox(
+            (MIN_AUGMENTATION_MULTIPLIER, MAX_AUGMENTATION_MULTIPLIER),
+            step=0.5,
+            default_value=0.0,
+            decimals=1,
+        )
+        self.horizontal_rotation_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
+        )
+        self.vertical_rotation_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
+        )
+        self.flip_x_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
+        )
+        self.flip_y_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
+        )
+        self.scale_augmentation_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
+        )
+        self.augmentation_brightness_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
+        )
+        self.augmentation_contrast_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
+        )
+        self.augmentation_gamma_probability_spinbox = create_double_spinbox(
+            (0.0, 1.0), step=0.05, default_value=1.0, decimals=2
         )
         self.augmentation_brightness_spinbox = create_double_spinbox(
             (MIN_AUG_STRENGTH, MAX_AUG_STRENGTH),
@@ -688,7 +772,6 @@ class SettingsPanel(QDockWidget):
         self._sync_validation_controls(self.validation_check_box.isChecked())
 
         self._init_color_type_combobox()
-        self._init_sample_type()
         self._init_nn_auxilary_settings()
         self._init_preprocess_groupbox()
         self._init_layout()
@@ -700,7 +783,8 @@ class SettingsPanel(QDockWidget):
         if label is not None:
             return label
         label = QLabel('')
-        label.setWordWrap(False)
+        label.setWordWrap(True)
+        label.setMaximumWidth(190)
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         label.setStyleSheet('')
         self._desc_labels[key] = label
@@ -788,6 +872,8 @@ class SettingsPanel(QDockWidget):
             checkbox.toggled.connect(lambda checked, name=loss_name: self._on_loss_term_toggled(name, checked))
             spinbox.valueChanged.connect(lambda _value, name=loss_name: self._on_loss_term_value_changed(name))
 
+        self._build_topograph_loss_rows(layout)
+
         self.loss_formula_label = QLabel('')
         self.loss_formula_label.setWordWrap(True)
         self.loss_formula_label.setTextFormat(Qt.TextFormat.RichText)
@@ -796,6 +882,66 @@ class SettingsPanel(QDockWidget):
 
         self.set_loss_term_weights(DEFAULT_LOSS_TERM_WEIGHTS)
         return widget
+
+    def _build_topograph_loss_rows(self, layout: QVBoxLayout) -> None:
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator)
+
+        self.topograph_enabled_check_box = QCheckBox('')
+        self.topograph_term_label = QLabel(TOPOGRAPH_LOSS_DISPLAY_NAME)
+        self.topograph_loss_weight_spinbox = create_double_spinbox(
+            (0.0, MAX_TOPOGRAPH_LOSS_WEIGHT),
+            step=0.05,
+            default_value=0.1,
+            decimals=2,
+        )
+        self.topograph_loss_weight_spinbox.setEnabled(False)
+        topograph_row = QWidget()
+        topograph_row_layout = QHBoxLayout(topograph_row)
+        topograph_row_layout.setContentsMargins(0, 0, 0, 0)
+        topograph_row_layout.setSpacing(8)
+        topograph_row_layout.addWidget(
+            self.topograph_enabled_check_box,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        topograph_row_layout.addWidget(
+            self.topograph_term_label,
+            1,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        topograph_row_layout.addWidget(
+            self.topograph_loss_weight_spinbox,
+            0,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
+        layout.addWidget(topograph_row)
+
+        self.topograph_debug_viz_check_box = QCheckBox('')
+        self.topograph_debug_viz_label = QLabel('Show Topograph critical regions')
+        self.topograph_debug_viz_check_box.setChecked(False)
+        self.topograph_debug_viz_check_box.setEnabled(False)
+        debug_row = QWidget()
+        debug_row_layout = QHBoxLayout(debug_row)
+        debug_row_layout.setContentsMargins(24, 0, 0, 0)
+        debug_row_layout.setSpacing(8)
+        debug_row_layout.addWidget(
+            self.topograph_debug_viz_check_box,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        debug_row_layout.addWidget(
+            self.topograph_debug_viz_label,
+            1,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        debug_row_layout.addStretch(1)
+        layout.addWidget(debug_row)
+
+        self.topograph_enabled_check_box.toggled.connect(self._on_topograph_enabled_toggled)
+        self.topograph_loss_weight_spinbox.valueChanged.connect(lambda _value: self._sync_loss_controls())
 
     def _loss_term_total(self, *, exclude: str | None = None) -> float:
         total = 0.0
@@ -842,6 +988,13 @@ class SettingsPanel(QDockWidget):
                 spinbox.setValue(max_value)
         finally:
             self._loss_terms_guard = False
+        self._sync_loss_controls()
+
+    def _on_topograph_enabled_toggled(self, checked: bool) -> None:
+        self.topograph_loss_weight_spinbox.setEnabled(bool(checked))
+        self.topograph_debug_viz_check_box.setEnabled(bool(checked))
+        if checked and float(self.topograph_loss_weight_spinbox.value()) <= 0.0:
+            self.topograph_loss_weight_spinbox.setValue(0.1)
         self._sync_loss_controls()
 
     def get_loss_term_weights(self) -> dict[str, float]:
@@ -967,10 +1120,8 @@ class SettingsPanel(QDockWidget):
                 self.validation_groupbox,
                 self.validation_check_box,
                 self.augmentation_preview_button,
-                self.sample_type_groupbox,
-                self.cut_dataset_type,
-                self.no_cut_dataset_type,
                 self.prepare_samples_groupbox,
+                self.preprocessing_groupbox,
                 self.enable_crop_processing,
                 self.enable_resize_processing,
                 self.compression_factor_spinbox,
@@ -1070,6 +1221,7 @@ class SettingsPanel(QDockWidget):
         self._sync_optional_training_mode_controls(training_applicable)
         self._sync_patch_size_controls()
         self._sync_random_patch_size_controls()
+        self._set_settings_page_visible('data', training_applicable)
         self._set_settings_page_visible('training', training_applicable)
         self._set_settings_page_visible('recognition', recognition_applicable)
         self._ensure_visible_settings_page_selected()
@@ -1084,6 +1236,7 @@ class SettingsPanel(QDockWidget):
         layout.setVerticalSpacing(FORM_VERTICAL_SPACING)
         layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         return layout
 
     def _init_color_type_combobox(self) -> None:
@@ -1143,18 +1296,6 @@ class SettingsPanel(QDockWidget):
             self.scheduler_one_cycle_anneal_strategy_combo.setCurrentIndex(index)
             return
         self.scheduler_one_cycle_anneal_strategy_combo.setCurrentText(normalized)
-
-    def _init_sample_type(self) -> None:
-        self.sample_type_groupbox = QGroupBox('')
-        vbox_layout = QVBoxLayout()
-        vbox_layout.setContentsMargins(*FORM_DEFAULT_MARGINS)
-        vbox_layout.setSpacing(FORM_VERTICAL_SPACING)
-        self.sample_type_groupbox.setLayout(vbox_layout)
-        self.cut_dataset_type = QRadioButton('')
-        self.no_cut_dataset_type = QRadioButton('')
-        self.no_cut_dataset_type.setChecked(True)
-        vbox_layout.addWidget(self.cut_dataset_type)
-        vbox_layout.addWidget(self.no_cut_dataset_type)
 
     def _init_preprocess_groupbox(self) -> None:
         self.prepare_samples_groupbox = QGroupBox('')
@@ -1413,43 +1554,38 @@ class SettingsPanel(QDockWidget):
         self.scheduler_groupbox, self.scheduler_form = _build_subgroup()
         self.hard_mining_groupbox, self.hard_mining_form = _build_subgroup()
         self.sem_segmentation_groupbox, self.sem_segmentation_form = _build_subgroup()
-        self.sem_segmentation_preset_combo = NoWheelComboBox()
-        self.sem_segmentation_preset_combo.addItem('Legacy v1', 'legacy_v1')
-        self.sem_segmentation_preset_combo.addItem('SEM topology experimental v1', 'sem_topology_experimental_v1')
-        self.sem_segmentation_preset_combo.addItem('Custom', 'custom')
-        self.sem_segmentation_apply_preset_button = QPushButton('Apply preset')
-        self.sem_segmentation_validate_button = QPushButton('Validate settings')
         self.sem_segmentation_validation_label = QLabel('')
         self.sem_segmentation_validation_label.setWordWrap(True)
         self.sem_segmentation_controls: dict[str, QWidget] = {}
         self.sem_segmentation_field_labels: dict[str, QLabel] = {}
+        self.sem_segmentation_error_labels: dict[str, QLabel] = {}
         self.sem_segmentation_section_groupboxes: dict[str, QGroupBox] = {}
+        self.sem_segmentation_section_contents: dict[str, QWidget] = {}
         self.sem_segmentation_section_forms: dict[str, QFormLayout] = {}
+        self.sem_segmentation_section_editors: dict[str, CompactSemSectionEditor] = {}
         self._sem_segmentation_update_guard = True
-        for section_key, section_title in SEM_UI_SECTIONS:
-            section_groupbox, section_layout, _content_widget = self._create_collapsible_groupbox()
-            section_groupbox.setTitle(section_title)
-            section_form = self._create_form_layout()
-            section_layout.addLayout(section_form)
-            section_groupbox.setToolTip(sem_ui_section_help(section_key, 'en'))
+        for section_key, _section_title in SEM_UI_SECTIONS:
+            section_editor = CompactSemSectionEditor(section_key)
+            section_editor.changed.connect(self._on_sem_segmentation_control_changed)
+            section_groupbox = section_editor
+            content_widget = section_editor
+            if section_key != 'augmentation':
+                section_groupbox.setToolTip(sem_ui_section_help(section_key, 'en'))
+            else:
+                section_editor.setToolTip(sem_ui_section_help(section_key, 'en'))
             self.sem_segmentation_section_groupboxes[section_key] = section_groupbox
-            self.sem_segmentation_section_forms[section_key] = section_form
-            for field in fields_for_section(section_key):
-                control = self._create_sem_segmentation_control(field)
-                label = QLabel(field.label_en)
-                label.setWordWrap(True)
-                tooltip = sem_ui_field_help(field, 'en')
-                control.setToolTip(tooltip)
-                label.setToolTip(tooltip)
-                if field.key != 'validation_enabled':
-                    section_form.addRow(label, control)
-                self.sem_segmentation_controls[field.key] = control
-                self.sem_segmentation_field_labels[field.key] = label
-        self.sem_segmentation_form.addRow(self.sem_segmentation_preset_combo, self.sem_segmentation_apply_preset_button)
+            self.sem_segmentation_section_contents[section_key] = content_widget
+            self.sem_segmentation_section_editors[section_key] = section_editor
+            self.sem_segmentation_controls.update(section_editor.controls)
+            self.sem_segmentation_field_labels.update(section_editor.labels)
+            self.sem_segmentation_error_labels.update(section_editor.error_labels)
+        self.sem_segmentation_section_editors['validation'].set_field_visible(
+            'validation_enabled',
+            False,
+        )
         self.sem_segmentation_form.addRow(self.sem_segmentation_section_groupboxes['basic_targets'])
         self.sem_segmentation_form.addRow(self.sem_segmentation_section_groupboxes['geometry_targets'])
-        self.sem_segmentation_form.addRow(self.sem_segmentation_validate_button)
-        self.sem_segmentation_form.addRow(self.sem_segmentation_validation_label)
+        self.preprocessing_groupbox = self.sem_segmentation_section_groupboxes['preprocessing']
         self.set_sem_segmentation_config({})
         self.early_stopping_groupbox, self.early_stopping_form = _build_subgroup()
 
@@ -1499,13 +1635,16 @@ class SettingsPanel(QDockWidget):
         self._add_labeled_row(self.recognition_form, self.recognition_threshold_spinbox, 'recognition_threshold')
         self.recognition_form.addRow(self.recognition_tta_check_box)
         self._add_labeled_row(self.recognition_form, self.confidence_save_mode_combo, 'confidence_save_mode')
+        # The confidence output combo is retained only as an adapter for old
+        # snapshots. Recognition TTA remains a separate mask-averaging option.
+        self._set_field_visible(self.confidence_save_mode_combo, False)
         self.recognition_form.addRow(self.recognition_postprocess_check_box)
         self._add_labeled_row(
             self.recognition_form,
             self.recognition_postprocess_kernel_size_spinbox,
             'recognition_postprocess_kernel_size',
         )
-        self.recognition_form.addRow(self.sem_segmentation_section_groupboxes['uncertainty'])
+        self.recognition_form.addRow(self.sem_segmentation_section_groupboxes['inference_uncertainty'])
         self.recognition_form.addRow(self.sem_segmentation_section_groupboxes['active_learning'])
         self._add_labeled_row(self.runtime_form, self.train_batch_spinbox, 'train_batch_size')
         self._add_labeled_row(self.runtime_form, self.dataloader_num_workers_spinbox, 'dataloader_num_workers')
@@ -1587,14 +1726,15 @@ class SettingsPanel(QDockWidget):
         self.scheduler_type_combo.currentIndexChanged.connect(self._sync_scheduler_controls)
         self.hard_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
         self.hard_pixel_mining_check_box.toggled.connect(self._sync_hard_mining_controls)
-        self.sem_segmentation_apply_preset_button.clicked.connect(self._apply_sem_segmentation_preset)
-        self.sem_segmentation_validate_button.clicked.connect(self._validate_sem_segmentation_settings)
         self.validation_check_box.toggled.connect(lambda _checked: self._sync_sem_segmentation_controls())
         self.early_stopping_check_box.toggled.connect(self._sync_early_stopping_controls)
         self.rare_patch_oversampling_check_box.toggled.connect(self._sync_rare_patch_oversampling_controls)
         self.recognition_binarize_output_check_box.toggled.connect(self._sync_recognition_output_controls)
         self.recognition_use_auto_threshold_check_box.toggled.connect(self._sync_recognition_output_controls)
         self.recognition_postprocess_check_box.toggled.connect(self._sync_recognition_output_controls)
+        self.confidence_save_mode_combo.currentIndexChanged.connect(
+            self._sync_inference_uncertainty_from_legacy
+        )
         self._sync_warmup_controls(self.warmup_check_box.isChecked())
         self._sync_scheduler_controls()
         self._sync_loss_controls()
@@ -1706,172 +1846,296 @@ class SettingsPanel(QDockWidget):
         self.shuffle_form.addRow(self.shuffle_frames_check_box)
         self.shuffle_form.addRow(self.shuffle_patches_in_frame_check_box)
         self.spatial_groupbox = QGroupBox('')
-        self.spatial_form = self._create_form_layout()
-        self.spatial_groupbox.setLayout(self.spatial_form)
-        self.spatial_orientation_widget = QWidget()
-        self.spatial_orientation_layout = QGridLayout(self.spatial_orientation_widget)
-        self.spatial_orientation_layout.setContentsMargins(0, 0, 0, 0)
-        self.spatial_orientation_layout.setHorizontalSpacing(FIELD_DESCRIPTION_ROW_SPACING)
-        self.spatial_orientation_layout.setVerticalSpacing(FORM_VERTICAL_SPACING)
-        self.spatial_orientation_layout.addWidget(self.horizontal_rotation, 0, 0)
-        self.spatial_orientation_layout.addWidget(self.flip_x, 0, 1)
-        self.spatial_orientation_layout.addWidget(self.vertical_rotation, 1, 0)
-        self.spatial_orientation_layout.addWidget(self.flip_y, 1, 1)
-        self.spatial_form.addRow(self.spatial_orientation_widget)
-        self.spatial_form.addRow(self.random_crop_check_box)
-        self.spatial_sampling_row_widget = QWidget()
-        self.spatial_sampling_row_layout = QHBoxLayout(self.spatial_sampling_row_widget)
-        self.spatial_sampling_row_layout.setContentsMargins(0, 0, 0, 0)
-        self.spatial_sampling_row_layout.setSpacing(FIELD_DESCRIPTION_ROW_SPACING)
-        self.spatial_sampling_row_layout.addWidget(self._field_with_description(self.shift_spinbox, 'shift'), 1)
-        self.spatial_sampling_row_layout.addWidget(
-            self._field_with_description(self.crops_per_image_spinbox, 'crops_per_image'),
-            1,
+        spatial_layout = QVBoxLayout(self.spatial_groupbox)
+        spatial_layout.setContentsMargins(6, 6, 6, 6)
+        spatial_layout.setSpacing(6)
+        add_compact_row(
+            spatial_layout,
+            controls=(self.horizontal_rotation, self.vertical_rotation, self.flip_x, self.flip_y),
+            stretch_label=False,
         )
-        self.spatial_form.addRow(self.spatial_sampling_row_widget)
-        self.spatial_form.addRow(self.scale_augmentation_check_box)
-        self._add_labeled_row(self.spatial_form, self.scale_augmentation_strength_spinbox, 'scale_augmentation_strength')
+        add_compact_row(
+            spatial_layout,
+            checkbox=self.random_crop_check_box,
+            controls=(self._field_with_description(self.crops_per_image_spinbox, 'crops_per_image'),),
+        )
+        add_compact_row(
+            spatial_layout,
+            controls=(self._field_with_description(self.shift_spinbox, 'shift'),),
+        )
+        add_compact_row(
+            spatial_layout,
+            checkbox=self.scale_augmentation_check_box,
+            controls=(self._field_with_description(self.scale_augmentation_strength_spinbox, 'scale_augmentation_strength'),),
+        )
+        add_compact_row(
+            spatial_layout,
+            controls=(self._field_with_description(self.augmentation_multiplier_spinbox, 'augmentation_multiplier'),),
+        )
         self.photometric_groupbox = QGroupBox('')
-        self.photometric_form = self._create_form_layout()
-        self.photometric_groupbox.setLayout(self.photometric_form)
-        self.photometric_form.addRow(self.additional_augmentation_check_box)
-        self._add_labeled_row(self.photometric_form, self.augmentation_brightness_spinbox, 'augmentation_brightness_strength')
-        self._add_labeled_row(self.photometric_form, self.augmentation_contrast_spinbox, 'augmentation_contrast_strength')
-        self._add_labeled_row(self.photometric_form, self.augmentation_gamma_spinbox, 'augmentation_gamma_strength')
-        self._add_labeled_row(self.photometric_form, self.augmentation_noise_probability_spinbox, 'augmentation_noise_probability')
-        self._add_labeled_row(self.photometric_form, self.augmentation_noise_sigma_spinbox, 'augmentation_noise_sigma')
-        self._add_labeled_row(self.photometric_form, self.augmentation_blur_probability_spinbox, 'augmentation_blur_probability')
-        self._add_labeled_row(self.photometric_form, self.augmentation_blur_radius_spinbox, 'augmentation_blur_radius')
-        self.photometric_form.addRow(self.sem_segmentation_section_groupboxes['augmentation'])
+        self.photometric_groupbox.setCheckable(True)
+        photometric_layout = QVBoxLayout(self.photometric_groupbox)
+        photometric_layout.setContentsMargins(6, 6, 6, 6)
+        photometric_layout.setSpacing(6)
+        add_compact_row(
+            photometric_layout,
+            controls=(self._field_with_description(self.augmentation_brightness_spinbox, 'augmentation_brightness_strength'),),
+        )
+        add_compact_row(
+            photometric_layout,
+            controls=(self._field_with_description(self.augmentation_contrast_spinbox, 'augmentation_contrast_strength'),),
+        )
+        add_compact_row(
+            photometric_layout,
+            controls=(self._field_with_description(self.augmentation_gamma_spinbox, 'augmentation_gamma_strength'),),
+        )
+        self._photometric_noise_row = add_compact_row(
+            photometric_layout,
+            controls=(
+                self._field_with_description(self.augmentation_noise_probability_spinbox, 'augmentation_noise_probability'),
+                self._field_with_description(self.augmentation_noise_sigma_spinbox, 'augmentation_noise_sigma'),
+            ),
+            stretch_label=False,
+        )
+        self._photometric_blur_row = add_compact_row(
+            photometric_layout,
+            controls=(
+                self._field_with_description(self.augmentation_blur_probability_spinbox, 'augmentation_blur_probability'),
+                self._field_with_description(self.augmentation_blur_radius_spinbox, 'augmentation_blur_radius'),
+            ),
+            stretch_label=False,
+        )
+        self.tech_augmentation_groupbox = QGroupBox('')
+        self.tech_augmentation_groupbox.setCheckable(True)
+        tech_layout = QVBoxLayout(self.tech_augmentation_groupbox)
+        tech_layout.setContentsMargins(6, 6, 6, 6)
+        tech_layout.setSpacing(6)
+        add_compact_row(tech_layout, checkbox=self.tech_augmentation_debug_pair_check_box)
+        add_compact_row(
+            tech_layout,
+            controls=(
+                self._field_with_description(self.tech_aug_min_operations_spinbox, 'tech_aug_min_operations'),
+                self._field_with_description(self.tech_aug_max_operations_spinbox, 'tech_aug_max_operations'),
+                self._field_with_description(self.tech_aug_max_changed_pixels_ratio_spinbox, 'tech_aug_max_changed_pixels_ratio'),
+                self._field_with_description(self.tech_aug_max_foreground_ratio_delta_spinbox, 'tech_aug_max_foreground_ratio_delta'),
+            ),
+            stretch_label=False,
+        )
+        for control, key in (
+            (self.tech_aug_global_width_probability_spinbox, 'tech_aug_global_width_probability'),
+            (self.tech_aug_scale_rethreshold_probability_spinbox, 'tech_aug_scale_rethreshold_probability'),
+            (self.tech_aug_blur_threshold_probability_spinbox, 'tech_aug_blur_threshold_probability'),
+            (self.tech_aug_boundary_aware_probability_spinbox, 'tech_aug_boundary_aware_probability'),
+            (self.tech_aug_local_morphology_probability_spinbox, 'tech_aug_local_morphology_probability'),
+            (self.tech_aug_gap_variation_probability_spinbox, 'tech_aug_gap_variation_probability'),
+        ):
+            add_compact_row(
+                tech_layout,
+                controls=(self._field_with_description(control, key),),
+            )
         self.synthetic_defect_generator_groupbox = QGroupBox('')
-        self.synthetic_defect_generator_form = self._create_form_layout()
-        self.synthetic_defect_generator_groupbox.setLayout(self.synthetic_defect_generator_form)
-        self.synthetic_defect_generator_form.addRow(self.synthetic_defect_generator_check_box)
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_topology_domain_combo,
-            'synthetic_topology_domain',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.pcb_topology_family_combo,
-            'pcb_topology_family',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.ic_topology_family_combo,
-            'ic_topology_family',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_dataset_factor_spinbox,
-            'synthetic_dataset_factor',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_image_size_widget,
-            'synthetic_image_size',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_trace_count_range_widget,
-            'synthetic_trace_count',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_segment_count_range_widget,
-            'synthetic_segment_count',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_trace_half_width_range_widget,
-            'synthetic_trace_half_width',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_background_noise_sigma_range_widget,
-            'synthetic_background_noise_sigma',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.synthetic_trace_noise_sigma_range_widget,
-            'synthetic_trace_noise_sigma',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.pcb_defects_probability_spinbox,
-            'pcb_defects_probability',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.pcb_defects_min_count_spinbox,
-            'pcb_defects_min_count',
-        )
-        self._add_labeled_row(
-            self.synthetic_defect_generator_form,
-            self.pcb_defects_max_count_spinbox,
-            'pcb_defects_max_count',
+        self.synthetic_defect_generator_groupbox.setCheckable(True)
+        synthetic_layout = QVBoxLayout(self.synthetic_defect_generator_groupbox)
+        synthetic_layout.setContentsMargins(6, 6, 6, 6)
+        synthetic_layout.setSpacing(6)
+        for field, key in (
+            (self.synthetic_topology_domain_combo, 'synthetic_topology_domain'),
+            (self.pcb_topology_family_combo, 'pcb_topology_family'),
+            (self.ic_topology_family_combo, 'ic_topology_family'),
+            (self.synthetic_dataset_factor_spinbox, 'synthetic_dataset_factor'),
+            (self.synthetic_image_size_widget, 'synthetic_image_size'),
+            (self.synthetic_trace_count_range_widget, 'synthetic_trace_count'),
+            (self.synthetic_segment_count_range_widget, 'synthetic_segment_count'),
+            (self.synthetic_trace_half_width_range_widget, 'synthetic_trace_half_width'),
+            (self.synthetic_background_noise_sigma_range_widget, 'synthetic_background_noise_sigma'),
+            (self.synthetic_trace_noise_sigma_range_widget, 'synthetic_trace_noise_sigma'),
+        ):
+            add_compact_row(
+                synthetic_layout,
+                controls=(self._field_with_description(field, key),),
+            )
+        add_compact_row(
+            synthetic_layout,
+            controls=(
+                self._field_with_description(self.pcb_defects_probability_spinbox, 'pcb_defects_probability'),
+                self._field_with_description(self.pcb_defects_min_count_spinbox, 'pcb_defects_min_count'),
+                self._field_with_description(self.pcb_defects_max_count_spinbox, 'pcb_defects_max_count'),
+            ),
+            stretch_label=False,
         )
         for defect_name, label_key in PCB_DEFECT_WEIGHT_FIELDS:
-            self._add_labeled_row(
-                self.synthetic_defect_generator_form,
-                self.pcb_defect_type_checkboxes[defect_name],
-                f'pcb_{defect_name}',
-            )
-            self._add_labeled_row(
-                self.synthetic_defect_generator_form,
-                self.pcb_defect_type_spinboxes[defect_name],
-                label_key,
+            add_compact_row(
+                synthetic_layout,
+                checkbox=self.pcb_defect_type_checkboxes[defect_name],
+                controls=(self._field_with_description(self.pcb_defect_type_spinboxes[defect_name], label_key),),
             )
         for defect_name, label_key in IC_DEFECT_WEIGHT_FIELDS:
-            self._add_labeled_row(
-                self.synthetic_defect_generator_form,
-                self.ic_defect_type_checkboxes[defect_name],
-                f'ic_{defect_name}',
-            )
-            self._add_labeled_row(
-                self.synthetic_defect_generator_form,
-                self.ic_defect_type_spinboxes[defect_name],
-                label_key,
+            add_compact_row(
+                synthetic_layout,
+                checkbox=self.ic_defect_type_checkboxes[defect_name],
+                controls=(self._field_with_description(self.ic_defect_type_spinboxes[defect_name], label_key),),
             )
         self.cutout_groupbox = QGroupBox('')
-        self.cutout_form = self._create_form_layout()
-        self.cutout_groupbox.setLayout(self.cutout_form)
-        self.cutout_form.addRow(self.cutout_check_box)
-        self._add_labeled_row(self.cutout_form, self.cutout_probability_spinbox, 'cutout_probability')
-        self._add_labeled_row(self.cutout_form, self.cutout_holes_spinbox, 'cutout_holes')
-        self._add_labeled_row(self.cutout_form, self.cutout_size_ratio_spinbox, 'cutout_size_ratio')
+        self.cutout_groupbox.setCheckable(True)
+        cutout_layout = QVBoxLayout(self.cutout_groupbox)
+        cutout_layout.setContentsMargins(6, 6, 6, 6)
+        cutout_layout.setSpacing(6)
+        add_compact_row(
+            cutout_layout,
+            controls=(
+                self._field_with_description(self.cutout_probability_spinbox, 'cutout_probability'),
+                self._field_with_description(self.cutout_holes_spinbox, 'cutout_holes'),
+                self._field_with_description(self.cutout_size_ratio_spinbox, 'cutout_size_ratio'),
+            ),
+            stretch_label=False,
+        )
         self.random_artifacts_groupbox = QGroupBox('')
-        self.random_artifacts_form = self._create_form_layout()
-        self.random_artifacts_groupbox.setLayout(self.random_artifacts_form)
-        self.random_artifacts_form.addRow(self.random_artifacts_check_box)
-        for artifact_name in RANDOM_ARTIFACT_TYPES:
-            self.random_artifacts_form.addRow(self.random_artifact_type_checkboxes[artifact_name])
-        self._add_labeled_row(
-            self.random_artifacts_form,
-            self.random_artifacts_probability_spinbox,
-            'random_artifacts_probability',
+        self.random_artifacts_groupbox.setCheckable(True)
+        random_artifacts_layout = QVBoxLayout(self.random_artifacts_groupbox)
+        random_artifacts_layout.setContentsMargins(6, 6, 6, 6)
+        random_artifacts_layout.setSpacing(6)
+        add_compact_row(
+            random_artifacts_layout,
+            controls=tuple(self.random_artifact_type_checkboxes[artifact_name] for artifact_name in RANDOM_ARTIFACT_TYPES),
+            stretch_label=False,
         )
-        self._add_labeled_row(
-            self.random_artifacts_form,
-            self.random_artifacts_count_spinbox,
-            'random_artifacts_count',
-        )
-        self._add_labeled_row(
-            self.random_artifacts_form,
-            self.random_artifacts_size_ratio_spinbox,
-            'random_artifacts_size_ratio',
+        add_compact_row(
+            random_artifacts_layout,
+            controls=(
+                self._field_with_description(self.random_artifacts_probability_spinbox, 'random_artifacts_probability'),
+                self._field_with_description(self.random_artifacts_count_spinbox, 'random_artifacts_count'),
+                self._field_with_description(self.random_artifacts_size_ratio_spinbox, 'random_artifacts_size_ratio'),
+            ),
+            stretch_label=False,
         )
         self.mixup_groupbox = QGroupBox('')
-        self.mixup_form = self._create_form_layout()
-        self.mixup_groupbox.setLayout(self.mixup_form)
-        self.mixup_form.addRow(self.mixup_check_box)
-        self._add_labeled_row(self.mixup_form, self.mixup_probability_spinbox, 'mixup_probability')
-        self._add_labeled_row(self.mixup_form, self.mixup_alpha_spinbox, 'mixup_alpha')
+        self.mixup_groupbox.setCheckable(True)
+        mixup_layout = QVBoxLayout(self.mixup_groupbox)
+        mixup_layout.setContentsMargins(6, 6, 6, 6)
+        mixup_layout.setSpacing(6)
+        add_compact_row(
+            mixup_layout,
+            controls=(
+                self._field_with_description(self.mixup_probability_spinbox, 'mixup_probability'),
+                self._field_with_description(self.mixup_alpha_spinbox, 'mixup_alpha'),
+            ),
+            stretch_label=False,
+        )
+        self.additional_augmentation_check_box = self.photometric_groupbox
+        self.tech_augmentation_check_box = self.tech_augmentation_groupbox
+        self.synthetic_defect_generator_check_box = self.synthetic_defect_generator_groupbox
+        self.cutout_check_box = self.cutout_groupbox
+        self.random_artifacts_check_box = self.random_artifacts_groupbox
+        self.mixup_check_box = self.mixup_groupbox
+        self.batch_augmentation_widget = QWidget()
+        batch_augmentation_layout = QVBoxLayout(self.batch_augmentation_widget)
+        batch_augmentation_layout.setContentsMargins(0, 0, 0, 0)
+        batch_augmentation_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        batch_augmentation_layout.addWidget(self.cutout_groupbox)
+        batch_augmentation_layout.addWidget(self.random_artifacts_groupbox)
+        batch_augmentation_layout.addWidget(self.mixup_groupbox)
+        self.sem_normalization_editor = SemNormalizationEditor(
+            self.preprocessing_groupbox, title='SEM normalization'
+        )
+
+        def _pair(*controls: QWidget) -> QWidget:
+            widget = QWidget()
+            widget.setMaximumWidth(180)
+            row = QHBoxLayout(widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            for control in controls:
+                row.addWidget(control)
+            return widget
+
+        def _stack(*controls: QWidget) -> QWidget:
+            widget = QWidget()
+            widget.setMaximumWidth(180)
+            column = QVBoxLayout(widget)
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(2)
+            for control in controls:
+                column.addWidget(control)
+            return widget
+
+        sem_controls = self.sem_segmentation_controls
+        self.training_augmentation_editor = TrainingAugmentationEditor(
+            (
+                AugmentationBlock('spatial', 'Пространственные', 'Spatial'),
+                AugmentationBlock('photometric', 'Фотометрические', 'Photometric'),
+                AugmentationBlock(
+                    'sem',
+                    'SEM-аугментации',
+                    'SEM augmentations',
+                    sem_controls['aug_enabled'],
+                    sem_controls['aug_plan'],
+                ),
+            ),
+            (
+                AugmentationRow('rotate_90', 'spatial', 'Поворот на 90°', 'Rotate 90°', self.horizontal_rotation, self.horizontal_rotation_probability_spinbox),
+                AugmentationRow('rotate_180', 'spatial', 'Поворот на 180°', 'Rotate 180°', self.vertical_rotation, self.vertical_rotation_probability_spinbox),
+                AugmentationRow('flip_x', 'spatial', 'Отражение по горизонтали', 'Horizontal flip', self.flip_x, self.flip_x_probability_spinbox),
+                AugmentationRow('flip_y', 'spatial', 'Отражение по вертикали', 'Vertical flip', self.flip_y, self.flip_y_probability_spinbox),
+                AugmentationRow('scale', 'spatial', 'Изменение масштаба', 'Scale', self.scale_augmentation_check_box, self.scale_augmentation_probability_spinbox, self.scale_augmentation_strength_spinbox),
+                AugmentationRow('brightness', 'photometric', 'Яркость', 'Brightness', self.brightness_augmentation_check_box, self.augmentation_brightness_probability_spinbox, self.augmentation_brightness_spinbox),
+                AugmentationRow('contrast', 'photometric', 'Контраст', 'Contrast', self.contrast_augmentation_check_box, self.augmentation_contrast_probability_spinbox, self.augmentation_contrast_spinbox),
+                AugmentationRow('gamma', 'photometric', 'Гамма', 'Gamma', self.gamma_augmentation_check_box, self.augmentation_gamma_probability_spinbox, self.augmentation_gamma_spinbox),
+                AugmentationRow('noise', 'photometric', 'Гауссов шум', 'Gaussian noise', self.noise_augmentation_check_box, self.augmentation_noise_probability_spinbox, self.augmentation_noise_sigma_spinbox),
+                AugmentationRow('blur', 'photometric', 'Размытие', 'Blur', self.blur_augmentation_check_box, self.augmentation_blur_probability_spinbox, self.augmentation_blur_radius_spinbox),
+                AugmentationRow('cutout', 'photometric', 'Cutout', 'Cutout', self.cutout_groupbox, self.cutout_probability_spinbox, _pair(self.cutout_holes_spinbox, self.cutout_size_ratio_spinbox)),
+                AugmentationRow('random_artifacts', 'photometric', 'Случайные артефакты', 'Random artifacts', self.random_artifacts_groupbox, self.random_artifacts_probability_spinbox, _stack(*self.random_artifact_type_checkboxes.values(), _pair(self.random_artifacts_count_spinbox, self.random_artifacts_size_ratio_spinbox))),
+                AugmentationRow('mixup', 'photometric', 'MixUp', 'MixUp', self.mixup_groupbox, self.mixup_probability_spinbox, self.mixup_alpha_spinbox),
+                AugmentationRow('topology_width', 'spatial', 'Изменение ширины проводников', 'Conductor width variation', self.tech_augmentation_operation_checkboxes['global_width'], self.tech_aug_global_width_probability_spinbox, _pair(self.tech_aug_min_operations_spinbox, self.tech_aug_max_operations_spinbox)),
+                AugmentationRow('topology_scale', 'spatial', 'Масштабирование с бинаризацией', 'Scale and re-threshold', self.tech_augmentation_operation_checkboxes['scale_rethreshold'], self.tech_aug_scale_rethreshold_probability_spinbox, self.tech_aug_max_changed_pixels_ratio_spinbox),
+                AugmentationRow('topology_blur', 'spatial', 'Размытие границы маски', 'Blur and threshold mask', self.tech_augmentation_operation_checkboxes['blur_threshold'], self.tech_aug_blur_threshold_probability_spinbox, self.tech_aug_max_foreground_ratio_delta_spinbox),
+                AugmentationRow('topology_boundary', 'spatial', 'Вариация границ', 'Boundary-aware variation', self.tech_augmentation_operation_checkboxes['boundary_aware'], self.tech_aug_boundary_aware_probability_spinbox),
+                AugmentationRow('topology_local', 'spatial', 'Локальная морфология', 'Local morphology', self.tech_augmentation_operation_checkboxes['local_morphology'], self.tech_aug_local_morphology_probability_spinbox),
+                AugmentationRow('topology_gap', 'spatial', 'Вариация разрывов', 'Gap variation', self.tech_augmentation_operation_checkboxes['gap_variation'], self.tech_aug_gap_variation_probability_spinbox),
+                AugmentationRow('charging', 'sem', 'Эффект заряда', 'Charging artifacts', sem_controls['aug_charging'], sem_controls['aug_charging_probability'], sem_controls['aug_charging_strength']),
+                AugmentationRow('drift', 'sem', 'Дрейф сканирования', 'Scan drift', sem_controls['aug_drift'], sem_controls['aug_drift_probability'], sem_controls['aug_drift_pixels']),
+                AugmentationRow('focus', 'sem', 'Локальная расфокусировка', 'Local focus variation', sem_controls['aug_focus'], sem_controls['aug_focus_probability'], sem_controls['aug_focus_sigma']),
+                AugmentationRow('detector_noise', 'sem', 'Шум детектора', 'Detector noise', sem_controls['aug_noise'], sem_controls['aug_noise_probability'], _pair(sem_controls['aug_peak_electrons'], sem_controls['aug_read_noise'])),
+                AugmentationRow('gain', 'sem', 'Градиент яркости', 'Brightness gradient', sem_controls['aug_gradient'], sem_controls['aug_gradient_probability'], sem_controls['aug_gain_strength']),
+                AugmentationRow('scan_defects', 'sem', 'Дефекты сканирования', 'Realistic scan defects', sem_controls['aug_defects'], sem_controls['aug_defects_probability']),
+            ),
+            reset_defaults=self._reset_training_augmentation_defaults,
+            title='Training augmentations',
+        )
+
+        self.patch_sampling_mode_groupbox = QGroupBox('Режим нарезки')
+        sampling_mode_layout = QGridLayout(self.patch_sampling_mode_groupbox)
+        self.grid_sampling_radio = QRadioButton('По сетке')
+        self.random_sampling_radio = QRadioButton('Случайная')
+        self.patch_sampling_mode_buttons = QButtonGroup(self.patch_sampling_mode_groupbox)
+        self.patch_sampling_mode_buttons.addButton(self.grid_sampling_radio)
+        self.patch_sampling_mode_buttons.addButton(self.random_sampling_radio)
+        sampling_mode_layout.addWidget(self.grid_sampling_radio, 0, 0)
+        sampling_mode_layout.addWidget(self.shift_spinbox, 0, 1)
+        sampling_mode_layout.addWidget(self.random_sampling_radio, 1, 0)
+        sampling_mode_layout.addWidget(self.crops_per_image_spinbox, 1, 1)
+        self.grid_sampling_radio.setToolTip('Патчи располагаются по регулярной сетке; справа задаётся шаг в пикселях.')
+        self.shift_spinbox.setToolTip('Шаг сетки между соседними патчами, пикс.')
+        self.random_sampling_radio.setToolTip('Для каждого кадра выбираются случайные позиции патчей.')
+        self.crops_per_image_spinbox.setToolTip('Количество случайных фрагментов на один кадр.')
+        self.grid_sampling_radio.setChecked(not self.random_crop_check_box.isChecked())
+        self.random_sampling_radio.setChecked(self.random_crop_check_box.isChecked())
+        self.random_sampling_radio.toggled.connect(self.random_crop_check_box.setChecked)
+        self.random_crop_check_box.toggled.connect(self._sync_patch_sampling_mode)
+        self.random_sampling_radio.toggled.connect(self._sync_patch_sampling_mode)
         self.pcb_defects_groupbox = QGroupBox('')
         self.pcb_defects_form = self._create_form_layout()
         self.pcb_defects_groupbox.setLayout(self.pcb_defects_form)
         self.additional_augmentation_check_box.toggled.connect(self._sync_augmentation_controls)
+        for checkbox in (
+            self.brightness_augmentation_check_box,
+            self.contrast_augmentation_check_box,
+            self.gamma_augmentation_check_box,
+            self.noise_augmentation_check_box,
+            self.blur_augmentation_check_box,
+        ):
+            checkbox.toggled.connect(self._sync_basic_photometric_master)
+        for checkbox in self.tech_augmentation_operation_checkboxes.values():
+            checkbox.toggled.connect(self._sync_tech_operation_controls)
         self.cutout_check_box.toggled.connect(self._sync_training_augmentation_controls)
         self.random_artifacts_check_box.toggled.connect(self._sync_training_augmentation_controls)
         for checkbox in self.random_artifact_type_checkboxes.values():
@@ -1913,62 +2177,227 @@ class SettingsPanel(QDockWidget):
         self.settings_tabs = QTabWidget()
         self.settings_tabs.setDocumentMode(True)
 
-        self.training_page = QWidget()
-        self.training_page_layout = QVBoxLayout(self.training_page)
-        self.training_page_layout.setContentsMargins(0, 0, 0, 0)
-        self.training_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.training_page_layout.addWidget(self.samples_number)
-        self.training_page_layout.addWidget(self.general_groupbox)
-        self.training_page_layout.addWidget(self.spatial_groupbox)
-        self.training_page_layout.addWidget(self.prepare_samples_groupbox)
-        self.training_page_layout.addWidget(self.preprocessing_groupbox)
-        self.training_page_layout.addWidget(self.rare_patch_groupbox)
-        self.training_page_layout.addWidget(self.optimizer_groupbox)
-        self.training_page_layout.addWidget(self.precision_loss_groupbox)
-        self.expert_groupbox = QGroupBox('')
-        self.expert_groupbox.setCheckable(True)
-        self.expert_groupbox.setChecked(False)
-        self.expert_groupbox_layout = QVBoxLayout(self.expert_groupbox)
-        self.expert_groupbox_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
-        self.expert_groupbox_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.expert_content_widget = QWidget()
-        self.expert_content_layout = QVBoxLayout(self.expert_content_widget)
-        self.expert_content_layout.setContentsMargins(0, 0, 0, 0)
-        self.expert_content_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.expert_content_layout.addWidget(self.validation_groupbox)
-        self.expert_content_layout.addWidget(self.shuffle_groupbox)
-        self.expert_content_layout.addWidget(self.photometric_groupbox)
-        self.expert_content_layout.addWidget(self.cutout_groupbox)
-        self.expert_content_layout.addWidget(self.random_artifacts_groupbox)
-        self.expert_content_layout.addWidget(self.synthetic_defect_generator_groupbox)
-        self.expert_content_layout.addWidget(self.mixup_groupbox)
-        self.expert_content_layout.addWidget(self.augmentation_preview_button)
-        self.expert_content_layout.addWidget(self.model_variants_groupbox)
-        self.expert_content_layout.addWidget(self.warmup_groupbox)
-        self.expert_content_layout.addWidget(self.scheduler_groupbox)
-        self.expert_content_layout.addWidget(self.hard_mining_groupbox)
-        self.expert_content_layout.addWidget(self.sem_segmentation_groupbox)
-        self.expert_content_layout.addWidget(self.runtime_groupbox)
-        self.expert_groupbox_layout.addWidget(self.expert_content_widget)
-        self.training_page_layout.addWidget(self.expert_groupbox)
+        def _container(*widgets: QWidget) -> QWidget:
+            container = QWidget()
+            container_layout = QVBoxLayout(container)
+            container_layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
+            container_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+            for widget in widgets:
+                container_layout.addWidget(widget)
+            return container
+
+        def _page() -> tuple[QWidget, QVBoxLayout]:
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+            return page, page_layout
+
+        def _card(
+            key: str,
+            title: str,
+            *widgets: QWidget,
+            expanded: bool = True,
+            expert_only: bool = False,
+        ) -> SettingsCard:
+            card = SettingsCard(title, _container(*widgets), expanded=expanded)
+            card.setProperty('settingsCardKey', key)
+            card.setProperty('expertOnly', expert_only)
+            self._settings_cards[key] = card
+            if expert_only:
+                self._expert_widgets.append(card)
+            return card
+
+        # Data owns image representation, patch generation, augmentation and sampling.
+        self.data_page, self.data_page_layout = _page()
+        self.data_page_layout.addWidget(
+            _card(
+                'data_source',
+                'Dataset and patches',
+                self.samples_number,
+                self._field_rows[self.color_type],
+                self.patch_size_section_widget,
+                self.prepare_samples_groupbox,
+                self.synthetic_defect_generator_groupbox,
+            )
+        )
+        self.data_page_layout.addWidget(_card('preprocessing', 'SEM normalization', self.sem_normalization_editor))
+        self.data_page_layout.addWidget(
+            _card(
+                'augmentation',
+                'Training augmentation',
+                self.training_augmentation_editor,
+                self.augmentation_preview_button,
+                expanded=False,
+            )
+        )
+        self.data_page_layout.addWidget(
+            _card(
+                'sampling',
+                'Patch sampling',
+                self.patch_sampling_mode_groupbox,
+                self.shuffle_groupbox,
+                self.rare_patch_groupbox,
+                self.hard_mining_groupbox,
+                expanded=False,
+            )
+        )
+        self.data_page_layout.addWidget(
+            _card('validation_data', 'Validation data', self.validation_check_box, self.validation_groupbox)
+        )
+        self.data_page_layout.addStretch(1)
+
+        # Model/training owns architecture, supervision, optimization and metrics.
+        self.training_page, self.training_page_layout = _page()
+        self.training_page_layout.addWidget(
+            _card(
+                'architecture',
+                'Architecture',
+                self._field_rows[self.nn_model_type],
+                self.model_variants_groupbox,
+            )
+        )
+        self.training_page_layout.addWidget(
+            _card(
+                'training',
+                'Training process',
+                self._field_rows[self.epochs_spinbox],
+                self.early_stopping_check_box,
+                self.early_stopping_control_warning,
+                self.optimizer_groupbox,
+            )
+        )
+        self.training_page_layout.addWidget(
+            _card(
+                'supervision',
+                'Topology supervision',
+                self.sem_segmentation_section_groupboxes['basic_targets'],
+                self.sem_segmentation_section_groupboxes['geometry_targets'],
+                expanded=False,
+                expert_only=True,
+            )
+        )
+        self.training_page_layout.addWidget(_card('losses', 'Loss functions', self.precision_loss_groupbox))
+        self.training_page_layout.addWidget(
+            _card(
+                'schedule',
+                'Learning-rate schedule',
+                self.warmup_groupbox,
+                self.scheduler_groupbox,
+                expanded=False,
+                expert_only=True,
+            )
+        )
+        self.training_page_layout.addWidget(
+            _card(
+                'confidence_training',
+                'Confidence-head training',
+                self.sem_segmentation_section_contents['confidence_training'],
+                expanded=False,
+                expert_only=True,
+            )
+        )
+        self.training_page_layout.addWidget(
+            _card(
+                'validation_metrics',
+                'Validation metrics and experiment',
+                self.sem_segmentation_section_groupboxes['validation'],
+                self.sem_segmentation_section_groupboxes['experiment'],
+                expanded=False,
+                expert_only=True,
+            )
+        )
+        self.training_page_layout.addWidget(
+            _card('runtime', 'Runtime and GPU', self.runtime_groupbox, expanded=False, expert_only=True)
+        )
         self.training_page_layout.addStretch(1)
 
-        self.recognition_page = QWidget()
-        self.recognition_page_layout = QVBoxLayout(self.recognition_page)
-        self.recognition_page_layout.setContentsMargins(0, 0, 0, 0)
-        self.recognition_page_layout.setSpacing(CONTENT_LAYOUT_SPACING)
-        self.recognition_page_layout.addWidget(self.recognition_tab_patch_size_groupbox)
-        self.recognition_page_layout.addWidget(self.recognition_groupbox)
+        # Recognition owns prediction, uncertainty and annotation export only.
+        self.recognition_page, self.recognition_page_layout = _page()
+        self.recognition_page_layout.addWidget(
+            _card(
+                'recognition',
+                'Mask prediction',
+                self.recognition_tab_patch_size_groupbox,
+                self.recognition_groupbox,
+            )
+        )
+        self.recognition_page_layout.addWidget(
+            _card(
+                'inference_uncertainty',
+                'Prediction uncertainty',
+                self.sem_segmentation_section_contents['inference_uncertainty'],
+                expanded=False,
+            )
+        )
+        self.recognition_page_layout.addWidget(
+            _card(
+                'active_learning',
+                'NeedsAnnotation export',
+                self.sem_segmentation_section_contents['active_learning'],
+                expanded=False,
+                expert_only=True,
+            )
+        )
         self.recognition_page_layout.addStretch(1)
+        for section_key in ('confidence_training', 'inference_uncertainty', 'active_learning'):
+            self.sem_segmentation_section_contents[section_key].setVisible(True)
+
+        self._expert_widgets.extend(
+            (
+                self.photometric_groupbox,
+                self.cutout_groupbox,
+                self.random_artifacts_groupbox,
+                self.synthetic_defect_generator_groupbox,
+                self.mixup_groupbox,
+                self.model_variants_groupbox,
+                self.optimizer_advanced_groupbox,
+                self.loss_advanced_groupbox,
+                self.hard_mining_groupbox,
+            )
+        )
+        for widget in self._expert_widgets:
+            widget.setProperty('expertOnly', True)
 
         self._page_indexes = {
+            'data': self.settings_tabs.addTab(self.data_page, ''),
             'training': self.settings_tabs.addTab(self.training_page, ''),
             'recognition': self.settings_tabs.addTab(self.recognition_page, ''),
         }
 
+        self.settings_search = QLineEdit()
+        self.settings_search.setClearButtonEnabled(True)
+        self.settings_search_completer = QCompleter(self)
+        self.settings_search_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.settings_search_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.settings_search_model = QStringListModel(self)
+        self.settings_search_completer.setModel(self.settings_search_model)
+        self.settings_search.setCompleter(self.settings_search_completer)
+        self.expert_mode_check_box = QCheckBox('Expert mode')
+        # Attribute compatibility only: the old container no longer exists in the UI.
+        self.expert_groupbox = self.expert_mode_check_box
+        settings = _settings_panel_qsettings()
+        self.expert_mode_check_box.setChecked(settings.value('expert_mode', False, type=bool))
+        self.configuration_status_button = QToolButton()
+        self.configuration_status_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.configuration_status_button.setAutoRaise(True)
+
+        header_layout = QGridLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        header_layout.addWidget(self.settings_search, 0, 0, 1, 2)
+        header_layout.addWidget(self.expert_mode_check_box, 1, 0)
+        header_layout.addWidget(
+            self.configuration_status_button,
+            1,
+            1,
+            alignment=Qt.AlignmentFlag.AlignRight,
+        )
+
         layout = QVBoxLayout()
         layout.setContentsMargins(*CONTENT_LAYOUT_MARGINS)
         layout.setSpacing(CONTENT_LAYOUT_SPACING)
+        layout.addLayout(header_layout)
         layout.addWidget(self.settings_tabs)
 
         reset_row = QHBoxLayout()
@@ -1988,16 +2417,60 @@ class SettingsPanel(QDockWidget):
         self.recognition_form.setAlignment(self.recognition_batch_spinbox, Qt.AlignmentFlag.AlignRight)
         self.recognition_form.setAlignment(self.overlap_spinbox, Qt.AlignmentFlag.AlignRight)
         self.recognition_form.setAlignment(self.recognition_jpeg_quality_spinbox, Qt.AlignmentFlag.AlignRight)
-        self.expert_groupbox.toggled.connect(self._sync_expert_groupbox_controls)
+        self.expert_mode_check_box.toggled.connect(self._sync_expert_mode)
+        self.settings_search.returnPressed.connect(self._activate_first_search_result)
+        self.settings_search_completer.activated.connect(self._activate_search_result)
+        self.configuration_status_button.clicked.connect(self._focus_first_configuration_error)
+        self.epochs_spinbox.valueChanged.connect(self._update_card_summaries)
+        self.nn_model_type.currentIndexChanged.connect(self._update_card_summaries)
+        self.optimizer_type.currentIndexChanged.connect(self._update_card_summaries)
+        self.recognition_batch_spinbox.valueChanged.connect(self._update_card_summaries)
+        self._search_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        self._search_shortcut.activated.connect(self.settings_search.setFocus)
         self.random_patch_size_check_box.toggled.connect(self._sync_random_patch_size_controls)
-        self.no_cut_dataset_type.toggled.connect(self._sync_random_patch_size_controls)
-        self._sync_expert_groupbox_controls(self.expert_groupbox.isChecked())
+        self._sync_expert_mode(self.expert_mode_check_box.isChecked())
         self._sync_random_patch_size_controls()
 
         self._content_widget.setLayout(layout)
+        self._rebuild_settings_registry()
+        for card in self._settings_cards.values():
+            card.capture_defaults()
+        QTimer.singleShot(0, self._validate_configuration_live)
 
     def _apply_localized_texts(self) -> None:
         apply_settings_panel_texts(self)
+        if hasattr(self, 'training_augmentation_editor'):
+            self.training_augmentation_editor.set_language(get_ui_language())
+            russian = get_ui_language().startswith('ru')
+            self.training_augmentation_editor.setTitle(
+                'Аугментации обучения' if russian else 'Training augmentations'
+            )
+            self.sem_normalization_editor.setTitle(
+                'Нормализация SEM' if russian else 'SEM normalization'
+            )
+        if hasattr(self, 'patch_sampling_mode_groupbox'):
+            russian = get_ui_language().startswith('ru')
+            self.patch_sampling_mode_groupbox.setTitle('Режим нарезки' if russian else 'Patch layout')
+            self.grid_sampling_radio.setText('По сетке' if russian else 'Grid')
+            self.random_sampling_radio.setText('Случайная' if russian else 'Random')
+
+    def _request_reset_defaults(self) -> None:
+        language = get_ui_language()
+        title = 'Сбросить настройки' if language.startswith('ru') else 'Reset settings'
+        message = (
+            'Вернуть все настройки к значениям по умолчанию?'
+            if language.startswith('ru')
+            else 'Restore all settings to their default values?'
+        )
+        answer = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.reset_defaults_requested.emit()
 
     def set_ui_language(self, language: str) -> None:
         active_language = set_global_ui_language(language)
@@ -2008,6 +2481,7 @@ class SettingsPanel(QDockWidget):
             self.set_samples_count_loading()
         else:
             self.set_samples_count(self._sample_count_value)
+        self._validate_configuration_live()
         self.ui_language_changed.emit(active_language)
 
     def get_validation_source_value(self) -> str:
@@ -2432,21 +2906,53 @@ class SettingsPanel(QDockWidget):
     def set_tech_aug_config(self, config: Any) -> None:
         self._tech_aug_config_payload = self._clone_plain_payload(config) if config is not None else {}
         resolved = build_tech_augmentation_config(config)
-        self.tech_augmentation_check_box.setChecked(bool(resolved.enabled))
+        raw = config if isinstance(config, Mapping) else {}
+        operation_values = {
+            'global_width': resolved.global_width.probability,
+            'scale_rethreshold': resolved.scale_rethreshold.probability,
+            'blur_threshold': resolved.blur_threshold.probability,
+            'boundary_aware': resolved.boundary_aware.probability,
+            'local_morphology': resolved.local_morphology.probability,
+            'gap_variation': resolved.gap_variation.probability,
+        }
+
+        def configured_probability(key: str) -> float:
+            nested = raw.get(key, {}) if isinstance(raw, Mapping) else {}
+            if isinstance(nested, Mapping) and 'probability' in nested:
+                return float(nested['probability'])
+            return float(operation_values[key])
+        for key, checkbox in self.tech_augmentation_operation_checkboxes.items():
+            nested = raw.get(key, {}) if isinstance(raw, Mapping) else {}
+            explicitly_enabled = nested.get('enabled') if isinstance(nested, Mapping) else None
+            checkbox.setChecked(
+                bool(resolved.enabled)
+                and (
+                    bool(explicitly_enabled)
+                    if explicitly_enabled is not None
+                    else float(operation_values[key]) > 0.0
+                )
+            )
+        self.tech_augmentation_check_box.setChecked(
+            bool(resolved.enabled) and any(
+                checkbox.isChecked() for checkbox in self.tech_augmentation_operation_checkboxes.values()
+            )
+        )
         self.tech_aug_min_operations_spinbox.setValue(int(resolved.min_operations))
         self.tech_aug_max_operations_spinbox.setValue(int(resolved.max_operations))
         self.tech_augmentation_debug_pair_check_box.setChecked(bool(resolved.debug_return_pair))
         self.tech_aug_max_changed_pixels_ratio_spinbox.setValue(float(resolved.max_changed_pixels_ratio))
         self.tech_aug_max_foreground_ratio_delta_spinbox.setValue(float(resolved.max_foreground_ratio_delta))
-        self.tech_aug_global_width_probability_spinbox.setValue(float(resolved.global_width.probability))
+        self.tech_aug_global_width_probability_spinbox.setValue(configured_probability('global_width'))
         self.tech_aug_scale_rethreshold_probability_spinbox.setValue(
-            float(resolved.scale_rethreshold.probability)
+            configured_probability('scale_rethreshold')
         )
-        self.tech_aug_blur_threshold_probability_spinbox.setValue(float(resolved.blur_threshold.probability))
-        self.tech_aug_boundary_aware_probability_spinbox.setValue(float(resolved.boundary_aware.probability))
-        self.tech_aug_local_morphology_probability_spinbox.setValue(float(resolved.local_morphology.probability))
-        self.tech_aug_gap_variation_probability_spinbox.setValue(float(resolved.gap_variation.probability))
+        self.tech_aug_blur_threshold_probability_spinbox.setValue(configured_probability('blur_threshold'))
+        self.tech_aug_boundary_aware_probability_spinbox.setValue(configured_probability('boundary_aware'))
+        self.tech_aug_local_morphology_probability_spinbox.setValue(configured_probability('local_morphology'))
+        self.tech_aug_gap_variation_probability_spinbox.setValue(configured_probability('gap_variation'))
         self._sync_tech_augmentation_controls(self.tech_augmentation_check_box.isChecked())
+        if hasattr(self, 'training_augmentation_editor'):
+            self.training_augmentation_editor.sync_from_controls()
 
     def get_tech_aug_config(self) -> dict[str, Any]:
         defaults = build_tech_augmentation_config(None)
@@ -2519,6 +3025,16 @@ class SettingsPanel(QDockWidget):
             ('gap_variation', 'probability'),
             float(self.tech_aug_gap_variation_probability_spinbox.value()),
             float(defaults.gap_variation.probability),
+        )
+        for key, checkbox in self.tech_augmentation_operation_checkboxes.items():
+            self._set_optional_config_value(
+                payload,
+                (key, 'enabled'),
+                bool(checkbox.isChecked()),
+                False,
+            )
+        payload['enabled'] = any(
+            checkbox.isChecked() for checkbox in self.tech_augmentation_operation_checkboxes.values()
         )
         self._tech_aug_config_payload = self._clone_plain_payload(payload)
         return payload
@@ -2609,7 +3125,7 @@ class SettingsPanel(QDockWidget):
     def show_settings_page(self, page_key: str) -> None:
         normalized_key = str(page_key or '').strip().lower()
         if normalized_key == 'base':
-            normalized_key = 'training'
+            normalized_key = 'data'
         index = self._page_indexes.get(normalized_key)
         if index is None:
             return
@@ -2626,7 +3142,7 @@ class SettingsPanel(QDockWidget):
         current_index = self.settings_tabs.currentIndex()
         if hasattr(self.settings_tabs, 'isTabVisible') and self.settings_tabs.isTabVisible(current_index):
             return
-        for page_key in ('training', 'recognition'):
+        for page_key in ('data', 'training', 'recognition'):
             index = self._page_indexes.get(page_key)
             if index is None:
                 continue
@@ -2634,9 +3150,226 @@ class SettingsPanel(QDockWidget):
                 self.settings_tabs.setCurrentIndex(index)
                 return
 
-    def _sync_expert_groupbox_controls(self, expanded: bool) -> None:
-        visible = bool(expanded)
-        self.expert_content_widget.setVisible(visible)
+    def _sync_expert_mode(self, enabled: bool) -> None:
+        visible = bool(enabled)
+        for widget in self._expert_widgets:
+            widget.setVisible(visible)
+        settings = _settings_panel_qsettings()
+        settings.setValue('expert_mode', visible)
+        settings.sync()
+
+    def _card_page(self, card_key: str) -> str:
+        if card_key in {'data_source', 'preprocessing', 'augmentation', 'sampling', 'validation_data'}:
+            return 'data'
+        if card_key in {'recognition', 'inference_uncertainty', 'active_learning'}:
+            return 'recognition'
+        return 'training'
+
+    def _find_card_for_widget(self, widget: QWidget) -> str | None:
+        for key, card in self._settings_cards.items():
+            if card is widget or card.isAncestorOf(widget):
+                return key
+        return None
+
+    def _rebuild_settings_registry(self) -> None:
+        registry: dict[str, dict[str, Any]] = {}
+
+        def _register(key: str, label: str, widget: QWidget, aliases: str = '') -> None:
+            card_key = self._find_card_for_widget(widget)
+            if card_key is None:
+                return
+            tooltip = widget.toolTip()
+            registry[key] = {
+                'label': str(label).strip() or key,
+                'widget': widget,
+                'card': card_key,
+                'page': self._card_page(card_key),
+                'search': f'{label} {tooltip} {aliases} {key} {card_key}'.casefold(),
+            }
+
+        for key, widget in self._desc_fields.items():
+            label_widget = self._desc_labels.get(key)
+            _register(key, label_widget.text() if label_widget is not None else key, widget)
+        for field in SEM_UI_FIELDS:
+            widget = self.sem_segmentation_controls.get(field.key)
+            label = self.sem_segmentation_field_labels.get(field.key)
+            if widget is not None:
+                _register(
+                    f'sem:{field.key}',
+                    label.text() if label is not None else field.label_en,
+                    widget,
+                    aliases=f'{field.label_en} {sem_ui_field_label(field, "ru")}',
+                )
+        card_aliases = {
+            'data_source': 'данные датасет патчи выборка dataset patches',
+            'preprocessing': 'нормализация препроцессинг SEM normalization preprocessing',
+            'augmentation': 'аугментация augmentation',
+            'sampling': 'выбор патчей сложные примеры sampling hard mining',
+            'validation_data': 'валидационная выборка validation data',
+            'architecture': 'архитектура модель context architecture model',
+            'training': 'обучение эпохи оптимизатор training epochs optimizer',
+            'supervision': 'цели геометрия топология supervision targets geometry topology',
+            'losses': 'функции потерь losses',
+            'schedule': 'расписание warmup scheduler',
+            'confidence_training': 'обучение уверенности confidence head training',
+            'validation_metrics': 'метрики эксперимент metrics experiment',
+            'runtime': 'ресурсы видеокарта GPU runtime',
+            'recognition': 'распознавание маска inference mask',
+            'inference_uncertainty': 'неопределенность уверенность uncertainty confidence',
+            'active_learning': 'активное обучение разметка NeedsAnnotation active learning',
+        }
+        for key, card in self._settings_cards.items():
+            _register(
+                f'card:{key}',
+                card.title(),
+                card,
+                aliases=f'{key.replace("_", " ")} {card_aliases.get(key, "")}',
+            )
+        self._settings_registry = registry
+        self._search_display_to_key = {
+            f"{item['label']} — {self._settings_cards[item['card']].title()}": key
+            for key, item in registry.items()
+        }
+        self.settings_search_model.setStringList(sorted(self._search_display_to_key))
+
+    def _activate_first_search_result(self) -> None:
+        query = self.settings_search.text().strip().casefold()
+        if not query:
+            return
+        for key, item in self._settings_registry.items():
+            if query in item['search']:
+                self._navigate_to_setting(key)
+                return
+
+    def _activate_search_result(self, display: str) -> None:
+        key = self._search_display_to_key.get(str(display))
+        if key is not None:
+            self._navigate_to_setting(key)
+
+    def _navigate_to_setting(self, key: str) -> None:
+        item = self._settings_registry.get(key)
+        if item is None:
+            return
+        card = self._settings_cards[item['card']]
+        widget = item['widget']
+        expert_only = bool(card.property('expertOnly'))
+        ancestor: QWidget | None = widget
+        while ancestor is not None and ancestor is not card:
+            expert_only = expert_only or bool(ancestor.property('expertOnly'))
+            ancestor = ancestor.parentWidget()
+        if expert_only and not self.expert_mode_check_box.isChecked():
+            self.expert_mode_check_box.setChecked(True)
+        self.show_settings_page(item['page'])
+        card.set_expanded(True)
+        ancestor = widget.parentWidget()
+        while ancestor is not None and ancestor is not card:
+            if isinstance(ancestor, QGroupBox) and ancestor.isCheckable():
+                ancestor.setChecked(True)
+            ancestor = ancestor.parentWidget()
+        self._scroll_area.ensureWidgetVisible(widget, 24, 48)
+        previous_style = widget.styleSheet()
+        widget.setStyleSheet(f'{previous_style}; border: 1px solid #42a5f5;')
+        QTimer.singleShot(1400, lambda w=widget, style=previous_style: w.setStyleSheet(style))
+        widget.setFocus(Qt.FocusReason.ShortcutFocusReason)
+
+    @staticmethod
+    def _configuration_error_field(message: str) -> str | None:
+        lowered = message.casefold()
+        mappings = (
+            ('attention_dim', 'context_dim'),
+            ('attention dimensions', 'context_dim'),
+            ('hard-mining', 'hard_geometry_weight'),
+            ('sdf target', 'target_sdf'),
+            ('heads and targets', 'target_boundary'),
+            ('confidence loss', 'confidence_training_loss_weight'),
+            ('mc dropout', 'uncertainty_samples'),
+            ('boundary kernel', 'target_boundary_kernel'),
+            ('experiment seed', 'experiment_seed_1'),
+        )
+        for fragment, key in mappings:
+            if fragment in lowered:
+                return key
+        return None
+
+    def _validate_configuration_live(self) -> None:
+        for key, label in self.sem_segmentation_error_labels.items():
+            label.clear()
+            label.setVisible(False)
+            self.sem_segmentation_controls[key].setProperty('configurationError', False)
+            base_tooltip = self.sem_segmentation_controls[key].property('baseToolTip')
+            if isinstance(base_tooltip, str):
+                self.sem_segmentation_controls[key].setToolTip(base_tooltip)
+        for card in self._settings_cards.values():
+            card.set_error_count(0)
+
+        errors: list[tuple[str | None, str]] = []
+        try:
+            build_sem_segmentation_config(self.get_sem_segmentation_config())
+        except (TypeError, ValueError) as error:
+            message = str(error)
+            errors.append((self._configuration_error_field(message), message))
+
+        card_errors: dict[str, int] = {}
+        for field_key, message in errors:
+            if field_key is None:
+                continue
+            error_label = self.sem_segmentation_error_labels.get(field_key)
+            control = self.sem_segmentation_controls.get(field_key)
+            if error_label is not None:
+                error_label.setText('!')
+                error_label.setToolTip(message)
+                error_label.setVisible(True)
+            if control is not None:
+                control.setProperty('configurationError', True)
+                control.setToolTip(f'{control.toolTip()}\n\n{message}'.strip())
+                card_key = self._find_card_for_widget(control)
+                if card_key is not None:
+                    card_errors[card_key] = card_errors.get(card_key, 0) + 1
+        for card_key, count in card_errors.items():
+            self._settings_cards[card_key].set_error_count(count)
+
+        self._configuration_errors = errors
+        self._update_card_summaries()
+        russian = get_ui_language() == 'ru'
+        if errors:
+            self.configuration_status_button.setText(
+                f'Ошибок: {len(errors)}' if russian else f'Errors: {len(errors)}'
+            )
+            self.configuration_status_button.setToolTip(errors[0][1])
+        else:
+            self.configuration_status_button.setText('OK')
+            self.configuration_status_button.setToolTip(
+                'Конфигурация корректна' if russian else 'Configuration is valid'
+            )
+        self.configuration_validity_changed.emit(not errors, tuple(message for _key, message in errors))
+
+    def _update_card_summaries(self) -> None:
+        pre_mode = self.sem_segmentation_controls['pre_mode'].currentData() or 'none'
+        hard_mode = self.sem_segmentation_controls['hard_mode'].currentData() or 'off'
+        uncertainty_method = self.sem_segmentation_controls['uncertainty_method'].currentData() or 'off'
+        uncertainty_enabled = self.sem_segmentation_controls['uncertainty_enabled'].isChecked()
+        summaries = {
+            'preprocessing': str(pre_mode).replace('_', ' '),
+            'sampling': str(hard_mode).replace('_', ' '),
+            'architecture': self.nn_model_type.currentText(),
+            'training': f'{self.epochs_spinbox.value()} epochs',
+            'losses': self.optimizer_type.currentText(),
+            'recognition': f'batch {self.recognition_batch_spinbox.value()}',
+            'inference_uncertainty': (
+                str(uncertainty_method).replace('_', ' ') if uncertainty_enabled else 'off'
+            ),
+        }
+        for key, summary in summaries.items():
+            card = self._settings_cards.get(key)
+            if card is not None:
+                card.set_summary(summary)
+
+    def _focus_first_configuration_error(self) -> None:
+        if not self._configuration_errors:
+            return
+        field_key, _message = self._configuration_errors[0]
+        if field_key is not None:
+            self._navigate_to_setting(f'sem:{field_key}')
 
     def _apply_optimizer_preset(self, optimizer_name: str, learning_rate: float, weight_decay: float) -> None:
         if optimizer_name not in OPTIMIZERS:
@@ -2825,11 +3558,13 @@ class SettingsPanel(QDockWidget):
     def _on_sem_segmentation_control_changed(self, *_args: Any) -> None:
         if self._sem_segmentation_update_guard:
             return
-        custom_index = self.sem_segmentation_preset_combo.findData('custom')
-        if custom_index >= 0:
-            self.sem_segmentation_preset_combo.setCurrentIndex(custom_index)
-        self.sem_segmentation_validation_label.clear()
+        mode_control = self.sem_segmentation_controls.get('pre_mode')
+        if mode_control is not None:
+            preprocessing_enabled = str(mode_control.currentData() or 'none') != 'none'
+            if self.preprocessing_groupbox.isChecked() != preprocessing_enabled:
+                self.preprocessing_groupbox.setChecked(preprocessing_enabled)
         self._sync_sem_segmentation_controls()
+        self._validate_configuration_live()
 
     def _on_preprocessing_group_toggled(self, enabled: bool) -> None:
         if self._sem_segmentation_update_guard:
@@ -2848,6 +3583,16 @@ class SettingsPanel(QDockWidget):
 
     def _sync_sem_segmentation_controls(self) -> None:
         controls = self.sem_segmentation_controls
+
+        def _set_sem_visible(key: str, visible: bool) -> None:
+            control = controls.get(key)
+            label = self.sem_segmentation_field_labels.get(key)
+            if control is not None:
+                container = control.parentWidget()
+                (container or control).setVisible(visible)
+            if label is not None:
+                label.setVisible(visible)
+
         for target_name in (
             'boundary', 'skeleton', 'sdf', 'distance_transform', 'thickness',
             'vertex', 'corner', 'endpoint', 'junction', 'orientation', 'tangent',
@@ -2866,7 +3611,6 @@ class SettingsPanel(QDockWidget):
         dependency_groups = (
             ('aug_enabled', tuple(key for key in controls if key.startswith('aug_') and key != 'aug_enabled')),
             ('context_enabled', tuple(key for key in controls if key.startswith('context_') and key != 'context_enabled')),
-            ('uncertainty_enabled', tuple(key for key in controls if key.startswith('uncertainty_') and key != 'uncertainty_enabled')),
             ('al_enabled', tuple(key for key in controls if key.startswith('al_') and key != 'al_enabled')),
             ('validation_enabled', tuple(key for key in controls if key.startswith('validation_') and key != 'validation_enabled')),
         )
@@ -2879,8 +3623,43 @@ class SettingsPanel(QDockWidget):
                 if parent_key == 'validation_enabled'
                 else bool(parent.isChecked())
             )
+            if parent_key == 'aug_enabled':
+                training_editor = getattr(self, 'training_augmentation_editor', None)
+                if training_editor is not None:
+                    training_editor.sync_from_controls()
+                    continue
+                augmentation_editor = self.sem_segmentation_section_editors.get('augmentation')
+                if augmentation_editor is not None and hasattr(augmentation_editor, '_sync_effect_rows'):
+                    if hasattr(augmentation_editor, '_plan_row'):
+                        augmentation_editor._plan_row.setEnabled(enabled)
+                    if enabled:
+                        augmentation_editor._sync_effect_rows()
+                    else:
+                        for child_key in child_keys:
+                            controls[child_key].setEnabled(False)
+                            _set_sem_visible(child_key, False)
+                    continue
             for child_key in child_keys:
                 controls[child_key].setEnabled(enabled)
+                _set_sem_visible(child_key, enabled)
+
+        confidence_enabled = bool(controls['confidence_training_enabled'].isChecked())
+        controls['confidence_training_loss_weight'].setEnabled(confidence_enabled)
+        _set_sem_visible('confidence_training_loss_weight', confidence_enabled)
+
+        uncertainty_enabled = bool(controls['uncertainty_enabled'].isChecked())
+        method = str(controls['uncertainty_method'].currentData() or 'confidence_head')
+        for key in ('uncertainty_method', 'uncertainty_export'):
+            controls[key].setEnabled(uncertainty_enabled)
+            _set_sem_visible(key, uncertainty_enabled)
+        for key in ('uncertainty_samples', 'uncertainty_rate'):
+            visible = uncertainty_enabled and method in {'mc_dropout', 'combined', 'auto'}
+            controls[key].setEnabled(visible)
+            _set_sem_visible(key, visible)
+        for key in ('uncertainty_tta_flips', 'uncertainty_tta_rotations'):
+            visible = uncertainty_enabled and method in {'tta_variance', 'combined', 'auto'}
+            controls[key].setEnabled(visible)
+            _set_sem_visible(key, visible)
 
         hard_mode = controls.get('hard_mode')
         if hard_mode is not None:
@@ -2888,8 +3667,56 @@ class SettingsPanel(QDockWidget):
             for key, control in controls.items():
                 if key.startswith('hard_') and key != 'hard_mode':
                     control.setEnabled(enabled)
+                    _set_sem_visible(key, enabled)
+        self._sync_legacy_uncertainty_adapters_from_sem()
+
+    def _sync_legacy_uncertainty_adapters_from_sem(self) -> None:
+        if self._legacy_uncertainty_sync_guard:
+            return
+        controls = self.sem_segmentation_controls
+        if 'uncertainty_enabled' not in controls:
+            return
+        enabled = bool(controls['uncertainty_enabled'].isChecked())
+        method = str(controls['uncertainty_method'].currentData() or 'confidence_head')
+        export = enabled and bool(controls['uncertainty_export'].isChecked())
+        uses_tta = enabled and method in {'tta_variance', 'combined', 'auto'}
+        export_mode = 'off'
+        if export:
+            export_mode = 'tta' if uses_tta else 'model_output'
+        self._legacy_uncertainty_sync_guard = True
+        try:
+            index = self.confidence_save_mode_combo.findData(export_mode)
+            if index >= 0:
+                self.confidence_save_mode_combo.setCurrentIndex(index)
+        finally:
+            self._legacy_uncertainty_sync_guard = False
+
+    def _sync_inference_uncertainty_from_legacy(self, *_args: Any) -> None:
+        if self._legacy_uncertainty_sync_guard or self._sem_segmentation_update_guard:
+            return
+        controls = self.sem_segmentation_controls
+        if 'uncertainty_enabled' not in controls:
+            return
+        export_mode = str(self.confidence_save_mode_combo.currentData() or 'off')
+        uses_tta = export_mode == 'tta'
+        enabled = uses_tta or export_mode != 'off'
+        method = 'tta_variance' if uses_tta else 'confidence_head'
+        self._legacy_uncertainty_pending = True
+        self._legacy_uncertainty_sync_guard = True
+        try:
+            controls['uncertainty_enabled'].setChecked(enabled)
+            method_index = controls['uncertainty_method'].findData(method)
+            if method_index >= 0:
+                controls['uncertainty_method'].setCurrentIndex(method_index)
+            controls['uncertainty_export'].setChecked(export_mode != 'off')
+        finally:
+            self._legacy_uncertainty_sync_guard = False
+        self._sync_sem_segmentation_controls()
+        if hasattr(self, 'configuration_status_button'):
+            self._validate_configuration_live()
 
     def set_sem_segmentation_config(self, payload: Mapping[str, Any] | None) -> None:
+        preserve_legacy_uncertainty = not bool(payload) and self._legacy_uncertainty_pending
         canonical = build_sem_segmentation_config(payload)
         values = sem_config_to_form_values(canonical.to_dict())
         self._sem_segmentation_update_guard = True
@@ -2900,16 +3727,17 @@ class SettingsPanel(QDockWidget):
                     self.sem_segmentation_controls[field.key],
                     values[field.form_name],
                 )
-            preset_name = str(canonical.preset or 'custom')
-            index = self.sem_segmentation_preset_combo.findData(preset_name)
-            if index < 0:
-                index = self.sem_segmentation_preset_combo.findData('custom')
-            self.sem_segmentation_preset_combo.setCurrentIndex(max(0, index))
             self.preprocessing_groupbox.setChecked(canonical.preprocessing.mode != 'none')
         finally:
             self._sem_segmentation_update_guard = False
+        if preserve_legacy_uncertainty:
+            self._sync_inference_uncertainty_from_legacy()
+        else:
+            self._sync_legacy_uncertainty_adapters_from_sem()
+        self._legacy_uncertainty_pending = False
         self._sync_sem_segmentation_controls()
-        self.sem_segmentation_validation_label.clear()
+        if hasattr(self, 'configuration_status_button'):
+            self._validate_configuration_live()
 
     def get_sem_segmentation_config(self) -> dict[str, Any]:
         values = {
@@ -2925,29 +3753,10 @@ class SettingsPanel(QDockWidget):
             values['sem__hard_mode'] = 'off'
         elif values.get('sem__hard_mode') == 'off':
             values['sem__hard_mode'] = 'online'
-        preset = str(self.sem_segmentation_preset_combo.currentData() or 'custom')
-        return sem_config_from_form_values(values, preset=preset)
-
-    def _apply_sem_segmentation_preset(self) -> None:
-        preset_name = str(self.sem_segmentation_preset_combo.currentData() or 'legacy_v1')
-        if preset_name == 'custom':
-            self._validate_sem_segmentation_settings()
-            return
-        config = get_sem_preset(preset_name)
-        self.set_sem_segmentation_config(config.to_dict())
-        self.hard_mining_check_box.setChecked(config.hard_mining.mode != 'off')
-        self._validate_sem_segmentation_settings()
+        return sem_config_from_form_values(values, preset='custom')
 
     def _validate_sem_segmentation_settings(self) -> None:
-        try:
-            payload = self.get_sem_segmentation_config()
-            config_hash = build_sem_segmentation_config(payload).stable_hash()
-        except (TypeError, ValueError) as error:
-            self.sem_segmentation_validation_label.setText(f'Invalid configuration: {error}')
-            self.sem_segmentation_validation_label.setStyleSheet('color: #c62828;')
-            return
-        self.sem_segmentation_validation_label.setText(f'Configuration is valid. SHA-256: {config_hash[:16]}…')
-        self.sem_segmentation_validation_label.setStyleSheet('color: #2e7d32;')
+        self._validate_configuration_live()
 
     def _sync_hard_mining_controls(self, enabled: bool) -> None:
         pixel_control_enabled = self._training_controls_applicable and bool(self.hard_pixel_mining_check_box.isChecked())
@@ -2978,6 +3787,19 @@ class SettingsPanel(QDockWidget):
             checkbox.setEnabled(self._training_controls_applicable)
             label.setEnabled(self._training_controls_applicable)
             spinbox.setEnabled(self._training_controls_applicable and checkbox.isChecked())
+        topograph_enabled = bool(getattr(self, 'topograph_enabled_check_box', None) and self.topograph_enabled_check_box.isChecked())
+        if hasattr(self, 'topograph_enabled_check_box'):
+            self.topograph_enabled_check_box.setEnabled(self._training_controls_applicable)
+            self.topograph_term_label.setEnabled(self._training_controls_applicable)
+            self.topograph_loss_weight_spinbox.setEnabled(
+                self._training_controls_applicable and topograph_enabled
+            )
+            self.topograph_debug_viz_check_box.setEnabled(
+                self._training_controls_applicable and topograph_enabled
+            )
+            self.topograph_debug_viz_label.setEnabled(
+                self._training_controls_applicable and topograph_enabled
+            )
         self.loss_formula_label.setEnabled(self._training_controls_applicable)
         formula_html = format_loss_formula_html(self.get_loss_term_weights())
         total_html = (
@@ -2985,7 +3807,16 @@ class SettingsPanel(QDockWidget):
             f"&Sigma;&nbsp;n<sub>i</sub> = {total:.2f}/{MAX_LOSS_TERM_WEIGHT_SUM:.2f}"
             "</span>"
         )
-        self.loss_formula_label.setText(f'{formula_html}<br>{total_html}')
+        topograph_html = ''
+        if topograph_enabled:
+            topograph_weight = float(self.topograph_loss_weight_spinbox.value())
+            if topograph_weight > 0.0:
+                topograph_html = (
+                    '<br><span style="font-family:\'Cambria Math\',\'Times New Roman\',serif; font-size:16px;">'
+                    f'+ {topograph_weight:.2f}&middot;<i>L</i><sub>Topograph</sub>'
+                    '</span>'
+                )
+        self.loss_formula_label.setText(f'{formula_html}<br>{total_html}{topograph_html}')
         self._sync_active_loss_preset()
 
     def _sync_early_stopping_controls(self, enabled: bool) -> None:
@@ -3001,7 +3832,7 @@ class SettingsPanel(QDockWidget):
         self.early_stopping_control_warning.setVisible(show_warning)
 
     def _sync_random_patch_size_controls(self, _enabled: bool | None = None) -> None:
-        online_mode = self._training_controls_applicable and bool(self.no_cut_dataset_type.isChecked())
+        online_mode = self._training_controls_applicable
         enabled = online_mode and bool(self.random_patch_size_check_box.isChecked())
         self.random_patch_size_check_box.setEnabled(online_mode)
         if enabled and self.sync_patch_sizes_check_box.isChecked():
@@ -3039,13 +3870,146 @@ class SettingsPanel(QDockWidget):
         self.patch_size_groups_layout.setColumnStretch(1, 1)
 
     def _sync_rare_patch_oversampling_controls(self, _enabled: bool | None = None) -> None:
-        online_mode_enabled = self._training_controls_applicable and bool(self.no_cut_dataset_type.isChecked())
+        online_mode_enabled = self._training_controls_applicable
         self.rare_patch_oversampling_check_box.setEnabled(online_mode_enabled)
         self.edit_rare_regions_button.setEnabled(online_mode_enabled)
         self._set_field_enabled(
             self.rare_patch_oversampling_factor_spinbox,
             online_mode_enabled and bool(self.rare_patch_oversampling_check_box.isChecked()),
         )
+
+    def _sync_patch_sampling_mode(self, *_args: object) -> None:
+        random_mode = bool(self.random_crop_check_box.isChecked())
+        if self.random_sampling_radio.isChecked() != random_mode:
+            self.random_sampling_radio.setChecked(random_mode)
+        if self.grid_sampling_radio.isChecked() == random_mode:
+            self.grid_sampling_radio.setChecked(not random_mode)
+        enabled = self._training_controls_applicable
+        self.shift_spinbox.setEnabled(enabled and not random_mode)
+        self.crops_per_image_spinbox.setEnabled(enabled and random_mode)
+
+    def _reset_training_augmentation_defaults(self) -> None:
+        defaults = {
+            self.horizontal_rotation: True,
+            self.vertical_rotation: True,
+            self.flip_x: False,
+            self.flip_y: False,
+            self.scale_augmentation_check_box: False,
+            self.photometric_groupbox: False,
+            self.brightness_augmentation_check_box: False,
+            self.contrast_augmentation_check_box: False,
+            self.gamma_augmentation_check_box: False,
+            self.noise_augmentation_check_box: False,
+            self.blur_augmentation_check_box: False,
+            self.cutout_groupbox: False,
+            self.random_artifacts_groupbox: False,
+            self.mixup_groupbox: False,
+        }
+        for control, checked in defaults.items():
+            control.setChecked(checked)
+        values = {
+            self.horizontal_rotation_probability_spinbox: 1.0,
+            self.vertical_rotation_probability_spinbox: 1.0,
+            self.flip_x_probability_spinbox: 1.0,
+            self.flip_y_probability_spinbox: 1.0,
+            self.scale_augmentation_probability_spinbox: 1.0,
+            self.scale_augmentation_strength_spinbox: 0.2,
+            self.augmentation_brightness_probability_spinbox: 1.0,
+            self.augmentation_brightness_spinbox: 0.1,
+            self.augmentation_contrast_probability_spinbox: 1.0,
+            self.augmentation_contrast_spinbox: 0.1,
+            self.augmentation_gamma_probability_spinbox: 1.0,
+            self.augmentation_gamma_spinbox: 0.15,
+            self.augmentation_noise_probability_spinbox: 0.5,
+            self.augmentation_noise_sigma_spinbox: 0.01,
+            self.augmentation_blur_probability_spinbox: 0.25,
+            self.augmentation_blur_radius_spinbox: 1.0,
+            self.cutout_probability_spinbox: 1.0,
+            self.cutout_holes_spinbox: 1,
+            self.cutout_size_ratio_spinbox: 0.25,
+            self.random_artifacts_probability_spinbox: 1.0,
+            self.random_artifacts_count_spinbox: 1,
+            self.random_artifacts_size_ratio_spinbox: 0.25,
+            self.mixup_probability_spinbox: 1.0,
+            self.mixup_alpha_spinbox: 0.2,
+        }
+        for control, value in values.items():
+            control.setValue(value)
+        for field in fields_for_section('augmentation'):
+            self._set_sem_segmentation_control_value(
+                field, self.sem_segmentation_controls[field.key], field.default
+            )
+        self._sync_sem_segmentation_controls()
+        self.set_tech_aug_config(None)
+
+    def get_training_augmentation_config(self) -> dict[str, dict[str, float | bool]]:
+        rows = {
+            'rotate_90': (self.horizontal_rotation, self.horizontal_rotation_probability_spinbox),
+            'rotate_180': (self.vertical_rotation, self.vertical_rotation_probability_spinbox),
+            'flip_x': (self.flip_x, self.flip_x_probability_spinbox),
+            'flip_y': (self.flip_y, self.flip_y_probability_spinbox),
+            'scale': (self.scale_augmentation_check_box, self.scale_augmentation_probability_spinbox),
+            'brightness': (self.brightness_augmentation_check_box, self.augmentation_brightness_probability_spinbox),
+            'contrast': (self.contrast_augmentation_check_box, self.augmentation_contrast_probability_spinbox),
+            'gamma': (self.gamma_augmentation_check_box, self.augmentation_gamma_probability_spinbox),
+            'noise': (self.noise_augmentation_check_box, self.augmentation_noise_probability_spinbox),
+            'blur': (self.blur_augmentation_check_box, self.augmentation_blur_probability_spinbox),
+        }
+        return {
+            key: {'enabled': bool(enabled.isChecked()), 'probability': float(probability.value())}
+            for key, (enabled, probability) in rows.items()
+        }
+
+    def set_training_augmentation_config(self, payload: Mapping[str, Any] | None) -> None:
+        if not payload:
+            legacy_enabled = self.additional_augmentation_check_box.isChecked()
+            for checkbox in (
+                self.brightness_augmentation_check_box,
+                self.contrast_augmentation_check_box,
+                self.gamma_augmentation_check_box,
+                self.noise_augmentation_check_box,
+                self.blur_augmentation_check_box,
+            ):
+                checkbox.setChecked(legacy_enabled)
+            self.training_augmentation_editor.sync_from_controls()
+            return
+        rows = {
+            'rotate_90': (self.horizontal_rotation, self.horizontal_rotation_probability_spinbox),
+            'rotate_180': (self.vertical_rotation, self.vertical_rotation_probability_spinbox),
+            'flip_x': (self.flip_x, self.flip_x_probability_spinbox),
+            'flip_y': (self.flip_y, self.flip_y_probability_spinbox),
+            'scale': (self.scale_augmentation_check_box, self.scale_augmentation_probability_spinbox),
+            'brightness': (self.brightness_augmentation_check_box, self.augmentation_brightness_probability_spinbox),
+            'contrast': (self.contrast_augmentation_check_box, self.augmentation_contrast_probability_spinbox),
+            'gamma': (self.gamma_augmentation_check_box, self.augmentation_gamma_probability_spinbox),
+            'noise': (self.noise_augmentation_check_box, self.augmentation_noise_probability_spinbox),
+            'blur': (self.blur_augmentation_check_box, self.augmentation_blur_probability_spinbox),
+        }
+        for key, (enabled, probability) in rows.items():
+            item = payload.get(key)
+            if not isinstance(item, Mapping):
+                continue
+            if 'enabled' in item:
+                enabled.setChecked(bool(item['enabled']))
+            if 'probability' in item:
+                probability.setValue(min(1.0, max(0.0, float(item['probability']))))
+        self.training_augmentation_editor.sync_from_controls()
+
+    def _sync_basic_photometric_master(self, *_args: object) -> None:
+        enabled = any(
+            checkbox.isChecked()
+            for checkbox in (
+                self.brightness_augmentation_check_box,
+                self.contrast_augmentation_check_box,
+                self.gamma_augmentation_check_box,
+                self.noise_augmentation_check_box,
+                self.blur_augmentation_check_box,
+            )
+        )
+        if self.additional_augmentation_check_box.isChecked() != enabled:
+            self.additional_augmentation_check_box.setChecked(enabled)
+        if hasattr(self, 'training_augmentation_editor'):
+            self.training_augmentation_editor.sync_from_controls()
 
     def _sync_preprocess_controls(self, _enabled: bool | None = None) -> None:
         self._set_field_enabled(
@@ -3059,11 +4023,11 @@ class SettingsPanel(QDockWidget):
 
     def _sync_augmentation_controls(self, enabled: bool) -> None:
         control_enabled = self._training_controls_applicable and bool(enabled)
-        online_mode_enabled = self._training_controls_applicable and bool(self.no_cut_dataset_type.isChecked())
+        online_mode_enabled = self._training_controls_applicable
         random_crop_enabled = online_mode_enabled and bool(self.random_crop_check_box.isChecked())
         self.spatial_groupbox.setEnabled(self._training_controls_applicable)
         self.photometric_groupbox.setEnabled(self._training_controls_applicable)
-        for field in (
+        photometric_fields = (
             self.augmentation_brightness_spinbox,
             self.augmentation_contrast_spinbox,
             self.augmentation_gamma_spinbox,
@@ -3071,8 +4035,17 @@ class SettingsPanel(QDockWidget):
             self.augmentation_noise_sigma_spinbox,
             self.augmentation_blur_probability_spinbox,
             self.augmentation_blur_radius_spinbox,
-        ):
-            self._set_field_visible(field, control_enabled)
+        )
+        if hasattr(self, 'training_augmentation_editor'):
+            for field in photometric_fields:
+                field.setVisible(True)
+        else:
+            for field in photometric_fields:
+                self._set_field_visible(field, control_enabled)
+            if hasattr(self, '_photometric_noise_row'):
+                self._photometric_noise_row.setVisible(control_enabled)
+            if hasattr(self, '_photometric_blur_row'):
+                self._photometric_blur_row.setVisible(control_enabled)
         self._set_field_enabled(self.augmentation_brightness_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_contrast_spinbox, control_enabled)
         self._set_field_enabled(self.augmentation_gamma_spinbox, control_enabled)
@@ -3090,10 +4063,14 @@ class SettingsPanel(QDockWidget):
             self.shift_spinbox,
             self._training_controls_applicable and not random_crop_enabled,
         )
+        if hasattr(self, 'grid_sampling_radio'):
+            self._sync_patch_sampling_mode()
         self._set_field_enabled(
             self.scale_augmentation_strength_spinbox,
             online_mode_enabled and bool(self.scale_augmentation_check_box.isChecked()),
         )
+        if hasattr(self, 'training_augmentation_editor'):
+            self.training_augmentation_editor.sync_from_controls()
         self._sync_tech_augmentation_controls(self.tech_augmentation_check_box.isChecked())
         self._sync_synthetic_defect_generator_controls(self.synthetic_defect_generator_check_box.isChecked())
         self._sync_training_augmentation_controls()
@@ -3113,6 +4090,16 @@ class SettingsPanel(QDockWidget):
         self._set_field_enabled(self.tech_aug_boundary_aware_probability_spinbox, tech_enabled)
         self._set_field_enabled(self.tech_aug_local_morphology_probability_spinbox, tech_enabled)
         self._set_field_enabled(self.tech_aug_gap_variation_probability_spinbox, tech_enabled)
+
+    def _sync_tech_operation_controls(self, *_args: object) -> None:
+        enabled = any(
+            checkbox.isChecked() for checkbox in self.tech_augmentation_operation_checkboxes.values()
+        )
+        if self.tech_augmentation_check_box.isChecked() != enabled:
+            self.tech_augmentation_check_box.setChecked(enabled)
+        self._sync_tech_augmentation_controls(enabled)
+        if hasattr(self, 'training_augmentation_editor'):
+            self.training_augmentation_editor.sync_from_controls()
 
     def _sync_synthetic_defect_generator_controls(self, _enabled: bool | None = None) -> None:
         training_enabled = self._training_controls_applicable
@@ -3208,6 +4195,14 @@ class SettingsPanel(QDockWidget):
         self._set_field_enabled(self.recognition_postprocess_kernel_size_spinbox, postprocess_enabled)
 
     def get_confidence_export_mode_value(self) -> str:
+        controls = getattr(self, 'sem_segmentation_controls', {})
+        if 'uncertainty_enabled' in controls:
+            enabled = bool(controls['uncertainty_enabled'].isChecked())
+            export = bool(controls['uncertainty_export'].isChecked())
+            if not enabled or not export:
+                return 'off'
+            method = str(controls['uncertainty_method'].currentData() or 'confidence_head')
+            return 'tta' if method in {'tta_variance', 'combined', 'auto'} else 'model_output'
         normalized = str(self.confidence_save_mode_combo.currentData() or self.confidence_save_mode_combo.currentText() or 'off')
         normalized = normalized.strip().lower()
         if normalized in CONFIDENCE_SAVE_MODES:
@@ -3223,6 +4218,11 @@ class SettingsPanel(QDockWidget):
         return 'separate_grayscale'
 
     def is_confidence_tta_enabled(self) -> bool:
+        controls = getattr(self, 'sem_segmentation_controls', {})
+        if 'uncertainty_enabled' in controls:
+            enabled = bool(controls['uncertainty_enabled'].isChecked())
+            method = str(controls['uncertainty_method'].currentData() or 'confidence_head')
+            return enabled and method in {'tta_variance', 'combined', 'auto'}
         return self.get_confidence_export_mode_value() == 'tta'
 
     def set_confidence_output_mode(self, confidence_save_mode: str | None, confidence_tta_enabled: bool = False) -> None:
@@ -3359,7 +4359,6 @@ class SettingsPanel(QDockWidget):
         try:
             random_enabled = (
                 self._training_controls_applicable
-                and bool(self.no_cut_dataset_type.isChecked())
                 and bool(self.random_patch_size_check_box.isChecked())
             )
             if random_enabled and self.sync_patch_sizes_check_box.isChecked():
@@ -3406,7 +4405,6 @@ class SettingsPanel(QDockWidget):
         try:
             random_enabled = (
                 self._training_controls_applicable
-                and bool(self.no_cut_dataset_type.isChecked())
                 and bool(self.random_patch_size_check_box.isChecked())
             )
             patch_sync = bool(self.sync_patch_sizes_check_box.isChecked()) and not random_enabled
@@ -3558,8 +4556,8 @@ class SettingsPanel(QDockWidget):
             self._model_combo_guard = False
 
     def restore_cut_mode(self, mode: Any) -> None:
-        """Retain the legacy hook while only online patch generation is supported."""
-        self.no_cut_dataset_type.setChecked(True)
+        """Compatibility hook: persisted disk mode is migrated to online generation."""
+        del mode
 
     def apply_style(self, style: str) -> None:
         """Apply stylesheet to the settings panel."""

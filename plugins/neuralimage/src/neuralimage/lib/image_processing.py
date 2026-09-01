@@ -44,7 +44,7 @@ def reshape_imgs(imgs):
 
 
 # Разрезать большое входное изображение на массив маленьких входных картинок для НС
-def cut_image(base_image, segment_size, overlap):
+def cut_image(base_image, segment_size, overlap, *, normalize: bool = True):
     # segment_size(width,height,channels)
     channels, segment_width, segment_height = segment_size
     base_height = base_image.shape[1]
@@ -79,7 +79,9 @@ def cut_image(base_image, segment_size, overlap):
                 patch[:, :copy_height, :copy_width] = base_image[:, src_top:src_bottom, src_left:src_right]
             images[image_index] = patch
 
-    return images / 255
+    if normalize:
+        return images / 255
+    return images
 
 
 # Срезать рамку с одноканального изображения (залить чёрным)

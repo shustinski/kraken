@@ -25,6 +25,7 @@ DEFAULT_FRAME_SWITCH_ENABLED = False
 DEFAULT_PROCESSING_ENABLED = False
 DEFAULT_THUMBNAIL_ENABLED = False
 DEFAULT_VERTEX_MOVE_ENABLED = True
+MOVE_VERTEX_TOOL_PROFILING_ENABLED = True
 DELETE_AREA_PROFILING_ENABLED = True
 # Change this value to True to profile one contact placement end-to-end.
 # CONTOUR_PROFILE_CONTACT_PLACEMENT=0/1 can still override it at runtime.
@@ -36,7 +37,7 @@ CONTACT_PASTE_PROFILING_ENABLED = False
 CONTACT_UNDO_PROFILING_ENABLED = False
 CONTACT_REDO_PROFILING_ENABLED = False
 CONTACT_DRAG_PROFILING_ENABLED = False
-SCENE_ZOOM_PROFILING_ENABLED = False
+SCENE_ZOOM_PROFILING_ENABLED = True
 IMAGE_RECOGNITION_PROFILING_ENABLED = False
 FILTER_APPLICATION_PROFILING_ENABLED = False
 POLYGON_CHANGE_PROFILING_ENABLED = True
@@ -45,6 +46,7 @@ DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
 DEFAULT_THUMBNAIL_TOP_LINES = 25
 DEFAULT_VERTEX_MOVE_TOP_LINES = 40
+DEFAULT_MOVE_VERTEX_TOOL_TOP_LINES = 40
 DEFAULT_DELETE_AREA_TOP_LINES = 40
 DEFAULT_CONTACT_PLACEMENT_TOP_LINES = 40
 DEFAULT_CONTACT_MULTI_SELECTION_TOP_LINES = 40
@@ -155,6 +157,14 @@ def vertex_move_profiling_enabled() -> bool:
     return profiling_enabled("vertex_move", default=DEFAULT_VERTEX_MOVE_ENABLED)
 
 
+def move_vertex_tool_profiling_enabled() -> bool:
+    return profiling_enabled(
+        "move_vertex_tool",
+        default=MOVE_VERTEX_TOOL_PROFILING_ENABLED,
+        legacy_env=("CONTOUR_PROFILE_VERTEX_TOOL",),
+    )
+
+
 def delete_area_profiling_enabled() -> bool:
     return profiling_enabled(
         "delete_area",
@@ -260,6 +270,10 @@ def thumbnail_top_lines() -> int:
 
 def vertex_move_top_lines() -> int:
     return profiling_top_lines("vertex_move", DEFAULT_VERTEX_MOVE_TOP_LINES)
+
+
+def move_vertex_tool_top_lines() -> int:
+    return profiling_top_lines("move_vertex_tool", DEFAULT_MOVE_VERTEX_TOOL_TOP_LINES)
 
 
 def delete_area_top_lines() -> int:

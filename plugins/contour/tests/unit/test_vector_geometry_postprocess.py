@@ -12,18 +12,29 @@ from contour.application.vector_geometry_postprocess import (
     dissolve_self_intersecting_polygons,
     dissolve_small_holes,
     drop_triangle_outer_artifacts,
+    apply_heavy_geometry_repair_after_edit,
+    apply_delete_area_geometry_repair,
+    apply_orphan_cleanup_after_removal,
+    apply_overlap_merge_after_edit,
     apply_overlap_repair_patch,
+    apply_topology_repair_after_edit,
     merge_overlapping_root_families,
+    merge_overlapping_root_families_near_polygons,
+    overlap_check_roots_for_layer_patch,
     polygon_description_is_invalid,
     polygons_needing_repair,
     patch_polygons_needing_repair,
     postprocess_after_editor_mutation,
     postprocess_after_vertex_move,
     postprocess_changed_polygon_edit,
+    postprocess_vertex_move_edit,
+    collapse_redundant_vertices_for_polygon_ids,
     postprocess_changed_polygon_only,
     postprocess_polygons_for_frame_navigation,
     remove_spikes_from_polygon_ring,
     repair_invalid_polygon_descriptions,
+    should_defer_geometry_repair,
+    should_defer_overlap_merge_after_edit,
     summarize_invalid_polygon_description_reasons,
     union_after_removing_polygon_ids,
 )
@@ -399,7 +410,7 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(len(roots), 1)
 
-    def test_postprocess_after_vertex_move_merges_even_when_setting_disabled(self) -> None:
+    def test_postprocess_after_vertex_move_skips_merge_when_setting_disabled(self) -> None:
         left = _rect(0.0, 0.0, 40.0, 40.0, 1)
         right = _rect(50.0, 0.0, 90.0, 40.0, 2)
         moved = apply_vertex_position_to_clone([left, right], 1, 1, (60.0, 0.0))
@@ -413,8 +424,7 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
             polygon_id=1,
         )
         roots = [p for p in processed if p.parent_id is None and not p.is_hole]
-        self.assertTrue(changed)
-        self.assertEqual(len(roots), 1)
+        self.assertEqual(len(roots), 2)
 
     def test_postprocess_changed_polygon_only_touches_target(self) -> None:
         large = _rect(0.0, 0.0, 100.0, 100.0, 1)
@@ -732,6 +742,212 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         self.assertEqual(reasons[3], ["small_object"])
         self.assertEqual(reasons[5], ["small_hole"])
         self.assertNotIn(4, reasons)
+
+    def test_should_defer_overlap_merge_only_when_removals_are_bulk(self) -> None:
+        settings = VectorGeometrySettings(deferred_geometry_repair_affected_threshold=48)
+        changed = set(range(30))
+        removed = set(range(30, 60))
+        self.assertTrue(
+            should_defer_overlap_merge_after_edit(
+                settings,
+                changed_polygon_ids=changed,
+                removed_ids=removed,
+            )
+        )
+        self.assertFalse(
+            should_defer_overlap_merge_after_edit(
+                settings,
+                changed_polygon_ids=changed,
+                removed_ids=set(),
+            )
+        )
+        self.assertFalse(
+            should_defer_overlap_merge_after_edit(
+                settings,
+                changed_polygon_ids={1},
+                removed_ids=set(),
+            )
+        )
+
+    def test_should_defer_geometry_repair_for_bulk_layer_edits(self) -> None:
+        settings = VectorGeometrySettings(deferred_geometry_repair_affected_threshold=48)
+        changed = set(range(30))
+        removed = set(range(30, 60))
+        self.assertTrue(
+            should_defer_geometry_repair(
+                settings,
+                changed_polygon_ids=changed,
+                removed_ids=removed,
+            )
+        )
+        self.assertFalse(
+            should_defer_geometry_repair(
+                settings,
+                changed_polygon_ids={1},
+                removed_ids=set(),
+            )
+        )
+
+    def test_apply_heavy_geometry_repair_after_edit_dissolves_invalid(self) -> None:
+        slot = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (30.0, 20.0),
+                (30.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 60.0),
+                (0.0, 60.0),
+            ],
+        )
+        area, perimeter, bbox = compute_polygon_metrics(slot.points)
+        slot.area = area
+        slot.perimeter = perimeter
+        slot.bbox = bbox
+        after_delete = apply_vertex_delete_to_clone([slot], 1, 0)
+        repaired = apply_heavy_geometry_repair_after_edit(
+            after_delete,
+            changed_polygon_ids={1},
+            removed_ids=set(),
+        )
+        self.assertTrue(all(is_valid_closed_polygon_ring(polygon.points) for polygon in repaired))
+
+    def test_apply_topology_repair_after_edit_dissolves_invalid(self) -> None:
+        slot = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (30.0, 20.0),
+                (30.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 60.0),
+                (0.0, 60.0),
+            ],
+        )
+        area, perimeter, bbox = compute_polygon_metrics(slot.points)
+        slot.area = area
+        slot.perimeter = perimeter
+        slot.bbox = bbox
+        after_delete = apply_vertex_delete_to_clone([slot], 1, 0)
+        repaired = apply_topology_repair_after_edit(after_delete, changed_polygon_ids={1})
+        self.assertTrue(all(is_valid_closed_polygon_ring(polygon.points) for polygon in repaired))
+
+    def test_postprocess_changed_polygon_edit_dissolves_invalid_contours(self) -> None:
+        slot = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (30.0, 20.0),
+                (30.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 60.0),
+                (0.0, 60.0),
+            ],
+        )
+        area, perimeter, bbox = compute_polygon_metrics(slot.points)
+        slot.area = area
+        slot.perimeter = perimeter
+        slot.bbox = bbox
+        trial = apply_vertex_delete_to_clone([slot], 1, 0)
+        processed, accepted, _changed = postprocess_changed_polygon_edit(
+            trial,
+            VectorGeometrySettings(),
+            polygon_id=1,
+        )
+        self.assertTrue(accepted)
+        self.assertTrue(all(is_valid_closed_polygon_ring(polygon.points) for polygon in processed))
+
+    def test_apply_delete_area_geometry_repair_dissolves_self_crossing(self) -> None:
+        slot = PolygonData(
+            id=1,
+            points=[
+                (0.0, 0.0),
+                (100.0, 0.0),
+                (100.0, 20.0),
+                (30.0, 20.0),
+                (30.0, 40.0),
+                (100.0, 40.0),
+                (100.0, 60.0),
+                (0.0, 60.0),
+            ],
+        )
+        area, perimeter, bbox = compute_polygon_metrics(slot.points)
+        slot.area = area
+        slot.perimeter = perimeter
+        slot.bbox = bbox
+        after_delete = apply_vertex_delete_to_clone([slot], 1, 0)
+        repaired = apply_delete_area_geometry_repair(
+            after_delete,
+            VectorGeometrySettings(min_outer_area_px2=1.0),
+            changed_polygon_ids={1},
+            removed_ids=set(),
+        )
+        self.assertTrue(all(is_valid_closed_polygon_ring(polygon.points) for polygon in repaired))
+
+    def test_apply_delete_area_geometry_repair_merges_after_hole_removal(self) -> None:
+        outer = _rect(0.0, 0.0, 80.0, 80.0, 1)
+        island = _rect(30.0, 30.0, 50.0, 50.0, 3)
+        island.parent_id = 2
+        hole = _rect(25.0, 25.0, 55.0, 55.0, 2)
+        hole.is_hole = True
+        hole.parent_id = 1
+        remaining = [outer, island]
+        repaired = apply_delete_area_geometry_repair(
+            remaining,
+            VectorGeometrySettings(merge_overlapping_on_edit=True, min_outer_area_px2=1.0),
+            changed_polygon_ids=set(),
+            removed_ids={2},
+            removed_polygons=[hole],
+        )
+        filled = [polygon for polygon in repaired if not polygon.is_hole]
+        self.assertEqual(len(filled), 1)
+
+    def test_postprocess_vertex_move_edit_uses_structural_sharing(self) -> None:
+        left = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        right = _rect(300.0, 300.0, 360.0, 360.0, 2)
+        layer = [left, right]
+        processed, accepted, focus_id = postprocess_vertex_move_edit(
+            layer,
+            VectorGeometrySettings(min_outer_area_px2=1.0, min_spike_interior_angle_deg=0.0),
+            polygon_id=1,
+            vertex_index=1,
+            new_point=(45.0, 0.0),
+        )
+        self.assertTrue(accepted)
+        self.assertEqual(focus_id, 1)
+        self.assertIs(processed[1], right)
+        self.assertEqual(processed[0].points[1], (45.0, 0.0))
+
+    def test_collapse_redundant_vertices_for_polygon_ids_only_clones_targets(self) -> None:
+        left = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        right = _rect(300.0, 300.0, 360.0, 360.0, 2)
+        layer = [left, right]
+        collapsed, changed_ids = collapse_redundant_vertices_for_polygon_ids(layer, {1})
+        self.assertEqual(changed_ids, set())
+        self.assertIs(collapsed[1], right)
+
+    def test_merge_near_polygon_skips_distant_roots(self) -> None:
+        near_a = _rect(0.0, 0.0, 70.0, 70.0, 1)
+        near_b = _rect(35.0, 35.0, 95.0, 95.0, 2)
+        far = _rect(300.0, 300.0, 400.0, 400.0, 3)
+        merged = merge_overlapping_root_families_near_polygons([near_a, near_b, far], 1)
+        roots = [polygon for polygon in merged if not polygon.is_hole and polygon.parent_id is None]
+        self.assertEqual(len(roots), 2)
+        self.assertIn(3, {polygon.id for polygon in merged})
+
+    def test_overlap_check_roots_for_layer_patch_limits_to_edit_region(self) -> None:
+        near = _rect(0.0, 0.0, 80.0, 80.0, 1)
+        far = _rect(300.0, 300.0, 400.0, 400.0, 2)
+        changed = _rect(10.0, 10.0, 20.0, 20.0, 1)
+        roots = overlap_check_roots_for_layer_patch([near, far], [], [changed])
+        self.assertIn(1, roots)
+        self.assertNotIn(2, roots)
 
     def test_patch_polygons_needing_repair_updates_only_local_overlap(self) -> None:
         big_a = _rect(0.0, 0.0, 80.0, 80.0, 1)

@@ -63,6 +63,23 @@ class PolygonData:
     _points_normalized: InitVar[bool] = False
 
     def __setattr__(self, name: str, value: object) -> None:
+        if name == "points":
+            try:
+                current = object.__getattribute__(self, "points")
+            except AttributeError:
+                current = None
+            if current is not None and list(current) == list(value):
+                if current is not value:
+                    object.__setattr__(self, "points", list(value))
+                return
+        elif name in {"category", "shape_hint"}:
+            try:
+                current = object.__getattribute__(self, name)
+            except AttributeError:
+                current = None
+            if current == value:
+                return
+
         object.__setattr__(self, name, value)
         if name in {"points", "category", "shape_hint"}:
             object.__setattr__(self, "_description_invalid", None)

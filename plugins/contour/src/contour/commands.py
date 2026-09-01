@@ -156,8 +156,10 @@ class MovePolygonCommand(QUndoCommand):
         polygon_id: int,
         old_points: list[tuple[float, float]],
         new_points: list[tuple[float, float]],
+        *,
+        description: str = "Move polygon",
     ) -> None:
-        super().__init__("Move polygon")
+        super().__init__(description)
         self._scene = scene
         self._polygon_id = polygon_id
         self._old_points = [(float(x), float(y)) for x, y in old_points]
@@ -203,20 +205,23 @@ class ReplacePolygonsPatchCommand(QUndoCommand):
         description: str,
         *,
         select_polygon_id: int | None = None,
+        sync_overlap_repair: bool = False,
     ) -> None:
         super().__init__(description)
         self._scene = scene
         self._removed = [polygon.clone() for polygon in removed_polygons]
         self._added = [polygon.clone() for polygon in added_polygons]
         self._select_polygon_id = select_polygon_id
+        self._sync_overlap_repair = sync_overlap_repair
 
     def redo(self) -> None:
         self._scene._apply_polygon_patch(
             remove_ids=[polygon.id for polygon in self._removed],
-            add_polygons=[polygon.clone() for polygon in self._added],
+            add_polygons=self._added,
             emit_signal=True,
             select_polygon_id=self._select_polygon_id,
             apply_selection=self._select_polygon_id is not None,
+            sync_overlap_repair=self._sync_overlap_repair,
         )
 
     def undo(self) -> None:
@@ -224,4 +229,5 @@ class ReplacePolygonsPatchCommand(QUndoCommand):
             remove_ids=[polygon.id for polygon in self._added],
             add_polygons=[polygon.clone() for polygon in self._removed],
             emit_signal=True,
+            sync_overlap_repair=self._sync_overlap_repair,
         )

@@ -436,6 +436,17 @@ class PolygonEditorSceneCreationTests(unittest.TestCase):
         self.scene.set_show_all_editable_vertices(False)
         self.assertEqual(len(self.scene._polygon_items[1]._handles), 0)
 
+    def test_show_all_editable_vertices_skips_repair_cache_rebuild(self) -> None:
+        first = _polygon(1, [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)])
+        second = _polygon(2, [(50.0, 0.0), (90.0, 0.0), (90.0, 40.0), (50.0, 40.0)])
+        self._reset([first, second])
+
+        with patch.object(self.scene, "_rebuild_polygons_needing_repair_cache") as rebuild_cache:
+            self.scene.set_show_all_editable_vertices(True)
+            self.scene.set_show_all_editable_vertices(False)
+
+        rebuild_cache.assert_not_called()
+
     def test_multi_selection_computes_editable_vertex_ids_once_for_full_refresh(self) -> None:
         polygons = [
             _polygon(

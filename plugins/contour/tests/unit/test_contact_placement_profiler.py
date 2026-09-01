@@ -11,6 +11,7 @@ from contour.infrastructure.contact_placement_profiler import (
     ContactDragProfile,
     ContactPlacementProfile,
     ImageRecognitionProfile,
+    MoveVertexToolActivationProfile,
     SceneZoomProfile,
 )
 
@@ -86,6 +87,29 @@ def test_scene_zoom_profile_reports_frames_fps_and_zoom_range() -> None:
     assert "target=2.0000" in summary
     assert "frames=2" in summary
     assert "fps=" in summary
+    assert "_some_contact_work" in session.format_stats()
+
+
+def test_move_vertex_tool_activation_profile_reports_tool_phases() -> None:
+    session = MoveVertexToolActivationProfile.begin(polygon_count=2208, vertex_count=29855)
+    assert _some_contact_work() > 0
+    session.note_timing("tool_setup", 1.5)
+    session.note_timing("sync_vertices", 42.0)
+    session.note_timing("ui_finish", 0.8)
+    session.note_timing("paint", 3.2)
+    session.note_timing("total_wall", 47.5)
+    session.finish()
+
+    summary = session.format_summary(status="displayed")
+
+    assert "[contour move-vertex-tool profiling]" in summary
+    assert "status=displayed" in summary
+    assert "polygons=2208" in summary
+    assert "vertices=29855" in summary
+    assert "tool_setup=1.500ms" in summary
+    assert "sync_vertices=42.000ms" in summary
+    assert "ui_finish=0.800ms" in summary
+    assert "paint=3.200ms" in summary
     assert "_some_contact_work" in session.format_stats()
 
 

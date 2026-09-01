@@ -2455,6 +2455,24 @@ class WidgetProcessingMixin:
     def _on_polygons_edited(self: Any) -> None:
         if self._updating_views:
             return
+        changed_polygon_id = None
+        if hasattr(self, "view") and self.view is not None:
+            changed_polygon_id = self.view._editor_scene.take_last_geometry_changed_polygon_id()
+        if (
+            changed_polygon_id is not None
+            and self._editor_polygons_are_current_frame()
+            and hasattr(self, "view")
+            and self.view is not None
+        ):
+            polygon = self.view._editor_scene._polygons.get(changed_polygon_id)
+            if polygon is not None and self._workspace.update_polygon_in_current(changed_polygon_id, polygon):
+                current_path = self._workspace.current_image_path
+                if current_path:
+                    self._persisted_highlight_paths.discard(str(Path(current_path)))
+                self._update_frame_item_status(self._workspace.current_image_path)
+                self._update_vector_edit_status_label(sync_editor=False)
+                self.polygonsEdited.emit()
+                return
         if self._sync_editor_polygons_to_current_workspace():
             current_path = self._workspace.current_image_path
             if current_path:
@@ -3946,9 +3964,10 @@ class WidgetProcessingMixin:
         if session is None:
             session = self._start_frame_switch_profile(normalized_load_path)
         if session is not None:
-            self._append_log(
+            print(
                 f"[contour frame switch profiling] started image={Path(normalized_load_path).name} "
-                "(runs until UI is interactive; set CONTOUR_PROFILE=0 or CONTOUR_PROFILE_FRAME_SWITCH=0 to disable)"
+                "(runs until UI is interactive; set CONTOUR_PROFILE=0 or CONTOUR_PROFILE_FRAME_SWITCH=0 to disable)",
+                flush=True,
             )
         cif_path_for_profile = self._find_matching_cif_path(normalized_load_path)
         profile_timings: dict[str, float] = {}
@@ -5019,21 +5038,17 @@ class WidgetProcessingMixin:
             failed=failed,
             interactive=interactive,
         )
-        print(summary)
-        self._append_log(summary)
+        print(summary, flush=True)
         if session.profiling_active or main_profiler.getstats():
-            print(session.format_stats(main_profiler, title="main_thread"))
+            print(session.format_stats(main_profiler, title="main_thread"), flush=True)
         elif session.main_stats_skipped:
             print(
                 "[contour frame switch profiling stats] main_thread skipped "
-                "(another cProfile session was active, e.g. contour processing extract)"
+                "(another cProfile session was active, e.g. contour processing extract)",
+                flush=True,
             )
         for label, worker_profiler in session.worker_profilers:
-            print(session.format_stats(worker_profiler, title=f"worker_{label}"))
-        self._append_log(
-            "[contour frame switch profiling stats] printed to console "
-            "(main thread through interactive; see worker_* sections for background load)"
-        )
+            print(session.format_stats(worker_profiler, title=f"worker_{label}"), flush=True)
         if getattr(self, "_prefetch_deferred_for_profile", False):
             self._prefetch_deferred_for_profile = False
             QTimer.singleShot(0, self._schedule_frame_prefetch)
@@ -5080,8 +5095,7 @@ class WidgetProcessingMixin:
             f"polygons={polygon_count} image={Path(image_path).name} "
             f"cif={Path(cif_path).name if cif_path else '<none>'} {detail}"
         )
-        print(message)
-        self._append_log(message)
+        print(message, flush=True)
 
     def _set_work_simulation_running(self: Any, running: bool) -> None:
         running = bool(running)

@@ -272,9 +272,10 @@ class WidgetPipelineActionsMixin:
         if image_path:
             session = self._start_frame_switch_profile(str(image_path))
             if session is not None:
-                self._append_log(
+                print(
                     f"[contour frame switch profiling] click image={Path(str(image_path)).name} "
-                    "(measures selection until UI is interactive)"
+                    "(measures selection until UI is interactive)",
+                    flush=True,
                 )
         if previous.isValid() and not self._try_leave_current_frame():
             if session is not None:

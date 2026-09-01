@@ -262,6 +262,20 @@ class GeometryTests(unittest.TestCase):
         self.assertFalse(bowtie.description_is_invalid())
         self.assertIsNone(bowtie.description_invalid_reason())
 
+    def test_description_cache_survives_no_op_points_reassign(self) -> None:
+        square = PolygonData(
+            id=2,
+            points=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+        )
+        self.assertFalse(square.description_is_invalid())
+        with patch(
+            "contour.domain.polygon_ring.closed_ring_description_invalid_reason",
+            side_effect=AssertionError("topology check should use the cached result"),
+        ):
+            square.points = list(square.points)
+            self.assertFalse(square.description_is_invalid())
+            self.assertIsNone(square.description_invalid_reason())
+
     def test_warmed_description_cache_survives_worker_style_clone_chain(self) -> None:
         bowtie = PolygonData(
             id=1,

@@ -10,6 +10,15 @@ _POINT_EQ_EPS_SQ = _POINT_EQ_EPS * _POINT_EQ_EPS
 _SEG_EPS = 1e-7
 # Dense mask-extracted rings can have thousands of vertices; full O(n²) checks are too slow.
 TOPOLOGY_CHECK_MAX_VERTICES = 192
+# Editor rings with more than a few vertices are checked via GEOS instead of Python segment loops.
+_EDITOR_RING_SHAPELY_MIN_VERTICES = 16
+
+
+def _ring_validity_via_shapely(points: list[tuple[float, float]]) -> bool:
+    from shapely.geometry import Polygon
+
+    polygon = Polygon(points)
+    return bool(polygon.is_valid and not polygon.is_empty and polygon.area > _SEG_EPS)
 
 
 def _point_equal(a: tuple[float, float], b: tuple[float, float]) -> bool:
@@ -155,13 +164,8 @@ def is_valid_closed_polygon_ring(points: list[tuple[float, float]]) -> bool:
     n = len(points)
     if n < 3:
         return True
-    if n > TOPOLOGY_CHECK_MAX_VERTICES:
-        # GEOS uses a sweep-line topology check and remains practical for
-        # mask-derived rings with thousands of vertices.
-        from shapely.geometry import Polygon
-
-        polygon = Polygon(points)
-        return bool(polygon.is_valid and not polygon.is_empty and polygon.area > _SEG_EPS)
+    if n > TOPOLOGY_CHECK_MAX_VERTICES or n >= _EDITOR_RING_SHAPELY_MIN_VERTICES:
+        return _ring_validity_via_shapely(points)
     inv_eps = 1.0 / _POINT_EQ_EPS
     buckets: dict[tuple[int, int], list[int]] = {}
     for index, (x_coord, y_coord) in enumerate(points):

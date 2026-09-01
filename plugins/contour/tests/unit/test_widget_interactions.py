@@ -4123,6 +4123,9 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
     def test_move_vertex_click_inside_selected_polygon_moves_nearest_vertex(self) -> None:
         poly = _rectangle_polygon(20, 20, 80, 80)
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(min_outer_area_px2=1.0, min_spike_interior_angle_deg=0.0)
+        )
         self.view.set_polygons([poly])
         self.view._editor_scene.select_polygon(1)
         self.view.set_tool(EditorTool.MOVE_VERTEX)

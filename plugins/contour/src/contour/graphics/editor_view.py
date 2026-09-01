@@ -50,18 +50,24 @@ from ..application.vector_geometry_postprocess import (
     apply_polygon_points_to_clone,
     apply_vertex_position_to_clone,
     collapse_redundant_vertices_in_polygons,
-    merge_overlapping_root_families,
+    merge_overlapping_root_families_near_polygons,
     postprocess_changed_polygon_edit,
+    postprocess_vertex_move_edit,
     resolve_focus_id_after_geometry_pass,
 )
-from ..commands import MovePolygonCommand, ReplacePolygonSetCommand
+from ..commands import MovePolygonCommand
 from ..domain import PolygonData
 from ..domain.polygon_ring import is_valid_closed_polygon_edge_move, is_valid_closed_polygon_vertex_move
-from ..infrastructure.contact_placement_profiler import ContactDragProfile, SceneZoomProfile
+from ..infrastructure.contact_placement_profiler import (
+    ContactDragProfile,
+    MoveVertexToolActivationProfile,
+    SceneZoomProfile,
+)
 from ..infrastructure.profiling import (
     contact_drag_profiling_enabled,
     delete_area_profiling_enabled,
     delete_area_top_lines,
+    move_vertex_tool_profiling_enabled,
     scene_zoom_profiling_enabled,
     try_disable_profiler,
     try_enable_profiler,
@@ -217,6 +223,9 @@ class PolygonEditorView(QGraphicsView):
         self._drag_polygons_snapshot: list[PolygonData] | None = None
         self._drag_polygon_is_contact = False
         self._contact_drag_profile: ContactDragProfile | None = None
+        self._move_vertex_tool_profile: MoveVertexToolActivationProfile | None = None
+        self._move_vertex_tool_profile_generation = 0
+        self._move_vertex_tool_profile_paint_started_at: float | None = None
         self._brush_pan_guard = False
         self._frame_navigation_guard: Callable[[], bool] | None = None
         self._pending_wheel_zoom_factor = 1.0
@@ -350,6 +359,25 @@ class PolygonEditorView(QGraphicsView):
             if self._tool in self._available_tools:
                 return
             tool = EditorTool.SELECT
+        profile_activation = (
+            tool == EditorTool.MOVE_VERTEX
+            and move_vertex_tool_profiling_enabled()
+        )
+        profile_started_at: float | None = None
+        if profile_activation:
+            self._cancel_move_vertex_tool_profile_finish()
+            if self._move_vertex_tool_profile is not None:
+                self._finish_move_vertex_tool_profile("superseded")
+            profile_started_at = perf_counter()
+            polygons = self._editor_scene.get_polygons()
+            self._move_vertex_tool_profile = MoveVertexToolActivationProfile.begin(
+                polygon_count=len(polygons),
+                vertex_count=sum(len(polygon.points) for polygon in polygons),
+            )
+            print("[contour move-vertex-tool profiling] started", flush=True)
+        elif self._move_vertex_tool_profile is not None:
+            self._cancel_move_vertex_tool_profile_finish()
+            self._finish_move_vertex_tool_profile("superseded")
         self._tool = tool
         self._select_press_polygon_id = None
         self._select_press_start = None
@@ -374,11 +402,31 @@ class PolygonEditorView(QGraphicsView):
             self.rulerMeasurementChanged.emit("")
         if tool != EditorTool.ANTIALIAS:
             self._editor_scene.clear_vertex_preview()
-        self._sync_all_editable_vertices_display()
+        sync_phase_started_at = perf_counter()
+        if profile_started_at is not None and self._move_vertex_tool_profile is not None:
+            self._move_vertex_tool_profile.note_timing(
+                "tool_setup",
+                (sync_phase_started_at - profile_started_at) * 1000.0,
+            )
+        sync_refresh_ms = self._sync_all_editable_vertices_display()
+        ui_phase_started_at = perf_counter()
+        if profile_started_at is not None and self._move_vertex_tool_profile is not None:
+            self._move_vertex_tool_profile.note_timing(
+                "sync_vertices",
+                sync_refresh_ms
+                if sync_refresh_ms > 0.0
+                else (ui_phase_started_at - sync_phase_started_at) * 1000.0,
+            )
         self._update_tool_cursors()
         self._update_minimap_mouse_interaction()
         self.toolChanged.emit(tool)
         self._emit_effective_polygon_create_mode_changed()
+        if profile_started_at is not None and self._move_vertex_tool_profile is not None:
+            self._move_vertex_tool_profile.note_timing(
+                "ui_finish",
+                (perf_counter() - ui_phase_started_at) * 1000.0,
+            )
+            self._schedule_move_vertex_tool_profile_finish()
 
     def available_tools(self) -> frozenset[EditorTool]:
         return self._available_tools
@@ -484,8 +532,10 @@ class PolygonEditorView(QGraphicsView):
             return True
         return self._tool == EditorTool.DELETE_VERTEX and self._delete_vertex_mode == DeleteVertexMode.SINGLE
 
-    def _sync_all_editable_vertices_display(self) -> None:
-        self._editor_scene.set_show_all_editable_vertices(self._should_show_all_editable_vertices())
+    def _sync_all_editable_vertices_display(self) -> float:
+        return self._editor_scene.set_show_all_editable_vertices(
+            self._should_show_all_editable_vertices()
+        )
 
     def _effective_polygon_create_mode(self) -> PolygonCreateMode:
         return effective_polygon_create_mode(
@@ -1549,13 +1599,13 @@ class PolygonEditorView(QGraphicsView):
             self._editor_scene.sync_vertex_preview(scene_pos)
         else:
             self._editor_scene.clear_vertex_preview()
-        if self._tool == EditorTool.MOVE_VERTEX and self._drag_kind is None:
+        if self._tool == EditorTool.MOVE_VERTEX and self._drag_kind is None and not zoom_active and not self._middle_pan_active:
             self._editor_scene.sync_move_target_preview(
                 scene_pos,
                 vertex_tolerance=self._scene_tolerance(8),
                 edge_tolerance=self._scene_tolerance(10),
             )
-        else:
+        elif not zoom_active and not self._middle_pan_active:
             self._editor_scene.clear_move_target_preview()
         if (
             self._tool == EditorTool.SELECT
@@ -1794,24 +1844,14 @@ class PolygonEditorView(QGraphicsView):
                     else:
                         profile_timings["validate"] = (perf_counter() - phase_start) * 1000.0
                         phase_start = perf_counter()
-                        trial = apply_vertex_position_to_clone(
+                        processed, accepted, focus_id = postprocess_vertex_move_edit(
                             self._drag_polygons_snapshot,
-                            self._drag_polygon_id,
-                            self._drag_vertex_index,
-                            new_point,
-                        )
-                        profile_timings["clone"] = (perf_counter() - phase_start) * 1000.0
-                        phase_start = perf_counter()
-                        processed, accepted, _changed = postprocess_changed_polygon_edit(
-                            trial,
                             self._vector_geometry_settings,
                             polygon_id=self._drag_polygon_id,
+                            vertex_index=self._drag_vertex_index,
+                            new_point=new_point,
                         )
                         profile_timings["postprocess"] = (perf_counter() - phase_start) * 1000.0
-                        if accepted:
-                            processed = collapse_redundant_vertices_in_polygons(processed)
-                            processed = merge_overlapping_root_families(processed)
-                            processed = collapse_redundant_vertices_in_polygons(processed)
                         if not accepted:
                             self._editor_scene.preview_vertex_move(
                                 self._drag_polygon_id,
@@ -1821,22 +1861,23 @@ class PolygonEditorView(QGraphicsView):
                             self._editor_scene.warn_invalid_polygon_geometry()
                         else:
                             phase_start = perf_counter()
-                            focus_id = resolve_focus_id_after_geometry_pass(
-                                self._drag_polygons_snapshot,
-                                self._drag_polygon_id,
-                                processed,
-                            )
+                            if focus_id is None:
+                                focus_id = self._drag_polygon_id
                             profile_timings["focus"] = (perf_counter() - phase_start) * 1000.0
                             phase_start = perf_counter()
-                            self.undo_stack.push(
-                                ReplacePolygonSetCommand(
-                                    self._editor_scene,
+                            committed = self._editor_scene._try_commit_single_polygon_points_change(
+                                self._drag_polygons_snapshot,
+                                processed,
+                                description="Move vertex",
+                                select_polygon_id=focus_id,
+                            )
+                            if not committed:
+                                self._editor_scene._push_polygon_set_change(
                                     self._drag_polygons_snapshot,
                                     processed,
                                     "Move vertex",
+                                    select_polygon_id=focus_id,
                                 )
-                            )
-                            self._editor_scene.select_polygon(focus_id)
                             profile_timings["undo_push"] = (perf_counter() - phase_start) * 1000.0
                     profile_timings["total_wall"] = (perf_counter() - profile_total_start) * 1000.0
                     if profiler_enabled and profiler is not None:
@@ -1881,7 +1922,11 @@ class PolygonEditorView(QGraphicsView):
                         )
                         if accepted:
                             processed = collapse_redundant_vertices_in_polygons(processed)
-                            processed = merge_overlapping_root_families(processed)
+                            if self._vector_geometry_settings.merge_overlapping_on_edit:
+                                processed = merge_overlapping_root_families_near_polygons(
+                                    processed,
+                                    self._drag_polygon_id,
+                                )
                             processed = collapse_redundant_vertices_in_polygons(processed)
                         if not accepted:
                             self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
@@ -1892,15 +1937,12 @@ class PolygonEditorView(QGraphicsView):
                                 self._drag_polygon_id,
                                 processed,
                             )
-                            self.undo_stack.push(
-                                ReplacePolygonSetCommand(
-                                    self._editor_scene,
-                                    self._drag_polygons_snapshot,
-                                    processed,
-                                    "Move edge",
-                                )
+                            self._editor_scene._push_polygon_set_change(
+                                self._drag_polygons_snapshot,
+                                processed,
+                                "Move edge",
+                                select_polygon_id=focus_id,
                             )
-                            self._editor_scene.select_polygon(focus_id)
             elif (
                 self._drag_kind == "polygon"
                 and self._drag_polygon_id is not None
@@ -1940,7 +1982,11 @@ class PolygonEditorView(QGraphicsView):
                         )
                         if accepted:
                             processed = collapse_redundant_vertices_in_polygons(processed)
-                            processed = merge_overlapping_root_families(processed)
+                            if self._vector_geometry_settings.merge_overlapping_on_edit:
+                                processed = merge_overlapping_root_families_near_polygons(
+                                    processed,
+                                    self._drag_polygon_id,
+                                )
                             processed = collapse_redundant_vertices_in_polygons(processed)
                         if not accepted:
                             contact_drag_status = "rejected"
@@ -1953,15 +1999,12 @@ class PolygonEditorView(QGraphicsView):
                                 self._drag_polygon_id,
                                 processed,
                             )
-                            self.undo_stack.push(
-                                ReplacePolygonSetCommand(
-                                    self._editor_scene,
-                                    self._drag_polygons_snapshot,
-                                    processed,
-                                    "Move polygon",
-                                )
+                            self._editor_scene._push_polygon_set_change(
+                                self._drag_polygons_snapshot,
+                                processed,
+                                "Move polygon",
+                                select_polygon_id=focus_id,
                             )
-                            self._editor_scene.select_polygon(focus_id)
             self._drag_kind = None
             self._drag_polygon_id = None
             self._drag_vertex_index = None
@@ -2295,6 +2338,7 @@ class PolygonEditorView(QGraphicsView):
         target_zoom = clamp_zoom_factor(base_zoom * float(factor))
         if abs(target_zoom - current_zoom) <= 1e-9:
             return
+        self._editor_scene.pause_deferred_geometry_repair()
         self._start_scene_zoom_profile(current_zoom, target_zoom)
         self._zoom_animation_viewport_pixel = QPoint(viewport_pixel)
         self._zoom_animation_target_zoom = target_zoom
@@ -2308,6 +2352,7 @@ class PolygonEditorView(QGraphicsView):
         self._zoom_animation_viewport_pixel = None
         self._leave_zoom_render_mode()
         self._finish_scene_zoom_profile("interrupted")
+        self._editor_scene.resume_deferred_geometry_repair()
 
     def _advance_zoom_animation(self) -> None:
         frame_started_at = perf_counter()
@@ -2346,6 +2391,17 @@ class PolygonEditorView(QGraphicsView):
         if frame_started_at is not None and self._scene_zoom_profile is not None:
             self._scene_zoom_profile.record_frame(frame_started_at)
         self._finish_scene_zoom_profile("displayed")
+        self._editor_scene.resume_deferred_geometry_repair()
+        if (
+            self._tool == EditorTool.MOVE_VERTEX
+            and self._drag_kind is None
+            and self._last_pointer_scene_pos is not None
+        ):
+            self._editor_scene.sync_move_target_preview(
+                self._last_pointer_scene_pos,
+                vertex_tolerance=self._scene_tolerance(8),
+                edge_tolerance=self._scene_tolerance(10),
+            )
 
     def _start_scene_zoom_profile(
         self,
@@ -2713,8 +2769,7 @@ class PolygonEditorView(QGraphicsView):
             f"[contour vertex profiling] total={total_ms:.3f}ms polygons={polygon_count} "
             f"vertices={vertex_count} {detail}"
         )
-        print(message)
-        self.logRequested.emit(message)
+        print(message, flush=True)
         if profiler is None:
             return
         stream = io.StringIO()
@@ -2722,9 +2777,46 @@ class PolygonEditorView(QGraphicsView):
         top_lines = vertex_move_top_lines()
         stats.print_stats(top_lines)
         report = stream.getvalue()
-        print(f"[contour vertex profiling stats] top={top_lines}")
-        print(report)
-        self.logRequested.emit(f"[contour vertex profiling stats] top={top_lines}\n{report}")
+        print(f"[contour vertex profiling stats] top={top_lines}", flush=True)
+        print(report, flush=True)
+
+    def _cancel_move_vertex_tool_profile_finish(self) -> None:
+        self._move_vertex_tool_profile_generation += 1
+        self._move_vertex_tool_profile_paint_started_at = None
+
+    def _schedule_move_vertex_tool_profile_finish(self) -> None:
+        self._move_vertex_tool_profile_generation += 1
+        generation = self._move_vertex_tool_profile_generation
+        self._move_vertex_tool_profile_paint_started_at = perf_counter()
+        QTimer.singleShot(
+            0,
+            lambda: self._finish_move_vertex_tool_profile_after_paint(generation),
+        )
+
+    def _finish_move_vertex_tool_profile_after_paint(self, generation: int) -> None:
+        if generation != self._move_vertex_tool_profile_generation:
+            return
+        profile = self._move_vertex_tool_profile
+        if profile is None:
+            return
+        paint_started_at = self._move_vertex_tool_profile_paint_started_at
+        if paint_started_at is not None:
+            profile.note_timing(
+                "paint",
+                (perf_counter() - paint_started_at) * 1000.0,
+            )
+        self._finish_move_vertex_tool_profile("displayed")
+
+    def _finish_move_vertex_tool_profile(self, status: str) -> None:
+        profile = self._move_vertex_tool_profile
+        if profile is None:
+            return
+        self._move_vertex_tool_profile = None
+        self._move_vertex_tool_profile_paint_started_at = None
+        profile.note_timing("total_wall", profile.total_wall_ms())
+        profile.finish()
+        print(profile.format_summary(status=status), flush=True)
+        print(profile.format_stats(), flush=True)
 
     def _commit_delete_vertices_in_area(self, rect: QRectF) -> None:
         profiling_enabled = delete_area_profiling_enabled()
@@ -2800,7 +2892,6 @@ class PolygonEditorView(QGraphicsView):
             f"vertices_total={vertex_total} deleted={deleted} {detail}"
         )
         print(message, flush=True)
-        self.logRequested.emit(message)
         if profiler is None:
             return
         stream = io.StringIO()
@@ -2810,4 +2901,3 @@ class PolygonEditorView(QGraphicsView):
         report = stream.getvalue()
         print(f"[contour delete-area profiling stats] top={top_lines}", flush=True)
         print(report, flush=True)
-        self.logRequested.emit(f"[contour delete-area profiling stats] top={top_lines}\n{report}")

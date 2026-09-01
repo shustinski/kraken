@@ -481,11 +481,35 @@ class WorkspaceSession:
         self._current_state = new_state
         return True
 
-    def update_current_polygons(self, polygons: list[PolygonData]) -> bool:
+    def update_current_polygons(
+        self,
+        polygons: list[PolygonData],
+        *,
+        mark_dirty: bool | None = None,
+    ) -> bool:
         if self._current_state is None or self._current_image_path is None:
             return False
         self._current_state.polygons = polygons
-        self._current_state.polygons_dirty = None
+        if mark_dirty is None:
+            self._current_state.polygons_dirty = None
+        else:
+            self._current_state.polygons_dirty = bool(mark_dirty)
+        self._current_state.polygons_needing_repair = None
+        self._state_cache[self._current_image_path] = self._current_state
+        return True
+
+    def update_polygon_in_current(self, polygon_id: int, polygon: PolygonData) -> bool:
+        if self._current_state is None or self._current_image_path is None:
+            return False
+        updated = False
+        for index, current in enumerate(self._current_state.polygons):
+            if current.id == polygon_id:
+                self._current_state.polygons[index] = polygon.clone()
+                updated = True
+                break
+        if not updated:
+            return False
+        self._current_state.polygons_dirty = True
         self._current_state.polygons_needing_repair = None
         self._state_cache[self._current_image_path] = self._current_state
         return True

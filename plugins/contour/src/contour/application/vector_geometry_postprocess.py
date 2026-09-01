@@ -75,6 +75,9 @@ class VectorGeometrySettings:
     min_hole_area_to_remove_px2: float = 100_000.0
     #: Merge conductors whose filled regions intersect after edits (vertex / polygon moves).
     merge_overlapping_on_edit: bool = True
+    #: Local edits touching at least this many polygons may defer overlap merge after commit.
+    #: Topology repair (self-intersection dissolve) always runs synchronously.
+    deferred_geometry_repair_affected_threshold: int = 48
     #: Interior angle threshold in degrees; spikes with a smaller apex angle at a vertex are removed. ``0`` disables.
     min_spike_interior_angle_deg: float = 30.0
     #: Drop unparented 3-vertex **outer** polygons (non-via) as triangle artifacts — disable if intentional triangles occur.
@@ -108,6 +111,42 @@ def collapse_redundant_vertices_in_polygons(polygons: list[PolygonData]) -> list
             _refresh_metrics(clone)
         collapsed.append(clone)
     return collapsed
+
+
+def collapse_redundant_vertices_for_polygon_ids(
+    polygons: list[PolygonData],
+    polygon_ids: set[int],
+) -> tuple[list[PolygonData], set[int]]:
+    """Collapse rings for ``polygon_ids`` only; reuse untouched polygon references."""
+
+    if not polygon_ids:
+        return polygons, set()
+    index_by_id = {polygon.id: index for index, polygon in enumerate(polygons)}
+    work = list(polygons)
+    changed_ids: set[int] = set()
+    for polygon_id in polygon_ids:
+        index = index_by_id.get(polygon_id)
+        if index is None:
+            continue
+        polygon = work[index]
+        new_points = collapse_redundant_polyline_vertices(polygon.points, closed=True, min_vertices=3)
+        if len(new_points) < 3 or new_points == polygon.points:
+            continue
+        clone = polygon.clone()
+        clone.points = new_points
+        _refresh_metrics(clone)
+        work[index] = clone
+        changed_ids.add(polygon_id)
+    return work, changed_ids
+
+
+def _replace_polygon_in_list(polygons: list[PolygonData], replacement: PolygonData) -> list[PolygonData]:
+    work = list(polygons)
+    for index, polygon in enumerate(work):
+        if polygon.id == replacement.id:
+            work[index] = replacement
+            return work
+    return work
 
 
 def drop_polygons_invalid_points(polygons: list[PolygonData]) -> list[PolygonData]:
@@ -210,34 +249,204 @@ def _expand_roots_by_touching_bboxes(
 def _merge_candidate_roots_after_removal(
     polygons: list[PolygonData],
     removed_ids: set[int],
+    *,
+    removed_polygons: list[PolygonData] | None = None,
 ) -> set[int] | None:
     """Roots that may overlap after deletions; ``None`` means check every root pair."""
 
     if not removed_ids:
         return None
-    promoted = _promoted_root_ids_before_reparent(polygons, removed_ids)
-    if not promoted:
+    root_bboxes = _root_family_bboxes(polygons)
+    seeds = set(_promoted_root_ids_before_reparent(polygons, removed_ids))
+    if removed_polygons:
+        touch_bboxes = [polygon.bbox for polygon in removed_polygons if polygon.bbox is not None]
+        if touch_bboxes:
+            _, _, _, _union_bbox = _mask_helpers()
+            touch_union = _union_bbox(touch_bboxes)
+            seeds.update(
+                root_id
+                for root_id, bbox in root_bboxes.items()
+                if _bboxes_intersect(bbox, touch_union)
+            )
+    if not seeds:
         return set()
-    roots = [
-        polygon.id
-        for polygon in polygons
-        if polygon.parent_id is None and not polygon.is_hole and not _is_via_like(polygon)
-    ]
-    root_bboxes = {root_id: _family_bbox(polygons, root_id) for root_id in roots}
-    return _expand_roots_by_touching_bboxes(promoted, root_bboxes)
+    return _expand_roots_by_touching_bboxes(seeds, root_bboxes)
 
 
 def union_after_removing_polygon_ids(
     remaining: list[PolygonData],
     removed_ids: set[int],
+    *,
+    removed_polygons: list[PolygonData] | None = None,
 ) -> list[PolygonData]:
     """Reparent orphans, then dissolve conductor–conductor overlaps."""
 
-    merge_candidates = _merge_candidate_roots_after_removal(remaining, removed_ids)
+    merge_candidates = _merge_candidate_roots_after_removal(
+        remaining,
+        removed_ids,
+        removed_polygons=removed_polygons,
+    )
     work = reparent_polygons_orphaned_by_ids(remaining, removed_ids)
     work = drop_orphan_holes(work)
     work = merge_overlapping_root_families(work, candidate_roots=merge_candidates)
     return collapse_redundant_vertices_in_polygons(work)
+
+
+def apply_orphan_cleanup_after_removal(
+    remaining: list[PolygonData],
+    removed_ids: set[int],
+) -> list[PolygonData]:
+    """Reparent islands and drop orphan holes without overlap merge."""
+
+    work = reparent_polygons_orphaned_by_ids(remaining, removed_ids)
+    return drop_orphan_holes(work)
+
+
+def apply_topology_repair_after_edit(
+    polygons: list[PolygonData],
+    *,
+    changed_polygon_ids: set[int],
+) -> list[PolygonData]:
+    """Rebuild self-intersecting rings touched by a local edit (always run synchronously)."""
+
+    work = dissolve_self_intersecting_polygons(
+        polygons,
+        changed_polygon_ids=changed_polygon_ids,
+    )
+    if not changed_polygon_ids:
+        return collapse_redundant_vertices_in_polygons(work)
+    original_ids = {polygon.id for polygon in polygons}
+    collapse_ids = set(changed_polygon_ids)
+    collapse_ids.update(polygon.id for polygon in work if polygon.id not in original_ids)
+    work, _ = collapse_redundant_vertices_for_polygon_ids(work, collapse_ids)
+    return work
+
+
+def apply_overlap_merge_after_edit(
+    polygons: list[PolygonData],
+    *,
+    removed_ids: set[int],
+    removed_polygons: list[PolygonData] | None = None,
+    changed_polygon_ids: set[int] | None = None,
+) -> list[PolygonData]:
+    """Merge conductor root families after holes/removals (may be deferred on bulk edits)."""
+
+    if removed_ids:
+        merge_candidates = _merge_candidate_roots_after_removal(
+            polygons,
+            removed_ids,
+            removed_polygons=removed_polygons or [],
+        )
+        work = merge_overlapping_root_families(polygons, candidate_roots=merge_candidates)
+        return collapse_redundant_vertices_in_polygons(work)
+    if changed_polygon_ids:
+        work = merge_overlapping_root_families_near_polygons(
+            polygons,
+            changed_polygon_ids,
+            expand_touching_roots=False,
+        )
+        return collapse_redundant_vertices_in_polygons(work)
+    return collapse_redundant_vertices_in_polygons(polygons)
+
+
+def _repair_still_invalid_ring_families(
+    polygons: list[PolygonData],
+    *,
+    seed_polygon_ids: set[int],
+) -> list[PolygonData]:
+    """Rebuild any families that still contain invalid rings after the main repair pass."""
+
+    if not seed_polygon_ids:
+        return polygons
+    by_id = {polygon.id: polygon for polygon in polygons}
+    invalid_ids: set[int] = set()
+    for polygon_id in seed_polygon_ids:
+        root_id = _root_id_for_polygon(by_id, polygon_id)
+        if root_id is None:
+            continue
+        for member in _collect_family(polygons, root_id):
+            if member.description_is_invalid():
+                invalid_ids.add(member.id)
+    if not invalid_ids:
+        return polygons
+    return dissolve_self_intersecting_polygons(polygons, changed_polygon_ids=invalid_ids)
+
+
+def apply_delete_area_geometry_repair(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings,
+    *,
+    changed_polygon_ids: set[int],
+    removed_ids: set[int],
+    removed_polygons: list[PolygonData] | None = None,
+) -> list[PolygonData]:
+    """Full synchronous repair after delete-area: topology, orphans, merge, final invalid pass."""
+
+    seed_ids = set(changed_polygon_ids) | set(removed_ids)
+    work = apply_topology_repair_after_edit(
+        polygons,
+        changed_polygon_ids=changed_polygon_ids,
+    )
+    if removed_ids:
+        work = apply_orphan_cleanup_after_removal(work, removed_ids)
+    if settings.merge_overlapping_on_edit and seed_ids:
+        work = apply_overlap_merge_after_edit(
+            work,
+            removed_ids=removed_ids,
+            removed_polygons=removed_polygons,
+            changed_polygon_ids=changed_polygon_ids if not removed_ids else None,
+        )
+    return _repair_still_invalid_ring_families(work, seed_polygon_ids=seed_ids)
+
+
+def apply_heavy_geometry_repair_after_edit(
+    polygons: list[PolygonData],
+    *,
+    changed_polygon_ids: set[int],
+    removed_ids: set[int],
+    removed_polygons: list[PolygonData] | None = None,
+) -> list[PolygonData]:
+    """Dissolve invalid rings and merge conductors after a local edit."""
+
+    work = apply_topology_repair_after_edit(
+        polygons,
+        changed_polygon_ids=changed_polygon_ids,
+    )
+    return apply_overlap_merge_after_edit(
+        work,
+        removed_ids=removed_ids,
+        removed_polygons=removed_polygons,
+    )
+
+
+def should_defer_overlap_merge_after_edit(
+    settings: VectorGeometrySettings,
+    *,
+    changed_polygon_ids: set[int],
+    removed_ids: set[int],
+) -> bool:
+    """Whether overlap merge may run after commit instead of blocking the edit."""
+
+    if not removed_ids:
+        return False
+    affected = len(changed_polygon_ids | removed_ids)
+    threshold = max(1, int(settings.deferred_geometry_repair_affected_threshold))
+    return affected >= threshold
+
+
+def should_defer_geometry_repair(
+    settings: VectorGeometrySettings,
+    *,
+    changed_polygon_ids: set[int],
+    removed_ids: set[int],
+) -> bool:
+    """Backward-compatible alias for overlap-merge deferral."""
+
+    return should_defer_overlap_merge_after_edit(
+        settings,
+        changed_polygon_ids=changed_polygon_ids,
+        removed_ids=removed_ids,
+    )
 
 
 def drop_small_outer_polygons(polygons: list[PolygonData], min_area_px2: float) -> list[PolygonData]:
@@ -457,31 +666,125 @@ class _UnionFind:
             self._parent[rb] = ra
 
 
-def _collect_family(polygons: list[PolygonData], root_id: int) -> list[PolygonData]:
-    by_id = {p.id: p for p in polygons}
+def _children_by_parent(polygons: list[PolygonData]) -> dict[int, list[int]]:
+    children: dict[int, list[int]] = {}
+    for polygon in polygons:
+        parent_id = polygon.parent_id
+        if parent_id is not None:
+            children.setdefault(parent_id, []).append(polygon.id)
+    return children
+
+
+def _pad_bbox(bbox: tuple[int, int, int, int], padding: int) -> tuple[int, int, int, int]:
+    x, y, width, height = bbox
+    return (x - padding, y - padding, width + 2 * padding, height + 2 * padding)
+
+
+def _root_id_map(polygons: list[PolygonData]) -> dict[int, int]:
+    by_id = {polygon.id: polygon for polygon in polygons}
+    roots: dict[int, int] = {}
+
+    def resolve(polygon_id: int) -> int:
+        cached = roots.get(polygon_id)
+        if cached is not None:
+            return cached
+        seen: set[int] = set()
+        chain: list[int] = []
+        current = polygon_id
+        while current in by_id:
+            cached = roots.get(current)
+            if cached is not None:
+                for node in chain:
+                    roots[node] = cached
+                return cached
+            if current in seen:
+                for node in chain:
+                    roots[node] = current
+                return current
+            seen.add(current)
+            chain.append(current)
+            parent_id = by_id[current].parent_id
+            if parent_id is None:
+                for node in chain:
+                    roots[node] = current
+                return current
+            current = parent_id
+        for node in chain:
+            roots[node] = polygon_id
+        return polygon_id
+
+    for polygon in polygons:
+        resolve(polygon.id)
+    return roots
+
+
+def _root_family_bboxes(polygons: list[PolygonData]) -> dict[int, tuple[int, int, int, int]]:
+    """Map conductor root id → padded union bbox of all family members."""
+
+    _, _, _, _union_bbox = _mask_helpers()
+    root_map = _root_id_map(polygons)
+    conductor_roots = {
+        polygon.id
+        for polygon in polygons
+        if polygon.parent_id is None and not polygon.is_hole and not _is_via_like(polygon)
+    }
+    grouped: dict[int, list[tuple[int, int, int, int]]] = {
+        root_id: [] for root_id in conductor_roots
+    }
+    for polygon in polygons:
+        root_id = root_map.get(polygon.id)
+        if root_id is None or root_id not in grouped or polygon.bbox is None:
+            continue
+        grouped[root_id].append(polygon.bbox)
+    bboxes: dict[int, tuple[int, int, int, int]] = {}
+    for root_id, boxes in grouped.items():
+        if not boxes:
+            bboxes[root_id] = (0, 0, 1, 1)
+        else:
+            bboxes[root_id] = _pad_bbox(_union_bbox(boxes), 2)
+    return bboxes
+
+
+def _collect_family(
+    polygons: list[PolygonData],
+    root_id: int,
+    *,
+    by_id: dict[int, PolygonData] | None = None,
+    children: dict[int, list[int]] | None = None,
+) -> list[PolygonData]:
+    by_id = by_id or {polygon.id: polygon for polygon in polygons}
+    children = children or _children_by_parent(polygons)
     out: list[PolygonData] = []
     pending = [root_id]
     seen: set[int] = set()
     while pending:
-        pid = pending.pop()
-        if pid in seen or pid not in by_id:
+        polygon_id = pending.pop()
+        if polygon_id in seen or polygon_id not in by_id:
             continue
-        seen.add(pid)
-        out.append(by_id[pid])
-        for p in polygons:
-            if p.parent_id == pid:
-                pending.append(p.id)
+        seen.add(polygon_id)
+        out.append(by_id[polygon_id])
+        pending.extend(children.get(polygon_id, ()))
     return out
 
 
-def _family_bbox(polygons: list[PolygonData], root_id: int) -> tuple[int, int, int, int]:
-    _bbox_from_points, *_rest = _mask_helpers()
-    pts: list[tuple[float, float]] = []
-    for p in _collect_family(polygons, root_id):
-        pts.extend(p.points)
-    if not pts:
+def _family_bbox(
+    polygons: list[PolygonData],
+    root_id: int,
+    *,
+    by_id: dict[int, PolygonData] | None = None,
+    children: dict[int, list[int]] | None = None,
+    root_bboxes: dict[int, tuple[int, int, int, int]] | None = None,
+) -> tuple[int, int, int, int]:
+    if root_bboxes is not None:
+        cached = root_bboxes.get(root_id)
+        if cached is not None:
+            return cached
+    _, _, _, _union_bbox = _mask_helpers()
+    family = _collect_family(polygons, root_id, by_id=by_id, children=children)
+    member_bboxes = [polygon.bbox for polygon in family if polygon.bbox is not None]
+    if not member_bboxes:
         return (0, 0, 1, 1)
-    return _bbox_from_points(pts, padding=2)
+    return _pad_bbox(_union_bbox(member_bboxes), 2)
 
 
 def _families_mask_overlap(polygons: list[PolygonData], root_a: int, root_b: int) -> bool:
@@ -522,6 +825,57 @@ def _families_mask_overlap_cached(
     return int(np.count_nonzero(cv2.bitwise_and(mask1, mask2))) > 1
 
 
+def _merge_candidate_roots_near_polygons(
+    polygons: list[PolygonData],
+    polygon_ids: set[int],
+    *,
+    expand_touching_roots: bool = True,
+) -> set[int]:
+    if not polygon_ids:
+        return set()
+    by_id = {polygon.id: polygon for polygon in polygons}
+    root_bboxes = _root_family_bboxes(polygons)
+    seeds: set[int] = set()
+    touch_bboxes: list[tuple[int, int, int, int]] = []
+    for polygon_id in polygon_ids:
+        root_id = _root_id_for_polygon(by_id, polygon_id)
+        if root_id is not None:
+            seeds.add(root_id)
+        polygon = by_id.get(polygon_id)
+        if polygon is not None and polygon.bbox is not None:
+            touch_bboxes.append(polygon.bbox)
+    if touch_bboxes:
+        _, _, _, _union_bbox = _mask_helpers()
+        touch_union = _union_bbox(touch_bboxes)
+        seeds.update(
+            root_id
+            for root_id, bbox in root_bboxes.items()
+            if _bboxes_intersect(bbox, touch_union)
+        )
+    if not seeds:
+        return set()
+    if expand_touching_roots:
+        return _expand_roots_by_touching_bboxes(seeds, root_bboxes)
+    return seeds
+
+
+def merge_overlapping_root_families_near_polygons(
+    polygons: list[PolygonData],
+    polygon_ids: set[int] | int,
+    *,
+    expand_touching_roots: bool = True,
+) -> list[PolygonData]:
+    """Merge only root families near edited polygons instead of scanning the full layer."""
+
+    ids = {polygon_ids} if isinstance(polygon_ids, int) else set(polygon_ids)
+    candidate_roots = _merge_candidate_roots_near_polygons(
+        polygons,
+        ids,
+        expand_touching_roots=expand_touching_roots,
+    )
+    return merge_overlapping_root_families(polygons, candidate_roots=candidate_roots)
+
+
 def merge_overlapping_root_families(
     polygons: list[PolygonData],
     *,
@@ -539,20 +893,36 @@ def merge_overlapping_root_families(
         return polygons
     uf = _UnionFind(roots)
     ordered = sorted(roots)
-    families = {root_id: _collect_family(polygons, root_id) for root_id in ordered}
-    bboxes = {root_id: _family_bbox(polygons, root_id) for root_id in ordered}
-    for idx, ra in enumerate(ordered):
-        for rb in ordered[idx + 1 :]:
-            if candidate_roots is not None and ra not in candidate_roots and rb not in candidate_roots:
+    by_id = {polygon.id: polygon for polygon in polygons}
+    children = _children_by_parent(polygons)
+    bboxes = _root_family_bboxes(polygons)
+    family_roots = set(roots if candidate_roots is None else candidate_roots)
+    if candidate_roots is not None:
+        for root_id in roots:
+            if root_id in family_roots:
                 continue
-            if not _bboxes_intersect(bboxes[ra], bboxes[rb]):
+            root_bbox = bboxes[root_id]
+            if any(_bboxes_intersect(root_bbox, bboxes[candidate_root]) for candidate_root in candidate_roots):
+                family_roots.add(root_id)
+    families = {
+        root_id: _collect_family(polygons, root_id, by_id=by_id, children=children)
+        for root_id in family_roots
+    }
+    for idx, root_a in enumerate(ordered):
+        for root_b in ordered[idx + 1 :]:
+            if candidate_roots is not None and root_a not in candidate_roots and root_b not in candidate_roots:
                 continue
-            if _families_mask_overlap_cached(ra, rb, families=families, bboxes=bboxes):
-                uf.union(ra, rb)
+            if not _bboxes_intersect(bboxes[root_a], bboxes[root_b]):
+                continue
+            for root_id in (root_a, root_b):
+                if root_id not in families:
+                    families[root_id] = _collect_family(polygons, root_id, by_id=by_id, children=children)
+            if _families_mask_overlap_cached(root_a, root_b, families=families, bboxes=bboxes):
+                uf.union(root_a, root_b)
     clusters: dict[int, set[int]] = {}
-    for r in roots:
-        root = uf.find(r)
-        clusters.setdefault(root, set()).add(r)
+    for root_id in roots:
+        leader = uf.find(root_id)
+        clusters.setdefault(leader, set()).add(root_id)
     merged_roots = {leader for leader, members in clusters.items() if len(members) > 1}
     if not merged_roots:
         return polygons
@@ -671,7 +1041,13 @@ def dissolve_self_intersecting_polygons(
         if roots_to_process is not None and root_id not in roots_to_process:
             continue
         family = _collect_family(polygons, root_id)
-        if not any(_needs(polygon) for polygon in family):
+        if changed_polygon_ids is not None:
+            family_changed = [
+                polygon for polygon in family if polygon.id in changed_polygon_ids
+            ]
+            if not family_changed or not any(_needs(polygon) for polygon in family_changed):
+                continue
+        elif not any(_needs(polygon) for polygon in family):
             continue
         extracted = _dissolve_family_to_simple_rings(family)
         if not extracted:
@@ -838,8 +1214,13 @@ def overlapping_root_family_ids_near_roots(
     if len(roots) < 2:
         return set()
     ordered = sorted(roots)
-    families = {root_id: _collect_family(polygons, root_id) for root_id in ordered}
-    bboxes = {root_id: _family_bbox(polygons, root_id) for root_id in ordered}
+    by_id = {polygon.id: polygon for polygon in polygons}
+    children = _children_by_parent(polygons)
+    families = {
+        root_id: _collect_family(polygons, root_id, by_id=by_id, children=children)
+        for root_id in ordered
+    }
+    bboxes = _root_family_bboxes(polygons)
     overlapping: set[int] = set()
     for idx, root_a in enumerate(ordered):
         for root_b in ordered[idx + 1 :]:
@@ -858,25 +1239,23 @@ def overlap_check_roots_for_layer_patch(
 ) -> set[int]:
     """Return root ids whose geometry may need overlap repair after a local edit."""
 
-    roots = [
-        polygon.id
-        for polygon in polygons
-        if polygon.parent_id is None and not polygon.is_hole and not _is_via_like(polygon)
-    ]
-    root_bboxes = {root_id: _family_bbox(polygons, root_id) for root_id in roots}
     touch_bboxes = [
         polygon.bbox
         for polygon in (*removed_polygons, *added_or_changed)
         if polygon.bbox is not None
     ]
-    overlap_check_roots: set[int] = set()
-    for root_id in roots:
-        bbox = root_bboxes.get(root_id)
-        if bbox is None:
-            continue
-        if any(_bboxes_intersect(bbox, touch_bbox) for touch_bbox in touch_bboxes):
-            overlap_check_roots.add(root_id)
-    return overlap_check_roots
+    if not touch_bboxes:
+        return set()
+    root_bboxes = _root_family_bboxes(polygons)
+    if not root_bboxes:
+        return set()
+    _, _, _, _union_bbox = _mask_helpers()
+    touch_union = _union_bbox(touch_bboxes)
+    return {
+        root_id
+        for root_id, bbox in root_bboxes.items()
+        if _bboxes_intersect(bbox, touch_union)
+    }
 
 
 def apply_overlap_repair_patch(
@@ -938,9 +1317,10 @@ def patch_polygons_needing_repair(
     min_outer = float(settings.min_outer_area_px2)
     min_hole = float(settings.min_hole_area_to_remove_px2)
     for polygon in added_or_changed:
-        ring_reason = polygon.description_invalid_reason()
-        if ring_reason is not None and ring_reason != "repeated_vertex":
-            _add(polygon.id, ring_reason)
+        if polygon.description_is_invalid():
+            ring_reason = polygon.description_invalid_reason()
+            if ring_reason is not None:
+                _add(polygon.id, ring_reason)
         if polygon.is_hole:
             if min_hole > 0.0 and _is_small_inner_area(polygon, min_hole):
                 _add(polygon.id, "small_hole")
@@ -966,6 +1346,7 @@ def polygons_needing_repair(
     settings: VectorGeometrySettings,
     *,
     include_ring_reasons: bool = True,
+    include_overlap: bool = True,
 ) -> dict[int, list[str]]:
     """Map polygon id → ordered unique repair reason codes (topology + area + overlap).
 
@@ -988,11 +1369,24 @@ def polygons_needing_repair(
 
     if include_ring_reasons:
         for polygon in polygons:
-            ring_reason = polygon.description_invalid_reason()
-            # CIF keyhole bridges (repeated_vertex) are valid descriptions; keep them out of
-            # auto red-mark / repair-offer maps. Explicit repair still targets them via reason.
-            if ring_reason is not None and ring_reason != "repeated_vertex":
-                _add(polygon.id, ring_reason)
+            if polygon.description_is_invalid():
+                ring_reason = polygon.description_invalid_reason()
+                if ring_reason is not None:
+                    _add(polygon.id, ring_reason)
+
+    if not include_overlap:
+        min_outer = float(settings.min_outer_area_px2)
+        min_hole = float(settings.min_hole_area_to_remove_px2)
+        for polygon in polygons:
+            if polygon.is_hole:
+                if min_hole > 0.0 and _is_small_inner_area(polygon, min_hole):
+                    _add(polygon.id, "small_hole")
+                continue
+            if _is_via_like(polygon):
+                continue
+            if min_outer > 0.0 and abs(float(polygon.area)) < min_outer:
+                _add(polygon.id, "small_object")
+        return reasons_by_id
 
     overlapping_roots = overlapping_root_family_ids(polygons)
     for root_id in overlapping_roots:
@@ -1210,19 +1604,29 @@ def postprocess_changed_polygon_edit(
     Returns ``(polygons, accepted, changed)``.
     """
 
-    original = [polygon.clone() for polygon in polygons]
     if polygon_id is None:
-        return original, True, False
+        return [polygon.clone() for polygon in polygons], True, False
 
-    trial = next((polygon for polygon in polygons if polygon.id == polygon_id), None)
+    original_trial = next((polygon for polygon in polygons if polygon.id == polygon_id), None)
+    if original_trial is None:
+        return [polygon.clone() for polygon in polygons], True, False
+
+    before_signature = _single_polygon_topo_signature(original_trial)
+    before_layer_signature = _polygons_topo_signature(polygons)
+    work = list(polygons)
+    work = apply_topology_repair_after_edit(work, changed_polygon_ids={polygon_id})
+    trial = next((polygon for polygon in work if polygon.id == polygon_id), None)
     if trial is None:
-        return original, True, False
+        work = drop_orphan_holes(work)
+        if not work or any(not _ring_has_usable_geometry(polygon.points) for polygon in work):
+            return [polygon.clone() for polygon in polygons], False, False
+        changed = before_layer_signature != _polygons_topo_signature(work)
+        return work, True, changed
 
     replacement = _postprocess_scoped_single_polygon(trial, settings)
     if replacement is None or len(replacement.points) < len(trial.points):
-        return original, False, False
+        return [polygon.clone() for polygon in polygons], False, False
 
-    work = [polygon.clone() for polygon in polygons]
     replacement.id = trial.id
     replacement.parent_id = trial.parent_id
     for index, polygon in enumerate(work):
@@ -1230,7 +1634,7 @@ def postprocess_changed_polygon_edit(
             work[index] = replacement
             break
     work = drop_orphan_holes(work)
-    changed = _single_polygon_topo_signature(trial) != _single_polygon_topo_signature(replacement)
+    changed = before_signature != _single_polygon_topo_signature(replacement)
     return work, True, changed
 
 
@@ -1281,14 +1685,67 @@ def postprocess_after_vertex_move(
     work, accepted, changed = postprocess_changed_polygon_edit(polygons, settings, polygon_id=polygon_id)
     if not accepted:
         return [p.clone() for p in polygons], False
-    before_merge = _polygons_topo_signature(work)
-    work = merge_overlapping_root_families(work)
-    work = drop_polygons_invalid_points(work)
-    work = filter_simple_valid_polygons(work)
-    work = drop_orphan_holes(work)
-    if before_merge != _polygons_topo_signature(work):
-        changed = True
+    if settings.merge_overlapping_on_edit and polygon_id is not None:
+        before_merge = _polygons_topo_signature(work)
+        work = merge_overlapping_root_families_near_polygons(
+            work,
+            polygon_id,
+            expand_touching_roots=False,
+        )
+        work = drop_polygons_invalid_points(work)
+        work = filter_simple_valid_polygons(work)
+        work = drop_orphan_holes(work)
+        if before_merge != _polygons_topo_signature(work):
+            changed = True
     return work, changed
+
+
+def postprocess_vertex_move_edit(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings,
+    *,
+    polygon_id: int,
+    vertex_index: int,
+    new_point: tuple[float, float],
+) -> tuple[list[PolygonData], bool, int | None]:
+    """Fast vertex-move postprocess with structural sharing and scoped collapse."""
+
+    work, moved = apply_vertex_position_scoped(
+        polygons,
+        polygon_id,
+        vertex_index,
+        new_point,
+    )
+    if not moved:
+        return list(polygons), False, polygon_id
+
+    work, accepted, _changed = postprocess_changed_polygon_edit(
+        work,
+        settings,
+        polygon_id=polygon_id,
+    )
+    if not accepted:
+        return list(polygons), False, polygon_id
+
+    if polygon_id in {polygon.id for polygon in work}:
+        work, _collapsed_ids = collapse_redundant_vertices_for_polygon_ids(work, {polygon_id})
+        if settings.merge_overlapping_on_edit:
+            before_merge = _polygons_topo_signature(work)
+            work = merge_overlapping_root_families_near_polygons(
+                work,
+                polygon_id,
+                expand_touching_roots=False,
+            )
+            work = drop_polygons_invalid_points(work)
+            work = filter_simple_valid_polygons(work)
+            work = drop_orphan_holes(work)
+            if before_merge != _polygons_topo_signature(work):
+                if polygon_id not in {polygon.id for polygon in work}:
+                    return work, True, resolve_focus_id_after_geometry_pass(polygons, polygon_id, work)
+        return work, True, polygon_id
+
+    work = drop_orphan_holes(work)
+    return work, True, resolve_focus_id_after_geometry_pass(polygons, polygon_id, work)
 
 
 def postprocess_polygons_for_frame_navigation(
@@ -1372,12 +1829,25 @@ def apply_vertex_position_to_clone(
     vertex_index: int,
     new_point: tuple[float, float],
 ) -> list[PolygonData]:
-    work = [p.clone() for p in polygons]
-    by_id = {p.id: p for p in work}
-    target = by_id.get(polygon_id)
-    if target is None or vertex_index < 0 or vertex_index >= len(target.points):
+    work, moved = apply_vertex_position_scoped(polygons, polygon_id, vertex_index, new_point)
+    if moved:
         return work
-    pts = [(float(x), float(y)) for x, y in target.points]
+    return [polygon.clone() for polygon in polygons]
+
+
+def apply_vertex_position_scoped(
+    polygons: list[PolygonData],
+    polygon_id: int,
+    vertex_index: int,
+    new_point: tuple[float, float],
+) -> tuple[list[PolygonData], bool]:
+    """Apply a vertex move by cloning only the edited polygon."""
+
+    target = next((polygon for polygon in polygons if polygon.id == polygon_id), None)
+    if target is None or vertex_index < 0 or vertex_index >= len(target.points):
+        return list(polygons), False
+    clone = target.clone()
+    pts = [(float(x), float(y)) for x, y in clone.points]
     moved_point = integer_point(new_point)
     closed_duplicate_endpoint = len(pts) > 2 and hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) < 1e-5
     pts[vertex_index] = moved_point
@@ -1386,12 +1856,13 @@ def apply_vertex_position_to_clone(
             pts[-1] = moved_point
         elif vertex_index == len(pts) - 1:
             pts[0] = moved_point
-    target.points = pts
-    if not is_valid_closed_polygon_vertex_move(target.points, vertex_index):
-        return [p.clone() for p in polygons]
-    _invalidate_authored_cif_paint_for_edit(work, target)
-    _refresh_metrics(target)
-    return work
+    clone.points = pts
+    if not is_valid_closed_polygon_vertex_move(clone.points, vertex_index):
+        return list(polygons), False
+    work = _replace_polygon_in_list(polygons, clone)
+    _invalidate_authored_cif_paint_for_edit(work, clone)
+    _refresh_metrics(clone)
+    return work, True
 
 
 def apply_vertex_delete_to_clone(
@@ -1442,6 +1913,9 @@ def resolve_focus_id_after_geometry_pass(
     before_sel = before_by_id.get(polygon_id_hint)
     if before_sel is None:
         return after_polygons[0].id if after_polygons else None
+    after_by_id = {polygon.id: polygon for polygon in after_polygons}
+    if polygon_id_hint in after_by_id:
+        return polygon_id_hint
     c = _centroid(before_sel.points)
     outer_candidates = [p for p in after_polygons if not p.is_hole]
     containment = []

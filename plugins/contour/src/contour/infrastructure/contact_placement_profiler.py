@@ -18,6 +18,7 @@ from .profiling import (
     contact_redo_top_lines,
     contact_undo_top_lines,
     image_recognition_top_lines,
+    move_vertex_tool_top_lines,
     scene_zoom_top_lines,
     try_disable_profiler,
     try_enable_profiler,
@@ -109,6 +110,70 @@ class SceneZoomProfile:
         if not self.profiler.getstats():
             return f"{prefix} no cProfile data collected"
         top_lines = scene_zoom_top_lines()
+        stream = io.StringIO()
+        pstats.Stats(self.profiler, stream=stream).sort_stats(
+            "cumtime"
+        ).print_stats(top_lines)
+        return f"{prefix} sort=cumulative top={top_lines}\n{stream.getvalue()}"
+
+
+@dataclass
+class MoveVertexToolActivationProfile:
+    polygon_count: int
+    vertex_count: int
+    started_at: float = field(default_factory=perf_counter)
+    profiler: cProfile.Profile = field(default_factory=cProfile.Profile)
+    profiler_active: bool = False
+    main_stats_skipped: bool = False
+    timings_ms: dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def begin(
+        cls,
+        *,
+        polygon_count: int,
+        vertex_count: int,
+    ) -> MoveVertexToolActivationProfile:
+        session = cls(
+            polygon_count=max(0, int(polygon_count)),
+            vertex_count=max(0, int(vertex_count)),
+        )
+        if try_enable_profiler(session.profiler):
+            session.profiler_active = True
+        else:
+            session.main_stats_skipped = True
+        return session
+
+    def note_timing(self, name: str, elapsed_ms: float) -> None:
+        self.timings_ms[name] = max(0.0, float(elapsed_ms))
+
+    def finish(self) -> None:
+        if self.profiler_active:
+            try_disable_profiler(self.profiler)
+            self.profiler_active = False
+
+    def total_wall_ms(self) -> float:
+        return max(0.0, (perf_counter() - self.started_at) * 1000.0)
+
+    def format_summary(self, *, status: str) -> str:
+        total_ms = self.timings_ms.get("total_wall", self.total_wall_ms())
+        detail = " ".join(
+            f"{name}={elapsed:.3f}ms"
+            for name, elapsed in self.timings_ms.items()
+            if name != "total_wall"
+        )
+        skipped = " main_cprofile_skipped=yes" if self.main_stats_skipped else ""
+        return (
+            f"[contour move-vertex-tool profiling] status={status} "
+            f"total={total_ms:.3f}ms polygons={self.polygon_count} "
+            f"vertices={self.vertex_count} {detail}{skipped}"
+        )
+
+    def format_stats(self) -> str:
+        prefix = "[contour move-vertex-tool profiling stats]"
+        if not self.profiler.getstats():
+            return f"{prefix} no cProfile data collected"
+        top_lines = move_vertex_tool_top_lines()
         stream = io.StringIO()
         pstats.Stats(self.profiler, stream=stream).sort_stats(
             "cumtime"

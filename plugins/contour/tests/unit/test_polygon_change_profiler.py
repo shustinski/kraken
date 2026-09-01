@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import cProfile
 
+import numpy as np
+
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.infrastructure import profiling
 from contour.infrastructure.polygon_change_profiler import PolygonChangeProfile
@@ -30,7 +32,7 @@ def test_polygon_change_profile_reports_operation_and_phases() -> None:
     assert "_some_polygon_work" in session.format_stats()
 
 
-def test_editor_scene_emits_polygon_change_profile(monkeypatch) -> None:
+def test_editor_scene_emits_polygon_change_profile(monkeypatch, capsys) -> None:
     from PyQt6.QtGui import QPixmap
     from PyQt6.QtWidgets import QApplication, QGraphicsView
 
@@ -53,8 +55,6 @@ def test_editor_scene_emits_polygon_change_profile(monkeypatch) -> None:
     scene.set_image_pixmap(QPixmap(100, 100))
     scene.set_polygons([outer], emit_signal=False)
 
-    messages: list[str] = []
-    scene.logRequested.connect(messages.append)
     monkeypatch.setattr(profiling, "POLYGON_CHANGE_PROFILING_ENABLED", True)
 
     changed = scene._subtract_shape_from_scene(
@@ -63,7 +63,44 @@ def test_editor_scene_emits_polygon_change_profile(monkeypatch) -> None:
         label="Erase rectangle",
     )
 
+    captured = capsys.readouterr().out
     assert changed
-    assert any("[contour polygon change profiling]" in message for message in messages)
-    assert any("operation=erase_rectangle" in message for message in messages)
-    assert any("[contour polygon change profiling stats]" in message for message in messages)
+    assert "[contour polygon change profiling]" in captured
+    assert "operation=erase_rectangle" in captured
+    assert "[contour polygon change profiling stats]" in captured
+
+
+def test_move_vertex_tool_activation_emits_console_profile(monkeypatch, capsys) -> None:
+    from PyQt6.QtWidgets import QApplication
+
+    from contour.graphics.editor_view import PolygonEditorView
+    from contour.graphics.tools import EditorTool
+    from contour.infrastructure import profiling
+
+    app = QApplication.instance() or QApplication([])
+    view = PolygonEditorView()
+    view.set_image(np.zeros((100, 100), dtype=np.uint8))
+    view.set_polygons(
+        [
+            PolygonData(
+                id=1,
+                points=[(10.0, 10.0), (70.0, 10.0), (70.0, 70.0), (10.0, 70.0)],
+                area=3600.0,
+                perimeter=240.0,
+                bbox=(10, 10, 60, 60),
+            )
+        ]
+    )
+
+    monkeypatch.setattr(profiling, "MOVE_VERTEX_TOOL_PROFILING_ENABLED", True)
+
+    view.set_tool(EditorTool.MOVE_VERTEX)
+    app.processEvents()
+
+    captured = capsys.readouterr().out
+    assert "[contour move-vertex-tool profiling] started" in captured
+    assert "[contour move-vertex-tool profiling] status=displayed" in captured
+    assert "polygons=1" in captured
+    assert "vertices=4" in captured
+    assert "sync_vertices=" in captured
+    assert "[contour move-vertex-tool profiling stats]" in captured

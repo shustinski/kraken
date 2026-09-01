@@ -333,6 +333,63 @@ class EditablePolygonItem(QGraphicsPathItem):
             display_settings=display_settings,
         )
 
+    def update_move_target_highlight(
+        self,
+        display_settings: DisplaySettings,
+        *,
+        preview_vertices: bool,
+        selected: bool,
+        highlight_vertex_index: int | None,
+        highlight_edge_index: int | None,
+        conductor_hover_highlight: bool = False,
+    ) -> None:
+        """Refresh move-target handles/edge highlight without rebuilding polygon paths."""
+
+        if self._polygon is None:
+            return
+        handle_color = QColor(display_settings.vertex_color)
+        show_handles = not _is_ellipse_display_polygon(self._polygon) and (
+            preview_vertices or (selected and display_settings.show_vertices)
+        )
+        target_handle_count = len(self._polygon.points) if show_handles else 0
+        if not show_handles:
+            while len(self._handles) > target_handle_count:
+                handle = self._handles.pop()
+                if handle.scene() is not None:
+                    handle.scene().removeItem(handle)
+                handle.setParentItem(None)
+            self._update_edge_highlight(
+                highlight_edge_index,
+                conductor_hover_highlight=conductor_hover_highlight,
+                display_settings=display_settings,
+            )
+            return
+
+        while len(self._handles) < target_handle_count:
+            self._handles.append(VertexHandleItem(self.polygon_id, len(self._handles), self))
+        highlight_size = max(display_settings.vertex_size + 2.0, display_settings.vertex_size * 1.35)
+        highlight_color = QColor(MOVE_TARGET_VERTEX_HIGHLIGHT_COLOR)
+        for index, point in enumerate(self._polygon.points):
+            handle = self._handles[index]
+            handle.polygon_id = self.polygon_id
+            handle.vertex_index = index
+            if highlight_vertex_index is not None and index == highlight_vertex_index:
+                handle.update_geometry(point, highlight_size, highlight_color)
+            else:
+                handle.update_geometry(point, display_settings.vertex_size, handle_color)
+            handle.setVisible(True)
+        while len(self._handles) > target_handle_count:
+            handle = self._handles.pop()
+            if handle.scene() is not None:
+                handle.scene().removeItem(handle)
+            handle.setParentItem(None)
+
+        self._update_edge_highlight(
+            highlight_edge_index,
+            conductor_hover_highlight=conductor_hover_highlight,
+            display_settings=display_settings,
+        )
+
     def _update_edge_highlight(
         self,
         highlight_edge_index: int | None,

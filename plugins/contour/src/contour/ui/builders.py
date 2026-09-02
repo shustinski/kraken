@@ -2902,6 +2902,7 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))
     self.polygon_editor.set_trace_mode(self.trace_mode_combo.currentData())
     self.polygon_editor.set_trace_width(float(self.trace_width_spin.value()))
+    self._restore_persisted_tool_modes()
     self._sync_editor_via_size()
     self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
     self.polygon_editor.set_antialias_grade(int(self.antialias_grade_spin.value()))

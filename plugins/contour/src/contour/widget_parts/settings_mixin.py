@@ -213,6 +213,34 @@ class WidgetSettingsMixin:
             path for path in self._workspace.image_paths if self._workspace.image_has_changes(path)
         )
         self._session_settings_store.save_modified_image_paths(restored_dirty)
+        if hasattr(self, "brush_mode_combo"):
+            brush_mode = self.brush_mode_combo.currentData()
+            if brush_mode is not None:
+                self._session_settings_store.save_brush_mode(str(brush_mode))
+        if hasattr(self, "trace_mode_combo"):
+            trace_mode = self.trace_mode_combo.currentData()
+            if trace_mode is not None:
+                self._session_settings_store.save_trace_mode(str(trace_mode))
+
+    def _restore_persisted_tool_modes(self: Any) -> None:
+        if not hasattr(self, "_session_settings_store") or not hasattr(self, "polygon_editor"):
+            return
+        from ..graphics.tools import BrushMode
+
+        brush_mode = self._session_settings_store.load_brush_mode()
+        trace_mode = self._session_settings_store.load_trace_mode()
+        if brush_mode in {BrushMode.FREEFORM, BrushMode.ANGLED}:
+            self.polygon_editor.set_brush_mode(BrushMode(brush_mode))
+            if hasattr(self, "brush_mode_combo"):
+                index = self.brush_mode_combo.findData(BrushMode(brush_mode))
+                if index >= 0:
+                    self.brush_mode_combo.setCurrentIndex(index)
+        if trace_mode in {BrushMode.FREEFORM, BrushMode.ANGLED}:
+            self.polygon_editor.set_trace_mode(BrushMode(trace_mode))
+            if hasattr(self, "trace_mode_combo"):
+                index = self.trace_mode_combo.findData(BrushMode(trace_mode))
+                if index >= 0:
+                    self.trace_mode_combo.setCurrentIndex(index)
 
     def _set_image_list_mode(self: Any, mode: str) -> None:
         from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY, IMAGE_LIST_MODE_EXPLICIT

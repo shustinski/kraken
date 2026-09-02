@@ -1145,7 +1145,10 @@ class PolygonEditorView(QGraphicsView):
         self._clipboard_polygons = [polygon.clone() for polygon in polygons]
         self._clipboard_anchor = _polygons_center(self._clipboard_polygons)
         self.contactCopyFinished.emit(len(polygons))
+        self.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self.start_paste_mode()
+        if self._paste_mode:
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
 
     def cut_selected(self) -> None:
         if self.vector_edits_locked():
@@ -1189,6 +1192,7 @@ class PolygonEditorView(QGraphicsView):
     def _exit_paste_mode(self) -> None:
         self._paste_mode = False
         self._clear_paste_preview()
+        self.unsetCursor()
 
     def _rebuild_paste_preview(self) -> None:
         self._clear_paste_preview()

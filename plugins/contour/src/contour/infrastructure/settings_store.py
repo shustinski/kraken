@@ -23,6 +23,8 @@ SESSION_IMAGE_LIST_MODE_KEY = "session/image_list_mode"
 SESSION_VIEWED_IMAGE_PATHS_KEY = "session/viewed_image_paths"
 SESSION_MODIFIED_IMAGE_PATHS_KEY = "session/modified_image_paths"
 SESSION_PERSISTED_IMAGE_PATHS_KEY = "session/persisted_image_paths"
+SESSION_BRUSH_MODE_KEY = "session/brush_mode"
+SESSION_TRACE_MODE_KEY = "session/trace_mode"
 WINDOW_GEOMETRY_SETTINGS_KEY = "window/geometry"
 WINDOW_STATE_SETTINGS_KEY = "window/state"
 IMAGE_LIST_MODE_EXPLICIT = "explicit_files"
@@ -265,6 +267,30 @@ class WidgetSessionSettingsStore:
         settings = self._settings_factory()
         normalized = IMAGE_LIST_MODE_EXPLICIT if mode == IMAGE_LIST_MODE_EXPLICIT else IMAGE_LIST_MODE_DIRECTORY
         settings.setValue(SESSION_IMAGE_LIST_MODE_KEY, normalized)
+        settings.sync()
+
+    def load_brush_mode(self) -> str | None:
+        settings = self._settings_factory()
+        value = settings.value(SESSION_BRUSH_MODE_KEY, "", type=str)
+        settings.sync()
+        text = str(value or "").strip()
+        return text or None
+
+    def save_brush_mode(self, mode: str) -> None:
+        settings = self._settings_factory()
+        settings.setValue(SESSION_BRUSH_MODE_KEY, str(mode))
+        settings.sync()
+
+    def load_trace_mode(self) -> str | None:
+        settings = self._settings_factory()
+        value = settings.value(SESSION_TRACE_MODE_KEY, "", type=str)
+        settings.sync()
+        text = str(value or "").strip()
+        return text or None
+
+    def save_trace_mode(self, mode: str) -> None:
+        settings = self._settings_factory()
+        settings.setValue(SESSION_TRACE_MODE_KEY, str(mode))
         settings.sync()
 
     def _load_path_list(self, key: str) -> list[str]:

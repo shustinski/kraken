@@ -70,7 +70,13 @@ class WidgetNavigationMixin:
         cif_failed = stem_lower in self._cif_load_failure_stems
         normalized = ipath or ""
         never_opened = (not normalized) or (normalized not in self._viewed_image_paths)
-        dirty = bool(ipath is not None and self._workspace.image_has_changes(normalized))
+        dirty = bool(
+            ipath is not None
+            and (
+                self._workspace.image_has_changes(normalized)
+                or normalized in self._restored_modified_image_paths
+            )
+        )
         persist = normalized in self._persisted_highlight_paths if normalized else False
         return classify_vector_side_status(
             has_matching_image=has_matching,

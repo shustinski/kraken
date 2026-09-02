@@ -223,11 +223,17 @@ class ContourMainView(QMainWindow):
         self._attach_update_menu_action()
         self._refresh_view_and_tools_menus()
         _try_apply_app_icon(self)
-        self._window_layout_restored = self._restore_window_layout()
-        if not self._window_layout_restored:
-            QTimer.singleShot(0, self._apply_default_dock_layout)
+        self._pending_window_layout_restore = True
         if _should_schedule_startup_update_check():
             QTimer.singleShot(0, lambda: self._update_controller.check_for_updates(manual=False))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if getattr(self, "_pending_window_layout_restore", False):
+            self._pending_window_layout_restore = False
+            self._window_layout_restored = self._restore_window_layout()
+            if not self._window_layout_restored:
+                QTimer.singleShot(0, self._apply_default_dock_layout)
 
     @property
     def widget(self) -> PolygonExtractionWidget:

@@ -1449,6 +1449,19 @@ class PolygonEditorScene(QGraphicsScene):
         self._last_geometry_changed_polygon_id = None
         return polygon_id
 
+    def _discard_authored_cif_paint_rings(self, polygon_ids: set[int]) -> None:
+        for polygon_id in polygon_ids:
+            polygon = self._polygons.get(polygon_id)
+            if polygon is None:
+                continue
+            if polygon.cif_paint_ring:
+                polygon.cif_paint_ring = []
+            root_id = self._polygon_root_id(polygon_id)
+            if root_id is not None:
+                root = self._polygons.get(root_id)
+                if root is not None and root.cif_paint_ring:
+                    root.cif_paint_ring = []
+
     def _apply_polygon_patch(
         self,
         *,
@@ -1488,6 +1501,10 @@ class PolygonEditorScene(QGraphicsScene):
                 defer_pick_z_rebuild=True,
             )
             refresh_ids.update(self._polygon_edit_family_ids(polygon.id))
+
+        self._discard_authored_cif_paint_rings(
+            {polygon.id for polygon in add_polygons} | removed_id_set
+        )
 
         for polygon_id in list(refresh_ids):
             root_id = self._polygon_root_id(polygon_id)
@@ -1966,11 +1983,12 @@ class PolygonEditorScene(QGraphicsScene):
             polygon = self._polygons.get(polygon_id)
             if item is None or polygon is None:
                 continue
-            conductor_hover_highlight = (
-                self._hover_conductor_polygon_id is not None
-                and polygon_id == self._hover_conductor_polygon_id
+            conductor_hover_highlight = self._polygon_has_conductor_hover_highlight(
+                polygon_id
+            ) or (
+                polygon_id in self._delete_area_highlight_ids
                 and polygon_id not in self._selected_polygon_ids
-            ) or (polygon_id in self._delete_area_highlight_ids and polygon_id not in self._selected_polygon_ids)
+            )
             item.update_move_target_highlight(
                 self._display_settings,
                 preview_vertices=polygon_id in editable_vertex_ids,
@@ -1992,6 +2010,13 @@ class PolygonEditorScene(QGraphicsScene):
                 conductor_hover_highlight=conductor_hover_highlight,
             )
 
+    def _polygon_has_conductor_hover_highlight(self, polygon_id: int) -> bool:
+        return (
+            self._hover_conductor_polygon_id is not None
+            and polygon_id == self._hover_conductor_polygon_id
+            and polygon_id not in self._selected_polygon_ids
+        )
+
     def _set_hover_conductor_polygon_id(self, conductor_id: int | None) -> None:
         if conductor_id is not None and conductor_id not in self._polygons:
             conductor_id = None
@@ -2008,7 +2033,7 @@ class PolygonEditorScene(QGraphicsScene):
         for polygon_id in changed_ids:
             item = self._polygon_items.get(polygon_id)
             if item is not None:
-                self._refresh_polygon_appearance(
+                self._refresh_polygon_item(
                     polygon_id,
                     item,
                     editable_vertex_ids=editable_vertex_ids,
@@ -4154,11 +4179,12 @@ class PolygonEditorScene(QGraphicsScene):
             item = self._polygon_items.get(polygon_id)
         if item is None:
             return
-        conductor_hover_highlight = (
-            self._hover_conductor_polygon_id is not None
-            and polygon_id == self._hover_conductor_polygon_id
+        conductor_hover_highlight = self._polygon_has_conductor_hover_highlight(
+            polygon_id
+        ) or (
+            polygon_id in self._delete_area_highlight_ids
             and polygon_id not in self._selected_polygon_ids
-        ) or (polygon_id in self._delete_area_highlight_ids and polygon_id not in self._selected_polygon_ids)
+        )
         item.update_from_polygon(
             polygon,
             self._display_settings,
@@ -4239,6 +4265,14 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> None:
         polygon = self._polygons.get(polygon_id)
         if polygon is None:
+            return
+        conductor_hover_highlight = self._polygon_has_conductor_hover_highlight(polygon_id)
+        if conductor_hover_highlight:
+            self._refresh_polygon_item(
+                polygon_id,
+                item,
+                editable_vertex_ids=editable_vertex_ids,
+            )
             return
         item.update_selection_appearance(
             self._display_settings,

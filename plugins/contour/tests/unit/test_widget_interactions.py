@@ -3489,6 +3489,14 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         self._move_editor_pointer(QPointF(50.0, 50.0))
         self.assertEqual(self.view._editor_scene._hover_conductor_polygon_id, 1)
 
+    def test_conductor_hover_fills_polygon_instead_of_outline_only(self) -> None:
+        self.view.set_polygons([_rectangle_polygon(20, 20, 80, 80)])
+        self.view.set_tool(EditorTool.SELECT)
+        self._move_editor_pointer(QPointF(50.0, 50.0))
+        item = self.view._editor_scene._polygon_items[1]
+        self.assertGreater(item.brush().color().alpha(), 64)
+        self.assertTrue(item._edge_highlight_item.path().isEmpty())
+
     def test_hole_hover_highlights_inner_polygon_not_parent(self) -> None:
         outer = _rectangle_polygon(0, 0, 80, 80)
         outer.id = 1

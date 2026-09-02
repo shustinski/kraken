@@ -3534,8 +3534,10 @@ class WidgetProcessingMixin:
             self._begin_async_directory_scan(str(Path(input_directory)))
             return
         if not image_paths:
+            self._refresh_image_list_item_states()
             return
         self.load_images(image_paths, preferred_current_image_path=preferred)
+        self._refresh_image_list_item_states()
 
     def _rebuild_image_list_items(self: Any, normalized_paths: list[str]) -> None:
         self._rebuild_image_list_items_responsive(normalized_paths)

@@ -308,6 +308,45 @@ class FilesystemAnalysisStore:
         self._project_partition_imported(result, stored.blob.sha256, frames)
         return True
 
+    def mark_partition_state(self, partition_id: str, state: str, *, error: str = "") -> None:
+        """Project an Agent lifecycle state while keeping imported data immutable."""
+
+        allowed = {"queued", "running", "failed", "cancelled"}
+        if state not in allowed:
+            raise ValueError(f"Unsupported analysis partition state: {state}")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT run_id, state FROM analysis_partitions WHERE partition_id=?",
+                (partition_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown Kraken analysis partition: {partition_id}")
+        if row["state"] == "imported":
+            return
+        if row["state"] == state:
+            return
+        payload = {
+            "idempotency_key": f"analysis-state:{partition_id}:{state}",
+            "partition_id": partition_id,
+            "state": state,
+            "error": str(error)[:10_000],
+        }
+        self._append_event(str(row["run_id"]), "analysis_partition.state_changed", payload)
+        self._project_partition_state(partition_id, state)
+
+    def _project_partition_state(self, partition_id: str, state: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE analysis_partitions SET state=?, updated_at=? WHERE partition_id=? AND state!='imported'",
+                (state, _now(), partition_id),
+            )
+            row = connection.execute(
+                "SELECT run_id FROM analysis_partitions WHERE partition_id=?",
+                (partition_id,),
+            ).fetchone()
+            if row is not None:
+                self._refresh_run(connection, str(row["run_id"]))
+
     def _project_partition_imported(
         self,
         result: AnalysisPartitionResultManifest,
@@ -372,6 +411,9 @@ class FilesystemAnalysisStore:
             """
             SELECT COUNT(*) AS total,
                    SUM(CASE WHEN state='imported' THEN 1 ELSE 0 END) AS imported,
+                   SUM(CASE WHEN state IN ('queued', 'running') THEN 1 ELSE 0 END) AS active,
+                   SUM(CASE WHEN state='failed' THEN 1 ELSE 0 END) AS failed_partitions,
+                   SUM(CASE WHEN state='cancelled' THEN 1 ELSE 0 END) AS cancelled_partitions,
                    COALESCE(SUM(completed_frames), 0) AS completed,
                    COALESCE(SUM(failed_frames), 0) AS failed
             FROM analysis_partitions WHERE run_id=?
@@ -381,7 +423,19 @@ class FilesystemAnalysisStore:
         total = int(row["total"] or 0)
         imported = int(row["imported"] or 0)
         failed = int(row["failed"] or 0)
-        state = "partial" if total and imported == total and failed else "completed" if total and imported == total else "running"
+        active = int(row["active"] or 0)
+        failed_partitions = int(row["failed_partitions"] or 0)
+        cancelled_partitions = int(row["cancelled_partitions"] or 0)
+        if total and imported == total:
+            state = "partial" if failed else "completed"
+        elif active:
+            state = "running"
+        elif failed_partitions:
+            state = "partial" if imported else "failed"
+        elif cancelled_partitions:
+            state = "partial" if imported else "cancelled"
+        else:
+            state = "queued"
         connection.execute(
             """
             UPDATE analysis_runs SET state=?, completed_frames=?, failed_frames=?, updated_at=? WHERE run_id=?
@@ -505,6 +559,61 @@ class FilesystemAnalysisStore:
             ).fetchall()
         return tuple(AnalysisPartitionJobManifest.from_payload(json.loads(row[0])) for row in rows)
 
+    def all_partitions(self, run_id: str) -> tuple[AnalysisPartitionJobManifest, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT manifest_json FROM analysis_partitions WHERE run_id=? ORDER BY partition_index",
+                (run_id,),
+            ).fetchall()
+        return tuple(AnalysisPartitionJobManifest.from_payload(json.loads(row[0])) for row in rows)
+
+    def failed_partitions(self, run_id: str) -> tuple[AnalysisPartitionJobManifest, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT manifest_json FROM analysis_partitions
+                WHERE run_id=? AND state IN ('failed', 'cancelled') ORDER BY partition_index
+                """,
+                (run_id,),
+            ).fetchall()
+        return tuple(AnalysisPartitionJobManifest.from_payload(json.loads(row[0])) for row in rows)
+
+    def requeue_partition(self, manifest: AnalysisPartitionJobManifest) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT run_id, state FROM analysis_partitions WHERE partition_id=?",
+                (manifest.partition_id,),
+            ).fetchone()
+        if row is None or str(row["run_id"]) != manifest.run_id:
+            raise KeyError(f"Unknown Kraken analysis partition: {manifest.partition_id}")
+        if row["state"] not in {"failed", "cancelled"}:
+            raise ValueError("Only failed or cancelled analysis partitions can be requeued")
+        payload = {
+            "idempotency_key": f"analysis-requeue:{manifest.partition_id}:{manifest.job_id}",
+            "partition_id": manifest.partition_id,
+            "manifest": manifest.to_payload(),
+        }
+        self._append_event(manifest.run_id, "analysis_partition.requeued", payload)
+        self._project_partition_requeued(manifest)
+
+    def _project_partition_requeued(self, manifest: AnalysisPartitionJobManifest) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE analysis_partitions
+                SET job_id=?, manifest_json=?, state='queued', attempt=attempt+1,
+                    bundle_sha256=NULL, result_json=NULL, updated_at=?
+                WHERE partition_id=? AND state!='imported'
+                """,
+                (
+                    manifest.job_id,
+                    canonical_json(manifest.to_payload()),
+                    _now(),
+                    manifest.partition_id,
+                ),
+            )
+            self._refresh_run(connection, manifest.run_id)
+
     def rebuild(self) -> None:
         events = tuple(self.events.iter_project())
         with self._connect() as connection:
@@ -559,6 +668,15 @@ class FilesystemAnalysisStore:
                         )
                     )
                 self._project_partition_imported(result, blob_sha256, frames)
+            elif event_type == "analysis_partition.state_changed":
+                partition_id = str(payload.get("partition_id", ""))
+                state = str(payload.get("state", ""))
+                if partition_id and state in {"queued", "running", "failed", "cancelled"}:
+                    self._project_partition_state(partition_id, state)
+            elif event_type == "analysis_partition.requeued":
+                raw_manifest = payload.get("manifest")
+                if isinstance(raw_manifest, dict):
+                    self._project_partition_requeued(AnalysisPartitionJobManifest.from_payload(raw_manifest))
 
 
 __all__ = ["FilesystemAnalysisStore", "KrakenAnalysisRun"]

@@ -3,9 +3,25 @@
 from __future__ import annotations
 
 import os
+import platform
 import sys
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from uuid import uuid4
 
+from kraken_core.analysis_protocol import (
+    AnalysisArtifactInput,
+    AnalysisFrameInput,
+    AnalysisParameter,
+    AnalysisSourceRole,
+)
+from kraken_core.analysis_run_protocol import (
+    AnalysisRecipe,
+    AnalysisRuntimeIdentity,
+    AnalysisSourceBinding,
+    canonical_json,
+    payload_sha256,
+)
 from kraken_core.frame_matrix import MatrixSession, ThumbnailStoreFactory
 from kraken_core.frame_matrix.qt import FrameMatrixWidget
 from kraken_core.plugins import PluginInventoryItem
@@ -14,6 +30,9 @@ from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
 from kraken_manager.domain.project import LayerType, RepresentationKind
 from kraken_manager.application.imports import ImportMappingMode
+from kraken_manager.application.analysis_runs import AnalysisRunCoordinator
+from kraken_manager.infrastructure.analysis import FilesystemAnalysisStore
+from kraken_manager.infrastructure.plugin import AgentAnalysisGateway
 from kraken_manager.presentation.qt import ProjectManagerShell, ProjectWorkspacePage
 from kraken_manager.presentation.qt.models import LayerListItem, ProjectListItem
 from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimensionsWidget
@@ -21,6 +40,24 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimension
 from . import windows_credentials
 from .composition import DesktopSession, EmbeddedProjectService
 from .matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
+
+
+def _installed_version(distribution: str, fallback: str = "not-installed") -> str:
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return fallback
+
+
+def _karakal_runtime_identity() -> AnalysisRuntimeIdentity:
+    return AnalysisRuntimeIdentity(
+        engine_version=_installed_version("karakal", "1.0.0"),
+        engine_build=os.environ.get("KARAKAL_BUILD_HASH", "development"),
+        python_version=platform.python_version(),
+        numpy_version=_installed_version("numpy"),
+        opencv_version=_installed_version("opencv-python", _installed_version("opencv-python-headless")),
+        operating_system=f"{platform.system()} {platform.release()}",
+    )
 
 
 class RepresentationDialog:
@@ -481,6 +518,270 @@ class DesktopController:
             if first is not None:
                 workspace.layer_tabs.setCurrentIndex(0)
                 self._select_layer(workspace, project.id, first)
+        self._configure_analysis(workspace, project.id)
+
+    def _configure_analysis(self, workspace, project_id) -> None:
+        from PyQt6.QtCore import QTimer
+
+        store = FilesystemAnalysisStore(self.service.catalog_root, str(project_id))
+        workspace._analysis_store = store
+        token = os.environ.get("KRAKEN_AGENT_TOKEN", "").strip()
+        coordinator = None
+        if token:
+            gateway = AgentAnalysisGateway(
+                base_url=os.environ.get("KRAKEN_AGENT_URL", "http://127.0.0.1:8765"),
+                token=token,
+                staging_root=Path(
+                    os.environ.get(
+                        "KRAKEN_AGENT_STAGING_ROOT",
+                        str(Path.home() / ".kraken" / "agent" / "staging"),
+                    )
+                ),
+            )
+            coordinator = AnalysisRunCoordinator(
+                store,
+                gateway,
+                lambda version_id: self.service.artifact_source_path(project_id, version_id),
+            )
+        workspace._analysis_coordinator = coordinator
+        workspace.analysisRequested.connect(
+            lambda configuration: self._start_analysis(workspace, project_id, configuration)
+        )
+        panel = workspace.analysis_runs_panel
+        panel.metricChanged.connect(lambda _key: self._refresh_analysis_panel(workspace))
+        panel.run_table.itemSelectionChanged.connect(lambda: self._refresh_analysis_results(workspace))
+        panel.retryRequested.connect(lambda run_id: self._analysis_action(workspace, "retry", run_id))
+        panel.cancelRequested.connect(lambda run_id: self._analysis_action(workspace, "cancel", run_id))
+        panel.repeatRequested.connect(lambda run_id: self._analysis_action(workspace, "repeat", run_id))
+        panel.exportRequested.connect(lambda run_id: self._export_analysis(workspace, run_id))
+        panel.renderMapRequested.connect(lambda _run_id, _frame_id: self._map_not_configured(workspace))
+        timer = QTimer(workspace)
+        timer.setInterval(750)
+        timer.timeout.connect(lambda: self._poll_analysis(workspace))
+        timer.start()
+        workspace._analysis_timer = timer
+        self._refresh_analysis_panel(workspace)
+
+    def _analysis_frames(self, workspace, project_id, configuration) -> tuple[
+        tuple[AnalysisFrameInput, ...], tuple[AnalysisSourceBinding, ...]
+    ]:
+        layer_id = getattr(workspace, "_selected_layer_id", None)
+        if not layer_id:
+            raise ValueError("Сначала выберите слой проекта")
+        coordinates = workspace.matrix_view.selected_coordinates(maximum=100_000)
+        if not coordinates:
+            raise ValueError("Выборка не содержит кадров")
+        raw_bindings = configuration.get("bindings")
+        if not isinstance(raw_bindings, dict):
+            raise ValueError("Некорректные привязки моделей A/B/C")
+        representations = {
+            str(item.id): item
+            for item in self.service.list_representations(project_id, layer_id)
+        }
+        resolved: dict[str, tuple[object, dict[tuple[int, int], object]]] = {}
+        source_bindings: list[AnalysisSourceBinding] = []
+        for key, identifier_value in raw_bindings.items():
+            identifier = str(identifier_value)
+            representation = representations.get(identifier)
+            if representation is None or representation.kind is not RepresentationKind.IMAGE:
+                raise ValueError(f"Модель {key} не является доступным изображением этого слоя")
+            cells = {
+                (item.x, item.y): item
+                for item in self.service.frame_cells(project_id, layer_id, identifier)
+            }
+            selected_cells = [cells.get(coordinate) for coordinate in coordinates]
+            missing = [coordinate for coordinate, cell in zip(coordinates, selected_cells, strict=True) if cell is None]
+            if missing:
+                preview = ", ".join(f"({x}, {y})" for x, y in missing[:5])
+                raise ValueError(f"У модели {key} нет {len(missing)} выбранных кадров: {preview}")
+            digests = [str(cell.sha256) for cell in selected_cells if cell is not None]
+            source_bindings.append(
+                AnalysisSourceBinding(
+                    binding_key=str(key),
+                    source_id=identifier,
+                    source_version=payload_sha256(digests),
+                    display_name=representation.name,
+                )
+            )
+            resolved[str(key)] = (representation, cells)
+
+        frames: list[AnalysisFrameInput] = []
+        for x, y in coordinates:
+            artifacts: list[AnalysisArtifactInput] = []
+            frame_id = ""
+            for key, (representation, cells) in resolved.items():
+                cell = cells[(x, y)]
+                if frame_id and frame_id != cell.frame_id:
+                    raise ValueError(f"Привязки моделей расходятся по идентификатору кадра ({x}, {y})")
+                frame_id = cell.frame_id
+                version_item = self.service.get_artifact_version(project_id, cell.artifact_version_id)
+                if version_item is None:
+                    raise ValueError(f"Версия артефакта для кадра ({x}, {y}) больше недоступна")
+                suffix = Path(version_item.filename).suffix.lower()
+                artifacts.append(
+                    AnalysisArtifactInput(
+                        binding_key=key,
+                        role=AnalysisSourceRole.MODEL_OUTPUT,
+                        artifact_id=str(version_item.series_id),
+                        artifact_version_id=str(version_item.id),
+                        relative_path=f"inputs/{key}/{frame_id}{suffix}",
+                        media_type=version_item.media_type,
+                        sha256=version_item.sha256,
+                        display_name=representation.name,
+                    )
+                )
+            frames.append(AnalysisFrameInput(frame_id=frame_id, x=x, y=y, artifacts=tuple(artifacts)))
+        return tuple(frames), tuple(source_bindings)
+
+    def _start_analysis(self, workspace, project_id, configuration) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        coordinator = getattr(workspace, "_analysis_coordinator", None)
+        if coordinator is None:
+            QMessageBox.warning(
+                workspace,
+                "Kraken Agent не настроен",
+                "Задайте KRAKEN_AGENT_TOKEN, KRAKEN_AGENT_URL и KRAKEN_AGENT_STAGING_ROOT, затем перезапустите Kraken.",
+            )
+            return
+        try:
+            frames, source_bindings = self._analysis_frames(workspace, project_id, configuration)
+            raw_recipe = configuration.get("recipe")
+            raw_parameters = configuration.get("parameters", {})
+            if not isinstance(raw_recipe, dict) or not isinstance(raw_parameters, dict):
+                raise ValueError("Некорректная конфигурация анализа")
+            recipe = AnalysisRecipe.from_payload(raw_recipe)
+            parameters = tuple(
+                AnalysisParameter(str(key), value)
+                for key, value in sorted(raw_parameters.items())
+                if isinstance(value, (str, int, float, bool))
+            )
+            coordinator.start(
+                project_id=str(project_id),
+                frames=frames,
+                source_bindings=source_bindings,
+                recipe=recipe,
+                runtime=_karakal_runtime_identity(),
+                parameters=parameters,
+            )
+        except Exception as exc:
+            QMessageBox.warning(workspace, "Не удалось запустить анализ", str(exc))
+            self._refresh_analysis_panel(workspace)
+            return
+        workspace.analysis_runs_panel.setVisible(True)
+        self._refresh_analysis_panel(workspace)
+
+    def _poll_analysis(self, workspace) -> None:
+        coordinator = getattr(workspace, "_analysis_coordinator", None)
+        store = getattr(workspace, "_analysis_store", None)
+        if coordinator is None or store is None:
+            return
+        changed = False
+        for run in store.list_runs():
+            if run.state in {"queued", "running"}:
+                coordinator.refresh(run.run_id)
+                changed = True
+        if changed:
+            self._refresh_analysis_panel(workspace)
+
+    def _refresh_analysis_panel(self, workspace) -> None:
+        store = getattr(workspace, "_analysis_store", None)
+        if store is None:
+            return
+        panel = workspace.analysis_runs_panel
+        selected = panel.selected_run_id()
+        runs = store.list_runs()
+        panel.set_runs(
+            {
+                "run_id": run.run_id,
+                "state": run.state,
+                "progress": f"{run.completed_frames + run.failed_frames}/{run.total_frames}",
+                "models": ", ".join(
+                    f"{item.binding_key}={item.display_name or item.source_id}"
+                    for item in run.manifest.source_bindings
+                ),
+                "recipe": canonical_json(run.manifest.recipe.expression.to_payload()),
+                "created_at": "",
+            }
+            for run in runs
+        )
+        if runs:
+            selected_row = next((index for index, run in enumerate(runs) if run.run_id == selected), 0)
+            panel.run_table.selectRow(selected_row)
+            active = runs[selected_row]
+            progress = round(100 * (active.completed_frames + active.failed_frames) / active.total_frames)
+            panel.progress.setValue(progress)
+        else:
+            panel.progress.setValue(0)
+        self._refresh_analysis_results(workspace)
+
+    def _refresh_analysis_results(self, workspace) -> None:
+        store = getattr(workspace, "_analysis_store", None)
+        panel = workspace.analysis_runs_panel
+        run_id = panel.selected_run_id()
+        if store is None or not run_id:
+            panel.set_results(())
+            return
+        metric_key = str(panel.metric_combo.currentData() or "xor")
+        panel.set_results(dict(row) for row in store.frame_results(run_id, metric_key))
+
+    def _analysis_action(self, workspace, action: str, run_id: str) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        coordinator = getattr(workspace, "_analysis_coordinator", None)
+        if coordinator is None or not run_id:
+            return
+        try:
+            if action == "retry":
+                coordinator.retry_failed(run_id)
+            elif action == "cancel":
+                coordinator.cancel(run_id)
+            elif action == "repeat":
+                coordinator.repeat(run_id)
+        except Exception as exc:
+            QMessageBox.warning(workspace, "Операция анализа не выполнена", str(exc))
+        self._refresh_analysis_panel(workspace)
+
+    def _export_analysis(self, workspace, run_id: str) -> None:
+        import csv
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+
+        store = getattr(workspace, "_analysis_store", None)
+        if store is None or not run_id:
+            return
+        destination, _selected_filter = QFileDialog.getSaveFileName(
+            workspace,
+            "Экспорт результатов анализа",
+            f"karakal-{run_id}.csv",
+            "CSV (*.csv)",
+        )
+        if not destination:
+            return
+        metric_key = str(workspace.analysis_runs_panel.metric_combo.currentData() or "xor")
+        rows = store.frame_results(run_id, metric_key)
+        try:
+            with Path(destination).open("w", encoding="utf-8-sig", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("frame_id", "x", "y", "status", "message", "metric", "raw_value", "goodness", "percentile"))
+                for row in rows:
+                    writer.writerow(
+                        (
+                            row["frame_id"], row["x"], row["y"], row["status"], row["message"],
+                            metric_key, row["raw_value"], row["goodness"], row["percentile"],
+                        )
+                    )
+        except OSError as exc:
+            QMessageBox.warning(workspace, "Не удалось экспортировать анализ", str(exc))
+
+    @staticmethod
+    def _map_not_configured(workspace) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        QMessageBox.information(
+            workspace,
+            "Карта расхождений",
+            "Ленивый рендеринг карты доступен через Karakal Engine; запуск из Agent будет добавлен отдельной операцией.",
+        )
 
     def _load_layers(self, workspace, project) -> None:
         colors = {

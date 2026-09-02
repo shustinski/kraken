@@ -166,6 +166,15 @@ class FilesystemBlobStore:
             raise BlobNotFoundError(digest)
         return path.open("rb")
 
+    def path_for_read(self, reference: str | BlobRef | Any) -> Path:
+        """Return a verified, immutable managed-blob path for local staging."""
+
+        digest = _digest_string(reference)
+        path = self._path(digest)
+        if path.is_symlink() or not path.is_file():
+            raise BlobNotFoundError(digest)
+        return path
+
     open_read = open
 
     def read(self, reference: str | BlobRef | Any) -> bytes:

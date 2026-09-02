@@ -60,7 +60,7 @@ from kraken_manager.application.representation_lifecycle import (
     UpdateRepresentationNoteHandler,
 )
 from kraken_manager.domain.artifacts import ArtifactScope, ArtifactVersion, deterministic_frame_series_id
-from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId
+from kraken_manager.domain.common import ArtifactVersionId, LayerId, PrincipalId, ProjectId, RepresentationId
 from kraken_manager.domain.identity import Performer, Principal, ProjectRole
 from kraken_manager.domain.project import GridOrientation, Layer, LayerType, Project, Representation, RepresentationKind
 from kraken_manager.domain.workflows import ReviewBatch
@@ -955,6 +955,29 @@ class EmbeddedProjectService:
 
     def read_project_blob(self, project_id: ProjectId | str, sha256: str) -> bytes:
         return FilesystemBlobStore.for_project(self.catalog_root, str(project_id)).read(sha256)
+
+    def get_artifact_version(
+        self,
+        project_id: ProjectId | str,
+        artifact_version_id: ArtifactVersionId | str,
+    ) -> ArtifactVersion | None:
+        return self._projection(project_id).get_artifact_version(ArtifactVersionId(str(artifact_version_id)))
+
+    def artifact_source_path(
+        self,
+        project_id: ProjectId | str,
+        artifact_version_id: ArtifactVersionId | str,
+    ) -> Path:
+        """Resolve a managed artifact for read-only staging into the local Agent."""
+
+        version = self.get_artifact_version(project_id, artifact_version_id)
+        if version is None:
+            raise KeyError(f"Unknown artifact version: {artifact_version_id}")
+        if version.blob is None:
+            raise ValueError("Analysis v1 requires managed model outputs in Kraken BlobStore")
+        blob_store = FilesystemBlobStore.for_project(self.catalog_root, str(project_id))
+        blob_store.verify(version.blob)
+        return blob_store.path_for_read(version.blob)
 
     def history(self, project_id: ProjectId | str, *, as_of: datetime | None = None) -> tuple[object, ...]:
         store = FilesystemEventStore(self.catalog_root, str(project_id))

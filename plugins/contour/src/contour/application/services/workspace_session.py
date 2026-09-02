@@ -514,6 +514,22 @@ class WorkspaceSession:
         self._state_cache[self._current_image_path] = self._current_state
         return True
 
+    def apply_layer_patch_to_current(
+        self,
+        removed_ids: set[int] | frozenset[int],
+        added_polygons: list[PolygonData],
+    ) -> bool:
+        if self._current_state is None or self._current_image_path is None:
+            return False
+        remove_set = set(removed_ids)
+        kept = [polygon for polygon in self._current_state.polygons if polygon.id not in remove_set]
+        kept.extend(polygon.clone() for polygon in added_polygons)
+        self._current_state.polygons = kept
+        self._current_state.polygons_dirty = True
+        self._current_state.polygons_needing_repair = None
+        self._state_cache[self._current_image_path] = self._current_state
+        return True
+
     def cached_state(self, image_path: str | Path) -> ImageProcessingState | None:
         return self._state_cache.get(_norm_path_key(image_path))
 

@@ -25,6 +25,7 @@ from contour.application.vector_geometry_postprocess import (
     polygons_needing_repair,
     patch_polygons_needing_repair,
     postprocess_after_editor_mutation,
+    postprocess_after_layer_patch,
     postprocess_after_vertex_move,
     postprocess_changed_polygon_edit,
     postprocess_vertex_move_edit,
@@ -436,6 +437,28 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         )
         self.assertFalse(changed)
         self.assertEqual({p.id for p in processed}, {1, 2})
+
+    def test_postprocess_after_layer_patch_only_spike_removes_changed_family(self) -> None:
+        from unittest.mock import patch
+
+        unchanged = _rect(0.0, 0.0, 40.0, 40.0, 1)
+        changed = _rect(100.0, 0.0, 140.0, 40.0, 2)
+        settings = VectorGeometrySettings(
+            min_hole_area_to_remove_px2=1.0,
+            min_outer_area_px2=1.0,
+            min_spike_interior_angle_deg=45.0,
+        )
+        with patch(
+            "contour.application.vector_geometry_postprocess.remove_spikes_from_polygon_ring",
+            wraps=remove_spikes_from_polygon_ring,
+        ) as spike_removal:
+            processed, did_change = postprocess_after_layer_patch(
+                [unchanged, changed],
+                settings,
+                changed_polygon_ids={2},
+            )
+        self.assertEqual({polygon.id for polygon in processed}, {1, 2})
+        self.assertLessEqual(spike_removal.call_count, 1)
 
     def test_vertex_move_preserves_small_inner_hole_target(self) -> None:
         outer = _rect(0.0, 0.0, 100.0, 100.0, 1)

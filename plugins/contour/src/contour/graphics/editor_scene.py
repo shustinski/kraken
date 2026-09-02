@@ -46,6 +46,7 @@ from ..application.vector_geometry_postprocess import (
     patch_polygons_needing_repair,
     polygons_needing_repair,
     postprocess_after_editor_mutation,
+    postprocess_after_layer_patch,
     postprocess_changed_polygon_edit,
     repair_invalid_polygon_descriptions,
     resolve_focus_id_after_geometry_pass,
@@ -322,6 +323,7 @@ class PolygonEditorScene(QGraphicsScene):
         self._vertex_preview_polygon_id: int | None = None
         self._move_target_preview: tuple[str, int, int] | None = None
         self._last_geometry_changed_polygon_id: int | None = None
+        self._pending_workspace_layer_patch: tuple[frozenset[int], list[PolygonData]] | None = None
         self._show_all_editable_vertices = False
         self._delete_area_highlight_ids: set[int] = set()
         self._vector_geometry_settings = VectorGeometrySettings()
@@ -1198,25 +1200,75 @@ class PolygonEditorScene(QGraphicsScene):
     ) -> bool:
         """Apply one polygon-layer edit with a single scene refresh for undo/redo."""
 
-        before = self.get_polygons()
         remove_ids = set(remove_polygon_ids)
-        remaining = [polygon.clone() for polygon in before if polygon.id not in remove_ids]
-        remaining.extend(polygon.clone() for polygon in add_polygons)
+        removed_snapshots = [
+            self._polygons[polygon_id].clone()
+            for polygon_id in remove_polygon_ids
+            if polygon_id in self._polygons
+        ]
+        work: list[PolygonData] = [
+            self._polygons[polygon_id]
+            for polygon_id in sorted(self._polygons)
+            if polygon_id not in remove_ids
+        ]
+        changed_polygon_ids = {polygon.id for polygon in add_polygons}
+        work.extend(polygon.clone() for polygon in add_polygons)
         if run_postprocess:
             profile = self._polygon_change_profile
             phase_started_at = perf_counter()
-            remaining, _changed, accepted = self._apply_vector_postprocess_polygons(remaining)
+            remaining, _changed, accepted = self._apply_vector_postprocess_polygons(
+                work,
+                changed_polygon_ids=changed_polygon_ids,
+            )
             self._note_polygon_change_phase(profile, "postprocess", phase_started_at)
             if not accepted:
                 self.warn_invalid_polygon_geometry()
                 return False
-        self._push_polygon_set_change(
-            before,
-            remaining,
-            description,
+        else:
+            remaining = work
+        unchanged_ids = {polygon_id for polygon_id in self._polygons if polygon_id not in remove_ids}
+        added_for_patch = [polygon for polygon in remaining if polygon.id not in unchanged_ids]
+        if not added_for_patch and not removed_snapshots:
+            self.warn_invalid_polygon_geometry()
+            return False
+        self._push_known_polygon_patch(
+            removed_polygons=removed_snapshots,
+            added_polygons=added_for_patch,
+            description=description,
             select_polygon_id=select_polygon_id,
         )
         return True
+
+    def _push_known_polygon_patch(
+        self,
+        *,
+        removed_polygons: list[PolygonData],
+        added_polygons: list[PolygonData],
+        description: str,
+        select_polygon_id: int | None = None,
+        sync_overlap_repair: bool = False,
+    ) -> None:
+        removed_ids = frozenset(polygon.id for polygon in removed_polygons)
+        self._pending_workspace_layer_patch = (removed_ids, list(added_polygons))
+        if select_polygon_id is not None:
+            self._last_geometry_changed_polygon_id = select_polygon_id
+        elif added_polygons:
+            self._last_geometry_changed_polygon_id = added_polygons[0].id
+        self.undo_stack.push(
+            ReplacePolygonsPatchCommand(
+                self,
+                removed_polygons,
+                added_polygons,
+                description,
+                select_polygon_id=select_polygon_id,
+                sync_overlap_repair=sync_overlap_repair,
+            )
+        )
+
+    def take_last_workspace_layer_patch(self) -> tuple[frozenset[int], list[PolygonData]] | None:
+        patch = self._pending_workspace_layer_patch
+        self._pending_workspace_layer_patch = None
+        return patch
 
     @staticmethod
     def _compute_polygon_layer_patch(
@@ -1489,15 +1541,26 @@ class PolygonEditorScene(QGraphicsScene):
     def _apply_vector_postprocess_polygons(
         self,
         polygons: list[PolygonData],
+        *,
+        changed_polygon_ids: set[int] | None = None,
     ) -> tuple[list[PolygonData], bool, bool]:
         needs_full_cleanup = float(self._vector_geometry_settings.min_hole_area_to_remove_px2) > 0.0
         if needs_full_cleanup:
-            final, changed = postprocess_after_editor_mutation(
-                polygons,
-                self._vector_geometry_settings,
-                frame_width_height=None,
-                include_merge=False,
-            )
+            if changed_polygon_ids:
+                final, changed = postprocess_after_layer_patch(
+                    polygons,
+                    self._vector_geometry_settings,
+                    changed_polygon_ids=changed_polygon_ids,
+                    frame_width_height=None,
+                    include_merge=False,
+                )
+            else:
+                final, changed = postprocess_after_editor_mutation(
+                    polygons,
+                    self._vector_geometry_settings,
+                    frame_width_height=None,
+                    include_merge=False,
+                )
             return final, changed, True
         final, accepted, changed = postprocess_changed_polygon_edit(
             polygons,

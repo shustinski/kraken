@@ -176,7 +176,29 @@ def _is_small_inner_area(poly: PolygonData, min_area_px2: float) -> bool:
 def dissolve_small_holes(polygons: list[PolygonData], min_area_px2: float) -> list[PolygonData]:
     if min_area_px2 <= 0.0:
         return polygons
-    return [p.clone() for p in polygons if not (p.is_hole and _is_small_inner_area(p, min_area_px2))]
+    return [
+        polygon
+        for polygon in polygons
+        if not (polygon.is_hole and _is_small_inner_area(polygon, min_area_px2))
+    ]
+
+
+def dissolve_small_holes_scoped(
+    polygons: list[PolygonData],
+    min_area_px2: float,
+    affected_ids: set[int],
+) -> list[PolygonData]:
+    if min_area_px2 <= 0.0 or not affected_ids:
+        return polygons
+    return [
+        polygon
+        for polygon in polygons
+        if not (
+            polygon.id in affected_ids
+            and polygon.is_hole
+            and _is_small_inner_area(polygon, min_area_px2)
+        )
+    ]
 
 
 def drop_orphan_holes(polygons: list[PolygonData]) -> list[PolygonData]:
@@ -470,6 +492,38 @@ def drop_small_outer_polygons(polygons: list[PolygonData], min_area_px2: float) 
     return drop_orphan_holes(survivors)
 
 
+def drop_small_outer_polygons_scoped(
+    polygons: list[PolygonData],
+    min_area_px2: float,
+    affected_ids: set[int],
+) -> list[PolygonData]:
+    if min_area_px2 <= 0.0 or not affected_ids:
+        return polygons
+
+    def _keep_outer(poly: PolygonData) -> bool:
+        if poly.is_hole:
+            return True
+        if poly.category == "via" or poly.shape_hint == "box":
+            return True
+        return abs(float(poly.area)) >= float(min_area_px2)
+
+    drop_ids = {
+        polygon.id
+        for polygon in polygons
+        if polygon.id in affected_ids and not _keep_outer(polygon)
+    }
+    if not drop_ids:
+        return polygons
+    survivors: list[PolygonData] = []
+    for polygon in polygons:
+        if polygon.id in drop_ids:
+            continue
+        if polygon.parent_id is not None and polygon.parent_id in drop_ids:
+            continue
+        survivors.append(polygon)
+    return drop_orphan_holes(survivors)
+
+
 def drop_triangle_outer_artifacts(
     polygons: list[PolygonData],
     enabled: bool,
@@ -493,6 +547,41 @@ def drop_triangle_outer_artifacts(
                 continue
         drop_ids.add(p.id)
     survivors = [p for p in polygons if p.id not in drop_ids and (p.parent_id is None or p.parent_id not in drop_ids)]
+    return drop_orphan_holes(survivors)
+
+
+def drop_triangle_outer_artifacts_scoped(
+    polygons: list[PolygonData],
+    affected_ids: set[int],
+    enabled: bool,
+    *,
+    min_outer_area_px2: float = 0.0,
+) -> list[PolygonData]:
+    if not enabled or not affected_ids:
+        return polygons
+    drop_ids: set[int] = set()
+    threshold = float(min_outer_area_px2)
+    for polygon in polygons:
+        if polygon.id not in affected_ids:
+            continue
+        if polygon.is_hole or len(polygon.points) != 3 or polygon.category == "via" or polygon.shape_hint == "box":
+            continue
+        if polygon.shape_hint == "manual_outline":
+            continue
+        if threshold > 0.0:
+            area_abs = abs(float(getattr(polygon, "area", 0.0) or 0.0))
+            if area_abs <= 0.0:
+                area_abs = abs(float(compute_polygon_metrics(polygon.points)[0]))
+            if area_abs >= threshold:
+                continue
+        drop_ids.add(polygon.id)
+    if not drop_ids:
+        return polygons
+    survivors = [
+        polygon
+        for polygon in polygons
+        if polygon.id not in drop_ids and (polygon.parent_id is None or polygon.parent_id not in drop_ids)
+    ]
     return drop_orphan_holes(survivors)
 
 
@@ -558,6 +647,94 @@ def apply_spike_removal_all(polygons: list[PolygonData], min_interior_angle_deg:
         out.append(q)
     out = drop_orphan_holes(out)
     return out
+
+
+def apply_spike_removal_for_polygon_ids(
+    polygons: list[PolygonData],
+    min_interior_angle_deg: float,
+    polygon_ids: set[int],
+) -> list[PolygonData]:
+    if min_interior_angle_deg <= 0.0 or not polygon_ids:
+        return polygons
+    work = list(polygons)
+    index_by_id = {polygon.id: index for index, polygon in enumerate(work)}
+    for polygon_id in polygon_ids:
+        index = index_by_id.get(polygon_id)
+        if index is None:
+            continue
+        polygon = work[index]
+        if polygon.is_hole or len(polygon.points) > TOPOLOGY_CHECK_MAX_VERTICES:
+            continue
+        clone = polygon.clone()
+        new_pts = remove_spikes_from_polygon_ring(
+            integer_points(clone.points),
+            min_interior_angle_deg,
+        )
+        if len(new_pts) < 3 or not _ring_ok_after_spike_removal(new_pts):
+            continue
+        clone.points = new_pts
+        _refresh_metrics(clone)
+        work[index] = clone
+    return drop_orphan_holes(work)
+
+
+def drop_polygons_invalid_points_scoped(
+    polygons: list[PolygonData],
+    affected_ids: set[int],
+) -> list[PolygonData]:
+    if not affected_ids:
+        return polygons
+    kept: list[PolygonData] = []
+    for polygon in polygons:
+        if polygon.id not in affected_ids:
+            kept.append(polygon)
+            continue
+        if not _ring_has_usable_geometry(polygon.points):
+            continue
+        if any(not _point_finite(point) for point in polygon.points):
+            continue
+        kept.append(polygon)
+    return kept
+
+
+def filter_simple_valid_polygons_scoped(
+    polygons: list[PolygonData],
+    affected_ids: set[int],
+) -> list[PolygonData]:
+    if not affected_ids:
+        return polygons
+    kept: list[PolygonData] = []
+    for polygon in polygons:
+        if polygon.id not in affected_ids or _ring_has_usable_geometry(polygon.points):
+            kept.append(polygon)
+    return kept
+
+
+def _polygon_ids_in_root_families(polygons: list[PolygonData], root_ids: set[int]) -> set[int]:
+    if not root_ids:
+        return set()
+    by_id = {polygon.id: polygon for polygon in polygons}
+    affected: set[int] = set()
+    for polygon in polygons:
+        root_id = _root_id_for_polygon(by_id, polygon.id)
+        if root_id in root_ids:
+            affected.add(polygon.id)
+    return affected
+
+
+def _affected_polygon_ids_for_layer_patch(
+    polygons: list[PolygonData],
+    changed_polygon_ids: set[int],
+) -> set[int]:
+    root_ids = {
+        root_id
+        for root_id in (
+            _root_id_for_polygon({polygon.id: polygon for polygon in polygons}, polygon_id)
+            for polygon_id in changed_polygon_ids
+        )
+        if root_id is not None
+    }
+    return _polygon_ids_in_root_families(polygons, root_ids)
 
 
 def clip_polygons_to_frame_raster(polygons: list[PolygonData], frame_width: int, frame_height: int) -> list[PolygonData]:
@@ -1246,16 +1423,20 @@ def overlap_check_roots_for_layer_patch(
     ]
     if not touch_bboxes:
         return set()
-    root_bboxes = _root_family_bboxes(polygons)
-    if not root_bboxes:
-        return set()
     _, _, _, _union_bbox = _mask_helpers()
-    touch_union = _union_bbox(touch_bboxes)
-    return {
-        root_id
-        for root_id, bbox in root_bboxes.items()
-        if _bboxes_intersect(bbox, touch_union)
-    }
+    touch_union = _pad_bbox(_union_bbox(touch_bboxes), 2)
+    candidate_roots: set[int] = set()
+    for polygon in removed_polygons:
+        if polygon.parent_id is None and not polygon.is_hole and not _is_via_like(polygon):
+            candidate_roots.add(polygon.id)
+    for polygon in polygons:
+        if polygon.parent_id is not None or polygon.is_hole or _is_via_like(polygon):
+            continue
+        if polygon.bbox is None:
+            continue
+        if _bboxes_intersect(_pad_bbox(polygon.bbox, 2), touch_union):
+            candidate_roots.add(polygon.id)
+    return candidate_roots
 
 
 def apply_overlap_repair_patch(
@@ -1562,6 +1743,70 @@ def postprocess_after_editor_mutation(
 
     work = drop_orphan_holes(work)
     changed = before != _polygons_topo_signature(work)
+    return work, changed
+
+
+def postprocess_after_layer_patch(
+    polygons: list[PolygonData],
+    settings: VectorGeometrySettings,
+    *,
+    changed_polygon_ids: set[int],
+    frame_width_height: tuple[int, int] | None = None,
+    include_merge: bool = False,
+) -> tuple[list[PolygonData], bool]:
+    """Apply cleanup after a local layer patch without rescanning the whole frame."""
+
+    if not changed_polygon_ids:
+        return postprocess_after_editor_mutation(
+            polygons,
+            settings,
+            frame_width_height=frame_width_height,
+            include_merge=include_merge,
+        )
+
+    work = list(polygons)
+    affected_ids = _affected_polygon_ids_for_layer_patch(work, changed_polygon_ids)
+    count_before = len(work)
+
+    work = drop_polygons_invalid_points_scoped(work, affected_ids)
+    work, _collapsed = collapse_redundant_vertices_for_polygon_ids(work, affected_ids)
+    work = filter_simple_valid_polygons_scoped(work, affected_ids)
+    for polygon in work:
+        if polygon.id in affected_ids:
+            _refresh_metrics(polygon)
+
+    fw, fh = frame_width_height or (0, 0)
+    if settings.clip_to_frame_on_sync and fw > 1 and fh > 1:
+        work = clip_polygons_to_frame_raster(work, fw, fh)
+        affected_ids = _affected_polygon_ids_for_layer_patch(work, changed_polygon_ids)
+
+    work = dissolve_small_holes_scoped(work, settings.min_hole_area_to_remove_px2, affected_ids)
+    work = apply_spike_removal_for_polygon_ids(
+        work,
+        settings.min_spike_interior_angle_deg,
+        affected_ids,
+    )
+    work, _collapsed = collapse_redundant_vertices_for_polygon_ids(work, affected_ids)
+    work = filter_simple_valid_polygons_scoped(work, affected_ids)
+
+    work = drop_small_outer_polygons_scoped(work, settings.min_outer_area_px2, affected_ids)
+    work = drop_triangle_outer_artifacts_scoped(
+        work,
+        affected_ids,
+        settings.drop_three_vertex_triangle_artifacts,
+        min_outer_area_px2=settings.min_outer_area_px2,
+    )
+
+    work = drop_polygons_invalid_points_scoped(work, affected_ids)
+    work = filter_simple_valid_polygons_scoped(work, affected_ids)
+
+    if include_merge:
+        work = merge_overlapping_root_families(work)
+
+    work = drop_polygons_invalid_points_scoped(work, affected_ids)
+    work = filter_simple_valid_polygons_scoped(work, affected_ids)
+    work = drop_orphan_holes(work)
+    changed = len(work) != count_before or bool(affected_ids)
     return work, changed
 
 

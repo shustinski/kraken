@@ -2455,6 +2455,22 @@ class WidgetProcessingMixin:
     def _on_polygons_edited(self: Any) -> None:
         if self._updating_views:
             return
+        layer_patch = None
+        if hasattr(self, "view") and self.view is not None:
+            layer_patch = self.view._editor_scene.take_last_workspace_layer_patch()
+        if (
+            layer_patch is not None
+            and self._editor_polygons_are_current_frame()
+        ):
+            removed_ids, added = layer_patch
+            if self._workspace.apply_layer_patch_to_current(removed_ids, added):
+                current_path = self._workspace.current_image_path
+                if current_path:
+                    self._persisted_highlight_paths.discard(str(Path(current_path)))
+                self._update_frame_item_status(self._workspace.current_image_path)
+                self._update_vector_edit_status_label(sync_editor=False)
+                self.polygonsEdited.emit()
+                return
         changed_polygon_id = None
         if hasattr(self, "view") and self.view is not None:
             changed_polygon_id = self.view._editor_scene.take_last_geometry_changed_polygon_id()

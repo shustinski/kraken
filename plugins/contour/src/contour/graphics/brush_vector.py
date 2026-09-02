@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from math import cos, hypot, radians, sin
 from dataclasses import dataclass
+from math import cos, hypot, radians, sin
 
 from shapely import BufferCapStyle, BufferJoinStyle, make_valid, unary_union
 from shapely.geometry import LineString, Polygon
@@ -15,6 +15,7 @@ from ..domain.polygon_ring import collapse_redundant_polyline_vertices
 
 QUAD_SEGS_BRUSH_DEFAULT = 8
 BRUSH_RING_SIMPLIFY_EPSILON_PX = 1.0
+BRUSH_CENTERLINE_SIMPLIFY_TOLERANCE_PX = 0.125
 
 
 def densify_polyline(points: list[tuple[float, float]], max_segment_length: float) -> list[tuple[float, float]]:
@@ -112,7 +113,20 @@ def brush_stroke_geometry(points: list[tuple[float, float]], diameter: float, *,
         gp = Polygon(_octagon_points(cleaned[0], radius))
         return unary_union(make_valid(gp))
 
-    gp = LineString(cleaned).buffer(
+    centerline = LineString(cleaned)
+    if len(cleaned) > 8:
+        # Pointer/tablet sampling can produce thousands of nearly collinear
+        # vertices. They cannot change raster output at this subpixel bound,
+        # but they make GEOS buffering grow sharply with stroke duration.
+        centerline = centerline.simplify(
+            BRUSH_CENTERLINE_SIMPLIFY_TOLERANCE_PX,
+            preserve_topology=False,
+        )
+        simplified = [(float(x_coord), float(y_coord)) for x_coord, y_coord in centerline.coords]
+        if len(simplified) >= 2:
+            cleaned = simplified
+
+    gp = centerline.buffer(
         radius,
         quad_segs=1,
         cap_style=BufferCapStyle.flat,

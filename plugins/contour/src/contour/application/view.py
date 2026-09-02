@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..__version__ import __version__
-from ..infrastructure import WidgetAppearanceSettingsStore
+from ..infrastructure import WidgetAppearanceSettingsStore, WidgetWindowSettingsStore
 from ..updater import create_contour_update_controller
 from ..widget import PolygonExtractionWidget
 from .styles import resolve_style_path
@@ -94,11 +94,19 @@ def _dock_toggle_action(dock: QDockWidget) -> QAction:
 
 
 class ContourMainView(QMainWindow):
-    def __init__(self, appearance_settings_store: WidgetAppearanceSettingsStore | None = None) -> None:
+    WINDOW_STATE_VERSION = 1
+
+    def __init__(
+        self,
+        appearance_settings_store: WidgetAppearanceSettingsStore | None = None,
+        window_settings_store: WidgetWindowSettingsStore | None = None,
+    ) -> None:
         super().__init__()
         self._presenter: Any | None = None
         self._theme = "dark"
         self._appearance_settings_store = appearance_settings_store
+        self._window_settings_store = window_settings_store or WidgetWindowSettingsStore()
+        self._window_layout_restored = False
         self._update_controller = None
         self._update_menu_action = None
         self._widget = PolygonExtractionWidget(self)
@@ -215,7 +223,9 @@ class ContourMainView(QMainWindow):
         self._attach_update_menu_action()
         self._refresh_view_and_tools_menus()
         _try_apply_app_icon(self)
-        QTimer.singleShot(0, self._apply_default_dock_layout)
+        self._window_layout_restored = self._restore_window_layout()
+        if not self._window_layout_restored:
+            QTimer.singleShot(0, self._apply_default_dock_layout)
         if _should_schedule_startup_update_check():
             QTimer.singleShot(0, lambda: self._update_controller.check_for_updates(manual=False))
 
@@ -289,6 +299,20 @@ class ContourMainView(QMainWindow):
         ]
         if len(right_docks) > 1:
             self.resizeDocks(right_docks, [1 for _dock in right_docks], Qt.Orientation.Vertical)
+
+    def _restore_window_layout(self) -> bool:
+        geometry, state = self._window_settings_store.load()
+        if geometry.isEmpty() or state.isEmpty():
+            return False
+        geometry_restored = self.restoreGeometry(geometry)
+        state_restored = self.restoreState(state, self.WINDOW_STATE_VERSION)
+        return bool(geometry_restored and state_restored)
+
+    def _save_window_layout(self) -> None:
+        self._window_settings_store.save(
+            self.saveGeometry(),
+            self.saveState(self.WINDOW_STATE_VERSION),
+        )
 
     def _on_thumbnail_matrix_toggle_triggered(self, checked: bool) -> None:
         if not self._widget._frame_matrix_enabled():
@@ -389,6 +413,8 @@ class ContourMainView(QMainWindow):
         self.setWindowTitle(versioned_title)
 
     def resize_window(self, width: int, height: int) -> None:
+        if self._window_layout_restored:
+            return
         screen = self.screen()
         if screen is None:
             self.resize(width, height)
@@ -566,6 +592,7 @@ class ContourMainView(QMainWindow):
             event.ignore()
             return
         self._widget._persist_session_state()
+        self._save_window_layout()
         super().closeEvent(event)
 
 

@@ -328,19 +328,30 @@ def resolve_hover_polygon_id(
     hole_children_by_parent: dict[int, list[PolygonData]],
     scene_x: float,
     scene_y: float,
+    *,
+    contours_by_id: dict[int, np.ndarray] | None = None,
 ) -> int | None:
     """Pick the smallest polygon under the pointer, preferring holes over outer metal."""
     point = (float(scene_x), float(scene_y))
+
+    def contains(polygon: PolygonData) -> bool:
+        contour = None if contours_by_id is None else contours_by_id.get(polygon.id)
+        if contour is None:
+            return _polygon_contains_point(polygon, point)
+        if contour.shape[0] < 3:
+            return False
+        return cv2.pointPolygonTest(contour, point, False) >= 0.0
+
     candidates: list[int] = []
     hole_ids_at_point: list[int] = []
     for polygon_id, polygon in polygons_by_id.items():
-        if not _polygon_contains_point(polygon, point):
+        if not contains(polygon):
             continue
         if polygon.is_hole:
             hole_ids_at_point.append(polygon_id)
             continue
         hole_children = hole_children_by_parent.get(polygon_id, [])
-        if any(_polygon_contains_point(hole, point) for hole in hole_children):
+        if any(contains(hole) for hole in hole_children):
             continue
         candidates.append(polygon_id)
     candidates.extend(hole_ids_at_point)

@@ -204,6 +204,15 @@ class WidgetSettingsMixin:
         self._session_settings_store.save_vector_paths(self._workspace.cif_paths_by_stem.values())
         if hasattr(self, "_image_list_mode"):
             self._session_settings_store.save_image_list_mode(self._image_list_mode)
+        if hasattr(self, "_viewed_image_paths"):
+            self._session_settings_store.save_viewed_image_paths(self._viewed_image_paths)
+        if hasattr(self, "_persisted_highlight_paths"):
+            self._session_settings_store.save_persisted_image_paths(self._persisted_highlight_paths)
+        restored_dirty = set(getattr(self, "_restored_modified_image_paths", set()))
+        restored_dirty.update(
+            path for path in self._workspace.image_paths if self._workspace.image_has_changes(path)
+        )
+        self._session_settings_store.save_modified_image_paths(restored_dirty)
 
     def _set_image_list_mode(self: Any, mode: str) -> None:
         from ..infrastructure.settings_store import IMAGE_LIST_MODE_DIRECTORY, IMAGE_LIST_MODE_EXPLICIT

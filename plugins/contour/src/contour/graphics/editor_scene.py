@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from math import ceil, floor, hypot
 from time import perf_counter
 
+import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
@@ -35,13 +36,11 @@ from ..application.polygon_antialiasing import antialias_polygons
 from ..application.processing import DisplaySettings, normalize_via_display_mode
 from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    _repair_still_invalid_ring_families,
     apply_delete_area_geometry_repair,
-    apply_orphan_cleanup_after_removal,
     apply_overlap_merge_after_edit,
     apply_overlap_repair_patch,
     apply_topology_repair_after_edit,
-    _repair_still_invalid_ring_families,
-    collapse_redundant_vertices_in_polygons,
     overlap_check_roots_for_layer_patch,
     patch_polygons_needing_repair,
     polygons_needing_repair,
@@ -67,6 +66,7 @@ from ..graphics_items import (
     VectorPolygonDisplayItem,
     VertexHandleItem,
     ZoomContactBatchItem,
+    _closed_polygon_path,
     _display_path_for_polygon,
     _hole_display_hidden,
 )
@@ -123,6 +123,7 @@ _ZOOM_COLOR_QUANTIZATION_STEP = 17
 _ZOOM_BATCH_TILE_SIZE = 256.0
 _ZOOM_RASTER_MAX_DIMENSION = 4096
 _CONTACT_PASTE_SPATIAL_CELL_SIZE = 64.0
+_POLYGON_SPATIAL_CELL_SIZE = 256.0
 _OUTER_POLYGON_ITEM_Z = 3.0
 _HOLE_POLYGON_ITEM_Z = 3.2
 _OUTER_PICK_Z_SPAN = 0.19
@@ -234,6 +235,73 @@ class _ContactSpatialIndex:
         return False
 
 
+class _PolygonSpatialIndex:
+    """Incremental bbox index for pointer and local-geometry queries."""
+
+    def __init__(self, cell_size: float = _POLYGON_SPATIAL_CELL_SIZE) -> None:
+        self._cell_size = max(1.0, float(cell_size))
+        self._cells: dict[tuple[int, int], set[int]] = {}
+        self._polygon_cells: dict[int, tuple[tuple[int, int], ...]] = {}
+
+    def _cells_for_bbox(
+        self,
+        bbox: tuple[int, int, int, int],
+        *,
+        padding: float = 0.0,
+    ):
+        x_coord, y_coord, width, height = bbox
+        pad = max(0.0, float(padding))
+        left = floor((float(x_coord) - pad) / self._cell_size)
+        right = floor((float(x_coord) + float(width) + pad) / self._cell_size)
+        top = floor((float(y_coord) - pad) / self._cell_size)
+        bottom = floor((float(y_coord) + float(height) + pad) / self._cell_size)
+        for cell_y in range(top, bottom + 1):
+            for cell_x in range(left, right + 1):
+                yield cell_x, cell_y
+
+    def clear(self) -> None:
+        self._cells.clear()
+        self._polygon_cells.clear()
+
+    def upsert(self, polygon: PolygonData) -> None:
+        self.remove(polygon.id)
+        cells = tuple(self._cells_for_bbox(polygon.bbox))
+        self._polygon_cells[polygon.id] = cells
+        for cell in cells:
+            self._cells.setdefault(cell, set()).add(polygon.id)
+
+    def remove(self, polygon_id: int) -> None:
+        for cell in self._polygon_cells.pop(polygon_id, ()):
+            polygon_ids = self._cells.get(cell)
+            if polygon_ids is None:
+                continue
+            polygon_ids.discard(polygon_id)
+            if not polygon_ids:
+                self._cells.pop(cell, None)
+
+    def query_bbox(
+        self,
+        bbox: tuple[int, int, int, int],
+        *,
+        padding: float = 0.0,
+    ) -> set[int]:
+        result: set[int] = set()
+        for cell in self._cells_for_bbox(bbox, padding=padding):
+            result.update(self._cells.get(cell, ()))
+        return result
+
+    def query_point(self, x_coord: float, y_coord: float, *, padding: float = 0.0) -> set[int]:
+        pad = max(0.0, float(padding))
+        return self.query_bbox(
+            (
+                floor(float(x_coord) - pad),
+                floor(float(y_coord) - pad),
+                max(1, ceil(pad * 2.0)),
+                max(1, ceil(pad * 2.0)),
+            )
+        )
+
+
 class PolygonEditorScene(QGraphicsScene):
     polygonsChanged = pyqtSignal()
     activePolygonChanged = pyqtSignal(object)
@@ -263,6 +331,8 @@ class PolygonEditorScene(QGraphicsScene):
         self._applying_deferred_geometry_repair = False
         self._hole_children_by_parent: dict[int, list[PolygonData]] = {}
         self._polygon_child_ids_by_parent: dict[int, set[int]] = {}
+        self._polygon_spatial_index = _PolygonSpatialIndex()
+        self._polygon_hover_contours: dict[int, np.ndarray] = {}
         self._selected_polygon_id: int | None = None
         self._selected_polygon_ids: set[int] = set()
         self._next_polygon_id = 1
@@ -343,6 +413,14 @@ class PolygonEditorScene(QGraphicsScene):
         self._pending_cursor: tuple[float, float] | None = None
         self._pending_polyline_for_brush = False
         self._pending_brush_width = 1.5
+        self._polygon_edit_preview_id: int | None = None
+        self._polygon_edit_preview_points: list[tuple[float, float]] | None = None
+        self._polygon_edit_preview_origin_points: list[tuple[float, float]] | None = None
+        self._polygon_edit_preview_item = QGraphicsPathItem()
+        self._polygon_edit_preview_item.setZValue(9)
+        self._polygon_edit_preview_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.addItem(self._polygon_edit_preview_item)
+        self._polygon_edit_preview_item.hide()
         self._pending_path_item = QGraphicsPathItem()
         self._pending_path_item.setZValue(10)
         pending_pen = QPen(QColor("#F7B801"), 1.5, Qt.PenStyle.DashLine)
@@ -1544,23 +1622,23 @@ class PolygonEditorScene(QGraphicsScene):
         *,
         changed_polygon_ids: set[int] | None = None,
     ) -> tuple[list[PolygonData], bool, bool]:
+        if changed_polygon_ids:
+            final, changed = postprocess_after_layer_patch(
+                polygons,
+                self._vector_geometry_settings,
+                changed_polygon_ids=changed_polygon_ids,
+                frame_width_height=None,
+                include_merge=False,
+            )
+            return final, changed, True
         needs_full_cleanup = float(self._vector_geometry_settings.min_hole_area_to_remove_px2) > 0.0
         if needs_full_cleanup:
-            if changed_polygon_ids:
-                final, changed = postprocess_after_layer_patch(
-                    polygons,
-                    self._vector_geometry_settings,
-                    changed_polygon_ids=changed_polygon_ids,
-                    frame_width_height=None,
-                    include_merge=False,
-                )
-            else:
-                final, changed = postprocess_after_editor_mutation(
-                    polygons,
-                    self._vector_geometry_settings,
-                    frame_width_height=None,
-                    include_merge=False,
-                )
+            final, changed = postprocess_after_editor_mutation(
+                polygons,
+                self._vector_geometry_settings,
+                frame_width_height=None,
+                include_merge=False,
+            )
             return final, changed, True
         final, accepted, changed = postprocess_changed_polygon_edit(
             polygons,
@@ -1608,6 +1686,8 @@ class PolygonEditorScene(QGraphicsScene):
         prev_selected_ids = set(self._selected_polygon_ids)
         self._recycle_polygon_items()
         self._polygons.clear()
+        self._polygon_spatial_index.clear()
+        self._polygon_hover_contours.clear()
         self._hole_children_by_parent.clear()
         self._polygon_child_ids_by_parent.clear()
         self._object_colors.clear()
@@ -1665,6 +1745,8 @@ class PolygonEditorScene(QGraphicsScene):
         self.undo_stack.clear()
         self._recycle_polygon_items()
         self._polygons.clear()
+        self._polygon_spatial_index.clear()
+        self._polygon_hover_contours.clear()
         self._hole_children_by_parent.clear()
         self._polygon_child_ids_by_parent.clear()
         self._object_colors.clear()
@@ -1719,11 +1801,23 @@ class PolygonEditorScene(QGraphicsScene):
         if not self._polygon_overlays_visible:
             self._set_hover_conductor_polygon_id(None)
             return
+        candidate_ids = self._polygon_spatial_index.query_point(scene_pos.x(), scene_pos.y())
+        candidate_polygons = {
+            polygon_id: self._polygons[polygon_id]
+            for polygon_id in candidate_ids
+            if polygon_id in self._polygons
+        }
+        candidate_holes = {
+            parent_id: [hole for hole in holes if hole.id in candidate_ids]
+            for parent_id, holes in self._hole_children_by_parent.items()
+            if parent_id in candidate_ids
+        }
         target_id = resolve_hover_polygon_id(
-            self._polygons,
-            self._hole_children_by_parent,
+            candidate_polygons,
+            candidate_holes,
             scene_pos.x(),
             scene_pos.y(),
+            contours_by_id=self._polygon_hover_contours,
         )
         if target_id is None:
             underneath = self.polygon_at(scene_pos)
@@ -1905,7 +1999,21 @@ class PolygonEditorScene(QGraphicsScene):
             return
         previous_id = self._hover_conductor_polygon_id
         self._hover_conductor_polygon_id = conductor_id
-        self._refresh_polygon_items_by_id(previous_id, conductor_id)
+        changed_ids = {
+            polygon_id
+            for polygon_id in (previous_id, conductor_id)
+            if polygon_id is not None
+        }
+        editable_vertex_ids = self._editable_vertex_polygon_ids()
+        for polygon_id in changed_ids:
+            item = self._polygon_items.get(polygon_id)
+            if item is not None:
+                self._refresh_polygon_appearance(
+                    polygon_id,
+                    item,
+                    editable_vertex_ids=editable_vertex_ids,
+                )
+        self._refresh_move_target_highlight_for_polygons(changed_ids)
 
     def _set_vertex_preview_polygon_id(self, polygon_id: int | None) -> None:
         if polygon_id is not None and polygon_id not in self._polygons:
@@ -1979,9 +2087,18 @@ class PolygonEditorScene(QGraphicsScene):
             if not additive:
                 self.select_polygon(None)
             return
+        candidate_ids = self._polygon_spatial_index.query_bbox(
+            (
+                floor(normalized.left()),
+                floor(normalized.top()),
+                max(1, ceil(normalized.width())),
+                max(1, ceil(normalized.height())),
+            )
+        )
         selected_ids = {
             polygon_id
-            for polygon_id, polygon in self._polygons.items()
+            for polygon_id in candidate_ids
+            if (polygon := self._polygons.get(polygon_id)) is not None
             if _polygon_data_rect(polygon).intersects(normalized)
         }
         if additive:
@@ -2086,26 +2203,44 @@ class PolygonEditorScene(QGraphicsScene):
             and bbox_y - pad <= y <= bbox_y + bbox_h + pad
         )
 
-    def _move_target_candidate_polygon_ids(self) -> list[int]:
+    def _move_target_candidate_polygon_ids(
+        self,
+        scene_pos: QPointF | None = None,
+        *,
+        padding: float = 0.0,
+    ) -> list[int]:
+        nearby_ids = (
+            None
+            if scene_pos is None
+            else self._polygon_spatial_index.query_point(
+                scene_pos.x(),
+                scene_pos.y(),
+                padding=padding,
+            )
+        )
         candidate_ids: list[int] = []
-        if self._selected_polygon_id is not None:
+        if self._selected_polygon_id is not None and (
+            nearby_ids is None or self._selected_polygon_id in nearby_ids
+        ):
             candidate_ids.append(self._selected_polygon_id)
         candidate_ids.extend(
             polygon_id
             for polygon_id in sorted(self._selected_polygon_ids)
             if polygon_id != self._selected_polygon_id
+            and (nearby_ids is None or polygon_id in nearby_ids)
         )
         candidate_ids.extend(
             polygon_id
             for polygon_id in sorted(self._polygons)
             if polygon_id not in self._selected_polygon_ids
+            and (nearby_ids is None or polygon_id in nearby_ids)
         )
         return candidate_ids
 
     def vertex_at(self, scene_pos: QPointF, tolerance: float) -> tuple[int, int] | None:
         target_x = float(scene_pos.x())
         target_y = float(scene_pos.y())
-        for polygon_id in self._move_target_candidate_polygon_ids():
+        for polygon_id in self._move_target_candidate_polygon_ids(scene_pos, padding=tolerance):
             polygon = self._polygons.get(polygon_id)
             if polygon is None:
                 continue
@@ -2137,7 +2272,11 @@ class PolygonEditorScene(QGraphicsScene):
         best_distance = float("inf") if max_distance is None else float(max_distance)
         sx, sy = scene_pos.x(), scene_pos.y()
         search_limit = best_distance
-        for polygon_id in self._move_target_candidate_polygon_ids():
+        candidate_ids = self._move_target_candidate_polygon_ids(
+            scene_pos,
+            padding=search_limit if max_distance is not None else 0.0,
+        ) if max_distance is not None else self._move_target_candidate_polygon_ids()
+        for polygon_id in candidate_ids:
             polygon = self._polygons.get(polygon_id)
             if polygon is None:
                 continue
@@ -2162,7 +2301,7 @@ class PolygonEditorScene(QGraphicsScene):
         target_y = float(scene_pos.y())
         best_hit: tuple[int, int] | None = None
         best_distance = float(tolerance)
-        for polygon_id in self._move_target_candidate_polygon_ids():
+        for polygon_id in self._move_target_candidate_polygon_ids(scene_pos, padding=tolerance):
             polygon = self._polygons.get(polygon_id)
             if polygon is None or len(polygon.points) < 2:
                 continue
@@ -2209,7 +2348,11 @@ class PolygonEditorScene(QGraphicsScene):
         best_distance = float("inf") if max_distance is None else float(max_distance)
         sx, sy = scene_pos.x(), scene_pos.y()
         search_limit = best_distance
-        for polygon_id in self._move_target_candidate_polygon_ids():
+        candidate_ids = self._move_target_candidate_polygon_ids(
+            scene_pos,
+            padding=search_limit if max_distance is not None else 0.0,
+        ) if max_distance is not None else self._move_target_candidate_polygon_ids()
+        for polygon_id in candidate_ids:
             polygon = self._polygons.get(polygon_id)
             if polygon is None:
                 continue
@@ -2528,7 +2671,19 @@ class PolygonEditorScene(QGraphicsScene):
         except Exception:
             return []
         overlapping_root_ids: list[int] = []
-        for polygon_id, polygon in self._polygons.items():
+        min_x, min_y, max_x, max_y = pasted_region.bounds
+        candidate_ids = self._polygon_spatial_index.query_bbox(
+            (
+                floor(min_x),
+                floor(min_y),
+                max(1, ceil(max_x - min_x)),
+                max(1, ceil(max_y - min_y)),
+            )
+        )
+        for polygon_id in sorted(candidate_ids):
+            polygon = self._polygons.get(polygon_id)
+            if polygon is None:
+                continue
             if polygon.is_hole:
                 continue
             try:
@@ -2689,8 +2844,88 @@ class PolygonEditorScene(QGraphicsScene):
     def has_polygon(self, polygon_id: int | None) -> bool:
         return polygon_id is not None and polygon_id in self._polygons
 
-    def preview_vertex_move(self, polygon_id: int, vertex_index: int, point: QPointF) -> None:
-        self._set_vertex_internal(polygon_id, vertex_index, integer_point((point.x(), point.y())), emit_signal=False)
+    def begin_polygon_edit_preview(self, polygon_id: int) -> None:
+        polygon = self._polygons.get(polygon_id)
+        item = self._polygon_items.get(polygon_id)
+        if polygon is None or item is None:
+            self.cancel_polygon_edit_preview()
+            return
+        if self._polygon_edit_preview_id != polygon_id:
+            self.cancel_polygon_edit_preview()
+        self._polygon_edit_preview_id = polygon_id
+        self._polygon_edit_preview_points = integer_points(polygon.points)
+        self._polygon_edit_preview_origin_points = list(self._polygon_edit_preview_points)
+        self._polygon_edit_preview_item.setPen(QPen(item.pen()))
+        self._polygon_edit_preview_item.setBrush(QBrush(item.brush()))
+        self._polygon_edit_preview_item.setPos(QPointF())
+        self._polygon_edit_preview_item.setPath(QPainterPath(item.path()))
+        item.hide()
+        self._polygon_edit_preview_item.show()
+
+    def _update_polygon_edit_preview_path(self) -> None:
+        polygon_id = self._polygon_edit_preview_id
+        points = self._polygon_edit_preview_points
+        if polygon_id is None or points is None or polygon_id not in self._polygons:
+            self._polygon_edit_preview_item.setPath(QPainterPath())
+            return
+        path = _closed_polygon_path(points)
+        for cutout in self._cutout_polygons_for(polygon_id):
+            path.addPath(_display_path_for_polygon(cutout, self._display_settings))
+        path.setFillRule(Qt.FillRule.WindingFill)
+        self._polygon_edit_preview_item.setPos(QPointF())
+        self._polygon_edit_preview_item.setPath(path)
+
+    def cancel_polygon_edit_preview(self) -> None:
+        polygon_id = self._polygon_edit_preview_id
+        self._polygon_edit_preview_id = None
+        self._polygon_edit_preview_points = None
+        self._polygon_edit_preview_origin_points = None
+        self._polygon_edit_preview_item.hide()
+        self._polygon_edit_preview_item.setPos(QPointF())
+        self._polygon_edit_preview_item.setPath(QPainterPath())
+        if polygon_id is None:
+            return
+        item = self._polygon_items.get(polygon_id)
+        polygon = self._polygons.get(polygon_id)
+        if item is None or polygon is None:
+            return
+        category = str(getattr(polygon, "category", "") or "")
+        item.setVisible(
+            self._polygon_category_visible.get(category, True)
+            and self._polygon_overlays_visible
+            and not _hole_display_hidden(polygon, self._polygons)
+        )
+
+    def polygon_edit_preview_points(self, polygon_id: int) -> list[tuple[float, float]] | None:
+        if polygon_id != self._polygon_edit_preview_id or self._polygon_edit_preview_points is None:
+            return None
+        return list(self._polygon_edit_preview_points)
+
+    def preview_vertex_move(
+        self,
+        polygon_id: int,
+        vertex_index: int,
+        point: QPointF,
+    ) -> list[tuple[float, float]]:
+        if self._polygon_edit_preview_id != polygon_id:
+            self.begin_polygon_edit_preview(polygon_id)
+        points = list(self._polygon_edit_preview_points or self.polygon_points(polygon_id))
+        if vertex_index < 0 or vertex_index >= len(points):
+            return points
+        new_point = integer_point((point.x(), point.y()))
+        closed_duplicate_endpoint = (
+            len(points) > 2
+            and hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) < 1e-5
+        )
+        points[vertex_index] = new_point
+        if closed_duplicate_endpoint:
+            if vertex_index == 0:
+                points[-1] = new_point
+            elif vertex_index == len(points) - 1:
+                points[0] = new_point
+        self._polygon_edit_preview_points = points
+        self._update_polygon_edit_preview_path()
+        return list(points)
 
     def preview_edge_move(
         self,
@@ -2698,12 +2933,30 @@ class PolygonEditorScene(QGraphicsScene):
         edge_index: int,
         origin_points: list[tuple[float, float]],
         delta: tuple[float, float],
-    ) -> None:
+    ) -> list[tuple[float, float]]:
         moved = self._translate_edge_points(origin_points, edge_index, delta)
-        self._replace_polygon_points_internal(polygon_id, moved, emit_signal=False)
+        if self._polygon_edit_preview_id != polygon_id:
+            self.begin_polygon_edit_preview(polygon_id)
+        self._polygon_edit_preview_points = moved
+        self._update_polygon_edit_preview_path()
+        return list(moved)
 
-    def preview_polygon_move(self, polygon_id: int, points: list[tuple[float, float]]) -> None:
-        self._replace_polygon_points_internal(polygon_id, points, emit_signal=False)
+    def preview_polygon_move(
+        self,
+        polygon_id: int,
+        points: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        if self._polygon_edit_preview_id != polygon_id:
+            self.begin_polygon_edit_preview(polygon_id)
+        self._polygon_edit_preview_points = integer_points(points)
+        origin = self._polygon_edit_preview_origin_points
+        if origin and self._polygon_edit_preview_points:
+            dx = self._polygon_edit_preview_points[0][0] - origin[0][0]
+            dy = self._polygon_edit_preview_points[0][1] - origin[0][1]
+            self._polygon_edit_preview_item.setPos(float(dx), float(dy))
+        else:
+            self._update_polygon_edit_preview_path()
+        return list(self._polygon_edit_preview_points)
 
     def start_pending_polygon(self, *, for_brush: bool = False) -> None:
         self._pending_points.clear()
@@ -3312,9 +3565,13 @@ class PolygonEditorScene(QGraphicsScene):
         with self._polygon_change_profile_scope(operation) as profile:
             if not self._polygons:
                 phase_started_at = perf_counter()
-                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._push_polygon_layer_replacement(
+                    remove_polygon_ids=[],
+                    add_polygons=[polygon],
+                    description=label,
+                    select_polygon_id=polygon.id,
+                )
                 self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
-                self._maybe_push_vector_postprocess("Vector geometry cleanup")
                 return
             phase_started_at = perf_counter()
             merged_polygons, overlapping_ids = self._merge_shape_into_scene(points=polygon.points, thickness=None)
@@ -3323,21 +3580,33 @@ class PolygonEditorScene(QGraphicsScene):
                 profile.set_metadata(overlapping=len(overlapping_ids))
             if merged_polygons is None:
                 phase_started_at = perf_counter()
-                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._push_polygon_layer_replacement(
+                    remove_polygon_ids=[],
+                    add_polygons=[polygon],
+                    description=label,
+                    select_polygon_id=polygon.id,
+                )
                 self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
-                self._maybe_push_vector_postprocess("Vector geometry cleanup")
                 return
             if not overlapping_ids:
                 phase_started_at = perf_counter()
-                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._push_polygon_layer_replacement(
+                    remove_polygon_ids=[],
+                    add_polygons=[polygon],
+                    description=label,
+                    select_polygon_id=polygon.id,
+                )
                 self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
-                self._maybe_push_vector_postprocess("Vector geometry cleanup")
                 return
             if not merged_polygons:
                 phase_started_at = perf_counter()
-                self.undo_stack.push(AddPolygonCommand(self, polygon, select_after_redo=True))
+                self._push_polygon_layer_replacement(
+                    remove_polygon_ids=[],
+                    add_polygons=[polygon],
+                    description=label,
+                    select_polygon_id=polygon.id,
+                )
                 self._note_polygon_change_phase(profile, "undo_commit", phase_started_at)
-                self._maybe_push_vector_postprocess("Vector geometry cleanup")
                 return
             phase_started_at = perf_counter()
             if not self._push_polygon_layer_replacement(
@@ -3546,7 +3815,11 @@ class PolygonEditorScene(QGraphicsScene):
 
         buffered_tool = tool_shape.buffer(1e-7)
 
-        for polygon_id, polygon in self._polygons.items():
+        candidate_ids = self._polygon_spatial_index.query_bbox(shape_bbox)
+        for polygon_id in sorted(candidate_ids):
+            polygon = self._polygons.get(polygon_id)
+            if polygon is None:
+                continue
             if polygon.is_hole:
                 continue
             if not _bboxes_intersect(shape_bbox, polygon.bbox):
@@ -3585,19 +3858,41 @@ class PolygonEditorScene(QGraphicsScene):
                 if self._pending_cursor is not None:
                     preview_points.append(self._pending_cursor)
 
-                fill_color = QColor("#F7B801")
-
-                fill_color.setAlpha(55)
-
-                self._pending_path_item.setBrush(QBrush(fill_color))
-
-                outline_pen = QPen(outline_color, 1.25)
-
-                outline_pen.setCosmetic(True)
-
-                self._pending_path_item.setPen(outline_pen)
-
-                self._pending_path_item.setPath(self._tool_preview_path(preview_points, brush_width))
+                preview_color = QColor(outline_color)
+                preview_color.setAlpha(96)
+                preview_pen = QPen(
+                    preview_color,
+                    max(1.0, float(brush_width)),
+                    Qt.PenStyle.SolidLine,
+                    Qt.PenCapStyle.RoundCap,
+                    Qt.PenJoinStyle.BevelJoin,
+                )
+                preview_pen.setCosmetic(False)
+                self._pending_path_item.setPen(preview_pen)
+                self._pending_path_item.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                backbone = QPainterPath()
+                if len(preview_points) == 1:
+                    radius = max(1.0, float(brush_width)) / 2.0
+                    x_coord, y_coord = preview_points[0]
+                    backbone.addEllipse(
+                        QRectF(
+                            x_coord - radius,
+                            y_coord - radius,
+                            radius * 2.0,
+                            radius * 2.0,
+                        )
+                    )
+                    dot_color = QColor(outline_color)
+                    dot_color.setAlpha(55)
+                    self._pending_path_item.setBrush(QBrush(dot_color))
+                    preview_pen.setWidthF(1.25)
+                    preview_pen.setCosmetic(True)
+                    self._pending_path_item.setPen(preview_pen)
+                else:
+                    backbone.moveTo(preview_points[0][0], preview_points[0][1])
+                    for tail in preview_points[1:]:
+                        backbone.lineTo(tail[0], tail[1])
+                self._pending_path_item.setPath(backbone)
 
                 return
 
@@ -3632,9 +3927,18 @@ class PolygonEditorScene(QGraphicsScene):
             preview_points.append(self._pending_cursor)
         can_preview_closed = len(preview_points) >= 3
         preview_valid = False
-        if can_preview_closed:
+        # Pointer motion only needs a visual continuation. Exact topology and
+        # size checks run on clicks/commit; repeating them for every cursor
+        # sample makes long vertex-authored polygons progressively slower.
+        if can_preview_closed and self._pending_cursor is None:
             preview_valid, _reason = polygon_commit_acceptability(preview_points)
-        preview_color = QColor("#38BDF8" if preview_valid else "#EF4444" if can_preview_closed else "#F7B801")
+        preview_color = QColor(
+            "#38BDF8"
+            if preview_valid or (can_preview_closed and self._pending_cursor is not None)
+            else "#EF4444"
+            if can_preview_closed
+            else "#F7B801"
+        )
 
         dashed_pen_setup = QPen(preview_color, 1.5, Qt.PenStyle.DashLine)
 
@@ -3818,21 +4122,20 @@ class PolygonEditorScene(QGraphicsScene):
         editable_vertex_ids: set[int],
     ) -> None:
         polygon = self._polygons.get(polygon_id)
-        if polygon is not None and _is_via_polygon(polygon):
-            item.update_selection_appearance(
-                self._display_settings,
-                selected=polygon_id in self._selected_polygon_ids,
-                custom_color=(
-                    self._via_score_color(polygon)
-                    or self._object_color_for(polygon_id)
-                ),
-                needs_repair=self.polygon_needs_repair(polygon_id),
-            )
+        if polygon is None:
             return
-        self._refresh_polygon_item(
-            polygon_id,
-            item,
-            editable_vertex_ids=editable_vertex_ids,
+        item.update_selection_appearance(
+            self._display_settings,
+            selected=polygon_id in self._selected_polygon_ids,
+            custom_color=self._via_score_color(polygon) or self._object_color_for(polygon_id),
+            needs_repair=self.polygon_needs_repair(polygon_id),
+        )
+        item.update_move_target_highlight(
+            self._display_settings,
+            preview_vertices=polygon_id in editable_vertex_ids,
+            selected=polygon_id in self._selected_polygon_ids,
+            highlight_vertex_index=None,
+            highlight_edge_index=None,
         )
 
     def _refresh_polygon_item(
@@ -4197,7 +4500,10 @@ class PolygonEditorScene(QGraphicsScene):
             perimeter=perimeter,
             bbox=bbox,
             recognition_score=existing.recognition_score,
-            reject_reason=existing.reject_reason,
+            # A recognition rejection describes the pre-edit geometry.  If it
+            # is retained, a manually repaired ring remains painted as invalid
+            # forever even though its authored geometry has changed.
+            reject_reason="",
             # The authored CIF keyhole ring describes the geometry before this
             # edit.  Keeping it would make display ignore the edited family.
             cif_paint_ring=[],
@@ -4215,6 +4521,11 @@ class PolygonEditorScene(QGraphicsScene):
         if polygon.id in self._polygon_items:
             self._remove_polygon_internal(polygon.id, emit_signal=False, refresh=False)
         self._polygons[polygon.id] = polygon.clone()
+        self._polygon_spatial_index.upsert(self._polygons[polygon.id])
+        self._polygon_hover_contours[polygon.id] = np.asarray(
+            self._polygons[polygon.id].points,
+            dtype=np.float32,
+        ).reshape((-1, 1, 2))
         self._index_polygon_relationship(self._polygons[polygon.id])
         self._next_polygon_id = max(self._next_polygon_id, polygon.id + 1)
         should_paint = True if paint is None else bool(paint)
@@ -4282,6 +4593,8 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _remove_polygon_internal(self, polygon_id: int, emit_signal: bool = True, refresh: bool = True) -> None:
         item = self._polygon_items.pop(polygon_id, None)
+        self._polygon_spatial_index.remove(polygon_id)
+        self._polygon_hover_contours.pop(polygon_id, None)
         self._unindex_polygon_relationship(self._polygons.pop(polygon_id, None))
         if self._hover_conductor_polygon_id == polygon_id:
             self._hover_conductor_polygon_id = None
@@ -4346,6 +4659,11 @@ class PolygonEditorScene(QGraphicsScene):
         root_id = self._polygon_root_id(polygon_id)
         self._unindex_polygon_relationship(self._polygons.get(polygon_id))
         self._polygons[polygon_id] = self._create_polygon_snapshot(polygon_id, points)
+        self._polygon_spatial_index.upsert(self._polygons[polygon_id])
+        self._polygon_hover_contours[polygon_id] = np.asarray(
+            self._polygons[polygon_id].points,
+            dtype=np.float32,
+        ).reshape((-1, 1, 2))
         if root_id is not None and root_id in self._polygons:
             self._polygons[root_id].cif_paint_ring = []
         self._index_polygon_relationship(self._polygons[polygon_id])

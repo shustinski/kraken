@@ -311,7 +311,12 @@ class PolygonExtractionWidget(
         self._via_template_images: list[np.ndarray] = []
         self._via_template_min_scores: list[float] = []
         self._via_template_diameters: list[int] = []
-        self._viewed_image_paths: set[str] = set()
+        self._viewed_image_paths: set[str] = {
+            str(Path(path)) for path in self._session_settings_store.load_viewed_image_paths()
+        }
+        self._restored_modified_image_paths: set[str] = {
+            str(Path(path)) for path in self._session_settings_store.load_modified_image_paths()
+        }
         self._user_via_presets: dict[str, dict[str, object]] = self._load_user_via_presets()
         self._user_metal_presets: dict[str, dict[str, object]] = self._load_user_metal_presets()
         self._extra_layers: list[dict[str, object]] = []
@@ -425,7 +430,9 @@ class PolygonExtractionWidget(
         self._thumbnail_radial_pump_timer = QTimer(self)
         self._thumbnail_radial_pump_timer.setSingleShot(True)
         self._thumbnail_radial_pump_timer.timeout.connect(self._pump_thumbnail_radial_loads)
-        self._persisted_highlight_paths: set[str] = set()
+        self._persisted_highlight_paths: set[str] = {
+            str(Path(path)) for path in self._session_settings_store.load_persisted_image_paths()
+        }
         self._last_vector_persist_error: str | None = None
         self._cif_load_failure_stems: set[str] = set()
         self._closing = False

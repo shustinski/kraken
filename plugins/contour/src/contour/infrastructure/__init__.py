@@ -4,6 +4,7 @@ from .settings_store import (
     WidgetGamificationProfileStore,
     WidgetPathSettingsStore,
     WidgetSessionSettingsStore,
+    WidgetWindowSettingsStore,
     WidgetMetalPresetSettingsStore,
     WidgetViaPresetSettingsStore,
 )
@@ -15,5 +16,6 @@ __all__ = [
     "WidgetMetalPresetSettingsStore",
     "WidgetPathSettingsStore",
     "WidgetSessionSettingsStore",
+    "WidgetWindowSettingsStore",
     "WidgetViaPresetSettingsStore",
 ]

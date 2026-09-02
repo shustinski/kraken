@@ -1064,6 +1064,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     self._update_action_button_texts()
     self.polygon_mode_label.setText("Полигон" if self._ui_language == "ru" else "Polygon")
     self.brush_mode_label.setText("Кисть" if self._ui_language == "ru" else "Brush")
+    if hasattr(self, "trace_mode_label"):
+        self.trace_mode_label.setText("Трасса" if self._ui_language == "ru" else "Trace")
     self.brush_size_label.setText("Толщина" if self._ui_language == "ru" else "Width")
     if hasattr(self, "trace_width_label"):
         self.trace_width_label.setText(self._tr("trace_width_label"))
@@ -1075,6 +1077,8 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
         (self.polygon_mode_combo, "polygon_mode"),
         (self.brush_mode_label, "brush_mode"),
         (self.brush_mode_combo, "brush_mode"),
+        (self.trace_mode_label, "trace_mode"),
+        (self.trace_mode_combo, "trace_mode"),
         (self.brush_size_label, "brush_size"),
         (self.brush_size_spin, "brush_size"),
         (self.delete_vertex_mode_label, "delete_vertex_mode"),

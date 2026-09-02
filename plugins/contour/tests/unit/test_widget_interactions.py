@@ -3080,7 +3080,7 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
 
         self.assertEqual(
             self.view.viewportUpdateMode(),
-            QGraphicsView.ViewportUpdateMode.FullViewportUpdate,
+            QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate,
         )
 
     def test_zoom_skips_hover_hit_testing_on_mouse_move(self) -> None:
@@ -4392,6 +4392,13 @@ class PolygonEditorViewMiddleClickTests(unittest.TestCase):
         ]
         area, perimeter, bbox = compute_polygon_metrics(points)
         poly = PolygonData(id=1, points=points, area=area, perimeter=perimeter, bbox=bbox)
+        self.view.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
         self.view.set_polygons([poly])
         self.view._editor_scene.select_polygon(1)
         self.view.set_tool(EditorTool.MOVE_VERTEX)
@@ -5130,14 +5137,68 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
         scene = PolygonEditorScene()
         scene.start_pending_polygon(for_brush=True)
         scene.set_pending_path_width(40.0, cosmetic=False)
-        scene.append_brush_vertex(QPointF(10.0, 10.0), 40.0)
-        scene.update_pending_cursor(QPointF(110.0, 10.0))
-        first_height = scene._pending_path_item.path().boundingRect().height()
-        scene.update_pending_cursor(QPointF(120.0, 10.0))
-        second_height = scene._pending_path_item.path().boundingRect().height()
+        with patch.object(scene, "_tool_preview_path") as exact_preview:
+            scene.append_brush_vertex(QPointF(10.0, 10.0), 40.0)
+            scene.update_pending_cursor(QPointF(110.0, 10.0))
+            first_height = scene._pending_path_item.boundingRect().height()
+            scene.update_pending_cursor(QPointF(120.0, 10.0))
+            second_height = scene._pending_path_item.boundingRect().height()
 
+        exact_preview.assert_not_called()
         self.assertGreater(first_height, 35.0)
         self.assertGreater(second_height, 35.0)
+
+    def test_polygon_cursor_preview_defers_exact_commit_validation(self) -> None:
+        scene = PolygonEditorScene()
+        for point in (QPointF(10.0, 10.0), QPointF(80.0, 10.0), QPointF(80.0, 80.0)):
+            scene.append_pending_point(point)
+
+        with patch("contour.graphics.editor_scene.polygon_commit_acceptability") as acceptability:
+            scene.update_pending_cursor(QPointF(20.0, 70.0))
+
+        acceptability.assert_not_called()
+        self.assertFalse(scene._pending_path_item.path().isEmpty())
+
+    def test_local_polygon_add_does_not_run_full_frame_postprocess(self) -> None:
+        scene = PolygonEditorScene()
+        scene.set_vector_geometry_settings(
+            VectorGeometrySettings(
+                min_outer_area_px2=1.0,
+                min_hole_area_to_remove_px2=0.0,
+                min_spike_interior_angle_deg=0.0,
+                drop_three_vertex_triangle_artifacts=False,
+            )
+        )
+        polygons = []
+        for index in range(100):
+            polygon = _rectangle_polygon(index * 20, 0, index * 20 + 10, 10)
+            polygon.id = index + 1
+            polygons.append(polygon)
+        scene.set_polygons(polygons)
+
+        with patch("contour.graphics.editor_scene.postprocess_after_editor_mutation") as full_cleanup:
+            changed = scene.add_rectangle_polygon(QPointF(2200.0, 0.0), QPointF(2210.0, 10.0))
+
+        self.assertTrue(changed)
+        full_cleanup.assert_not_called()
+
+    def test_hover_hit_testing_passes_only_spatial_candidates(self) -> None:
+        scene = PolygonEditorScene()
+        polygons = []
+        for index in range(100):
+            polygon = _rectangle_polygon(index * 300, 0, index * 300 + 20, 20)
+            polygon.id = index + 1
+            polygons.append(polygon)
+        scene.set_polygons(polygons)
+
+        with patch(
+            "contour.graphics.editor_scene.resolve_hover_polygon_id",
+            return_value=None,
+        ) as resolve_hover:
+            scene.sync_conductor_hover_highlight(QPointF(10.0, 10.0))
+
+        candidate_polygons = resolve_hover.call_args.args[0]
+        self.assertEqual(set(candidate_polygons), {1})
 
     def test_append_brush_vertex_does_not_densify_long_jump(self) -> None:
         scene = PolygonEditorScene()
@@ -5262,8 +5323,10 @@ class PolygonEditorSceneBrushPreviewTests(unittest.TestCase):
             scene.preview_polygon_move(1, moved_points)
 
         self.assertEqual(refresh_all.call_count, 0)
-        self.assertEqual(refresh_item.call_count, 1)
-        self.assertEqual(scene.polygon_points(1), moved_points)
+        self.assertEqual(refresh_item.call_count, 0)
+        self.assertNotEqual(scene.polygon_points(1), moved_points)
+        self.assertEqual(scene.polygon_edit_preview_points(1), moved_points)
+        self.assertTrue(scene._polygon_edit_preview_item.isVisible())
 
     def test_selection_refreshes_only_previous_and_next_contacts(self) -> None:
         scene = PolygonEditorScene()

@@ -105,7 +105,13 @@ class VectorPolygonDisplayItem(QGraphicsPathItem):
         if polygon.is_hole:
             fill.setAlpha(0)
         else:
-            fill.setAlphaF(max(0.0, min(1.0, display_settings.fill_opacity)))
+            fill_opacity = max(0.0, min(1.0, display_settings.fill_opacity))
+            # Selection must remain visible even when the regular conductor
+            # fill is disabled.  Keep it translucent so the source image is
+            # still readable through the selected conductor.
+            if selected:
+                fill_opacity = max(0.35, fill_opacity)
+            fill.setAlphaF(fill_opacity)
         pen = QPen(outline, max(1.0, display_settings.line_width))
         pen.setCosmetic(True)
         self.setPen(pen)

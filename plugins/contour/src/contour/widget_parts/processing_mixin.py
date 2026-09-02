@@ -376,7 +376,10 @@ class WidgetProcessingMixin:
         paint_image_row_item(
             item,
             normalized,
-            image_has_changes=self._workspace.image_has_changes(normalized),
+            image_has_changes=(
+                self._workspace.image_has_changes(normalized)
+                or normalized in self._restored_modified_image_paths
+            ),
             has_vector_overlay=bool(self._workspace.resolve_cif_path(normalized)),
             vector_index_active=self._vector_index_active(),
             extraction_enabled=extraction_enabled,
@@ -433,11 +436,17 @@ class WidgetProcessingMixin:
         extraction_enabled = self._is_extraction_mode_enabled()
         current_path = self._workspace.current_image_path
         if extraction_enabled or current_path == normalized:
-            polygons_dirty = False if extraction_enabled else self._workspace.image_has_changes(normalized)
+            polygons_dirty = False if extraction_enabled else (
+                self._workspace.image_has_changes(normalized)
+                or normalized in self._restored_modified_image_paths
+            )
         elif self._uses_large_frame_list():
             polygons_dirty = False
         else:
-            polygons_dirty = self._workspace.image_has_changes(normalized)
+            polygons_dirty = (
+                self._workspace.image_has_changes(normalized)
+                or normalized in self._restored_modified_image_paths
+            )
         painted = classify_image_side_paint_status(
             has_matching_cif=has_vector,
             vector_index_active=self._vector_index_active(),
@@ -642,7 +651,11 @@ class WidgetProcessingMixin:
             return
         if sync_editor and not self._updating_views:
             self._sync_editor_polygons_to_current_workspace()
-        dirty = self._workspace.current_image_has_changes()
+        current_path = str(Path(self._workspace.current_image_path))
+        dirty = (
+            self._workspace.current_image_has_changes()
+            or current_path in self._restored_modified_image_paths
+        )
         if self._ui_language == "ru":
             self.vector_edit_status_label.setText("Изменено" if dirty else "Сохранено")
         else:

@@ -4,10 +4,9 @@ import cProfile
 import io
 import pstats
 from collections import OrderedDict
+from collections.abc import Callable
 from math import hypot, log2
 from time import perf_counter
-
-from typing import Callable
 
 from PyQt6.QtCore import (
     QEvent,
@@ -21,9 +20,10 @@ from PyQt6.QtCore import (
 )
 from PyQt6.QtGui import (
     QBrush,
-    QColor,
     QCloseEvent,
+    QColor,
     QContextMenuEvent,
+    QGuiApplication,
     QKeyEvent,
     QKeySequence,
     QMouseEvent,
@@ -31,7 +31,6 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
-    QGuiApplication,
     QResizeEvent,
     QShortcut,
     QTabletEvent,
@@ -48,7 +47,6 @@ from ..application.vector_geometry_postprocess import (
     VectorGeometrySettings,
     apply_edge_translation_to_clone,
     apply_polygon_points_to_clone,
-    apply_vertex_position_to_clone,
     collapse_redundant_vertices_in_polygons,
     merge_overlapping_root_families_near_polygons,
     postprocess_changed_polygon_edit,
@@ -92,7 +90,7 @@ from .tool_mode_logic import (
     is_via_polygon,
     normalize_editor_tool,
 )
-from .tools import BrushMode, DeleteVertexMode, EditorTool, MIN_MANUAL_STROKE_WIDTH_PX, PolygonCreateMode
+from .tools import MIN_MANUAL_STROKE_WIDTH_PX, BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
 from .viewport_navigation import (
     DEFAULT_ZOOM_STEP_FACTOR,
     clamp_zoom_factor,
@@ -129,6 +127,7 @@ class PolygonEditorView(QGraphicsView):
     effectivePolygonCreateModeChanged = pyqtSignal(object)
     polygonCreateModeChanged = pyqtSignal(object)
     brushModeChanged = pyqtSignal(object)
+    traceModeChanged = pyqtSignal(object)
     deleteVertexModeChanged = pyqtSignal(object)
     zoomChanged = pyqtSignal(float)
     neighborFrameActivated = pyqtSignal(str)
@@ -165,7 +164,10 @@ class PolygonEditorView(QGraphicsView):
         self._steady_render_hints = QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
         self._zooming_render_hints = QPainter.RenderHint(0)
         self.setRenderHints(self._steady_render_hints)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        # Manual tools invalidate one small overlay or polygon. Repainting the
+        # complete image and vector layer for every pointer sample makes input
+        # latency scale with viewport size rather than with the edited region.
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
         self.setCacheMode(QGraphicsView.CacheModeFlag.CacheBackground)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontSavePainterState, True)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, False)
@@ -187,6 +189,7 @@ class PolygonEditorView(QGraphicsView):
         self._polygon_create_mode = PolygonCreateMode.RECTANGLE
         self._brush_mode = BrushMode.ANGLED
         self._brush_thickness = 12.0
+        self._trace_mode = BrushMode.ANGLED
         self._trace_width = 12.0
         self._via_width = 12.0
         self._via_height = 12.0
@@ -199,6 +202,7 @@ class PolygonEditorView(QGraphicsView):
         self._drag_vertex_index: int | None = None
         self._drag_edge_index: int | None = None
         self._drag_origin_points: list[tuple[float, float]] | None = None
+        self._drag_preview_points: list[tuple[float, float]] | None = None
         self._drag_start_scene_pos: QPointF | None = None
         self._last_pointer_scene_pos: QPointF | None = None
         self._drag_erases = False
@@ -378,6 +382,8 @@ class PolygonEditorView(QGraphicsView):
         elif self._move_vertex_tool_profile is not None:
             self._cancel_move_vertex_tool_profile_finish()
             self._finish_move_vertex_tool_profile("superseded")
+        self._editor_scene.cancel_polygon_edit_preview()
+        self._drag_preview_points = None
         self._tool = tool
         self._select_press_polygon_id = None
         self._select_press_start = None
@@ -505,6 +511,16 @@ class PolygonEditorView(QGraphicsView):
         if self._tool == EditorTool.TRACE_PEN:
             self._editor_scene.set_pending_path_width(self._trace_width, cosmetic=False)
         self._update_tool_cursors()
+
+    def set_trace_mode(self, mode: BrushMode) -> None:
+        mode = BrushMode(mode)
+        changed = mode != self._trace_mode
+        self._trace_mode = mode
+        if changed:
+            self.traceModeChanged.emit(mode)
+        if self._editor_scene.has_pending_polygon() and self._tool == EditorTool.TRACE_PEN:
+            self._editor_scene.cancel_pending_polygon()
+            self._pending_polygon_erases = None
 
     def set_via_size(self, width: float, height: float) -> None:
         self._via_width = max(1.0, float(width))
@@ -1129,6 +1145,7 @@ class PolygonEditorView(QGraphicsView):
         self._clipboard_polygons = [polygon.clone() for polygon in polygons]
         self._clipboard_anchor = _polygons_center(self._clipboard_polygons)
         self.contactCopyFinished.emit(len(polygons))
+        self.start_paste_mode()
 
     def cut_selected(self) -> None:
         if self.vector_edits_locked():
@@ -1147,6 +1164,11 @@ class PolygonEditorView(QGraphicsView):
     def start_paste_mode(self) -> None:
         if self.vector_edits_locked():
             self.contactPasteFinished.emit(0)
+            return
+        if self._paste_mode:
+            self._update_paste_preview(
+                self._last_pointer_scene_pos or self.mapToScene(self._require_viewport().rect().center())
+            )
             return
         self.contactPasteStarted.emit(len(self._clipboard_polygons))
         if not self._clipboard_polygons or not self._editor_scene.can_add_polygon_set(self._clipboard_polygons):
@@ -1540,6 +1562,8 @@ class PolygonEditorView(QGraphicsView):
                 self._editor_scene.clear_move_target_preview()
                 self._drag_polygon_id = polygon_id
                 self._drag_origin_points = self._editor_scene.polygon_points(polygon_id)
+                self._drag_preview_points = list(self._drag_origin_points)
+                self._editor_scene.begin_polygon_edit_preview(polygon_id)
                 self._drag_polygons_snapshot = self._editor_scene.get_polygons()
                 self._drag_start_scene_pos = scene_pos
                 if kind == "vertex":
@@ -1625,6 +1649,8 @@ class PolygonEditorView(QGraphicsView):
                     self._select_press_polygon_id
                 )
                 self._drag_origin_points = self._editor_scene.polygon_points(self._select_press_polygon_id)
+                self._drag_preview_points = list(self._drag_origin_points)
+                self._editor_scene.begin_polygon_edit_preview(self._select_press_polygon_id)
                 self._drag_polygons_snapshot = (
                     None
                     if self._drag_polygon_is_contact
@@ -1686,14 +1712,22 @@ class PolygonEditorView(QGraphicsView):
             last_point = self._editor_scene.pending_last_point()
             target = (
                 _snap_to_45(last_point, scene_pos)
-                if last_point is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                if last_point is not None
+                and (
+                    self._trace_mode == BrushMode.ANGLED
+                    or event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                )
                 else scene_pos
             )
             self._editor_scene.update_pending_cursor(target)
             event.accept()
             return
         if self._drag_kind == "vertex" and self._drag_polygon_id is not None and self._drag_vertex_index is not None:
-            self._editor_scene.preview_vertex_move(self._drag_polygon_id, self._drag_vertex_index, scene_pos)
+            self._drag_preview_points = self._editor_scene.preview_vertex_move(
+                self._drag_polygon_id,
+                self._drag_vertex_index,
+                scene_pos,
+            )
             event.accept()
             return
         if (
@@ -1707,7 +1741,7 @@ class PolygonEditorView(QGraphicsView):
                 scene_pos.x() - self._drag_start_scene_pos.x(),
                 scene_pos.y() - self._drag_start_scene_pos.y(),
             )
-            self._editor_scene.preview_edge_move(
+            self._drag_preview_points = self._editor_scene.preview_edge_move(
                 self._drag_polygon_id,
                 self._drag_edge_index,
                 self._drag_origin_points,
@@ -1724,7 +1758,10 @@ class PolygonEditorView(QGraphicsView):
             dx = scene_pos.x() - self._drag_start_scene_pos.x()
             dy = scene_pos.y() - self._drag_start_scene_pos.y()
             moved = [(x_coord + dx, y_coord + dy) for x_coord, y_coord in self._drag_origin_points]
-            self._editor_scene.preview_polygon_move(self._drag_polygon_id, moved)
+            self._drag_preview_points = self._editor_scene.preview_polygon_move(
+                self._drag_polygon_id,
+                moved,
+            )
             if self._contact_drag_profile is not None:
                 self._contact_drag_profile.record_frame(move_event_started_at)
             event.accept()
@@ -1822,7 +1859,11 @@ class PolygonEditorView(QGraphicsView):
                 profiler_enabled = False
                 if profiler is not None:
                     profiler_enabled = try_enable_profiler(profiler)
-                new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
+                new_points = list(
+                    self._drag_preview_points
+                    or self._editor_scene.polygon_edit_preview_points(self._drag_polygon_id)
+                    or self._drag_origin_points
+                )
                 old_point = self._drag_origin_points[self._drag_vertex_index]
                 new_point = (
                     new_points[self._drag_vertex_index]
@@ -1903,7 +1944,11 @@ class PolygonEditorView(QGraphicsView):
                     release_pos.x() - self._drag_start_scene_pos.x(),
                     release_pos.y() - self._drag_start_scene_pos.y(),
                 )
-                new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
+                new_points = list(
+                    self._drag_preview_points
+                    or self._editor_scene.polygon_edit_preview_points(self._drag_polygon_id)
+                    or self._drag_origin_points
+                )
                 if new_points and _polygon_points_different(self._drag_origin_points, new_points):
                     if not is_valid_closed_polygon_edge_move(new_points, self._drag_edge_index):
                         self._editor_scene.preview_polygon_move(self._drag_polygon_id, self._drag_origin_points)
@@ -1952,7 +1997,11 @@ class PolygonEditorView(QGraphicsView):
                     or self._drag_polygons_snapshot is not None
                 )
             ):
-                new_points = self._editor_scene.polygon_points(self._drag_polygon_id)
+                new_points = list(
+                    self._drag_preview_points
+                    or self._editor_scene.polygon_edit_preview_points(self._drag_polygon_id)
+                    or self._drag_origin_points
+                )
                 if new_points and _polygon_points_different(self._drag_origin_points, new_points):
                     if not is_valid_closed_polygon_ring(new_points):
                         contact_drag_status = "rejected"
@@ -2010,11 +2059,13 @@ class PolygonEditorView(QGraphicsView):
             self._drag_vertex_index = None
             self._drag_edge_index = None
             self._drag_origin_points = None
+            self._drag_preview_points = None
             self._drag_start_scene_pos = None
             self._drag_polygons_snapshot = None
             self._drag_polygon_is_contact = False
             self._drag_erases = False
             self._brush_pan_guard = False
+            self._editor_scene.cancel_polygon_edit_preview()
             self._editor_scene.clear_move_target_preview()
             self._update_tool_cursors()
             if contact_drag_commit_started_at is not None:
@@ -2445,7 +2496,7 @@ class PolygonEditorView(QGraphicsView):
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
 
     def _leave_zoom_render_mode(self) -> None:
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
         self.setRenderHints(self._steady_render_hints)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, False)
         self._editor_scene.end_zoom_vector_render_mode()
@@ -2627,6 +2678,11 @@ class PolygonEditorView(QGraphicsView):
             index = order.index(self._brush_mode) if self._brush_mode in order else 0
             self.set_brush_mode(order[(index + 1) % len(order)])
             return True
+        if self._tool == EditorTool.TRACE_PEN:
+            order = [BrushMode.FREEFORM, BrushMode.ANGLED]
+            index = order.index(self._trace_mode) if self._trace_mode in order else 0
+            self.set_trace_mode(order[(index + 1) % len(order)])
+            return True
         if self._tool == EditorTool.DELETE_VERTEX:
             next_mode = (
                 DeleteVertexMode.AREA
@@ -2673,7 +2729,7 @@ class PolygonEditorView(QGraphicsView):
 
         target = scene_pos
         last_point = self._editor_scene.pending_last_point()
-        if snap and last_point is not None:
+        if (snap or self._trace_mode == BrushMode.ANGLED) and last_point is not None:
             target = _snap_to_45(last_point, scene_pos)
         if last_point is not None and hypot(target.x() - last_point.x(), target.y() - last_point.y()) < 1.0:
             return

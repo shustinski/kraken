@@ -94,6 +94,8 @@ class WidgetUiHelpersMixin:
             combo = self.polygon_mode_combo
         elif tool == EditorTool.BRUSH and hasattr(self, "brush_mode_combo"):
             combo = self.brush_mode_combo
+        elif tool == EditorTool.TRACE_PEN and hasattr(self, "trace_mode_combo"):
+            combo = self.trace_mode_combo
         elif tool == EditorTool.DELETE_VERTEX and hasattr(self, "delete_vertex_mode_combo"):
             combo = self.delete_vertex_mode_combo
         if combo is None or combo.count() < 2:
@@ -105,6 +107,9 @@ class WidgetUiHelpersMixin:
 
     def _sync_brush_mode_combo(self, mode: BrushMode) -> None:
         self._sync_mode_combo(self.brush_mode_combo, mode)
+
+    def _sync_trace_mode_combo(self, mode: BrushMode) -> None:
+        self._sync_mode_combo(self.trace_mode_combo, mode)
 
     def _sync_delete_vertex_mode_combo(self, mode: DeleteVertexMode) -> None:
         self._sync_mode_combo(self.delete_vertex_mode_combo, mode)
@@ -410,6 +415,7 @@ class WidgetUiHelpersMixin:
     def _retranslate_editor_mode_combos(self) -> None:
         polygon_mode = self.polygon_mode_combo.currentData()
         brush_mode = self.brush_mode_combo.currentData()
+        trace_mode = self.trace_mode_combo.currentData()
         delete_mode = self.delete_vertex_mode_combo.currentData()
 
         self.polygon_mode_combo.setItemText(0, self._mode_text("polygon_points"))
@@ -418,11 +424,16 @@ class WidgetUiHelpersMixin:
             self.brush_mode_combo.setItemText(0, self._mode_text("brush_freeform"))
         if self.brush_mode_combo.count() > 1:
             self.brush_mode_combo.setItemText(1, self._mode_text("brush_45deg"))
+        if self.trace_mode_combo.count() > 0:
+            self.trace_mode_combo.setItemText(0, self._mode_text("brush_freeform"))
+        if self.trace_mode_combo.count() > 1:
+            self.trace_mode_combo.setItemText(1, self._mode_text("brush_45deg"))
         self.delete_vertex_mode_combo.setItemText(0, self._mode_text("delete_single"))
         self.delete_vertex_mode_combo.setItemText(1, self._mode_text("delete_area"))
 
         polygon_index = self.polygon_mode_combo.findData(polygon_mode)
         brush_index = self.brush_mode_combo.findData(brush_mode)
+        trace_index = self.trace_mode_combo.findData(trace_mode)
         delete_index = self.delete_vertex_mode_combo.findData(delete_mode)
         if polygon_index >= 0:
             self.polygon_mode_combo.setCurrentIndex(polygon_index)
@@ -430,6 +441,8 @@ class WidgetUiHelpersMixin:
             self.brush_mode_combo.setCurrentIndex(brush_index)
         elif self.brush_mode_combo.count() > 0:
             self.brush_mode_combo.setCurrentIndex(0)
+        if trace_index >= 0:
+            self.trace_mode_combo.setCurrentIndex(trace_index)
         if delete_index >= 0:
             self.delete_vertex_mode_combo.setCurrentIndex(delete_index)
 

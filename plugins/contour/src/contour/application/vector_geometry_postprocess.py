@@ -16,8 +16,8 @@ from ..domain import PolygonData, compute_polygon_metrics, integer_point, intege
 from ..domain.polygon_ring import (
     TOPOLOGY_CHECK_MAX_VERTICES,
     collapse_redundant_polyline_vertices,
-    is_valid_closed_polygon_ring,
     is_valid_closed_polygon_edge_move,
+    is_valid_closed_polygon_ring,
     is_valid_closed_polygon_vertex_move,
 )
 
@@ -1869,8 +1869,27 @@ def postprocess_changed_polygon_edit(
         return work, True, changed
 
     replacement = _postprocess_scoped_single_polygon(trial, settings)
-    if replacement is None or len(replacement.points) < len(trial.points):
+    trial_has_duplicate_closure = (
+        len(trial.points) > 3
+        and hypot(
+            float(trial.points[0][0]) - float(trial.points[-1][0]),
+            float(trial.points[0][1]) - float(trial.points[-1][1]),
+        )
+        < 1e-5
+    )
+    removed_only_duplicate_closure = (
+        replacement is not None
+        and trial_has_duplicate_closure
+        and len(replacement.points) + 1 == len(trial.points)
+    )
+    if replacement is None or (
+        len(replacement.points) < len(trial.points) and not removed_only_duplicate_closure
+    ):
         return [polygon.clone() for polygon in polygons], False, False
+
+    if removed_only_duplicate_closure:
+        replacement.points = [*replacement.points, replacement.points[0]]
+        _refresh_metrics(replacement)
 
     replacement.id = trial.id
     replacement.parent_id = trial.parent_id
@@ -1955,6 +1974,17 @@ def postprocess_vertex_move_edit(
 ) -> tuple[list[PolygonData], bool, int | None]:
     """Fast vertex-move postprocess with structural sharing and scoped collapse."""
 
+    source = next((polygon for polygon in polygons if polygon.id == polygon_id), None)
+    preserve_duplicate_closure = bool(
+        source is not None
+        and len(source.points) > 3
+        and hypot(
+            float(source.points[0][0]) - float(source.points[-1][0]),
+            float(source.points[0][1]) - float(source.points[-1][1]),
+        )
+        < 1e-5
+    )
+
     work, moved = apply_vertex_position_scoped(
         polygons,
         polygon_id,
@@ -1974,6 +2004,11 @@ def postprocess_vertex_move_edit(
 
     if polygon_id in {polygon.id for polygon in work}:
         work, _collapsed_ids = collapse_redundant_vertices_for_polygon_ids(work, {polygon_id})
+        if preserve_duplicate_closure:
+            moved_polygon = next(polygon for polygon in work if polygon.id == polygon_id)
+            if moved_polygon.points and moved_polygon.points[-1] != moved_polygon.points[0]:
+                moved_polygon.points = [*moved_polygon.points, moved_polygon.points[0]]
+                _refresh_metrics(moved_polygon)
         if settings.merge_overlapping_on_edit:
             before_merge = _polygons_topo_signature(work)
             work = merge_overlapping_root_families_near_polygons(

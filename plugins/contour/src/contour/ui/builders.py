@@ -2630,6 +2630,7 @@ def build_visual_panel(self) -> QWidget:
     self.polygon_editor.effectivePolygonCreateModeChanged.connect(self._on_effective_polygon_create_mode_changed)
     self.polygon_editor.polygonCreateModeChanged.connect(self._sync_polygon_mode_combo)
     self.polygon_editor.brushModeChanged.connect(self._sync_brush_mode_combo)
+    self.polygon_editor.traceModeChanged.connect(self._sync_trace_mode_combo)
     self.polygon_editor.deleteVertexModeChanged.connect(self._sync_delete_vertex_mode_combo)
     self.editor_toolbar = self._build_editor_toolbar()
     self.editor_toolbar_scroll = QScrollArea()
@@ -2735,11 +2736,21 @@ def build_editor_toolbar(self) -> QWidget:
     _trace_blk = QHBoxLayout(self._trace_toolbar_block)
     _trace_blk.setContentsMargins(0, 0, 0, 0)
     _trace_blk.setSpacing(6)
+    self.trace_mode_label = QLabel("Trace")
+    self.trace_mode_combo = QComboBox()
+    self.trace_mode_combo.addItem(self._mode_text("brush_freeform"), BrushMode.FREEFORM)
+    self.trace_mode_combo.addItem(self._mode_text("brush_45deg"), BrushMode.ANGLED)
+    self.trace_mode_combo.setCurrentIndex(self.trace_mode_combo.findData(BrushMode.ANGLED))
+    self.trace_mode_combo.currentIndexChanged.connect(
+        lambda _index: self.polygon_editor.set_trace_mode(self.trace_mode_combo.currentData())
+    )
     self.trace_width_label = QLabel("Ширина" if self._ui_language == "ru" else "Width")
     self.trace_width_spin = QSpinBox()
     self.trace_width_spin.setRange(int(MIN_MANUAL_STROKE_WIDTH_PX), 256)
     self.trace_width_spin.setValue(12)
     self.trace_width_spin.valueChanged.connect(lambda value: self.polygon_editor.set_trace_width(float(value)))
+    _trace_blk.addWidget(self.trace_mode_label)
+    _trace_blk.addWidget(self.trace_mode_combo)
     _trace_blk.addWidget(self.trace_width_label)
     _trace_blk.addWidget(self.trace_width_spin)
 
@@ -2874,6 +2885,8 @@ def build_editor_toolbar(self) -> QWidget:
         self.polygon_draw_mode_indicator,
         self.brush_mode_combo,
         self.brush_size_spin,
+        self.trace_mode_combo,
+        self.trace_width_spin,
         self.via_width_spin,
         self.via_height_spin,
         self.delete_vertex_mode_combo,
@@ -2887,6 +2900,7 @@ def build_editor_toolbar(self) -> QWidget:
     self.polygon_editor.set_polygon_create_mode(self.polygon_mode_combo.currentData())
     self.polygon_editor.set_brush_mode(self.brush_mode_combo.currentData())
     self.polygon_editor.set_brush_thickness(float(self.brush_size_spin.value()))
+    self.polygon_editor.set_trace_mode(self.trace_mode_combo.currentData())
     self.polygon_editor.set_trace_width(float(self.trace_width_spin.value()))
     self._sync_editor_via_size()
     self.polygon_editor.set_delete_vertex_mode(self.delete_vertex_mode_combo.currentData())
@@ -2895,6 +2909,7 @@ def build_editor_toolbar(self) -> QWidget:
         max(
             self._polygon_toolbar_block.sizeHint().width(),
             self._brush_toolbar_block.sizeHint().width(),
+            self._trace_toolbar_block.sizeHint().width(),
             self._via_toolbar_block.sizeHint().width(),
             self._delete_vertex_toolbar_block.sizeHint().width(),
             self._antialias_toolbar_block.sizeHint().width(),

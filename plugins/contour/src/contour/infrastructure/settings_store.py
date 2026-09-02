@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from kraken_core.theme import normalize_theme
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import QByteArray, QSettings
 
 from ..application.dto import PersistedPaths
 from ..application.processing import DisplaySettings
@@ -20,6 +20,11 @@ SESSION_CURRENT_IMAGE_PATH_KEY = "session/current_image_path"
 SESSION_IMAGE_PATHS_KEY = "session/image_paths"
 SESSION_VECTOR_PATHS_KEY = "session/vector_paths"
 SESSION_IMAGE_LIST_MODE_KEY = "session/image_list_mode"
+SESSION_VIEWED_IMAGE_PATHS_KEY = "session/viewed_image_paths"
+SESSION_MODIFIED_IMAGE_PATHS_KEY = "session/modified_image_paths"
+SESSION_PERSISTED_IMAGE_PATHS_KEY = "session/persisted_image_paths"
+WINDOW_GEOMETRY_SETTINGS_KEY = "window/geometry"
+WINDOW_STATE_SETTINGS_KEY = "window/state"
 IMAGE_LIST_MODE_EXPLICIT = "explicit_files"
 IMAGE_LIST_MODE_DIRECTORY = "directory_scan"
 APPEARANCE_LANGUAGE_SETTINGS_KEY = "appearance/language"
@@ -229,6 +234,24 @@ class WidgetSessionSettingsStore:
     def save_vector_paths(self, paths: Iterable[str | Path]) -> None:
         self._save_path_list(SESSION_VECTOR_PATHS_KEY, paths)
 
+    def load_viewed_image_paths(self) -> list[str]:
+        return self._load_path_list(SESSION_VIEWED_IMAGE_PATHS_KEY)
+
+    def save_viewed_image_paths(self, paths: Iterable[str | Path]) -> None:
+        self._save_path_list(SESSION_VIEWED_IMAGE_PATHS_KEY, paths)
+
+    def load_modified_image_paths(self) -> list[str]:
+        return self._load_path_list(SESSION_MODIFIED_IMAGE_PATHS_KEY)
+
+    def save_modified_image_paths(self, paths: Iterable[str | Path]) -> None:
+        self._save_path_list(SESSION_MODIFIED_IMAGE_PATHS_KEY, paths)
+
+    def load_persisted_image_paths(self) -> list[str]:
+        return self._load_path_list(SESSION_PERSISTED_IMAGE_PATHS_KEY)
+
+    def save_persisted_image_paths(self, paths: Iterable[str | Path]) -> None:
+        self._save_path_list(SESSION_PERSISTED_IMAGE_PATHS_KEY, paths)
+
     def load_image_list_mode(self) -> str:
         settings = self._settings_factory()
         value = settings.value(SESSION_IMAGE_LIST_MODE_KEY, IMAGE_LIST_MODE_DIRECTORY, type=str)
@@ -280,6 +303,24 @@ class WidgetSessionSettingsStore:
             settings.setValue(key, json.dumps(normalized, ensure_ascii=False))
         else:
             settings.remove(key)
+        settings.sync()
+
+
+class WidgetWindowSettingsStore:
+    def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
+        self._settings_factory = settings_factory or _build_contour_settings
+
+    def load(self) -> tuple[QByteArray, QByteArray]:
+        settings = self._settings_factory()
+        geometry = settings.value(WINDOW_GEOMETRY_SETTINGS_KEY, QByteArray(), type=QByteArray)
+        state = settings.value(WINDOW_STATE_SETTINGS_KEY, QByteArray(), type=QByteArray)
+        settings.sync()
+        return geometry, state
+
+    def save(self, geometry: QByteArray, state: QByteArray) -> None:
+        settings = self._settings_factory()
+        settings.setValue(WINDOW_GEOMETRY_SETTINGS_KEY, geometry)
+        settings.setValue(WINDOW_STATE_SETTINGS_KEY, state)
         settings.sync()
 
 

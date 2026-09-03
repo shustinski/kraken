@@ -6,12 +6,15 @@ offload dataset-export work to a small service object with no Qt dependency.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...serializers import export_dataset_frame
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ...domain import PolygonData
@@ -54,6 +57,7 @@ def export_frame_to_dataset(
             source_image=state.source_image,
         )
     except Exception as exc:  # pragma: no cover - surfaced to logs
+        _LOGGER.exception("Dataset export failed for %s", image_path)
         return DatasetExportResult(
             saved_files={},
             message_key="dataset_export_failed_log",

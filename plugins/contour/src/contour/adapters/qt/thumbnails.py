@@ -3,6 +3,7 @@ from __future__ import annotations
 import cProfile
 import hashlib
 import io
+import logging
 import os
 import pstats
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Callable
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QObject, Qt, QRunnable, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, Qt, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from ...infrastructure.profiling import (
@@ -21,9 +22,12 @@ from ...infrastructure.profiling import (
     thumbnail_top_lines,
     try_disable_profiler,
     try_enable_profiler,
+    write_profile_report,
 )
 from ...utils import load_image_color_thumbnail
 from .image_conversion import cv_to_qimage
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ThumbnailLoadSignals(QObject):
@@ -99,6 +103,7 @@ class ThumbnailLoadRunnable(QRunnable):
             if qimage.save(str(tmp_path), "JPG", 82):
                 os.replace(tmp_path, cache_path)
         except Exception:
+            _LOGGER.exception("Failed to write thumbnail cache for %s", self.path)
             return
 
     def _profile_start(self, started_at: float) -> float | None:
@@ -122,17 +127,16 @@ class ThumbnailLoadRunnable(QRunnable):
         previous = "<first>" if since_previous_start_ms is None else f"{since_previous_start_ms:.3f}ms"
         output_width = 0 if qimage is None or qimage.isNull() else qimage.width()
         output_height = 0 if qimage is None or qimage.isNull() else qimage.height()
-        print(
+        summary = (
             "[contour thumbnail profiling] "
             f"image={Path(self.path).name} generation={self.generation} "
             f"request={self.width}x{self.height} output={output_width}x{output_height} "
-            f"cache={cache_status} load={elapsed_ms:.3f}ms since_previous_start={previous}",
-            flush=True,
+            f"cache={cache_status} load={elapsed_ms:.3f}ms since_previous_start={previous}"
         )
         if profiler is None or not profiler.getstats():
-            print(
+            write_profile_report(
+                summary,
                 f"[contour thumbnail profiling stats] image={Path(self.path).name} cprofile_skipped=yes",
-                flush=True,
             )
             return
         stream = io.StringIO()
@@ -144,10 +148,10 @@ class ThumbnailLoadRunnable(QRunnable):
             top_lines = thumbnail_top_lines()
             stats.print_stats(top_lines)
             stats_detail = f"top={top_lines}"
-        print(
+        write_profile_report(
+            summary,
             f"[contour thumbnail profiling stats] image={Path(self.path).name} {stats_detail}\n"
             f"{stream.getvalue()}",
-            flush=True,
         )
 
     def _load_thumbnail(self) -> tuple[QImage | None, str]:
@@ -204,6 +208,7 @@ class ThumbnailLoadRunnable(QRunnable):
             else:
                 qimage, cache_status = self._load_thumbnail()
         except Exception:
+            _LOGGER.exception("Thumbnail loading failed for %s", self.path)
             qimage = None
             cache_status = "error"
         if profiling_enabled:

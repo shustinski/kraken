@@ -1,46 +1,26 @@
-"""Central profiling controls for Contour.
+"""Central profiling controls and file output for Contour.
 
 Environment switches:
   CONTOUR_PROFILE=0 disables all contour profiling.
   CONTOUR_PROFILE=1 enables profiling unless a narrower switch overrides it.
   CONTOUR_PROFILE_<KIND>=0/1 controls a specific profiler.
 
-The contact-placement profiler is normally toggled with the
-CONTACT_PLACEMENT_PROFILING_ENABLED code variable below.
-Area vertex deletion is toggled with DELETE_AREA_PROFILING_ENABLED or
-CONTOUR_PROFILE_DELETE_AREA=0/1.
-Polygon edit mutations are toggled with POLYGON_CHANGE_PROFILING_ENABLED or
-CONTOUR_PROFILE_POLYGON_CHANGE=0/1.
+The bundled ``contour.ini`` is the primary source of defaults. Environment
+variables remain supported as deployment/debug overrides.
 """
 
 from __future__ import annotations
 
 import cProfile
+import logging
 import os
+from logging.handlers import RotatingFileHandler
+from threading import Lock
+
+from .runtime_config import config_bool, config_int, load_runtime_config, profiling_log_path
 
 PROFILE_ENV_TRUE = {"1", "true", "yes", "on"}
 PROFILE_ENV_FALSE = {"0", "false", "no", "off"}
-
-DEFAULT_FRAME_SWITCH_ENABLED = False
-DEFAULT_PROCESSING_ENABLED = False
-DEFAULT_THUMBNAIL_ENABLED = False
-DEFAULT_VERTEX_MOVE_ENABLED = False
-MOVE_VERTEX_TOOL_PROFILING_ENABLED = False
-DELETE_AREA_PROFILING_ENABLED = False
-# Change this value to True to profile one contact placement end-to-end.
-# CONTOUR_PROFILE_CONTACT_PLACEMENT=0/1 can still override it at runtime.
-CONTACT_PLACEMENT_PROFILING_ENABLED = False
-CONTACT_MULTI_SELECTION_PROFILING_ENABLED = False
-CONTACT_DELETION_PROFILING_ENABLED = False
-CONTACT_COPY_PROFILING_ENABLED = False
-CONTACT_PASTE_PROFILING_ENABLED = False
-CONTACT_UNDO_PROFILING_ENABLED = False
-CONTACT_REDO_PROFILING_ENABLED = False
-CONTACT_DRAG_PROFILING_ENABLED = False
-SCENE_ZOOM_PROFILING_ENABLED = False
-IMAGE_RECOGNITION_PROFILING_ENABLED = False
-FILTER_APPLICATION_PROFILING_ENABLED = False
-POLYGON_CHANGE_PROFILING_ENABLED = False
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
@@ -60,6 +40,11 @@ DEFAULT_SCENE_ZOOM_TOP_LINES = 40
 DEFAULT_IMAGE_RECOGNITION_TOP_LINES = 40
 DEFAULT_POLYGON_CHANGE_TOP_LINES = 40
 DEFAULT_FRAME_SWITCH_IDLE_POLLS = 300
+
+_PROFILE_LOGGER_NAME = "contour.profiling.output"
+_PROFILE_LOG_LOCK = Lock()
+_PROFILE_LOG_HANDLER: RotatingFileHandler | None = None
+_LOGGER = logging.getLogger(__name__)
 
 
 def _env_flag(name: str) -> bool | None:
@@ -111,7 +96,17 @@ def _master_profile_flag() -> bool | None:
     return None
 
 
-def profiling_enabled(kind: str, *, default: bool, legacy_env: tuple[str, ...] = ()) -> bool:
+def _ini_flag(kind: str) -> bool | None:
+    parser = load_runtime_config()
+    if parser.has_option("profiling", kind):
+        try:
+            return parser.getboolean("profiling", kind)
+        except ValueError:
+            return None
+    return None
+
+
+def profiling_enabled(kind: str, *, default: bool = False, legacy_env: tuple[str, ...] = ()) -> bool:
     env_name = f"CONTOUR_PROFILE_{kind.upper()}"
     explicit = _env_flag(env_name)
     if explicit is not None:
@@ -123,6 +118,11 @@ def profiling_enabled(kind: str, *, default: bool, legacy_env: tuple[str, ...] =
     master = _master_profile_flag()
     if master is not None:
         return master
+    specific_ini = _ini_flag(kind)
+    if specific_ini is not None:
+        return specific_ini
+    if load_runtime_config().has_option("profiling", "enabled"):
+        return config_bool("profiling", "enabled", default)
     return default
 
 
@@ -130,37 +130,88 @@ def profiling_top_lines(kind: str, default: int) -> int:
     specific = _env_int(f"CONTOUR_PROFILE_{kind.upper()}_TOP", 0, minimum=0)
     if specific > 0:
         return specific
-    return _env_int("CONTOUR_PROFILE_TOP", default)
+    common_env = _env_int("CONTOUR_PROFILE_TOP", 0, minimum=0)
+    if common_env > 0:
+        return common_env
+    return config_int(
+        "profiling",
+        f"{kind}_top_lines",
+        config_int("profiling", "top_lines", default, minimum=1),
+        minimum=1,
+    )
+
+
+def write_profile_report(*messages: object) -> None:
+    """Append one profiling report to the configured rotating UTF-8 log."""
+
+    global _PROFILE_LOG_HANDLER
+    text = "\n".join(str(message).rstrip() for message in messages if message is not None)
+    if not text:
+        return
+    with _PROFILE_LOG_LOCK:
+        logger = logging.getLogger(_PROFILE_LOGGER_NAME)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        if _PROFILE_LOG_HANDLER is None:
+            path = profiling_log_path()
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _PROFILE_LOG_HANDLER = RotatingFileHandler(
+                    path,
+                    maxBytes=config_int("profiling", "max_log_bytes", 5 * 1024 * 1024, minimum=1024),
+                    backupCount=config_int("profiling", "backup_count", 3, minimum=0),
+                    encoding="utf-8",
+                )
+            except OSError:
+                _LOGGER.exception("Cannot open Contour profiling log: %s", path)
+                return
+            _PROFILE_LOG_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+            logger.addHandler(_PROFILE_LOG_HANDLER)
+        logger.info(text)
+
+
+def reset_profile_output() -> None:
+    """Close the lazy profiling log handler so configuration can be reloaded."""
+
+    global _PROFILE_LOG_HANDLER
+    with _PROFILE_LOG_LOCK:
+        if _PROFILE_LOG_HANDLER is None:
+            return
+        logger = logging.getLogger(_PROFILE_LOGGER_NAME)
+        logger.removeHandler(_PROFILE_LOG_HANDLER)
+        _PROFILE_LOG_HANDLER.close()
+        _PROFILE_LOG_HANDLER = None
 
 
 def frame_switch_profiling_enabled() -> bool:
     return profiling_enabled(
         "frame_switch",
-        default=DEFAULT_FRAME_SWITCH_ENABLED,
         legacy_env=("CONTOUR_PROFILE_FRAME_OPEN", "CONTOUR_PROFILE_CIF_OPEN"),
     )
 
 
 def processing_profiling_enabled() -> bool:
-    return profiling_enabled("processing", default=DEFAULT_PROCESSING_ENABLED)
+    return profiling_enabled("processing")
 
 
 def thumbnail_profiling_enabled() -> bool:
-    return profiling_enabled("thumbnail", default=DEFAULT_THUMBNAIL_ENABLED)
+    return profiling_enabled("thumbnail")
 
 
 def thumbnail_full_function_usage_enabled() -> bool:
-    return bool(_env_flag("CONTOUR_PROFILE_THUMBNAIL_FULL"))
+    env_value = _env_flag("CONTOUR_PROFILE_THUMBNAIL_FULL")
+    if env_value is not None:
+        return env_value
+    return config_bool("profiling", "thumbnail_full_functions", False)
 
 
 def vertex_move_profiling_enabled() -> bool:
-    return profiling_enabled("vertex_move", default=DEFAULT_VERTEX_MOVE_ENABLED)
+    return profiling_enabled("vertex_move")
 
 
 def move_vertex_tool_profiling_enabled() -> bool:
     return profiling_enabled(
         "move_vertex_tool",
-        default=MOVE_VERTEX_TOOL_PROFILING_ENABLED,
         legacy_env=("CONTOUR_PROFILE_VERTEX_TOOL",),
     )
 
@@ -168,91 +219,78 @@ def move_vertex_tool_profiling_enabled() -> bool:
 def delete_area_profiling_enabled() -> bool:
     return profiling_enabled(
         "delete_area",
-        default=DELETE_AREA_PROFILING_ENABLED,
     )
 
 
 def contact_placement_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_placement",
-        default=CONTACT_PLACEMENT_PROFILING_ENABLED,
     )
 
 
 def contact_multi_selection_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_multi_selection",
-        default=CONTACT_MULTI_SELECTION_PROFILING_ENABLED,
     )
 
 
 def contact_deletion_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_deletion",
-        default=CONTACT_DELETION_PROFILING_ENABLED,
     )
 
 
 def contact_copy_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_copy",
-        default=CONTACT_COPY_PROFILING_ENABLED,
     )
 
 
 def contact_paste_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_paste",
-        default=CONTACT_PASTE_PROFILING_ENABLED,
     )
 
 
 def contact_undo_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_undo",
-        default=CONTACT_UNDO_PROFILING_ENABLED,
     )
 
 
 def contact_redo_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_redo",
-        default=CONTACT_REDO_PROFILING_ENABLED,
     )
 
 
 def contact_drag_profiling_enabled() -> bool:
     return profiling_enabled(
         "contact_drag",
-        default=CONTACT_DRAG_PROFILING_ENABLED,
     )
 
 
 def scene_zoom_profiling_enabled() -> bool:
     return profiling_enabled(
         "scene_zoom",
-        default=SCENE_ZOOM_PROFILING_ENABLED,
     )
 
 
 def image_recognition_profiling_enabled() -> bool:
     return profiling_enabled(
         "image_recognition",
-        default=IMAGE_RECOGNITION_PROFILING_ENABLED,
     )
 
 
 def filter_application_profiling_enabled() -> bool:
     return profiling_enabled(
         "filter_application",
-        default=FILTER_APPLICATION_PROFILING_ENABLED,
     )
 
 
 def polygon_change_profiling_enabled() -> bool:
     return profiling_enabled(
         "polygon_change",
-        default=POLYGON_CHANGE_PROFILING_ENABLED,
     )
 
 
@@ -331,4 +369,12 @@ def polygon_change_top_lines() -> int:
 
 
 def frame_switch_idle_polls() -> int:
-    return _env_int("CONTOUR_PROFILE_FRAME_SWITCH_IDLE_POLLS", DEFAULT_FRAME_SWITCH_IDLE_POLLS)
+    env_value = _env_int("CONTOUR_PROFILE_FRAME_SWITCH_IDLE_POLLS", 0, minimum=0)
+    if env_value > 0:
+        return env_value
+    return config_int(
+        "profiling",
+        "frame_switch_idle_polls",
+        DEFAULT_FRAME_SWITCH_IDLE_POLLS,
+        minimum=1,
+    )

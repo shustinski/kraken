@@ -12,9 +12,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication
 
+import contour.widget as widget_module
 from contour.adapters.qt import thumbnails as thumbnails_module
 from contour.adapters.qt.thumbnails import ThumbnailLoadRunnable
-import contour.widget as widget_module
+from contour.infrastructure import profiling
 from contour.ui.large_dataset import clamp_thumbnail_source_size
 from contour.widget import PolygonExtractionWidget
 
@@ -117,18 +118,24 @@ def test_neighbor_thumbnail_worker_can_reuse_shared_full_resolution_source() -> 
     assert results[0].height() == 48
 
 
-def test_thumbnail_worker_profiles_gap_between_load_starts(capsys) -> None:
+def test_thumbnail_worker_profiles_gap_between_load_starts() -> None:
     with tempfile.TemporaryDirectory() as directory:
         image_path = Path(directory) / "frame_001.png"
         cache_dir = Path(directory) / "thumb-cache"
+        profile_path = Path(directory) / "profiling.log"
         cv2.imwrite(str(image_path), np.full((16, 16, 3), 255, dtype=np.uint8))
         ThumbnailLoadRunnable._previous_start_at = None
 
-        with patch.dict(os.environ, {"CONTOUR_PROFILE_THUMBNAIL": "1", "CONTOUR_PROFILE_THUMBNAIL_FULL": "1"}):
+        with (
+            patch.dict(os.environ, {"CONTOUR_PROFILE_THUMBNAIL": "1", "CONTOUR_PROFILE_THUMBNAIL_FULL": "1"}),
+            patch("contour.infrastructure.profiling.profiling_log_path", return_value=profile_path),
+        ):
+            profiling.reset_profile_output()
             ThumbnailLoadRunnable(1, str(image_path), 64, 48, str(cache_dir)).run()
             ThumbnailLoadRunnable(1, str(image_path), 64, 48, str(cache_dir)).run()
+            profiling.reset_profile_output()
 
-        output = capsys.readouterr().out
+        output = profile_path.read_text(encoding="utf-8")
         assert "[contour thumbnail profiling]" in output
         assert "[contour thumbnail profiling stats]" in output
         assert "full_function_usage" in output

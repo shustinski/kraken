@@ -14,8 +14,11 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import TracebackType
+from typing import Any
 
 __all__ = [
     "DEFAULT_APP_NAME",
@@ -23,6 +26,7 @@ __all__ = [
     "configure_logging",
     "default_log_directory",
     "default_log_file",
+    "install_background_exception_hooks",
 ]
 
 DEFAULT_ORG_NAME = "ViaLaNet"
@@ -34,6 +38,88 @@ _MAX_BYTES = 1 * 1024 * 1024
 _BACKUP_COUNT = 5
 
 _CONFIGURED = False
+_EXCEPTION_HOOKS_INSTALLED = False
+_PREVIOUS_THREADING_EXCEPTHOOK = threading.excepthook
+_PREVIOUS_UNRAISABLEHOOK = sys.unraisablehook
+_PREVIOUS_QT_MESSAGE_HANDLER: Any | None = None
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
+    if issubclass(args.exc_type, SystemExit):
+        return
+    thread_name = args.thread.name if args.thread is not None else "<unknown>"
+    _LOGGER.critical(
+        "Unhandled exception in thread %s",
+        thread_name,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+
+
+def _log_unraisable_exception(args: Any) -> None:
+    exc_value = getattr(args, "exc_value", None)
+    exc_type = type(exc_value) if exc_value is not None else RuntimeError
+    exc_traceback: TracebackType | None = getattr(args, "exc_traceback", None)
+    _LOGGER.error(
+        "Unraisable exception%s in object %r",
+        f" ({args.err_msg})" if getattr(args, "err_msg", None) else "",
+        getattr(args, "object", None),
+        exc_info=(exc_type, exc_value, exc_traceback) if exc_value is not None else None,
+    )
+
+
+def _log_qt_message(message_type: Any, context: Any, message: str) -> None:
+    try:
+        from PyQt6.QtCore import QtMsgType
+
+        levels = {
+            QtMsgType.QtDebugMsg: logging.DEBUG,
+            QtMsgType.QtInfoMsg: logging.INFO,
+            QtMsgType.QtWarningMsg: logging.WARNING,
+            QtMsgType.QtCriticalMsg: logging.ERROR,
+            QtMsgType.QtFatalMsg: logging.CRITICAL,
+        }
+        level = levels.get(message_type, logging.ERROR)
+    except Exception:
+        level = logging.ERROR
+    location = ""
+    if context is not None and getattr(context, "file", None):
+        location = f" ({context.file}:{getattr(context, 'line', 0)} {getattr(context, 'function', '')})"
+    _LOGGER.log(level, "Qt: %s%s", message, location)
+    if _PREVIOUS_QT_MESSAGE_HANDLER is not None:
+        _PREVIOUS_QT_MESSAGE_HANDLER(message_type, context, message)
+
+
+def install_background_exception_hooks() -> None:
+    """Log uncaught thread, unraisable, warning, and Qt runtime errors."""
+
+    global _EXCEPTION_HOOKS_INSTALLED
+    global _PREVIOUS_QT_MESSAGE_HANDLER, _PREVIOUS_THREADING_EXCEPTHOOK, _PREVIOUS_UNRAISABLEHOOK
+    if _EXCEPTION_HOOKS_INSTALLED:
+        return
+
+    _PREVIOUS_THREADING_EXCEPTHOOK = threading.excepthook
+    _PREVIOUS_UNRAISABLEHOOK = sys.unraisablehook
+
+    def thread_hook(args: threading.ExceptHookArgs) -> None:
+        _log_thread_exception(args)
+        _PREVIOUS_THREADING_EXCEPTHOOK(args)
+
+    def unraisable_hook(args: Any) -> None:
+        _log_unraisable_exception(args)
+        _PREVIOUS_UNRAISABLEHOOK(args)
+
+    threading.excepthook = thread_hook
+    sys.unraisablehook = unraisable_hook
+    logging.captureWarnings(True)
+    try:
+        from PyQt6.QtCore import qInstallMessageHandler
+
+        _PREVIOUS_QT_MESSAGE_HANDLER = qInstallMessageHandler(_log_qt_message)
+    except Exception:
+        _LOGGER.exception("Failed to install the Qt message logging hook")
+    _EXCEPTION_HOOKS_INSTALLED = True
 
 
 def default_log_directory(

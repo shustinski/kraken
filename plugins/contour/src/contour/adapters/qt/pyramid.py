@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from ...application.frame_lod import PyramidFrameStore
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PyramidFrameLoadSignals(QObject):
@@ -42,6 +46,7 @@ class PyramidFrameLoadRunnable(QRunnable):
             array = self.store.get_frame(self.frame_id, self.lod)
             qimage = qimage_from_array(array)
         except Exception as exc:
+            _LOGGER.exception("Pyramid frame loading failed for frame=%s lod=%s", self.frame_id, self.lod)
             _emit_if_alive(self.signals, "error", self.generation, self.frame_id, self.lod, str(exc))
             return
         _emit_if_alive(self.signals, "result", self.generation, self.frame_id, self.lod, qimage)
@@ -88,6 +93,7 @@ class PyramidThumbnailLoadRunnable(QRunnable):
                 qimage,
             )
         except Exception as exc:
+            _LOGGER.exception("Pyramid thumbnail loading failed for frame=%s lod=%s", self.frame_id, self.lod)
             _emit_if_alive(
                 self.signals,
                 "error",

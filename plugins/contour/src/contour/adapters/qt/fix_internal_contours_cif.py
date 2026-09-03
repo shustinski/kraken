@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
@@ -13,6 +14,8 @@ from ...application.fix_internal_contours import (
 from ...domain import PolygonData
 from ...i18n import tr
 from ...serializers import load_polygons_vector, save_polygons_vector
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +81,7 @@ def run_fix_internal_contours_batch(
         try:
             result = _fix_internal_contours_work_item(item, run_id)
         except Exception as exc:
+            _LOGGER.exception("Internal-contour repair failed for %s", item.cif_path)
             failed.append(f"{Path(item.cif_path).name}: {exc}")
             result = FixInternalContoursCifItemResult(
                 run_id=run_id,
@@ -153,6 +157,7 @@ class FixInternalContoursCifRunnable(QRunnable):
                 try:
                     result = _fix_internal_contours_work_item(item, self._run_id)
                 except Exception as exc:
+                    _LOGGER.exception("Internal-contour repair failed for %s", item.cif_path)
                     failed.append(f"{Path(item.cif_path).name}: {exc}")
                     result = FixInternalContoursCifItemResult(
                         run_id=self._run_id,

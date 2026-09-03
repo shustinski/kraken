@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from .image_conversion import cv_to_qimage
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class EditorDisplaySignals(QObject):
@@ -41,6 +45,7 @@ class EditorDisplayRunnable(QRunnable):
         try:
             qimage = profile_callable("editor_display", self._profile_session, _convert)
         except Exception:
+            _LOGGER.exception("Editor image conversion failed for %s", self.image_path)
             qimage = QImage()
         try:
             self.signals.result.emit(self.request_id, self.image_path, qimage)

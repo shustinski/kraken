@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from math import ceil, floor, hypot
@@ -72,7 +73,7 @@ from ..graphics_items import (
 )
 from ..i18n import active_language, tr
 from ..infrastructure.polygon_change_profiler import PolygonChangeProfile
-from ..infrastructure.profiling import polygon_change_profiling_enabled
+from ..infrastructure.profiling import polygon_change_profiling_enabled, write_profile_report
 from .brush_vector import (
     QUAD_SEGS_BRUSH_DEFAULT,
     PreservedPolygonMatchCache,
@@ -118,6 +119,8 @@ from .tool_mode_logic import (
     is_via_polygon as _is_via_polygon,
 )
 from .tools import EditorTool
+
+_LOGGER = logging.getLogger(__name__)
 
 _ZOOM_COLOR_QUANTIZATION_STEP = 17
 _ZOOM_BATCH_TILE_SIZE = 256.0
@@ -1263,9 +1266,8 @@ class PolygonEditorScene(QGraphicsScene):
 
     def _emit_polygon_change_profile(self, profile: PolygonChangeProfile, *, status: str) -> None:
         summary = profile.format_summary(status=status)
-        print(summary, flush=True)
         stats = profile.format_stats()
-        print(stats, flush=True)
+        write_profile_report(summary, stats)
 
     def _push_polygon_layer_replacement(
         self,
@@ -3808,6 +3810,7 @@ class PolygonEditorScene(QGraphicsScene):
             if thickness is not None:
                 brush_tool = simplify_polygonal_geometry(brush_tool)
         except Exception as exc:
+            _LOGGER.exception("Failed to construct brush geometry")
             return None, f"{type(exc).__name__}: {exc}"
         try:
             base_region = region_geometry(self._polygons, render_ids)

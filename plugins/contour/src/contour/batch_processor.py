@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import multiprocessing as mp
 import os
 from collections.abc import Iterable
@@ -24,6 +25,8 @@ from .application.use_cases.processing import process_image_path as run_image_pr
 from .batch_worker import BatchChunkRequest, BatchChunkResult, configure_worker_runtime, process_batch_chunk
 from .i18n import active_language, tr
 from .pipeline import PreprocessingPipeline
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def configure_batch_runtime() -> None:
@@ -220,12 +223,14 @@ class BatchQueueRunnable(QRunnable):
                         try:
                             chunk_result = future.result()
                         except Exception as exc:
+                            _LOGGER.exception("Batch chunk %s failed", chunk_id)
                             self.signals.error.emit("", f"Chunk {chunk_id} failed: {exc}")
                             chunk_result = BatchChunkResult(chunk_id=chunk_id)
                         chunk_results.append(chunk_result)
                         for item in chunk_result.metadata:
                             completed += 1
                             if item.error:
+                                _LOGGER.error("Batch item failed for %s: %s", item.image_path, item.error)
                                 self.signals.error.emit(item.image_path, item.error)
                             else:
                                 self.signals.result.emit(item)
@@ -251,6 +256,7 @@ class BatchQueueRunnable(QRunnable):
                 executor.shutdown(wait=True, cancel_futures=True)
             self._emit_summary(chunk_results, completed, total, started_at)
         except Exception as exc:
+            _LOGGER.exception("Batch processing failed")
             self.signals.error.emit("", str(exc))
             self.stop()
         finally:

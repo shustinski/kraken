@@ -173,7 +173,7 @@ def test_worker_profiler_conflict_never_prevents_image_recognition() -> None:
     assert errors == []
 
 
-def test_contact_profile_code_variable_is_the_default(monkeypatch) -> None:
+def test_contact_profile_ini_switch_is_the_default(monkeypatch) -> None:
     for name in (
         "CONTOUR_PROFILE",
         "CONTOUR_PROFILING",
@@ -181,14 +181,13 @@ def test_contact_profile_code_variable_is_the_default(monkeypatch) -> None:
         "CONTOUR_PROFILE_CONTACT_PLACEMENT",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(profiling, "CONTACT_PLACEMENT_PROFILING_ENABLED", False)
+    monkeypatch.setattr(profiling, "_ini_flag", lambda kind: False)
     assert not profiling.contact_placement_profiling_enabled()
-    monkeypatch.setattr(profiling, "CONTACT_PLACEMENT_PROFILING_ENABLED", True)
+    monkeypatch.setattr(profiling, "_ini_flag", lambda kind: True)
     assert profiling.contact_placement_profiling_enabled()
 
 
-def test_contact_profile_environment_can_override_code_variable(monkeypatch) -> None:
-    monkeypatch.setattr(profiling, "CONTACT_PLACEMENT_PROFILING_ENABLED", False)
+def test_contact_profile_environment_can_enable_profiler(monkeypatch) -> None:
     monkeypatch.setenv("CONTOUR_PROFILE_CONTACT_PLACEMENT", "1")
     assert profiling.contact_placement_profiling_enabled()
 
@@ -219,7 +218,7 @@ def test_contact_action_profiles_have_separate_report_names() -> None:
     assert "[contour contact redo profiling]" in redo.format_summary(status="displayed")
 
 
-def test_contact_action_code_switches_are_independent(monkeypatch) -> None:
+def test_contact_action_ini_switches_are_independent(monkeypatch) -> None:
     for name in (
         "CONTOUR_PROFILE",
         "CONTOUR_PROFILING",
@@ -235,15 +234,8 @@ def test_contact_action_code_switches_are_independent(monkeypatch) -> None:
         "CONTOUR_PROFILE_IMAGE_RECOGNITION",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(profiling, "CONTACT_MULTI_SELECTION_PROFILING_ENABLED", True)
-    monkeypatch.setattr(profiling, "CONTACT_DELETION_PROFILING_ENABLED", False)
-    monkeypatch.setattr(profiling, "CONTACT_COPY_PROFILING_ENABLED", True)
-    monkeypatch.setattr(profiling, "CONTACT_PASTE_PROFILING_ENABLED", False)
-    monkeypatch.setattr(profiling, "CONTACT_UNDO_PROFILING_ENABLED", True)
-    monkeypatch.setattr(profiling, "CONTACT_REDO_PROFILING_ENABLED", False)
-    monkeypatch.setattr(profiling, "CONTACT_DRAG_PROFILING_ENABLED", True)
-    monkeypatch.setattr(profiling, "SCENE_ZOOM_PROFILING_ENABLED", False)
-    monkeypatch.setattr(profiling, "IMAGE_RECOGNITION_PROFILING_ENABLED", True)
+    enabled = {"contact_multi_selection", "contact_copy", "contact_undo", "contact_drag", "image_recognition"}
+    monkeypatch.setattr(profiling, "_ini_flag", lambda kind: kind in enabled)
 
     assert profiling.contact_multi_selection_profiling_enabled()
     assert not profiling.contact_deletion_profiling_enabled()
@@ -256,7 +248,7 @@ def test_contact_action_code_switches_are_independent(monkeypatch) -> None:
     assert profiling.image_recognition_profiling_enabled()
 
 
-def test_delete_area_profile_code_variable_is_the_default(monkeypatch) -> None:
+def test_delete_area_profile_ini_switch_is_the_default(monkeypatch) -> None:
     for name in (
         "CONTOUR_PROFILE",
         "CONTOUR_PROFILING",
@@ -264,7 +256,7 @@ def test_delete_area_profile_code_variable_is_the_default(monkeypatch) -> None:
         "CONTOUR_PROFILE_DELETE_AREA",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(profiling, "DELETE_AREA_PROFILING_ENABLED", False)
+    monkeypatch.setattr(profiling, "_ini_flag", lambda kind: False)
     assert not profiling.delete_area_profiling_enabled()
-    monkeypatch.setattr(profiling, "DELETE_AREA_PROFILING_ENABLED", True)
+    monkeypatch.setattr(profiling, "_ini_flag", lambda kind: True)
     assert profiling.delete_area_profiling_enabled()

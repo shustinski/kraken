@@ -3,6 +3,7 @@ from __future__ import annotations
 import cProfile
 import hashlib
 import json
+import logging
 import os
 import shutil
 from time import perf_counter, time_ns
@@ -32,8 +33,11 @@ from ..infrastructure.profiling import (
     contact_undo_profiling_enabled,
     filter_application_profiling_enabled,
     image_recognition_profiling_enabled,
+    write_profile_report,
 )
 from ._imports import *  # noqa: F403
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class WidgetProcessingMixin:
@@ -57,11 +61,10 @@ class WidgetProcessingMixin:
         )
         session.note("queued")
         self._image_recognition_profile = session
-        print(
+        write_profile_report(
             "[contour image recognition profiling] "
             f"started mode={recognition_mode} "
             f"image={Path(request.image_path).name!r}",
-            flush=True,
         )
 
     def _finish_image_recognition_profile(self: Any, status: str) -> None:
@@ -70,8 +73,7 @@ class WidgetProcessingMixin:
             return
         self._image_recognition_profile = None
         session.stop()
-        print(session.format_summary(status=status), flush=True)
-        print(session.format_stats(), flush=True)
+        write_profile_report(session.format_summary(status=status), session.format_stats())
 
     def _start_contact_undo_profile(self: Any) -> None:
         self._start_contact_history_profile("undo")
@@ -301,7 +303,7 @@ class WidgetProcessingMixin:
         )
 
     def _emit_contact_profile_output(self: Any, message: str) -> None:
-        print(message, flush=True)
+        write_profile_report(message)
 
     def _on_contact_placement_attempt_finished(self: Any, added: bool) -> None:
         session = getattr(self, "_contact_placement_profile", None)
@@ -733,6 +735,7 @@ class WidgetProcessingMixin:
                     )
                 self._workspace.refresh_cif_revision(current_image_path, cif_path)
             except Exception as exc:
+                _LOGGER.exception("Autosave failed for %s to %s", current_image_path, cif_path)
                 reason = self._tr(
                     "autosave_failed_log",
                     "Не удалось сохранить CIF {path}: {error}"
@@ -2022,8 +2025,7 @@ class WidgetProcessingMixin:
     ) -> None:
         if request_id != self._prepared_image_running_request_id:
             status = "superseded"
-        print(profile.format_summary(status=status), flush=True)
-        print(profile.format_stats(), flush=True)
+        write_profile_report(profile.format_summary(status=status), profile.format_stats())
 
     def _build_preview_request(self: Any) -> PreviewProcessingRequest | None:
         if not self._workspace.current_image_path:
@@ -3160,6 +3162,7 @@ class WidgetProcessingMixin:
                 cancel_event=cancel_event,
             )
         except Exception as exc:
+            _LOGGER.exception("Failed to start internal-contour repair")
             self._fix_internal_contours_running = False
             self._fix_internal_contours_cancel = None
             self._finish_shared_progress_if_idle()
@@ -3213,6 +3216,7 @@ class WidgetProcessingMixin:
         try:
             result = _fix_internal_contours_work_item(item, run_id)
         except Exception as exc:
+            _LOGGER.exception("Internal-contour repair failed for %s", item.cif_path)
             self._fix_internal_contours_batch_failed.append(f"{Path(item.cif_path).name}: {exc}")
             result = FixInternalContoursCifItemResult(
                 run_id=run_id,
@@ -3912,6 +3916,7 @@ class WidgetProcessingMixin:
             else:
                 referenced_image, image_size, polygons = load_polygons_vector(cif_path)
         except Exception as exc:
+            _LOGGER.exception("Failed to load CIF %s for image %s", cif_path, image_path)
             self._cif_load_failure_stems.add(stem_key)
             self._append_log(self._tr("cif_load_failed_log", file_name=Path(cif_path).name, error=exc))
             return []
@@ -3995,10 +4000,9 @@ class WidgetProcessingMixin:
         if session is None:
             session = self._start_frame_switch_profile(normalized_load_path)
         if session is not None:
-            print(
+            write_profile_report(
                 f"[contour frame switch profiling] started image={Path(normalized_load_path).name} "
-                "(runs until UI is interactive; set CONTOUR_PROFILE=0 or CONTOUR_PROFILE_FRAME_SWITCH=0 to disable)",
-                flush=True,
+                "(runs until UI is interactive)",
             )
         cif_path_for_profile = self._find_matching_cif_path(normalized_load_path)
         profile_timings: dict[str, float] = {}
@@ -5069,17 +5073,17 @@ class WidgetProcessingMixin:
             failed=failed,
             interactive=interactive,
         )
-        print(summary, flush=True)
+        reports = [summary]
         if session.profiling_active or main_profiler.getstats():
-            print(session.format_stats(main_profiler, title="main_thread"), flush=True)
+            reports.append(session.format_stats(main_profiler, title="main_thread"))
         elif session.main_stats_skipped:
-            print(
+            reports.append(
                 "[contour frame switch profiling stats] main_thread skipped "
                 "(another cProfile session was active, e.g. contour processing extract)",
-                flush=True,
             )
         for label, worker_profiler in session.worker_profilers:
-            print(session.format_stats(worker_profiler, title=f"worker_{label}"), flush=True)
+            reports.append(session.format_stats(worker_profiler, title=f"worker_{label}"))
+        write_profile_report(*reports)
         if getattr(self, "_prefetch_deferred_for_profile", False):
             self._prefetch_deferred_for_profile = False
             QTimer.singleShot(0, self._schedule_frame_prefetch)
@@ -5126,7 +5130,7 @@ class WidgetProcessingMixin:
             f"polygons={polygon_count} image={Path(image_path).name} "
             f"cif={Path(cif_path).name if cif_path else '<none>'} {detail}"
         )
-        print(message, flush=True)
+        write_profile_report(message)
 
     def _set_work_simulation_running(self: Any, running: bool) -> None:
         running = bool(running)
@@ -5585,6 +5589,7 @@ class WidgetProcessingMixin:
                     if result.success and result.message:
                         self._append_log(result.message)
         except Exception as exc:
+            _LOGGER.exception("Gamification event handling failed")
             self._append_log(f"Gamification error: {exc}")
 
     def _handle_gamification_ui_event(self: Any, event_type: RewardEventType) -> None:
@@ -5592,6 +5597,7 @@ class WidgetProcessingMixin:
             if hasattr(self, "gamification_panel"):
                 self.gamification_panel.react_to_event(event_type)
         except Exception as exc:
+            _LOGGER.exception("Gamification UI event handling failed")
             self._append_log(f"Gamification UI error: {exc}")
 
     @staticmethod

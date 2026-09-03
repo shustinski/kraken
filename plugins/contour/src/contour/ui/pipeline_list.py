@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QAbstractItemView, QListWidget, QMenu
 
+from ..graphics.editor_hotkeys import event_matches_shortcut
 from ..i18n import active_language
 
 
@@ -21,7 +22,7 @@ class PipelineListWidget(QListWidget):
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
     def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+        if event_matches_shortcut(event, "delete_pipeline_step", "Del; Backspace"):
             self.deletePressed.emit()
             event.accept()
             return

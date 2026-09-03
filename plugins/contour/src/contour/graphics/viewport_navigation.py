@@ -7,11 +7,15 @@ when the view already has a non-identity transform; scrollbar correction derived
 
 from __future__ import annotations
 
+from ..infrastructure.runtime_config import config_float
 
-DEFAULT_ZOOM_STEP_FACTOR = 1.15
-WHEEL_ZOOM_STEP_FACTOR = 1.28
-MIN_ZOOM_FACTOR = 0.08
-MAX_ZOOM_FACTOR = 32.0
+DEFAULT_ZOOM_STEP_FACTOR = config_float("editor", "default_zoom_step_factor", 1.15, minimum=1.000001)
+WHEEL_ZOOM_STEP_FACTOR = config_float("editor", "wheel_zoom_step_factor", 1.28, minimum=1.000001)
+MIN_ZOOM_FACTOR = config_float("editor", "min_zoom_factor", 0.08, minimum=0.000001)
+MAX_ZOOM_FACTOR = max(
+    MIN_ZOOM_FACTOR,
+    config_float("editor", "max_zoom_factor", 32.0, minimum=MIN_ZOOM_FACTOR),
+)
 
 
 def clamp_zoom_factor(zoom: float) -> float:

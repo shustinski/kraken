@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from math import cos, hypot, radians, sin
 
@@ -12,6 +13,8 @@ from shapely.geometry.base import BaseGeometry
 from ..application.polygon_antialiasing import _simplify_closed_ring
 from ..domain import PolygonData, compute_polygon_metrics, integer_points
 from ..domain.polygon_ring import collapse_redundant_polyline_vertices
+
+_LOGGER = logging.getLogger(__name__)
 
 QUAD_SEGS_BRUSH_DEFAULT = 8
 BRUSH_RING_SIMPLIFY_EPSILON_PX = 1.0
@@ -361,6 +364,7 @@ def apply_boolean(
         return out, None
 
     except Exception as exc:
+        _LOGGER.exception("Brush geometry operation failed")
         return None, f"{type(exc).__name__}: {exc}"
 
 

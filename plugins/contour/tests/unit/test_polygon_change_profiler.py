@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import cProfile
-
 import numpy as np
 
 from contour.domain import PolygonData, compute_polygon_metrics
-from contour.infrastructure import profiling
 from contour.infrastructure.polygon_change_profiler import PolygonChangeProfile
 
 
@@ -32,13 +29,13 @@ def test_polygon_change_profile_reports_operation_and_phases() -> None:
     assert "_some_polygon_work" in session.format_stats()
 
 
-def test_editor_scene_emits_polygon_change_profile(monkeypatch, capsys) -> None:
+def test_editor_scene_writes_polygon_change_profile(monkeypatch) -> None:
     from PyQt6.QtGui import QPixmap
     from PyQt6.QtWidgets import QApplication, QGraphicsView
 
     from contour.graphics.editor_scene import PolygonEditorScene
 
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     view = QGraphicsView()
     scene = PolygonEditorScene(view)
     view.setScene(scene)
@@ -55,7 +52,12 @@ def test_editor_scene_emits_polygon_change_profile(monkeypatch, capsys) -> None:
     scene.set_image_pixmap(QPixmap(100, 100))
     scene.set_polygons([outer], emit_signal=False)
 
-    monkeypatch.setattr(profiling, "POLYGON_CHANGE_PROFILING_ENABLED", True)
+    monkeypatch.setenv("CONTOUR_PROFILE_POLYGON_CHANGE", "1")
+    reports: list[str] = []
+    monkeypatch.setattr(
+        "contour.graphics.editor_scene.write_profile_report",
+        lambda *messages: reports.extend(str(message) for message in messages),
+    )
 
     changed = scene._subtract_shape_from_scene(
         points=[(30.0, 30.0), (50.0, 30.0), (50.0, 50.0), (30.0, 50.0)],
@@ -63,20 +65,18 @@ def test_editor_scene_emits_polygon_change_profile(monkeypatch, capsys) -> None:
         label="Erase rectangle",
     )
 
-    captured = capsys.readouterr().out
     assert changed
-    assert "[contour polygon change profiling]" in captured
-    assert "operation=erase_rectangle" in captured
-    assert "[contour polygon change profiling stats]" in captured
+    output = "\n".join(reports)
+    assert "[contour polygon change profiling]" in output
+    assert "operation=erase_rectangle" in output
+    assert "[contour polygon change profiling stats]" in output
 
 
-def test_move_vertex_tool_activation_emits_console_profile(monkeypatch, capsys) -> None:
+def test_move_vertex_tool_activation_writes_profile(monkeypatch) -> None:
     from PyQt6.QtWidgets import QApplication
 
     from contour.graphics.editor_view import PolygonEditorView
     from contour.graphics.tools import EditorTool
-    from contour.infrastructure import profiling
-
     app = QApplication.instance() or QApplication([])
     view = PolygonEditorView()
     view.set_image(np.zeros((100, 100), dtype=np.uint8))
@@ -92,15 +92,20 @@ def test_move_vertex_tool_activation_emits_console_profile(monkeypatch, capsys) 
         ]
     )
 
-    monkeypatch.setattr(profiling, "MOVE_VERTEX_TOOL_PROFILING_ENABLED", True)
+    monkeypatch.setenv("CONTOUR_PROFILE_MOVE_VERTEX_TOOL", "1")
+    reports: list[str] = []
+    monkeypatch.setattr(
+        "contour.graphics.editor_view.write_profile_report",
+        lambda *messages: reports.extend(str(message) for message in messages),
+    )
 
     view.set_tool(EditorTool.MOVE_VERTEX)
     app.processEvents()
 
-    captured = capsys.readouterr().out
-    assert "[contour move-vertex-tool profiling] started" in captured
-    assert "[contour move-vertex-tool profiling] status=displayed" in captured
-    assert "polygons=1" in captured
-    assert "vertices=4" in captured
-    assert "sync_vertices=" in captured
-    assert "[contour move-vertex-tool profiling stats]" in captured
+    output = "\n".join(reports)
+    assert "[contour move-vertex-tool profiling] started" in output
+    assert "[contour move-vertex-tool profiling] status=displayed" in output
+    assert "polygons=1" in output
+    assert "vertices=4" in output
+    assert "sync_vertices=" in output
+    assert "[contour move-vertex-tool profiling stats]" in output

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
 from ...domain import PolygonData
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,7 @@ class FrameLoadRunnable(QRunnable):
             except RuntimeError:
                 return
         except Exception as exc:
+            _LOGGER.exception("Frame loading failed for %s", self.image_path)
             try:
                 self.signals.error.emit(self.request_id, self.image_path, str(exc))
             except RuntimeError:
@@ -133,6 +137,7 @@ class GeometryValidationRunnable(QRunnable):
             except RuntimeError:
                 return
         except Exception as exc:
+            _LOGGER.exception("Geometry validation failed for %s", self.image_path)
             try:
                 self.signals.error.emit(self.request_id, self.image_path, str(exc))
             except RuntimeError:

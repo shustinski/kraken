@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import logging
+
+from ..infrastructure.profiling import write_profile_report
 from ._imports import *  # noqa: F403
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class WidgetPipelineActionsMixin:
@@ -272,10 +277,9 @@ class WidgetPipelineActionsMixin:
         if image_path:
             session = self._start_frame_switch_profile(str(image_path))
             if session is not None:
-                print(
+                write_profile_report(
                     f"[contour frame switch profiling] click image={Path(str(image_path)).name} "
                     "(measures selection until UI is interactive)",
-                    flush=True,
                 )
         if previous.isValid() and not self._try_leave_current_frame():
             if session is not None:
@@ -321,6 +325,7 @@ class WidgetPipelineActionsMixin:
                 try:
                     self.load_image(path)
                 except Exception as exc:
+                    _LOGGER.exception("Failed to reload image %s after a pipeline change", path)
                     self._append_log(self._tr("failed_to_load_image_log", image_path=path, error=exc))
                     QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
 
@@ -382,6 +387,7 @@ class WidgetPipelineActionsMixin:
         try:
             self.load_image(str(image_path))
         except Exception as exc:
+            _LOGGER.exception("Failed to load image %s after pipeline navigation", image_path)
             self._append_log(self._tr("failed_to_load_image_log", image_path=image_path, error=exc))
             QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
         for item in (previous, current):

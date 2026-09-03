@@ -24,6 +24,7 @@ htmlcov/
 *.bak
 *.ini
 !alembic.ini
+!plugins/contour/src/contour/resources/contour.ini
 *.AppImage
 *.tar.gz
 *.exe

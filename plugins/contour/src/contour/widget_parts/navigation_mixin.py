@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..adapters.qt.object_validity import qt_object_is_valid
 from ._imports import *  # noqa: F403
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class WidgetNavigationMixin:
@@ -1285,26 +1288,28 @@ class WidgetNavigationMixin:
         self._schedule_visible_thumbnail_loads()
 
     def _handle_frame_matrix_arrow_key_event(self: Any, event: object) -> bool:
+        from ..graphics.editor_hotkeys import event_matches_shortcut
+
         if not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid"):
             return False
         if getattr(self, "_closing", False) or not qt_object_is_valid(self.thumbnail_grid):
             return False
         if getattr(event, "type", lambda: None)() != QEvent.Type.KeyPress:
             return False
-        modifiers = event.modifiers()
-        if not (modifiers & Qt.KeyboardModifier.ControlModifier):
-            return False
-        if modifiers & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.AltModifier):
-            return False
-        key = event.key()
         columns = max(1, self._thumbnail_columns())
-        deltas = {
-            Qt.Key.Key_Left: -1,
-            Qt.Key.Key_Right: 1,
-            Qt.Key.Key_Up: -columns,
-            Qt.Key.Key_Down: columns,
-        }
-        delta = deltas.get(key)
+        delta = next(
+            (
+                value
+                for action, default, value in (
+                    ("frame_previous", "Ctrl+Left", -1),
+                    ("frame_next", "Ctrl+Right", 1),
+                    ("frame_previous_row", "Ctrl+Up", -columns),
+                    ("frame_next_row", "Ctrl+Down", columns),
+                )
+                if event_matches_shortcut(event, action, default)
+            ),
+            None,
+        )
         if delta is None:
             return False
         count = int(self.thumbnail_grid.count())
@@ -1412,6 +1417,7 @@ class WidgetNavigationMixin:
         try:
             self.load_image(normalized_path, preserve_editor_view_position=True)
         except Exception as exc:
+            _LOGGER.exception("Failed to load image %s", normalized_path)
             self._append_log(self._tr("failed_to_load_image_log", image_path=normalized_path, error=exc))
             QMessageBox.warning(self, self._tr("image_load_error_title"), str(exc))
 
@@ -1528,11 +1534,13 @@ class WidgetNavigationMixin:
                 try:
                     self._reload_current_frame_vectors()
                 except Exception as exc:
+                    _LOGGER.exception("Failed to reload vectors for %s", cur)
                     self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
             else:
                 try:
                     self.load_image(cur, load_vectors=True)
                 except Exception as exc:
+                    _LOGGER.exception("Failed to reload image and vectors for %s", cur)
                     self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
         if not self._uses_large_frame_list():
             report = self._matching_report()
@@ -1612,6 +1620,7 @@ class WidgetNavigationMixin:
             try:
                 self.load_image(cur)
             except Exception as exc:
+                _LOGGER.exception("Failed to reload image %s after vector refresh", cur)
                 self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
 
     def _on_vector_item_navigate_request(self: Any, item: QListWidgetItem) -> None:
@@ -1712,6 +1721,10 @@ class WidgetNavigationMixin:
                 try:
                     self.load_image(self._workspace.current_image_path)
                 except Exception as exc:
+                    _LOGGER.exception(
+                        "Failed to reload image %s after directory change",
+                        self._workspace.current_image_path,
+                    )
                     self._append_log(self._tr("reload_with_cif_failed_log", error=exc))
 
     def _apply_output_directory_edit(self: Any) -> None:

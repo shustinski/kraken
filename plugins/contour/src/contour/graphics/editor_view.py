@@ -25,7 +25,6 @@ from PyQt6.QtGui import (
     QContextMenuEvent,
     QGuiApplication,
     QKeyEvent,
-    QKeySequence,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -71,8 +70,10 @@ from ..infrastructure.profiling import (
     try_enable_profiler,
     vertex_move_profiling_enabled,
     vertex_move_top_lines,
+    write_profile_report,
 )
-from .editor_hotkeys import tool_shortcut_sequence
+from ..infrastructure.runtime_config import config_bool, config_float, config_int
+from .editor_hotkeys import event_matches_shortcut, shortcut_sequence, tool_shortcut_sequence
 from .editor_scene import PolygonEditorScene
 from .geometry import (
     _points_different,
@@ -98,11 +99,11 @@ from .viewport_navigation import (
     zoom_factor_for_wheel_delta,
 )
 
-_WHEEL_ZOOM_COALESCE_MS = 3
-_ZOOM_ANIMATION_FRAME_MS = 16
-_ZOOM_EASING_FRACTION = 0.55
-_ZOOM_SETTLE_RATIO = 0.001
-_ZOOM_VECTOR_BATCH_THRESHOLD = 1000
+_WHEEL_ZOOM_COALESCE_MS = config_int("editor", "wheel_zoom_coalesce_ms", 3, minimum=0)
+_ZOOM_ANIMATION_FRAME_MS = config_int("editor", "zoom_animation_frame_ms", 16, minimum=1)
+_ZOOM_EASING_FRACTION = min(1.0, config_float("editor", "zoom_easing_fraction", 0.55, minimum=0.01))
+_ZOOM_SETTLE_RATIO = config_float("editor", "zoom_settle_ratio", 0.001, minimum=0.000001)
+_ZOOM_VECTOR_BATCH_THRESHOLD = config_int("editor", "zoom_vector_batch_threshold", 1000, minimum=1)
 _MINIMAP_DRAWING_TOOLS = frozenset(
     {
         EditorTool.ADD_POLYGON,
@@ -110,10 +111,10 @@ _MINIMAP_DRAWING_TOOLS = frozenset(
         EditorTool.TRACE_PEN,
     }
 )
-_OPENGL_VIEWPORT_ENABLED = True
+_OPENGL_VIEWPORT_ENABLED = config_bool("editor", "opengl_viewport_enabled", True)
 _OPENGL_DISABLED_PLATFORMS = {"offscreen", "minimal"}
-_PYRAMID_VISIBLE_UPDATE_MS = 24
-_PYRAMID_CACHE_LIMIT = 192
+_PYRAMID_VISIBLE_UPDATE_MS = config_int("editor", "pyramid_visible_update_ms", 24, minimum=1)
+_PYRAMID_CACHE_LIMIT = config_int("editor", "pyramid_cache_limit", 192, minimum=1)
 
 
 class PolygonEditorView(QGraphicsView):
@@ -284,13 +285,16 @@ class PolygonEditorView(QGraphicsView):
         self._editor_scene.activePolygonChanged.connect(self.activePolygonChanged.emit)
         self._editor_scene.logRequested.connect(self.logRequested.emit)
 
-        for sequence, slot in (
-            (QKeySequence.StandardKey.Undo, self.undo),
-            (QKeySequence.StandardKey.Redo, self.redo),
-            (QKeySequence.StandardKey.Copy, self.copy_selected),
-            (QKeySequence.StandardKey.Cut, self.cut_selected),
-            (QKeySequence.StandardKey.Paste, self.start_paste_mode),
+        for action, default, slot in (
+            ("undo", "Ctrl+Z", self.undo),
+            ("redo", "Ctrl+Y", self.redo),
+            ("copy", "Ctrl+C", self.copy_selected),
+            ("cut", "Ctrl+X", self.cut_selected),
+            ("paste", "Ctrl+V", self.start_paste_mode),
         ):
+            sequence = shortcut_sequence(action, default)
+            if sequence is None:
+                continue
             shortcut = QShortcut(sequence, self)
             shortcut.activated.connect(slot)
 
@@ -378,7 +382,7 @@ class PolygonEditorView(QGraphicsView):
                 polygon_count=len(polygons),
                 vertex_count=sum(len(polygon.points) for polygon in polygons),
             )
-            print("[contour move-vertex-tool profiling] started", flush=True)
+            write_profile_report("[contour move-vertex-tool profiling] started")
         elif self._move_vertex_tool_profile is not None:
             self._cancel_move_vertex_tool_profile_finish()
             self._finish_move_vertex_tool_profile("superseded")
@@ -2184,8 +2188,7 @@ class PolygonEditorView(QGraphicsView):
         if event is None:
             return
         if (
-            event.key() == Qt.Key.Key_F
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            event_matches_shortcut(event, "fit_view", "F")
             and self.isEnabled()
         ):
             if not event.isAutoRepeat():
@@ -2193,8 +2196,7 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if (
-            event.key() == Qt.Key.Key_Space
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            event_matches_shortcut(event, "hold_vectors", "Space")
             and self.isEnabled()
             and (self.hasFocus() or self._require_viewport().hasFocus())
         ):
@@ -2206,8 +2208,7 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if (
-            event.key() == Qt.Key.Key_X
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            event_matches_shortcut(event, "hold_source_image", "X")
             and self.isEnabled()
             and (self.hasFocus() or self._require_viewport().hasFocus())
         ):
@@ -2220,14 +2221,14 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if (
-            event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return)
+            event_matches_shortcut(event, "finish_polygon", "Enter")
             and self._tool == EditorTool.ADD_VERTEX
         ):
             self._editor_scene.select_polygon(None)
             event.accept()
             return
         if (
-            event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return)
+            event_matches_shortcut(event, "finish_polygon", "Enter")
             and self._tool in (EditorTool.ADD_POLYGON, EditorTool.TRACE_PEN)
             and self._editor_scene.has_pending_polygon()
         ):
@@ -2237,7 +2238,7 @@ class PolygonEditorView(QGraphicsView):
                 self._finish_pending_polygon()
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Escape:
+        if event_matches_shortcut(event, "cancel", "Esc"):
             paste_was_active = self._paste_mode
             if self._drag_kind == "select_area":
                 self.contactMultiSelectionFinished.emit(0)
@@ -2263,7 +2264,7 @@ class PolygonEditorView(QGraphicsView):
             self._emit_effective_polygon_create_mode_changed()
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Delete:
+        if event_matches_shortcut(event, "delete_selection", "Del"):
             if self.vector_edits_locked():
                 event.accept()
                 return
@@ -2278,12 +2279,16 @@ class PolygonEditorView(QGraphicsView):
                 self.contactDeletionFinished.emit(len(contacts) if did_delete else 0)
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Shift and self._drag_kind is None and not event.isAutoRepeat():
-            if self._cycle_active_tool_mode():
-                event.accept()
-                return
         if (
-            event.key() == Qt.Key.Key_Shift
+            event_matches_shortcut(event, "cycle_tool_mode", "Shift")
+            and self._drag_kind is None
+            and not event.isAutoRepeat()
+            and self._cycle_active_tool_mode()
+        ):
+            event.accept()
+            return
+        if (
+            event_matches_shortcut(event, "cycle_tool_mode", "Shift")
             and self._drag_kind == "ruler"
             and self._drag_start_scene_pos is not None
             and self._last_pointer_scene_pos is not None
@@ -2315,8 +2320,7 @@ class PolygonEditorView(QGraphicsView):
         if event is None:
             return
         if (
-            event.key() == Qt.Key.Key_Space
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            event_matches_shortcut(event, "hold_vectors", "Space")
             and not event.isAutoRepeat()
             and "space" in self._polygon_overlay_hide_holds
         ):
@@ -2324,8 +2328,7 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if (
-            event.key() == Qt.Key.Key_X
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            event_matches_shortcut(event, "hold_source_image", "X")
             and not event.isAutoRepeat()
             and self._filter_preview_hold_active
         ):
@@ -2334,7 +2337,7 @@ class PolygonEditorView(QGraphicsView):
             event.accept()
             return
         if (
-            event.key() == Qt.Key.Key_Shift
+            event_matches_shortcut(event, "cycle_tool_mode", "Shift")
             and self._drag_kind == "ruler"
             and self._drag_start_scene_pos is not None
             and self._last_pointer_scene_pos is not None
@@ -2473,10 +2476,9 @@ class PolygonEditorView(QGraphicsView):
             initial_zoom=initial_zoom,
             target_zoom=target_zoom,
         )
-        print(
+        write_profile_report(
             "[contour scene zoom profiling] "
             f"started zoom={initial_zoom:.4f} target={target_zoom:.4f}",
-            flush=True,
         )
 
     def _finish_scene_zoom_profile(self, status: str) -> None:
@@ -2485,11 +2487,10 @@ class PolygonEditorView(QGraphicsView):
             return
         self._scene_zoom_profile = None
         profile.finish()
-        print(
+        write_profile_report(
             profile.format_summary(status=status, final_zoom=self.zoom_factor()),
-            flush=True,
+            profile.format_stats(),
         )
-        print(profile.format_stats(), flush=True)
 
     def _enter_zoom_render_mode(self) -> None:
         self._editor_scene.begin_zoom_vector_render_mode(
@@ -2790,11 +2791,10 @@ class PolygonEditorView(QGraphicsView):
             polygon_id=polygon_id,
             contact_count=contact_count,
         )
-        print(
+        write_profile_report(
             "[contour contact drag profiling] "
             f"started polygon_id={polygon_id} "
             f"contacts={contact_count}",
-            flush=True,
         )
 
     def _finish_contact_drag_profile(
@@ -2808,8 +2808,7 @@ class PolygonEditorView(QGraphicsView):
             return
         self._contact_drag_profile = None
         profile.finish(commit_ms=commit_ms)
-        print(profile.format_summary(status=status), flush=True)
-        print(profile.format_stats(), flush=True)
+        write_profile_report(profile.format_summary(status=status), profile.format_stats())
 
     def _emit_vertex_move_profile(
         self,
@@ -2829,16 +2828,17 @@ class PolygonEditorView(QGraphicsView):
             f"[contour vertex profiling] total={total_ms:.3f}ms polygons={polygon_count} "
             f"vertices={vertex_count} {detail}"
         )
-        print(message, flush=True)
+        reports = [message]
         if profiler is None:
+            write_profile_report(*reports)
             return
         stream = io.StringIO()
         stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
         top_lines = vertex_move_top_lines()
         stats.print_stats(top_lines)
         report = stream.getvalue()
-        print(f"[contour vertex profiling stats] top={top_lines}", flush=True)
-        print(report, flush=True)
+        reports.extend((f"[contour vertex profiling stats] top={top_lines}", report))
+        write_profile_report(*reports)
 
     def _cancel_move_vertex_tool_profile_finish(self) -> None:
         self._move_vertex_tool_profile_generation += 1
@@ -2875,8 +2875,7 @@ class PolygonEditorView(QGraphicsView):
         self._move_vertex_tool_profile_paint_started_at = None
         profile.note_timing("total_wall", profile.total_wall_ms())
         profile.finish()
-        print(profile.format_summary(status=status), flush=True)
-        print(profile.format_stats(), flush=True)
+        write_profile_report(profile.format_summary(status=status), profile.format_stats())
 
     def _commit_delete_vertices_in_area(self, rect: QRectF) -> None:
         profiling_enabled = delete_area_profiling_enabled()
@@ -2951,13 +2950,14 @@ class PolygonEditorView(QGraphicsView):
             f"polygons_hit={polygon_hits} vertices_hit={vertex_hits} "
             f"vertices_total={vertex_total} deleted={deleted} {detail}"
         )
-        print(message, flush=True)
+        reports = [message]
         if profiler is None:
+            write_profile_report(*reports)
             return
         stream = io.StringIO()
         stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
         top_lines = delete_area_top_lines()
         stats.print_stats(top_lines)
         report = stream.getvalue()
-        print(f"[contour delete-area profiling stats] top={top_lines}", flush=True)
-        print(report, flush=True)
+        reports.extend((f"[contour delete-area profiling stats] top={top_lines}", report))
+        write_profile_report(*reports)

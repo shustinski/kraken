@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cProfile
+import logging
 import threading
 from time import perf_counter
 
@@ -18,6 +19,8 @@ from ...application.use_cases.processing import (
 )
 from ...infrastructure.filter_application_profiler import FilterApplicationProfile
 from .image_conversion import cv_to_qimage
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PreviewImageView(QGraphicsView):
@@ -144,6 +147,7 @@ class PreviewProcessingRunnable(QRunnable):
             emit_profile()
         except Exception as exc:
             emit_profile()
+            _LOGGER.exception("Preview processing failed for request %s", self.request_id)
             self.signals.error.emit(self.request_id, str(exc))
         finally:
             emit_profile()
@@ -218,6 +222,7 @@ class PreparedImageRunnable(QRunnable):
         except PreviewProcessingCancelled:
             status = "cancelled"
         except Exception as exc:
+            _LOGGER.exception("Prepared-image processing failed for request %s", self.request_id)
             self.signals.error.emit(self.request_id, str(exc))
         finally:
             if profile is not None:
@@ -243,6 +248,7 @@ class AutoTuneRunnable(QRunnable):
             )
             self.signals.result.emit(self.request_id, result)
         except Exception as exc:
+            _LOGGER.exception("Auto-tuning failed for request %s", self.request_id)
             self.signals.error.emit(self.request_id, str(exc))
         finally:
             self.signals.finished.emit(self.request_id)

@@ -14,7 +14,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from ..__version__ import __version__
 from ..infrastructure import WidgetAppearanceSettingsStore
-from ..infrastructure.logging import configure_logging
+from ..infrastructure.logging import configure_logging, install_background_exception_hooks
+from ..infrastructure.runtime_config import config_int, runtime_config_path
 from .model import ContourApplicationModel, StartupConfiguration
 from .presenter import ContourPresenter
 from .styles import load_stylesheet
@@ -75,13 +76,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--width",
         type=int,
-        default=1680,
+        default=config_int("window", "width", 1680, minimum=640),
         help="Initial window width.",
     )
     parser.add_argument(
         "--height",
         type=int,
-        default=980,
+        default=config_int("window", "height", 980, minimum=480),
         help="Initial window height.",
     )
     parser.add_argument(
@@ -175,8 +176,10 @@ def assemble_application(argv: Sequence[str] | None = None) -> ContourApplicatio
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     log_file = configure_logging(verbose=args.verbose, log_file=args.log_file)
+    install_background_exception_hooks()
     _install_global_excepthook(log_file)
     _LOGGER.info("Starting Contour %s (log file: %s)", __version__, log_file)
+    _LOGGER.info("Runtime configuration: %s", runtime_config_path())
 
     qt_argv = sys.argv if argv is None else [sys.argv[0], *argv]
     app = QApplication.instance() or QApplication(qt_argv)

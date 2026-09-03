@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -26,6 +27,9 @@ from kraken_core.plugin_protocol import (
 )
 
 from .__version__ import __version__
+from .infrastructure.runtime_config import config_string
+
+_LOGGER = logging.getLogger(__name__)
 
 
 JOB_ENV = "KRAKEN_JOB_MANIFEST"
@@ -233,7 +237,7 @@ class ContourKrakenSession:
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
         menu = window.menuBar().addMenu("Kraken")
         action = QAction("Вернуть результаты в Kraken", window)
-        action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
+        action.setShortcut(QKeySequence(config_string("shortcuts", "return_to_kraken", "Ctrl+Shift+Return")))
 
         def return_results() -> None:
             try:
@@ -248,6 +252,7 @@ class ContourKrakenSession:
                         return
                 self.write_result(result)
             except Exception as exc:
+                _LOGGER.exception("Failed to return the interactive result to Kraken")
                 QMessageBox.critical(window, "Kraken", f"Не удалось вернуть результат:\n{exc}")
                 return
             QMessageBox.information(
@@ -344,7 +349,7 @@ class ContourWorkspaceSession:
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
         menu = window.menuBar().addMenu("Kraken")
         action = QAction("Вернуть результаты в Kraken", window)
-        action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
+        action.setShortcut(QKeySequence(config_string("shortcuts", "return_to_kraken", "Ctrl+Shift+Return")))
 
         def return_results() -> None:
             try:
@@ -375,6 +380,7 @@ class ContourWorkspaceSession:
                     },
                 ).write(self.result_manifest_path)
             except Exception as exc:
+                _LOGGER.exception("Failed to write the Contour result manifest")
                 QMessageBox.critical(
                     window,
                     "Kraken",

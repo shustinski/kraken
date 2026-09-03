@@ -6,11 +6,13 @@ do not fire while typing in other widgets.
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QKeySequence
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeyEvent, QKeySequence
 
+from ..infrastructure.runtime_config import config_string
 from .tools import EditorTool
 
-_TOOL_SEQUENCE_STRINGS: dict[EditorTool, str | None] = {
+_DEFAULT_TOOL_SEQUENCE_STRINGS: dict[EditorTool, str | None] = {
     EditorTool.SELECT: "V",
     EditorTool.SELECT_AREA: None,
     EditorTool.PAN: "H",
@@ -28,10 +30,41 @@ _TOOL_SEQUENCE_STRINGS: dict[EditorTool, str | None] = {
 
 
 def tool_shortcut_sequence(tool: EditorTool) -> QKeySequence | None:
-    raw = _TOOL_SEQUENCE_STRINGS.get(tool)
+    default = _DEFAULT_TOOL_SEQUENCE_STRINGS.get(tool)
+    raw = config_string("shortcuts", f"tool_{tool.value}", default or "")
     if not raw:
         return None
     return QKeySequence(raw)
+
+
+def shortcut_sequence(action: str, default: str) -> QKeySequence | None:
+    raw = config_string("shortcuts", action, default)
+    return QKeySequence(raw) if raw else None
+
+
+def shortcut_native_text(action: str, default: str) -> str:
+    raw = config_string("shortcuts", action, default)
+    return " / ".join(
+        QKeySequence(item.strip()).toString(QKeySequence.SequenceFormat.NativeText)
+        for item in raw.split(";")
+        if item.strip()
+    )
+
+
+def event_matches_shortcut(event: QKeyEvent, action: str, default: str) -> bool:
+    raw = config_string("shortcuts", action, default)
+    modifier_keys = {
+        "shift": Qt.Key.Key_Shift,
+        "ctrl": Qt.Key.Key_Control,
+        "control": Qt.Key.Key_Control,
+        "alt": Qt.Key.Key_Alt,
+        "meta": Qt.Key.Key_Meta,
+    }
+    alternatives = [item.strip() for item in raw.split(";") if item.strip()]
+    if any(event.key() == modifier_keys.get(item.lower()) for item in alternatives):
+        return True
+    actual = QKeySequence(event.keyCombination())
+    return any(actual.matches(QKeySequence(item)) == QKeySequence.SequenceMatch.ExactMatch for item in alternatives)
 
 
 def tool_shortcut_native_text(tool: EditorTool) -> str:
@@ -103,11 +136,18 @@ def build_editor_hotkeys_plain_text(*, ru: bool) -> str:
 
 def editor_misc_hotkey_lines(*, ru: bool) -> list[tuple[str, str]]:
     """(action description, key text) for help dialog — labels are human-facing."""
-    undo = QKeySequence(QKeySequence.StandardKey.Undo).toString(QKeySequence.SequenceFormat.NativeText)
-    redo = QKeySequence(QKeySequence.StandardKey.Redo).toString(QKeySequence.SequenceFormat.NativeText)
-    copy = QKeySequence(QKeySequence.StandardKey.Copy).toString(QKeySequence.SequenceFormat.NativeText)
-    cut = QKeySequence(QKeySequence.StandardKey.Cut).toString(QKeySequence.SequenceFormat.NativeText)
-    paste = QKeySequence(QKeySequence.StandardKey.Paste).toString(QKeySequence.SequenceFormat.NativeText)
+    undo = shortcut_native_text("undo", "Ctrl+Z")
+    redo = shortcut_native_text("redo", "Ctrl+Y")
+    copy = shortcut_native_text("copy", "Ctrl+C")
+    cut = shortcut_native_text("cut", "Ctrl+X")
+    paste = shortcut_native_text("paste", "Ctrl+V")
+    delete_selection = shortcut_native_text("delete_selection", "Del")
+    cancel = shortcut_native_text("cancel", "Esc")
+    hold_vectors = shortcut_native_text("hold_vectors", "Space")
+    fit_view = shortcut_native_text("fit_view", "F")
+    hold_source = shortcut_native_text("hold_source_image", "X")
+    finish_polygon = shortcut_native_text("finish_polygon", "Enter")
+    cycle_mode = shortcut_native_text("cycle_tool_mode", "Shift")
     if ru:
         return [
             ("Отменить", undo),
@@ -115,16 +155,16 @@ def editor_misc_hotkey_lines(*, ru: bool) -> list[tuple[str, str]]:
             ("Копировать выделение", copy),
             ("Вырезать выделение", cut),
             ("Вставить", paste),
-            ("Удалить выделенные полигоны", "Del"),
-            ("Снять выделение / отменить вставку", "Esc"),
-            ("Переключить видимость векторов", "Пробел"),
-            ("Подогнать изображение под окно", "F"),
+            ("Удалить выделенные полигоны", delete_selection),
+            ("Снять выделение / отменить вставку", cancel),
+            ("Переключить видимость векторов", hold_vectors),
+            ("Подогнать изображение под окно", fit_view),
             ("Временно скрыть векторы и перемещать изображение", "Средняя кнопка мыши"),
-            ("Временно показать исходное изображение без фильтров", "X"),
-            ("Завершить полигон по точкам", "Enter"),
+            ("Временно показать исходное изображение без фильтров", hold_source),
+            ("Завершить полигон по точкам", finish_polygon),
             ("Масштаб (колесо)", "Ctrl+колесо"),
             ("Прокрутка по горизонтали", "Shift+колесо"),
-            ("В режиме полигона — временно точки или прямоугольник", "Shift"),
+            ("В режиме полигона — временно точки или прямоугольник", cycle_mode),
             ("Добавить к выделению / убрать из выделения", "Ctrl+клик"),
         ]
     return [
@@ -133,15 +173,15 @@ def editor_misc_hotkey_lines(*, ru: bool) -> list[tuple[str, str]]:
         ("Copy selection", copy),
         ("Cut selection", cut),
         ("Paste", paste),
-        ("Delete selected polygons", "Del"),
-        ("Clear selection / cancel paste", "Esc"),
-        ("Temporarily hide vector overlays", "Space"),
-        ("Fit image to view", "F"),
+        ("Delete selected polygons", delete_selection),
+        ("Clear selection / cancel paste", cancel),
+        ("Temporarily hide vector overlays", hold_vectors),
+        ("Fit image to view", fit_view),
         ("Temporarily hide vectors and pan", "Middle mouse button"),
-        ("Temporarily show source image without filters", "X"),
-        ("Finish point polygon", "Enter"),
+        ("Temporarily show source image without filters", hold_source),
+        ("Finish point polygon", finish_polygon),
         ("Zoom (wheel)", "Ctrl+wheel"),
         ("Scroll horizontally", "Shift+wheel"),
-        ("In polygon tool: temporarily points vs rectangle", "Shift"),
+        ("In polygon tool: temporarily points vs rectangle", cycle_mode),
         ("Add/remove from selection", "Ctrl+click"),
     ]

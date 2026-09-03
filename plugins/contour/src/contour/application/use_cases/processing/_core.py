@@ -33,6 +33,7 @@ from ....infrastructure.profiling import (
     processing_top_lines,
     try_disable_profiler,
     try_enable_profiler,
+    write_profile_report,
 )
 from ...processing import (
     ALGORITHM_BACKEND_LEGACY,
@@ -1682,15 +1683,19 @@ def process_image_path(
             )
         finally:
             if not profiler_enabled:
-                print(f"[contour profiling] image={image_path} skipped=yes reason=cprofile_already_active")
+                write_profile_report(
+                    f"[contour profiling] image={image_path} skipped=yes reason=cprofile_already_active"
+                )
             else:
                 try_disable_profiler(profiler)
                 top_lines = processing_top_lines()
                 stream = io.StringIO()
                 stats = pstats.Stats(profiler, stream=stream).sort_stats("cumtime")
                 stats.print_stats(top_lines)
-                print(f"[contour profiling] image={image_path} top={top_lines}")
-                print(stream.getvalue())
+                write_profile_report(
+                    f"[contour profiling] image={image_path} top={top_lines}",
+                    stream.getvalue(),
+                )
 
     return _process_image_path_impl(
         image_path=image_path,

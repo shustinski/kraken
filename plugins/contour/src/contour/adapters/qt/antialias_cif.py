@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,6 +11,8 @@ from ...application.polygon_antialiasing import antialias_polygons
 from ...domain import PolygonData
 from ...i18n import tr
 from ...serializers import load_polygons_vector, save_polygons_vector
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,7 @@ class AntialiasCifRunnable(QRunnable):
                 try:
                     result = _antialias_work_item(item, self._grade, self._run_id)
                 except Exception as exc:
+                    _LOGGER.exception("CIF antialiasing failed for %s", item.cif_path)
                     failed.append(f"{Path(item.cif_path).name}: {exc}")
                     result = AntialiasCifItemResult(
                         run_id=self._run_id,

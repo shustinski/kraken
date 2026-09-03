@@ -6,6 +6,7 @@ import sys
 from collections.abc import Sequence
 
 from ..batch_processor import configure_batch_runtime
+from ..infrastructure.runtime_config import config_int
 from ..kraken_bridge import prepare_contour_launch
 
 
@@ -20,8 +21,18 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.add_argument("--cif-dir", help="Directory with CIF overlays.")
         parser.add_argument("--pipeline-json", help="Path to pipeline JSON config.")
         parser.add_argument("--language", choices=("ru", "en"), default=None, help="UI language override.")
-        parser.add_argument("--width", type=int, default=1680, help="Initial window width.")
-        parser.add_argument("--height", type=int, default=980, help="Initial window height.")
+        parser.add_argument(
+            "--width",
+            type=int,
+            default=config_int("window", "width", 1680, minimum=640),
+            help="Initial window width.",
+        )
+        parser.add_argument(
+            "--height",
+            type=int,
+            default=config_int("window", "height", 980, minimum=480),
+            help="Initial window height.",
+        )
         parser.add_argument("--no-qss", action="store_true", help="Do not apply the main application QSS theme.")
         parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging.")
         parser.add_argument("--log-file", default=None, help="Path to the log file.")

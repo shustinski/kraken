@@ -135,7 +135,9 @@ def test_thumbnail_worker_profiles_gap_between_load_starts() -> None:
             ThumbnailLoadRunnable(1, str(image_path), 64, 48, str(cache_dir)).run()
             profiling.reset_profile_output()
 
-        output = profile_path.read_text(encoding="utf-8")
+        generated_logs = list(profile_path.parent.glob("profiling-*-p*.log"))
+        assert len(generated_logs) == 1
+        output = generated_logs[0].read_text(encoding="utf-8")
         assert "[contour thumbnail profiling]" in output
         assert "[contour thumbnail profiling stats]" in output
         assert "full_function_usage" in output

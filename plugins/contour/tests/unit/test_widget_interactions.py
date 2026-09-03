@@ -120,6 +120,7 @@ class ViaCandidateOverlayTests(unittest.TestCase):
             debug_candidates_checkbox=QCheckBox(),
             bright_via_show_rejected_checkbox=show_rejected,
             _sync_polygons_to_editor=MagicMock(),
+            _polygons_visible_in_editor=lambda _state, polygons: list(polygons),
             _via_debug_inspection_enabled=lambda: True,
         )
         owner.debug_candidates_checkbox.setChecked(True)
@@ -1576,7 +1577,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.widget._frame_load_running_path = None
         self.widget._pending_editor_frame_apply = None
         self.widget._thumbnail_rebuild_in_progress = False
-        self.widget._frame_chrome_update_timer.stop()
+        frame_chrome_timer = getattr(self.widget, "_frame_chrome_update_timer", None)
+        if frame_chrome_timer is not None:
+            frame_chrome_timer.stop()
         self.widget._neighbor_sync_timer.stop()
         self.widget._editor_display_thread_pool.waitForDone(1000)
 
@@ -1678,6 +1681,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         apply_frame.assert_called_once()
 
     def test_inner_hole_stays_a_hole_after_switching_frames_and_back(self) -> None:
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("disabled")
+        )
         first_path = str(Path("frame_with_hole.png"))
         second_path = str(Path("frame_plain.png"))
         outer = _rectangle_polygon(0, 0, 80, 80)
@@ -2451,8 +2457,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
                 cv2.imwrite(path, np.zeros((8, 8), dtype=np.uint8))
             vector_a = os.path.join(directory, "frame_a.cif")
             vector_lonely = os.path.join(directory, "lonely.cif")
-            Path(vector_a).write_text("placeholder", encoding="utf-8")
-            Path(vector_lonely).write_text("placeholder", encoding="utf-8")
+            valid_cif = "\n".join(("DS 1 1 1;", "L NM;", "B 4 4 4 4;", "DF;", "E"))
+            Path(vector_a).write_text(valid_cif, encoding="utf-8")
+            Path(vector_lonely).write_text(valid_cif, encoding="utf-8")
 
             self.widget.load_images([image_a, image_b])
             self._wait_for_thumbnail_grid_count(2)
@@ -2651,6 +2658,9 @@ class PolygonExtractionWidgetExtractionAutoApplyTests(unittest.TestCase):
         self.assertEqual(action.text(), "Постобработка ручных инструментов")
 
     def test_view_sync_does_not_postprocess_untouched_vectors_or_mark_dirty(self) -> None:
+        self.widget.recognition_mode_combo.setCurrentIndex(
+            self.widget.recognition_mode_combo.findData("disabled")
+        )
         tiny = _rectangle_polygon(4, 4, 5, 5)
         state = ImageProcessingState(
             image_path="frame_1.png",

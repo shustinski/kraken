@@ -43,7 +43,7 @@ class ContourPresenter:
 
             self.view.load_images(startup.file_paths, image_list_mode=IMAGE_LIST_MODE_EXPLICIT)
         elif not startup.has_explicit_image_source:
-            self.view.restore_persisted_session_selection()
+            self.view.defer_persisted_session_selection_restore()
         elif input_directory:
             self.view.set_input_directory(input_directory)
 

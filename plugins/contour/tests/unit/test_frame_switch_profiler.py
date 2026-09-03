@@ -85,7 +85,7 @@ class FrameSwitchProfilerTests(unittest.TestCase):
         finally:
             outer.disable()
 
-    def test_profiling_is_opt_in_by_default(self) -> None:
+    def test_specific_environment_switch_overrides_default(self) -> None:
         env = os.environ
         for key in (
             "CONTOUR_PROFILE",
@@ -96,6 +96,7 @@ class FrameSwitchProfilerTests(unittest.TestCase):
             "CONTOUR_PROFILE_CIF_OPEN",
         ):
             env.pop(key, None)
+        env["CONTOUR_PROFILE_FRAME_SWITCH"] = "0"
         self.assertFalse(frame_switch_profiling_enabled())
         env["CONTOUR_PROFILE_FRAME_SWITCH"] = "1"
         try:

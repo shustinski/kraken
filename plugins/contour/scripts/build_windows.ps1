@@ -238,9 +238,9 @@ try {
 
         if (-not $InstallerOnly) {
             if (-not $SkipTests) {
-                Write-Step "Running tests"
+                Write-Step "Running full test suite"
                 Invoke-ContourUvRun -Uv $Uv -ProjectPath $ProjectPath -Command @(
-                    "python", "-m", "pytest"
+                    "python", "-m", "pytest", "-m", "full"
                 )
             }
             else {

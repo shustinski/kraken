@@ -1,5 +1,6 @@
 {
   "translations": {
+    "geometry_validation_failed_log": "Geometry validation failed: {error}",
     "via_search_mode_universal": "Universal",
     "via_search_mode_bright_sem": "Bright spots (SEM)",
     "path_panel_title": "Paths",

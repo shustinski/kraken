@@ -93,9 +93,17 @@ def config_float(section: str, option: str, default: float, *, minimum: float | 
     return max(minimum, value) if minimum is not None else value
 
 
+def contour_application_directory() -> Path:
+    """Return the directory containing Contour.exe or the source launcher."""
+
+    if bool(getattr(sys, "frozen", False)):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
+
+
 def profiling_log_path() -> Path:
     raw = config_string("profiling", "log_file", "profiling.log")
     path = Path(raw).expanduser()
     if path.is_absolute():
         return path
-    return default_log_directory() / path
+    return contour_application_directory() / "logs" / path

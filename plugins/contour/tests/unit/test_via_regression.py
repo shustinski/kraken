@@ -108,7 +108,10 @@ def test_bright_via_regression_fixture_exists(stem: str) -> None:
 
 @pytest.mark.parametrize("stem", _FIXTURES)
 def test_binary_mask_recovers_every_cif_via(stem: str) -> None:
-    mask = cv2.imread(str(_TEST_VIA_ROOT / "mask" / f"{stem}.jpg"), cv2.IMREAD_GRAYSCALE)
+    mask_path = _TEST_VIA_ROOT / "mask" / f"{stem}.jpg"
+    if not mask_path.is_file():
+        pytest.skip(f"mask not found: {mask_path}")
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     assert mask is not None
     ground_truth = _cif_ground_truth_centers(_TEST_VIA_ROOT / "cif" / f"{stem}.cif")
     result = detect_bright_vias(mask, _bright_via_preset_config())
@@ -121,7 +124,10 @@ def test_binary_mask_recovers_every_cif_via(stem: str) -> None:
 
 @pytest.mark.parametrize("stem", _FIXTURES)
 def test_heuristic_binary_mask_recovers_every_cif_via(stem: str) -> None:
-    mask = cv2.imread(str(_TEST_VIA_ROOT / "mask" / f"{stem}.jpg"), cv2.IMREAD_GRAYSCALE)
+    mask_path = _TEST_VIA_ROOT / "mask" / f"{stem}.jpg"
+    if not mask_path.is_file():
+        pytest.skip(f"mask not found: {mask_path}")
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
     assert mask is not None
     ground_truth = _cif_ground_truth_centers(_TEST_VIA_ROOT / "cif" / f"{stem}.cif")
     result = detect_vias_heuristic(mask, _heuristic_via_preset_config())
@@ -148,7 +154,10 @@ def test_heuristic_real_frame_quality(
     min_precision: float,
     max_false_positives: int,
 ) -> None:
-    image = cv2.imread(str(_TEST_VIA_ROOT / "img" / f"{stem}.jpg"), cv2.IMREAD_GRAYSCALE)
+    image_path = _TEST_VIA_ROOT / "img" / f"{stem}.jpg"
+    if not image_path.is_file():
+        pytest.skip(f"image not found: {image_path}")
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
     assert image is not None
     ground_truth = _cif_ground_truth_centers(_TEST_VIA_ROOT / "cif" / f"{stem}.cif")
     result = run_via_detection(

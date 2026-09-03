@@ -184,14 +184,13 @@ class GradientOverlayWidgetTests(unittest.TestCase):
         self.widget.deleteLater()
         self._app.processEvents()
 
-    def test_source_image_is_the_default_opaque_view(self) -> None:
+    def test_source_mode_uses_base_raster_without_duplicate_overlay(self) -> None:
         self.assertEqual(self.widget.gradient_overlay_mode_combo.currentData(), "source")
         self.widget._refresh_gradient_overlay()
 
         overlay_item = self.widget.polygon_editor._editor_scene._gradient_overlay_item
-        self.assertTrue(overlay_item.isVisible())
-        self.assertFalse(overlay_item.pixmap().isNull())
-        self.assertAlmostEqual(overlay_item.opacity(), 1.0, places=3)
+        self.assertFalse(overlay_item.isVisible())
+        self.assertTrue(overlay_item.pixmap().isNull())
 
     def test_threshold_mode_honours_via_min_contrast(self) -> None:
         self.widget.recognition_mode_combo.setCurrentIndex(self.widget.recognition_mode_combo.findData("via"))

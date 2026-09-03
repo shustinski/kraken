@@ -594,7 +594,8 @@ class WidgetUiHelpersMixin:
         return view is not None and view.isVisible()
 
     def eventFilter(self, watched, event) -> bool:
-        if event.type() == QEvent.Type.Wheel:
+        event_type = event.type()
+        if event_type == QEvent.Type.Wheel:
             control = self._enclosing_value_control(watched)
             if (
                 control is not None
@@ -604,7 +605,11 @@ class WidgetUiHelpersMixin:
                 # Do not re-dispatch the same QWheelEvent: a scroll viewport would
                 # deliver it back to the widget under the cursor and change the value.
                 return True
-        if hasattr(self, "_handle_frame_matrix_arrow_key_event") and not getattr(self, "_closing", False):
+        elif (
+            event_type == QEvent.Type.KeyPress
+            and hasattr(self, "_handle_frame_matrix_arrow_key_event")
+            and not getattr(self, "_closing", False)
+        ):
             arrow_key_targets: set[object] = set()
             for attr_name in ("polygon_editor", "thumbnail_grid"):
                 widget = getattr(self, attr_name, None)

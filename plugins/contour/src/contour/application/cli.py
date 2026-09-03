@@ -4,15 +4,14 @@ import argparse
 import multiprocessing as mp
 import sys
 from collections.abc import Sequence
-
-from ..batch_processor import configure_batch_runtime
-from ..infrastructure.runtime_config import config_int
-from ..kraken_bridge import prepare_contour_launch
+from time import perf_counter
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(argv) if argv is not None else sys.argv[1:]
     if any(item in {"-h", "--help"} for item in args):
+        from ..infrastructure.runtime_config import config_int
+
         parser = argparse.ArgumentParser(prog="contour", description="Standalone launcher for Contour.")
         parser.add_argument("paths", nargs="*", help="Optional image files or a single directory to load on startup.")
         parser.add_argument("--input-dir", help="Input image directory.")
@@ -46,17 +45,67 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.print_help()
         return
 
-    kraken_session, args = prepare_contour_launch(args)
-    from .bootstrap import build_application
+    from ..infrastructure.startup_profiler import StartupProfile
 
-    app, window = build_application(args)
-    if kraken_session is not None:
-        kraken_session.attach_return_action(window)
-    window.show()
-    app.exec()
+    startup_profile = StartupProfile.begin()
+    try:
+        batch_import_started_at = perf_counter()
+        from ..batch_processor import configure_batch_runtime
+
+        if startup_profile is not None:
+            startup_profile.mark_interval("batch_runtime_import", batch_import_started_at)
+            startup_profile.measure("batch_runtime_configure", configure_batch_runtime)
+        else:
+            configure_batch_runtime()
+
+        bridge_import_started_at = perf_counter()
+        from ..kraken_bridge import prepare_contour_launch
+
+        if startup_profile is not None:
+            startup_profile.mark_interval("launch_bridge_import", bridge_import_started_at)
+
+        if startup_profile is None:
+            kraken_session, args = prepare_contour_launch(args)
+        else:
+            kraken_session, args = startup_profile.measure("prepare_launch", lambda: prepare_contour_launch(args))
+
+        import_started_at = perf_counter()
+        from .bootstrap import build_application
+
+        if startup_profile is not None:
+            startup_profile.mark_interval("bootstrap_import", import_started_at)
+            app, window = startup_profile.measure("application_build", lambda: build_application(args))
+        else:
+            app, window = build_application(args)
+
+        if kraken_session is not None:
+            if startup_profile is None:
+                kraken_session.attach_return_action(window)
+            else:
+                startup_profile.measure("session_attach", lambda: kraken_session.attach_return_action(window))
+
+        show_started_at = perf_counter()
+        window.show()
+        if startup_profile is not None:
+            startup_profile.mark_interval("window_show", show_started_at)
+            event_loop_started_at = perf_counter()
+
+            def _finish_startup_profile() -> None:
+                startup_profile.mark_interval("first_event_loop", event_loop_started_at)
+                startup_profile.finish(status="interactive")
+
+            from PyQt6.QtCore import QTimer
+
+            QTimer.singleShot(0, _finish_startup_profile)
+        app.exec()
+        if startup_profile is not None:
+            startup_profile.finish(status="stopped")
+    except BaseException:
+        if startup_profile is not None:
+            startup_profile.finish(status="failed")
+        raise
 
 
 if __name__ == "__main__":
     mp.freeze_support()
-    configure_batch_runtime()
     main()

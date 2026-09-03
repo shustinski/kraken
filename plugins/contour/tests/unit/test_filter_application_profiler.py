@@ -45,6 +45,7 @@ def test_filter_application_profile_env_switch(monkeypatch) -> None:
         "CONTOUR_PROFILE_FILTER_APPLICATION",
     ):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CONTOUR_PROFILE_FILTER_APPLICATION", "0")
     assert not profiling.filter_application_profiling_enabled()
 
     monkeypatch.setenv("CONTOUR_PROFILE_FILTER_APPLICATION", "1")

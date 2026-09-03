@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -25,6 +26,18 @@ class ApplicationBootstrapTests(unittest.TestCase):
             components.view.close()
             components.view.deleteLater()
             components.app.processEvents()
+
+    def test_presenter_defers_implicit_session_restore(self) -> None:
+        from contour.application.model import ContourApplicationModel
+        from contour.application.presenter import ContourPresenter
+
+        view = MagicMock()
+        presenter = ContourPresenter(model=ContourApplicationModel(), view=view)
+
+        presenter.initialize()
+
+        view.defer_persisted_session_selection_restore.assert_called_once_with()
+        view.restore_persisted_session_selection.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -110,7 +110,8 @@ ruff check contour tests examples
 ruff format --check contour tests examples
 mypy contour
 $env:QT_QPA_PLATFORM = "offscreen"
-pytest
+pytest             # fast behavioral suite (default)
+pytest -m full     # all tests, including vectorization
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow and
@@ -147,7 +148,7 @@ Requirements:
 
 ```powershell
 cd D:\code\kraken\plugins\contour
-.\scripts\build_windows.ps1                 # uv sync + tests + PyInstaller + Inno Setup
+.\scripts\build_windows.ps1                 # uv sync + full tests + PyInstaller + Inno Setup
 .\scripts\build_windows.ps1 -SkipTests      # quick iteration
 .\scripts\build_windows.ps1 -SkipSync       # reuse current uv env
 .\scripts\build_windows.ps1 -Clean          # remove previous dist/build output first
@@ -157,7 +158,9 @@ cd D:\code\kraken\plugins\contour
 ```
 
 The script runs `uv sync --project plugins/contour --extra build --extra dev`
-from the repo root, then invokes pytest and PyInstaller through `uv run`.
+from the repo root, then invokes the `full` pytest suite and PyInstaller through
+`uv run`. Run plain `pytest` during development for the fast behavioral suite;
+run `pytest -m full` explicitly when the complete suite is required.
 
 Outputs:
 

@@ -1,5 +1,6 @@
 {
   "translations": {
+    "geometry_validation_failed_log": "Проверка геометрии не удалась: {error}",
     "via_search_mode_universal": "Универсальный",
     "via_search_mode_bright_sem": "Светлые точки (SEM)",
     "path_panel_title": "Пути",

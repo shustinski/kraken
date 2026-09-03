@@ -50,7 +50,7 @@ def test_background_error_channels_are_written_to_app_log(tmp_path) -> None:
 
         contour_logging._log_qt_message(
             QtCore.QtMsgType.QtCriticalMsg,
-            SimpleNamespace(file="worker.cpp", line=42, function="run"),
+            SimpleNamespace(file="worker.cpp", line=42, function="run", category=None),
             "Qt worker failure",
         )
         _flush_handlers()

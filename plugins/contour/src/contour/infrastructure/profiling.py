@@ -14,7 +14,9 @@ from __future__ import annotations
 import cProfile
 import logging
 import os
-from logging.handlers import RotatingFileHandler
+from datetime import datetime
+from logging import FileHandler
+from pathlib import Path
 from threading import Lock
 
 from .runtime_config import config_bool, config_int, load_runtime_config, profiling_log_path
@@ -23,6 +25,7 @@ PROFILE_ENV_TRUE = {"1", "true", "yes", "on"}
 PROFILE_ENV_FALSE = {"0", "false", "no", "off"}
 
 DEFAULT_FRAME_SWITCH_TOP_LINES = 80
+DEFAULT_STARTUP_TOP_LINES = 80
 DEFAULT_PROCESSING_TOP_LINES = 25
 DEFAULT_THUMBNAIL_TOP_LINES = 25
 DEFAULT_VERTEX_MOVE_TOP_LINES = 40
@@ -40,11 +43,38 @@ DEFAULT_SCENE_ZOOM_TOP_LINES = 40
 DEFAULT_IMAGE_RECOGNITION_TOP_LINES = 40
 DEFAULT_POLYGON_CHANGE_TOP_LINES = 40
 DEFAULT_FRAME_SWITCH_IDLE_POLLS = 300
+MAX_PROFILE_LOG_FILES = 500
 
 _PROFILE_LOGGER_NAME = "contour.profiling.output"
 _PROFILE_LOG_LOCK = Lock()
-_PROFILE_LOG_HANDLER: RotatingFileHandler | None = None
+_PROFILE_LOG_HANDLER: FileHandler | None = None
 _LOGGER = logging.getLogger(__name__)
+
+
+def _new_profile_log_path(configured_path: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    return configured_path.with_name(
+        f"{configured_path.stem}-{timestamp}-p{os.getpid()}{configured_path.suffix}"
+    )
+
+
+def _profile_log_files(configured_path: Path) -> list[Path]:
+    generated = list(configured_path.parent.glob(f"{configured_path.stem}-*-p*{configured_path.suffix}"))
+    if configured_path.is_file():
+        generated.append(configured_path)
+    return generated
+
+
+def _prune_profile_logs(configured_path: Path) -> None:
+    candidates = _profile_log_files(configured_path)
+    candidates.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
+    for stale_path in candidates[MAX_PROFILE_LOG_FILES:]:
+        try:
+            stale_path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            _LOGGER.warning("Cannot remove old Contour profiling log: %s", stale_path, exc_info=True)
 
 
 def _env_flag(name: str) -> bool | None:
@@ -153,15 +183,12 @@ def write_profile_report(*messages: object) -> None:
         logger.setLevel(logging.INFO)
         logger.propagate = False
         if _PROFILE_LOG_HANDLER is None:
-            path = profiling_log_path()
+            configured_path = profiling_log_path()
+            path = _new_profile_log_path(configured_path)
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                _PROFILE_LOG_HANDLER = RotatingFileHandler(
-                    path,
-                    maxBytes=config_int("profiling", "max_log_bytes", 5 * 1024 * 1024, minimum=1024),
-                    backupCount=config_int("profiling", "backup_count", 3, minimum=0),
-                    encoding="utf-8",
-                )
+                _PROFILE_LOG_HANDLER = FileHandler(path, mode="x", encoding="utf-8")
+                _prune_profile_logs(configured_path)
             except OSError:
                 _LOGGER.exception("Cannot open Contour profiling log: %s", path)
                 return
@@ -188,6 +215,10 @@ def frame_switch_profiling_enabled() -> bool:
         "frame_switch",
         legacy_env=("CONTOUR_PROFILE_FRAME_OPEN", "CONTOUR_PROFILE_CIF_OPEN"),
     )
+
+
+def startup_profiling_enabled() -> bool:
+    return profiling_enabled("startup")
 
 
 def processing_profiling_enabled() -> bool:
@@ -296,6 +327,10 @@ def polygon_change_profiling_enabled() -> bool:
 
 def frame_switch_top_lines() -> int:
     return profiling_top_lines("frame_switch", DEFAULT_FRAME_SWITCH_TOP_LINES)
+
+
+def startup_top_lines() -> int:
+    return profiling_top_lines("startup", DEFAULT_STARTUP_TOP_LINES)
 
 
 def processing_top_lines() -> int:

@@ -43,6 +43,7 @@ class GradientField3DWindow(QDialog):
         self._render_timer.setInterval(12)
         self._render_timer.timeout.connect(self._redraw)
         self._interacting = False
+        self._view: QLabel | None = None
         self._full_redraw_timer = QTimer(self)
         self._full_redraw_timer.setSingleShot(True)
         self._full_redraw_timer.setInterval(70)

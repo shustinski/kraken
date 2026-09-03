@@ -22,7 +22,8 @@ ruff check contour tests examples
 ruff format --check contour tests examples
 mypy contour
 $env:QT_QPA_PLATFORM = "offscreen"
-pytest
+pytest             # fast behavioral suite (default)
+pytest -m full     # complete suite, including vectorization
 ```
 
 All checks must be green. `pre-commit` is configured to run a subset of these

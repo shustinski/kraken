@@ -85,6 +85,29 @@ def test_main_view_dock_contents_do_not_force_excessive_minimum_height() -> None
         view.deleteLater()
 
 
+def test_persisted_session_restore_runs_only_after_window_is_shown() -> None:
+    app = _app()
+    view = ContourMainView()
+    restored_while_visible: list[bool] = []
+    view.widget._restore_persisted_session_selection = lambda: restored_while_visible.append(view.isVisible())
+    try:
+        view.defer_persisted_session_selection_restore()
+        app.processEvents()
+        assert restored_while_visible == []
+
+        view.show()
+        assert restored_while_visible == []
+        for _attempt in range(3):
+            app.processEvents()
+            if restored_while_visible:
+                break
+
+        assert restored_while_visible == [True]
+    finally:
+        view.close()
+        view.deleteLater()
+
+
 def test_main_view_status_bar_shows_selected_object_count() -> None:
     app = _app()
     view = ContourMainView()
@@ -302,6 +325,9 @@ def test_main_view_gives_central_image_area_default_priority() -> None:
     app = _app()
     view = ContourMainView()
     try:
+        # Verify the default layout independently of state saved by another
+        # window test in the same QApplication session.
+        view._pending_window_layout_restore = False
         view.resize(1400, 900)
         view.show()
         app.processEvents()

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtBoundSignal
+from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, pyqtBoundSignal
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QListWidgetItem, QMessageBox, QWidget
 
@@ -81,6 +81,22 @@ class WidgetSmokeTests(unittest.TestCase):
         widget = PolygonExtractionWidget()
         try:
             self.assertIsNotNone(widget)
+        finally:
+            widget.close()
+            widget.deleteLater()
+
+    def test_unrelated_events_skip_viewport_validity_checks(self) -> None:
+        widget = PolygonExtractionWidget()
+        try:
+            event = QEvent(QEvent.Type.User)
+            with (
+                patch("contour.widget_parts.ui_helpers_mixin.qt_object_is_valid") as validity_check,
+                patch("contour.widget_parts.ui_helpers_mixin.safe_viewport") as viewport_check,
+            ):
+                widget.eventFilter(widget, event)
+
+            validity_check.assert_not_called()
+            viewport_check.assert_not_called()
         finally:
             widget.close()
             widget.deleteLater()
@@ -349,6 +365,7 @@ class WidgetSmokeTests(unittest.TestCase):
     def test_image_list_selection_selects_thumbnail_grid_item(self) -> None:
         widget = PolygonExtractionWidget()
         try:
+            widget.show_frame_matrix_checkbox.setChecked(True)
             paths = [r"d:\frames\a.png", r"d:\frames\b.png"]
             widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
             for path in paths:
@@ -359,6 +376,7 @@ class WidgetSmokeTests(unittest.TestCase):
                 thumbnail_item = QListWidgetItem()
                 thumbnail_item.setData(Qt.ItemDataRole.UserRole, path)
                 widget.thumbnail_grid.addItem(thumbnail_item)
+            widget._rebuild_thumbnail_path_index()
 
             def _fake_load_image(path: str) -> None:
                 widget._workspace._current_image_path = path
@@ -375,6 +393,7 @@ class WidgetSmokeTests(unittest.TestCase):
     def test_image_list_selection_scrolls_thumbnail_grid_to_item(self) -> None:
         widget = PolygonExtractionWidget()
         try:
+            widget.show_frame_matrix_checkbox.setChecked(True)
             paths = [fr"d:\frames\frame_{index:03d}.png" for index in range(40)]
             widget._workspace.replace_image_selection(paths, is_supported_image=lambda _path: True)
             widget.neighbor_columns_spin.setValue(4)
@@ -386,6 +405,7 @@ class WidgetSmokeTests(unittest.TestCase):
                 thumbnail_item = QListWidgetItem()
                 thumbnail_item.setData(Qt.ItemDataRole.UserRole, path)
                 widget.thumbnail_grid.addItem(thumbnail_item)
+            widget._rebuild_thumbnail_path_index()
 
             widget._configure_thumbnail_grid_geometry()
             widget.thumbnail_grid_scroll_area.setFixedSize(4 * 64 + 4, 2 * 48 + 4)

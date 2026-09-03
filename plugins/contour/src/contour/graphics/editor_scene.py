@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import ceil, floor, hypot
 from time import perf_counter
 
@@ -1296,9 +1296,18 @@ class PolygonEditorScene(QGraphicsScene):
         if run_postprocess:
             profile = self._polygon_change_profile
             phase_started_at = perf_counter()
+            # Noise-size thresholds are import/recognition cleanup controls.
+            # Applying them to a deliberate editor gesture can immediately
+            # delete a valid user-created polygon (the default is 60,000 px²).
+            edit_settings = replace(
+                self._vector_geometry_settings,
+                min_outer_area_px2=0.0,
+                min_hole_area_to_remove_px2=0.0,
+            )
             remaining, _changed, accepted = self._apply_vector_postprocess_polygons(
                 work,
                 changed_polygon_ids=changed_polygon_ids,
+                settings=edit_settings,
             )
             self._note_polygon_change_phase(profile, "postprocess", phase_started_at)
             if not accepted:
@@ -1640,28 +1649,30 @@ class PolygonEditorScene(QGraphicsScene):
         polygons: list[PolygonData],
         *,
         changed_polygon_ids: set[int] | None = None,
+        settings: VectorGeometrySettings | None = None,
     ) -> tuple[list[PolygonData], bool, bool]:
+        active_settings = settings or self._vector_geometry_settings
         if changed_polygon_ids:
             final, changed = postprocess_after_layer_patch(
                 polygons,
-                self._vector_geometry_settings,
+                active_settings,
                 changed_polygon_ids=changed_polygon_ids,
                 frame_width_height=None,
                 include_merge=False,
             )
             return final, changed, True
-        needs_full_cleanup = float(self._vector_geometry_settings.min_hole_area_to_remove_px2) > 0.0
+        needs_full_cleanup = float(active_settings.min_hole_area_to_remove_px2) > 0.0
         if needs_full_cleanup:
             final, changed = postprocess_after_editor_mutation(
                 polygons,
-                self._vector_geometry_settings,
+                active_settings,
                 frame_width_height=None,
                 include_merge=False,
             )
             return final, changed, True
         final, accepted, changed = postprocess_changed_polygon_edit(
             polygons,
-            self._vector_geometry_settings,
+            active_settings,
             polygon_id=self._selected_polygon_id,
         )
         if not accepted:
@@ -1669,7 +1680,7 @@ class PolygonEditorScene(QGraphicsScene):
         if not changed:
             final, changed = postprocess_after_editor_mutation(
                 polygons,
-                self._vector_geometry_settings,
+                active_settings,
                 frame_width_height=None,
                 include_merge=False,
             )

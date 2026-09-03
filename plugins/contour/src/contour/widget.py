@@ -510,6 +510,10 @@ class PolygonExtractionWidget(
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._closing = True
+        frame_switch_profile = getattr(self, "_frame_switch_profile", None)
+        if frame_switch_profile is not None:
+            frame_switch_profile.disable_main_profiler()
+            self._frame_switch_profile = None
         if getattr(self, "_image_recognition_profile", None) is not None:
             self._finish_image_recognition_profile("closed")
         for timer in list(getattr(self, "_deferred_image_load_timers", [])):

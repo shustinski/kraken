@@ -199,8 +199,11 @@ strict_optional = true
 minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m fast"
 markers = [
+    "fast: stable behavioral tests used during everyday development",
+    "full: all tests, including GUI regressions and vectorization",
+    "vectorization: image-to-vector, geometry, and CIF regression tests",
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "gui: marks tests requiring a Qt GUI event loop",
 ]

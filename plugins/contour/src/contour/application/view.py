@@ -224,6 +224,8 @@ class ContourMainView(QMainWindow):
         self._refresh_view_and_tools_menus()
         _try_apply_app_icon(self)
         self._pending_window_layout_restore = True
+        self._pending_persisted_session_restore = False
+        self._persisted_session_restore_scheduled = False
         if _should_schedule_startup_update_check():
             QTimer.singleShot(0, lambda: self._update_controller.check_for_updates(manual=False))
 
@@ -234,6 +236,7 @@ class ContourMainView(QMainWindow):
             self._window_layout_restored = self._restore_window_layout()
             if not self._window_layout_restored:
                 QTimer.singleShot(0, self._apply_default_dock_layout)
+        self._schedule_persisted_session_restore_after_show()
 
     @property
     def widget(self) -> PolygonExtractionWidget:
@@ -563,6 +566,31 @@ class ContourMainView(QMainWindow):
 
     def restore_persisted_session_selection(self) -> None:
         self._widget._restore_persisted_session_selection()
+
+    def defer_persisted_session_selection_restore(self) -> None:
+        self._pending_persisted_session_restore = True
+        if self.isVisible():
+            self._schedule_persisted_session_restore_after_show()
+
+    def _schedule_persisted_session_restore_after_show(self) -> None:
+        if (
+            not self._pending_persisted_session_restore
+            or self._persisted_session_restore_scheduled
+            or not self.isVisible()
+        ):
+            return
+        self._persisted_session_restore_scheduled = True
+        QTimer.singleShot(0, self._defer_persisted_session_restore_one_event_loop_turn)
+
+    def _defer_persisted_session_restore_one_event_loop_turn(self) -> None:
+        QTimer.singleShot(0, self._run_deferred_persisted_session_restore)
+
+    def _run_deferred_persisted_session_restore(self) -> None:
+        self._persisted_session_restore_scheduled = False
+        if not self._pending_persisted_session_restore or not self.isVisible():
+            return
+        self._pending_persisted_session_restore = False
+        self.restore_persisted_session_selection()
 
     def show_status_message(self, message: str, timeout_ms: int = 0) -> None:
         _status_bar(self).showMessage(message, timeout_ms)

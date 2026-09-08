@@ -22,6 +22,8 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -328,6 +330,10 @@ class AugmentationPreviewDialog(QDialog):
         root_layout.setSpacing(10)
 
         left_widget = QWidget(self)
+        left_widget.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
@@ -369,9 +375,9 @@ class AugmentationPreviewDialog(QDialog):
         self.mode_label.setWordWrap(True)
         left_layout.addWidget(self.mode_label)
 
-        content_row = QHBoxLayout()
-        content_row.setContentsMargins(0, 0, 0, 0)
-        content_row.setSpacing(10)
+        self.content_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.content_splitter.setChildrenCollapsible(False)
+        self.content_splitter.setHandleWidth(8)
 
         self.sample_list_group = QGroupBox(
             str(
@@ -385,7 +391,7 @@ class AugmentationPreviewDialog(QDialog):
         sample_list_layout.setContentsMargins(6, 6, 6, 6)
         self.sample_list_widget = QListWidget(self.sample_list_group)
         self.sample_list_widget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self.sample_list_widget.setMinimumWidth(220)
+        self.sample_list_widget.setMinimumWidth(140)
         sample_list_layout.addWidget(self.sample_list_widget)
 
         preview_widget = QWidget(self)
@@ -397,7 +403,7 @@ class AugmentationPreviewDialog(QDialog):
         image_layout = QVBoxLayout(self.image_group)
         self.image_preview = _PreviewLabel()
         self.image_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_preview.setMinimumSize(420, 420)
+        self.image_preview.setMinimumSize(180, 220)
         self.image_preview.setStyleSheet('border: 1px solid #666; background: #111;')
         image_layout.addWidget(self.image_preview)
 
@@ -405,15 +411,18 @@ class AugmentationPreviewDialog(QDialog):
         label_layout = QVBoxLayout(self.label_group)
         self.label_preview = _PreviewLabel()
         self.label_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.label_preview.setMinimumSize(420, 420)
+        self.label_preview.setMinimumSize(180, 220)
         self.label_preview.setStyleSheet('border: 1px solid #666; background: #111;')
         label_layout.addWidget(self.label_preview)
 
         preview_row.addWidget(self.image_group, 1)
         preview_row.addWidget(self.label_group, 1)
-        content_row.addWidget(self.sample_list_group, 0)
-        content_row.addWidget(preview_widget, 1)
-        left_layout.addLayout(content_row, 1)
+        self.content_splitter.addWidget(self.sample_list_group)
+        self.content_splitter.addWidget(preview_widget)
+        self.content_splitter.setStretchFactor(0, 0)
+        self.content_splitter.setStretchFactor(1, 1)
+        self.content_splitter.setSizes([260, 900])
+        left_layout.addWidget(self.content_splitter, 1)
 
         self.status_label = QLabel('')
         self.status_label.setWordWrap(True)
@@ -421,7 +430,7 @@ class AugmentationPreviewDialog(QDialog):
 
         right_scroll = QScrollArea(self)
         right_scroll.setWidgetResizable(True)
-        right_scroll.setMinimumWidth(420)
+        right_scroll.setMinimumWidth(260)
         right_content = QWidget()
         right_layout = QVBoxLayout(right_content)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -432,9 +441,17 @@ class AugmentationPreviewDialog(QDialog):
         right_layout.addStretch(1)
         right_scroll.setWidget(right_content)
 
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(8)
+        self.main_splitter.addWidget(left_widget)
+        self.main_splitter.addWidget(right_scroll)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        self.main_splitter.setSizes([1060, 360])
+
         self._populate_sample_list()
-        root_layout.addWidget(left_widget, 1)
-        root_layout.addWidget(right_scroll, 0)
+        root_layout.addWidget(self.main_splitter, 1)
 
     def _build_shared_training_transform_groups(self) -> tuple[QGroupBox, QGroupBox]:
         return self._panel.sem_normalization_editor, self._panel.training_augmentation_editor

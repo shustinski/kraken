@@ -679,3 +679,32 @@ def test_augmentation_preview_dialog_sidebar_uses_shared_training_transform_edit
 
     assert panel.augmentation_noise_probability_spinbox.isVisible()
     dialog.close()
+
+
+def test_augmentation_preview_dialog_sidebars_are_resizable(qapp):
+    root = make_test_dir('augmentation_preview_dialog_resizable_sidebars')
+    sample_dir = root / 'samples'
+    label_dir = root / 'labels'
+    sample_dir.mkdir()
+    label_dir.mkdir()
+    image = np.zeros((32, 32), dtype=np.uint8)
+    label = np.zeros((32, 32), dtype=np.uint8)
+    Image.fromarray(image, mode='L').save(sample_dir / 'frame.png')
+    Image.fromarray(label, mode='L').save(label_dir / 'frame.png')
+
+    dialog, _panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
+    try:
+        dialog.show()
+        qapp.processEvents()
+        assert dialog.main_splitter.count() == 2
+        assert dialog.content_splitter.count() == 2
+        assert not dialog.main_splitter.childrenCollapsible()
+        assert not dialog.content_splitter.childrenCollapsible()
+        dialog.content_splitter.setSizes([360, 600])
+        qapp.processEvents()
+        assert dialog.content_splitter.sizes()[0] >= 340
+        dialog.main_splitter.setSizes([500, 920])
+        qapp.processEvents()
+        assert dialog.main_splitter.sizes()[1] >= 450
+    finally:
+        dialog.close()

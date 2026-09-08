@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QShowEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -161,6 +162,7 @@ class TrainingAugmentationEditor(QGroupBox):
         self.tree.setRootIsDecorated(True)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
@@ -172,10 +174,25 @@ class TrainingAugmentationEditor(QGroupBox):
         self.defaults_button.setToolTip('Восстановить исходные значения только для аугментаций.')
         layout.addWidget(self.defaults_button, 0, Qt.AlignmentFlag.AlignRight)
         self._build_tree()
+        self.tree.expanded.connect(self._fit_tree_height)
+        self.tree.collapsed.connect(self._fit_tree_height)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.defaults_button.clicked.connect(self._restore_defaults)
         self._connect_controls()
         self.sync_from_controls()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self._fit_tree_height()
+
+    def _fit_tree_height(self) -> None:
+        self.tree.doItemsLayout()
+        height = self.tree.header().height() + 2 * self.tree.frameWidth()
+        index = self.tree.model().index(0, 0)
+        while index.isValid():
+            height += self.tree.visualRect(index).height()
+            index = self.tree.indexBelow(index)
+        self.tree.setFixedHeight(height)
 
     def _build_tree(self) -> None:
         for block in self.blocks:

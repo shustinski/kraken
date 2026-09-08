@@ -1872,7 +1872,9 @@ class SettingsPanel(QDockWidget):
             spatial_layout,
             controls=(self._field_with_description(self.augmentation_multiplier_spinbox, 'augmentation_multiplier'),),
         )
-        self.photometric_groupbox = QGroupBox('')
+        # Legacy state holder; its controls are displayed by the shared editor.
+        self.photometric_groupbox = QGroupBox('', self)
+        self.photometric_groupbox.hide()
         self.photometric_groupbox.setCheckable(True)
         photometric_layout = QVBoxLayout(self.photometric_groupbox)
         photometric_layout.setContentsMargins(6, 6, 6, 6)
@@ -2345,7 +2347,6 @@ class SettingsPanel(QDockWidget):
 
         self._expert_widgets.extend(
             (
-                self.photometric_groupbox,
                 self.cutout_groupbox,
                 self.random_artifacts_groupbox,
                 self.synthetic_defect_generator_groupbox,

@@ -902,7 +902,7 @@ class MainPresenter(QObject):
             finally:
                 self._augmentation_preview_dialog = None
 
-        dialog = AugmentationPreviewDialog(training_parameters, self.settings_panel, self.view)
+        dialog = AugmentationPreviewDialog(training_parameters, self.settings_panel)
         dialog.apply_to_main_requested.connect(self._apply_augmentation_preview_settings)
         dialog.destroyed.connect(lambda *_args: setattr(self, '_augmentation_preview_dialog', None))
         self._augmentation_preview_dialog = dialog

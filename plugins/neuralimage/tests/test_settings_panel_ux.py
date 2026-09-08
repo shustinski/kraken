@@ -61,6 +61,44 @@ def test_augmentation_editor_is_four_column_hierarchy(qapp):
     assert editor.tree.itemWidget(editor.row_items['brightness'], 3) is panel.augmentation_brightness_spinbox
 
 
+def test_expert_mode_does_not_show_detached_photometric_window(qapp):
+    panel = SettingsPanel()
+    try:
+        panel._sync_expert_mode(True)
+        panel.show()
+        qapp.processEvents()
+        assert not panel.photometric_groupbox.isWindow()
+        assert not panel.photometric_groupbox.isVisible()
+    finally:
+        panel.close()
+
+
+def test_augmentation_tree_fits_expanded_rows_without_scrolling(qapp):
+    panel = SettingsPanel()
+    editor = panel.training_augmentation_editor
+    editor.setParent(None)
+    try:
+        editor.resize(1100, 300)
+        editor.show()
+        qapp.processEvents()
+        tree = editor.tree
+        assert tree.verticalScrollBar().maximum() == 0
+        assert not tree.verticalScrollBar().isVisible()
+        for item in editor.row_items.values():
+            assert tree.viewport().rect().contains(tree.visualItemRect(item))
+        expanded_height = tree.height()
+        tree.collapseAll()
+        qapp.processEvents()
+        assert tree.height() < expanded_height
+        tree.expandAll()
+        qapp.processEvents()
+        assert tree.height() == expanded_height
+        assert tree.verticalScrollBar().maximum() == 0
+    finally:
+        editor.close()
+        panel.close()
+
+
 def test_augmentation_block_and_defaults_control_real_widgets(qapp):
     panel = SettingsPanel()
     editor = panel.training_augmentation_editor

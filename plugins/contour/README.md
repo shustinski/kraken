@@ -114,7 +114,7 @@ pytest             # fast behavioral suite (default)
 pytest -m full     # all tests, including vectorization
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer workflow and
+See [CONTRIBUTING.md](resources/docs/CONTRIBUTING.md) for the full developer workflow and
 release process.
 
 ### Project layout

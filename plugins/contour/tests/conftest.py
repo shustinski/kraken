@@ -27,7 +27,6 @@ FAST_TEST_FILES = frozenset(
         "test_frame_prefetch.py",
         "test_i18n.py",
         "test_logging.py",
-        "test_processing_use_cases.py",
         "test_processing_v2.py",
         "test_qt_object_validity.py",
         "test_recognition_modes.py",
@@ -68,6 +67,8 @@ VECTORIZATION_TEST_FILES = frozenset(
         "test_polygon_antialiasing.py",
         "test_polygon_creation.py",
         "test_polygon_offset.py",
+        "test_processing_use_cases.py",
+        "test_gradient_watershed.py",
         "test_structural_watershed.py",
         "test_vector_geometry_postprocess.py",
         "test_via_regression.py",
@@ -82,10 +83,10 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         filename = item.path.name
         item.add_marker(pytest.mark.full)
-        if filename in FAST_TEST_FILES:
-            item.add_marker(pytest.mark.fast)
         if filename in VECTORIZATION_TEST_FILES:
             item.add_marker(pytest.mark.vectorization)
+        if filename in FAST_TEST_FILES and item.get_closest_marker("vectorization") is None:
+            item.add_marker(pytest.mark.fast)
 
 
 @pytest.fixture(autouse=True)
@@ -102,13 +103,14 @@ def _isolated_settings_dir(tmp_path) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _restore_profiling_environment() -> Iterator[None]:
-    """Prevent profiling switch mutations from leaking between tests."""
+def _isolated_profiling_environment() -> Iterator[None]:
+    """Disable instrumentation unless a test explicitly enables it; restore overrides."""
     previous = {
         name: value
         for name, value in os.environ.items()
         if name.startswith("CONTOUR_PROFILE") or name == "CONTOUR_PROFILING"
     }
+    os.environ["CONTOUR_PROFILE"] = "0"
     try:
         yield
     finally:

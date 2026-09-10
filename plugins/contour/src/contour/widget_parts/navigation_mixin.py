@@ -3,13 +3,67 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from PyQt6.QtGui import QKeyEvent
+
 from ..adapters.qt.object_validity import qt_object_is_valid
-from ._imports import *  # noqa: F403
+from ..value_conversion import to_int
+from ._imports import (
+    ASSET_FILTER_LISTS_MAX_FRAMES,
+    LARGE_FRAME_COUNT_THRESHOLD,
+    THUMBNAIL_APPLY_INTERVAL_MS,
+    THUMBNAIL_ICONS_APPLY_PER_TICK,
+    THUMBNAIL_MAX_ACTIVE_DECODES,
+    THUMBNAIL_RADIAL_LOADS_PER_PUMP,
+    THUMBNAIL_RADIAL_PUMP_INTERVAL_MS,
+    THUMBNAIL_SCROLL_SETTLE_MS,
+    THUMBNAIL_VISIBLE_LOAD_DEBOUNCE_MS,
+    Path,
+    PyramidFrameStore,
+    QAbstractSpinBox,
+    QBrush,
+    QCheckBox,
+    QColor,
+    QColorDialog,
+    QEvent,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QIcon,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPixmap,
+    QPoint,
+    QPushButton,
+    QScrollArea,
+    QSignalBlocker,
+    QSize,
+    QSizePolicy,
+    QSpinBox,
+    Qt,
+    QTimer,
+    QWidget,
+    ThumbnailLoadRunnable,
+    build_additional_layer_frame_map,
+    build_frame_asset_sets,
+    classify_dropped_paths,
+    classify_vector_side_status,
+    index_cif_file_paths,
+    is_image_path,
+    normalize_via_display_mode,
+    np,
+    paint_vector_row_item,
+    scan_image_files,
+    time,
+)
+from .host_contract import WidgetMixinHost
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class WidgetNavigationMixin:
+class WidgetNavigationMixin(WidgetMixinHost):
     def _dialog_start_directory_from_value(self: Any, value: str | Path | None, fallback: str | Path | None = None) -> str:
         candidates = [value, fallback, Path.home()]
         for candidate in candidates:
@@ -515,8 +569,8 @@ class WidgetNavigationMixin:
             return (0, 0)
         icon_w = max(1, int(icon_size.width()))
         icon_h = max(1, int(icon_size.height()))
-        overlap_x = int(round(full_overlap * icon_w / float(full_w)))
-        overlap_y = int(round(full_overlap * icon_h / float(full_h)))
+        overlap_x = round(full_overlap * icon_w / float(full_w))
+        overlap_y = round(full_overlap * icon_h / float(full_h))
         # An overlap equal to (or larger than) a cell would make the matrix
         # extent negative and all following frames collapse onto one point.
         return (
@@ -582,6 +636,7 @@ class WidgetNavigationMixin:
     def _configure_pyramid_frame_store(self: Any, image_paths: list[str]) -> None:
         normalized_paths = [str(Path(path)) for path in image_paths]
         existing_store = getattr(self, "_pyramid_frame_store", None)
+        store: PyramidFrameStore | None
         if (
             isinstance(existing_store, PyramidFrameStore)
             and existing_store.image_paths == normalized_paths
@@ -628,7 +683,7 @@ class WidgetNavigationMixin:
         self._thumbnail_loaded_generation.clear()
         self._thumbnail_rebuild_in_progress = True
         self._thumbnail_selected_path = None
-        self._thumbnail_path_to_row = {}
+        self._thumbnail_path_to_row: dict[str, int] = {}
         try:
             self._thumbnail_thread_pool.clear()
         except AttributeError:
@@ -747,9 +802,7 @@ class WidgetNavigationMixin:
             return True
         if getattr(self, "_frame_load_running_path", None) is not None:
             return True
-        if getattr(self, "_loading_image_path", None) is not None:
-            return True
-        return False
+        return getattr(self, "_loading_image_path", None) is not None
 
     def _cancel_thumbnail_loading(self: Any) -> None:
         self._thumbnail_generation += 1
@@ -761,8 +814,8 @@ class WidgetNavigationMixin:
                 timer.stop()
             except RuntimeError:
                 pass
-        self._deferred_thumbnail_load_timers = []
-        self._thumbnail_radial_paths = []
+        self._deferred_thumbnail_load_timers: list[QTimer] = []
+        self._thumbnail_radial_paths: list[str] = []
         self._thumbnail_radial_cursor = 0
         self._thumbnail_radial_center_path = None
         if hasattr(self, "_thumbnail_radial_pump_timer"):
@@ -839,7 +892,7 @@ class WidgetNavigationMixin:
             return
         loaded_generation = getattr(self, "_thumbnail_loaded_generation", {})
         loaded_sizes = getattr(self, "_thumbnail_loaded_sizes", {})
-        queued_paths = getattr(self, "_thumbnail_queued_paths", set())
+        queued_paths: set[str] = getattr(self, "_thumbnail_queued_paths", set())
         queued_sizes = getattr(self, "_thumbnail_queued_sizes", {})
         current_generation = self._thumbnail_generation
         requested_size = self._thumbnail_request_size()
@@ -974,16 +1027,19 @@ class WidgetNavigationMixin:
                 else:
                     target_w, target_h = max(1, int(requested_size[0])), max(1, int(requested_size[1]))
                     pixmap_image = qimage
-                    if hasattr(qimage, "width") and hasattr(qimage, "height"):
-                        if int(qimage.width()) != target_w or int(qimage.height()) != target_h:
-                            scaled = qimage.scaled(
-                                QSize(target_w, target_h),
-                                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                                Qt.TransformationMode.SmoothTransformation,
-                            )
-                            crop_x = max(0, (int(scaled.width()) - target_w) // 2)
-                            crop_y = max(0, (int(scaled.height()) - target_h) // 2)
-                            pixmap_image = scaled.copy(crop_x, crop_y, target_w, target_h)
+                    if (
+                        hasattr(qimage, "width")
+                        and hasattr(qimage, "height")
+                        and (int(qimage.width()) != target_w or int(qimage.height()) != target_h)
+                    ):
+                        scaled = qimage.scaled(
+                            QSize(target_w, target_h),
+                            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
+                        crop_x = max(0, (int(scaled.width()) - target_w) // 2)
+                        crop_y = max(0, (int(scaled.height()) - target_h) // 2)
+                        pixmap_image = scaled.copy(crop_x, crop_y, target_w, target_h)
                     pixmap = QPixmap.fromImage(pixmap_image)
                     icon = QIcon(pixmap) if not pixmap.isNull() else placeholder
                     item.setData(int(Qt.ItemDataRole.UserRole) + 1001, pixmap if not pixmap.isNull() else None)
@@ -1257,9 +1313,12 @@ class WidgetNavigationMixin:
         if suppressed_path and current and str(Path(current)) == str(Path(suppressed_path)):
             self._suppress_thumbnail_grid_scroll_path = None
         current_path = self._normalized_path(current) if current else None
-        if current_path and current_path != getattr(self, "_thumbnail_radial_center_path", None):
-            if not self._thumbnail_loading_blocked():
-                self._schedule_visible_thumbnail_loads()
+        if (
+            current_path
+            and current_path != getattr(self, "_thumbnail_radial_center_path", None)
+            and not self._thumbnail_loading_blocked()
+        ):
+            self._schedule_visible_thumbnail_loads()
 
     def _scroll_thumbnail_grid_to_row(self: Any, row: int) -> None:
         if not self._frame_matrix_enabled() or not hasattr(self, "thumbnail_grid") or not hasattr(self, "thumbnail_grid_scroll_area"):
@@ -1294,7 +1353,7 @@ class WidgetNavigationMixin:
             return False
         if getattr(self, "_closing", False) or not qt_object_is_valid(self.thumbnail_grid):
             return False
-        if getattr(event, "type", lambda: None)() != QEvent.Type.KeyPress:
+        if not isinstance(event, QKeyEvent) or event.type() != QEvent.Type.KeyPress:
             return False
         columns = max(1, self._thumbnail_columns())
         delta = next(
@@ -1316,8 +1375,8 @@ class WidgetNavigationMixin:
         if count <= 0:
             event.accept()
             return True
-        current_row = int(self.thumbnail_grid.currentRow())
-        if current_row < 0:
+        current_row: int | None = int(self.thumbnail_grid.currentRow())
+        if current_row is not None and current_row < 0:
             current_path = getattr(self._workspace, "current_image_path", None)
             current_row = self._thumbnail_row_for_path(str(current_path)) if current_path else None
         if current_row is None or current_row < 0:
@@ -1362,12 +1421,14 @@ class WidgetNavigationMixin:
         path = str(item.data(Qt.ItemDataRole.UserRole) or "")
         if not path:
             return
-        global_pos = list_widget.viewport().mapToGlobal(position)
+        viewport = list_widget.viewport()
+        assert viewport is not None
+        global_pos = viewport.mapToGlobal(position)
         self._show_frame_context_menu(path, global_pos)
 
     def _on_frame_matrix_context_menu(self: Any, frame_id: object, global_pos: QPoint) -> None:
         try:
-            index = int(frame_id)
+            index = to_int(frame_id)
         except (TypeError, ValueError):
             return
         image_paths = [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
@@ -1423,7 +1484,7 @@ class WidgetNavigationMixin:
 
     def _on_frame_navigation_requested(self: Any, frame_id: object) -> None:
         try:
-            index = int(frame_id)
+            index = to_int(frame_id)
         except (TypeError, ValueError):
             return
         image_paths = [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
@@ -1436,7 +1497,7 @@ class WidgetNavigationMixin:
 
     def _on_editor_current_frame_changed(self: Any, frame_id: object) -> None:
         try:
-            index = int(frame_id)
+            index = to_int(frame_id)
         except (TypeError, ValueError):
             return
         image_paths = [str(Path(path)) for path in getattr(self._workspace, "image_paths", [])]
@@ -1694,8 +1755,8 @@ class WidgetNavigationMixin:
             self.set_input_directory(path)
         else:
             self._workspace.replace_image_selection([], is_supported_image=is_image_path)
-            self._base_frame_number_by_path = {}
-            self._base_frame_numbers = set()
+            self._base_frame_number_by_path: dict[str, int] = {}
+            self._base_frame_numbers: set[int] = set()
             self._set_image_list_paths([])
             self._rebuild_thumbnail_grid()
             self._clear_extra_layers()
@@ -1825,7 +1886,7 @@ class WidgetNavigationMixin:
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
-        layer_id = int(layer.get("id", 0))
+        layer_id = to_int(layer.get("id", 0))
 
         visible_checkbox = QCheckBox("")
         visible_checkbox.setFixedWidth(22)
@@ -1837,14 +1898,14 @@ class WidgetNavigationMixin:
 
         dx_spin = QSpinBox()
         dx_spin.setRange(-1_000_000, 1_000_000)
-        dx_spin.setValue(int(layer.get("dx", 0) or 0))
+        dx_spin.setValue(to_int(layer.get("dx", 0) or 0))
         self._configure_extra_layer_spinbox(dx_spin, width=48)
         dx_spin.setToolTip("Смещение слоя по X")
         dx_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dx", int(value)))
 
         dy_spin = QSpinBox()
         dy_spin.setRange(-1_000_000, 1_000_000)
-        dy_spin.setValue(int(layer.get("dy", 0) or 0))
+        dy_spin.setValue(to_int(layer.get("dy", 0) or 0))
         self._configure_extra_layer_spinbox(dy_spin, width=48)
         dy_spin.setToolTip("Смещение слоя по Y")
         dy_spin.valueChanged.connect(lambda value, lid=layer_id: self._set_extra_layer_field(lid, "dy", int(value)))
@@ -1852,7 +1913,7 @@ class WidgetNavigationMixin:
         opacity_spin = QSpinBox()
         opacity_spin.setRange(0, 100)
         try:
-            opacity_value = int(layer.get("opacity", 100))
+            opacity_value = to_int(layer.get("opacity", 100))
         except (TypeError, ValueError):
             opacity_value = 100
         opacity_spin.setValue(max(0, min(100, opacity_value)))
@@ -1894,7 +1955,9 @@ class WidgetNavigationMixin:
     @staticmethod
     def _compact_spinbox_width(spinbox: QSpinBox, sample_text: str) -> int:
         text_width = spinbox.fontMetrics().horizontalAdvance(sample_text)
-        arrow_width = max(24, spinbox.style().pixelMetric(spinbox.style().PixelMetric.PM_ScrollBarExtent))
+        style = spinbox.style()
+        assert style is not None
+        arrow_width = max(24, style.pixelMetric(style.PixelMetric.PM_ScrollBarExtent))
         frame = 16
         return text_width + arrow_width + frame
 

@@ -2,10 +2,32 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._imports import *  # noqa: F403
+from ._imports import (
+    COMPACT_UI_STYLE,
+    DisplaySettings,
+    Path,
+    PersistedPaths,
+    QApplication,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QIcon,
+    QPushButton,
+    QScrollArea,
+    QSignalBlocker,
+    Qt,
+    QVBoxLayout,
+    QWidget,
+    VectorGeometrySettings,
+    build_path_panel,
+    build_paths_tab,
+    build_tabs,
+    build_ui,
+)
+from .host_contract import WidgetMixinHost
 
 
-class WidgetSettingsMixin:
+class WidgetSettingsMixin(WidgetMixinHost):
     @staticmethod
     def _apply_contour_application_icon() -> None:
         app = QApplication.instance()

@@ -262,7 +262,7 @@ def _subtree_geometry(
     if not extra_parts:
         return unary_union(make_valid(hull))
 
-    merged = unary_union([hull] + extra_parts)
+    merged = unary_union([hull, *extra_parts])
     return unary_union(make_valid(merged))
 
 
@@ -500,13 +500,13 @@ def shapely_to_polygon_data_list(result: BaseGeometry) -> list[PolygonData]:
 class PreservedPolygonMatchCache:
     """Precomputed preserved footprints for duplicate detection during boolean edits."""
 
-    _entries: tuple[tuple[bool, tuple[int, int, int, int], float, object | None], ...]
+    _entries: tuple[tuple[bool, tuple[int, int, int, int], float, BaseGeometry | None], ...]
 
     @classmethod
     def from_polygons(cls, preserved_polygons: list[PolygonData]) -> PreservedPolygonMatchCache:
-        entries: list[tuple[bool, tuple[int, int, int, int], float, object | None]] = []
+        entries: list[tuple[bool, tuple[int, int, int, int], float, BaseGeometry | None]] = []
         for preserved in preserved_polygons:
-            footprint: object | None
+            footprint: BaseGeometry | None
             try:
                 footprint = unary_union(make_valid(_polygon_from_points(preserved.points).buffer(0)))
                 if footprint.is_empty:
@@ -516,7 +516,7 @@ class PreservedPolygonMatchCache:
             entries.append(
                 (
                     bool(preserved.is_hole),
-                    tuple(int(value) for value in preserved.bbox),
+                    (int(preserved.bbox[0]), int(preserved.bbox[1]), int(preserved.bbox[2]), int(preserved.bbox[3])),
                     float(preserved.area),
                     footprint,
                 )
@@ -548,8 +548,8 @@ def polygon_equivalent_preserved(
     if not preserved_polygons:
         return False
 
-    poly_bbox = tuple(int(value) for value in poly.bbox)
-    poly_area = float(poly.area)
+    poly_bbox = (int(poly.bbox[0]), int(poly.bbox[1]), int(poly.bbox[2]), int(poly.bbox[3]))
+    _unused_poly_area = float(poly.area)
     poly_points = poly.points
 
     for preserved in preserved_polygons:

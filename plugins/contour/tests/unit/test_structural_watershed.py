@@ -3,11 +3,11 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from contour.vision.metal_recovery.gradient_watershed import GradientWatershedConfig
 from contour.vision.metal_recovery.seeded_segmentation import seeded_segmentation_mask
 from contour.vision.metal_recovery.segmentation import (
     normalize_metal_segmentation_strategy,
 )
-from contour.vision.metal_recovery.gradient_watershed import GradientWatershedConfig
 from contour.vision.metal_recovery.structural_watershed import (
     STRUCTURAL_WATERSHED_STRATEGY,
     StructuralWatershedConfig,

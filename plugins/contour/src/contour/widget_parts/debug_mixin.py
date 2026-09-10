@@ -4,10 +4,29 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ..domain import compute_polygon_metrics
-from ._imports import *  # noqa: F403
+from ._imports import (
+    ContourDebugCandidate,
+    ContourExtractionSettings,
+    PolygonData,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QMessageBox,
+    QPixmap,
+    QPoint,
+    QPushButton,
+    QRectF,
+    Qt,
+    QWidget,
+    WorkspaceSession,
+    cv2,
+    cv_to_qimage,
+    np,
+)
+from .host_contract import WidgetMixinHost
 
 
-class WidgetDebugMixin:
+class WidgetDebugMixin(WidgetMixinHost):
     if TYPE_CHECKING:
         _workspace: WorkspaceSession
         _show_source_while_filter_hotkey_held: bool
@@ -68,7 +87,7 @@ class WidgetDebugMixin:
             f"{self._tr('debug.field_method')}: {self._debug_method_text(source)}",
             f"{self._tr('debug.field_criterion')}: {self._debug_criterion_text(source, reason, accepted)}",
         ]
-        if is_template_match:
+        if is_template_match and template_index is not None:
             similarity = max(0.0, min(1.0, float(getattr(candidate, "score", 0.0)) / 100.0))
             similarity_text = f"{similarity:.3f}"
             if self._ui_language == "ru":
@@ -220,7 +239,7 @@ class WidgetDebugMixin:
         )
         return ContourDebugCandidate(
             contour_index=-1,
-            bbox=tuple(int(value) for value in detection.bbox),
+            bbox=(int(detection.bbox[0]), int(detection.bbox[1]), int(detection.bbox[2]), int(detection.bbox[3])),
             area=float(detection.bbox[2] * detection.bbox[3]),
             perimeter=float(2 * (detection.bbox[2] + detection.bbox[3])),
             roundness=float(detection.features.get("circularity", 0.0) * 100.0),
@@ -265,7 +284,7 @@ class WidgetDebugMixin:
             return []
         settings = self._current_contour_settings()
 
-        def number(value: object, decimals: int = 3) -> str:
+        def number(value: float, decimals: int = 3) -> str:
             text = f"{float(value):.{decimals}f}"
             return text.replace(".", ",") if self._ui_language == "ru" else text
 
@@ -276,7 +295,7 @@ class WidgetDebugMixin:
         drift = float(metrics.get("center_drift", 0.0))
         drift_ratio = drift / diameter
         polarity = str(getattr(settings, "via_heuristic_polarity", "") or "")
-        bilateral = bool(getattr(settings, "heuristic_use_bilateral", False))
+        _unused_bilateral = bool(getattr(settings, "heuristic_use_bilateral", False))
         score = float(metrics.get("final_score", getattr(candidate, "score", 0.0)))
 
         if self._ui_language != "ru":
@@ -537,7 +556,7 @@ class WidgetDebugMixin:
             points = getattr(polygon, "points", []) or []
             if len(points) < 3:
                 continue
-            pts = np.array([(int(round(float(x))), int(round(float(y)))) for x, y in points], dtype=np.int32)
+            pts = np.array([(round(float(x)), round(float(y))) for x, y in points], dtype=np.int32)
             pts[:, 0] = np.clip(pts[:, 0], 0, width - 1)
             pts[:, 1] = np.clip(pts[:, 1], 0, height - 1)
             cv2.fillPoly(mask, [pts.reshape((-1, 1, 2))], 0 if bool(getattr(polygon, "is_hole", False)) else 1)

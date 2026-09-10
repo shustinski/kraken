@@ -11,8 +11,8 @@ from .path_settings import (
 from .pipeline_controller import load_pipeline_config_from_path, save_pipeline_config_to_path
 from .preview_orchestrator import PreviewOrchestrator
 from .quality_gates import SemQualityGateThresholds, SemQualityMetrics, evaluate_sem_quality_gates
-from .workspace_session import WorkspaceLoadResult, WorkspaceSession
 from .vector_index_controller import VectorIndexController
+from .workspace_session import WorkspaceLoadResult, WorkspaceSession
 
 __all__ = [
     "BatchController",

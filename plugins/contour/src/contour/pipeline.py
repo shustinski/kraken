@@ -8,6 +8,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .application.preview_cancellation import raise_if_preview_cancelled
 from .application.processing import OperationParameterSpec, PipelineStepConfig
 from .edge_detection import (
     EDGE_METHOD_CHOICES,
@@ -33,7 +34,6 @@ from .edge_detection import (
     structured_edges as _ed_structured_edges,
 )
 from .i18n import choice_label, operation_name, parameter_label, tr
-from .application.preview_cancellation import raise_if_preview_cancelled
 from .utils import ensure_binary_mask, ensure_uint8
 
 OperationCallable = Callable[[np.ndarray, dict[str, Any]], np.ndarray]

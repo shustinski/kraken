@@ -9,14 +9,16 @@ delegate draw focus, selection, and labels.
 from __future__ import annotations
 
 from PyQt6.QtCore import QModelIndex, Qt
-from PyQt6.QtGui import QColor, QBrush, QPainter
+from PyQt6.QtGui import QBrush, QColor, QPainter
 from PyQt6.QtWidgets import QAbstractItemView, QStyledItemDelegate, QStyleOptionViewItem
 
 
 class StatusBackgroundListDelegate(QStyledItemDelegate):
     """Paint status tint from ``BackgroundRole`` under global application QSS."""
 
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+    def paint(self, painter: QPainter | None, option: QStyleOptionViewItem, index: QModelIndex) -> None:
+        if painter is None:
+            return
         raw = index.data(Qt.ItemDataRole.BackgroundRole)
         if isinstance(raw, QColor) and raw.isValid():
             painter.save()

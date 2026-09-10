@@ -1,10 +1,65 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from ..widget import PolygonExtractionWidget
+
 from ..adapters.qt.object_validity import qt_object_is_valid, safe_viewport
-from ._imports import *  # noqa: F403
+from ._imports import (
+    EDITOR_ACTION_TOOLTIPS,
+    EDITOR_TOOL_TOOLTIPS,
+    GENERAL_CONTROL_TOOLTIPS,
+    TOOLBAR_BUTTON_SIZE_PX,
+    TOOLBAR_ICON_CANVAS_SIZE_PX,
+    TOOLBAR_ICON_SIZE_PX,
+    VIA_SEARCH_MODE_HYBRID,
+    VIA_SEARCH_MODE_TEMPLATE,
+    BrushMode,
+    DeleteVertexMode,
+    EditorTool,
+    PolygonCreateMode,
+    PreviewProcessingRequest,
+    QAbstractSpinBox,
+    QApplication,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QEvent,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QPointF,
+    QPolygonF,
+    QPushButton,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+    _localized_text,
+    active_language,
+    append_shortcut_to_tooltip,
+    build_editor_toolbar,
+    build_visual_panel,
+    create_editor_action_icon,
+    create_editor_tool_icon,
+    normalize_via_search_mode,
+    retranslate_ui,
+    tool_shortcut_native_text,
+    tr,
+)
+from .host_contract import WidgetMixinHost
 
 
-class WidgetUiHelpersMixin:
+class WidgetUiHelpersMixin(WidgetMixinHost):
     def _build_visual_panel(self) -> QWidget:
         return build_visual_panel(self)
 
@@ -69,7 +124,7 @@ class WidgetUiHelpersMixin:
         if shift_clicked:
             self._cycle_editor_tool_mode(tool)
 
-    def _on_available_editor_tools_changed(self, available_tools: object) -> None:
+    def _on_available_editor_tools_changed(self, available_tools: Iterable[EditorTool] | None) -> None:
         available = set(available_tools) if available_tools is not None else set()
         if hasattr(self, "_tool_buttons"):
             for tool, button in self._tool_buttons.items():
@@ -245,7 +300,8 @@ class WidgetUiHelpersMixin:
             self.gamification_panel.set_ui_language(self._ui_language)
 
     def _retranslate_ui(self) -> None:
-        retranslate_ui(self)
+        # This mixin runs only as part of the assembled widget built by the UI builders.
+        retranslate_ui(cast("PolygonExtractionWidget", self))
 
     def _update_tool_button_texts(self) -> None:
         texts = {

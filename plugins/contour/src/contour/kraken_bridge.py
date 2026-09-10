@@ -129,7 +129,7 @@ class ContourKrakenSession:
         job_manifest: str | os.PathLike[str],
         result_manifest: str | os.PathLike[str],
         staging_root: str | os.PathLike[str],
-    ) -> "ContourKrakenSession":
+    ) -> ContourKrakenSession:
         root = _resolve_workspace_root(staging_root)
         manifest_path = _resolve_direct_child(root, job_manifest, must_exist=True)
         result_path = _resolve_direct_child(root, result_manifest, must_exist=False)
@@ -231,11 +231,14 @@ class ContourKrakenSession:
         """Install an explicit UI callback without coupling to project storage."""
 
         from PyQt6.QtGui import QAction, QKeySequence
-        from PyQt6.QtWidgets import QMainWindow, QMessageBox
+        from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox
 
         if not isinstance(window, QMainWindow):
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
-        menu = window.menuBar().addMenu("Kraken")
+        menu_bar = window.menuBar()
+        assert menu_bar is not None
+        menu = QMenu("Kraken", window)
+        menu_bar.addMenu(menu)
         action = QAction("Вернуть результаты в Kraken", window)
         action.setShortcut(QKeySequence(config_string("shortcuts", "return_to_kraken", "Ctrl+Shift+Return")))
 
@@ -264,7 +267,7 @@ class ContourKrakenSession:
 
         action.triggered.connect(return_results)
         menu.addAction(action)
-        setattr(window, "_kraken_return_action", action)
+        window.__dict__["_kraken_return_action"] = action
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,7 +281,7 @@ class ContourWorkspaceSession:
     result_manifest_path: Path
 
     @classmethod
-    def load(cls, path: str | os.PathLike[str]) -> "ContourWorkspaceSession":
+    def load(cls, path: str | os.PathLike[str]) -> ContourWorkspaceSession:
         raw = Path(path)
         if raw.is_symlink():
             raise KrakenBridgeError("Workspace context must not be a symbolic link")
@@ -343,11 +346,14 @@ class ContourWorkspaceSession:
 
     def attach_return_action(self, window: object) -> None:
         from PyQt6.QtGui import QAction, QKeySequence
-        from PyQt6.QtWidgets import QMainWindow, QMessageBox
+        from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox
 
         if not isinstance(window, QMainWindow):
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
-        menu = window.menuBar().addMenu("Kraken")
+        menu_bar = window.menuBar()
+        assert menu_bar is not None
+        menu = QMenu("Kraken", window)
+        menu_bar.addMenu(menu)
         action = QAction("Вернуть результаты в Kraken", window)
         action.setShortcut(QKeySequence(config_string("shortcuts", "return_to_kraken", "Ctrl+Shift+Return")))
 
@@ -396,7 +402,7 @@ class ContourWorkspaceSession:
 
         action.triggered.connect(return_results)
         menu.addAction(action)
-        setattr(window, "_kraken_return_action", action)
+        window.__dict__["_kraken_return_action"] = action
 
 
 def _validated_ui_arguments(arguments: Sequence[str]) -> list[str]:
@@ -423,7 +429,7 @@ def prepare_contour_launch(
     argv: Sequence[str],
     *,
     environ: Mapping[str, str] | None = None,
-) -> tuple[ContourKrakenSession | None, list[str]]:
+) -> tuple[ContourKrakenSession | ContourWorkspaceSession | None, list[str]]:
     """Extract bridge options and return the controlled Contour argv."""
 
     environment = os.environ if environ is None else environ

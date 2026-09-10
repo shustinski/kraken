@@ -6,9 +6,8 @@ from PyQt6.QtCore import QEvent, QPoint, Qt, QTimer
 from PyQt6.QtGui import QMouseEvent, QPixmap, QResizeEvent, QWheelEvent
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from ..ui.no_wheel_controls import NoWheelComboBox as QComboBox
-
 from ..adapters.qt.image_conversion import cv_to_qimage
+from ..ui.no_wheel_controls import NoWheelComboBox as QComboBox
 from .gradient_field_3d import (
     DEFAULT_AZIMUTH_DEG,
     DEFAULT_ELEVATION_DEG,
@@ -43,7 +42,7 @@ class GradientField3DWindow(QDialog):
         self._render_timer.setInterval(12)
         self._render_timer.timeout.connect(self._redraw)
         self._interacting = False
-        self._view: QLabel | None = None
+        self._view = QLabel()
         self._full_redraw_timer = QTimer(self)
         self._full_redraw_timer.setSingleShot(True)
         self._full_redraw_timer.setInterval(70)
@@ -64,7 +63,6 @@ class GradientField3DWindow(QDialog):
         top.addWidget(self._height_combo, 0)
         top.addWidget(self._hint, 1)
         layout.addLayout(top)
-        self._view = QLabel()
         self._view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._view.setMinimumSize(320, 240)
         self._view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -102,12 +100,10 @@ class GradientField3DWindow(QDialog):
         self.raise_()
         self.activateWindow()
 
-    def eventFilter(self, watched, event) -> bool:  # noqa: ANN001
+    def eventFilter(self, watched, event) -> bool:
         if watched is self._height_combo and event.type() == QEvent.Type.Wheel:
             view = self._height_combo.view()
-            if view is not None and view.isVisible():
-                return False
-            return True
+            return not (view is not None and view.isVisible())
         if watched is not self._view:
             return super().eventFilter(watched, event)
         if isinstance(event, QMouseEvent):

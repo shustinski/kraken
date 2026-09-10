@@ -1,164 +1,149 @@
 from __future__ import annotations
 
-import threading
-import time
 import tempfile
+import threading
+import time as time
 from collections import OrderedDict
 from pathlib import Path
 
-import cv2
+import cv2 as cv2
 import numpy as np
-from PyQt6.QtCore import (
-    QEvent,
-    QPointF,
-    QRectF,
-    QSignalBlocker,
-    QSize,
-    Qt,
-    QThreadPool,
-    QTimer,
-    pyqtSignal,
-)
-from PyQt6.QtGui import QBrush, QCloseEvent, QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QPolygonF
-from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QAbstractSpinBox,
-    QApplication,
-    QCheckBox,
-    QListView,
-    QColorDialog,
-    QComboBox,
-    QDialog,
-    QDoubleSpinBox,
-    QFileDialog,
-    QFormLayout,
-    QFrame,
-    QGroupBox,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QSpinBox,
-    QTabWidget,
-    QTextEdit,
-    QToolButton,
-    QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from PyQt6.QtCore import QEvent as QEvent
+from PyQt6.QtCore import QPointF as QPointF
+from PyQt6.QtCore import QRectF as QRectF
+from PyQt6.QtCore import QSignalBlocker as QSignalBlocker
+from PyQt6.QtCore import QSize, QThreadPool, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt as Qt
+from PyQt6.QtGui import QBrush as QBrush
+from PyQt6.QtGui import QCloseEvent, QIcon, QPixmap
+from PyQt6.QtGui import QColor as QColor
+from PyQt6.QtGui import QKeySequence as QKeySequence
+from PyQt6.QtGui import QPainter as QPainter
+from PyQt6.QtGui import QPen as QPen
+from PyQt6.QtGui import QPolygonF as QPolygonF
+from PyQt6.QtWidgets import QAbstractItemView as QAbstractItemView
+from PyQt6.QtWidgets import QAbstractSpinBox as QAbstractSpinBox
+from PyQt6.QtWidgets import QApplication as QApplication
+from PyQt6.QtWidgets import QCheckBox, QListView, QMenu, QWidget
+from PyQt6.QtWidgets import QColorDialog as QColorDialog
+from PyQt6.QtWidgets import QComboBox as QComboBox
+from PyQt6.QtWidgets import QDialog as QDialog
+from PyQt6.QtWidgets import QDoubleSpinBox as QDoubleSpinBox
+from PyQt6.QtWidgets import QFileDialog as QFileDialog
+from PyQt6.QtWidgets import QFormLayout as QFormLayout
+from PyQt6.QtWidgets import QFrame as QFrame
+from PyQt6.QtWidgets import QGroupBox as QGroupBox
+from PyQt6.QtWidgets import QHBoxLayout as QHBoxLayout
+from PyQt6.QtWidgets import QInputDialog as QInputDialog
+from PyQt6.QtWidgets import QLabel as QLabel
+from PyQt6.QtWidgets import QListWidget as QListWidget
+from PyQt6.QtWidgets import QListWidgetItem as QListWidgetItem
+from PyQt6.QtWidgets import QMessageBox as QMessageBox
+from PyQt6.QtWidgets import QPushButton as QPushButton
+from PyQt6.QtWidgets import QScrollArea as QScrollArea
+from PyQt6.QtWidgets import QSpinBox as QSpinBox
+from PyQt6.QtWidgets import QTabWidget as QTabWidget
+from PyQt6.QtWidgets import QTextEdit as QTextEdit
+from PyQt6.QtWidgets import QToolButton as QToolButton
+from PyQt6.QtWidgets import QTreeWidgetItem as QTreeWidgetItem
+from PyQt6.QtWidgets import QVBoxLayout as QVBoxLayout
 
 from .adapters.qt.antialias_cif import AntialiasCifSignals
-from .adapters.qt.image_conversion import cv_to_qimage
-from .adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
-from .adapters.qt.thumbnails import ThumbnailLoadRunnable
-from .application.dto import PersistedPaths
+from .adapters.qt.image_conversion import cv_to_qimage as cv_to_qimage
+from .adapters.qt.preview import AutoTuneRunnable as AutoTuneRunnable
+from .adapters.qt.preview import PreparedImageRunnable as PreparedImageRunnable
+from .adapters.qt.preview import PreviewProcessingRunnable as PreviewProcessingRunnable
+from .adapters.qt.thumbnails import ThumbnailLoadRunnable as ThumbnailLoadRunnable
+from .application.dto import PersistedPaths as PersistedPaths
 from .application.extraction_profiles import default_contour_settings_profiles
-from .application.frame_asset_sync import (
-    build_frame_asset_sets,
-    build_image_cif_matching_report,
-    classify_vector_side_status,
-    index_cif_file_paths,
-)
-from .application.frame_layers import (
-    build_additional_layer_frame_map,
-    build_base_frame_number_map,
-    build_base_frame_records,
-)
+from .application.frame_asset_sync import build_frame_asset_sets as build_frame_asset_sets
+from .application.frame_asset_sync import build_image_cif_matching_report as build_image_cif_matching_report
+from .application.frame_asset_sync import classify_vector_side_status as classify_vector_side_status
+from .application.frame_asset_sync import index_cif_file_paths as index_cif_file_paths
+from .application.frame_layers import build_additional_layer_frame_map as build_additional_layer_frame_map
+from .application.frame_layers import build_base_frame_number_map as build_base_frame_number_map
+from .application.frame_layers import build_base_frame_records as build_base_frame_records
+from .application.processing import VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG as VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
+from .application.processing import VIA_SEARCH_MODE_HEURISTIC as VIA_SEARCH_MODE_HEURISTIC
+from .application.processing import VIA_SEARCH_MODE_TEMPLATE as VIA_SEARCH_MODE_TEMPLATE
+from .application.processing import VIA_SIZE_MODE_FIXED as VIA_SIZE_MODE_FIXED
+from .application.processing import ContourExtractionSettings as ContourExtractionSettings
+from .application.processing import DisplaySettings
+from .application.processing import ImageProcessingState as ImageProcessingState
+from .application.processing import SaveOptions as SaveOptions
 from .application.processing import (
-    VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
-    VIA_SEARCH_MODE_HEURISTIC,
-    VIA_SEARCH_MODE_TEMPLATE,
-    VIA_SIZE_MODE_FIXED,
-    ContourExtractionSettings,
-    DisplaySettings,
-    ImageProcessingState,
-    SaveOptions,
-    _normalize_bright_via_metal_constraint_mode,
-    normalize_algorithm_backend,
-    normalize_recognition_mode,
-    normalize_via_search_mode,
-    normalize_via_size_mode,
+    _normalize_bright_via_metal_constraint_mode as _normalize_bright_via_metal_constraint_mode,
 )
+from .application.processing import normalize_algorithm_backend as normalize_algorithm_backend
+from .application.processing import normalize_recognition_mode as normalize_recognition_mode
+from .application.processing import normalize_via_search_mode as normalize_via_search_mode
+from .application.processing import normalize_via_size_mode as normalize_via_size_mode
 from .application.services import (
     BatchController,
-    BatchStartRequest,
     DirectoryScanController,
     PathSettingsController,
     VectorIndexController,
     WorkspaceSession,
-    export_frame_to_dataset,
-    load_pipeline_config_from_path,
-    save_pipeline_config_to_path,
 )
+from .application.services import BatchStartRequest as BatchStartRequest
+from .application.services import export_frame_to_dataset as export_frame_to_dataset
+from .application.services import load_pipeline_config_from_path as load_pipeline_config_from_path
+from .application.services import save_pipeline_config_to_path as save_pipeline_config_to_path
+from .application.transition_save_guard import TransitionPromptChoice as TransitionPromptChoice
 from .application.transition_save_guard import (
-    TransitionPromptChoice,
-    navigation_allowed_after_autosave_attempt,
-    navigation_allowed_after_prompt,
+    navigation_allowed_after_autosave_attempt as navigation_allowed_after_autosave_attempt,
 )
-from .application.use_cases import (
-    AutoTuneResult,
-    PreparedImageRequest,
-    PreviewProcessingRequest,
-    build_prepared_image_signature,
-    build_preview_request_signature,
-    index_cif_directory,
-)
-from .application.vector_geometry_postprocess import VectorGeometrySettings
+from .application.transition_save_guard import navigation_allowed_after_prompt as navigation_allowed_after_prompt
+from .application.use_cases import AutoTuneResult as AutoTuneResult
+from .application.use_cases import PreparedImageRequest, PreviewProcessingRequest
+from .application.use_cases import build_prepared_image_signature as build_prepared_image_signature
+from .application.use_cases import build_preview_request_signature as build_preview_request_signature
+from .application.use_cases import index_cif_directory as index_cif_directory
+from .application.vector_geometry_postprocess import VectorGeometrySettings as VectorGeometrySettings
 from .batch_processor import BatchProcessor
 from .domain import PolygonData
-from .graphics.editor_hotkeys import (
-    append_shortcut_to_tooltip,
-    build_editor_hotkeys_plain_text,
-    tool_shortcut_native_text,
-)
-from .graphics_view import EditorTool, PolygonCreateMode
 from .gamification import GamificationProfileService, GamificationService
-from .i18n import active_language, tr
+from .graphics.editor_hotkeys import append_shortcut_to_tooltip as append_shortcut_to_tooltip
+from .graphics.editor_hotkeys import build_editor_hotkeys_plain_text as build_editor_hotkeys_plain_text
+from .graphics.editor_hotkeys import tool_shortcut_native_text as tool_shortcut_native_text
+from .graphics_view import EditorTool as EditorTool
+from .graphics_view import PolygonCreateMode as PolygonCreateMode
+from .i18n import active_language
+from .i18n import tr as tr
 from .infrastructure import (
     WidgetDisplaySettingsStore,
     WidgetGamificationProfileStore,
+    WidgetMetalPresetSettingsStore,
     WidgetPathSettingsStore,
     WidgetSessionSettingsStore,
-    WidgetMetalPresetSettingsStore,
     WidgetViaPresetSettingsStore,
 )
-from .pipeline import (
-    PreprocessingPipeline,
-    available_operations,
-    get_choice_display_label,
-    get_operation_descriptor,
-    get_operation_display_name,
-    get_parameter_display_label,
-)
-from .serializers import load_polygons_vector, save_polygons_vector, save_result_bundle
-from .ui.builders import (
-    build_display_tab,
-    build_editor_toolbar,
-    build_extraction_tab,
-    build_files_tab,
-    build_help_tab,
-    build_path_panel,
-    build_paths_tab,
-    build_pipeline_tab,
-    build_tabs,
-    build_ui,
-    build_visual_panel,
-)
-from .ui.editor_icons import (
-    TOOLBAR_BUTTON_SIZE_PX,
-    TOOLBAR_ICON_CANVAS_SIZE_PX,
-    TOOLBAR_ICON_SIZE_PX,
-    create_editor_action_icon,
-    create_editor_tool_icon,
-)
+from .pipeline import PreprocessingPipeline
+from .pipeline import available_operations as available_operations
+from .pipeline import get_choice_display_label as get_choice_display_label
+from .pipeline import get_operation_descriptor as get_operation_descriptor
+from .pipeline import get_operation_display_name as get_operation_display_name
+from .pipeline import get_parameter_display_label as get_parameter_display_label
+from .serializers import load_polygons_vector as load_polygons_vector
+from .serializers import save_polygons_vector as save_polygons_vector
+from .serializers import save_result_bundle as save_result_bundle
+from .ui.builders import build_display_tab as build_display_tab
+from .ui.builders import build_editor_toolbar as build_editor_toolbar
+from .ui.builders import build_extraction_tab as build_extraction_tab
+from .ui.builders import build_files_tab as build_files_tab
+from .ui.builders import build_help_tab as build_help_tab
+from .ui.builders import build_path_panel as build_path_panel
+from .ui.builders import build_paths_tab as build_paths_tab
+from .ui.builders import build_pipeline_tab as build_pipeline_tab
+from .ui.builders import build_tabs as build_tabs
+from .ui.builders import build_ui as build_ui
+from .ui.builders import build_visual_panel as build_visual_panel
+from .ui.editor_icons import TOOLBAR_BUTTON_SIZE_PX as TOOLBAR_BUTTON_SIZE_PX
+from .ui.editor_icons import TOOLBAR_ICON_CANVAS_SIZE_PX as TOOLBAR_ICON_CANVAS_SIZE_PX
+from .ui.editor_icons import TOOLBAR_ICON_SIZE_PX as TOOLBAR_ICON_SIZE_PX
+from .ui.editor_icons import create_editor_action_icon as create_editor_action_icon
+from .ui.editor_icons import create_editor_tool_icon as create_editor_tool_icon
 from .ui.frame_path_list_model import FramePathFilterProxyModel, FramePathListModel
-from .ui.item_status_painting import FRAME_STATUS_ROLE, paint_image_row_item, paint_vector_row_item
-from .ui.large_dataset import LARGE_FRAME_COUNT_THRESHOLD
 from .ui.i18n_content import (
     EDITOR_ACTION_TOOLTIPS,
     EDITOR_TOOL_TOOLTIPS,
@@ -171,15 +156,19 @@ from .ui.i18n_content import (
     LocalizedTextMap,
     _localized_text,
 )
-from .ui.retranslate import retranslate_ui
-from .ui.styles import COMPACT_UI_STYLE
-from .ui.via_presets import (
-    blurred_via_preset_payload,
-    built_in_via_presets,
-    noisy_traces_via_preset_payload,
-)
-from .utils import is_image_path, is_visible_image_path, load_image_color, scan_image_files
-
+from .ui.item_status_painting import FRAME_STATUS_ROLE as FRAME_STATUS_ROLE
+from .ui.item_status_painting import paint_image_row_item as paint_image_row_item
+from .ui.item_status_painting import paint_vector_row_item as paint_vector_row_item
+from .ui.large_dataset import LARGE_FRAME_COUNT_THRESHOLD as LARGE_FRAME_COUNT_THRESHOLD
+from .ui.retranslate import retranslate_ui as retranslate_ui
+from .ui.styles import COMPACT_UI_STYLE as COMPACT_UI_STYLE
+from .ui.via_presets import blurred_via_preset_payload as blurred_via_preset_payload
+from .ui.via_presets import built_in_via_presets as built_in_via_presets
+from .ui.via_presets import noisy_traces_via_preset_payload as noisy_traces_via_preset_payload
+from .utils import is_image_path as is_image_path
+from .utils import is_visible_image_path as is_visible_image_path
+from .utils import load_image_color as load_image_color
+from .utils import scan_image_files as scan_image_files
 from .widget_parts import (
     WidgetDebugMixin,
     WidgetExtractionControlsMixin,
@@ -508,7 +497,9 @@ class PolygonExtractionWidget(
         self.set_ui_language(self._ui_language)
         self._update_extra_layers_enabled_state()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent | None) -> None:
+        if event is None:
+            return
         self._closing = True
         frame_switch_profile = getattr(self, "_frame_switch_profile", None)
         if frame_switch_profile is not None:

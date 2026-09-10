@@ -11,11 +11,15 @@ Ground truth, frame ids, and filenames are never consulted.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 
 from ...utils import ensure_binary_mask
+
+if TYPE_CHECKING:
+    from .marker_consolidation import ConsolidationEvidence
 
 _MAX_HALF_EXTENT_PX = 18.0
 _PROFILE_SAMPLES = 37
@@ -84,18 +88,18 @@ class BandInferenceStats:
     wide_dropped_for_separator: int = 0
 
 
-def evidence_from_consolidation(source: object) -> BandEvidence:
+def evidence_from_consolidation(source: ConsolidationEvidence) -> BandEvidence:
     return BandEvidence(
-        intensity=np.asarray(getattr(source, "intensity")),
-        ridge_confidence=np.asarray(getattr(source, "ridge_confidence")),
-        ridge_orientation=np.asarray(getattr(source, "ridge_orientation")),
-        structure_orientation=np.asarray(getattr(source, "structure_orientation")),
-        coherence=np.asarray(getattr(source, "coherence")),
-        persistent_edge=np.asarray(getattr(source, "persistent_edge")),
-        magnitude=np.asarray(getattr(source, "magnitude")),
-        rim_response=np.asarray(getattr(source, "rim_response")),
-        gradient_x=np.asarray(getattr(source, "gradient_x")),
-        gradient_y=np.asarray(getattr(source, "gradient_y")),
+        intensity=np.asarray(source.intensity),
+        ridge_confidence=np.asarray(source.ridge_confidence),
+        ridge_orientation=np.asarray(source.ridge_orientation),
+        structure_orientation=np.asarray(source.structure_orientation),
+        coherence=np.asarray(source.coherence),
+        persistent_edge=np.asarray(source.persistent_edge),
+        magnitude=np.asarray(source.magnitude),
+        rim_response=np.asarray(source.rim_response),
+        gradient_x=np.asarray(source.gradient_x),
+        gradient_y=np.asarray(source.gradient_y),
     )
 
 
@@ -243,7 +247,7 @@ def has_separating_boundary(
         score = band_score(profile)
     wall = score * (1.0 - _unit(profile.ridge))
     if starts.size >= 2:
-        for start, end, next_start in zip(starts, ends, starts[1:]):
+        for start, end, next_start in zip(starts, ends, starts[1:], strict=False):
             width = int(next_start) - int(end)
             if width < 4:
                 continue
@@ -269,9 +273,9 @@ def has_separating_boundary(
     flank = 0.5 * (
         float(profile.intensity[left_index]) + float(profile.intensity[right_index])
     )
-    gap = float(np.min(profile.intensity[inner]))
+    gap_intensity = float(np.min(profile.intensity[inner]))
     local_std = max(float(np.std(profile.intensity[inner])), 4.0)
-    return (flank - gap) >= _SEPARATOR_RELATIVE * local_std + 8.0
+    return (flank - gap_intensity) >= _SEPARATOR_RELATIVE * local_std + 8.0
 
 
 def region_has_internal_separator(region: np.ndarray, evidence: BandEvidence) -> bool:
@@ -286,7 +290,7 @@ def region_has_internal_separator(region: np.ndarray, evidence: BandEvidence) ->
     interior_edge = evidence.persistent_edge[eroded > 0]
     local = float(np.median(interior_edge))
     spread = max(float(np.percentile(interior_edge, 80.0) - local), 1e-3)
-    walls = np.zeros(binary.shape, dtype=np.uint8)
+    walls: np.ndarray = np.zeros(binary.shape, dtype=np.uint8)
     walls[eroded > 0] = np.where(
         evidence.persistent_edge[eroded > 0] >= local + 1.8 * spread,
         255,
@@ -347,7 +351,7 @@ def group_ridges_by_conductor_band(
     samples = dimmed.copy()
     accepted_view = dimmed.copy()
     rejected_view = dimmed.copy()
-    bands: list[tuple[int, BoundaryPair, TransverseProfile]] = []
+    bands: list[tuple[int, BoundaryPair | None, TransverseProfile]] = []
     for fragment_id in ids:
         row = float(centroids_y[int(fragment_id)])
         col = float(centroids_x[int(fragment_id)])
@@ -441,9 +445,8 @@ def _same_conductor_band(
         pass
     elif pair_b is not None:
         across_b = -dx * profile_b.normal_x + -dy * profile_b.normal_y
-        if not (pair_b.left_offset - 1.0 <= across_b <= pair_b.right_offset + 1.0):
-            if abs(across) > 10.0:
-                return False
+        if not (pair_b.left_offset - 1.0 <= across_b <= pair_b.right_offset + 1.0) and abs(across) > 10.0:
+            return False
     elif abs(across) > 10.0:
         return False
     return not has_separating_boundary(profile_a, min(0.0, across), max(0.0, across))
@@ -475,7 +478,7 @@ def corridor_has_transverse_separator(
 ) -> bool:
     """Veto only a boundary that crosses the corridor, not a parallel rim."""
 
-    length = max(int(round(np.hypot(col_b - col_a, row_b - row_a))), 1)
+    length = max(round(np.hypot(col_b - col_a, row_b - row_a)), 1)
     if length <= 3:
         return False
     rows = np.linspace(row_a, row_b, length + 1)
@@ -486,7 +489,7 @@ def corridor_has_transverse_separator(
     dir_x = dx / norm
     dir_y = dy / norm
     height, width = evidence.intensity.shape
-    trim = max(1, int(round(0.15 * (length + 1))))
+    trim = max(1, round(0.15 * (length + 1)))
     ys = np.clip(np.round(rows).astype(np.int32), 0, height - 1)[trim:-trim]
     xs = np.clip(np.round(cols).astype(np.int32), 0, width - 1)[trim:-trim]
     if ys.size == 0:
@@ -671,12 +674,12 @@ def _draw_band_tick(
     color: tuple[int, int, int],
 ) -> None:
     left = (
-        int(round(profile.origin_col + pair.left_offset * profile.normal_x)),
-        int(round(profile.origin_row + pair.left_offset * profile.normal_y)),
+        round(profile.origin_col + pair.left_offset * profile.normal_x),
+        round(profile.origin_row + pair.left_offset * profile.normal_y),
     )
     right = (
-        int(round(profile.origin_col + pair.right_offset * profile.normal_x)),
-        int(round(profile.origin_row + pair.right_offset * profile.normal_y)),
+        round(profile.origin_col + pair.right_offset * profile.normal_x),
+        round(profile.origin_row + pair.right_offset * profile.normal_y),
     )
     cv2.line(overlay, left, right, color, 1, lineType=cv2.LINE_AA)
     cv2.circle(overlay, left, 2, color, -1, lineType=cv2.LINE_AA)
@@ -689,12 +692,12 @@ def _draw_sample_line(
     color: tuple[int, int, int],
 ) -> None:
     start = (
-        int(round(profile.origin_col + float(profile.offsets[0]) * profile.normal_x)),
-        int(round(profile.origin_row + float(profile.offsets[0]) * profile.normal_y)),
+        round(profile.origin_col + float(profile.offsets[0]) * profile.normal_x),
+        round(profile.origin_row + float(profile.offsets[0]) * profile.normal_y),
     )
     end = (
-        int(round(profile.origin_col + float(profile.offsets[-1]) * profile.normal_x)),
-        int(round(profile.origin_row + float(profile.offsets[-1]) * profile.normal_y)),
+        round(profile.origin_col + float(profile.offsets[-1]) * profile.normal_x),
+        round(profile.origin_row + float(profile.offsets[-1]) * profile.normal_y),
     )
     cv2.line(overlay, start, end, color, 1, lineType=cv2.LINE_AA)
 
@@ -705,6 +708,6 @@ def _draw_group_line(
     centroid_b: np.ndarray,
     color: tuple[int, int, int],
 ) -> None:
-    a = (int(round(centroid_a[0])), int(round(centroid_a[1])))
-    b = (int(round(centroid_b[0])), int(round(centroid_b[1])))
+    a = (round(centroid_a[0]), round(centroid_a[1]))
+    b = (round(centroid_b[0]), round(centroid_b[1]))
     cv2.line(overlay, a, b, color, 1, lineType=cv2.LINE_AA)

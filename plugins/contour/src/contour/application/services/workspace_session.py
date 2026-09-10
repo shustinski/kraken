@@ -52,7 +52,7 @@ def _normalize_polygon_points(points: list[tuple[float, float]]) -> tuple[tuple[
         if isinstance(x_coord, int) and isinstance(y_coord, int):
             normalized.append((x_coord * scale, y_coord * scale))
             continue
-        normalized.append((int(round(float(x_coord) * scale)), int(round(float(y_coord) * scale))))
+        normalized.append((round(float(x_coord) * scale), round(float(y_coord) * scale)))
     return tuple(normalized)
 
 
@@ -222,9 +222,7 @@ class WorkspaceSession:
                 if key not in retained:
                     self._state_cache.pop(key, None)
         self._cleared_vector_paths = {path for path in self._cleared_vector_paths if path in retained}
-        if not self._image_paths:
-            self.clear_current_selection()
-        elif self._current_image_path not in self._image_paths:
+        if not self._image_paths or self._current_image_path not in self._image_paths:
             self.clear_current_selection()
         return list(self._image_paths)
 

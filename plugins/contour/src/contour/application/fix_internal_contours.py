@@ -48,7 +48,7 @@ class InternalContourFixStats:
 
 def _hole_center(point_bbox: tuple[int, int, int, int]) -> tuple[int, int]:
     left, top, width, height = point_bbox
-    return int(round(left + width / 2.0)), int(round(top + height / 2.0))
+    return round(left + width / 2.0), round(top + height / 2.0)
 
 
 def _mask_sample(mask: np.ndarray, left: int, top: int, x_coord: int, y_coord: int) -> int:
@@ -182,19 +182,22 @@ def fix_internal_contour_display(
     fixed: list[PolygonData] = []
     changed = False
     for polygon in polygons:
-        if polygon.id in issue_outer_ids and not polygon.is_hole:
-            if integer_points(polygon.cif_paint_ring) != integer_points(polygon.points):
-                clone = polygon.clone()
-                clone.cif_paint_ring = list(polygon.points)
-                fixed.append(clone)
-                changed = True
-                continue
+        if (
+            polygon.id in issue_outer_ids
+            and not polygon.is_hole
+            and integer_points(polygon.cif_paint_ring) != integer_points(polygon.points)
+        ):
+            clone = polygon.clone()
+            clone.cif_paint_ring = list(polygon.points)
+            fixed.append(clone)
+            changed = True
+            continue
         fixed.append(polygon.clone())
     return fixed, analysis, changed
 
 
 def should_use_cutout_display_for_keyhole_family(
-    authored_ring: list[tuple[int, int]],
+    authored_ring: list[tuple[float, float]],
     outer_points: list[tuple[float, float]],
     hole_rings: list[list[tuple[float, float]]],
     image_size: tuple[int, int],
@@ -237,9 +240,7 @@ def should_use_cutout_display_for_keyhole_family(
                 bbox=hole_bbox,
             )
         )
-    if _is_klayout_keyhole_slot(outer, holes, authored_ring=[(float(x), float(y)) for x, y in authored_ring]):
-        return False
-    return True
+    return not _is_klayout_keyhole_slot(outer, holes, authored_ring=[(float(x), float(y)) for x, y in authored_ring])
 
 
 def _metrics_for_ring(points: list[tuple[float, float]]) -> tuple[float, float, tuple[int, int, int, int]]:

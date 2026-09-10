@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import InitVar, dataclass, field
 from typing import Any
 
@@ -7,7 +8,7 @@ Point = tuple[float, float]
 
 
 def integer_coord(value: float) -> int:
-    return int(round(float(value)))
+    return round(float(value))
 
 
 def _coord_is_integer(value: object) -> bool:
@@ -19,7 +20,7 @@ def _coord_is_integer(value: object) -> bool:
     return False
 
 
-def _points_are_integer(points: list[Point]) -> bool:
+def _points_are_integer(points: Sequence[Point]) -> bool:
     if not points:
         return True
     return all(_coord_is_integer(x_coord) and _coord_is_integer(y_coord) for x_coord, y_coord in points)
@@ -32,7 +33,8 @@ def integer_point(point: Point) -> tuple[int, int]:
     return integer_coord(x_coord), integer_coord(y_coord)
 
 
-def integer_points(points: list[Point]) -> list[tuple[int, int]]:
+def integer_points(points: Sequence[Point]) -> list[Point]:
+    """Return fresh integer coordinates in the mutable domain point-list format."""
     if _points_are_integer(points):
         return [(int(x_coord), int(y_coord)) for x_coord, y_coord in points]
     return [integer_point(point) for point in points]
@@ -68,7 +70,9 @@ class PolygonData:
                 current = object.__getattribute__(self, "points")
             except AttributeError:
                 current = None
-            if current is not None and list(current) == list(value):
+            if current is not None and not isinstance(value, Iterable):
+                raise TypeError("Polygon points must be iterable")
+            if current is not None and isinstance(value, Iterable) and list(current) == list(value):
                 if current is not value:
                     object.__setattr__(self, "points", list(value))
                 return

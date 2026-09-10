@@ -11,10 +11,12 @@ from time import perf_counter
 
 from .profiling import (
     frame_switch_idle_polls,
-    frame_switch_profiling_enabled,
     frame_switch_top_lines,
     try_disable_profiler,
     try_enable_profiler,
+)
+from .profiling import (
+    frame_switch_profiling_enabled as frame_switch_profiling_enabled,
 )
 
 MAX_IDLE_POLLS = frame_switch_idle_polls()

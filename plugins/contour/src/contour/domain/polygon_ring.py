@@ -121,7 +121,7 @@ def closed_ring_has_repeated_vertex(points: list[tuple[float, float]]) -> bool:
     seen: set[tuple[int, int]] = set()
     inv_eps = 1.0 / _POINT_EQ_EPS
     for x_coord, y_coord in open_points:
-        key = (int(round(float(x_coord) * inv_eps)), int(round(float(y_coord) * inv_eps)))
+        key = (round(float(x_coord) * inv_eps), round(float(y_coord) * inv_eps))
         if key in seen:
             return True
         seen.add(key)
@@ -169,11 +169,14 @@ def is_valid_closed_polygon_ring(points: list[tuple[float, float]]) -> bool:
     inv_eps = 1.0 / _POINT_EQ_EPS
     buckets: dict[tuple[int, int], list[int]] = {}
     for index, (x_coord, y_coord) in enumerate(points):
-        key = (int(round(x_coord * inv_eps)), int(round(y_coord * inv_eps)))
+        key = (round(x_coord * inv_eps), round(y_coord * inv_eps))
         for other_index in buckets.get(key, ()):
-            if _point_equal(points[index], points[other_index]):
-                if other_index + 1 != index and not (other_index == 0 and index == n - 1):
-                    return False
+            if (
+                _point_equal(points[index], points[other_index])
+                and other_index + 1 != index
+                and not (other_index == 0 and index == n - 1)
+            ):
+                return False
         buckets.setdefault(key, []).append(index)
     for ei in range(n):
         a, b = points[ei], points[(ei + 1) % n]
@@ -231,9 +234,8 @@ def is_valid_closed_polygon_edge_move(points: list[tuple[float, float]], edge_in
     start_idx = edge_index
     end_idx = (edge_index + 1) % n
     moved_vertices = {start_idx, end_idx}
-    if n > 3 and _point_equal(points[0], points[-1]):
-        if 0 in moved_vertices or (n - 1) in moved_vertices:
-            moved_vertices.update({0, n - 1})
+    if n > 3 and _point_equal(points[0], points[-1]) and (0 in moved_vertices or (n - 1) in moved_vertices):
+        moved_vertices.update({0, n - 1})
     for other_idx, other in enumerate(points):
         if other_idx in moved_vertices:
             continue

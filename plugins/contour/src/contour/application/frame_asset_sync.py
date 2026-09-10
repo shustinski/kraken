@@ -6,10 +6,10 @@ implemented in ``PolygonExtractionWidget``.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
-import os
 from pathlib import Path
 
 from kraken_core.theme import normalize_theme

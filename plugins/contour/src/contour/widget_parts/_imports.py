@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import multiprocessing as mp
 import threading
 import time
-import multiprocessing as mp
 from pathlib import Path
 
 import cv2
@@ -53,18 +53,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..ui.no_wheel_controls import (
-    NoWheelComboBox as QComboBox,
-    NoWheelDoubleSpinBox as QDoubleSpinBox,
-    NoWheelSpinBox as QSpinBox,
-)
-
 from ..adapters.qt.antialias_cif import (
     AntialiasCifItemResult,
     AntialiasCifJobSummary,
     AntialiasCifRunnable,
     AntialiasCifWorkItem,
 )
+from ..adapters.qt.editor_display import EditorDisplayRunnable
 from ..adapters.qt.fix_internal_contours_cif import (
     FixInternalContoursCifItemResult,
     FixInternalContoursCifJobSummary,
@@ -72,14 +67,13 @@ from ..adapters.qt.fix_internal_contours_cif import (
     FixInternalContoursCifWorkItem,
     _fix_internal_contours_work_item,
 )
-from ..application.fix_internal_contours import InternalContourFixStats
-from ..adapters.qt.image_conversion import cv_to_qimage
-from ..adapters.qt.editor_display import EditorDisplayRunnable
 from ..adapters.qt.frame_load import FrameLoadPayload, FrameLoadRunnable, GeometryValidationRunnable
+from ..adapters.qt.image_conversion import cv_to_qimage
 from ..adapters.qt.preview import AutoTuneRunnable, PreparedImageRunnable, PreviewProcessingRunnable
 from ..adapters.qt.thumbnails import ThumbnailLoadRunnable
 from ..application.dto import PersistedPaths
 from ..application.extraction_profiles import default_contour_settings_profiles
+from ..application.fix_internal_contours import InternalContourFixStats
 from ..application.frame_asset_sync import (
     build_frame_asset_sets,
     build_image_cif_matching_report,
@@ -87,13 +81,13 @@ from ..application.frame_asset_sync import (
     index_cif_file_paths,
 )
 from ..application.frame_drop import classify_dropped_paths
-from ..application.frame_prefetch import neighborhood_indices
 from ..application.frame_layers import (
     build_additional_layer_frame_map,
     build_base_frame_number_map,
     build_base_frame_records,
 )
 from ..application.frame_lod import PyramidFrameStore
+from ..application.frame_prefetch import neighborhood_indices
 from ..application.polygon_antialiasing import antialias_polygons
 from ..application.processing import (
     VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
@@ -147,12 +141,6 @@ from ..application.vector_geometry_postprocess import (
 from ..batch_processor import BatchProcessor
 from ..domain import PolygonData
 from ..domain.polygon_offset import offset_conductor_polygons
-from ..graphics.editor_hotkeys import (
-    append_shortcut_to_tooltip,
-    build_editor_hotkeys_plain_text,
-    tool_shortcut_native_text,
-)
-from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
 from ..gamification import (
     CorrectionEvent,
     CorrectionType,
@@ -161,13 +149,19 @@ from ..gamification import (
     RewardEventType,
 )
 from ..gamification.ui import GamificationPanel
+from ..graphics.editor_hotkeys import (
+    append_shortcut_to_tooltip,
+    build_editor_hotkeys_plain_text,
+    tool_shortcut_native_text,
+)
+from ..graphics_view import BrushMode, DeleteVertexMode, EditorTool, PolygonCreateMode
 from ..i18n import active_language, tr
 from ..infrastructure import (
     WidgetDisplaySettingsStore,
     WidgetGamificationProfileStore,
+    WidgetMetalPresetSettingsStore,
     WidgetPathSettingsStore,
     WidgetSessionSettingsStore,
-    WidgetMetalPresetSettingsStore,
     WidgetViaPresetSettingsStore,
 )
 from ..pipeline import (
@@ -200,18 +194,6 @@ from ..ui.editor_icons import (
     create_editor_tool_icon,
 )
 from ..ui.frame_path_list_model import FramePathFilterProxyModel, FramePathListModel
-from ..ui.item_status_painting import FRAME_STATUS_ROLE, paint_image_row_item, paint_vector_row_item
-from ..ui.large_dataset import (
-    ASSET_FILTER_LISTS_MAX_FRAMES,
-    LARGE_FRAME_COUNT_THRESHOLD,
-    THUMBNAIL_APPLY_INTERVAL_MS,
-    THUMBNAIL_ICONS_APPLY_PER_TICK,
-    THUMBNAIL_MAX_ACTIVE_DECODES,
-    THUMBNAIL_RADIAL_LOADS_PER_PUMP,
-    THUMBNAIL_RADIAL_PUMP_INTERVAL_MS,
-    THUMBNAIL_SCROLL_SETTLE_MS,
-    THUMBNAIL_VISIBLE_LOAD_DEBOUNCE_MS,
-)
 from ..ui.i18n_content import (
     EDITOR_ACTION_TOOLTIPS,
     EDITOR_TOOL_TOOLTIPS,
@@ -224,9 +206,30 @@ from ..ui.i18n_content import (
     LocalizedTextMap,
     _localized_text,
 )
+from ..ui.item_status_painting import FRAME_STATUS_ROLE, paint_image_row_item, paint_vector_row_item
+from ..ui.large_dataset import (
+    ASSET_FILTER_LISTS_MAX_FRAMES,
+    LARGE_FRAME_COUNT_THRESHOLD,
+    THUMBNAIL_APPLY_INTERVAL_MS,
+    THUMBNAIL_ICONS_APPLY_PER_TICK,
+    THUMBNAIL_MAX_ACTIVE_DECODES,
+    THUMBNAIL_RADIAL_LOADS_PER_PUMP,
+    THUMBNAIL_RADIAL_PUMP_INTERVAL_MS,
+    THUMBNAIL_SCROLL_SETTLE_MS,
+    THUMBNAIL_VISIBLE_LOAD_DEBOUNCE_MS,
+)
+from ..ui.metal_presets import built_in_metal_presets, metal_preset_table
+from ..ui.no_wheel_controls import (
+    NoWheelComboBox as QComboBox,
+)
+from ..ui.no_wheel_controls import (
+    NoWheelDoubleSpinBox as QDoubleSpinBox,
+)
+from ..ui.no_wheel_controls import (
+    NoWheelSpinBox as QSpinBox,
+)
 from ..ui.retranslate import retranslate_ui
 from ..ui.styles import COMPACT_UI_STYLE, RECOGNITION_SCENE_FRAME_STYLE
-from ..ui.metal_presets import built_in_metal_presets, metal_preset_table
 from ..ui.via_presets import (
     blurred_via_preset_payload,
     built_in_via_presets,
@@ -240,4 +243,219 @@ from ..utils import (
     scan_image_files,
 )
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = [
+    "ASSET_FILTER_LISTS_MAX_FRAMES",
+    "COMPACT_UI_STYLE",
+    "EDITOR_ACTION_TOOLTIPS",
+    "EDITOR_TOOL_TOOLTIPS",
+    "EXTRACTION_HELP_TEXTS",
+    "FRAME_STATUS_ROLE",
+    "GENERAL_CONTROL_TOOLTIPS",
+    "LARGE_FRAME_COUNT_THRESHOLD",
+    "PIPELINE_CONTROL_TOOLTIPS",
+    "PIPELINE_OPERATION_GROUPS",
+    "PIPELINE_OPERATION_HELP_TEXTS",
+    "PIPELINE_PARAMETER_HELP_TEXTS",
+    "RECOGNITION_SCENE_FRAME_STYLE",
+    "THUMBNAIL_APPLY_INTERVAL_MS",
+    "THUMBNAIL_ICONS_APPLY_PER_TICK",
+    "THUMBNAIL_MAX_ACTIVE_DECODES",
+    "THUMBNAIL_RADIAL_LOADS_PER_PUMP",
+    "THUMBNAIL_RADIAL_PUMP_INTERVAL_MS",
+    "THUMBNAIL_SCROLL_SETTLE_MS",
+    "THUMBNAIL_VISIBLE_LOAD_DEBOUNCE_MS",
+    "TOOLBAR_BUTTON_SIZE_PX",
+    "TOOLBAR_ICON_CANVAS_SIZE_PX",
+    "TOOLBAR_ICON_SIZE_PX",
+    "VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG",
+    "VIA_SEARCH_MODE_HEURISTIC",
+    "VIA_SEARCH_MODE_HYBRID",
+    "VIA_SEARCH_MODE_TEMPLATE",
+    "VIA_SIZE_MODE_FIXED",
+    "VIA_SIZE_MODE_RANGE",
+    "AntialiasCifItemResult",
+    "AntialiasCifJobSummary",
+    "AntialiasCifRunnable",
+    "AntialiasCifWorkItem",
+    "AutoTuneResult",
+    "AutoTuneRunnable",
+    "BatchController",
+    "BatchProcessor",
+    "BatchStartRequest",
+    "BrushMode",
+    "ContourDebugCandidate",
+    "ContourExtractionSettings",
+    "CorrectionEvent",
+    "CorrectionType",
+    "DeleteVertexMode",
+    "DirectoryScanController",
+    "DisplaySettings",
+    "EditorDisplayRunnable",
+    "EditorTool",
+    "FixInternalContoursCifItemResult",
+    "FixInternalContoursCifJobSummary",
+    "FixInternalContoursCifRunnable",
+    "FixInternalContoursCifWorkItem",
+    "FrameLoadPayload",
+    "FrameLoadRunnable",
+    "FramePathFilterProxyModel",
+    "FramePathListModel",
+    "GamificationPanel",
+    "GamificationProfileService",
+    "GamificationService",
+    "GeometryValidationRunnable",
+    "ImageProcessingState",
+    "InternalContourFixStats",
+    "LocalizedTextMap",
+    "Path",
+    "PathSettingsController",
+    "PersistedPaths",
+    "PolygonCreateMode",
+    "PolygonData",
+    "PreparedImageRequest",
+    "PreparedImageRunnable",
+    "PreprocessingPipeline",
+    "PreviewProcessingRequest",
+    "PreviewProcessingRunnable",
+    "PyramidFrameStore",
+    "QAbstractItemView",
+    "QAbstractSpinBox",
+    "QApplication",
+    "QBrush",
+    "QCheckBox",
+    "QColor",
+    "QColorDialog",
+    "QComboBox",
+    "QDialog",
+    "QDialogButtonBox",
+    "QDoubleSpinBox",
+    "QEvent",
+    "QEventLoop",
+    "QFileDialog",
+    "QFormLayout",
+    "QFrame",
+    "QGroupBox",
+    "QHBoxLayout",
+    "QIcon",
+    "QInputDialog",
+    "QKeySequence",
+    "QLabel",
+    "QLineEdit",
+    "QListWidget",
+    "QListWidgetItem",
+    "QMenu",
+    "QMessageBox",
+    "QModelIndex",
+    "QPainter",
+    "QPen",
+    "QPixmap",
+    "QPoint",
+    "QPointF",
+    "QPolygonF",
+    "QPushButton",
+    "QRectF",
+    "QScrollArea",
+    "QSignalBlocker",
+    "QSize",
+    "QSizePolicy",
+    "QSpinBox",
+    "QTabWidget",
+    "QTextEdit",
+    "QThreadPool",
+    "QTimer",
+    "QToolButton",
+    "QTreeWidgetItem",
+    "QVBoxLayout",
+    "QWidget",
+    "Qt",
+    "RewardEventType",
+    "SaveOptions",
+    "ThumbnailLoadRunnable",
+    "TransitionPromptChoice",
+    "VectorGeometrySettings",
+    "VectorIndexController",
+    "WidgetDisplaySettingsStore",
+    "WidgetGamificationProfileStore",
+    "WidgetMetalPresetSettingsStore",
+    "WidgetPathSettingsStore",
+    "WidgetSessionSettingsStore",
+    "WidgetViaPresetSettingsStore",
+    "WorkspaceLoadResult",
+    "WorkspaceSession",
+    "_fix_internal_contours_work_item",
+    "_localized_text",
+    "_normalize_bright_via_metal_constraint_mode",
+    "active_language",
+    "antialias_polygons",
+    "append_shortcut_to_tooltip",
+    "available_operations",
+    "blurred_via_preset_payload",
+    "build_additional_layer_frame_map",
+    "build_base_frame_number_map",
+    "build_base_frame_records",
+    "build_display_tab",
+    "build_editor_hotkeys_plain_text",
+    "build_editor_toolbar",
+    "build_extraction_tab",
+    "build_files_tab",
+    "build_frame_asset_sets",
+    "build_help_tab",
+    "build_image_cif_matching_report",
+    "build_path_panel",
+    "build_paths_tab",
+    "build_pipeline_tab",
+    "build_prepared_image_signature",
+    "build_preview_request_signature",
+    "build_tabs",
+    "build_ui",
+    "build_visual_panel",
+    "built_in_metal_presets",
+    "built_in_via_presets",
+    "classify_dropped_paths",
+    "classify_vector_side_status",
+    "create_editor_action_icon",
+    "create_editor_tool_icon",
+    "cv2",
+    "cv_to_qimage",
+    "default_contour_settings_profiles",
+    "export_frame_to_dataset",
+    "get_choice_display_label",
+    "get_operation_descriptor",
+    "get_operation_display_name",
+    "get_parameter_display_label",
+    "index_cif_directory",
+    "index_cif_file_paths",
+    "is_image_path",
+    "is_visible_image_path",
+    "load_image_color",
+    "load_image_color_thumbnail",
+    "load_pipeline_config_from_path",
+    "load_polygons_vector",
+    "metal_preset_table",
+    "mp",
+    "navigation_allowed_after_autosave_attempt",
+    "navigation_allowed_after_prompt",
+    "neighborhood_indices",
+    "noisy_traces_via_preset_payload",
+    "normalize_algorithm_backend",
+    "normalize_recognition_mode",
+    "normalize_via_display_mode",
+    "normalize_via_search_mode",
+    "normalize_via_size_mode",
+    "np",
+    "offset_conductor_polygons",
+    "paint_image_row_item",
+    "paint_vector_row_item",
+    "polygons_needing_repair",
+    "pyqtSignal",
+    "retranslate_ui",
+    "save_pipeline_config_to_path",
+    "save_polygons_vector",
+    "save_result_bundle",
+    "scan_image_files",
+    "summarize_invalid_polygon_description_reasons",
+    "threading",
+    "time",
+    "tool_shortcut_native_text",
+    "tr",
+]

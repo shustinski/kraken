@@ -54,4 +54,4 @@ def clamp_thumbnail_source_size(width: int, height: int) -> tuple[int, int]:
         THUMBNAIL_MAX_SOURCE_WIDTH / float(source_w),
         THUMBNAIL_MAX_SOURCE_HEIGHT / float(source_h),
     )
-    return max(1, int(round(source_w * scale))), max(1, int(round(source_h * scale)))
+    return max(1, round(source_w * scale)), max(1, round(source_h * scale))

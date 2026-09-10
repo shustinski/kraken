@@ -11,8 +11,11 @@ from contour.infrastructure.frame_switch_profiler import (
     frame_switch_profiling_enabled,
     profile_callable,
 )
-from contour.infrastructure.profiling import processing_profiling_enabled, vertex_move_profiling_enabled
-from contour.infrastructure.profiling import try_enable_profiler
+from contour.infrastructure.profiling import (
+    processing_profiling_enabled,
+    try_enable_profiler,
+    vertex_move_profiling_enabled,
+)
 
 
 class FrameSwitchProfilerTests(unittest.TestCase):

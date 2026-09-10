@@ -23,8 +23,18 @@ ruff format --check contour tests examples
 mypy contour
 $env:QT_QPA_PLATFORM = "offscreen"
 pytest             # fast behavioral suite (default)
-pytest -m full     # complete suite, including vectorization
+pytest -m full     # before a build or on demand: all tests, including vectorization
 ```
+
+`fast` is the default and runs behavioral checks only. `full` includes every
+collected test, including `fast`, GUI regressions, vectorization and benchmarks.
+The Windows build script runs `full` before packaging. Benchmarks and real-image
+regressions require their SEM fixtures; absent fixture files are reported as skips.
+New test modules belong to `full` by default. Add stable behavioral modules to
+`FAST_TEST_FILES` in `tests/conftest.py`; mark individual image-processing tests in
+mixed modules with `@pytest.mark.vectorization` to keep them out of `fast`.
+Profiling is disabled in tests by default to avoid distorting timings; profiling
+tests explicitly enable the switches they exercise.
 
 All checks must be green. `pre-commit` is configured to run a subset of these
 automatically on every commit.

@@ -159,7 +159,7 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     bright_map = corr_u8
     dark_map = 255 - corr_u8
 
-    ksize = int(max(3, 2 * int(round(0.5 * d_max)) + 1))
+    ksize = int(max(3, 2 * round(0.5 * d_max) + 1))
     ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
 
     seeds_b, mask_b = _local_extrema_seeds(
@@ -245,10 +245,10 @@ def detect_vias_heuristic(image: np.ndarray, config: HeuristicViaDetectorConfig)
     dets = [d for d in dets if d.reject_reason is None or (d.reject_reason and "hard" in d.reject_reason)]
     dets = _dedupe_by_score(dets, min_dist=1.0)
     dets.sort(key=lambda d: d.score, reverse=True)
-    effective_nms = max(0, int(config.nms_distance), int(round(0.6 * d_max)))
+    effective_nms = max(0, int(config.nms_distance), round(0.6 * d_max))
     after = _nms_simple(dets, effective_nms)
 
-    accepted: list[ViaDetection] = [
+    accepted = [
         d for d in after if d.reject_reason is None and d.score >= float(config.min_final_score)
     ]
     below: list[ViaDetection] = [
@@ -330,8 +330,8 @@ def analyze_vias_at(
     hypotheses = _candidate_hypotheses(config)
     results: list[ViaDetection | None] = []
     for center_x, center_y in centers:
-        x_coord = max(0, min(width - 1, int(round(float(center_x)))))
-        y_coord = max(0, min(height - 1, int(round(float(center_y)))))
+        x_coord = max(0, min(width - 1, round(float(center_x))))
+        y_coord = max(0, min(height - 1, round(float(center_y))))
         results.append(
             _score_seed(
                 frame,
@@ -462,8 +462,8 @@ def _fast_percentile(values: np.ndarray, percentile: float) -> float:
     if flat.size == 0:
         return 0.0
     rank = (flat.size - 1) * max(0.0, min(100.0, float(percentile))) / 100.0
-    lower = int(math.floor(rank))
-    upper = int(math.ceil(rank))
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
     selected = np.partition(flat, (lower, upper))
     if lower == upper:
         return float(selected[lower])
@@ -503,13 +503,13 @@ def _local_extrema_seeds(
             lab_roi = labels[y : y + hh, x : x + ww] == label
             if roi.size == 0 or not bool(np.any(lab_roi)):
                 cx, cy = centroids[label]
-                pts.append((int(round(cy)), int(round(cx))))
+                pts.append((round(cy), round(cx)))
                 continue
             masked = np.where(lab_roi, roi, 0)
             peak_value = int(np.max(masked))
             peak_y, peak_x = np.nonzero(lab_roi & (roi == peak_value))
             if peak_x.size:
-                pts.append((int(round(y + float(np.mean(peak_y)))), int(round(x + float(np.mean(peak_x))))))
+                pts.append((round(y + float(np.mean(peak_y))), round(x + float(np.mean(peak_x)))))
             else:
                 yy, xx = np.unravel_index(int(np.argmax(masked)), masked.shape)
                 pts.append((int(y + yy), int(x + xx)))
@@ -535,7 +535,7 @@ def _intensity_range_seeds(
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(support, connectivity=8)
     min_area = max(2.0, math.pi * (max(1, diameter_min) * 0.5) ** 2 * 0.15)
     max_area = math.pi * (max(1, diameter_max) * 0.5) ** 2 * 2.2
-    max_span = max(3, int(round(float(diameter_max) * 2.0)))
+    max_span = max(3, round(float(diameter_max) * 2.0))
     points: list[tuple[int, int]] = []
     accepted_labels = np.zeros(count, dtype=np.uint8)
     for label in range(1, count):
@@ -548,7 +548,7 @@ def _intensity_range_seeds(
         if aspect > 3.2:
             continue
         cx, cy = centroids[label]
-        points.append((int(round(cy)), int(round(cx))))
+        points.append((round(cy), round(cx)))
         accepted_labels[label] = 255
     filtered = accepted_labels[labels]
     return points, filtered
@@ -711,7 +711,7 @@ def _component_geometry_center(
 
 
 @lru_cache(maxsize=512)
-def _coordinate_grids(shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
+def _coordinate_grids(shape: tuple[int, int]) -> np.ndarray:
     return np.indices(shape, dtype=np.float32)
 
 
@@ -1206,7 +1206,7 @@ def _score_one(
             _hard_reason(ViaRejectCode.DIFFUSE_SPOT, f"({edge_sharpness:.2f})"),
         )
 
-    icx, icy = int(round(fcx)), int(round(fcy))
+    icx, icy = round(fcx), round(fcy)
     icx = max(0, min(pw - 1, icx))
     icy = max(0, min(ph - 1, icy))
     r_edge = int(max(1, d_est // 3))
@@ -1248,8 +1248,8 @@ def _score_one(
     gx = float(offset[0]) + fcx
     gy = float(offset[1]) + fcy
     half = float(d_est) * 0.5
-    ox = int(round(gx - half))
-    oy = int(round(gy - half))
+    ox = round(gx - half)
+    oy = round(gy - half)
     bbox = (ox, oy, int(d_est), int(d_est))
     return ViaDetection(
         x=gx,
@@ -1392,7 +1392,7 @@ def _debug_viz(
     for v in acc:
         cv2.drawMarker(
             out,
-            (int(round(v.x)), int(round(v.y))),
+            (round(v.x), round(v.y)),
             g,
             markerType=cv2.MARKER_CROSS,
             markerSize=int(max(5, v.diameter_estimate + 1)),
@@ -1401,7 +1401,7 @@ def _debug_viz(
     for v in below:
         cv2.drawMarker(
             out,
-            (int(round(v.x)), int(round(v.y))),
+            (round(v.x), round(v.y)),
             yl,
             markerType=cv2.MARKER_SQUARE,
             markerSize=int(max(5, d)),
@@ -1411,7 +1411,7 @@ def _debug_viz(
         if v.reject_reason and "low_contrast" not in str(v.reject_reason):
             cv2.drawMarker(
                 out,
-                (int(round(v.x)), int(round(v.y))),
+                (round(v.x), round(v.y)),
                 rd,
                 markerType=cv2.MARKER_TILTED_CROSS,
                 markerSize=int(max(5, d)),

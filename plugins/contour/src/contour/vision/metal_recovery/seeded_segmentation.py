@@ -13,7 +13,7 @@ from .gradient_watershed import (
     build_conductor_seeds,
     gradient_watershed_mask,
 )
-from .structural_watershed import structural_watershed_mask, structural_watershed_config_from_object
+from .structural_watershed import structural_watershed_config_from_object, structural_watershed_mask
 
 _SEEDED_MAX_SIDE = 640
 _RANDOM_WALKER_BETA = 90.0

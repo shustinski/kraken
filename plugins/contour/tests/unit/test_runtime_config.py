@@ -43,7 +43,8 @@ def test_shipped_config_enables_startup_profiling_and_contains_runtime_sections(
 
     assert bundled_config_path().is_file()
     assert parser.getboolean("profiling", "startup")
-    assert parser.get("profiling", "frame_switch") == ""
+    frame_switch_key = "frame_switch" if parser.get("profiling", "frame_switch").strip() else "enabled"
+    assert parser.getboolean("profiling", frame_switch_key)
     assert parser.has_section("shortcuts")
     assert parser.has_section("editor")
     assert parser.has_section("large_dataset")
@@ -85,10 +86,7 @@ def test_environment_override_has_priority_over_ini(tmp_path, monkeypatch) -> No
 def test_startup_profiler_uses_its_own_switch_and_top_lines(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "custom.ini"
     config_path.write_text(
-        "[profiling]\n"
-        "enabled = false\n"
-        "startup = true\n"
-        "startup_top_lines = 19\n",
+        "[profiling]\nenabled = false\nstartup = true\nstartup_top_lines = 19\n",
         encoding="utf-8",
     )
     _use_config(monkeypatch, config_path)

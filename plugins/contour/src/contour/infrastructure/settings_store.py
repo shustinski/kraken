@@ -153,7 +153,8 @@ class WidgetAppearanceSettingsStore:
         settings = self._settings_factory()
         value = settings.value(APPEARANCE_THEME_SETTINGS_KEY, default, type=str)
         settings.sync()
-        return normalize_theme(str(value or default))
+        theme: str = normalize_theme(str(value or default))
+        return theme
 
     def save_theme(self, theme: str | None) -> None:
         settings = self._settings_factory()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtWidgets import QComboBox, QFormLayout, QWidget
+from PyQt6.QtWidgets import QComboBox, QFormLayout, QLabel, QLayout, QWidget
 
 if TYPE_CHECKING:
     from contour.widget import PolygonExtractionWidget
@@ -38,14 +38,14 @@ def _set_combo_item_texts(combo: QComboBox, labels: dict[str, tuple[str, str]], 
             combo.setItemText(index, _text(language, *pair))
 
 
-def _set_form_field_label(container: QWidget | None, field: object, text: str) -> None:
+def _set_form_field_label(container: QWidget | None, field: QWidget | QLayout, text: str) -> None:
     if container is None:
         return
     form = container.layout()
     if not isinstance(form, QFormLayout):
         return
     label = form.labelForField(field)
-    if label is not None:
+    if isinstance(label, QLabel):
         label.setText(text)
 
 

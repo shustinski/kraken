@@ -20,6 +20,7 @@ from .domain.polygon_ring import collapse_redundant_polyline_vertices
 from .i18n import tr
 from .infrastructure.cif_primitives import CifBox, CifPrimitive
 from .utils import draw_polygon_overlay, ensure_directory, imwrite_unicode_safe
+from .value_conversion import to_int
 
 
 def _note_cif_phase_timing(phase: str, started_at: float) -> None:
@@ -110,7 +111,7 @@ def _polygon_bbox_values(polygon: PolygonData) -> tuple[float, float, float, flo
 
 
 def _cv_coord(value: float) -> int:
-    return int(round(float(value)))
+    return round(float(value))
 
 
 def _cv_ring(points: list[tuple[float, float]]) -> list[list[int]]:
@@ -208,7 +209,7 @@ def _cv_json_array(values: list[object], *, indent: int) -> str:
         rows = []
         for start in range(0, len(values), 8):
             chunk = values[start : start + 8]
-            rows.append(", ".join(_cv_json_array(value, indent=indent + 2) for value in chunk))
+            rows.append(", ".join(_cv_json_array(value, indent=indent + 2) for value in chunk if isinstance(value, list)))
         if len(rows) == 1:
             return "[" + rows[0] + "]"
         tail_rows = [inner_prefix + row for row in rows[1:]]
@@ -354,7 +355,7 @@ def _cv_points_from_ring(raw_points: object) -> list[tuple[float, float]]:
 
 
 def _cv_object_id(item: dict[str, object], fallback_id: int) -> int:
-    return int(item.get("id", fallback_id))
+    return to_int(item.get("id", fallback_id))
 
 
 def _polygons_from_cv_object(
@@ -368,7 +369,7 @@ def _polygons_from_cv_object(
         area, perimeter, bbox = compute_polygon_metrics(points)
         return [
             PolygonData(
-                id=int(item.get("id", fallback_id)),
+                id=_cv_object_id(item, fallback_id),
                 points=points,
                 is_hole=False,
                 parent_id=None,
@@ -450,10 +451,7 @@ CIF_CUTOUT_DISPLAY_MARKER = "( CONTOUR cutout_display );"
 
 
 def _cif_cutout_display_requested(cif_path: Path) -> bool:
-    for line in _read_cif_text(cif_path).splitlines():
-        if line.strip() == CIF_CUTOUT_DISPLAY_MARKER.strip():
-            return True
-    return False
+    return any(line.strip() == CIF_CUTOUT_DISPLAY_MARKER.strip() for line in _read_cif_text(cif_path).splitlines())
 
 
 def save_polygons_vector(
@@ -568,7 +566,7 @@ def _cif_polygon_points_to_polygon(
 
     _width, height = image_size
     image_height = int(height)
-    image_points = [(x_coord, image_height - y_coord) for x_coord, y_coord in raw_points]
+    image_points: list[tuple[float, float]] = [(x_coord, image_height - y_coord) for x_coord, y_coord in raw_points]
     area, perimeter, bbox = compute_polygon_metrics(image_points)
     return PolygonData(
         id=polygon_id,
@@ -737,9 +735,9 @@ def load_polygons_cif(path: str | Path) -> tuple[str | None, tuple[int, int] | N
 
     lines = _read_cif_text(cif_path).splitlines()
 
-    image_name: str | None = None
-    image_size: tuple[int, int] | None = None
-    polygons: list[PolygonData] = []
+    image_name = None
+    image_size = None
+    polygons = []
 
     for line in lines:
         stripped = line.strip()
@@ -1625,8 +1623,8 @@ def _recover_cut_hole_topology(
             parent_index = int(hierarchy[index][3])
             if parent_index < 0:
                 continue
-            parent_id = contour_to_parent_id.get(parent_index)
-            if parent_id is None:
+            recovered_parent_id = contour_to_parent_id.get(parent_index)
+            if recovered_parent_id is None:
                 continue
             hole_poly = _contour_points_to_polygon(
                 contour,
@@ -1634,7 +1632,7 @@ def _recover_cut_hole_topology(
                 top=top,
                 polygon_id=next_id,
                 is_hole=True,
-                parent_id=parent_id,
+                parent_id=recovered_parent_id,
             )
             recovered.append(hole_poly)
             next_id += 1
@@ -1916,7 +1914,7 @@ def save_polygons_cif(
     for polygon in sorted_polygons:
         if polygon.is_hole:
             continue
-        save_families = [(polygon, [])]
+        save_families: list[tuple[PolygonData, list[PolygonData]]] = [(polygon, [])]
         if polygon.category != "via" and polygon.shape_hint != "box":
             holes = holes_by_parent.get(int(polygon.id), [])
             if holes:

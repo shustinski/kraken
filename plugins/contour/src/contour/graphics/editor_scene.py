@@ -1296,13 +1296,12 @@ class PolygonEditorScene(QGraphicsScene):
         if run_postprocess:
             profile = self._polygon_change_profile
             phase_started_at = perf_counter()
-            # Noise-size thresholds are import/recognition cleanup controls.
-            # Applying them to a deliberate editor gesture can immediately
+            # The outer noise-size threshold is an import/recognition control.
+            # Applying it to a deliberate editor gesture can immediately
             # delete a valid user-created polygon (the default is 60,000 px²).
             edit_settings = replace(
                 self._vector_geometry_settings,
                 min_outer_area_px2=0.0,
-                min_hole_area_to_remove_px2=0.0,
             )
             remaining, _changed, accepted = self._apply_vector_postprocess_polygons(
                 work,

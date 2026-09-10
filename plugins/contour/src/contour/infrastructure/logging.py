@@ -53,7 +53,7 @@ def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
     _LOGGER.critical(
         "Unhandled exception in thread %s",
         thread_name,
-        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback) if args.exc_value is not None else None,
     )
 
 
@@ -69,7 +69,7 @@ def _log_unraisable_exception(args: Any) -> None:
     )
 
 
-def _log_qt_message(message_type: Any, context: Any, message: str) -> None:
+def _log_qt_message(message_type: Any, context: Any, message: str | None) -> None:
     try:
         from PyQt6.QtCore import QtMsgType
 

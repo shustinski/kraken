@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from contour.application.processing_v2 import (
     MetalRecoverySettings,
     ProcessingRequestV2,
@@ -7,6 +9,22 @@ from contour.application.processing_v2 import (
     ViaDetectionSettings,
 )
 from contour.domain import PolygonData
+
+
+@pytest.mark.parametrize(
+    ("mode", "field"),
+    [("via", "via_heuristic_polarity"), ("conductors", "metal_hierarchy_mode"), ("conductors", "metal_border_handling")],
+)
+def test_migration_rejects_unsupported_enum_values(mode: str, field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        ProcessingRequestV2.migrate_legacy({"recognition_mode": mode, field: "invalid"})
+
+
+@pytest.mark.parametrize("polarity", ["auto", "bright", "dark", "ring_light_ring", "ring_dark_ring"])
+def test_migration_preserves_supported_via_polarities(polarity: str) -> None:
+    request, _report = ProcessingRequestV2.migrate_legacy({"recognition_mode": "via", "via_heuristic_polarity": polarity})
+    assert isinstance(request.recognition, ViaDetectionSettings)
+    assert request.recognition.polarity == polarity
 
 
 def test_v2_request_round_trip_keeps_discriminated_settings() -> None:

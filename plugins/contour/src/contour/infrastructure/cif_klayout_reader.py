@@ -62,7 +62,7 @@ def _read_cif_text(path: str | Path) -> str:
 class _CifTextStream:
     """Index-based CIF text cursor; avoids per-character method dispatch in hot paths."""
 
-    __slots__ = ("_text", "_pos", "_length", "line_number")
+    __slots__ = ("_length", "_pos", "_text", "line_number")
 
     def __init__(self, text: str) -> None:
         self._text = text
@@ -416,10 +416,10 @@ def rotated_box_points(
         half_w = width / 2.0
         half_h = height / 2.0
         return [
-            (int(round(center_x - half_w)), int(round(center_y - half_h))),
-            (int(round(center_x + half_w)), int(round(center_y - half_h))),
-            (int(round(center_x + half_w)), int(round(center_y + half_h))),
-            (int(round(center_x - half_w)), int(round(center_y + half_h))),
+            (round(center_x - half_w), round(center_y - half_h)),
+            (round(center_x + half_w), round(center_y - half_h)),
+            (round(center_x + half_w), round(center_y + half_h)),
+            (round(center_x - half_w), round(center_y + half_h)),
         ]
 
     norm = math.hypot(float(rotation_x), float(rotation_y))
@@ -430,8 +430,8 @@ def rotated_box_points(
     xh = -height * 0.5 * rotation_y / norm
     yh = height * 0.5 * rotation_x / norm
     return [
-        (int(round(center_x - xw - xh)), int(round(center_y - yw - yh))),
-        (int(round(center_x - xw + xh)), int(round(center_y - yw + yh))),
-        (int(round(center_x + xw + xh)), int(round(center_y + yw + yh))),
-        (int(round(center_x + xw - xh)), int(round(center_y + yw - yh))),
+        (round(center_x - xw - xh), round(center_y - yw - yh)),
+        (round(center_x - xw + xh), round(center_y - yw + yh)),
+        (round(center_x + xw + xh), round(center_y + yw + yh)),
+        (round(center_x + xw - xh), round(center_y + yw - yh)),
     ]

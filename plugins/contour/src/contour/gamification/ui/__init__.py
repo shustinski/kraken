@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from functools import partial
 from random import Random
 from typing import Any
 
@@ -8,11 +9,11 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -22,7 +23,6 @@ from PyQt6.QtWidgets import (
 
 from ...ui.no_wheel_controls import NoWheelComboBox as QComboBox
 from ...ui.no_wheel_controls import NoWheelSpinBox as QSpinBox
-
 from ..avatar import PetAvatarWidget
 from ..config import DEFAULT_GAMIFICATION_BALANCE, GamificationBalance
 from ..models import GamificationProfile, PetMood, PetType, Rarity, RewardEventType, ServiceResult, next_rarity
@@ -64,16 +64,18 @@ def _fragment_line(values: Callable[[Rarity], int]) -> str:
     return " / ".join(f"{rarity.value}: {values(rarity)}" for rarity in Rarity)
 
 
-def _clear_layout(layout: QVBoxLayout | QGridLayout | QFormLayout) -> None:
+def _clear_layout(layout: QLayout) -> None:
     while layout.count():
         item = layout.takeAt(0)
+        if item is None:
+            continue
         widget = item.widget()
         child_layout = item.layout()
         if widget is not None:
             widget.setParent(None)
             widget.deleteLater()
         elif child_layout is not None:
-            _clear_layout(child_layout)  # type: ignore[arg-type]
+            _clear_layout(child_layout)
 
 
 class GamificationPanel(QWidget):
@@ -486,7 +488,7 @@ class GamificationDialog(QDialog):
         spins: dict[PetType, QSpinBox] = {}
         grid = QGridLayout()
         for row, pet_type in enumerate(PET_DEFINITIONS):
-            label = QLabel(f"{PET_DEFINITIONS[pet_type].title}: {_fragment_line(lambda rarity, pet=pet_type: profile.pet_fragments.get(pet, rarity))}")
+            label = QLabel(f"{PET_DEFINITIONS[pet_type].title}: {_fragment_line(partial(profile.pet_fragments.get, pet_type))}")
             spin = QSpinBox()
             spin.setRange(0, 1_000_000)
             spins[pet_type] = spin
@@ -517,7 +519,7 @@ class GamificationDialog(QDialog):
         spins: dict[str, QSpinBox] = {}
         grid = QGridLayout()
         for row, skin_id in enumerate(PAID_SKIN_IDS):
-            label = QLabel(f"{SKIN_DEFINITIONS[skin_id].title}: {_fragment_line(lambda rarity, skin=skin_id: profile.skin_fragments.get(skin, rarity))}")
+            label = QLabel(f"{SKIN_DEFINITIONS[skin_id].title}: {_fragment_line(partial(profile.skin_fragments.get, skin_id))}")
             spin = QSpinBox()
             spin.setRange(0, 1_000_000)
             spins[skin_id] = spin

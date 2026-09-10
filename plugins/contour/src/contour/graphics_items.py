@@ -165,7 +165,9 @@ class ZoomContactBatchItem(QGraphicsItem):
     def boundingRect(self) -> QRectF:
         return QRectF(self._bounds)
 
-    def paint(self, painter: QPainter, _option, _widget=None) -> None:
+    def paint(self, painter: QPainter | None, _option, _widget=None) -> None:
+        if painter is None:
+            return
         if self._rectangles:
             painter.setPen(self._pen)
             painter.setBrush(self._brush)
@@ -509,7 +511,6 @@ class EditablePolygonItem(QGraphicsPathItem):
         return super().shape()
 
 def _iter_shapely_polygon_parts(geom: object) -> Iterator[object]:
-    from shapely.geometry import Polygon as ShapelyPolygon
 
     if getattr(geom, "is_empty", True):
         return

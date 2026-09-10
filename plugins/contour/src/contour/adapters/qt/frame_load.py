@@ -3,10 +3,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
 from ...domain import PolygonData
+
+if TYPE_CHECKING:
+    from ...infrastructure.frame_switch_profiler import FrameSwitchProfile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -69,7 +73,7 @@ class FrameLoadRunnable(QRunnable):
                 )
             else:
                 source_image = None if self._load_source is None else self._load_source(self.image_path)
-                polygons_list: list[PolygonData] = []
+                polygons_list = []
                 if self.load_vectors:
                     polygons_list = list(self._load_cif(self.image_path))
                 polygons = tuple(polygons_list)
@@ -93,7 +97,7 @@ class FrameLoadRunnable(QRunnable):
             try:
                 self.signals.finished.emit(self.request_id, self.image_path)
             except RuntimeError:
-                return
+                _LOGGER.debug("Frame load completion receiver is no longer available", exc_info=True)
 
 
 class GeometryValidationSignals(QObject):
@@ -111,7 +115,7 @@ class GeometryValidationRunnable(QRunnable):
         polygons: list[PolygonData],
         scan_repair: Callable[[list[PolygonData]], Mapping[int, list[str]]],
         *,
-        profile_session: object | None = None,
+        profile_session: FrameSwitchProfile | None = None,
     ) -> None:
         super().__init__()
         self.request_id = int(request_id)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import cv2
 import numpy as np
 import pytest
@@ -28,6 +30,18 @@ from contour.vision.metal_recovery.segmentation import (
 SUBSTRATE = 40
 FILL = 75
 RIM = 220
+
+# Synthetic regression images were authored for these parameters. Keep their
+# contrast assumptions independent of changes to the shipped SEM preset.
+REGRESSION_CONFIG = GradientWatershedConfig(
+    smoothing_sigma=1.0,
+    core_margin=8.0,
+    groove_margin=16.0,
+    rim_probe_px=6,
+    seed_speckle_px=4,
+    valley_span_px=5,
+    valley_depth=45.0,
+)
 
 
 def _rim_lit_trace(canvas: np.ndarray, x0: int, x1: int) -> None:
@@ -72,7 +86,7 @@ def test_uniform_traces_without_rims_are_recovered_beside_rim_lit() -> None:
     image[:, 350:400] = 90
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert mask[90, 227] > 0, "a 14 px uniform trace without a rim must still be metal"
     assert mask[90, 290] > 0, "a wide uniform conductor must not be classified as substrate"
@@ -90,7 +104,7 @@ def test_narrow_rim_lit_trace_touching_the_border_is_kept() -> None:
     _rim_lit_trace(image, 70, 160)
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert mask[60, 26] > 0, "narrow rim-lit fill must remain metal, not a gap seed"
     assert mask[60, 115] > 0
@@ -104,7 +118,7 @@ def test_pale_centred_traces_are_filled_and_kept_apart() -> None:
     _rim_lit_trace(image, 170, 260)
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert mask[70, 70] > 0, "pale conductor centre must be recovered"
     assert mask[70, 215] > 0
@@ -118,7 +132,7 @@ def test_dark_texture_inside_a_pour_does_not_split_it() -> None:
     cv2.circle(image, (100, 100), 9, SUBSTRATE, -1)
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert _component_count(mask) == 1, "a dark speck inside metal must not fragment the pour"
 
@@ -133,8 +147,8 @@ def test_wide_dark_conductor_center_is_not_a_background_seed() -> None:
     image[42:138, 64:216] = 49
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    seeds = build_conductor_seeds(image, GradientWatershedConfig())
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    seeds = build_conductor_seeds(image, REGRESSION_CONFIG)
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert seeds is not None
     assert seeds.groove_seeds[90, 140] == 0
@@ -177,7 +191,7 @@ def _pair_split_by_a_grey_seam() -> np.ndarray:
 def test_grey_seam_between_close_traces_separates_them() -> None:
     image = _pair_split_by_a_grey_seam()
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert _component_count(mask) == 2, "a seam darker than the metal must part the neighbours"
 
@@ -190,7 +204,7 @@ def test_selective_recovery_preserves_resolved_close_conductor_gaps(gap_width: i
     image[10:150, split + gap_width : 235] = RIM
     image[10:150, split : split + gap_width] = 105
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert not np.any(mask[20:140, split : split + gap_width])
     assert _component_count(mask) == 2
@@ -202,7 +216,7 @@ def test_selective_recovery_does_not_bridge_a_weak_bright_gap() -> None:
     image[10:170, 145:280] = RIM
     image[10:170, 140:145] = 125
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert not np.any(mask[20:160, 140:145])
     assert _component_count(mask) == 2
@@ -216,7 +230,7 @@ def test_selective_recovery_keeps_wide_dark_conductor_touching_two_borders() -> 
     image[:, 105:215] = 48
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert mask[90, 160] > 0
     assert mask[90, 40] == 0
@@ -226,7 +240,7 @@ def test_selective_recovery_keeps_wide_dark_conductor_touching_two_borders() -> 
 def test_seam_separation_can_be_switched_off() -> None:
     image = _pair_split_by_a_grey_seam()
 
-    mask = gradient_watershed_mask(image, GradientWatershedConfig(valley_span_px=0))
+    mask = gradient_watershed_mask(image, replace(REGRESSION_CONFIG, valley_span_px=0))
 
     assert _component_count(mask) == 1, "without valley seeding the grey seam is invisible"
 
@@ -256,7 +270,7 @@ def test_texture_only_frame_is_rejected_before_watershed() -> None:
     image = np.clip(texture, 0.0, 255.0).astype(np.uint8)
 
     presence = analyze_metal_presence(image)
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert not presence.has_metal
     assert not np.any(mask)
@@ -277,7 +291,7 @@ def test_low_area_rim_lit_trace_is_not_rejected_as_empty() -> None:
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
     presence = analyze_metal_presence(image)
-    mask = gradient_watershed_mask(image, GradientWatershedConfig())
+    mask = gradient_watershed_mask(image, REGRESSION_CONFIG)
 
     assert presence.has_metal
     assert np.any(mask[180:220, 190:210])
@@ -290,7 +304,7 @@ def test_seeded_algorithms_fill_pale_traces_and_keep_them_apart(strategy: str) -
     _rim_lit_trace(image, 170, 260)
     image = cv2.GaussianBlur(image, (0, 0), 1.0)
 
-    mask = seeded_segmentation_mask(image, strategy, GradientWatershedConfig())
+    mask = seeded_segmentation_mask(image, strategy, REGRESSION_CONFIG)
 
     assert mask[70, 70] > 0, f"{strategy}: pale conductor centre must be recovered"
     assert mask[70, 215] > 0

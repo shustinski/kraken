@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 
+from contour.application.dto import PersistedPaths
 from contour.application.services import (
     BatchController,
     BatchStartRequest,
@@ -18,7 +19,6 @@ from contour.application.services import (
     load_pipeline_config_from_path,
     save_pipeline_config_to_path,
 )
-from contour.application.dto import PersistedPaths
 
 
 class PipelineControllerTests(unittest.TestCase):

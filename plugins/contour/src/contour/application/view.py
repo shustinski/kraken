@@ -604,14 +604,18 @@ class ContourMainView(QMainWindow):
     def set_selection_status(self, message: str) -> None:
         self._selection_status_label.setText(str(message))
 
-    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+    def dragEnterEvent(self, event: QDragEnterEvent | None) -> None:
+        if event is None:
+            return
         mime = event.mimeData()
         if mime is not None and mime.hasUrls():
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
-    def dropEvent(self, event: QDropEvent) -> None:
+    def dropEvent(self, event: QDropEvent | None) -> None:
+        if event is None:
+            return
         mime = event.mimeData()
         urls = mime.urls() if mime is not None else []
         paths = [url.toLocalFile() for url in urls if url.isLocalFile() and url.toLocalFile()]
@@ -621,7 +625,9 @@ class ContourMainView(QMainWindow):
             return
         super().dropEvent(event)
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    def closeEvent(self, event: QCloseEvent | None) -> None:
+        if event is None:
+            return
         if hasattr(self._widget, "confirm_ok_to_leave_current_vectors") and not self._widget.confirm_ok_to_leave_current_vectors():
             event.ignore()
             return

@@ -64,8 +64,8 @@ def test_weak_gradients_are_skipped() -> None:
     )
     assert arrows
     for origin_x, origin_y, _dx, _dy in arrows:
-        pixel_x = int(round(origin_x))
-        pixel_y = int(round(origin_y))
+        pixel_x = round(origin_x)
+        pixel_y = round(origin_y)
         assert float(gradient_x[pixel_y, pixel_x]) >= 8.0
 
 

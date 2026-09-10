@@ -25,13 +25,13 @@ from .domain import Point, PolygonData
 __all__ = [
     "BatchImageResult",
     "BatchProcessingOptions",
-    "ContourExtractionSettings",
     "CommonContourSettings",
+    "ContourExtractionSettings",
     "DisplaySettings",
     "ImageProcessingState",
+    "MetalRecoverySettings",
     "OperationParameterSpec",
     "PipelineStepConfig",
-    "MetalRecoverySettings",
     "Point",
     "PolygonData",
     "ProcessingRequestV2",
@@ -39,6 +39,6 @@ __all__ = [
     "SaveOptions",
     "SettingsMigrationReport",
     "ViaDetectionSettings",
-    "process_request_v2",
     "base_name_from_path",
+    "process_request_v2",
 ]

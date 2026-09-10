@@ -60,8 +60,8 @@ def sample_gradient_field_arrows(
     step = gradient_sample_step_image_px(scene_units_per_view_px, view_step_px)
     vis_w = clip_right - clip_left
     vis_h = clip_bottom - clip_top
-    columns = max(1, int(ceil(vis_w / step)))
-    rows = max(1, int(ceil(vis_h / step)))
+    columns = max(1, ceil(vis_w / step))
+    rows = max(1, ceil(vis_h / step))
     estimated = columns * rows
     if estimated > max(1, int(max_arrows)):
         step *= (estimated / float(max_arrows)) ** 0.5
@@ -107,10 +107,10 @@ def sample_gradient_field_arrows(
 
     arrows: list[ArrowSample] = [
         (float(px), float(py), float(adx), float(ady))
-        for px, py, adx, ady in zip(out_x, out_y, out_dx, out_dy)
+        for px, py, adx, ady in zip(out_x, out_y, out_dx, out_dy, strict=False)
     ]
     if len(arrows) > int(max_arrows):
-        stride = int(ceil(len(arrows) / float(max_arrows)))
+        stride = ceil(len(arrows) / float(max_arrows))
         arrows = arrows[::stride][: int(max_arrows)]
     return arrows
 
@@ -128,7 +128,7 @@ def _grid_samples(start: float, stop: float, step: float) -> np.ndarray:
     if step <= 1e-12 or stop <= start:
         return np.empty(0, dtype=np.float64)
     origin = 0.5 * step
-    first_index = int(ceil((start - origin) / step - 1e-12))
+    first_index = ceil((start - origin) / step - 1e-12)
     first = origin + first_index * step
     if first < start:
         first += step

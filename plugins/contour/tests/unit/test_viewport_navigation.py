@@ -12,8 +12,8 @@ from contour.graphics.viewport_navigation import (
     clamp_zoom_factor,
     image_coordinate_under_cursor,
     pan_offset_after_zoom_to_cursor,
-    viewport_scroll_correction_after_scale_reanchor,
     scroll_values_after_viewport_drag,
+    viewport_scroll_correction_after_scale_reanchor,
     zoom_factor_for_wheel_delta,
 )
 

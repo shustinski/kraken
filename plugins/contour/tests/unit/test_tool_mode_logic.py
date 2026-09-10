@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from contour.domain import PolygonData
 from contour.graphics.tool_mode_logic import (
-    EditorContentKind,
     NAVIGATION_TOOLS,
     POLYGON_TOOLS,
+    EditorContentKind,
     apply_conductor_recognition_tool_lock,
     available_editor_tools,
     editor_content_kind,

@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import contextvars
 import threading
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
 _preview_cancel: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
     "contour_preview_cancel", default=None
 )
 
 
-class PreviewProcessingCancelled(Exception):
+class PreviewProcessingCancelledError(Exception):
     """Raised when a newer preview was queued and this run should stop."""
 
 
+# Preserve the existing import and exception-catching API.
+PreviewProcessingCancelled = PreviewProcessingCancelledError
+
+
 @contextmanager
-def use_preview_cancellation_event(event: threading.Event | None) -> Generator[None, None, None]:
+def use_preview_cancellation_event(event: threading.Event | None) -> Generator[None]:
     if event is None:
         yield
         return

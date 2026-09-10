@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import cv2
 import numpy as np
 
@@ -11,14 +13,14 @@ from ..schemas import HierarchicalComponent
 try:
     from ...utils import ensure_uint8
 except ImportError:  # pragma: no cover
-    from ..io_normalize import ensure_uint8_local as ensure_uint8  # type: ignore[misc,assignment]
+    from ..io_normalize import ensure_uint8_local as ensure_uint8
 
 
 def build_hierarchy_from_mask(
     mask: np.ndarray,
     *,
     epsilon: float = 1.0,
-) -> tuple[np.ndarray, list[HierarchicalComponent]]:
+) -> tuple[Sequence[np.ndarray] | np.ndarray, list[HierarchicalComponent]]:
     """``RETR_TREE`` on binarized mask; returns simplified contours + metadata."""
 
     m = (ensure_uint8(mask) > 0).astype(np.uint8) * 255

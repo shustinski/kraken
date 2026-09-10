@@ -6,12 +6,14 @@ import json
 import logging
 import os
 import shutil
+from collections.abc import Iterable
 from time import perf_counter, time_ns
 from typing import Any
 
 from PyQt6.QtGui import QImage, QImageReader
 
 from ..adapters.qt.object_validity import qt_object_is_valid
+from ..adapters.qt.signal_connection import connect_queued
 from ..infrastructure.contact_placement_profiler import (
     ContactPlacementProfile,
     ImageRecognitionProfile,
@@ -35,12 +37,87 @@ from ..infrastructure.profiling import (
     image_recognition_profiling_enabled,
     write_profile_report,
 )
-from ._imports import *  # noqa: F403
+from ._imports import (
+    ASSET_FILTER_LISTS_MAX_FRAMES,
+    FRAME_STATUS_ROLE,
+    LARGE_FRAME_COUNT_THRESHOLD,
+    VIA_SEARCH_MODE_HEURISTIC,
+    VIA_SEARCH_MODE_TEMPLATE,
+    AntialiasCifItemResult,
+    AntialiasCifJobSummary,
+    AntialiasCifRunnable,
+    AntialiasCifWorkItem,
+    AutoTuneResult,
+    BatchStartRequest,
+    CorrectionEvent,
+    CorrectionType,
+    EditorDisplayRunnable,
+    FixInternalContoursCifItemResult,
+    FixInternalContoursCifJobSummary,
+    FixInternalContoursCifWorkItem,
+    FrameLoadPayload,
+    FrameLoadRunnable,
+    GeometryValidationRunnable,
+    ImageProcessingState,
+    InternalContourFixStats,
+    Path,
+    PolygonData,
+    PreparedImageRequest,
+    PreparedImageRunnable,
+    PreprocessingPipeline,
+    PreviewProcessingRequest,
+    PreviewProcessingRunnable,
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QColor,
+    QEventLoop,
+    QListWidgetItem,
+    QMessageBox,
+    QModelIndex,
+    QPixmap,
+    QSignalBlocker,
+    QSpinBox,
+    Qt,
+    QTimer,
+    QWidget,
+    RewardEventType,
+    SaveOptions,
+    ThumbnailLoadRunnable,
+    TransitionPromptChoice,
+    VectorGeometrySettings,
+    WorkspaceLoadResult,
+    _fix_internal_contours_work_item,
+    build_base_frame_number_map,
+    build_base_frame_records,
+    build_prepared_image_signature,
+    build_preview_request_signature,
+    export_frame_to_dataset,
+    index_cif_file_paths,
+    is_image_path,
+    is_visible_image_path,
+    load_image_color,
+    load_polygons_vector,
+    mp,
+    navigation_allowed_after_autosave_attempt,
+    navigation_allowed_after_prompt,
+    neighborhood_indices,
+    normalize_recognition_mode,
+    normalize_via_search_mode,
+    np,
+    paint_image_row_item,
+    polygons_needing_repair,
+    save_polygons_vector,
+    save_result_bundle,
+    summarize_invalid_polygon_description_reasons,
+    threading,
+)
+from .host_contract import WidgetMixinHost
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class WidgetProcessingMixin:
+class WidgetProcessingMixin(WidgetMixinHost):
     def _start_image_recognition_profile(
         self: Any,
         request: PreviewProcessingRequest,
@@ -1087,7 +1164,7 @@ class WidgetProcessingMixin:
 
     def _clear_neighbor_frame_display_for_frame_change(self: Any) -> None:
         self._neighbor_sync_image_path = None
-        self._neighbor_frame_specs = []
+        self._neighbor_frame_specs: list[tuple[int, int, str]] = []
         self._neighbor_queued_paths.clear()
         timer = getattr(self, "_neighbor_apply_timer", None)
         if timer is not None:
@@ -1111,7 +1188,7 @@ class WidgetProcessingMixin:
         """Apply editor mutations without intermediate paints (image+vectors swap)."""
 
         editor = getattr(self, "polygon_editor", None)
-        if not qt_object_is_valid(editor):
+        if editor is None or not qt_object_is_valid(editor):
             callback()
             return
         editor.setUpdatesEnabled(False)
@@ -1127,7 +1204,7 @@ class WidgetProcessingMixin:
     def _queue_editor_display_pixmap(
         self: Any,
         image_path: str,
-        display_image: object,
+        display_image: np.ndarray | None,
         *,
         cache_key: tuple[str, str, str],
         preserve_view: bool = False,
@@ -1309,9 +1386,7 @@ class WidgetProcessingMixin:
             return True
         if getattr(state, "metal_overlay_polygons", None):
             return True
-        if getattr(state, "recognition_base_polygons", None):
-            return True
-        return False
+        return bool(getattr(state, "recognition_base_polygons", None))
 
     def _polygons_visible_in_editor(self: Any, state, polygons: list) -> list:
         if not self._recognition_hides_loaded_vectors():
@@ -1386,7 +1461,7 @@ class WidgetProcessingMixin:
             return
         filters_on = self._conductor_display_filters_enabled()
         if hasattr(self, "metal_show_rejected_checkbox"):
-            layers = {}
+            layers: dict[str, list[PolygonData]] = {}
             if state is not None:
                 layers = getattr(state, "metal_overlay_polygons", None) or {}
             elif self._workspace.current_state is not None:
@@ -1653,7 +1728,8 @@ class WidgetProcessingMixin:
                 max_dim,
                 source_image_loader=self._load_scene_source_image_cached,
             )
-            runnable.signals.result.connect(
+            connect_queued(
+                runnable.signals.result,
                 lambda generation, image_path, width, height, qimage: self._on_neighbor_frame_loaded(
                     generation,
                     image_path,
@@ -1661,11 +1737,10 @@ class WidgetProcessingMixin:
                     height,
                     qimage,
                 ),
-                Qt.ConnectionType.QueuedConnection,
             )
-            runnable.signals.finished.connect(
+            connect_queued(
+                runnable.signals.finished,
                 self._on_neighbor_frame_load_finished,
-                Qt.ConnectionType.QueuedConnection,
             )
             self._neighbor_thread_pool.start(runnable)
         except RuntimeError:
@@ -1791,7 +1866,7 @@ class WidgetProcessingMixin:
                 if vector_source_size is not None:
                     source_size = vector_source_size
             frames.append((column_offset, row_offset, image, image_path, polygons, source_size))
-        if not frames and getattr(self, "_neighbor_queued_paths", set()):
+        if not frames and bool(getattr(self, "_neighbor_queued_paths", set())):
             return
         self.polygon_editor.set_neighbor_frames(
             frames,
@@ -1848,9 +1923,8 @@ class WidgetProcessingMixin:
             and hasattr(self, "_ensure_neighbor_pyramid_or_prompt")
             and not bool(getattr(self, "_restoring_display_settings", False))
             and bool(self.isVisible())
-        ):
-            if not self._ensure_neighbor_pyramid_or_prompt():
-                return
+        ) and not self._ensure_neighbor_pyramid_or_prompt():
+            return
         current_path = self._workspace.current_image_path
         session = (
             self._frame_switch_profile_for_path(str(current_path))
@@ -1872,7 +1946,7 @@ class WidgetProcessingMixin:
             self.polygon_editor.set_pyramid_frame_store(
                 store,
                 frame_count=len(image_paths),
-                columns=max(1, int(getattr(self, "neighbor_columns_spin").value()))
+                columns=max(1, int(self.neighbor_columns_spin.value()))
                 if hasattr(self, "neighbor_columns_spin")
                 else 1,
                 current_frame_id=frame_id,
@@ -2133,7 +2207,7 @@ class WidgetProcessingMixin:
         profile_recognition = bool(recognition_session is not None)
         if profile_contact:
             contact_session.stop()
-        if profile_recognition:
+        if recognition_session is not None:
             recognition_session.stop()
         worker = PreviewProcessingRunnable(
             request_id=request_id,
@@ -2145,7 +2219,7 @@ class WidgetProcessingMixin:
             contact_session.preview_request_id = request_id
             contact_session.note("preview_started")
             worker.signals.profile.connect(self._on_contact_preview_profile)
-        if profile_recognition:
+        if recognition_session is not None:
             recognition_session.preview_request_id = request_id
             recognition_session.note("worker_started")
             if not profile_contact:
@@ -2632,7 +2706,7 @@ class WidgetProcessingMixin:
                     lambda: self._finish_contact_placement_profile("displayed"),
                 )
 
-    def _on_recognized_vias_deleted(self: Any, polygons: object) -> None:
+    def _on_recognized_vias_deleted(self: Any, polygons: Iterable[PolygonData] | None) -> None:
         removed_polygons = [
             polygon
             for polygon in list(polygons or [])
@@ -2759,7 +2833,7 @@ class WidgetProcessingMixin:
             blocker = QSignalBlocker(widget)
             try:
                 if isinstance(widget, QSpinBox):
-                    widget.setValue(int(round(float(change.new_value))))
+                    widget.setValue(round(float(change.new_value)))
                 else:
                     widget.setValue(float(change.new_value))
             finally:
@@ -2796,7 +2870,7 @@ class WidgetProcessingMixin:
         self._abort_in_flight_interactive_processing(preview=True, prepared=False)
         self.process_current_image(debounced=False)
 
-    def _format_contact_feedback_value(self: Any, value: object) -> str:
+    def _format_contact_feedback_value(self: Any, value: float) -> str:
         numeric = float(value)
         if numeric.is_integer():
             return str(int(numeric))
@@ -4015,7 +4089,7 @@ class WidgetProcessingMixin:
 
             sync_result = self._workspace.resolve_cached_load(normalized_load_path)
             if sync_result is not None:
-                state = sync_result.state
+                _unused_state = sync_result.state
                 needs_vectors = load_vectors and self._workspace.needs_vector_overlay(
                     normalized_load_path
                 )
@@ -4313,11 +4387,7 @@ class WidgetProcessingMixin:
             and not image_result.cache_hit
             and not image_result.reused_current_state
             and not image_result.vectors_only
-        ):
-            image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
-            image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
-            image_result.state.polygons_dirty = False
-        elif image_result.state is not None and image_result.vectors_only:
+        ) or (image_result.state is not None and image_result.vectors_only):
             image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
             image_result.state.reference_polygons = [polygon.clone() for polygon in image_result.state.polygons]
             image_result.state.polygons_dirty = False
@@ -4326,12 +4396,15 @@ class WidgetProcessingMixin:
             image_result.state.loaded_cif_path = self._find_matching_cif_path(image_result.image_path)
         if image_result.state is not None and not image_result.vectors_only:
             self._clear_stale_preprocessed_image_for_current_pipeline(image_result.state)
-        if image_result.reused_current_state:
+        if (
+            image_result.reused_current_state
+            and getattr(self, "_last_editor_display_path", None) == image_result.image_path
+        ):
             step_start = perf_counter()
             self._defer_frame_chrome_updates(image_result.image_path)
             if profile_enabled:
                 profile_timings["defer_frame_chrome"] = (perf_counter() - step_start) * 1000.0
-            if self._prepared_image_update_required(image_result):
+            if image_result.state is not None and self._prepared_image_update_required(image_result):
                 self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
             step_start = perf_counter()
             self._center_editor_on_current_main_image(force=False)
@@ -4398,7 +4471,7 @@ class WidgetProcessingMixin:
             self._update_vector_edit_status_label()
             if profile_enabled:
                 profile_timings["update_vector_status"] = (perf_counter() - step_start) * 1000.0
-        elif image_result.cache_hit:
+        elif image_result.cache_hit or image_result.reused_current_state:
             self._updating_views = True
             try:
                 step_start = perf_counter()
@@ -4470,7 +4543,7 @@ class WidgetProcessingMixin:
         if profile_enabled:
             profile_timings["sync_views"] = (perf_counter() - phase_start) * 1000.0
             phase_start = perf_counter()
-        if self._prepared_image_update_required(image_result):
+        if image_result.state is not None and self._prepared_image_update_required(image_result):
             self._queue_prepared_image_update(image_result.image_path, image_result.state.source_image)
         if profile_enabled:
             profile_timings["queue_prepared"] = (perf_counter() - phase_start) * 1000.0
@@ -4557,7 +4630,7 @@ class WidgetProcessingMixin:
             profile_session=profile_session,
         )
 
-        def _on_result(req_id: int, path: str, reasons_obj: object) -> None:
+        def _on_result(req_id: int, path: str, reasons_obj: dict[int, list[str]] | None) -> None:
             if bool(getattr(self, "_closing", False)):
                 return
             if req_id != int(getattr(self, "_geometry_validation_generation", 0)):
@@ -4672,7 +4745,7 @@ class WidgetProcessingMixin:
                 parts.append(label)
         if parts:
             return "; ".join(parts)
-        return "—" if self._ui_language == "ru" else "—"
+        return "—"
 
     def _offer_repair_invalid_polygon_descriptions(self: Any, expected_path: str = "") -> None:
         if bool(getattr(self, "_invalid_polygon_offer_active", False)):
@@ -4703,7 +4776,7 @@ class WidgetProcessingMixin:
             polygons,
             reasons_by_id=reasons_by_id,
         )
-        dismissed = getattr(self, "_invalid_polygon_prompt_dismissed", set())
+        dismissed: set[str] = getattr(self, "_invalid_polygon_prompt_dismissed", set())
         if current in dismissed:
             return
         self._invalid_polygon_offer_active = True
@@ -4841,7 +4914,7 @@ class WidgetProcessingMixin:
         running = getattr(self, "_frame_load_running_path", "") or ""
         if running and running not in getattr(self, "_image_path_to_index", {}):
             running = str(Path(running))
-        queued = getattr(self, "_prefetch_queued_paths", set())
+        queued: set[str] = getattr(self, "_prefetch_queued_paths", set())
         for path in neighborhood:
             if path in {current, running} or path in queued:
                 continue
@@ -4980,9 +5053,7 @@ class WidgetProcessingMixin:
         if neighbor_timer is not None and neighbor_timer.isActive():
             return False
         session = self._frame_switch_profile_for_path(normalized)
-        if session is not None and session.pending_since:
-            return False
-        return True
+        return not (session is not None and session.pending_since)
 
     def _schedule_frame_switch_profile_until_interactive(
         self: Any,
@@ -5166,7 +5237,7 @@ class WidgetProcessingMixin:
         self._set_work_simulation_running(True)
         self._work_simulation_paths = paths
         self._work_simulation_path_index = -1
-        self._work_simulation_target_polygons = []
+        self._work_simulation_target_polygons: list[PolygonData] = []
         self._work_simulation_visible_points = 0
         self._work_simulation_total_points = 0
         self._work_simulation_timer.setInterval(max(1, int(self._work_simulation_interval_ms)))
@@ -5183,7 +5254,7 @@ class WidgetProcessingMixin:
         self._work_simulation_visible_points = 0
         self._work_simulation_total_points = 0
         self._work_simulation_original_dirty = None
-        self._work_simulation_original_reference_polygons = []
+        self._work_simulation_original_reference_polygons: list[PolygonData] = []
         self._set_work_simulation_running(False)
 
     def _advance_work_simulation(self: Any) -> None:

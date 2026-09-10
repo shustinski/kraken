@@ -6,10 +6,10 @@ import io
 import logging
 import os
 import pstats
+from collections.abc import Callable
 from pathlib import Path
 from threading import Lock
 from time import perf_counter
-from typing import Callable
 
 import cv2
 import numpy as np

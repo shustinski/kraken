@@ -518,8 +518,8 @@ class CifViaSupportTests(unittest.TestCase):
         self.assertEqual(len(repaired), len(loaded))
         self.assertEqual(sum(1 for polygon in repaired if polygon.is_hole), holes_before)
 
-    def test_cif_loader_matches_klayout_fill_for_keyhole_frame_0525(self) -> None:
-        """0525 vector fill must match KLayout viewer (Qt WindingFill on authored ring)."""
+    def test_cif_loader_matches_klayout_fill_for_authored_keyhole(self) -> None:
+        """Keyhole fill must match KLayout (Qt WindingFill on the authored ring)."""
 
         import numpy as np
 
@@ -534,11 +534,9 @@ class CifViaSupportTests(unittest.TestCase):
             _stamp_cif_paint_ring_on_mask,
         )
 
-        cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0525.cif")
-        if not cif_path.exists():
-            self.skipTest("0525.cif fixture not available")
+        cif_path = Path(__file__).parents[1] / "fixtures" / "authored_keyhole.cif"
 
-        image_height = 2000
+        image_height = 100
         parsed = load_cif_primitives_klayout(cif_path)
         reference_mask = np.zeros((image_height, image_height), dtype=np.uint8)
         keyhole_cif_points: list[tuple[float, float]] | None = None
@@ -562,13 +560,13 @@ class CifViaSupportTests(unittest.TestCase):
 
         rendered_mask = _render_cif_klayout_layer_mask(image_size, loaded)
         xor_pixels = int(np.sum(np.bitwise_xor(reference_mask, rendered_mask) > 0))
-        self.assertEqual(xor_pixels, 0, msg=f"0525 layer fill differs from KLayout by {xor_pixels} pixels")
+        self.assertEqual(xor_pixels, 0, msg=f"Keyhole fill differs from KLayout by {xor_pixels} pixels")
 
         hole = next(polygon for polygon in loaded if polygon.parent_id == outer.id)
         hole_mask, left, top = _cif_paint_mask_from_ring(outer.cif_paint_ring)
         hole_left, hole_top, hole_width, hole_height = hole.bbox
-        local_x = int(round(hole_left + hole_width / 2)) - left
-        local_y = int(round(hole_top + hole_height / 2)) - top
+        local_x = round(hole_left + hole_width / 2) - left
+        local_y = round(hole_top + hole_height / 2) - top
         self.assertGreaterEqual(local_x, 0)
         self.assertGreaterEqual(local_y, 0)
         self.assertLess(local_x, hole_mask.shape[1])
@@ -1351,7 +1349,8 @@ class BoundaryVertexSnapTests(unittest.TestCase):
 
     def test_vertex_slit_can_attach_to_linked_neighbor_hole(self) -> None:
         from shapely import make_valid
-        from shapely.geometry import LineString, Polygon as ShapelyPolygon
+        from shapely.geometry import LineString
+        from shapely.geometry import Polygon as ShapelyPolygon
 
         from contour.serializers import _ring_with_orientation, _select_vertex_slit_for_hole
 

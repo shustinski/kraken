@@ -42,7 +42,7 @@ def detect_vias_template_raw(
     scales = _iter_scales(float(config.scale_min), float(config.scale_max), float(config.scale_step))
 
     for template_index, tmpl in enumerate(config.templates):
-        t0 = np.asarray(tmpl, dtype=np.uint8)
+        t0: np.ndarray = np.asarray(tmpl, dtype=np.uint8)
         if t0.ndim > 2:
             t0 = cv2.cvtColor(t0, cv2.COLOR_BGR2GRAY)
         th0, tw0 = t0.shape[:2]

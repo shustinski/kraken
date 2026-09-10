@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import acos, degrees, hypot, pi
 
@@ -49,7 +50,7 @@ def estimate_effective_polygon_width_px(
         return 0.0, "invalid"
     height, width = binary_mask.shape[:2]
     x, y, w_box, h_box = cv2.boundingRect(contour)
-    pad = max(4, int(round(0.08 * max(float(w_box), float(h_box), 1.0))))
+    pad = max(4, round(0.08 * max(float(w_box), float(h_box), 1.0)))
     x0 = max(0, x - pad)
     y0 = max(0, y - pad)
     x1 = min(width, x + w_box + pad)
@@ -114,7 +115,7 @@ def _depth(index: int, hierarchy: np.ndarray, cache: dict[int, int]) -> int:
 def _match_contour_to_dense_list(
     chain_simple: np.ndarray,
     contour_index: int,
-    dense_list: list[np.ndarray],
+    dense_list: Sequence[np.ndarray],
 ) -> np.ndarray:
     """Map the CHAIN_SIMPLE contour to the same boundary with CHAIN_APPROX_NONE (full pixel chain).
 
@@ -160,7 +161,7 @@ def _raw_contour_for_epsilon_simplify(
     contour_index: int,
     *,
     chain_flag: int,
-    dense_list: list[np.ndarray] | None,
+    dense_list: Sequence[np.ndarray] | None,
     use_dense_for_epsilon: bool,
 ) -> np.ndarray:
     if not use_dense_for_epsilon or chain_flag != cv2.CHAIN_APPROX_SIMPLE or not dense_list:
@@ -310,7 +311,7 @@ def _debug_candidates_for_mask(
     raise_if_preview_cancelled()
 
     use_dense = chain_flag == cv2.CHAIN_APPROX_SIMPLE and float(config.epsilon) > 0.0
-    dense_list: list[np.ndarray] | None = None
+    dense_list: Sequence[np.ndarray] | None = None
     if use_dense:
         dense_list, _ = cv2.findContours(
             binary_mask.copy(),
@@ -344,8 +345,8 @@ def _debug_candidates_for_mask(
         if config.epsilon_relative:
             epsilon *= cv2.arcLength(raw, True)
         approx = _adaptive_approximate_contour(raw, epsilon, config.preserve_corners) if epsilon > 0 else contour
-        points = [(float(point[0][0]), float(point[0][1])) for point in approx]
-        points = _finalize_closed_polygon_points(points, raw, (image_height, image_width), config)
+        approximate_points = [(float(point[0][0]), float(point[0][1])) for point in approx]
+        points = _finalize_closed_polygon_points(approximate_points, raw, (image_height, image_width), config)
         if points is None:
             continue
         if len(points) < 3:
@@ -705,7 +706,7 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
     raise_if_preview_cancelled()
 
     use_dense = chain_flag == cv2.CHAIN_APPROX_SIMPLE and float(config.epsilon) > 0.0
-    dense_list: list[np.ndarray] | None = None
+    dense_list: Sequence[np.ndarray] | None = None
     if use_dense:
         dense_list, _ = cv2.findContours(
             binary_mask.copy(),
@@ -737,8 +738,8 @@ def extract_polygons(mask: np.ndarray, settings: ContourExtractionSettings | Non
         if config.epsilon_relative:
             epsilon *= cv2.arcLength(raw, True)
         approx = _adaptive_approximate_contour(raw, epsilon, config.preserve_corners) if epsilon > 0 else contour
-        points = [(float(point[0][0]), float(point[0][1])) for point in approx]
-        points = _finalize_closed_polygon_points(points, raw, (image_height, image_width), config)
+        approximate_points = [(float(point[0][0]), float(point[0][1])) for point in approx]
+        points = _finalize_closed_polygon_points(approximate_points, raw, (image_height, image_width), config)
         if points is None:
             continue
         if len(points) < max(3, config.min_points):

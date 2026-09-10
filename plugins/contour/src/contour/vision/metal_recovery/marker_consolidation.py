@@ -651,7 +651,7 @@ def _sample_corridor(
     col_b: int,
     evidence: ConsolidationEvidence,
 ) -> _CorridorSample | None:
-    length = max(int(round(np.hypot(col_b - col_a, row_b - row_a))), 1)
+    length = max(round(np.hypot(col_b - col_a, row_b - row_a)), 1)
     rows = np.linspace(row_a, row_b, length + 1)
     cols = np.linspace(col_a, col_b, length + 1)
     dy = float(row_b - row_a)
@@ -690,7 +690,7 @@ def _sample_corridor(
     n = int(center_intensity.size)
     center_interior = np.ones(n, dtype=bool)
     if n >= 5:
-        trim = max(1, int(round(0.15 * n)))
+        trim = max(1, round(0.15 * n))
         center_interior[:trim] = False
         center_interior[-trim:] = False
     edge = np.concatenate(sampled_edge)
@@ -866,7 +866,7 @@ def _enclosed_conductor_basins(
 ) -> np.ndarray:
     radius = max(1.0, float(wide_interior_radius))
     rim_limit = float(np.percentile(evidence.rim_response, 85.0))
-    walls = np.where(evidence.rim_response >= max(rim_limit, 1e-4), 255, 0).astype(np.uint8)
+    walls: np.ndarray = np.where(evidence.rim_response >= max(rim_limit, 1e-4), 255, 0).astype(np.uint8)
     walls = cv2.dilate(walls, np.ones((5, 5), np.uint8))
     open_space = np.where(walls > 0, 0, 255).astype(np.uint8)
     count, labels, stats, _centroids = cv2.connectedComponentsWithStats(open_space, connectivity=4)

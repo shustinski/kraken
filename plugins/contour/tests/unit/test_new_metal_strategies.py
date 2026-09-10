@@ -25,8 +25,8 @@ from contour.vision.metal_recovery.graph_multi_separator import (
     _recover_paired_rim_ribbons,
     _thin_separator_to_one_pixel,
 )
-from contour.vision.metal_recovery.material_classifier import classify_partition_material
 from contour.vision.metal_recovery.graph_strategies import _lifted_relations
+from contour.vision.metal_recovery.material_classifier import classify_partition_material
 from contour.vision.metal_recovery.owt_ucm import (
     build_ucm_hierarchy,
     oriented_watershed_partition,

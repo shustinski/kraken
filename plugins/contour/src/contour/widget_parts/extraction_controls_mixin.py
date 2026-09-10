@@ -1,9 +1,23 @@
 from __future__ import annotations
 
-from ._imports import *  # noqa: F403
+from ._imports import (
+    EXTRACTION_HELP_TEXTS,
+    VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
+    VIA_SEARCH_MODE_HEURISTIC,
+    VIA_SEARCH_MODE_HYBRID,
+    VIA_SEARCH_MODE_TEMPLATE,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    QWidget,
+    _localized_text,
+    normalize_via_search_mode,
+)
+from .host_contract import WidgetMixinHost
 
 
-class WidgetExtractionControlsMixin:
+class WidgetExtractionControlsMixin(WidgetMixinHost):
     def _renumber_fixed_via_rows(self) -> None:
         for index, row in enumerate(self._fixed_via_rows, start=1):
             label = row["label"]
@@ -741,8 +755,8 @@ class WidgetExtractionControlsMixin:
                     "is indistinguishable from the substrate and only its outline is visible.",
                 )
             )
-            if getattr(self, "metal_segmentation_strategy_label_widget", None) is not None:
-                self.metal_segmentation_strategy_label_widget.setToolTip(
+            if (label_widget := getattr(self, "metal_segmentation_strategy_label_widget", None)) is not None:
+                label_widget.setToolTip(
                     self.metal_segmentation_strategy_combo.toolTip()
                 )
         if getattr(self, "metal_auto_contrast_step_spin", None) is not None:
@@ -756,8 +770,8 @@ class WidgetExtractionControlsMixin:
                     "Set to 0 to disable this check.",
                 )
             )
-            if getattr(self, "metal_auto_contrast_step_label_widget", None) is not None:
-                self.metal_auto_contrast_step_label_widget.setToolTip(
+            if (label_widget := getattr(self, "metal_auto_contrast_step_label_widget", None)) is not None:
+                label_widget.setToolTip(
                     self.metal_auto_contrast_step_spin.toolTip()
                 )
         if getattr(self, "metal_auto_source_contrast_step_spin", None) is not None:
@@ -771,8 +785,8 @@ class WidgetExtractionControlsMixin:
                     "Set to 0 to disable this check.",
                 )
             )
-            if getattr(self, "metal_auto_source_contrast_step_label_widget", None) is not None:
-                self.metal_auto_source_contrast_step_label_widget.setToolTip(
+            if (label_widget := getattr(self, "metal_auto_source_contrast_step_label_widget", None)) is not None:
+                label_widget.setToolTip(
                     self.metal_auto_source_contrast_step_spin.toolTip()
                 )
         if getattr(self, "metal_auto_directional_gap_bridge_spin", None) is not None:
@@ -786,8 +800,8 @@ class WidgetExtractionControlsMixin:
                     "Set to 0 to disable bridging.",
                 )
             )
-            if getattr(self, "metal_auto_directional_gap_bridge_label_widget", None) is not None:
-                self.metal_auto_directional_gap_bridge_label_widget.setToolTip(
+            if (label_widget := getattr(self, "metal_auto_directional_gap_bridge_label_widget", None)) is not None:
+                label_widget.setToolTip(
                     self.metal_auto_directional_gap_bridge_spin.toolTip()
                 )
         if getattr(self, "metal_auto_directional_gap_min_source_spin", None) is not None:
@@ -799,8 +813,8 @@ class WidgetExtractionControlsMixin:
                     "Increase it to reduce the risk of merging neighboring conductors.",
                 )
             )
-            if getattr(self, "metal_auto_directional_gap_min_source_label_widget", None) is not None:
-                self.metal_auto_directional_gap_min_source_label_widget.setToolTip(
+            if (label_widget := getattr(self, "metal_auto_directional_gap_min_source_label_widget", None)) is not None:
+                label_widget.setToolTip(
                     self.metal_auto_directional_gap_min_source_spin.toolTip()
                 )
         if getattr(self, "metal_gap_bridge_spin", None) is not None:
@@ -966,8 +980,8 @@ class WidgetExtractionControlsMixin:
                     "Decrease: fills recover more readily, but neighbouring traces merge more often.",
                 )
             )
-            if getattr(self, "metal_rw_beta_label_widget", None) is not None:
-                self.metal_rw_beta_label_widget.setToolTip(self.metal_rw_beta_spin.toolTip())
+            if (label_widget := getattr(self, "metal_rw_beta_label_widget", None)) is not None:
+                label_widget.setToolTip(self.metal_rw_beta_spin.toolTip())
         if getattr(self, "metal_rw_iterations_spin", None) is not None:
             self.metal_rw_iterations_spin.setToolTip(
                 tt(
@@ -975,8 +989,8 @@ class WidgetExtractionControlsMixin:
                     "Jacobi iterations for Random Walker. More iterations stabilize wide frames; fewer run faster but may stop short of equilibrium.",
                 )
             )
-            if getattr(self, "metal_rw_iterations_label_widget", None) is not None:
-                self.metal_rw_iterations_label_widget.setToolTip(self.metal_rw_iterations_spin.toolTip())
+            if (label_widget := getattr(self, "metal_rw_iterations_label_widget", None)) is not None:
+                label_widget.setToolTip(self.metal_rw_iterations_spin.toolTip())
         if getattr(self, "metal_gc_iterations_spin", None) is not None:
             self.metal_gc_iterations_spin.setToolTip(
                 tt(
@@ -984,8 +998,8 @@ class WidgetExtractionControlsMixin:
                     "OpenCV GrabCut iterations. 3–5 is typical; more rarely changes the contour and only slows the preview.",
                 )
             )
-            if getattr(self, "metal_gc_iterations_label_widget", None) is not None:
-                self.metal_gc_iterations_label_widget.setToolTip(self.metal_gc_iterations_spin.toolTip())
+            if (label_widget := getattr(self, "metal_gc_iterations_label_widget", None)) is not None:
+                label_widget.setToolTip(self.metal_gc_iterations_spin.toolTip())
         if getattr(self, "metal_recon_erode_spin", None) is not None:
             self.metal_recon_erode_spin.setToolTip(
                 tt(
@@ -993,8 +1007,8 @@ class WidgetExtractionControlsMixin:
                     "Erode metal cores before geodesic reconstruction. 0 keeps cores as-is; increasing pulls the seed off the rim and is less likely to jump a narrow gap.",
                 )
             )
-            if getattr(self, "metal_recon_erode_label_widget", None) is not None:
-                self.metal_recon_erode_label_widget.setToolTip(self.metal_recon_erode_spin.toolTip())
+            if (label_widget := getattr(self, "metal_recon_erode_label_widget", None)) is not None:
+                label_widget.setToolTip(self.metal_recon_erode_spin.toolTip())
         if getattr(self, "metal_boundary_relief_spin", None) is not None:
             self.metal_boundary_relief_spin.setToolTip(
                 tt(
@@ -1006,8 +1020,8 @@ class WidgetExtractionControlsMixin:
                     "Decrease: faint edges are caught, but noise adds walls and shatters large pours.",
                 )
             )
-            if getattr(self, "metal_boundary_relief_label_widget", None) is not None:
-                self.metal_boundary_relief_label_widget.setToolTip(
+            if (label_widget := getattr(self, "metal_boundary_relief_label_widget", None)) is not None:
+                label_widget.setToolTip(
                     self.metal_boundary_relief_spin.toolTip()
                 )
         if getattr(self, "metal_boundary_background_spin", None) is not None:
@@ -1021,8 +1035,8 @@ class WidgetExtractionControlsMixin:
                     "Decrease: dense thin traces separate better, while the edge of a wide pour may split into two separate walls.",
                 )
             )
-            if getattr(self, "metal_boundary_background_label_widget", None) is not None:
-                self.metal_boundary_background_label_widget.setToolTip(
+            if (label_widget := getattr(self, "metal_boundary_background_label_widget", None)) is not None:
+                label_widget.setToolTip(
                     self.metal_boundary_background_spin.toolTip()
                 )
         if getattr(self, "metal_show_conductors_checkbox", None) is not None:
@@ -1224,18 +1238,18 @@ class WidgetExtractionControlsMixin:
         self._update_via_threshold_controls_state()
 
     def _update_bright_via_diameter_controls_state(self) -> None:
-        if getattr(self, "bright_via_diameter_range_label_widget", None) is not None:
-            self.bright_via_diameter_range_label_widget.setVisible(True)
+        if (label_widget := getattr(self, "bright_via_diameter_range_label_widget", None)) is not None:
+            label_widget.setVisible(True)
         if hasattr(self, "bright_via_diameter_range_widget"):
             self.bright_via_diameter_range_widget.setVisible(True)
-        if getattr(self, "via_output_diameter_label_widget", None) is not None:
-            self.via_output_diameter_label_widget.setVisible(True)
+        if (label_widget := getattr(self, "via_output_diameter_label_widget", None)) is not None:
+            label_widget.setVisible(True)
         self.via_output_diameter_spin.setVisible(True)
 
     def _update_via_threshold_controls_state(self) -> None:
         mode = normalize_via_search_mode(self.via_search_mode_combo.currentData())
         advanced = self._advanced_extraction_enabled()
-        bright_enabled = mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
+        _unused_bright_enabled = mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
         heuristic_mode = mode in (VIA_SEARCH_MODE_HEURISTIC, VIA_SEARCH_MODE_HYBRID)
         blob_enabled = False
         template_enabled = mode in (VIA_SEARCH_MODE_TEMPLATE, VIA_SEARCH_MODE_HYBRID)
@@ -1285,10 +1299,10 @@ class WidgetExtractionControlsMixin:
             self._update_bright_via_diameter_controls_state()
         if hasattr(self, "via_heuristic_polarity_combo"):
             self.via_heuristic_polarity_combo.setVisible(heuristic_mode)
-        if getattr(self, "bright_via_polarity_label_widget", None) is not None:
-            self.bright_via_polarity_label_widget.setVisible(heuristic_mode)
-        if getattr(self, "bright_via_mode_stack_label_widget", None) is not None:
-            self.bright_via_mode_stack_label_widget.setVisible(not template_only)
+        if (label_widget := getattr(self, "bright_via_polarity_label_widget", None)) is not None:
+            label_widget.setVisible(heuristic_mode)
+        if (label_widget := getattr(self, "bright_via_mode_stack_label_widget", None)) is not None:
+            label_widget.setVisible(not template_only)
         sem_mode = mode == VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG
         if hasattr(self, "bright_via_quality_group"):
             self.bright_via_quality_group.setVisible(sem_mode and not template_only)
@@ -1318,10 +1332,10 @@ class WidgetExtractionControlsMixin:
         self.via_white_range_widget.setVisible(show_in_basics)
         self.via_black_range_checkbox.setVisible(show_in_basics)
         self.via_black_range_widget.setVisible(show_in_basics)
-        if getattr(self, "bright_via_white_range_label_widget", None) is not None:
-            self.bright_via_white_range_label_widget.setVisible(show_in_basics)
-        if getattr(self, "bright_via_black_range_label_widget", None) is not None:
-            self.bright_via_black_range_label_widget.setVisible(show_in_basics)
+        if (label_widget := getattr(self, "bright_via_white_range_label_widget", None)) is not None:
+            label_widget.setVisible(show_in_basics)
+        if (label_widget := getattr(self, "bright_via_black_range_label_widget", None)) is not None:
+            label_widget.setVisible(show_in_basics)
 
         # Legacy via panel duplicates (recognition disabled).
         legacy_visible = (

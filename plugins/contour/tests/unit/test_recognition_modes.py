@@ -325,13 +325,7 @@ def test_contact_polarity_is_in_basics_and_obsolete_debug_controls_are_removed()
         assert {editor.width() for editor in basic_single_editors} == {
             widget.bright_via_basics_editor_width
         }
-        basic_fields = basic_single_editors + (
-            widget.bright_via_diameter_range_widget,
-            widget.via_white_range_widget,
-            widget.via_black_range_widget,
-            widget.via_preset_widget,
-            widget.reset_bright_via_button,
-        )
+        basic_fields = (*basic_single_editors, widget.bright_via_diameter_range_widget, widget.via_white_range_widget, widget.via_black_range_widget, widget.via_preset_widget, widget.reset_bright_via_button)
         laid_out_x_positions = {
             field.geometry().x()
             for field in basic_fields
@@ -407,7 +401,7 @@ def test_template_table_reorders_all_template_metadata() -> None:
 
 
 def test_template_table_empty_hint_and_inherited_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     widget = PolygonExtractionWidget()
     try:
         empty_hint = widget.via_template_table.cellWidget(0, 0)
@@ -582,7 +576,7 @@ def test_conductor_click_shows_complete_geometry_properties(
 def test_heuristic_contact_click_shows_measured_features_and_expert_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     widget = PolygonExtractionWidget()
     try:
         polygon = PolygonData(

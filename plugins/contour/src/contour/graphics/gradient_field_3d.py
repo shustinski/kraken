@@ -180,12 +180,12 @@ def _stretch_height(height: np.ndarray) -> np.ndarray:
 
 
 def _lowpass_resize(values: np.ndarray, cols: int, rows: int, *, sigma: float) -> np.ndarray:
-    data = np.ascontiguousarray(values, dtype=np.float32)
+    data: np.ndarray = np.ascontiguousarray(values, dtype=np.float32)
     if min(int(data.shape[0]), int(data.shape[1])) >= 12:
-        kernel = max(3, int(round(float(sigma) * 6.0)) | 1)
+        kernel = max(3, round(float(sigma) * 6.0) | 1)
         data = cv2.GaussianBlur(data, (kernel, kernel), float(sigma))
     resized = cv2.resize(data, (int(cols), int(rows)), interpolation=cv2.INTER_AREA)
-    fine = max(3, int(round(5.0)) | 1)
+    fine = max(3, round(5.0) | 1)
     return cv2.GaussianBlur(resized, (fine, fine), 1.15)
 
 
@@ -223,8 +223,8 @@ def _build_faces(
 def _fit_grid_shape(rows: int, cols: int, max_side: int) -> tuple[int, int]:
     longest = max(rows, cols, 1)
     scale = min(1.0, float(max_side) / float(longest))
-    out_rows = max(8, int(round(rows * scale)))
-    out_cols = max(8, int(round(cols * scale)))
+    out_rows = max(8, round(rows * scale))
+    out_cols = max(8, round(cols * scale))
     return out_rows, out_cols
 
 
@@ -293,7 +293,7 @@ def _face_shade(normals: np.ndarray, azimuth_deg: float, elevation_deg: float) -
     el = radians(float(elevation_deg))
     ca, sa = cos(az), sin(az)
     ce, se = cos(el), sin(el)
-    nx = ca * normals[:, 0] - sa * normals[:, 1]
+    _unused_nx = ca * normals[:, 0] - sa * normals[:, 1]
     ny = sa * normals[:, 0] + ca * normals[:, 1]
     nz = normals[:, 2]
     cam_z = se * ny + ce * nz
@@ -347,13 +347,13 @@ def _draw_box(
         (3, 7),
     )
     for a, b in edges:
-        p0 = (int(round(mapped[a, 0])), int(round(mapped[a, 1])))
-        p1 = (int(round(mapped[b, 0])), int(round(mapped[b, 1])))
+        p0 = (round(mapped[a, 0]), round(mapped[a, 1]))
+        p1 = (round(mapped[b, 0]), round(mapped[b, 1]))
         cv2.line(image, p0, p1, _BOX_BGR, 1, cv2.LINE_AA)
     if not labels:
         return
     for index, text in ((1, "X"), (2, "Y"), (4, "Z")):
-        px, py = int(round(mapped[index, 0])), int(round(mapped[index, 1]))
+        px, py = round(mapped[index, 0]), round(mapped[index, 1])
         cv2.putText(image, text, (px + 4, py - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 244, 255), 1, cv2.LINE_AA)
 
 
@@ -386,7 +386,7 @@ def _draw_arrowhead(image: np.ndarray, pts: np.ndarray, color: tuple[int, int, i
     if length < 4.0:
         return
     ux, uy = delta / length
-    nx, ny = -uy, ux
+    nx, _unused_ny = -uy, ux
     tip = 8.0
     left = end - ux * tip + nx * 4.0
     right = end - ux * tip - nx * 4.0
@@ -409,13 +409,13 @@ def _trace_streamlines(
     if peak <= 1e-8:
         return []
     min_mag = 0.10 * peak
-    seeds_n = max(3, int(round(count**0.5)))
+    seeds_n = max(3, round(count**0.5))
     row_ids = np.linspace(1, rows - 2, seeds_n)
     col_ids = np.linspace(1, cols - 2, seeds_n)
     lines: list[np.ndarray] = []
     for row in row_ids:
         for col in col_ids:
-            if float(mag[int(round(row)), int(round(col))]) < min_mag:
+            if float(mag[round(row), round(col)]) < min_mag:
                 continue
             forward = _integrate_line(gx, gy, height, grid_x, grid_y, col, row, 1.0, min_mag)
             backward = _integrate_line(gx, gy, height, grid_x, grid_y, col, row, -1.0, min_mag)

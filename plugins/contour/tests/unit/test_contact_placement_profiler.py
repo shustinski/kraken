@@ -118,6 +118,7 @@ def test_image_recognition_profile_combines_worker_and_ui_stats() -> None:
         image_path="sample.png",
         recognition_mode="via",
     )
+    assert session.action == "recognition"
     assert _some_contact_work() > 0
     session.stop()
     worker = cProfile.Profile()

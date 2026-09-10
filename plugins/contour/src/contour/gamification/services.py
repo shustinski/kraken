@@ -186,27 +186,27 @@ class GamificationProfileService:
                 progress.rarity = Rarity.COMMON
 
         for skin_id, definition in SKIN_DEFINITIONS.items():
-            progress = profile.skin_progress.get(skin_id)
-            if progress is None:
-                progress = SkinProgress(
+            skin_progress = profile.skin_progress.get(skin_id)
+            if skin_progress is None:
+                skin_progress = SkinProgress(
                     skin_id=skin_id,
                     pet_type=definition.pet_type,
                     is_default=definition.is_default,
                 )
-                profile.skin_progress[skin_id] = progress
-            progress.skin_id = skin_id
-            progress.pet_type = definition.pet_type
-            progress.is_default = definition.is_default
+                profile.skin_progress[skin_id] = skin_progress
+            skin_progress.skin_id = skin_id
+            skin_progress.pet_type = definition.pet_type
+            skin_progress.is_default = definition.is_default
             if not profile.pet_progress[definition.pet_type].unlocked:
-                progress.unlocked = False
-                progress.rarity = None
+                skin_progress.unlocked = False
+                skin_progress.rarity = None
             if definition.is_default and profile.pet_progress[definition.pet_type].unlocked:
-                progress.unlocked = True
-                progress.rarity = progress.rarity or Rarity.COMMON
-            if not progress.unlocked:
-                progress.rarity = None
-            elif progress.rarity not in RARITY_ORDER:
-                progress.rarity = Rarity.COMMON
+                skin_progress.unlocked = True
+                skin_progress.rarity = skin_progress.rarity or Rarity.COMMON
+            if not skin_progress.unlocked:
+                skin_progress.rarity = None
+            elif skin_progress.rarity not in RARITY_ORDER:
+                skin_progress.rarity = Rarity.COMMON
 
         self._repair_pet_inventory(profile.pet_fragments.fragments_by_pet)
         self._repair_skin_inventory(profile.skin_fragments.fragments_by_skin_id)

@@ -1,9 +1,44 @@
 from __future__ import annotations
 
-from ._imports import *  # noqa: F403
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import QLayout
+
+from ._imports import (
+    EXTRACTION_HELP_TEXTS,
+    PIPELINE_OPERATION_GROUPS,
+    PIPELINE_OPERATION_HELP_TEXTS,
+    PIPELINE_PARAMETER_HELP_TEXTS,
+    QDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMenu,
+    QPixmap,
+    QPushButton,
+    QScrollArea,
+    Qt,
+    QTextEdit,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    _localized_text,
+    available_operations,
+    build_display_tab,
+    build_editor_hotkeys_plain_text,
+    build_extraction_tab,
+    build_files_tab,
+    build_help_tab,
+    build_pipeline_tab,
+    cv2,
+    cv_to_qimage,
+    get_operation_descriptor,
+    get_operation_display_name,
+    np,
+)
+from .host_contract import WidgetMixinHost
 
 
-class WidgetHelpMixin:
+class WidgetHelpMixin(WidgetMixinHost):
     def _build_files_tab(self) -> QWidget:
         return build_files_tab(self)
 
@@ -19,9 +54,11 @@ class WidgetHelpMixin:
     def _build_help_tab(self) -> QWidget:
         return build_help_tab(self)
 
-    def _clear_layout_widgets(self, layout: QVBoxLayout) -> None:
+    def _clear_layout_widgets(self, layout: QLayout) -> None:
         while layout.count():
             item = layout.takeAt(0)
+            if item is None:
+                continue
             widget = item.widget()
             child_layout = item.layout()
             if widget is not None:
@@ -132,33 +169,41 @@ class WidgetHelpMixin:
         if self._help_menu is None:
             return
         self._help_menu.clear()
-        postprocess_action = self._help_menu.addAction(
+        postprocess_action = QAction(
             "Постобработка ручных инструментов"
             if self._ui_language == "ru"
-            else "Manual tool post-processing"
+            else "Manual tool post-processing",
+            self._help_menu,
         )
+        self._help_menu.addAction(postprocess_action)
         postprocess_action.setObjectName("manualToolPostprocessAction")
         postprocess_action.triggered.connect(lambda _checked=False: self._show_manual_tool_postprocess_dialog())
         self._help_menu.addSeparator()
-        overview_action = self._help_menu.addAction(
+        overview_action = QAction(
             self._tr(
                 "help_all_filters_action", "Все преобразования" if self._ui_language == "ru" else "All transformations"
-            )
+            ),
+            self._help_menu,
         )
+        self._help_menu.addAction(overview_action)
         overview_action.triggered.connect(lambda _checked=False: self._show_help_dialog())
-        hotkeys_action = self._help_menu.addAction(
+        hotkeys_action = QAction(
             self._tr(
                 "help_editor_hotkeys_action",
                 "Горячие клавиши редактора" if self._ui_language == "ru" else "Editor hotkeys",
-            )
+            ),
+            self._help_menu,
         )
+        self._help_menu.addAction(hotkeys_action)
         hotkeys_action.triggered.connect(lambda _checked=False: self._show_editor_hotkeys_dialog())
         self._help_menu.addSeparator()
         for group_key, labels, operations in PIPELINE_OPERATION_GROUPS:
-            submenu = self._help_menu.addMenu(labels[0] if self._ui_language == "ru" else labels[1])
+            submenu = QMenu(labels[0] if self._ui_language == "ru" else labels[1], self._help_menu)
+            self._help_menu.addMenu(submenu)
             submenu.setObjectName(f"helpMenu_{group_key}")
             for operation_name in operations:
-                action = submenu.addAction(get_operation_display_name(operation_name, self._ui_language))
+                action = QAction(get_operation_display_name(operation_name, self._ui_language), submenu)
+                submenu.addAction(action)
                 action.triggered.connect(lambda _checked=False, op=operation_name: self._show_help_dialog(op))
 
     def _show_help_dialog(self, operation_name: str | None = None) -> None:
@@ -272,9 +317,11 @@ class WidgetHelpMixin:
             return None
         for index in range(self.operation_tree.topLevelItemCount()):
             group_item = self.operation_tree.topLevelItem(index)
+            if group_item is None:
+                continue
             for child_index in range(group_item.childCount()):
                 child_item = group_item.child(child_index)
-                if child_item.data(0, Qt.ItemDataRole.UserRole) == operation_name:
+                if child_item is not None and child_item.data(0, Qt.ItemDataRole.UserRole) == operation_name:
                     return child_item
         return None
 
@@ -313,7 +360,7 @@ class WidgetHelpMixin:
         if item.data(0, Qt.ItemDataRole.UserRole):
             self._add_pipeline_step()
 
-    def _set_field_tooltip(self, label_widget: QLabel | None, field_widget: QWidget, help_key: str) -> None:
+    def _set_field_tooltip(self, label_widget: QWidget | None, field_widget: QWidget, help_key: str) -> None:
         tooltip = _localized_text(EXTRACTION_HELP_TEXTS, help_key, self._ui_language)
         if label_widget is not None:
             label_widget.setToolTip(tooltip)

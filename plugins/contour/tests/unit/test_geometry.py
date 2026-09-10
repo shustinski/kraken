@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-
 from unittest.mock import patch
 
 from contour.domain import PolygonData, compute_polygon_metrics
@@ -90,13 +89,13 @@ class GeometryTests(unittest.TestCase):
         self.assertFalse(is_valid_closed_polygon_vertex_move(pts, 1))
 
     def test_edge_move_validation_accepts_parallel_translation(self) -> None:
-        pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
+        _unused_pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
         moved = [(0.0, 5.0), (40.0, 5.0), (40.0, 40.0), (0.0, 40.0)]
         self.assertTrue(is_valid_closed_polygon_edge_move(moved, 0))
 
     def test_edge_move_validation_rejects_crossing_translation(self) -> None:
-        pts = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
-        moved = [(15.0, 0.0), (55.0, 0.0), (40.0, 40.0), (0.0, 40.0)]
+        # Translate one edge of a concave ring across the opposite indentation.
+        moved = [(0.0, 30.0), (40.0, 30.0), (40.0, 40.0), (20.0, 20.0), (0.0, 40.0)]
         self.assertFalse(is_valid_closed_polygon_edge_move(moved, 0))
 
     def test_open_polyline_rejects_segment_crossing_prior_edge(self) -> None:

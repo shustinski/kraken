@@ -153,6 +153,13 @@ class ViaDetectionSettings:
 RecognitionSettingsV2 = MetalRecoverySettings | ViaDetectionSettings
 
 
+def _require_choice[T: str](value: str, choices: tuple[T, ...], *, field_name: str) -> T:
+    for choice in choices:
+        if value == choice:
+            return choice
+    raise ValueError(f"Unsupported {field_name}: {value!r}; expected one of {choices}")
+
+
 @dataclass(slots=True)
 class SettingsMigrationReport:
     migrated_fields: list[str] = field(default_factory=list)
@@ -344,9 +351,17 @@ class ProcessingRequestV2:
         )
         if legacy.recognition_mode == "via":
             recognition: RecognitionSettingsV2 = ViaDetectionSettings(
-                search_mode=legacy.via_search_mode,
-                polarity=legacy.via_heuristic_polarity,
-                size_mode=legacy.via_size_mode,
+                search_mode=_require_choice(
+                    legacy.via_search_mode,
+                    ("heuristic", "bright_tophat_dog", "template", "hybrid"),
+                    field_name="via_search_mode",
+                ),
+                polarity=_require_choice(
+                    legacy.via_heuristic_polarity,
+                    ("auto", "bright", "dark", "ring_light_ring", "ring_dark_ring"),
+                    field_name="via_heuristic_polarity",
+                ),
+                size_mode=_require_choice(legacy.via_size_mode, ("range", "fixed"), field_name="via_size_mode"),
                 candidate_diameter_min=legacy.bright_via_diameter_min,
                 candidate_diameter_max=legacy.bright_via_diameter_max,
                 output_diameter=legacy.via_output_diameter,
@@ -386,8 +401,12 @@ class ProcessingRequestV2:
                 max_trace_width_px=legacy.metal_max_trace_width_px,
                 min_trace_length_px=legacy.metal_min_trace_length_px,
                 min_object_area=legacy.metal_min_object_area,
-                hierarchy_mode=legacy.metal_hierarchy_mode,
-                border_handling=legacy.metal_border_handling,
+                hierarchy_mode=_require_choice(
+                    legacy.metal_hierarchy_mode, ("full", "external"), field_name="metal_hierarchy_mode"
+                ),
+                border_handling=_require_choice(
+                    legacy.metal_border_handling, ("mark", "ignore", "accept"), field_name="metal_border_handling"
+                ),
                 use_wide_conductor_gradient=legacy.metal_use_wide_conductor_gradient,
                 watershed_smoothing_sigma=legacy.metal_watershed_smoothing_sigma,
                 watershed_core_margin=legacy.metal_watershed_core_margin,

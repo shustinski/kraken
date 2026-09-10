@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from .schemas import ImageRef
+
+ensure_uint8: Callable[[np.ndarray], np.ndarray] | None
+load_image_color: Callable[[str | Path], np.ndarray] | None
 
 try:
     from ..utils import ensure_uint8, load_image_color
@@ -20,7 +24,10 @@ def load_bgr(path: str | Path) -> np.ndarray:
     if load_image_color is None:
         import cv2
 
-        return cv2.imread(str(path), cv2.IMREAD_COLOR)
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError(f"Could not load image: {path}")
+        return image
     return load_image_color(str(path))
 
 

@@ -1676,8 +1676,8 @@ def _polygon_topo_points_key(points: list[tuple[float, float]]) -> object:
     return (
         "dense",
         n,
-        int(round(centroid_x * inv_n * 10_000.0)),
-        int(round(centroid_y * inv_n * 10_000.0)),
+        round(centroid_x * inv_n * 10_000.0),
+        round(centroid_y * inv_n * 10_000.0),
     )
 
 
@@ -2019,9 +2019,8 @@ def postprocess_vertex_move_edit(
             work = drop_polygons_invalid_points(work)
             work = filter_simple_valid_polygons(work)
             work = drop_orphan_holes(work)
-            if before_merge != _polygons_topo_signature(work):
-                if polygon_id not in {polygon.id for polygon in work}:
-                    return work, True, resolve_focus_id_after_geometry_pass(polygons, polygon_id, work)
+            if before_merge != _polygons_topo_signature(work) and polygon_id not in {polygon.id for polygon in work}:
+                return work, True, resolve_focus_id_after_geometry_pass(polygons, polygon_id, work)
         return work, True, polygon_id
 
     work = drop_orphan_holes(work)

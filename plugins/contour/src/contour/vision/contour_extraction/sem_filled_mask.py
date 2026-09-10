@@ -26,7 +26,7 @@ from ..schemas import SemPolarity
 try:
     from ...utils import ensure_uint8
 except ImportError:  # pragma: no cover
-    from ..io_normalize import ensure_uint8_local as ensure_uint8  # type: ignore[misc,assignment]
+    from ..io_normalize import ensure_uint8_local as ensure_uint8
 
 
 class SegmentationStrategyName(StrEnum):
@@ -215,9 +215,9 @@ def extract_filled_mask(
         strategies.append((name, mm))
 
     scored: list[tuple[str, float, np.ndarray]] = []
-    for name, m in strategies:
+    for strategy_name, m in strategies:
         q = _quality_score(prep, m)
-        scored.append((name, q, m))
+        scored.append((strategy_name, q, m))
     scored.sort(key=lambda t: t[1], reverse=True)
     best_name, _best_q, best_mask = scored[0]
     alternatives = [(n, float(q)) for n, q, _ in scored]

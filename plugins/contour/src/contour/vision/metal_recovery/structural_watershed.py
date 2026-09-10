@@ -497,9 +497,9 @@ def _hessian_ridge_at_scale(source: np.ndarray, sigma: float) -> tuple[np.ndarra
     blurred = cv2.GaussianBlur(source, (0, 0), max(0.4, float(sigma)))
     lx = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
     ly = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)
-    lxx = cv2.Sobel(lx, cv2.CV_32F, 1, 0, ksize=3)
-    lxy = cv2.Sobel(lx, cv2.CV_32F, 0, 1, ksize=3)
-    lyy = cv2.Sobel(ly, cv2.CV_32F, 0, 1, ksize=3)
+    lxx: np.ndarray = cv2.Sobel(lx, cv2.CV_32F, 1, 0, ksize=3)
+    lxy: np.ndarray = cv2.Sobel(lx, cv2.CV_32F, 0, 1, ksize=3)
+    lyy: np.ndarray = cv2.Sobel(ly, cv2.CV_32F, 0, 1, ksize=3)
     scale = float(sigma) * float(sigma)
     lxx *= scale
     lxy *= scale
@@ -717,8 +717,8 @@ def _oriented_line_kernel(size: int, angle: float) -> np.ndarray:
     dx = float(np.cos(angle))
     dy = float(np.sin(angle))
     for offset in range(-center, center + 1):
-        x = int(round(center + offset * dx))
-        y = int(round(center + offset * dy))
+        x = round(center + offset * dx)
+        y = round(center + offset * dy)
         if 0 <= x < length and 0 <= y < length:
             kernel[y, x] = 1
     kernel[center, center] = 1
@@ -788,7 +788,7 @@ def _eroded_wide_cores(core_seeds: np.ndarray, radius: float) -> np.ndarray:
     wide = np.where(distance >= radius, 255, 0).astype(np.uint8)
     if np.any(wide):
         return wide
-    return _erode_binary(cores, max(1, int(round(radius))))
+    return _erode_binary(cores, max(1, round(radius)))
 
 
 def _rim_walls(features: _StructuralFeatures) -> np.ndarray:

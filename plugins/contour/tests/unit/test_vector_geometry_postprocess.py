@@ -4,34 +4,31 @@ import unittest
 
 from contour.application.vector_geometry_postprocess import (
     VectorGeometrySettings,
+    apply_delete_area_geometry_repair,
     apply_edge_translation_to_clone,
+    apply_heavy_geometry_repair_after_edit,
+    apply_overlap_repair_patch,
     apply_polygon_points_to_clone,
+    apply_topology_repair_after_edit,
     apply_vertex_delete_to_clone,
     apply_vertex_position_to_clone,
     clip_polygons_to_frame_raster,
+    collapse_redundant_vertices_for_polygon_ids,
     dissolve_self_intersecting_polygons,
     dissolve_small_holes,
     drop_triangle_outer_artifacts,
-    apply_heavy_geometry_repair_after_edit,
-    apply_delete_area_geometry_repair,
-    apply_orphan_cleanup_after_removal,
-    apply_overlap_merge_after_edit,
-    apply_overlap_repair_patch,
-    apply_topology_repair_after_edit,
     merge_overlapping_root_families,
     merge_overlapping_root_families_near_polygons,
     overlap_check_roots_for_layer_patch,
     polygon_description_is_invalid,
     polygons_needing_repair,
-    patch_polygons_needing_repair,
     postprocess_after_editor_mutation,
     postprocess_after_layer_patch,
     postprocess_after_vertex_move,
     postprocess_changed_polygon_edit,
-    postprocess_vertex_move_edit,
-    collapse_redundant_vertices_for_polygon_ids,
     postprocess_changed_polygon_only,
     postprocess_polygons_for_frame_navigation,
+    postprocess_vertex_move_edit,
     remove_spikes_from_polygon_ring,
     repair_invalid_polygon_descriptions,
     should_defer_geometry_repair,
@@ -305,7 +302,8 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
 
     def test_edge_move_invalid_polygon_is_rejected(self) -> None:
         poly = _rect(0.0, 0.0, 100.0, 100.0, 1)
-        moved = apply_edge_translation_to_clone([poly], 1, 0, (60.0, 0.0))
+        # Collapsing the translated edge onto the opposite edge is degenerate.
+        moved = apply_edge_translation_to_clone([poly], 1, 0, (0.0, 100.0))
         self.assertEqual(moved[0].points, poly.points)
 
     def test_manual_family_edit_discards_authored_cif_paint_ring(self) -> None:
@@ -415,7 +413,7 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
         left = _rect(0.0, 0.0, 40.0, 40.0, 1)
         right = _rect(50.0, 0.0, 90.0, 40.0, 2)
         moved = apply_vertex_position_to_clone([left, right], 1, 1, (60.0, 0.0))
-        processed, changed = postprocess_after_vertex_move(
+        processed, _changed = postprocess_after_vertex_move(
             moved,
             VectorGeometrySettings(
                 merge_overlapping_on_edit=False,
@@ -452,7 +450,7 @@ class VectorGeometryPostprocessTests(unittest.TestCase):
             "contour.application.vector_geometry_postprocess.remove_spikes_from_polygon_ring",
             wraps=remove_spikes_from_polygon_ring,
         ) as spike_removal:
-            processed, did_change = postprocess_after_layer_patch(
+            processed, _did_change = postprocess_after_layer_patch(
                 [unchanged, changed],
                 settings,
                 changed_polygon_ids={2},

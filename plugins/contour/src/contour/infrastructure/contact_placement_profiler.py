@@ -395,11 +395,12 @@ class ImageRecognitionProfile(ContactPlacementProfile):
     def begin(
         cls,
         *,
-        image_path: str,
-        recognition_mode: str,
+        image_path: str = "",
+        recognition_mode: str = "",
+        action: str = "recognition",
     ) -> ImageRecognitionProfile:
         session = cls(
-            action="recognition",
+            action=str(action),
             image_path=str(image_path),
             recognition_mode=str(recognition_mode),
         )

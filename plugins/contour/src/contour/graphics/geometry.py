@@ -152,10 +152,10 @@ def _grid_cells_for_bbox(
     left, top, width, height = bbox
     right = float(left) + float(width)
     bottom = float(top) + float(height)
-    x0 = int(math.floor((float(left) - margin) / cell_size))
-    x1 = int(math.floor((right + margin) / cell_size))
-    y0 = int(math.floor((float(top) - margin) / cell_size))
-    y1 = int(math.floor((bottom + margin) / cell_size))
+    x0 = math.floor((float(left) - margin) / cell_size)
+    x1 = math.floor((right + margin) / cell_size)
+    y0 = math.floor((float(top) - margin) / cell_size)
+    y1 = math.floor((bottom + margin) / cell_size)
     for cx in range(x0, x1 + 1):
         for cy in range(y0, y1 + 1):
             yield cx, cy
@@ -179,7 +179,7 @@ def _contrasting_object_colors(
     frame_width, frame_height = frame_size
     proximity = max(12.0, min(64.0, hypot(float(frame_width), float(frame_height)) * 0.01))
     proximity_squared = proximity * proximity
-    neighbors = {polygon_id: set() for polygon_id in conductors}
+    neighbors: dict[int, set[int]] = {polygon_id: set() for polygon_id in conductors}
     cell_size = proximity
     grid: dict[tuple[int, int], list[int]] = defaultdict(list)
     for polygon_id, polygon in conductors.items():

@@ -1,9 +1,29 @@
 from __future__ import annotations
 
-from ._imports import *  # noqa: F403
+from ._imports import (
+    RECOGNITION_SCENE_FRAME_STYLE,
+    VIA_SEARCH_MODE_HYBRID,
+    VIA_SEARCH_MODE_TEMPLATE,
+    VIA_SIZE_MODE_RANGE,
+    AutoTuneResult,
+    AutoTuneRunnable,
+    ContourExtractionSettings,
+    Path,
+    PreprocessingPipeline,
+    QCheckBox,
+    QComboBox,
+    QSignalBlocker,
+    _normalize_bright_via_metal_constraint_mode,
+    metal_preset_table,
+    normalize_algorithm_backend,
+    normalize_recognition_mode,
+    normalize_via_search_mode,
+    offset_conductor_polygons,
+)
+from .host_contract import WidgetMixinHost
 
 
-class WidgetExtractionSettingsMixin:
+class WidgetExtractionSettingsMixin(WidgetMixinHost):
     def _auto_apply_pipeline(self) -> None:
         current_path = self._workspace.current_image_path
         state = self._workspace.current_state
@@ -163,7 +183,7 @@ class WidgetExtractionSettingsMixin:
                 else:
                     values[key] = widget.value()
             raw[strategy] = values
-        return MetalStrategyConfigs.from_mapping(raw).to_dict()
+        return {strategy: dict(values) for strategy, values in MetalStrategyConfigs.from_mapping(raw).to_dict().items()}
 
     def _set_metal_strategy_parameter_widgets(self, raw: object) -> None:
         from ..vision.metal_recovery.strategy_registry import MetalStrategyConfigs
@@ -573,7 +593,7 @@ class WidgetExtractionSettingsMixin:
                         self.metal_preset_combo.setCurrentIndex(user_index)
                 if hasattr(self, "metal_min_contrast_slider"):
                     self.metal_min_contrast_slider.setValue(
-                        int(round(float(getattr(settings, "metal_min_contrast", 50.0))))
+                        round(float(getattr(settings, "metal_min_contrast", 50.0)))
                     )
                 if hasattr(self, "metal_min_object_source_contrast_spin"):
                     self.metal_min_object_source_contrast_spin.setValue(
@@ -620,7 +640,7 @@ class WidgetExtractionSettingsMixin:
                 self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
                 if hasattr(self, "metal_conductor_size_offset_slider"):
                     self.metal_conductor_size_offset_slider.setValue(
-                        int(round(float(getattr(settings, "metal_conductor_size_offset_px", 0.0) or 0.0)))
+                        round(float(getattr(settings, "metal_conductor_size_offset_px", 0.0) or 0.0))
                     )
                 self.metal_min_area_spin.setValue(float(getattr(settings, "metal_min_area", 60.0) or 60.0))
                 ma = getattr(settings, "metal_max_area", None)
@@ -1335,7 +1355,7 @@ class WidgetExtractionSettingsMixin:
             if ix >= 0:
                 self.metal_preset_combo.setCurrentIndex(ix)
         if hasattr(self, "metal_min_contrast_slider"):
-            self.metal_min_contrast_slider.setValue(int(round(defaults.metal_min_contrast)))
+            self.metal_min_contrast_slider.setValue(round(defaults.metal_min_contrast))
         if hasattr(self, "metal_min_object_source_contrast_spin"):
             self.metal_min_object_source_contrast_spin.setValue(
                 float(defaults.metal_min_object_source_contrast)
@@ -1375,7 +1395,7 @@ class WidgetExtractionSettingsMixin:
             self.metal_max_width_spin.setValue(0.0 if mw is None else float(mw))
         if hasattr(self, "metal_conductor_size_offset_slider"):
             self.metal_conductor_size_offset_slider.setValue(
-                int(round(float(defaults.metal_conductor_size_offset_px)))
+                round(float(defaults.metal_conductor_size_offset_px))
             )
         if hasattr(self, "metal_min_area_spin"):
             self.metal_min_area_spin.setValue(float(defaults.metal_min_area))

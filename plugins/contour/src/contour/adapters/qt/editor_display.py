@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
+import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from .image_conversion import cv_to_qimage
+
+if TYPE_CHECKING:
+    from ...infrastructure.frame_switch_profiler import FrameSwitchProfile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,9 +27,9 @@ class EditorDisplayRunnable(QRunnable):
         self,
         request_id: int,
         image_path: str,
-        image: object,
+        image: np.ndarray | None,
         *,
-        profile_session: object | None = None,
+        profile_session: FrameSwitchProfile | None = None,
     ) -> None:
         super().__init__()
         self.request_id = int(request_id)

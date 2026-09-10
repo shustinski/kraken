@@ -4,9 +4,13 @@ Composite via detection: «По шаблону» (matchTemplate) или эври
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ...application.processing import ContourExtractionSettings
 
 from ..schemas import AppMode, ImageRef, OutputShapeKind, ViaDetectionOutput, ViaHit
 from ..via_detection.heuristic_detector import detect_vias_heuristic
@@ -18,20 +22,20 @@ from ..via_detection.settings_bridge import (
 )
 from ..via_detection.template_detector import detect_vias_template
 
+normalize_via_search_mode: Callable[[object], str] | None
+
 try:
     from ...application.processing import (
         VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG,
         VIA_SEARCH_MODE_HEURISTIC,
         VIA_SEARCH_MODE_TEMPLATE,
-        ContourExtractionSettings,
         normalize_via_search_mode,
     )
 except ImportError:  # pragma: no cover
-    ContourExtractionSettings = Any  # type: ignore[assignment]
-    normalize_via_search_mode = None  # type: ignore[assignment]
-    VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG = "bright_tophat_dog"  # type: ignore[assignment]
-    VIA_SEARCH_MODE_HEURISTIC = "heuristic"  # type: ignore[assignment]
-    VIA_SEARCH_MODE_TEMPLATE = "template"  # type: ignore[assignment]
+    normalize_via_search_mode = None
+    VIA_SEARCH_MODE_BRIGHT_TOPHAT_DOG = "bright_tophat_dog"
+    VIA_SEARCH_MODE_HEURISTIC = "heuristic"
+    VIA_SEARCH_MODE_TEMPLATE = "template"
 
 
 class ViaStrategyName(StrEnum):

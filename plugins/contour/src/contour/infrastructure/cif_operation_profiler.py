@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import contextvars
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from time import perf_counter
 
 _cif_timings: contextvars.ContextVar[dict[str, float] | None] = contextvars.ContextVar(

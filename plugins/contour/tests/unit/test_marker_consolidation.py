@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import numpy as np
 
+from contour.vision.metal_recovery.gradient_watershed import GradientWatershedConfig
 from contour.vision.metal_recovery.marker_consolidation import (
     ConsolidationEvidence,
     consolidate_markers,
 )
-from contour.vision.metal_recovery.gradient_watershed import GradientWatershedConfig
 from contour.vision.metal_recovery.structural_watershed import (
-    clamped_structural_watershed_config,
-    run_structural_watershed,
     _finalize_instance_labels,
     _geodesic_label_competition,
+    clamped_structural_watershed_config,
+    run_structural_watershed,
 )
 
 
 def _horizontal_evidence(shape: tuple[int, int], line_rows: tuple[int, ...]) -> ConsolidationEvidence:
-    height, width = shape
+    height, _width = shape
     intensity = np.full(shape, 40.0, np.float32)
     ridge_confidence = np.zeros(shape, np.float32)
     ridge_orientation = np.zeros(shape, np.float32)

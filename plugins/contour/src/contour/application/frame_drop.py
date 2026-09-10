@@ -6,8 +6,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .frame_asset_sync import VECTOR_FILE_SUFFIXES
 from ..utils import is_visible_image_path, scan_image_files
+from .frame_asset_sync import VECTOR_FILE_SUFFIXES
 
 
 @dataclass(frozen=True, slots=True)

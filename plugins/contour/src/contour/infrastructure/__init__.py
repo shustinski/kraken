@@ -2,11 +2,11 @@ from .settings_store import (
     WidgetAppearanceSettingsStore,
     WidgetDisplaySettingsStore,
     WidgetGamificationProfileStore,
+    WidgetMetalPresetSettingsStore,
     WidgetPathSettingsStore,
     WidgetSessionSettingsStore,
-    WidgetWindowSettingsStore,
-    WidgetMetalPresetSettingsStore,
     WidgetViaPresetSettingsStore,
+    WidgetWindowSettingsStore,
 )
 
 __all__ = [
@@ -16,6 +16,6 @@ __all__ = [
     "WidgetMetalPresetSettingsStore",
     "WidgetPathSettingsStore",
     "WidgetSessionSettingsStore",
-    "WidgetWindowSettingsStore",
     "WidgetViaPresetSettingsStore",
+    "WidgetWindowSettingsStore",
 ]

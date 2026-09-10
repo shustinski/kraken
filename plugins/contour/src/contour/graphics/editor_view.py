@@ -585,8 +585,8 @@ class PolygonEditorView(QGraphicsView):
     ) -> None:
         self.setTransform(transform)
         mapped = self.mapFromScene(scene_anchor)
-        dx = int(round(mapped.x() - pixel.x()))
-        dy = int(round(mapped.y() - pixel.y()))
+        dx = round(mapped.x() - pixel.x())
+        dy = round(mapped.y() - pixel.y())
         if dx or dy:
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dx)
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dy)
@@ -726,7 +726,7 @@ class PolygonEditorView(QGraphicsView):
             self._update_navigation_scene_rect()
             return
         if columns is None:
-            columns = max(1, int(round(count ** 0.5)))
+            columns = max(1, round(count ** 0.5))
         self._pyramid_layout = FixedGridFrameLayout(
             frame_count=count,
             columns=max(1, int(columns)),
@@ -762,7 +762,7 @@ class PolygonEditorView(QGraphicsView):
     def choose_lod(self, zoom: float, max_lod: int) -> int:
         max_lod = max(0, int(max_lod))
         zoom = max(1e-6, float(zoom))
-        target = max(0, min(max_lod, int(round(log2(1.0 / zoom)))))
+        target = max(0, min(max_lod, round(log2(1.0 / zoom))))
         current = max(0, min(max_lod, int(getattr(self, "_pyramid_current_lod", 0))))
         if target == current:
             return current
@@ -2088,7 +2088,9 @@ class PolygonEditorView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
-    def tabletEvent(self, event: QTabletEvent) -> None:
+    def tabletEvent(self, event: QTabletEvent | None) -> None:
+        if event is None:
+            return
         scene_pos = self.mapToScene(event.position().toPoint())
         self._last_pointer_scene_pos = scene_pos
         self._update_tool_cursors()
@@ -2563,7 +2565,7 @@ class PolygonEditorView(QGraphicsView):
         super().leaveEvent(event)
 
     def _scene_tolerance(self, pixels: float | int) -> float:
-        px = max(1, int(round(pixels)))
+        px = max(1, round(pixels))
         start = self.mapToScene(QPoint(0, 0))
         end = self.mapToScene(QPoint(px, 0))
         return max(1.0, abs(end.x() - start.x()))
@@ -2708,7 +2710,11 @@ class PolygonEditorView(QGraphicsView):
 
     def _commit_brush_drag(self, release_pos: QPointF) -> None:
         if self._brush_mode == BrushMode.ANGLED and self._drag_start_scene_pos is not None:
-            end_point = _snap_to_45(self._drag_start_scene_pos, release_pos)
+            end_pos = release_pos
+            if self._brush_pan_guard:
+                # Panning changes the release coordinate, not the drawn endpoint.
+                end_pos = self._last_pointer_scene_pos or self._drag_start_scene_pos
+            end_point = _snap_to_45(self._drag_start_scene_pos, end_pos)
             brush_points = [
                 (self._drag_start_scene_pos.x(), self._drag_start_scene_pos.y()),
                 (end_point.x(), end_point.y()),

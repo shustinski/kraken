@@ -4,9 +4,10 @@ import re
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QThreadPool, QTimer, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QPainter, QPen, QPixmap, QWheelEvent
+from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
@@ -127,7 +128,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
         if not _OPENGL_VIEWPORT_ENABLED:
             return False
         app = QGuiApplication.instance()
-        platform = str(app.platformName()).lower() if app is not None else ""
+        platform = QGuiApplication.platformName().lower() if app is not None else ""
         if platform in _OPENGL_DISABLED_PLATFORMS:
             return False
         try:
@@ -233,7 +234,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
             pass
 
     @staticmethod
-    def _graphics_item_is_valid(graphics_item: object) -> bool:
+    def _graphics_item_is_valid(graphics_item: QGraphicsItem) -> bool:
         if shiboken6 is None:
             try:
                 graphics_item.scene()
@@ -312,13 +313,13 @@ class FrameMatrixGraphicsView(QGraphicsView):
         self._update_selection_rows(previous_row, -1)
         self._sync_render_region()
 
-    def blockSignals(self, block: bool) -> bool:  # type: ignore[override]
+    def blockSignals(self, block: bool) -> bool:
         previous = self._signals_blocked
         self._signals_blocked = bool(block)
         super().blockSignals(block)
         return previous
 
-    def setUpdatesEnabled(self, enabled: bool) -> None:  # type: ignore[override]
+    def setUpdatesEnabled(self, enabled: bool) -> None:
         super().setUpdatesEnabled(enabled)
         if enabled and not getattr(self, "_suppress_matrix_refresh", False):
             self._refresh_items()
@@ -439,6 +440,10 @@ class FrameMatrixGraphicsView(QGraphicsView):
         super().ensureVisible(float(x), float(y), float(w), float(h), xmargin, ymargin)
 
     def wheelEvent(self, event: QWheelEvent | None) -> None:
+        horizontal_scrollbar = self.horizontalScrollBar()
+        assert horizontal_scrollbar is not None
+        vertical_scrollbar = self.verticalScrollBar()
+        assert vertical_scrollbar is not None
         if event is None:
             return
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -448,27 +453,33 @@ class FrameMatrixGraphicsView(QGraphicsView):
             event.accept()
             return
         if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            delta = event.angleDelta()
-            delta_value = delta.x() if delta.x() else delta.y()
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta_value)
+            angle_delta = event.angleDelta()
+            delta_value = angle_delta.x() if angle_delta.x() else angle_delta.y()
+            horizontal_scrollbar.setValue(horizontal_scrollbar.value() - delta_value)
             event.accept()
             return
         if event.modifiers() & Qt.KeyboardModifier.AltModifier:
             delta = event.angleDelta().y()
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta)
+            vertical_scrollbar.setValue(vertical_scrollbar.value() - delta)
             event.accept()
             return
         super().wheelEvent(event)
 
     def mousePressEvent(self, event) -> None:
+        viewport = self.viewport()
+        assert viewport is not None
+        horizontal_scrollbar = self.horizontalScrollBar()
+        assert horizontal_scrollbar is not None
+        vertical_scrollbar = self.verticalScrollBar()
+        assert vertical_scrollbar is not None
         if event.button() == Qt.MouseButton.MiddleButton:
             self._middle_pan_active = True
             self._middle_pan_origin = event.position().toPoint()
             self._middle_pan_scroll_origin = QPoint(
-                self.horizontalScrollBar().value(),
-                self.verticalScrollBar().value(),
+                horizontal_scrollbar.value(),
+                vertical_scrollbar.value(),
             )
-            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            viewport.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
         item = self._item_at_viewport_pos(event.position().toPoint())
@@ -488,7 +499,9 @@ class FrameMatrixGraphicsView(QGraphicsView):
         super().mousePressEvent(event)
 
     def contextMenuEvent(self, event) -> None:
-        viewport_pos = self.viewport().mapFrom(self, event.pos())
+        viewport = self.viewport()
+        assert viewport is not None
+        viewport_pos = viewport.mapFrom(self, event.pos())
         item = self._item_at_viewport_pos(viewport_pos)
         if item is None:
             event.ignore()
@@ -501,13 +514,17 @@ class FrameMatrixGraphicsView(QGraphicsView):
         event.accept()
 
     def mouseMoveEvent(self, event) -> None:
+        horizontal_scrollbar = self.horizontalScrollBar()
+        assert horizontal_scrollbar is not None
+        vertical_scrollbar = self.verticalScrollBar()
+        assert vertical_scrollbar is not None
         if self._middle_pan_active:
             if not (event.buttons() & Qt.MouseButton.MiddleButton):
                 self._finish_middle_pan()
                 return
             delta = event.position().toPoint() - self._middle_pan_origin
-            self.horizontalScrollBar().setValue(self._middle_pan_scroll_origin.x() - delta.x())
-            self.verticalScrollBar().setValue(self._middle_pan_scroll_origin.y() - delta.y())
+            horizontal_scrollbar.setValue(self._middle_pan_scroll_origin.x() - delta.x())
+            vertical_scrollbar.setValue(self._middle_pan_scroll_origin.y() - delta.y())
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -520,8 +537,10 @@ class FrameMatrixGraphicsView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def _finish_middle_pan(self) -> None:
+        viewport = self.viewport()
+        assert viewport is not None
         self._middle_pan_active = False
-        self.viewport().unsetCursor()
+        viewport.unsetCursor()
 
     def _item_at_viewport_pos(self, point: QPoint) -> QListWidgetItem | None:
         scene_pos = self.mapToScene(point)
@@ -534,19 +553,25 @@ class FrameMatrixGraphicsView(QGraphicsView):
         return item
 
     def _apply_zoom_at_viewport_pixel(self, viewport_pixel: QPoint, factor: float) -> None:
+        viewport = self.viewport()
+        assert viewport is not None
+        horizontal_scrollbar = self.horizontalScrollBar()
+        assert horizontal_scrollbar is not None
+        vertical_scrollbar = self.verticalScrollBar()
+        assert vertical_scrollbar is not None
         old_zoom = self._matrix_zoom
         new_zoom = clamp_zoom_factor(old_zoom * float(factor))
         if abs(new_zoom - old_zoom) <= 1e-9:
             return
         factor = new_zoom / old_zoom
-        view_point = self.viewport().mapTo(self, viewport_pixel)
+        view_point = viewport.mapTo(self, viewport_pixel)
         scene_anchor = self.mapToScene(view_point)
         self.scale(factor, factor)
         self._matrix_zoom = new_zoom
-        mapped = self.viewport().mapFrom(self, self.mapFromScene(scene_anchor))
+        mapped = viewport.mapFrom(self, self.mapFromScene(scene_anchor))
         dh, dv = viewport_scroll_correction_after_scale_reanchor((viewport_pixel.x(), viewport_pixel.y()), (mapped.x(), mapped.y()))
-        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + dh)
-        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + dv)
+        horizontal_scrollbar.setValue(horizontal_scrollbar.value() + dh)
+        vertical_scrollbar.setValue(vertical_scrollbar.value() + dv)
         self._emit_thumbnail_lod_if_needed()
         region = self._effective_render_index_range()
         first_index, last_index = region
@@ -619,12 +644,14 @@ class FrameMatrixGraphicsView(QGraphicsView):
             self._layout_item_geometry(index, item, group, region=region)
 
     def _visible_item_index_range(self) -> tuple[int, int]:
+        viewport = self.viewport()
+        assert viewport is not None
         if not self._items:
             return (0, -1)
         columns = max(1, self._columns)
         step_x = max(1, self._cell_step_x())
         step_y = max(1, self._cell_step_y())
-        viewport_rect = self.viewport().rect()
+        viewport_rect = viewport.rect()
         top_left = self.mapToScene(viewport_rect.topLeft())
         bottom_right = self.mapToScene(viewport_rect.bottomRight())
         min_x = min(top_left.x(), bottom_right.x())
@@ -720,12 +747,12 @@ class FrameMatrixGraphicsView(QGraphicsView):
         if not self._items:
             return
         region = self._effective_render_index_range()
-        for group in list(self._item_groups.values()):
-            if not self._group_is_valid(group):
+        for existing_group in list(self._item_groups.values()):
+            if not self._group_is_valid(existing_group):
                 continue
-            for graphics_item in group:
+            for graphics_item in existing_group:
                 graphics_item.setVisible(False)
-            group[3].setPixmap(QPixmap())
+            existing_group[3].setPixmap(QPixmap())
         first_index, last_index = region
         if last_index >= first_index:
             for index in range(max(0, first_index), min(len(self._items) - 1, last_index) + 1):
@@ -882,7 +909,7 @@ class FrameMatrixGraphicsView(QGraphicsView):
         lod: int,
         target_width: int,
         target_height: int,
-        qimage: object,
+        qimage: QImage,
     ) -> None:
         pending_key = (int(frame_id), int(lod), int(target_width), int(target_height))
         self._pyramid_thumbnail_pending.discard(pending_key)

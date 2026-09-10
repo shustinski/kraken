@@ -2,19 +2,47 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol, TypedDict
+
+from .cif_primitives import CifBox, CifComment, CifPolygon, CifPrimitive
 
 CifLoadStatus = Literal["ok", "cant_open", "incomplete", "incorrect", "unknown"]
 
-_NATIVE_MODULE = None
+
+class NativeCifCommand(TypedDict, total=False):
+    """Dictionary emitted by third_party/libopencif/cif_loader.cxx."""
+
+    type: str
+    content: str
+    points: list[tuple[int, int]]
+    width: int
+    height: int
+    center_x: int
+    center_y: int
+    rotation_x: int
+    rotation_y: int
+
+
+class NativeCifPayload(TypedDict):
+    status: CifLoadStatus
+    messages: list[str]
+    commands: list[NativeCifCommand]
+
+
+class NativeCifLoader(Protocol):
+    def load_cif_file(self, path: str, continue_on_error: bool = True) -> NativeCifPayload: ...
+
+
+_NATIVE_MODULE: NativeCifLoader | None = None
 _NATIVE_IMPORT_ERROR: str | None = None
 
 
-from .cif_primitives import CifBox, CifComment, CifPolygon, CifPrimitive
+@dataclass
 class CifOpenCifLoadResult:
     status: CifLoadStatus
     messages: tuple[str, ...]
@@ -55,7 +83,7 @@ def load_cif_primitives(path: str | Path, *, continue_on_error: bool = True) -> 
 
     source_path = Path(path)
     payload = _load_native_cif_file(native, source_path, continue_on_error)
-    status = str(payload.get("status", "unknown"))
+    status = payload.get("status", "unknown")
     messages = tuple(str(item) for item in payload.get("messages", ()))
     primitives: list[CifPrimitive] = []
     for command in payload.get("commands", ()):
@@ -80,13 +108,13 @@ def load_cif_primitives(path: str | Path, *, continue_on_error: bool = True) -> 
                 )
             )
     return CifOpenCifLoadResult(
-        status=status,  # type: ignore[arg-type]
+        status=status,
         messages=messages,
         primitives=tuple(primitives),
     )
 
 
-def _ensure_native_module():
+def _ensure_native_module() -> NativeCifLoader | None:
     global _NATIVE_MODULE, _NATIVE_IMPORT_ERROR
     if _NATIVE_MODULE is not None or _NATIVE_IMPORT_ERROR is not None:
         return _NATIVE_MODULE
@@ -99,7 +127,7 @@ def _ensure_native_module():
     return _NATIVE_MODULE
 
 
-def _load_native_cif_file(native, source_path: Path, continue_on_error: bool) -> dict[str, object]:
+def _load_native_cif_file(native: NativeCifLoader, source_path: Path, continue_on_error: bool) -> NativeCifPayload:
     """Load through LibOpenCIF, copying to an ASCII temp path when needed on Windows."""
 
     payload = native.load_cif_file(os.fspath(source_path), bool(continue_on_error))
@@ -115,4 +143,4 @@ def _load_native_cif_file(native, source_path: Path, continue_on_error: bool) ->
         try:
             os.unlink(temp_path)
         except OSError:
-            pass
+            logging.getLogger(__name__).warning("Could not remove temporary CIF file %s", temp_path, exc_info=True)

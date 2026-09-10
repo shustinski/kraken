@@ -14,6 +14,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from ...contour_extractor import estimate_effective_polygon_width_px
+from ...domain import integer_points
 from ..io_normalize import make_image_ref, to_gray_u8
 from ..preprocessing import NoiseLevel, PreprocessConfig
 from ..schemas import (
@@ -25,8 +27,6 @@ from ..schemas import (
     RotatedBox,
     SemPolarity,
 )
-from ...contour_extractor import estimate_effective_polygon_width_px
-from ...domain import integer_points
 from .hierarchy import build_hierarchy_from_mask
 from .sem_filled_mask import FilledMaskResult, FilledMaskSegmentationConfig, extract_filled_mask
 
@@ -194,7 +194,7 @@ class SemContourExtractor:
             if self.config.min_polygon_width_px > 0.0 and len(component.points) >= 3:
                 zero = np.zeros((image_height, image_width), dtype=np.uint8)
                 ctr = np.array(
-                    [[int(round(p[0])), int(round(p[1]))] for p in component.points],
+                    [[round(p[0]), round(p[1])] for p in component.points],
                     dtype=np.int32,
                 ).reshape(-1, 1, 2)
                 cv2.fillPoly(zero, [ctr], 255)
@@ -226,6 +226,7 @@ class SemContourExtractor:
         (cx, cy), (width, height), angle = cv2.minAreaRect(arr)
         box = cv2.boxPoints(((cx, cy), (width, height), angle))
         points = integer_points([(float(x), float(y)) for x, y in box])
+        left, top, bbox_width, bbox_height = cv2.boundingRect(box.astype(np.float32))
         return replace(
             component,
             is_hole=False,
@@ -233,7 +234,7 @@ class SemContourExtractor:
             depth=0,
             points=points,
             area=float(max(1.0, width) * max(1.0, height)),
-            bbox_xywh=tuple(int(v) for v in cv2.boundingRect(box.astype(np.float32))),
+            bbox_xywh=(left, top, bbox_width, bbox_height),
             rotated_box=RotatedBox(float(cx), float(cy), float(width), float(height), float(angle)),
             source_strategy=f"{component.source_strategy}:rbox",
         )

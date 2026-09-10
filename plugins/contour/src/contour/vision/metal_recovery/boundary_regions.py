@@ -18,12 +18,12 @@ from ...utils import ensure_binary_mask, ensure_uint8
 from .gradient_watershed import GradientWatershedConfig, build_conductor_seeds
 from .structural_watershed import (
     StructuralWatershedConfig,
-    _StructuralFeatures,
     _extract_structural_features,
     _filter_short_components,
     _link_along_orientation,
     _non_maximum_suppress,
     _shift_no_wrap,
+    _StructuralFeatures,
     clamped_structural_watershed_config,
 )
 
@@ -460,7 +460,7 @@ def _build_adjacencies(
     height, width = region_ids.shape
     buckets: dict[tuple[int, int], list[int]] = {}
     neighbor_offsets = ((-1, 0), (1, 0), (0, -1), (0, 1))
-    for index, (row, col) in enumerate(zip(rows.tolist(), cols.tolist())):
+    for index, (row, col) in enumerate(zip(rows.tolist(), cols.tolist(), strict=False)):
         seen: list[int] = []
         for dy, dx in neighbor_offsets:
             ny = row + dy
@@ -535,7 +535,7 @@ def _signed_profile(
     samples_a: list[float] = []
     samples_b: list[float] = []
     used = 0
-    for row, col in zip(rows.tolist(), cols.tolist()):
+    for row, col in zip(rows.tolist(), cols.tolist(), strict=False):
         nx = float(np.cos(across[row, col]))
         ny = float(np.sin(across[row, col]))
         oriented = _orient_normal(region_ids, row, col, nx, ny, id_a, id_b)
@@ -580,10 +580,10 @@ def _orient_normal(
 ) -> tuple[float, float] | None:
     height, width = region_ids.shape
     probe = 2.0
-    ya = int(round(row - ny * probe))
-    xa = int(round(col - nx * probe))
-    yb = int(round(row + ny * probe))
-    xb = int(round(col + nx * probe))
+    ya = round(row - ny * probe)
+    xa = round(col - nx * probe)
+    yb = round(row + ny * probe)
+    xb = round(col + nx * probe)
     if not (0 <= ya < height and 0 <= xa < width and 0 <= yb < height and 0 <= xb < width):
         return None
     left = int(region_ids[ya, xa])

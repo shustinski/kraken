@@ -29,6 +29,7 @@ htmlcov/
 *.tar.gz
 *.exe
 *.cif
+!plugins/contour/tests/fixtures/authored_keyhole.cif
 *.jpg
 *.bmp
 *.png

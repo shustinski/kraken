@@ -3,12 +3,34 @@ from __future__ import annotations
 import logging
 
 from ..infrastructure.profiling import write_profile_report
-from ._imports import *  # noqa: F403
+from ._imports import (
+    LARGE_FRAME_COUNT_THRESHOLD,
+    VIA_SEARCH_MODE_HEURISTIC,
+    VIA_SEARCH_MODE_HYBRID,
+    VIA_SEARCH_MODE_TEMPLATE,
+    ContourExtractionSettings,
+    Path,
+    PreprocessingPipeline,
+    QFileDialog,
+    QListWidgetItem,
+    QMessageBox,
+    QModelIndex,
+    QSignalBlocker,
+    Qt,
+    QTimer,
+    build_image_cif_matching_report,
+    index_cif_file_paths,
+    load_pipeline_config_from_path,
+    normalize_via_search_mode,
+    save_pipeline_config_to_path,
+    time,
+)
+from .host_contract import WidgetMixinHost
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class WidgetPipelineActionsMixin:
+class WidgetPipelineActionsMixin(WidgetMixinHost):
     def _add_pipeline_step(self) -> None:
         operation_name = self._selected_available_operation_name()
         if not operation_name:
@@ -66,6 +88,8 @@ class WidgetPipelineActionsMixin:
         new_steps = []
         for row in range(self.pipeline_list.count()):
             item = self.pipeline_list.item(row)
+            if item is None:
+                return
             old_index = item.data(Qt.ItemDataRole.UserRole)
             if not isinstance(old_index, int) or old_index < 0 or old_index >= len(old_steps):
                 return
@@ -76,7 +100,9 @@ class WidgetPipelineActionsMixin:
             return
         self._pipeline.steps = new_steps
         for row in range(self.pipeline_list.count()):
-            self.pipeline_list.item(row).setData(Qt.ItemDataRole.UserRole, row)
+            item = self.pipeline_list.item(row)
+            if item is not None:
+                item.setData(Qt.ItemDataRole.UserRole, row)
         self._render_pipeline_parameters(self.pipeline_list.currentRow())
         self._auto_apply_pipeline()
 
@@ -300,7 +326,7 @@ class WidgetPipelineActionsMixin:
                 timer.stop()
             except RuntimeError:
                 pass
-        self._deferred_image_load_timers = []
+        self._deferred_image_load_timers: list[QTimer] = []
         self._image_selection_request_serial = int(getattr(self, "_image_selection_request_serial", 0)) + 1
         selection_request_id = self._image_selection_request_serial
         self._desired_image_path = str(Path(image_path)) if image_path else None
@@ -541,7 +567,7 @@ class WidgetPipelineActionsMixin:
         pending_vector_paths = list(getattr(self, "_pending_restore_vector_paths", []) or [])
         if pending_vector_paths:
             self._workspace.merge_cif_paths(index_cif_file_paths(pending_vector_paths))
-            self._pending_restore_vector_paths = []
+            self._pending_restore_vector_paths: list[str] = []
         self._indexed_cif_directory = directory_state.directory
         if directory_state.available:
             self._append_log(self._tr("cif_indexed_log", count=len(directory_state.indexed_paths)))

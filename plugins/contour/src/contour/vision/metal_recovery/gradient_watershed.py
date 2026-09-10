@@ -9,9 +9,11 @@ boundary is placed on the intensity edge between them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 
 from ...utils import ensure_binary_mask, ensure_uint8
 
@@ -195,6 +197,7 @@ def keep_rim_lined_seeds(
     thin dark regions remain seeds; a broad dark component may be the centre of
     a conductor that continues beyond the frame.
     """
+    labels: np.ndarray
     count, labels, _stats, _centroids = cv2.connectedComponentsWithStats(seeds, connectivity=8)
     if count <= 1:
         return seeds
@@ -208,7 +211,8 @@ def keep_rim_lined_seeds(
     keep = near_maxima >= float(rim_level)
     distance = cv2.distanceTransform((seeds > 0).astype(np.uint8), cv2.DIST_L2, 3)
     max_radius = np.zeros(count, dtype=np.float32)
-    np.maximum.at(max_radius, labels.ravel(), distance.ravel())
+    # connectedComponentsWithStats returns CV_32S labels; OpenCV stubs also allow floats.
+    np.maximum.at(max_radius, cast(NDArray[np.int32], labels).ravel(), distance.ravel())
     border_labels = np.unique(np.concatenate((labels[0], labels[-1], labels[:, 0], labels[:, -1])))
     keep[border_labels] |= max_radius[border_labels] <= 3.0 * float(probe_px)
     keep[0] = False
@@ -265,11 +269,13 @@ def keep_thin_valley_components(seams: np.ndarray, max_radius: float) -> np.ndar
         return np.zeros(seams.shape, dtype=np.uint8)
     binary = (seams > 0).astype(np.uint8)
     dist = cv2.distanceTransform(binary, cv2.DIST_L2, 3)
+    labels: np.ndarray
     count, labels = cv2.connectedComponents(binary, connectivity=8)
     if count <= 1:
         return seams
     thickest = np.zeros(count, dtype=np.float64)
-    np.maximum.at(thickest, labels.ravel(), dist.ravel())
+    # connectedComponents returns CV_32S labels by default.
+    np.maximum.at(thickest, cast(NDArray[np.int32], labels).ravel(), dist.ravel())
     keep = thickest <= float(max_radius)
     keep[0] = False
     return np.where(keep[labels], 255, 0).astype(np.uint8)

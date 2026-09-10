@@ -274,7 +274,9 @@ class _DockWidthComboBox(QComboBox):
         finally:
             self._locking_popup_width = False
 
-    def eventFilter(self, watched: object, event: QEvent) -> bool:
+    def eventFilter(self, watched: object, event: QEvent | None) -> bool:
+        if event is None:
+            return False
         if (
             watched is self._width_locked_popup
             and not self._locking_popup_width

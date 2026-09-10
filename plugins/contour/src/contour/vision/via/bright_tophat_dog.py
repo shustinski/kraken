@@ -274,7 +274,7 @@ class BrightViaPreparedCandidates:
     candidate_mask: np.ndarray
     metal_mask: np.ndarray
     edge_distance: np.ndarray
-    raw_candidates: list["_RawStage1"]
+    raw_candidates: list[_RawStage1]
     min_area: float
     max_area: float
     nominal_diameter: float
@@ -447,7 +447,7 @@ def prepare_bright_via_candidates(image: np.ndarray, config: BrightViaDetectorCo
     min_area = pi * (float(cfg.diameter_min) * 0.5) ** 2 * float(cfg.min_area_factor)
     max_area = pi * (float(cfg.diameter_max) * 0.5) ** 2 * float(cfg.max_area_factor)
     nominal_radius = max(1.0, nominal_diameter * 0.5)
-    isolation = _build_isolation_map(processed, int(round(nominal_diameter)))
+    isolation = _build_isolation_map(processed, round(nominal_diameter))
     raise_if_preview_cancelled()
     raws = _stage1_raw_candidates(
         gray_u8=gray,
@@ -657,9 +657,9 @@ def _raw_from_peak(
 ) -> _RawStage1 | None:
     d = (float(cfg.diameter_min) + float(cfg.diameter_max)) * 0.5
     r = max(1.0, d * 0.5)
-    side = max(2, int(round(d)))
-    ix = int(round(cx)) - side // 2
-    iy = int(round(cy)) - side // 2
+    side = max(2, round(d))
+    ix = round(cx) - side // 2
+    iy = round(cy) - side // 2
     area = pi_v * r * r
     if not (min_area * 0.5 <= area <= max_area * 1.2):
         return None
@@ -710,9 +710,9 @@ def _refine_center_on_bright_core(
     """
 
     height, width = gray_f32.shape[:2]
-    search_r = max(2, int(round(float(diameter) * 0.6)))
-    cx0 = int(round(center[0]))
-    cy0 = int(round(center[1]))
+    search_r = max(2, round(float(diameter) * 0.6))
+    cx0 = round(center[0])
+    cy0 = round(center[1])
     x0 = max(0, cx0 - search_r)
     x1 = min(width, cx0 + search_r + 1)
     y0 = max(0, cy0 - search_r)
@@ -742,10 +742,10 @@ def _refine_center_on_bright_core(
 def _fixed_size_bbox(center: tuple[float, float], diameter: float, shape: tuple[int, ...]) -> tuple[int, int, int, int]:
     """Square bbox of side ``diameter`` centered on ``center`` (clamped to image)."""
 
-    side = max(1, int(round(float(diameter))))
+    side = max(1, round(float(diameter)))
     half = side / 2.0
-    x = int(round(center[0] - half))
-    y = int(round(center[1] - half))
+    x = round(center[0] - half)
+    y = round(center[1] - half)
     if len(shape) >= 2:
         max_x = max(0, int(shape[1]) - side)
         max_y = max(0, int(shape[0]) - side)
@@ -925,9 +925,9 @@ def _score_one_candidate(
 
     iso_score = _isolation_score(
         isolation,
-        int(round(center[0])),
-        int(round(center[1])),
-        int(round(max(nominal_radius, eff_r))),
+        round(center[0]),
+        round(center[1]),
+        round(max(nominal_radius, eff_r)),
     )
     if iso_score < float(cfg.min_isolation_score) - 1e-4:
         return _hard(
@@ -1369,7 +1369,7 @@ def _build_isolation_map(gray: np.ndarray, max_radius: int) -> tuple[np.ndarray,
         # sparse Otsu mask so each via stays its own component.
         if float(cv2.countNonZero(mask)) / float(mask.size) > 0.40:
             mask = otsu
-    kernel_size = _odd_kernel_size(max(3, int(round(max_radius * 0.45))))
+    kernel_size = _odd_kernel_size(max(3, round(max_radius * 0.45)))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     if cv2.countNonZero(mask) <= 0:
@@ -1595,8 +1595,8 @@ def _draw_overlay(
             color = _COLOR_HARD
         x, y, w, h = det.bbox
         cv2.rectangle(base, (x, y), (x + w, y + h), color, 1)
-        cx, cy = int(round(det.center[0])), int(round(det.center[1]))
-        r = max(2, int(round(0.5 * max(w, h))))
+        cx, cy = round(det.center[0]), round(det.center[1])
+        r = max(2, round(0.5 * max(w, h)))
         cv2.circle(base, (cx, cy), r, color, 1)
         if det.status != "accepted" and det.hard_reason:
             cv2.putText(

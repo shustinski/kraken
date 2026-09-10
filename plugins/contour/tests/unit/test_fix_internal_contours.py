@@ -11,10 +11,10 @@ from contour.application.fix_internal_contours import (
 from contour.domain import PolygonData, compute_polygon_metrics
 from contour.serializers import (
     CIF_CUTOUT_DISPLAY_MARKER,
+    _polygon_uses_authored_cif_paint_ring,
     clear_cif_parse_cache,
     load_polygons_cif,
     save_polygons_cif,
-    _polygon_uses_authored_cif_paint_ring,
 )
 
 _KEYHOLE_CIF = """
@@ -95,10 +95,8 @@ class FixInternalContoursTests(unittest.TestCase):
             reloaded_outer = next(polygon for polygon in reloaded if not polygon.is_hole)
             self.assertFalse(_polygon_uses_authored_cif_paint_ring(reloaded_outer))
 
-    def test_klayout_keyhole_slot_is_skipped_on_0525(self) -> None:
-        cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0525.cif")
-        if not cif_path.exists():
-            self.skipTest("0525.cif fixture not available")
+    def test_klayout_keyhole_slot_is_skipped(self) -> None:
+        cif_path = Path(__file__).parents[1] / "fixtures" / "authored_keyhole.cif"
         clear_cif_parse_cache()
         _image_name, image_size, loaded = load_polygons_cif(cif_path)
         analysis = analyze_internal_contour_display(loaded, image_size)

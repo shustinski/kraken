@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import cProfile
-import json
 import hashlib
 import io
+import json
 import pstats
-from time import perf_counter
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from time import perf_counter
 from typing import Any
 
 import cv2
@@ -24,10 +24,6 @@ from ....edge_detection import (
     scharr_magnitude,
     structured_edges,
 )
-from ....pipeline import PreprocessingPipeline
-from ....serializers import save_result_bundle
-from ....utils import ensure_binary_mask, ensure_uint8, load_image_color
-from ...preview_cancellation import raise_if_preview_cancelled
 from ....infrastructure.profiling import (
     processing_profiling_enabled,
     processing_top_lines,
@@ -35,6 +31,10 @@ from ....infrastructure.profiling import (
     try_enable_profiler,
     write_profile_report,
 )
+from ....pipeline import PreprocessingPipeline
+from ....serializers import save_result_bundle
+from ....utils import ensure_binary_mask, ensure_uint8, load_image_color
+from ...preview_cancellation import raise_if_preview_cancelled
 from ...processing import (
     ALGORITHM_BACKEND_LEGACY,
     RECOGNITION_MODE_CONDUCTORS,
@@ -44,8 +44,8 @@ from ...processing import (
     VIA_SEARCH_MODE_HEURISTIC,
     VIA_SEARCH_MODE_HYBRID,
     VIA_SEARCH_MODE_TEMPLATE,
-    BatchImageResult,
     BatchFrameTiming,
+    BatchImageResult,
     ContourDebugCandidate,
     ContourExtractionSettings,
     DisplaySettings,
@@ -356,9 +356,9 @@ def _build_modern_via_vectorization_mask(
             ax = max(1, int(bw * 0.5))
             ay = max(1, int(bh * 0.5))
         else:
-            ax = ay = max(1, int(round(r)))
+            ax = ay = max(1, round(r))
         cv2.ellipse(mask, center, (ax, ay), 0.0, 0.0, 360.0, 255, thickness=-1, lineType=cv2.LINE_8)
-    debug_candidates: list[ContourDebugCandidate] = []
+    debug_candidates = []
     idx = 0
     for det in result.accepted:
         debug_candidates.append(
@@ -1512,8 +1512,8 @@ def _merge_dual_branch_polygons(
 def _build_metalization_mask(gray: np.ndarray, settings: ContourExtractionSettings) -> np.ndarray:
     if gray.size == 0:
         return np.zeros_like(gray, dtype=np.uint8)
-    from ....vision.metal_recovery.detector import build_metal_extraction_mask
     from ....vision.metal_recovery import metal_recovery_config_from_settings
+    from ....vision.metal_recovery.detector import build_metal_extraction_mask
 
     cfg = metal_recovery_config_from_settings(settings)
     mask, _dbg = build_metal_extraction_mask(gray, cfg)
@@ -1892,7 +1892,7 @@ def _process_image_path_impl(
         recognition_base,
         float(getattr(contour_settings, "metal_conductor_size_offset_px", 0.0) or 0.0),
     )
-    saved_files: dict[str, str] = {}
+    saved_files = {}
     if output_directory:
         phase_started = perf_counter()
         saved_files = save_bundle(
@@ -2095,7 +2095,7 @@ def _debug_candidates_from_via_debug(debug_payload: Any) -> list[ContourDebugCan
                 out.append(
                     ContourDebugCandidate(
                         contour_index=index,
-                        bbox=bbox,  # type: ignore[arg-type]
+                        bbox=bbox,
                         area=float(max(0, bbox[2]) * max(0, bbox[3])),
                         perimeter=float(2 * (max(0, bbox[2]) + max(0, bbox[3]))),
                         roundness=float(item.get("compactness", 0.0) or 0.0) * 100.0,

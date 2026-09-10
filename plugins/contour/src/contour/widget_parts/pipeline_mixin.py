@@ -1,9 +1,59 @@
 from __future__ import annotations
 
-from ._imports import *  # noqa: F403
+from typing import TypedDict
+
+from ..value_conversion import to_float
+from ._imports import (
+    PIPELINE_OPERATION_GROUPS,
+    ContourExtractionSettings,
+    Path,
+    QAbstractItemView,
+    QCheckBox,
+    QColor,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPixmap,
+    QPushButton,
+    QSignalBlocker,
+    QSizePolicy,
+    QSpinBox,
+    Qt,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+    _normalize_bright_via_metal_constraint_mode,
+    blurred_via_preset_payload,
+    built_in_metal_presets,
+    built_in_via_presets,
+    cv2,
+    cv_to_qimage,
+    get_choice_display_label,
+    get_operation_descriptor,
+    get_operation_display_name,
+    get_parameter_display_label,
+    load_pipeline_config_from_path,
+    noisy_traces_via_preset_payload,
+    normalize_via_search_mode,
+    np,
+    save_pipeline_config_to_path,
+)
+from .host_contract import WidgetMixinHost
 
 
-class WidgetPipelineMixin:
+class ColorSelectionEntry(TypedDict):
+    rgb: list[int]
+    enabled: bool
+
+
+class WidgetPipelineMixin(WidgetMixinHost):
     def _populate_pipeline_operations(self) -> None:
         selected_operation = self._selected_available_operation_name()
         self.operation_tree.clear()
@@ -55,6 +105,8 @@ class WidgetPipelineMixin:
     def _clear_parameters_form(self) -> None:
         while self.parameters_form.count():
             item = self.parameters_form.takeAt(0)
+            if item is None:
+                continue
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
@@ -70,6 +122,7 @@ class WidgetPipelineMixin:
             return
         step = self._pipeline.steps[row]
         descriptor = get_operation_descriptor(step.operation)
+        widget: QWidget
         for spec in descriptor.parameters:
             value = step.parameters.get(spec.name, spec.default)
             if spec.kind == "bool":
@@ -135,13 +188,13 @@ class WidgetPipelineMixin:
         self._pipeline.steps[row].parameters[parameter_name] = value
         self._auto_apply_pipeline()
 
-    def _color_selection_entries(self, row: int) -> list[dict[str, object]]:
+    def _color_selection_entries(self, row: int) -> list[ColorSelectionEntry]:
         if row < 0 or row >= len(self._pipeline.steps):
             return []
         entries = self._pipeline.steps[row].parameters.get("selected_colors", [])
         if not isinstance(entries, list):
             entries = []
-        normalized: list[dict[str, object]] = []
+        normalized: list[ColorSelectionEntry] = []
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -405,8 +458,9 @@ class WidgetPipelineMixin:
         if source_row == target_row:
             return
         self._ensure_via_template_metadata()
-        for values in (self._via_template_images, self._via_template_min_scores, self._via_template_diameters):
-            values.insert(target_row, values.pop(source_row))
+        self._via_template_images.insert(target_row, self._via_template_images.pop(source_row))
+        self._via_template_min_scores.insert(target_row, self._via_template_min_scores.pop(source_row))
+        self._via_template_diameters.insert(target_row, self._via_template_diameters.pop(source_row))
         self._refresh_via_template_list()
         self._on_extraction_settings_changed()
 
@@ -424,7 +478,7 @@ class WidgetPipelineMixin:
         templates: list[np.ndarray] = []
         for item in payload:
             try:
-                image = np.asarray(item, dtype=np.uint8)
+                image: np.ndarray = np.asarray(item, dtype=np.uint8)
             except (TypeError, ValueError):
                 continue
             if image.ndim == 3:
@@ -574,11 +628,12 @@ class WidgetPipelineMixin:
         preset_blockers = [QSignalBlocker(widget) for widget in preset_widgets.values()]
         try:
             for key, widget in preset_widgets.items():
+                assert widget is not None
                 value = payload[key]
                 if isinstance(widget, QCheckBox):
                     widget.setChecked(bool(value))
                 else:
-                    widget.setValue(float(value))
+                    widget.setValue(to_float(value))
         finally:
             del preset_blockers
         if hasattr(self, "bright_via_advanced_outer"):
@@ -950,7 +1005,7 @@ class WidgetPipelineMixin:
         if "metal_min_contrast" not in normalized_payload and "metal_contrast_bias" in normalized_payload:
             normalized_payload["metal_min_contrast"] = max(
                 1.0,
-                float(normalized_payload.get("metal_contrast_bias", 0.0)),
+                to_float(normalized_payload.get("metal_contrast_bias", 0.0)),
             )
         merged = ContourExtractionSettings.from_dict(
             self._current_contour_settings().to_dict() | normalized_payload
@@ -1051,11 +1106,9 @@ class WidgetPipelineMixin:
             },
         )
         self._append_log(
-            (
-                f"Пресет распознавания выгружен: {path}"
-                if self._ui_language == "ru"
-                else f"Recognition preset exported: {path}"
-            )
+            f"Пресет распознавания выгружен: {path}"
+            if self._ui_language == "ru"
+            else f"Recognition preset exported: {path}"
         )
 
     def _import_metal_preset(self) -> None:
@@ -1105,11 +1158,9 @@ class WidgetPipelineMixin:
             if index >= 0:
                 self.metal_preset_combo.setCurrentIndex(index)
         self._append_log(
-            (
-                f"Пресет распознавания загружен: {path}"
-                if self._ui_language == "ru"
-                else f"Recognition preset imported: {path}"
-            )
+            f"Пресет распознавания загружен: {path}"
+            if self._ui_language == "ru"
+            else f"Recognition preset imported: {path}"
         )
 
     def _apply_noisy_traces_via_preset(self, *_args) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from shapely.geometry import MultiPolygon, Polygon as ShapelyPolygon
+from shapely.geometry import MultiPolygon
+from shapely.geometry import Polygon as ShapelyPolygon
 from shapely.geometry.base import BaseGeometry
 
 from .geometry import compute_polygon_metrics

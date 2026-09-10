@@ -6,7 +6,6 @@ from typing import Any
 
 from contour.i18n import active_language, load_ui_texts, normalize_language, operation_name, tr
 
-
 MOJIBAKE_MARKERS = (
     "Ð",
     "Ñ",

@@ -190,6 +190,7 @@ def test_batch_analysis_matches_single_analysis() -> None:
     )
 
 
+@pytest.mark.vectorization
 def test_positive_feedback_makes_synthetic_contact_automatically_detectable() -> None:
     image = np.zeros((64, 64), dtype=np.uint8)
     yy, xx = np.ogrid[:64, :64]

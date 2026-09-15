@@ -1385,7 +1385,13 @@ class MatrixLegendWidget(QFrame):
             self.states_label.setText(self._state_text())
             return
         self.bar.set_gradient_name(info.gradient_name)
-        mode_key = "matrix.legend.absolute" if info.score_view_mode == "absolute" else "matrix.legend.within_run"
+        mode_key = (
+            "matrix.legend.absolute"
+            if info.score_view_mode == "absolute"
+            else "matrix.legend.percentile"
+            if info.score_view_mode == "percentile"
+            else "matrix.legend.within_run"
+        )
         self.title_label.setText(f"{self._i18n.tr(mode_key)} · {info.metric_key or 'score'}")
         self.range_label.setText(
             f"{self._format_value(info.low)}  ·  {self._i18n.tr('matrix.legend.direction')}  ·  {self._format_value(info.high)}"
@@ -1706,7 +1712,7 @@ class MatrixListWidget(QGraphicsView):
 
     def set_score_view_mode(self, mode: str | None) -> None:
         normalized = str(mode or "relative").strip().lower()
-        next_mode = "absolute" if normalized == "absolute" else "relative"
+        next_mode = normalized if normalized in {"absolute", "percentile"} else "relative"
         if self._score_view_mode == next_mode:
             return
         self._score_view_mode = next_mode
@@ -1763,7 +1769,7 @@ class MatrixListWidget(QGraphicsView):
             p05, p50, p95 = (float(value) for value in np.percentile(normalized_scores, (5, 50, 95)))
         else:
             p05 = p50 = p95 = None
-        if self._score_view_mode == "absolute":
+        if self._score_view_mode in {"absolute", "percentile"}:
             low, high = 0.0, 1.0
         else:
             low, high = self._auto_color_window_low, self._auto_color_window_high
@@ -3765,6 +3771,11 @@ class MatrixListWidget(QGraphicsView):
             return None
         if not bool(getattr(record, "score_ready", False)):
             return None
+        if self._score_view_mode == "percentile":
+            percentile = getattr(record, "score_percentile", None)
+            if percentile is None:
+                return None
+            return max(0.0, min(1.0, float(percentile) / 100.0))
         if self._score_view_mode == "absolute":
             absolute_value = getattr(record, "absolute_score", None)
             if absolute_value is None:
@@ -3790,7 +3801,7 @@ class MatrixListWidget(QGraphicsView):
         return f"{numeric:.3f}"
 
     def _background_color(self, score: float) -> QColor:
-        if self._score_view_mode == "absolute":
+        if self._score_view_mode in {"absolute", "percentile"}:
             position = max(0.0, min(float(score), 1.0))
         else:
             position = map_score_to_palette_position(score, self._auto_color_window_low, self._auto_color_window_high)

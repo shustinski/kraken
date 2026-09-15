@@ -1424,6 +1424,17 @@ def compute_build_result_analytics(
     state_callback=None,
     cancel_check=None,
 ) -> BuildResult:
+    from .single_result_risk import SINGLE_RESULT_RISK_METRICS, compute_single_result_risk
+
+    if str(metric_key or build_result.selected_metric_key or "") in SINGLE_RESULT_RISK_METRICS:
+        return compute_single_result_risk(
+            build_result,
+            sensitivity=str(getattr(build_result.options, "single_result_sensitivity", "balanced") or "balanced"),
+            excluded_record_keys=excluded_record_keys,
+            progress_callback=progress_callback,
+            state_callback=state_callback,
+            cancel_check=cancel_check,
+        )
     _clear_runtime_image_caches()
     records = list(build_result.records)
     if not records:

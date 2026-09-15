@@ -32,11 +32,8 @@ from kraken_manager.application import (
 )
 from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, BlobRef
 from kraken_manager.domain.common import (
-    ArtifactVersionId,
     PerformerId,
-    PrincipalId,
     ProjectId,
-    ReviewBatchId,
 )
 from kraken_manager.domain.identity import Performer, Principal, ProjectRole
 from kraken_manager.domain.project import (

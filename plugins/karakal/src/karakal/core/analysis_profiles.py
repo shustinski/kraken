@@ -28,6 +28,7 @@ class AnalysisProfileDefinition:
     comparison_target: str
     minimum_models: int
     confidence_required: bool = False
+    maximum_models: int | None = None
 
 
 ANALYSIS_PROFILES: tuple[AnalysisProfileDefinition, ...] = (
@@ -58,6 +59,16 @@ ANALYSIS_PROFILES: tuple[AnalysisProfileDefinition, ...] = (
         analysis_mode="model_output_confidence",
         comparison_target="confidence",
         minimum_models=0,
+    ),
+    AnalysisProfileDefinition(
+        key=AnalysisProfileKind.SINGLE_RESULT_RISK,
+        title_key="profile.single_result_risk.title",
+        description_key="profile.single_result_risk.description",
+        app_mode="validation",
+        analysis_mode="single_result_risk",
+        comparison_target="outputs",
+        minimum_models=1,
+        maximum_models=1,
     ),
 )
 
@@ -200,13 +211,36 @@ def build_standalone_preflight(
                 str(profile.minimum_models),
             )
         )
+    if profile.maximum_models is not None and len(model_specs) > profile.maximum_models:
+        issues.append(
+            PreflightIssue(
+                PreflightSeverity.ERROR,
+                "single_model_required",
+                "preflight.single_model_required",
+                str(profile.maximum_models),
+            )
+        )
+    if profile.key == AnalysisProfileKind.SINGLE_RESULT_RISK and (
+        len(model_inventories) != 1 or not model_inventories[0]
+    ):
+        issues.append(
+            PreflightIssue(
+                PreflightSeverity.ERROR,
+                "model_output_required",
+                "preflight.model_output_required",
+            )
+        )
     if profile.confidence_required and not any(confidence_inventories):
         issues.append(PreflightIssue(PreflightSeverity.ERROR, "confidence_required", "preflight.confidence_required"))
     if profile.key == AnalysisProfileKind.GRID_DEFECTS and not model_inventories and not original_keys:
         issues.append(PreflightIssue(PreflightSeverity.ERROR, "grid_source_required", "preflight.grid_source_required"))
 
-    baseline = original_keys or (model_inventories[0] if model_inventories else set())
-    compared_sets = [inventory for inventory in model_inventories if inventory]
+    if profile.key == AnalysisProfileKind.SINGLE_RESULT_RISK:
+        baseline = model_inventories[0] if len(model_inventories) == 1 else set()
+        compared_sets: list[set[str]] = []
+    else:
+        baseline = original_keys or (model_inventories[0] if model_inventories else set())
+        compared_sets = [inventory for inventory in model_inventories if inventory]
     if profile.confidence_required:
         compared_sets.extend(inventory for inventory in confidence_inventories if inventory)
     matched_keys = set(baseline)
@@ -221,6 +255,23 @@ def build_standalone_preflight(
                 f"{len(matched_keys)}/{len(baseline)}",
             )
         )
+    if profile.key == AnalysisProfileKind.SINGLE_RESULT_RISK and baseline:
+        optional_details: list[str] = []
+        if original_folder is not None and len(original_keys & baseline) < len(baseline):
+            optional_details.append(f"original {len(original_keys & baseline)}/{len(baseline)}")
+        if any(model.prob_folder is not None for model in model_specs):
+            confidence_keys = set().union(*confidence_inventories) if confidence_inventories else set()
+            if len(confidence_keys & baseline) < len(baseline):
+                optional_details.append(f"confidence {len(confidence_keys & baseline)}/{len(baseline)}")
+        if optional_details and not any(issue.code == "partial_coverage" for issue in issues):
+            issues.append(
+                PreflightIssue(
+                    PreflightSeverity.WARNING,
+                    "partial_coverage",
+                    "preflight.partial_coverage",
+                    "; ".join(optional_details),
+                )
+            )
     if not baseline:
         issues.append(PreflightIssue(PreflightSeverity.ERROR, "no_frames", "preflight.no_frames"))
 

@@ -37,6 +37,10 @@ def _record_position(record: FrameRecord, index: int, frames_per_row: int) -> tu
 def _record_goodness(record: FrameRecord, metric_key: str, score_view_mode: str, build_result: BuildResult) -> float | None:
     if not bool(getattr(record, "score_ready", False)):
         return None
+    if score_view_mode == "percentile":
+        if record.score_percentile is None:
+            return None
+        return max(0.0, min(1.0, float(record.score_percentile) / 100.0))
     if score_view_mode != "absolute":
         return max(0.0, min(1.0, float(record.score)))
     if record.absolute_score is None:

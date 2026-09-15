@@ -233,6 +233,11 @@ def load_frame_detail_base(
         "consensus_mask": consensus_mask,
         "pairwise_model_comparisons": summary_pairwise,
         "frame_metrics": dict(active_record.summary.metric_values) if active_record.summary is not None else {},
+        "single_result_risk": (
+            getattr(active_record.summary, "single_result_risk", None)
+            if active_record.summary is not None
+            else None
+        ),
         "model_confidence": model_confidence,
         "model_confidence_output_available": model_confidence_output_available,
         "model_diagnostics": model_diagnostics,

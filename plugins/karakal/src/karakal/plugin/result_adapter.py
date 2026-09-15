@@ -6,6 +6,7 @@ import math
 import numpy as np
 
 from kraken_core.analysis_protocol import (
+    AnalysisAnomalyRegion,
     AnalysisFrameResult,
     AnalysisMetricValue,
     AnalysisOutcome,
@@ -18,6 +19,7 @@ from kraken_core.analysis_protocol import (
 from ..core.analysis_modes import metric_visual_ratio
 from ..core.domain import BuildResult, FrameRecord
 from ..core.metric_keys import metric_higher_is_better
+from ..core.single_result_risk import SINGLE_RESULT_RISK_METRICS
 
 
 def _frame_position(record: FrameRecord, index: int) -> tuple[int, int]:
@@ -80,6 +82,110 @@ def build_analysis_result_manifest(
     message: str = "",
 ) -> AnalysisResultManifest:
     """Create a project-safe result containing metrics and coordinates, not storage paths."""
+
+    if profile == AnalysisProfileKind.SINGLE_RESULT_RISK:
+        frame_results: list[AnalysisFrameResult] = []
+        raw_values: dict[str, list[float]] = {key: [] for key in SINGLE_RESULT_RISK_METRICS}
+        for index, record in enumerate(build_result.records):
+            x, y = _frame_position(record, index)
+            summary = record.summary
+            risk_summary = None if summary is None else getattr(summary, "single_result_risk", None)
+            if not record.score_ready or summary is None or risk_summary is None:
+                frame_results.append(
+                    AnalysisFrameResult(
+                        frame_id=str(record.key),
+                        x=x,
+                        y=y,
+                        status="error" if summary is not None and summary.notes else "not_computed",
+                        metrics=(),
+                        message="; ".join(summary.notes) if summary is not None else "",
+                    )
+                )
+                continue
+            metrics: list[AnalysisMetricValue] = []
+            for key in SINGLE_RESULT_RISK_METRICS:
+                value = summary.metric_values.get(key)
+                if value is None or not math.isfinite(float(value)):
+                    continue
+                numeric = float(value)
+                raw_values[key].append(numeric)
+                metrics.append(
+                    AnalysisMetricValue(
+                        key=key,
+                        raw_value=numeric,
+                        goodness=max(0.0, min(1.0, 1.0 - numeric / 100.0)),
+                        percentile=(
+                            float(record.score_percentile)
+                            if key == "single_result_risk_score" and record.score_percentile is not None
+                            else None
+                        ),
+                        unit="risk_0_100",
+                        higher_is_better=False,
+                    )
+                )
+            anomalies: list[AnalysisAnomalyRegion] = []
+            for reason in tuple(getattr(risk_summary, "reasons", ()) or ()):
+                bbox = getattr(reason, "bbox", None)
+                if bbox is None:
+                    continue
+                bx, by, bw, bh = (float(value) for value in bbox)
+                anomalies.append(
+                    AnalysisAnomalyRegion(
+                        x=max(0.0, min(1.0, bx)),
+                        y=max(0.0, min(1.0, by)),
+                        width=max(0.0, min(1.0, bw)),
+                        height=max(0.0, min(1.0, bh)),
+                        error_type=str(getattr(reason, "code", "single_result_risk")),
+                        severity=max(0.0, min(1.0, float(getattr(reason, "contribution", 0.0)))),
+                    )
+                )
+            frame_results.append(
+                AnalysisFrameResult(
+                    frame_id=str(record.key),
+                    x=x,
+                    y=y,
+                    status="ready",
+                    metrics=tuple(metrics),
+                    anomalies=tuple(anomalies),
+                    message="; ".join(str(reason.code) for reason in risk_summary.reasons),
+                )
+            )
+        scales: list[AnalysisScaleDefinition] = []
+        for key in SINGLE_RESULT_RISK_METRICS:
+            values = raw_values[key]
+            if not values:
+                continue
+            p05, p50, p95 = (float(value) for value in np.percentile(values, (5, 50, 95)))
+            if scale_mode == AnalysisScaleMode.ABSOLUTE:
+                low, high = 0.0, 100.0
+            else:
+                low, high = p05, p95
+                if high - low < 0.01:
+                    low, high = max(0.0, p50 - 0.5), min(100.0, p50 + 0.5)
+                if high <= low:
+                    low, high = 0.0, 100.0
+            scales.append(
+                AnalysisScaleDefinition(
+                    metric_key=key,
+                    mode=scale_mode,
+                    low=low,
+                    high=high,
+                    p05=p05,
+                    p50=p50,
+                    p95=p95,
+                    clipped_low=sum(1 for value in values if value < low),
+                    clipped_high=sum(1 for value in values if value > high),
+                )
+            )
+        return AnalysisResultManifest(
+            job_id=job_id,
+            project_id=project_id,
+            profile=profile,
+            outcome=outcome,
+            frames=tuple(frame_results),
+            scales=tuple(scales),
+            message=message,
+        )
 
     frame_results: list[AnalysisFrameResult] = []
     goodness_values: list[float] = []

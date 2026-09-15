@@ -20,6 +20,7 @@ class AnalysisProfileKind(StrEnum):
     GROUND_TRUTH_VALIDATION = "ground_truth_validation"
     CONFIDENCE_AUDIT = "confidence_audit"
     GRID_DEFECTS = "grid_defects"
+    SINGLE_RESULT_RISK = "single_result_risk"
 
 
 class AnalysisSourceRole(StrEnum):
@@ -33,6 +34,7 @@ class AnalysisSourceRole(StrEnum):
 class AnalysisScaleMode(StrEnum):
     ABSOLUTE = "absolute"
     WITHIN_RUN = "within_run"
+    PERCENTILE = "percentile"
 
 
 class AnalysisOutcome(StrEnum):

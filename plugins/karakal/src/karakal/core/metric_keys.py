@@ -143,6 +143,16 @@ def _available_metric_keys_for_models(
         "f1",
         "mean_localization_distance",
     ]
+    if len(model_specs) == 1:
+        keys.extend(
+            [
+                "single_result_risk_score",
+                "mask_structure_risk",
+                "batch_outlier_risk",
+                "source_alignment_risk",
+                "confidence_risk",
+            ]
+        )
     model_ids_with_output = None
     if records is not None:
         model_ids_with_output = {

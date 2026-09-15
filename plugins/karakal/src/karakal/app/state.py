@@ -49,6 +49,7 @@ class ExtendMatrixTabState:
     analysis_mode: str = INTER_MODEL_ANALYSIS_MODE
     object_type: str = POLYGON_OBJECT_TYPE
     confidence_model_id: str | None = None
+    single_result_sensitivity: str = "balanced"
     frame_type_filter: str = 'all'
     preview: ExtendPreviewPanel | None = None
     selected_percentile_metric_key: str | None = None

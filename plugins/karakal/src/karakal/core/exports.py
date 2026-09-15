@@ -1922,6 +1922,40 @@ def export_ranked_frames(
     export_records = {
         record.key: record for record in build_result.records if record.key in selected_keys | supplemental_keys
     }
+    single_result_risk: dict[str, object] = {}
+    for record in export_records.values():
+        risk_summary = None if record.summary is None else getattr(record.summary, "single_result_risk", None)
+        if risk_summary is None:
+            continue
+        single_result_risk[str(record.key)] = {
+            "risk": float(getattr(risk_summary, "total_risk", 0.0)),
+            "sensitivity": str(getattr(risk_summary, "sensitivity", "balanced")),
+            "sources": list(getattr(risk_summary, "evidence", ()) or ()),
+            "components": {
+                "mask_structure_risk": float(getattr(risk_summary, "structure_risk", 0.0)),
+                "batch_outlier_risk": getattr(risk_summary, "batch_outlier_risk", None),
+                "source_alignment_risk": getattr(risk_summary, "source_alignment_risk", None),
+                "confidence_risk": getattr(risk_summary, "confidence_risk", None),
+            },
+            "component_weights": dict(getattr(risk_summary, "component_weights", {}) or {}),
+            "component_contributions": dict(
+                getattr(risk_summary, "component_contributions", {}) or {}
+            ),
+            "reasons": [
+                {
+                    "code": str(getattr(reason, "code", "")),
+                    "severity": str(getattr(reason, "severity", "low")),
+                    "contribution": float(getattr(reason, "contribution", 0.0)),
+                    "bbox": (
+                        None
+                        if getattr(reason, "bbox", None) is None
+                        else [float(value) for value in getattr(reason, "bbox")]
+                    ),
+                    "detail": str(getattr(reason, "detail", "")),
+                }
+                for reason in tuple(getattr(risk_summary, "reasons", ()) or ())
+            ],
+        }
     manifest: dict[str, object] = {
         "metric_key": metric_key,
         "selection_mode": selection_mode,
@@ -1939,6 +1973,8 @@ def export_ranked_frames(
             for record in export_records.values()
         },
     }
+    if single_result_risk:
+        manifest["single_result_risk"] = single_result_risk
 
     original_dir = destination_path / "original"
     masks_root = destination_path / "models"

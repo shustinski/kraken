@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import numpy as np
 from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QPushButton, QSlider
 from kraken_core.analysis_protocol import AnalysisProfileKind, AnalysisScaleMode
 
 from karakal.app.main_window import KarakalWidget
 from karakal.app.presenter import KarakalPresenter
-from karakal.core.domain import BuildOptions, BuildResult, FrameIdentity, FrameRecord
+from karakal.core.domain import BuildOptions, BuildResult, FrameAnalysisSummary, FrameIdentity, FrameRecord
+from karakal.core.image_io import _grayscale_array_to_qimage
+from karakal.core.single_result_risk import RiskReason, SingleResultRiskSummary
 from karakal.plugin.matrix_adapter import KarakalMatrixDataSource, project_build_result
 from karakal.plugin.result_adapter import build_analysis_result_manifest
 from karakal.ui.details_dialog import ExtendFrameDetailsDialog
@@ -31,7 +34,7 @@ def test_quick_setup_is_visible_and_advanced_controls_start_collapsed(tmp_path, 
     ]
 
     assert widget.analysis_setup_panel.isVisibleTo(widget)
-    assert len(profile_buttons) == 3
+    assert len(profile_buttons) == 4
     assert widget.folders_info_label.isVisibleTo(widget)
     assert not widget.pair_matrix_group.isChecked()
     assert widget.pair_matrix_body.isHidden()
@@ -39,6 +42,35 @@ def test_quick_setup_is_visible_and_advanced_controls_start_collapsed(tmp_path, 
     assert not widget.analysis_settings_group.isChecked()
     assert widget.matrix_gradient_combo.count() >= 4
     assert widget.matrix_gradient_combo.currentData() == DEFAULT_GRADIENT_NAME
+
+
+def test_single_result_profile_shows_only_risk_controls(tmp_path, qtbot) -> None:
+    settings_path = tmp_path / "karakal.ini"
+    settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    widget = KarakalWidget(settings=settings)
+    qtbot.addWidget(widget)
+
+    widget._presenter._on_analysis_profile_changed(AnalysisProfileKind.SINGLE_RESULT_RISK.value)
+
+    assert widget.matrix_score_view_combo.currentData() == "absolute"
+    assert widget.metric_combo.currentData() == "single_result_risk_score"
+    assert widget.matrix_score_view_combo.findData("percentile") >= 0
+    assert not widget.pair_matrix_group.isVisibleTo(widget)
+    assert widget._matrix_comparison_target_row.isHidden()
+    assert widget._matrix_geometry_row.isHidden()
+    assert widget._matrix_polygon_compare_profile_row.isHidden()
+    assert not widget._matrix_single_result_sensitivity_row.isHidden()
+
+    widget.single_result_sensitivity_combo.setCurrentIndex(
+        widget.single_result_sensitivity_combo.findData("strict")
+    )
+    widget._presenter._persist_state()
+    restored = KarakalWidget(settings=QSettings(str(settings_path), QSettings.Format.IniFormat))
+    qtbot.addWidget(restored)
+
+    assert restored._presenter._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK
+    assert restored.single_result_sensitivity_combo.currentData() == "strict"
+    assert restored.matrix_score_view_combo.currentData() == "absolute"
 
 
 def test_pair_matrix_panel_expansion_is_persisted(tmp_path, qtbot) -> None:
@@ -121,6 +153,10 @@ def test_matrix_legend_exposes_distribution_and_raw_range(qtbot) -> None:
     assert info.raw_high == 93.0
     assert "P5" in legend.stats_label.text()
 
+    view.set_score_view_mode("percentile")
+    assert view.color_scale_info().score_view_mode == "percentile"
+    assert view._display_score(view._records[0]) == 0.1
+
 
 def test_frame_details_separates_overview_from_layer_controls(qtbot) -> None:
     record = FrameRecord("frame-1", "Frame 1")
@@ -183,6 +219,13 @@ def test_shared_matrix_adapter_preserves_coordinates_and_heatmap_metadata() -> N
     assert source.session.width == 5
     assert source.session.height == 3
 
+    percentile_projection = project_build_result(
+        result,
+        metric_key="overall_polygon_score",
+        score_view_mode="percentile",
+    )
+    assert percentile_projection.items[0].metadata["heatmap_value"] == 0.8
+
     manifest = build_analysis_result_manifest(
         job_id="job-1",
         project_id="project-1",
@@ -196,3 +239,57 @@ def test_shared_matrix_adapter_preserves_coordinates_and_heatmap_metadata() -> N
     assert manifest.frames[0].metrics[0].raw_value == 75.0
     assert manifest.scales[0].low == 0.0
     assert manifest.scales[0].high == 1.0
+
+
+def test_single_result_details_show_reasons_and_anomaly_layers(tmp_path, qtbot) -> None:
+    mask = np.zeros((48, 48), dtype=np.uint8)
+    mask[8:24, 8:24] = 255
+    mask_path = tmp_path / "mask.png"
+    assert _grayscale_array_to_qimage(mask).save(str(mask_path))
+    risk = SingleResultRiskSummary(
+        total_risk=72.0,
+        structure_risk=80.0,
+        batch_outlier_risk=None,
+        source_alignment_risk=50.0,
+        confidence_risk=40.0,
+        sensitivity="balanced",
+        evidence=("mask", "original", "confidence"),
+        reasons=(
+            RiskReason("tiny_components", "high", 0.8, (0.1, 0.1, 0.2, 0.2)),
+            RiskReason("unsupported_boundary", "medium", 0.6, (0.3, 0.3, 0.2, 0.2)),
+            RiskReason("low_confidence", "medium", 0.5, (0.5, 0.5, 0.2, 0.2)),
+        ),
+        component_weights={"mask_structure_risk": 0.6, "source_alignment_risk": 0.3, "confidence_risk": 0.1},
+        component_contributions={
+            "mask_structure_risk": 48.0,
+            "source_alignment_risk": 15.0,
+            "confidence_risk": 4.0,
+        },
+        feature_values={"area_fraction": 0.1},
+    )
+    record = FrameRecord(
+        "frame-1",
+        "Frame 1",
+        first_path=str(mask_path),
+        second_path=str(mask_path),
+        model_mask_paths={"model": str(mask_path)},
+        score_ready=True,
+        absolute_score=72.0,
+        summary=FrameAnalysisSummary(0.0, 0.0, 0.8, 0.72, single_result_risk=risk),
+    )
+    result = BuildResult(records=(record,), options=BuildOptions(), scores_computed=True)
+    dialog = ExtendFrameDetailsDialog(
+        record,
+        result,
+        allowed_result_kinds=("risk_structure", "risk_source", "risk_confidence"),
+    )
+    qtbot.addWidget(dialog)
+    dialog._payload["single_result_risk"] = risk
+    dialog._refresh_result_kind_options("risk_structure")
+    dialog._refresh_comparison_panel()
+
+    assert dialog.result_kind_combo.count() == 3
+    assert "risk: 72.0/100" in dialog.comparison_metrics_label.text()
+    assert "tiny_components" in dialog.comparison_events_label.text()
+    for kind in ("risk_structure", "risk_source", "risk_confidence"):
+        assert not dialog._single_result_risk_pixmap(kind).isNull()

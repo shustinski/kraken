@@ -179,6 +179,7 @@ def _development_session(service: EmbeddedProjectService) -> DesktopSession | No
 
 
 def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
+    from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QMessageBox, QVBoxLayout
 
     if not service.has_accounts:
@@ -186,9 +187,20 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
         dialog.setObjectName("initialAccountDialog")
         dialog.setWindowTitle("Создание аккаунта Kraken")
         layout = QVBoxLayout(dialog)
-        intro = QLabel("Создайте первый локальный аккаунт для этой рабочей станции.")
+        intro = QLabel(
+            "В текущем локальном хранилище аккаунтов пока нет. "
+            "Создайте первый аккаунт для этой рабочей станции. Если аккаунт уже создавался, "
+            "проверьте указанный ниже путь: войти можно только из того же хранилища."
+        )
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        data_directory = QLabel(f"Хранилище: {service.data_dir}")
+        data_directory.setObjectName("initialAccountDataDirectory")
+        data_directory.setTextInteractionFlags(
+            data_directory.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        data_directory.setWordWrap(True)
+        layout.addWidget(data_directory)
         form = QFormLayout()
         username = QLineEdit()
         username.setObjectName("initialAccountUsername")
@@ -248,6 +260,13 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
     dialog.setWindowTitle("Вход в Kraken")
     layout = QVBoxLayout(dialog)
     layout.addWidget(QLabel("Локальная сессия рабочей станции"))
+    data_directory = QLabel(f"Хранилище: {service.data_dir}")
+    data_directory.setObjectName("loginDataDirectory")
+    data_directory.setTextInteractionFlags(
+        data_directory.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    data_directory.setWordWrap(True)
+    layout.addWidget(data_directory)
     form = QFormLayout()
     username = QLineEdit()
     username.setObjectName("loginUsername")
@@ -258,6 +277,7 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
     form.addRow("Пароль", password)
     layout.addLayout(form)
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Войти")
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
@@ -476,6 +496,8 @@ class DesktopController:
             thumbnail_store=thumbnail_store,
         )
         workspace = self.shell.open_project_workspace(ProjectWorkspacePage(matrix_view=matrix_view))
+        workspace.add_image_representation_button.setEnabled(False)
+        workspace.add_vector_representation_button.setEnabled(False)
         workspace._matrix_data_source = data_source
         workspace._matrix_asset_source = asset_source
         workspace.set_project_title(project.name)
@@ -798,6 +820,7 @@ class DesktopController:
 
     def _select_layer(self, workspace, project_id, item: LayerListItem) -> None:
         workspace._selected_layer_id = item.layer_id
+        workspace.add_image_representation_button.setEnabled(True)
         self._load_representations(workspace, project_id, item.layer_id)
 
     def _load_representations(self, workspace, project_id, layer_id) -> None:
@@ -827,6 +850,7 @@ class DesktopController:
                 )
             ],
         )
+        workspace.add_vector_representation_button.setEnabled(bool(images))
         self._refresh_matrix(workspace, project_id)
 
     def _activate_representation(self, workspace, project_id, representation_id: str) -> None:
@@ -1046,7 +1070,7 @@ class DesktopController:
             return
         try:
             layers = self.service.list_layers(project.id)
-            self.service.create_layer(
+            created_layer = self.service.create_layer(
                 principal=self.session.principal,
                 project=project,
                 name=name.text(),
@@ -1057,6 +1081,21 @@ class DesktopController:
             latest = self.service.get_project(project.id)
             if latest is not None:
                 self._load_layers(workspace, latest)
+                layer_item = workspace.layer_model.layer_by_id(str(created_layer.id))
+                if layer_item is not None:
+                    tab_index = next(
+                        (
+                            index
+                            for index in range(workspace.layer_tabs.count())
+                            if str(workspace.layer_tabs.tabData(index) or "") == layer_item.layer_id
+                        ),
+                        -1,
+                    )
+                    if tab_index >= 0:
+                        signals_were_blocked = workspace.layer_tabs.blockSignals(True)
+                        workspace.layer_tabs.setCurrentIndex(tab_index)
+                        workspace.layer_tabs.blockSignals(signals_were_blocked)
+                    self._select_layer(workspace, project.id, layer_item)
         except Exception as exc:
             QMessageBox.warning(dialog, "Не удалось добавить слой", str(exc))
 

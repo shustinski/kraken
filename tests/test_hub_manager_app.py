@@ -9,7 +9,8 @@ from PyQt6.QtWidgets import QApplication, QDialog, QFileDialog, QLineEdit, QWidg
 from kraken_hub import windows_credentials
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.manager_app import DesktopController, _development_session, _login
-from kraken_manager.domain.project import RepresentationKind
+from kraken_manager.domain.project import GridOrientation, RepresentationKind
+from kraken_manager.presentation.qt.pages import ProjectWorkspacePage
 from kraken_manager.presentation.qt.widgets import ClickableLabel
 
 
@@ -150,3 +151,43 @@ def test_image_representation_source_picker_fills_selected_folder(qapp, monkeypa
     monkeypatch.setattr(QDialog, "exec", use_picker_and_cancel)
 
     controller._add_representation(workspace, "project-1", RepresentationKind.IMAGE)
+
+
+def test_new_layer_is_selected_and_enables_image_import(qapp, monkeypatch, tmp_path) -> None:
+    service = EmbeddedProjectService(tmp_path)
+    session = service.create_initial_account("operator", "Operator", "")
+    project = service.create_project(
+        principal=session.principal,
+        name="Project",
+        width=2,
+        height=2,
+        orientation=GridOrientation.Y_DOWN,
+        idempotency_key="project",
+    )
+    controller = object.__new__(DesktopController)
+    controller.service = service
+    controller.session = session
+    controller.shell = QWidget()
+    selected_layers = []
+    controller._load_representations = (
+        lambda _workspace, _project_id, layer_id: selected_layers.append(layer_id)
+    )
+    workspace = ProjectWorkspacePage()
+
+    def create_layer(dialog: QDialog) -> QDialog.DialogCode:
+        name = dialog.findChild(QLineEdit)
+        assert name is not None
+        name.setText("Metal")
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", create_layer)
+
+    controller._add_layer(workspace, project.id)
+
+    layers = service.list_layers(project.id)
+    assert len(layers) == 1
+    assert workspace._selected_layer_id == str(layers[0].id)
+    assert workspace.layer_tabs.currentIndex() == 0
+    assert workspace.layer_tabs.tabData(0) == str(layers[0].id)
+    assert workspace.add_image_representation_button.isEnabled()
+    assert selected_layers == [str(layers[0].id)]

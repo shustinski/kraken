@@ -2422,6 +2422,15 @@ class ExtendFrameDetailsDialog(QDialog):
         def append_item(label: str, key: str) -> None:
             items.append((f"  {label}", key))
 
+        risk_summary = self._payload.get("single_result_risk")
+        if risk_summary is not None:
+            append_header(self._t("details.result_group_single_result_risk"))
+            append_item(self._t("details.risk_structure_regions"), "risk_structure")
+            if getattr(risk_summary, "source_alignment_risk", None) is not None:
+                append_item(self._t("details.risk_source_regions"), "risk_source")
+            if getattr(risk_summary, "confidence_risk", None) is not None:
+                append_item(self._t("details.risk_confidence_regions"), "risk_confidence")
+
         append_header(self._t("details.result_group_mask_comparison"))
         append_item(self._t("details.comparison_difference"), "diff")
         if self._is_point_geometry():
@@ -2787,6 +2796,8 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _result_pixmap_for_model(self, model_id: str | None) -> QPixmap:
         kind = self._selected_result_kind()
+        if kind in {"risk_structure", "risk_source", "risk_confidence"}:
+            return self._single_result_risk_pixmap(kind)
         if kind.startswith("comparison_layer::"):
             return self._comparison_raster_layer_pixmap(kind.split("::", 1)[1])
         if kind == "confidence":
@@ -2804,6 +2815,39 @@ class ExtendFrameDetailsDialog(QDialog):
             return QPixmap(pixmap)
         pixmap = self.result_item.pixmap()
         return QPixmap(pixmap)
+
+    def _single_result_risk_pixmap(self, kind: str) -> QPixmap:
+        cache_key = ("single_result_risk", str(kind))
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        base = self._base_array()
+        intensity = np.zeros(base.shape, dtype=np.float32)
+        summary = self._payload.get("single_result_risk")
+        prefixes = {
+            "risk_structure": ("empty_mask", "full_mask", "tiny_components", "fragmented_mask", "rough_boundary", "excess_holes", "skeleton_complexity", "edge_clipping", "batch_outlier."),
+            "risk_source": ("unsupported_boundary",),
+            "risk_confidence": ("low_confidence",),
+        }.get(str(kind), ())
+        height, width = intensity.shape
+        for reason in tuple(getattr(summary, "reasons", ()) or ()):
+            code = str(getattr(reason, "code", ""))
+            if not any(code.startswith(prefix) for prefix in prefixes):
+                continue
+            bbox = getattr(reason, "bbox", None)
+            if bbox is None:
+                continue
+            x, y, w, h = (float(value) for value in bbox)
+            x0 = max(0, min(width, int(round(x * width))))
+            y0 = max(0, min(height, int(round(y * height))))
+            x1 = max(x0 + 1, min(width, int(round((x + w) * width))))
+            y1 = max(y0 + 1, min(height, int(round((y + h) * height))))
+            intensity[y0:y1, x0:x1] = np.maximum(
+                intensity[y0:y1, x0:x1], float(getattr(reason, "contribution", 0.0))
+            )
+        pixmap = self._bad_area_intensity_pixmap(intensity, self._named_color("input_output_mask"), alpha_scale=250.0)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
 
     def _sanitize_export_component(self, value: str) -> str:
         text = str(value or "").strip()
@@ -2846,6 +2890,12 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("details.result_confidence_conflict")
         if kind == "result_confidence_transition_uncertainty":
             return self._t("details.result_confidence_transition_uncertainty")
+        if kind == "risk_structure":
+            return self._t("details.risk_structure_regions")
+        if kind == "risk_source":
+            return self._t("details.risk_source_regions")
+        if kind == "risk_confidence":
+            return self._t("details.risk_confidence_regions")
         return self._t("details.difference_heatmap")
 
     def _refresh_dynamic_labels(self) -> None:
@@ -3393,6 +3443,41 @@ class ExtendFrameDetailsDialog(QDialog):
         metrics_label = getattr(self, "comparison_metrics_label", None)
         events_label = getattr(self, "comparison_events_label", None)
         if metrics_label is None or events_label is None:
+            return
+        risk_summary = self._payload.get("single_result_risk")
+        if risk_summary is not None:
+            values = [
+                f"risk: {float(getattr(risk_summary, 'total_risk', 0.0)):.1f}/100",
+                f"structure: {float(getattr(risk_summary, 'structure_risk', 0.0)):.1f}",
+                f"sensitivity: {getattr(risk_summary, 'sensitivity', 'balanced')}",
+                f"evidence: {', '.join(getattr(risk_summary, 'evidence', ()) or ())}",
+            ]
+            for label, attribute in (
+                ("batch", "batch_outlier_risk"),
+                ("source", "source_alignment_risk"),
+                ("confidence", "confidence_risk"),
+            ):
+                value = getattr(risk_summary, attribute, None)
+                if value is not None:
+                    values.append(f"{label}: {float(value):.1f}")
+            contributions = dict(getattr(risk_summary, "component_contributions", {}) or {})
+            if contributions:
+                values.append(
+                    "contributions: "
+                    + ", ".join(
+                        f"{key}={float(value):.1f}"
+                        for key, value in sorted(contributions.items())
+                    )
+                )
+            metrics_label.setText("\n".join(values))
+            reasons = tuple(getattr(risk_summary, "reasons", ()) or ())
+            events_label.setText(
+                "\n".join(
+                    f"{reason.code}: {float(reason.contribution) * 100.0:.1f}% [{reason.severity}]"
+                    for reason in reasons
+                )
+                or "Risk reasons: -"
+            )
             return
         if self._selected_result_kind() == "grid_cell_defects":
             result = self._grid_cell_analysis_result()

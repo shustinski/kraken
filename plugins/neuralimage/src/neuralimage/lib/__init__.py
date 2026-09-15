@@ -9,7 +9,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QSettings
 
 from neuralimage.lib.data_interfaces import (
     WorkMode,
@@ -838,6 +837,7 @@ def load_workflow_snapshot(snapshot_path: Path | str) -> tuple[MainWindowState, 
 
 class QSettingsStateStore:
     def _settings(self, organization: str, application: str) -> QSettings:
+        from PyQt6.QtCore import QSettings
         root = os.getenv('NEURALIMAGE_SETTINGS_DIR')
         if root:
             settings_root = Path(root)

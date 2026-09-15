@@ -1178,16 +1178,10 @@ dependencies = [
     { name = "kraken", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "networkx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "opencv-python", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "opencv-python-headless", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pillow", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "pyinstaller", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "pyqtgraph", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "scikit-image", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "scipy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "timm", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -1196,6 +1190,15 @@ build = [
     { name = "huggingface-hub", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "networkx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyinstaller", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+client = [
+    { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pyqtgraph", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+compute = [
+    { name = "timm", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 dev = [
     { name = "cython", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -1206,14 +1209,29 @@ dev = [
     { name = "pytest", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pytest-cov", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
+full = [
+    { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pyqtgraph", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "timm", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 monitoring = [
     { name = "psutil", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+server = [
+    { name = "fastapi", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "timm", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "uvicorn", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "cython", marker = "extra == 'build'", specifier = ">=3.0" },
     { name = "cython", marker = "extra == 'dev'", specifier = ">=3.0" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
     { name = "huggingface-hub", marker = "extra == 'build'", specifier = ">=0.30" },
     { name = "huggingface-hub", marker = "extra == 'dev'", specifier = ">=0.30" },
     { name = "kraken", editable = "." },
@@ -1221,26 +1239,38 @@ requires-dist = [
     { name = "networkx", marker = "extra == 'build'", specifier = ">=3.2" },
     { name = "networkx", marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "opencv-python", specifier = ">=4.8" },
+    { name = "opencv-python-headless", specifier = ">=4.8" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "psutil", marker = "extra == 'dev'", specifier = ">=5.9" },
     { name = "psutil", marker = "extra == 'monitoring'", specifier = ">=5.9" },
-    { name = "pyinstaller", specifier = ">=6.0" },
     { name = "pyinstaller", marker = "extra == 'build'", specifier = ">=6.0" },
     { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "pyqt6", specifier = ">=6.6" },
-    { name = "pyqtgraph", specifier = ">=0.13" },
+    { name = "pyqt6", marker = "extra == 'client'", specifier = ">=6.6" },
+    { name = "pyqt6", marker = "extra == 'full'", specifier = ">=6.6" },
+    { name = "pyqtgraph", marker = "extra == 'client'", specifier = ">=0.13" },
+    { name = "pyqtgraph", marker = "extra == 'full'", specifier = ">=0.13" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "scikit-image", specifier = ">=0.25" },
     { name = "scipy", specifier = ">=1.14" },
-    { name = "timm", specifier = ">=1.0" },
-    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "==2.12.0" },
-    { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
-    { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = "==0.27.0" },
-    { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "timm", marker = "extra == 'compute'", specifier = ">=1.0" },
+    { name = "timm", marker = "extra == 'full'", specifier = ">=1.0" },
+    { name = "timm", marker = "extra == 'server'", specifier = ">=1.0" },
+    { name = "torch", marker = "(sys_platform == 'linux' and extra == 'compute') or (sys_platform == 'win32' and extra == 'compute')", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torch", marker = "(sys_platform == 'linux' and extra == 'full') or (sys_platform == 'win32' and extra == 'full')", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torch", marker = "(sys_platform == 'linux' and extra == 'server') or (sys_platform == 'win32' and extra == 'server')", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'compute'", specifier = "==2.12.0" },
+    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'full'", specifier = "==2.12.0" },
+    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'server'", specifier = "==2.12.0" },
+    { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'compute') or (sys_platform == 'win32' and extra == 'compute')", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'full') or (sys_platform == 'win32' and extra == 'full')", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'server') or (sys_platform == 'win32' and extra == 'server')", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'compute'", specifier = "==0.27.0" },
+    { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'full'", specifier = "==0.27.0" },
+    { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'server'", specifier = "==0.27.0" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30" },
 ]
-provides-extras = ["monitoring", "build", "dev"]
+provides-extras = ["client", "compute", "server", "full", "monitoring", "build", "dev"]
 
 [[package]]
 name = "nodeenv"
@@ -1453,6 +1483,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/55/b3b49a1b97aabcfbbd6c7326df9cb0b6fa0c0aefa8e89d500939e04aa229/opencv_python-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:620d602b8f7d8b8dab5f4b99c6eb353e78d3fb8b0f53db1bd258bb1aa001c1d5", size = 72927042, upload-time = "2026-02-05T06:59:23.389Z" },
     { url = "https://files.pythonhosted.org/packages/fb/17/de5458312bcb07ddf434d7bfcb24bb52c59635ad58c6e7c751b48949b009/opencv_python-4.13.0.92-cp37-abi3-win32.whl", hash = "sha256:372fe164a3148ac1ca51e5f3ad0541a4a276452273f503441d718fab9c5e5f59", size = 30932638, upload-time = "2026-02-05T07:02:14.98Z" },
     { url = "https://files.pythonhosted.org/packages/e9/a5/1be1516390333ff9be3a9cb648c9f33df79d5096e5884b5df71a588af463/opencv_python-4.13.0.92-cp37-abi3-win_amd64.whl", hash = "sha256:423d934c9fafb91aad38edf26efb46da91ffbc05f3f59c4b0c72e699720706f5", size = 40212062, upload-time = "2026-02-05T07:02:12.724Z" },
+]
+
+[[package]]
+name = "opencv-python-headless"
+version = "5.0.0.93"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1d/99/76b7c80252aa83c1af16393454aafd125a0287101afe8deb0a6821af0e30/opencv_python_headless-5.0.0.93.tar.gz", hash = "sha256:b82f9831daab90b725c7c1ee1b36cb5732c367096ac76d119e64e14eb70d5f3c", size = 81817738, upload-time = "2026-07-02T07:01:06.039Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ec/78/afca939f40ffe2b2380bfa86f812b2f7d4acc5a27b27dc41b49cad7ce7b4/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:10818d91510e05c04568ae12b5cd120779c70c01bf897b001a6221fe430df80f", size = 36521085, upload-time = "2026-07-02T06:55:24.429Z" },
+    { url = "https://files.pythonhosted.org/packages/2b/97/8170e9819764c47e436c130d3ff6cfb73b58f923eae9d3a03d8982b04aec/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:09a872a157c1376ab922a69bbf22f9a95bcc7b658a9d8b436a60212b02b2eeb4", size = 56563598, upload-time = "2026-07-02T06:55:47.355Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/98/1a28a7101e31801042b3098871a74b76c61581d328ef40774ff4edb53a56/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:840bd717c21e5c11cadadc022a823315ea417f961213d06b4df010e019eb16f4", size = 39648433, upload-time = "2026-07-02T06:56:04.255Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/21/f6ef335f6e65724aa78b8d792b48d40a48c381715f1e62f5a5049e09d07e/opencv_python_headless-5.0.0.93-cp37-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:ed709fdf9aa0bd1f2ed8549e71d19449b03a675bb581eb292285f6861953be37", size = 61204038, upload-time = "2026-07-02T06:56:41.823Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/8f/b8756467ea991449a293797f6b3fa80fcfdd29598a0a60d1cd5715b96e61/opencv_python_headless-5.0.0.93-cp37-abi3-win32.whl", hash = "sha256:c6bcd96b185975ea240d22cfdb15a1f6d080cc95264cfbe2621f21bb144d89b9", size = 35411237, upload-time = "2026-07-02T05:50:12.901Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/88/763b967f7efd7226b82c9fae16d560cba049b1f0c036647e65c610fd636e/opencv_python_headless-5.0.0.93-cp37-abi3-win_amd64.whl", hash = "sha256:829717b6a95554f273e49e357cee3b3a2a26b6f4842fbc1bed2b45bdd8f87e0e", size = 43825962, upload-time = "2026-07-02T05:50:09.627Z" },
 ]
 
 [[package]]

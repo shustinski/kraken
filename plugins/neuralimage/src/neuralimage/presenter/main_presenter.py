@@ -71,7 +71,6 @@ from neuralimage.lib.update_checker import (
 )
 from neuralimage.lib.version import APP_VERSION
 from neuralimage.model.NeuralNetwork import get_registered_model_names_by_type
-from neuralimage.model.general_neural_handler import GeneralNeuralHandler
 from neuralimage.lib.ui_texts import get_ui_section
 from neuralimage.view import MainView, SettingsPanel
 from neuralimage.view.task_properties_dialog import TaskPropertiesDialog
@@ -176,6 +175,8 @@ class MainPresenter(QObject):
 
         # Инициализируем главное окно
         self.view = MainView(side_panel=self.settings_panel)
+        from neuralimage.remote.ui import install_remote_controls
+        install_remote_controls(self)
         self.view.configure_update_channels(
             self._update_client_config.available_channels,
             self._selected_update_channel,
@@ -1363,6 +1364,7 @@ class MainPresenter(QObject):
             if not self._is_qthread_running(handler):
                 self.neuaral_handler = None
 
+        self._stop_owned_qthread('_remote_connection_check', wait_ms, 'remote connection check')
         self._stop_owned_qthread('_rare_patch_editor_prepare_thread', wait_ms, 'rare patch preparation')
         self._stop_owned_qthread('_update_check_thread', min(wait_ms, 3000), 'update check')
         self._stop_owned_qthread('_update_download_thread', min(wait_ms, 3000), 'update download')
@@ -1384,7 +1386,7 @@ class MainPresenter(QObject):
             setattr(self, attr_name, None)
 
     def _stop_worker_object(self, worker: object, operation_name: str = 'worker') -> None:
-        stop = getattr(worker, 'stop', None)
+        stop = getattr(worker, 'detach', None) or getattr(worker, 'stop', None)
         try:
             if callable(stop):
                 stop()
@@ -1672,6 +1674,8 @@ class GeneralNeuralHandlerThread(QThread):
         super().__init__()
         self._last_answer = False
         self._waiting_for_answer = False
+        from neuralimage.model.general_neural_handler import GeneralNeuralHandler
+
         self.main_logic = GeneralNeuralHandler(work_mode=work_mode,
                                                recogniton_parameters=recognition_parameters,
                                                tranining_parameters=tranining_parameters,

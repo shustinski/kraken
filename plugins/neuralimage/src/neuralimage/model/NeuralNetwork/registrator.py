@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import enum
 import inspect
 from typing import Callable, Dict, Type, TypedDict
 
-import torch.nn as nn
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch.nn as nn
 
 
 class ModelType(enum.Enum):
@@ -12,7 +17,7 @@ class ModelType(enum.Enum):
 
 
 class ModelRegistryEntry(TypedDict):
-    model_class: Type[nn.Module]
+    model_class: Type["nn.Module"]
     model_type: ModelType
 
 
@@ -77,6 +82,7 @@ def register_model(
     """Register a ``torch.nn.Module`` subclass in the global model registry."""
 
     def decorator(cls: Type[nn.Module]) -> Type[nn.Module]:
+        import torch.nn as nn
         if not issubclass(cls, nn.Module):
             raise TypeError('Только подклассы torch.nn.Module могут быть зарегистрированы')
         model_name = name or cls.__name__

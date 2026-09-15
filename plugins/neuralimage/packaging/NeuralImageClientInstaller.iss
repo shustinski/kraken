@@ -1,0 +1,5 @@
+#define AppName "NeuralImageClient"
+#define AppExeName "NeuralImageClient.exe"
+#define AppIdentity "{{3F61B3B0-89E5-409C-B67C-9171F3E55ED2}"
+#define BuildDir AddBackslash(SourcePath) + "..\dist\NeuralImageClient"
+#include "NeuralImageInstaller.iss"

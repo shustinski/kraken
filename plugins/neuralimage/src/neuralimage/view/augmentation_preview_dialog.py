@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import copy
-import random
-import zlib
 from collections import OrderedDict
-from contextlib import contextmanager
 from dataclasses import asdict
 from dataclasses import replace
 
 import numpy as np
-import torch
 from PIL import Image
 from PyQt6.QtCore import QEvent, QObject, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QImage, QMouseEvent, QPixmap
@@ -29,40 +25,25 @@ from PyQt6.QtWidgets import (
 )
 
 from neuralimage.augmentations import (
-    ICDefectAugmentor,
-    PCBDefectAugmentor,
-    SyntheticTopologyGenerator,
-    SyntheticTopologyParameters,
-    TechVariationAugmentor,
+    PCBDefectAugmentor as PCBDefectAugmentor,
 )
 from neuralimage.lib.data_interfaces import (
-    IC_TOPOLOGY_FAMILIES,
-    PCB_TOPOLOGY_FAMILIES,
     TrainingParameters,
     build_ic_defect_parameters,
     build_pcb_defect_parameters,
     build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
 )
-from neuralimage.lib.images import ImagePreparator, SampleFastCutter, resolved_augmentation_variant_count
-from neuralimage.lib.random_artifacts import generate_random_artifact_patch
+from neuralimage.lib.images import ImagePreparator, SampleFastCutter
 from neuralimage.lib.rare_patch_masks import (
     collect_matching_sample_label_pairs,
     prepare_cif_label_raster,
 )
 from neuralimage.lib.ui_texts import get_ui_section
-from neuralimage.model.NeuralNetwork.dataset import _apply_binary_tech_augmentation_to_pair
 from neuralimage.preprocessing.pipeline import image_to_channel_first_float01
-from neuralimage.targets.dataset_hooks import (
-    apply_dataset_preprocessing,
-    apply_dataset_sem_augmentation_preview,
-)
 from neuralimage.configuration import (
     build_sem_segmentation_config,
-    sem_config_from_form_values,
-    sem_config_to_form_values,
 )
-from neuralimage.view.sem_compact_section_editor import CompactSemSectionEditor
 from neuralimage.view.settings_panel import SettingsPanel
 from neuralimage.view.settings_panel_widgets import NoWheelComboBox
 
@@ -201,20 +182,6 @@ PREVIEW_VALUE_LABELS_RU = {
 }
 
 
-@contextmanager
-def _seeded_random(seed: int):
-    random_state = random.getstate()
-    np_random_state = np.random.get_state()
-    torch_random_state = torch.random.get_rng_state()
-    random.seed(int(seed))
-    np.random.seed(int(seed))
-    torch.manual_seed(int(seed))
-    try:
-        yield
-    finally:
-        random.setstate(random_state)
-        np.random.set_state(np_random_state)
-        torch.random.set_rng_state(torch_random_state)
 
 
 class _PreviewLabel(QLabel):
@@ -468,6 +435,8 @@ class AugmentationPreviewDialog(QDialog):
         self._sidebar_restore.append((widget, old_parent, old_layout, index))
 
     def closeEvent(self, event) -> None:
+        self._remote_preview_serial = getattr(self, "_remote_preview_serial", 0) + 1
+        self._pending_preview = None
         for widget, old_parent, old_layout, index in reversed(self._sidebar_restore):
             current_parent = widget.parentWidget()
             if current_parent is not None:
@@ -1068,26 +1037,20 @@ class AugmentationPreviewDialog(QDialog):
             )
         )
         try:
-            original_image, original_label, augmented_image, augmented_label = self._build_preview_arrays(
-                self._current_sample_index
-            )
-        except Exception as exc:
-            error_text = str(
-                self._texts.get('preview_error', 'Unable to build preview: {error}')
-            ).format(error=exc)
-            self.status_label.setText(error_text)
-            self.image_preview.setText(error_text)
-            self.label_preview.setText(error_text)
-            return
-        self._original_image_array = original_image
-        self._original_label_array = original_label
-        self._augmented_image_array = augmented_image
-        self._augmented_label_array = augmented_label
+            from neuralimage.remote.ui import remote_url
+            if remote_url() is not None:
+                from neuralimage.remote.preview_qt import request_preview
+                request_preview(self)
+            else:
+                (self._original_image_array, self._original_label_array,
+                 self._augmented_image_array, self._augmented_label_array) = self._build_preview_arrays(self._current_sample_index)
+                self._update_preview_mode_label()
+                self._update_visible_preview()
+        except Exception as error:
+            self.status_label.setText(str(error))
         self.prev_button.setEnabled((not synthetic_enabled) and len(self._frame_plan) > 1)
         self.next_button.setEnabled((not synthetic_enabled) and len(self._frame_plan) > 1)
-        self.resample_button.setEnabled(True)
-        self._update_preview_mode_label()
-        self._update_visible_preview()
+
 
     def _update_preview_mode_label(self) -> None:
         mode_key = 'mode_augmented' if self._show_augmented else 'mode_original'
@@ -1115,135 +1078,14 @@ class AugmentationPreviewDialog(QDialog):
         self._set_preview_image(self.image_preview, image_array, target_width=target_width, target_height=target_height)
         self._set_preview_image(self.label_preview, label_array, target_width=target_width, target_height=target_height)
 
-    def _build_preview_arrays(
-        self,
-        sample_index: int,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        synthetic = self._panel.synthetic_defect_generator_check_box.isChecked()
-        raw_image, raw_label = (
-            self._build_synthetic_base_arrays()
-            if synthetic
-            else self._load_prepared_arrays(sample_index)
-        )
-        sem_config = self._current_sem_config()
-        original_base = apply_dataset_preprocessing(raw_image, sem_config.preprocessing)
-        with _seeded_random(self._seed_for(sample_index, f'sem:{self._variant_serial}')):
-            augmented_base, augmented_base_label = apply_dataset_sem_augmentation_preview(
-                raw_image,
-                raw_label,
-                sem_config.augmentation,
-            )
-        augmented_base = apply_dataset_preprocessing(
-            augmented_base,
-            sem_config.preprocessing,
-        )
+    def _build_preview_arrays(self, sample_index):
+        from neuralimage.remote.preview_qt import snapshot
+        from neuralimage.remote.preview import compute_preview, decode_array
+        payload = snapshot(self)
+        payload["index"] = sample_index
+        return tuple(decode_array(array) for array in compute_preview(payload))
 
-        full_image = self.full_image_check_box.isChecked()
-        if full_image:
-            original_image, original_label = self._build_original_full_image(
-                original_base,
-                raw_label,
-            )
-            augmented_image, augmented_label = self._build_augmented_full_image(
-                sample_index,
-                augmented_base,
-                augmented_base_label,
-                include_mixup=not synthetic,
-            )
-        else:
-            original_image, original_label = self._build_original_patch(
-                sample_index,
-                original_base,
-                raw_label,
-            )
-            augmented_image, augmented_label = self._build_augmented_patch(
-                sample_index,
-                augmented_base,
-                augmented_base_label,
-                include_mixup=not synthetic,
-            )
-        return (
-            self._to_display_array(original_image),
-            self._to_display_array(original_label),
-            self._to_display_array(augmented_image),
-            self._to_display_array(augmented_label),
-        )
 
-    def _build_synthetic_base_arrays(self) -> tuple[np.ndarray, np.ndarray]:
-        patch_height, patch_width = tuple(getattr(self._training_parameters.generation, 'segment_size', (256, 256)))
-        size_hw = (
-            max(int(patch_height), int(self._panel.synthetic_image_height_spinbox.value())),
-            max(int(patch_width), int(self._panel.synthetic_image_width_spinbox.value())),
-        )
-        trace_count = self._sample_preview_int_range(
-            self._panel.synthetic_trace_count_min_spinbox,
-            self._panel.synthetic_trace_count_max_spinbox,
-            salt='synthetic_trace_count',
-        )
-        background_noise_sigma = self._sample_preview_float_range(
-            self._panel.synthetic_background_noise_sigma_min_spinbox,
-            self._panel.synthetic_background_noise_sigma_max_spinbox,
-            salt='synthetic_background_noise_sigma',
-        )
-        trace_noise_sigma = self._sample_preview_float_range(
-            self._panel.synthetic_trace_noise_sigma_min_spinbox,
-            self._panel.synthetic_trace_noise_sigma_max_spinbox,
-            salt='synthetic_trace_noise_sigma',
-        )
-        params = SyntheticTopologyParameters(
-            trace_count=trace_count,
-            segment_count_range=tuple(
-                sorted(
-                    (
-                        int(self._panel.synthetic_segment_count_min_spinbox.value()),
-                        int(self._panel.synthetic_segment_count_max_spinbox.value()),
-                    )
-                )
-            ),
-            trace_half_width_range=tuple(
-                sorted(
-                    (
-                        int(self._panel.synthetic_trace_half_width_min_spinbox.value()),
-                        int(self._panel.synthetic_trace_half_width_max_spinbox.value()),
-                    )
-                )
-            ),
-            topology_domain=self._get_synthetic_topology_domain(),
-            topology_family=self._get_synthetic_topology_family(),
-            via_count_range=(1, max(1, min(6, int(round(trace_count / 3.0))))),
-            background_noise_sigma=background_noise_sigma,
-            trace_noise_sigma=trace_noise_sigma,
-        )
-        generator = SyntheticTopologyGenerator(params)
-        synthetic_channels = 3 if self._get_synthetic_topology_domain() == 'pcb' else int(self._training_parameters.colors)
-        image_array, label_array = generator.generate(
-            size_hw=size_hw,
-            channels=synthetic_channels,
-            seed=self._seed_for(self._current_sample_index, f'synthetic:{self._variant_serial}'),
-        )
-        return image_array.astype(np.float32, copy=False), label_array.astype(np.float32, copy=False)
-
-    def _build_augmented_synthetic_pair(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-        *,
-        full_image: bool,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        if full_image:
-            return self._build_augmented_full_image(
-                sample_index,
-                image_matrix,
-                label_matrix,
-                include_mixup=False,
-            )
-        return self._build_augmented_patch(
-            sample_index,
-            image_matrix,
-            label_matrix,
-            include_mixup=False,
-        )
 
     def _load_prepared_arrays(self, sample_index: int) -> tuple[np.ndarray, np.ndarray]:
         cached = self._prepared_arrays_cache.get(sample_index)
@@ -1272,189 +1114,14 @@ class AugmentationPreviewDialog(QDialog):
             self._prepared_arrays_cache.popitem(last=False)
         return prepared
 
-    def _build_original_patch(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return self._extract_patch(
-            sample_index,
-            image_matrix,
-            label_matrix,
-            random_crop=False,
-            scale=False,
-        )
 
-    def _build_original_full_image(
-        self,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        return (
-            image_matrix.astype(np.float32, copy=True),
-            label_matrix.astype(np.float32, copy=True),
-        )
 
-    def _build_augmented_patch(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-        *,
-        include_mixup: bool,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        image_patch, label_patch = self._build_pre_batch_patch(
-            sample_index,
-            image_matrix,
-            label_matrix,
-        )
-        if include_mixup and self._panel.mixup_check_box.isChecked():
-            image_patch, label_patch = self._apply_mixup(sample_index, image_patch, label_patch)
-        image_patch = self._apply_cutout(sample_index, image_patch)
-        image_patch = self._apply_random_artifacts(sample_index, image_patch)
-        return image_patch, label_patch
 
-    def _build_augmented_full_image(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-        *,
-        include_mixup: bool,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        image_full, label_full = self._build_pre_batch_full_image(
-            sample_index,
-            image_matrix,
-            label_matrix,
-        )
-        if include_mixup and self._panel.mixup_check_box.isChecked():
-            image_full, label_full = self._apply_mixup(
-                sample_index,
-                image_full,
-                label_full,
-                full_image=True,
-            )
-        image_full = self._apply_cutout(sample_index, image_full)
-        image_full = self._apply_random_artifacts(sample_index, image_full)
-        return image_full, label_full
 
-    def _build_pre_batch_patch(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        augmented_image = image_matrix.astype(np.float32, copy=True)
-        augmented_label = label_matrix.astype(np.float32, copy=True)
-        image_patch, label_patch = self._extract_patch(
-            sample_index,
-            augmented_image,
-            augmented_label,
-            random_crop=self._panel.random_crop_check_box.isChecked(),
-            scale=self._panel.scale_augmentation_check_box.isChecked(),
-        )
-        image_patch, label_patch = self._apply_rotations(image_patch, label_patch)
-        image_patch = self._apply_photometric_augmentations(sample_index, image_patch)
-        image_patch, label_patch = self._apply_pcb_defects(sample_index, image_patch, label_patch)
-        return image_patch, label_patch
 
-    def _build_pre_batch_full_image(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        image_full = image_matrix.astype(np.float32, copy=True)
-        label_full = label_matrix.astype(np.float32, copy=True)
-        image_full, label_full = self._apply_rotations(image_full, label_full)
-        image_full = self._apply_photometric_augmentations(sample_index, image_full)
-        image_full, label_full = self._apply_pcb_defects(sample_index, image_full, label_full)
-        return image_full, label_full
 
-    def _extract_patch(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-        *,
-        random_crop: bool,
-        scale: bool,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        generation = self._generation_settings_for_cutter()
-        with _seeded_random(self._seed_for(sample_index, f'extract:{int(random_crop)}:{int(scale)}')):
-            cutter = SampleFastCutter((image_matrix, label_matrix), generation, shuffle=False)
-        if len(cutter) <= 0:
-            return image_matrix.copy(), label_matrix.copy()
-        item_index = min(max(0, int(getattr(self, '_cutter_item_index', 0))), len(cutter) - 1)
-        image_patch, label_patch = cutter[item_index]
-        return (
-            np.asarray(image_patch, dtype=np.float32).copy(),
-            np.asarray(label_patch, dtype=np.float32).copy(),
-        )
 
-    def _apply_rotations(
-        self,
-        image_patch: np.ndarray,
-        label_patch: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        image = image_patch.copy()
-        label = label_patch.copy()
-        operations = self._panel.get_training_augmentation_config()
 
-        def selected(key: str) -> bool:
-            item = operations[key]
-            return bool(item['enabled']) and random.random() < float(item['probability'])
-
-        if selected('rotate_90') and image.shape[1] == image.shape[2]:
-            image = np.rot90(image, k=-1, axes=(1, 2)).copy()
-            label = np.rot90(label, k=-1, axes=(1, 2)).copy()
-        if selected('rotate_180'):
-            image = image[:, ::-1, ::-1].copy()
-            label = label[:, ::-1, ::-1].copy()
-        if selected('flip_x'):
-            image = image[:, ::-1, :].copy()
-            label = label[:, ::-1, :].copy()
-        if selected('flip_y'):
-            image = image[:, :, ::-1].copy()
-            label = label[:, :, ::-1].copy()
-        return image, label
-
-    def _apply_photometric_augmentations(self, sample_index: int, image_patch: np.ndarray) -> np.ndarray:
-        multiplier = self._augmentation_multiplier_value()
-        if multiplier > 0.0 and self._variant_serial <= 0:
-            return image_patch.astype(np.float32, copy=False)
-        image = image_patch.astype(np.float32, copy=True)
-        with _seeded_random(self._seed_for(sample_index, 'photometric')):
-            operations = self._panel.get_training_augmentation_config()
-
-            def selected(key: str) -> bool:
-                item = operations[key]
-                return bool(item['enabled']) and random.random() < float(item['probability'])
-
-            if selected('blur'):
-                blur_radius = max(0.0, float(self._panel.augmentation_blur_radius_spinbox.value()))
-                if blur_radius > 0.0:
-                    image = SampleFastCutter._apply_gaussian_blur(image, blur_radius)
-            if selected('brightness'):
-                strength = max(0.0, float(self._panel.augmentation_brightness_spinbox.value()))
-                brightness = 1.0 + strength
-                image *= float(brightness)
-            if selected('contrast'):
-                strength = max(0.0, float(self._panel.augmentation_contrast_spinbox.value()))
-                contrast = 1.0 + strength
-                mean = image.mean(axis=(1, 2), keepdims=True)
-                image = (image - mean) * float(contrast) + mean
-            if selected('gamma'):
-                gamma_strength = max(0.0, float(self._panel.augmentation_gamma_spinbox.value()))
-                gamma = max(0.1, 1.0 - min(gamma_strength, 0.9))
-                image = np.power(np.clip(image, 0.0, 1.0), float(gamma)).astype(np.float32, copy=False)
-            if selected('noise'):
-                sigma = max(0.0, float(self._panel.augmentation_noise_sigma_spinbox.value()))
-                if sigma > 0.0:
-                    image += np.random.normal(0.0, sigma, size=image.shape).astype(np.float32)
-        np.clip(image, 0.0, 1.0, out=image)
-        return image.astype(np.float32, copy=False)
 
     def _has_selected_tech_variations(self) -> bool:
         if not self._panel.tech_augmentation_check_box.isChecked():
@@ -1471,233 +1138,11 @@ class AugmentationPreviewDialog(QDialog):
             )
         )
 
-    def _apply_tech_variations(
-        self,
-        sample_index: int,
-        image_matrix: np.ndarray,
-        label_matrix: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        config = self._build_apply_tech_aug_config(preview=True)
-        if not config.enabled:
-            return image_matrix, label_matrix
-        selected_count = sum(
-            1
-            for spinbox in (
-                self._panel.tech_aug_global_width_probability_spinbox,
-                self._panel.tech_aug_scale_rethreshold_probability_spinbox,
-                self._panel.tech_aug_blur_threshold_probability_spinbox,
-                self._panel.tech_aug_boundary_aware_probability_spinbox,
-                self._panel.tech_aug_local_morphology_probability_spinbox,
-                self._panel.tech_aug_gap_variation_probability_spinbox,
-            )
-            if self._tech_effect_enabled(spinbox)
-        )
-        if selected_count <= 0:
-            return image_matrix, label_matrix
-        augmentor = TechVariationAugmentor(config)
-        source_image = image_matrix.astype(np.float32, copy=False)
-        source_label = label_matrix.astype(np.float32, copy=False)
-        preview_attempts = max(1, min(12, max(selected_count * 2, int(getattr(config, 'max_operations', 1)))))
-        for attempt_index in range(preview_attempts):
-            with _seeded_random(self._seed_for(sample_index, f'tech:{attempt_index}')):
-                augmented_image, augmented_label = _apply_binary_tech_augmentation_to_pair(
-                    source_image,
-                    source_label,
-                    augmentor,
-                    binary_tolerance=float(getattr(config, 'binary_tolerance', 0.15)),
-                )
-            if np.array_equal(augmented_image, source_image) and np.array_equal(augmented_label, source_label):
-                continue
-            return augmented_image, augmented_label
-        return source_image, source_label
 
-    def _apply_pcb_defects(
-        self,
-        sample_index: int,
-        image_patch: np.ndarray,
-        label_patch: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        if not self._panel.synthetic_defect_generator_check_box.isChecked():
-            return image_patch, label_patch
-        if not self._panel.pcb_defects_check_box.isChecked():
-            return image_patch, label_patch
-        current_domain = self._get_synthetic_topology_domain()
-        if current_domain == 'ic':
-            selected_probabilities = {
-                'line_break': 1.0 if self._panel.ic_defect_type_checkboxes["line_break"].isChecked() else 0.0,
-                'bridge': 1.0 if self._panel.ic_defect_type_checkboxes["bridge"].isChecked() else 0.0,
-                'necking': 1.0 if self._panel.ic_defect_type_checkboxes["necking"].isChecked() else 0.0,
-                'missing_metal': 1.0 if self._panel.ic_defect_type_checkboxes["missing_metal"].isChecked() else 0.0,
-                'spur': 1.0 if self._panel.ic_defect_type_checkboxes["spur"].isChecked() else 0.0,
-                'pinhole': 1.0 if self._panel.ic_defect_type_checkboxes["pinhole"].isChecked() else 0.0,
-                'via_open': 1.0 if self._panel.ic_defect_type_checkboxes["via_open"].isChecked() else 0.0,
-                'line_shift': 1.0 if self._panel.ic_defect_type_checkboxes["line_shift"].isChecked() else 0.0,
-            }
-            selected_severities = {
-                defect_name: float(self._panel.ic_defect_type_spinboxes[defect_name].value()) / 100.0
-                for defect_name in selected_probabilities
-            }
-            config = self._build_apply_ic_defects_config()
-            augmentor_cls = ICDefectAugmentor
-        else:
-            selected_probabilities = {
-                'break': 1.0 if self._panel.pcb_defect_type_checkboxes["break"].isChecked() else 0.0,
-                'short': 1.0 if self._panel.pcb_defect_type_checkboxes["short"].isChecked() else 0.0,
-                'missing_copper': 1.0 if self._panel.pcb_defect_type_checkboxes["missing_copper"].isChecked() else 0.0,
-                'excess_copper': 1.0 if self._panel.pcb_defect_type_checkboxes["excess_copper"].isChecked() else 0.0,
-                'pinhole': 1.0 if self._panel.pcb_defect_type_checkboxes["pinhole"].isChecked() else 0.0,
-                'spurious_copper': 1.0 if self._panel.pcb_defect_type_checkboxes["spurious_copper"].isChecked() else 0.0,
-                'via': 1.0 if self._panel.pcb_defect_type_checkboxes["via"].isChecked() else 0.0,
-                'misalignment': 1.0 if self._panel.pcb_defect_type_checkboxes["misalignment"].isChecked() else 0.0,
-            }
-            selected_severities = {
-                defect_name: float(self._panel.pcb_defect_type_spinboxes[defect_name].value()) / 100.0
-                for defect_name in selected_probabilities
-            }
-            config = self._build_apply_pcb_defects_config()
-            augmentor_cls = PCBDefectAugmentor
-        active_count = sum(1 for probability in selected_probabilities.values() if probability > 0.0)
-        if active_count <= 0:
-            return image_patch, label_patch
-        config.defect_probability = 1.0
-        config.min_defects = min(active_count, max(1, int(self._panel.pcb_defects_min_count_spinbox.value())))
-        config.max_defects = min(active_count, max(config.min_defects, int(self._panel.pcb_defects_max_count_spinbox.value())))
-        for defect_name in tuple(config.defect_probabilities.keys()):
-            config.defect_probabilities[defect_name] = float(selected_probabilities.get(defect_name, 0.0))
-            config.defect_severities[defect_name] = float(selected_severities.get(defect_name, 0.5))
-        augmentor = augmentor_cls(config)
-        source_image = image_patch.astype(np.float32, copy=False)
-        source_label = label_patch.astype(np.float32, copy=False)
-        preview_attempts = max(1, min(16, int(getattr(config, 'max_attempts_per_defect', 8))))
-        for attempt_index in range(preview_attempts):
-            augmented_image, defect_mask, _augmented_mask = augmentor(
-                source_image,
-                source_label,
-                seed=self._seed_for(sample_index, f'pcb_defects_{attempt_index}'),
-                return_augmented_mask=True,
-            )
-            defect_mask_array = np.asarray(defect_mask)
-            if np.count_nonzero(defect_mask_array) <= 0 and np.array_equal(augmented_image, source_image):
-                continue
-            return (
-                augmented_image,
-                source_label,
-            )
-        return source_image, source_label
 
-    def _apply_mixup(
-        self,
-        sample_index: int,
-        image_patch: np.ndarray,
-        label_patch: np.ndarray,
-        *,
-        full_image: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        if len(self._sample_pairs) <= 1:
-            return image_patch, label_patch
-        alpha = max(0.0, float(self._panel.mixup_alpha_spinbox.value()))
-        if alpha <= 0.0:
-            return image_patch, label_patch
-        partner_index = (sample_index + 1 + self._variant_serial) % len(self._sample_pairs)
-        if partner_index == sample_index:
-            partner_index = (partner_index + 1) % len(self._sample_pairs)
-        partner_base_image, partner_base_label = self._load_prepared_arrays(partner_index)
-        if full_image:
-            partner_image, partner_label = self._build_pre_batch_full_image(
-                partner_index,
-                partner_base_image,
-                partner_base_label,
-            )
-        else:
-            partner_image, partner_label = self._build_pre_batch_patch(
-                partner_index,
-                partner_base_image,
-                partner_base_label,
-            )
-        if partner_image.shape != image_patch.shape or partner_label.shape != label_patch.shape:
-            return image_patch, label_patch
-        with _seeded_random(self._seed_for(sample_index, 'mixup')):
-            lambda_value = float(np.random.beta(alpha, alpha))
-        lambda_value = float(min(max(lambda_value, 0.0), 1.0))
-        mixed_image = (lambda_value * image_patch) + ((1.0 - lambda_value) * partner_image)
-        mixed_label = (lambda_value * label_patch) + ((1.0 - lambda_value) * partner_label)
-        return (
-            mixed_image.astype(np.float32, copy=False),
-            mixed_label.astype(np.float32, copy=False),
-        )
 
-    def _apply_cutout(self, sample_index: int, image_patch: np.ndarray) -> np.ndarray:
-        if not self._panel.cutout_check_box.isChecked():
-            return image_patch
-        holes = max(1, int(self._panel.cutout_holes_spinbox.value()))
-        size_ratio = float(self._panel.cutout_size_ratio_spinbox.value())
-        if size_ratio <= 0.0:
-            return image_patch
-        image = torch.from_numpy(np.ascontiguousarray(image_patch[None, ...])).float()
-        with _seeded_random(self._seed_for(sample_index, 'cutout')):
-            _batch, channels, height, width = image.shape
-            max_cutout_height = max(1, min(int(height), int(round(int(height) * size_ratio))))
-            max_cutout_width = max(1, min(int(width), int(round(int(width) * size_ratio))))
-            if max_cutout_height <= 0 or max_cutout_width <= 0:
-                return image_patch
-            for _ in range(holes):
-                cutout_height = (
-                    1 if max_cutout_height == 1 else int(torch.randint(1, max_cutout_height + 1, (1,)).item())
-                )
-                cutout_width = (
-                    1 if max_cutout_width == 1 else int(torch.randint(1, max_cutout_width + 1, (1,)).item())
-                )
-                max_top = max(0, height - cutout_height)
-                max_left = max(0, width - cutout_width)
-                top = 0 if max_top == 0 else int(torch.randint(0, max_top + 1, (1,)).item())
-                left = 0 if max_left == 0 else int(torch.randint(0, max_left + 1, (1,)).item())
-                fill_color = torch.rand((channels, 1, 1), dtype=image.dtype)
-                image[0, :, top:top + cutout_height, left:left + cutout_width] = fill_color
-        return image[0].numpy().astype(np.float32, copy=False)
 
-    def _apply_random_artifacts(self, sample_index: int, image_patch: np.ndarray) -> np.ndarray:
-        if not self._panel.random_artifacts_check_box.isChecked():
-            return image_patch
-        artifact_types = self._selected_artifact_types()
-        if not artifact_types:
-            return image_patch
-        count = max(1, int(self._panel.random_artifacts_count_spinbox.value()))
-        size_ratio = float(self._panel.random_artifacts_size_ratio_spinbox.value())
-        if size_ratio <= 0.0:
-            return image_patch
-        image = torch.from_numpy(np.ascontiguousarray(image_patch[None, ...])).float()
-        _, channels, height, width = image.shape
-        min_h, max_h, min_w, max_w = self._artifact_size_bounds(height, width, size_ratio)
-        with _seeded_random(self._seed_for(sample_index, 'random_artifacts')):
-            for _ in range(count):
-                artifact_height = int(min_h if max_h == min_h else np.random.randint(min_h, max_h + 1))
-                artifact_width = int(min_w if max_w == min_w else np.random.randint(min_w, max_w + 1))
-                max_top = max(0, height - artifact_height)
-                max_left = max(0, width - artifact_width)
-                top = 0 if max_top == 0 else int(np.random.randint(0, max_top + 1))
-                left = 0 if max_left == 0 else int(np.random.randint(0, max_left + 1))
-                overlay, alpha = generate_random_artifact_patch(
-                    int(channels),
-                    int(artifact_height),
-                    int(artifact_width),
-                    device=torch.device('cpu'),
-                    dtype=torch.float32,
-                    artifact_types=artifact_types,
-                )
-                patch = image[0, :, top:top + artifact_height, left:left + artifact_width]
-                image[0, :, top:top + artifact_height, left:left + artifact_width] = torch.clamp(
-                    (patch * (1.0 - alpha)) + (overlay * alpha),
-                    min=0.0,
-                    max=1.0,
-                )
-        return image[0].numpy().astype(np.float32, copy=False)
 
-    def _selected_artifact_types(self) -> tuple[str, ...]:
-        return tuple(
-            artifact_name
-            for artifact_name, checkbox in self._panel.random_artifact_type_checkboxes.items()
-            if checkbox.isChecked()
-        )
 
     def _preview_mode_text(self) -> str:
         if self.full_image_check_box.isChecked():
@@ -1714,22 +1159,8 @@ class AugmentationPreviewDialog(QDialog):
             )
         )
 
-    def _sample_preview_int_range(self, min_widget: QWidget, max_widget: QWidget, *, salt: str) -> int:
-        lower = int(min(getattr(min_widget, 'value')(), getattr(max_widget, 'value')()))
-        upper = int(max(getattr(min_widget, 'value')(), getattr(max_widget, 'value')()))
-        with _seeded_random(self._seed_for(self._current_sample_index, salt)):
-            return int(np.random.randint(lower, upper + 1))
 
-    def _sample_preview_float_range(self, min_widget: QWidget, max_widget: QWidget, *, salt: str) -> float:
-        lower = float(min(getattr(min_widget, 'value')(), getattr(max_widget, 'value')()))
-        upper = float(max(getattr(min_widget, 'value')(), getattr(max_widget, 'value')()))
-        if upper <= lower:
-            return lower
-        with _seeded_random(self._seed_for(self._current_sample_index, salt)):
-            return float(np.random.uniform(lower, upper))
 
-    def _passes_probability(self, sample_index: int, salt: str, probability: float) -> bool:
-        return float(probability) > 0.0
 
     @staticmethod
     def _set_combo_value(combo: NoWheelComboBox, value: str) -> None:
@@ -1850,55 +1281,8 @@ class AugmentationPreviewDialog(QDialog):
             resolved = float(lower)
         return max(float(lower), min(float(upper), resolved))
 
-    @staticmethod
-    def _artifact_size_bounds(
-        image_height: int,
-        image_width: int,
-        size_ratio: float,
-    ) -> tuple[int, int, int, int]:
-        max_artifact_height = max(1, min(int(image_height), int(round(int(image_height) * float(size_ratio)))))
-        max_artifact_width = max(1, min(int(image_width), int(round(int(image_width) * float(size_ratio)))))
-        min_artifact_height = 1 if max_artifact_height <= 2 else max(2, int(round(max_artifact_height * 0.35)))
-        min_artifact_width = 1 if max_artifact_width <= 2 else max(2, int(round(max_artifact_width * 0.35)))
-        min_artifact_height = min(max_artifact_height, min_artifact_height)
-        min_artifact_width = min(max_artifact_width, min_artifact_width)
-        return (
-            int(min_artifact_height),
-            int(max_artifact_height),
-            int(min_artifact_width),
-            int(max_artifact_width),
-        )
 
-    def _seed_for(self, sample_index: int, salt: str) -> int:
-        if 0 <= int(sample_index) < len(self._sample_pairs):
-            sample_key = self._sample_pairs[sample_index][0].as_posix()
-        else:
-            sample_key = 'synthetic'
-        payload = (
-            f'{sample_key}|{sample_index}|{getattr(self, "_cutter_item_index", 0)}|'
-            f'{self._variant_serial}|{self._resample_salt}|{salt}'
-        )
-        return int(zlib.crc32(payload.encode('utf-8')) & 0xFFFFFFFF)
 
-    @staticmethod
-    def _to_display_array(image_array: np.ndarray) -> np.ndarray:
-        array = np.asarray(image_array, dtype=np.float32)
-        finite = array[np.isfinite(array)]
-        if finite.size and (float(finite.min()) < 0.0 or float(finite.max()) > 1.0):
-            low, high = np.percentile(finite, (1.0, 99.0))
-            if float(high - low) > 1e-6:
-                array = (array - float(low)) / float(high - low)
-            else:
-                array = np.zeros_like(array, dtype=np.float32)
-        array = np.nan_to_num(array, nan=0.0, posinf=1.0, neginf=0.0)
-        if array.ndim == 2:
-            return np.clip(np.round(array * 255.0), 0.0, 255.0).astype(np.uint8)
-        if array.ndim == 3 and array.shape[0] == 1:
-            return np.clip(np.round(array[0] * 255.0), 0.0, 255.0).astype(np.uint8)
-        if array.ndim == 3 and array.shape[0] >= 3:
-            rgb = np.transpose(array[:3], (1, 2, 0))
-            return np.clip(np.round(rgb * 255.0), 0.0, 255.0).astype(np.uint8)
-        return np.zeros((16, 16), dtype=np.uint8)
 
     @staticmethod
     def _set_preview_image(

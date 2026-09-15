@@ -1,15 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import sys
+import os
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 
-APP_NAME = 'NeuralImage'
+REMOTE_CLIENT = os.environ.get('NEURALIMAGE_BUILD_CLIENT') == '1'
+APP_NAME = 'NeuralImageClient' if REMOTE_CLIENT else 'NeuralImage'
 BUILD_TARGET = 'auto'  # Supported values: 'auto', 'linux', 'windows', 'native'.
 
 block_cipher = None
 _spec_file = globals().get('__file__')
-project_root = Path(_spec_file).resolve().parent.parent if _spec_file else Path.cwd()
+project_root = Path(SPECPATH).resolve().parent
 
 
 def _resolve_build_target() -> str:
@@ -53,7 +55,7 @@ if update_client_path.exists():
     datas.append((str(update_client_path), 'resources'))
 
 offline_timm_root = project_root / 'resources' / 'internal' / 'models' / 'timm'
-if offline_timm_root.exists():
+if not REMOTE_CLIENT and offline_timm_root.exists():
     for source_path in offline_timm_root.rglob('model.safetensors'):
         relative_parent = source_path.parent.relative_to(project_root / 'resources' / 'internal')
         datas.append((str(source_path), str(relative_parent)))
@@ -68,7 +70,7 @@ datas += collect_data_files(
     ],
 )
 
-base_excludes = []
+base_excludes = ['torch', 'torchvision', 'timm', 'triton', 'nvidia', 'fastapi', 'uvicorn'] if REMOTE_CLIENT else []
 
 icon_path = None
 if build_target == 'windows':
@@ -81,7 +83,7 @@ elif build_target == 'linux':
         icon_path = [str(icon_candidate)]
 
 a = Analysis(
-    [str(project_root / 'src' / 'neuralimage' / 'main.py')],
+    [str(project_root / 'src' / 'neuralimage' / ('remote/client_main.py' if REMOTE_CLIENT else 'main.py'))],
     pathex=[str(project_root / 'src')],
     binaries=[],          # <-- torch DLLs / pyds
     datas=datas ,

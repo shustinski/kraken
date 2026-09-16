@@ -41,6 +41,12 @@ UV cache populated with `uv sync --frozen --all-packages --all-extras
 manifest. It requires network access only on this source PC while dependencies
 are populated.
 
+If the run fails or is interrupted, re-run with the **same** `-OutputPath`.
+The script resumes: wheelhouse files that already match `uv.lock` hashes are
+kept, the UV cache is reused, and an existing Cargo vendor tree is skipped.
+Failed runs no longer delete the kit directory. A previous `manifest.json` is
+removed at the start of a resume and rewritten only when the kit completes.
+
 ## Install on the offline PC
 
 First install the bundled CPython, UV, Git/Git LFS, Rust, Visual Studio Build

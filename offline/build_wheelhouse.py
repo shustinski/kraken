@@ -10,7 +10,7 @@ import tomllib
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 # files.pythonhosted.org rejects the default Python-urllib User-Agent with HTTP 403.
@@ -18,7 +18,7 @@ _USER_AGENT = "kraken-offline-build-wheelhouse/1.0 (+https://github.com/)"
 
 
 def is_windows_x64_wheel(url: str) -> bool:
-    filename = Path(urlparse(url).path).name.lower()
+    filename = Path(unquote(urlparse(url).path)).name.lower()
     return filename.endswith(".whl") and (filename.endswith("-none-any.whl") or "win_amd64" in filename)
 
 
@@ -30,13 +30,21 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download(url: str, expected_hash: str, output: Path) -> None:
-    filename = Path(urlparse(url).path).name
+def distribution_filename(url: str) -> str:
+    filename = Path(unquote(urlparse(url).path)).name
     if not filename:
         raise ValueError(f"Distribution URL has no filename: {url}")
+    return filename
+
+
+def download(url: str, expected_hash: str, output: Path) -> str:
+    """Return 'verified', 'downloaded', or raise after retries."""
+    filename = distribution_filename(url)
     destination = output / filename
     if destination.exists() and sha256(destination) == expected_hash:
-        return
+        return "verified"
+    if destination.exists():
+        destination.unlink()
     partial = destination.with_suffix(destination.suffix + ".partial")
     request = Request(url, headers={"User-Agent": _USER_AGENT})
     for attempt in range(4):
@@ -47,12 +55,13 @@ def download(url: str, expected_hash: str, output: Path) -> None:
             if actual_hash != expected_hash:
                 raise ValueError(f"SHA-256 mismatch for {url}: expected {expected_hash}, got {actual_hash}")
             partial.replace(destination)
-            return
+            return "downloaded"
         except (OSError, URLError, HTTPError) as error:
             partial.unlink(missing_ok=True)
             if attempt == 3:
                 raise RuntimeError(f"Failed to download {url}") from error
             time.sleep(2**attempt)
+    raise RuntimeError(f"Failed to download {url}")
 
 
 def main() -> int:
@@ -62,17 +71,28 @@ def main() -> int:
     args = parser.parse_args()
     lock = tomllib.loads(args.lock.read_text(encoding="utf-8"))
     args.output.mkdir(parents=True, exist_ok=True)
-    selected = 0
+    for leftover in args.output.glob("*.partial"):
+        leftover.unlink(missing_ok=True)
+    verified = 0
+    downloaded = 0
     for package in lock.get("package", []):
         wheels = [wheel for wheel in package.get("wheels", []) if is_windows_x64_wheel(wheel["url"])]
         distributions = wheels or ([package["sdist"]] if package.get("sdist") else [])
         for distribution in distributions:
             expected = distribution["hash"].removeprefix("sha256:")
-            download(distribution["url"], expected, args.output)
-            selected += 1
+            result = download(distribution["url"], expected, args.output)
+            if result == "verified":
+                verified += 1
+            else:
+                downloaded += 1
+                print(f"Downloaded {distribution_filename(distribution['url'])}", flush=True)
+    selected = verified + downloaded
     if selected == 0:
         raise RuntimeError("No Windows x64 distributions were found in uv.lock")
-    print(f"Downloaded or verified {selected} locked distributions in {args.output}")
+    print(
+        f"Wheelhouse ready in {args.output}: {verified} already present, {downloaded} downloaded "
+        f"({selected} locked distributions total)"
+    )
     return 0
 
 

@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $outputFullPath = $null
+$stagingEnvironment = $null
 
 function Invoke-External {
     param([string]$FilePath, [string[]]$Arguments)
@@ -28,7 +29,11 @@ function Get-Sha256ManifestEntries {
     param([string]$Root)
 
     Get-ChildItem -LiteralPath $Root -File -Recurse |
-        Where-Object { $_.FullName -ne (Join-Path $Root "manifest.json") } |
+        Where-Object {
+            $_.FullName -ne (Join-Path $Root "manifest.json") -and
+            $_.Name -notlike "*.partial" -and
+            $_.FullName -notlike "*\.staging-venv\*"
+        } |
         Sort-Object FullName |
         ForEach-Object {
             $relativePath = $_.FullName.Substring($Root.Length).TrimStart("\\", "/").Replace("\\", "/")
@@ -46,6 +51,15 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Copy-ToolchainTree {
+    param([string]$Source, [string]$Destination)
+
+    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
+        $target = Join-Path $Destination $_.Name
+        Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force
+    }
+}
+
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $repositoryRoot
 try {
@@ -61,15 +75,21 @@ try {
     $uvCommand = Get-Command $Uv -ErrorAction Stop
 
     $outputFullPath = [System.IO.Path]::GetFullPath($OutputPath)
-    if ($null -ne $outputFullPath -and (Test-Path -LiteralPath $outputFullPath)) {
-        throw "Output path already exists: $outputFullPath. Choose a new, empty kit directory."
+    if (Test-Path -LiteralPath $outputFullPath) {
+        Write-Host "Resuming existing kit directory: $outputFullPath"
+        $staleManifest = Join-Path $outputFullPath "manifest.json"
+        if (Test-Path -LiteralPath $staleManifest) {
+            Remove-Item -LiteralPath $staleManifest -Force
+            Write-Host "Removed previous manifest.json; it will be rewritten when the kit completes."
+        }
+    } else {
+        New-Item -ItemType Directory -Path $outputFullPath | Out-Null
     }
-    New-Item -ItemType Directory -Path $outputFullPath | Out-Null
 
     $sourceDirectory = Join-Path $outputFullPath "source"
     $dependencyDirectory = Join-Path $outputFullPath "dependencies"
     $toolDirectory = Join-Path $outputFullPath "toolchains"
-    New-Item -ItemType Directory -Path $sourceDirectory, $dependencyDirectory, $toolDirectory | Out-Null
+    New-Item -ItemType Directory -Path $sourceDirectory, $dependencyDirectory, $toolDirectory -Force | Out-Null
 
     $branch = (git branch --show-current).Trim()
     if ([string]::IsNullOrWhiteSpace($branch)) {
@@ -82,6 +102,7 @@ try {
     }
 
     $bundlePath = Join-Path $sourceDirectory "kraken-full.bundle"
+    Write-Host "Creating Git bundle..."
     Invoke-External git (@("bundle", "create", $bundlePath) + $bundleRefs)
     Invoke-External git @("bundle", "verify", $bundlePath)
     $headsPath = Join-Path $sourceDirectory "bundle-heads.txt"
@@ -89,25 +110,31 @@ try {
 
     # This is an auditable, exact dependency list. Local workspace packages are restored from the bundle.
     $requirementsPath = Join-Path $dependencyDirectory "requirements-windows-x64.txt"
+    Write-Host "Exporting locked requirements..."
     Invoke-External $uvCommand.Source @(
         "export", "--locked", "--all-packages", "--all-extras", "--all-groups", "--no-emit-local",
         "--output-file", $requirementsPath
     )
     $wheelhouse = Join-Path $dependencyDirectory "wheelhouse"
+    Write-Host "Building wheelhouse (skips files that already match uv.lock hashes)..."
     Invoke-External $pythonPath @(
         (Join-Path $PSScriptRoot "build_wheelhouse.py"),
         "--lock", (Join-Path $repositoryRoot "uv.lock"),
         "--output", $wheelhouse
     )
 
-    # Populate a fresh UV cache instead of copying a developer cache that might contain unrelated packages.
+    # Populate a UV cache in the kit. Re-runs reuse archive entries already on disk.
     $uvCache = Join-Path $dependencyDirectory "uv-cache"
     $stagingEnvironment = Join-Path $outputFullPath ".staging-venv"
+    if (Test-Path -LiteralPath $stagingEnvironment) {
+        Remove-Item -LiteralPath $stagingEnvironment -Recurse -Force
+    }
     $previousCache = $env:UV_CACHE_DIR
     $previousEnvironment = $env:UV_PROJECT_ENVIRONMENT
     try {
         $env:UV_CACHE_DIR = $uvCache
         $env:UV_PROJECT_ENVIRONMENT = $stagingEnvironment
+        Write-Host "Populating UV cache via sync (reuses $uvCache when present)..."
         Invoke-External $uvCommand.Source @(
             "sync", "--frozen", "--all-packages", "--all-extras", "--all-groups", "--link-mode=copy",
             "--python", $pythonPath
@@ -118,6 +145,7 @@ try {
         if (Test-Path -LiteralPath $stagingEnvironment) {
             Remove-Item -LiteralPath $stagingEnvironment -Recurse -Force
         }
+        $stagingEnvironment = $null
     }
 
     # Cargo vendor is deliberately generated from Cargo.lock so an offline build cannot update Rust dependencies.
@@ -132,19 +160,28 @@ try {
     }
     $cargoConfigDirectory = Join-Path $dependencyDirectory "cargo"
     $cargoVendorDirectory = Join-Path $cargoConfigDirectory "vendor"
-    New-Item -ItemType Directory -Path $cargoConfigDirectory | Out-Null
-    $vendorConfig = & $cargo.Source vendor --locked --manifest-path (Join-Path $repositoryRoot "blob_gateway\\Cargo.toml") $cargoVendorDirectory
-    if ($LASTEXITCODE -ne 0) {
-        throw "cargo vendor failed with exit code $LASTEXITCODE"
-    }
-    @(
-        "[source.crates-io]",
-        "replace-with = 'offline-vendor'",
-        "",
-        "[source.offline-vendor]",
-        "directory = 'vendor'"
-    ) | ForEach-Object { $_ } | Out-String | ForEach-Object {
-        Write-Utf8NoBom -Path (Join-Path $cargoConfigDirectory "config.toml") -Content $_
+    $cargoConfigPath = Join-Path $cargoConfigDirectory "config.toml"
+    New-Item -ItemType Directory -Path $cargoConfigDirectory -Force | Out-Null
+    if ((Test-Path -LiteralPath $cargoVendorDirectory) -and (Test-Path -LiteralPath $cargoConfigPath)) {
+        Write-Host "Cargo vendor directory already present; skipping cargo vendor."
+    } else {
+        if (Test-Path -LiteralPath $cargoVendorDirectory) {
+            Remove-Item -LiteralPath $cargoVendorDirectory -Recurse -Force
+        }
+        Write-Host "Vendoring Cargo dependencies..."
+        $null = & $cargo.Source vendor --locked --manifest-path (Join-Path $repositoryRoot "blob_gateway\\Cargo.toml") $cargoVendorDirectory
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo vendor failed with exit code $LASTEXITCODE"
+        }
+        @(
+            "[source.crates-io]",
+            "replace-with = 'offline-vendor'",
+            "",
+            "[source.offline-vendor]",
+            "directory = 'vendor'"
+        ) | ForEach-Object { $_ } | Out-String | ForEach-Object {
+            Write-Utf8NoBom -Path $cargoConfigPath -Content $_
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($ToolchainDirectory)) {
@@ -172,7 +209,8 @@ try {
             throw "Toolchain manifest entry is missing: $($entry.path)"
         }
     }
-    Get-ChildItem -LiteralPath $toolchainSource -Force | Copy-Item -Destination $toolDirectory -Recurse
+    Write-Host "Copying toolchain installers into the kit..."
+    Copy-ToolchainTree -Source $toolchainSource -Destination $toolDirectory
 
     $lfsFiles = @(git lfs ls-files -n)
     if ($lfsFiles.Count -gt 0) {
@@ -209,8 +247,11 @@ try {
     Write-Utf8NoBom -Path (Join-Path $outputFullPath "manifest.json") -Content ($manifest | ConvertTo-Json -Depth 8)
     Write-Host "Offline kit created: $outputFullPath"
 } catch {
+    if ($null -ne $stagingEnvironment -and (Test-Path -LiteralPath $stagingEnvironment)) {
+        Remove-Item -LiteralPath $stagingEnvironment -Recurse -Force -ErrorAction SilentlyContinue
+    }
     if ($null -ne $outputFullPath -and (Test-Path -LiteralPath $outputFullPath)) {
-        Remove-Item -LiteralPath $outputFullPath -Recurse -Force
+        Write-Host "Kit left incomplete at $outputFullPath. Re-run with the same -OutputPath to resume."
     }
     throw
 } finally {

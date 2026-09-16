@@ -102,6 +102,7 @@ DEFAULT_BOUNDARY_RADIUS = 1
 DEFAULT_POLYGON_COMPARE_PROFILE = "balanced"
 DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA = 0.10
 DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE = "standard"
+DEFAULT_SINGLE_RESULT_SENSITIVITY = "balanced"
 DEFAULT_POINT_MATCH_RADIUS = 3.0
 DEFAULT_POINT_CONFIDENCE_RADIUS = 3
 DEFAULT_POINT_EXTRACTION_MODE = 'component_centroids'
@@ -256,6 +257,12 @@ CONFIDENCE_UNCERTAINTY_PROFILE_VALUES = {
     "strict": 0.15,
 }
 
+SINGLE_RESULT_SENSITIVITY_OPTIONS = (
+    ("single_result.sensitivity.soft", "soft"),
+    ("single_result.sensitivity.balanced", "balanced"),
+    ("single_result.sensitivity.strict", "strict"),
+)
+
 EXPORT_SELECTION_MODE_OPTIONS = (
     ("Worst frame count", "count"),
     ("Worst percent of frames", "percent"),
@@ -277,6 +284,7 @@ MATRIX_METRIC_OPTIONS = (
 MATRIX_SCORE_VIEW_OPTIONS = (
     ("matrix.score_view.relative", "relative"),
     ("matrix.score_view.absolute", "absolute"),
+    ("matrix.score_view.percentile", "percentile"),
 )
 
 EXTEND_ROOT_OBJECT_NAME = "KarakalRoot"

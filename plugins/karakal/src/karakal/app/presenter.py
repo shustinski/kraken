@@ -47,6 +47,7 @@ from ..core.analysis_modes import (
     INTRA_MODEL_CONFIDENCE_MODE,
     INTER_MODEL_ANALYSIS_MODE,
     MODEL_OUTPUT_CONFIDENCE_MODE,
+    SINGLE_RESULT_RISK_MODE,
     POINT_OBJECT_TYPE,
     POLYGON_OBJECT_TYPE,
     confidence_metric_family,
@@ -123,6 +124,7 @@ from ..ui.ui_constants import (
     DEFAULT_COMPARISON_TARGET,
     DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA,
     DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
+    DEFAULT_SINGLE_RESULT_SENSITIVITY,
     DEFAULT_FRAMES_PER_ROW,
     DEFAULT_GEOMETRY_MODE,
     DEFAULT_GRADIENT_NAME,
@@ -722,6 +724,7 @@ class KarakalPresenter(QObject):
         is_grid_inspection_mode = self._current_app_mode() == "grid_inspection"
         is_confidence_mode = context.analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}
         is_confidence_comparison = context.analysis_mode == CONFIDENCE_COMPARISON_MODE
+        is_single_result_risk = context.analysis_mode == SINGLE_RESULT_RISK_MODE
         has_scope_choices = bool(getattr(build_result, "model_specs", ()) if build_result is not None else ())
         is_confidence = self._confidence_context_available(context, build_result)
         is_point = context.object_type == POINT_OBJECT_TYPE
@@ -738,22 +741,30 @@ class KarakalPresenter(QObject):
         self._set_row_enabled(getattr(self, "_matrix_frames_per_row_row", None), True)
         self._set_row_visible(getattr(self, "_matrix_frames_per_row_row", None), True)
         self._set_row_visible(
-            getattr(self, "_metric_scope_row", None), (not is_grid_inspection_mode) and (not is_confidence_comparison)
+            getattr(self, "_metric_scope_row", None),
+            (not is_grid_inspection_mode) and (not is_confidence_comparison) and (not is_single_result_risk),
         )
         self._set_row_enabled(
             getattr(self, "_metric_scope_row", None),
-            has_scope_choices and (not is_grid_inspection_mode) and (not is_confidence_comparison),
+            has_scope_choices
+            and (not is_grid_inspection_mode)
+            and (not is_confidence_comparison)
+            and (not is_single_result_risk),
         )
         self._set_row_visible(
             getattr(self, "_metric_select_row", None), (not is_grid_inspection_mode) and (not is_confidence_mode)
         )
         self._set_row_visible(getattr(self, "_matrix_confidence_delta_row", None), is_confidence)
         self._set_row_visible(
+            getattr(self, "_matrix_single_result_sensitivity_row", None), is_single_result_risk
+        )
+        self._set_row_visible(getattr(self, "_matrix_geometry_row", None), not is_single_result_risk)
+        self._set_row_visible(
             getattr(self, "_matrix_polygon_confidence_summary_row", None), is_confidence and not is_point
         )
         self._set_row_visible(
             getattr(self, "_matrix_polygon_compare_profile_row", None),
-            not is_confidence and not is_confidence_comparison and not is_point,
+            not is_confidence and not is_confidence_comparison and not is_single_result_risk and not is_point,
         )
         self._set_row_visible(
             getattr(self, "_matrix_point_radius_row", None),
@@ -842,6 +853,10 @@ class KarakalPresenter(QObject):
                 has_grid_source,
                 "" if has_grid_source else self._t("profile.unavailable.grid"),
             ),
+            AnalysisProfileKind.SINGLE_RESULT_RISK: (
+                model_count == 1,
+                "" if model_count == 1 else self._t("profile.unavailable.single_result"),
+            ),
         }
 
     def _on_analysis_profile_changed(self, value: str) -> None:
@@ -857,6 +872,16 @@ class KarakalPresenter(QObject):
             index = combo.findData(selected_value)
             combo.setCurrentIndex(index if index >= 0 else 0)
             del blocker
+        if self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK:
+            geometry_blocker = QSignalBlocker(self.geometry_mode_combo)
+            geometry_index = self.geometry_mode_combo.findData("mask")
+            self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
+            del geometry_blocker
+            score_blocker = QSignalBlocker(self.matrix_score_view_combo)
+            score_index = self.matrix_score_view_combo.findData("absolute")
+            self.matrix_score_view_combo.setCurrentIndex(score_index if score_index >= 0 else 0)
+            del score_blocker
+            self._sync_metric_controls(None, preferred_metric_key="single_result_risk_score")
         self._preflight_signature = None
         self._on_app_mode_changed()
         self._sync_mode_controls(self._current_tab_state())
@@ -1353,6 +1378,16 @@ class KarakalPresenter(QObject):
     def _selected_confidence_uncertainty_profile(self) -> str:
         return str(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
 
+    def _selected_single_result_sensitivity(self) -> str:
+        return str(self.single_result_sensitivity_combo.currentData() or DEFAULT_SINGLE_RESULT_SENSITIVITY)
+
+    def _on_single_result_sensitivity_changed(self, *_args) -> None:
+        state = self._current_tab_state()
+        if state is not None:
+            state.single_result_sensitivity = self._selected_single_result_sensitivity()
+            self._sync_current_analysis_context(state, auto_recompute=True)
+        self._sync_action_buttons()
+
     def _confidence_uncertainty_delta_for_profile(self, profile_key: str | None) -> float:
         profile = str(profile_key or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
         value = CONFIDENCE_UNCERTAINTY_PROFILE_VALUES.get(profile, DEFAULT_CONFIDENCE_UNCERTAINTY_DELTA)
@@ -1773,6 +1808,7 @@ class KarakalPresenter(QObject):
             "boundary_radius": int(boundary_radius),
             "confidence_uncertainty_profile": self._selected_confidence_uncertainty_profile(),
             "confidence_uncertainty_delta": self._selected_confidence_uncertainty_delta(),
+            "single_result_sensitivity": self._selected_single_result_sensitivity(),
             "point_match_radius": float(self.point_match_radius_spin.value()),
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(
@@ -1826,6 +1862,13 @@ class KarakalPresenter(QObject):
         frame_type_filter_index = self.frame_type_filter_combo.findData(str(state.frame_type_filter or "all"))
         self.frame_type_filter_combo.setCurrentIndex(frame_type_filter_index if frame_type_filter_index >= 0 else 0)
         del frame_type_filter_blocker
+
+        sensitivity_blocker = QSignalBlocker(self.single_result_sensitivity_combo)
+        sensitivity_index = self.single_result_sensitivity_combo.findData(
+            str(state.single_result_sensitivity or DEFAULT_SINGLE_RESULT_SENSITIVITY)
+        )
+        self.single_result_sensitivity_combo.setCurrentIndex(sensitivity_index if sensitivity_index >= 0 else 1)
+        del sensitivity_blocker
 
         self._set_grid_inspection_config_controls(
             getattr(state, "grid_inspection_config_payload", {}) or self._grid_inspection_config_payload()
@@ -1887,6 +1930,7 @@ class KarakalPresenter(QObject):
             ),
             comparison_pairs=self._selected_comparison_pairs(),
             comparison_target=self._selected_comparison_target(),
+            single_result_sensitivity=self._selected_single_result_sensitivity(),
         )
 
     def _invalidate_state_runtime_caches(
@@ -2165,6 +2209,17 @@ class KarakalPresenter(QObject):
         if build_result is None:
             return False
         if str(metric_key or "") in {
+            "single_result_risk_score",
+            "mask_structure_risk",
+            "batch_outlier_risk",
+            "source_alignment_risk",
+            "confidence_risk",
+        }:
+            return not any(
+                record.summary is not None and metric_key in getattr(record.summary, "metric_values", {})
+                for record in build_result.records
+            )
+        if str(metric_key or "") in {
             "confidence_model_score",
             "confidence_difference_score",
             "confidence_bce_score",
@@ -2392,6 +2447,14 @@ class KarakalPresenter(QObject):
 
     def _metric_hint(self, metric_key: str, summary) -> str | None:
         metric_key_text = str(metric_key)
+        if metric_key_text in {
+            "single_result_risk_score",
+            "mask_structure_risk",
+            "batch_outlier_risk",
+            "source_alignment_risk",
+            "confidence_risk",
+        }:
+            return self._t("hint.single_result_risk")
         if metric_key_text == GRID_INSPECTION_DAMAGE_METRIC_KEY:
             return self._t("hint.grid_inspection_percentiles")
         if (
@@ -2494,6 +2557,11 @@ class KarakalPresenter(QObject):
             "confidence_difference_score": self._t("hint.confidence_comparison"),
             "confidence_bce_score": self._t("hint.confidence_comparison"),
             "confidence_threshold_crossing_score": self._t("hint.confidence_comparison"),
+            "single_result_risk_score": self._t("hint.single_result_risk"),
+            "mask_structure_risk": self._t("hint.single_result_risk"),
+            "batch_outlier_risk": self._t("hint.single_result_risk"),
+            "source_alignment_risk": self._t("hint.single_result_risk"),
+            "confidence_risk": self._t("hint.single_result_risk"),
         }
         return defaults.get(family, self._metric_label(metric_key_text, build_result))
 
@@ -2501,6 +2569,18 @@ class KarakalPresenter(QObject):
         metric_key_text = str(metric_key)
         family = metric_key_text.split("::", 1)[0]
         is_ru = getattr(self._i18n, "language", "en") == "ru"
+        if family in {
+            "single_result_risk_score",
+            "mask_structure_risk",
+            "batch_outlier_risk",
+            "source_alignment_risk",
+            "confidence_risk",
+        }:
+            risk = getattr(summary, "single_result_risk", None)
+            if risk is None:
+                return "-"
+            parts = [f"{reason.code}: {float(reason.contribution) * 100.0:.1f}" for reason in risk.reasons[:4]]
+            return "; ".join(parts) or ("причины не обнаружены" if is_ru else "no risk reasons detected")
         if family == "overall_frame_score":
             return self._t("metric.disagreement_score")
         if family in {"overall_polygon_score", "iou_score", "dice_score", "polygon_bce_score", "iou", "dice", "bce"}:
@@ -4051,6 +4131,13 @@ class KarakalPresenter(QObject):
 
     def _start_build(self) -> None:
         explicit_model_specs = self._checked_model_specs()
+        if self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK and len(explicit_model_specs) != 1:
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("preflight.single_model_required"),
+            )
+            return
         model_specs = self._effective_model_specs_for_build()
         required_model_count = self._required_model_count_for_build()
         building_from_base_only = (
@@ -4084,6 +4171,7 @@ class KarakalPresenter(QObject):
                 self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY
             ),
             comparison_pairs=self._selected_comparison_pairs(),
+            single_result_sensitivity=self._selected_single_result_sensitivity(),
         )
         self._pending_build_snapshot = self._capture_view_snapshot()
         self._worker_kind = "build"
@@ -4876,11 +4964,16 @@ class KarakalPresenter(QObject):
     ) -> None:
         session_view_state = dict(self._details_view_payload)
         is_grid_inspection_details = self._current_app_mode() == "grid_inspection"
+        is_single_result_risk_details = self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK
         preferred_model_id = self._preferred_details_model_id_for_state(state, session_view_state=session_view_state)
         session_view_state["preferred_model_id"] = preferred_model_id
         session_view_state["analysis_mode"] = str(state.analysis_mode or INTER_MODEL_ANALYSIS_MODE)
         session_view_state["result_kind"] = (
-            "grid_cell_defects" if is_grid_inspection_details else self._default_details_result_kind_for_state(state)
+            "grid_cell_defects"
+            if is_grid_inspection_details
+            else "risk_structure"
+            if is_single_result_risk_details
+            else self._default_details_result_kind_for_state(state)
         )
         session_view_state["layer_view"] = self._default_details_layer_view_for_state(state)
         session_view_state["comparison_mode"] = self._default_details_comparison_mode_for_state(state)
@@ -4896,6 +4989,17 @@ class KarakalPresenter(QObject):
                 str(getattr(record, "key", "") or "")
             )
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
+        allowed_result_kinds = None
+        if is_grid_inspection_details:
+            allowed_result_kinds = ("grid_cell_defects",)
+        elif is_single_result_risk_details:
+            risk_summary = None if record.summary is None else getattr(record.summary, "single_result_risk", None)
+            risk_kinds = ["risk_structure"]
+            if risk_summary is not None and getattr(risk_summary, "source_alignment_risk", None) is not None:
+                risk_kinds.append("risk_source")
+            if risk_summary is not None and getattr(risk_summary, "confidence_risk", None) is not None:
+                risk_kinds.append("risk_confidence")
+            allowed_result_kinds = tuple(risk_kinds)
         dialog = ExtendFrameDetailsDialog(
             record=record,
             build_result=state.build_result,
@@ -4903,7 +5007,7 @@ class KarakalPresenter(QObject):
             session_view_state=session_view_state,
             on_view_state_changed=self._store_details_view_payload,
             export_folder=self._export_folder,
-            allowed_result_kinds=("grid_cell_defects",) if is_grid_inspection_details else None,
+            allowed_result_kinds=allowed_result_kinds,
             grid_inspection_result=grid_inspection_result,
             grid_inspection_source_path=grid_inspection_source_path,
             performance_config=self._view.performance_config,
@@ -6072,6 +6176,7 @@ class KarakalPresenter(QObject):
             "boundary_radius": int(boundary_radius),
             "confidence_uncertainty_profile": self._selected_confidence_uncertainty_profile(),
             "confidence_uncertainty_delta": self._selected_confidence_uncertainty_delta(),
+            "single_result_sensitivity": self._selected_single_result_sensitivity(),
             "point_match_radius": float(self.point_match_radius_spin.value()),
             "point_confidence_radius": int(self.point_confidence_radius_spin.value()),
             "point_extraction_mode": str(
@@ -6136,13 +6241,20 @@ class KarakalPresenter(QObject):
             bindings=tuple(bindings),
             object_type=self._selected_object_type(),
             metric_key=str(self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY),
-            scale_mode=AnalysisScaleMode.ABSOLUTE if score_view == "absolute" else AnalysisScaleMode.WITHIN_RUN,
+            scale_mode=(
+                AnalysisScaleMode.ABSOLUTE
+                if score_view == "absolute"
+                else AnalysisScaleMode.PERCENTILE
+                if score_view == "percentile"
+                else AnalysisScaleMode.WITHIN_RUN
+            ),
             gradient_name=str(self.matrix_gradient_combo.currentData() or DEFAULT_GRADIENT_NAME),
             visible_layers=("quality", "status", "reference", "anomalies"),
             parameters=(
                 AnalysisParameter("analysis_mode", self._selected_analysis_mode()),
                 AnalysisParameter("comparison_target", self._selected_comparison_target().value),
                 AnalysisParameter("frames_per_row", int(self.frames_per_row_spin.value())),
+                AnalysisParameter("single_result_sensitivity", self._selected_single_result_sensitivity()),
             ),
         )
         return profile.to_payload()
@@ -6161,7 +6273,15 @@ class KarakalPresenter(QObject):
                 payload.setdefault("metric_key", versioned_profile.metric_key)
                 payload.setdefault(
                     "matrix_score_view_mode",
-                    "absolute" if versioned_profile.scale_mode == AnalysisScaleMode.ABSOLUTE else "relative",
+                    {
+                        AnalysisScaleMode.ABSOLUTE: "absolute",
+                        AnalysisScaleMode.PERCENTILE: "percentile",
+                    }.get(versioned_profile.scale_mode, "relative"),
+                )
+                profile_parameters = {parameter.key: parameter.value for parameter in versioned_profile.parameters}
+                payload.setdefault(
+                    "single_result_sensitivity",
+                    profile_parameters.get("single_result_sensitivity", DEFAULT_SINGLE_RESULT_SENSITIVITY),
                 )
         blockers = [
             QSignalBlocker(self.thumbnail_size_spin),
@@ -6174,6 +6294,7 @@ class KarakalPresenter(QObject):
             QSignalBlocker(self.mask_threshold_spin),
             QSignalBlocker(self.boundary_radius_spin),
             QSignalBlocker(self.confidence_uncertainty_profile_combo),
+            QSignalBlocker(self.single_result_sensitivity_combo),
             QSignalBlocker(self.point_match_radius_spin),
             QSignalBlocker(self.point_confidence_radius_spin),
             QSignalBlocker(self.point_extraction_mode_combo),
@@ -6230,6 +6351,13 @@ class KarakalPresenter(QObject):
             )
         uncertainty_index = self.confidence_uncertainty_profile_combo.findData(uncertainty_profile)
         self.confidence_uncertainty_profile_combo.setCurrentIndex(uncertainty_index if uncertainty_index >= 0 else 0)
+        risk_sensitivity = str(
+            payload.get("single_result_sensitivity") or DEFAULT_SINGLE_RESULT_SENSITIVITY
+        )
+        risk_sensitivity_index = self.single_result_sensitivity_combo.findData(risk_sensitivity)
+        self.single_result_sensitivity_combo.setCurrentIndex(
+            risk_sensitivity_index if risk_sensitivity_index >= 0 else 1
+        )
         self.point_match_radius_spin.setValue(
             float(payload.get("point_match_radius", self.point_match_radius_spin.value()))
         )
@@ -6269,6 +6397,18 @@ class KarakalPresenter(QObject):
             blocker = QSignalBlocker(self.pair_matrix_group)
             self.pair_matrix_group.setChecked(pair_panel_expanded)
             del blocker
+        if self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK:
+            geometry_blocker = QSignalBlocker(self.geometry_mode_combo)
+            geometry_index = self.geometry_mode_combo.findData("mask")
+            self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
+            del geometry_blocker
+            score_blocker = QSignalBlocker(self.matrix_score_view_combo)
+            score_index = self.matrix_score_view_combo.findData("absolute")
+            self.matrix_score_view_combo.setCurrentIndex(score_index if score_index >= 0 else 0)
+            del score_blocker
+            metric_blocker = QSignalBlocker(self.metric_combo)
+            self._sync_metric_controls(None, preferred_metric_key="single_result_risk_score")
+            del metric_blocker
         if hasattr(self, "pair_matrix_body"):
             self.pair_matrix_body.setVisible(pair_panel_expanded)
         analysis_panel_expanded = bool(payload.get("analysis_panel_expanded", False))

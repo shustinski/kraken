@@ -10,6 +10,15 @@ INTER_MODEL_ANALYSIS_MODE = "inter_model"
 INTRA_MODEL_CONFIDENCE_MODE = "intra_model_confidence"
 MODEL_OUTPUT_CONFIDENCE_MODE = "model_output_confidence"
 CONFIDENCE_COMPARISON_MODE = "confidence_comparison"
+SINGLE_RESULT_RISK_MODE = "single_result_risk"
+
+SINGLE_RESULT_RISK_DISPLAY_KEYS: tuple[str, ...] = (
+    "single_result_risk_score",
+    "mask_structure_risk",
+    "batch_outlier_risk",
+    "source_alignment_risk",
+    "confidence_risk",
+)
 
 POLYGON_OBJECT_TYPE = "polygon"
 POINT_OBJECT_TYPE = "point"
@@ -19,6 +28,7 @@ ANALYSIS_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("analysis.mode.confidence_comparison", CONFIDENCE_COMPARISON_MODE),
     ("analysis.mode.intra_model_confidence", INTRA_MODEL_CONFIDENCE_MODE),
     ("analysis.mode.model_output_confidence", MODEL_OUTPUT_CONFIDENCE_MODE),
+    ("analysis.mode.single_result_risk", SINGLE_RESULT_RISK_MODE),
 )
 
 OBJECT_TYPE_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -69,6 +79,7 @@ SCORE_100_METRIC_KEYS = frozenset(
         "confidence_difference_score",
         "confidence_bce_score",
         "confidence_threshold_crossing_score",
+        *SINGLE_RESULT_RISK_DISPLAY_KEYS,
     }
 )
 
@@ -84,6 +95,7 @@ LOWER_IS_BETTER_METRIC_KEYS = frozenset(
         "bce",
         "grid_inspection_damage_score",
         "mean_localization_distance",
+        *SINGLE_RESULT_RISK_DISPLAY_KEYS,
     }
 )
 
@@ -105,7 +117,12 @@ class AnalysisContext:
 
 def normalize_analysis_mode(value: str | None) -> str:
     text = str(value or "")
-    if text in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE, CONFIDENCE_COMPARISON_MODE}:
+    if text in {
+        INTRA_MODEL_CONFIDENCE_MODE,
+        MODEL_OUTPUT_CONFIDENCE_MODE,
+        CONFIDENCE_COMPARISON_MODE,
+        SINGLE_RESULT_RISK_MODE,
+    }:
         return text
     return INTER_MODEL_ANALYSIS_MODE
 
@@ -209,6 +226,8 @@ def resolve_analysis_context(
 
 
 def display_metric_keys(context: AnalysisContext) -> tuple[str, ...]:
+    if context.analysis_mode == SINGLE_RESULT_RISK_MODE:
+        return SINGLE_RESULT_RISK_DISPLAY_KEYS
     if context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE:
         if context.confidence_model_id is None:
             return tuple()
@@ -225,6 +244,8 @@ def display_metric_keys(context: AnalysisContext) -> tuple[str, ...]:
 
 
 def percentile_basis_keys(context: AnalysisContext) -> tuple[str, ...]:
+    if context.analysis_mode == SINGLE_RESULT_RISK_MODE:
+        return SINGLE_RESULT_RISK_DISPLAY_KEYS
     if context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE:
         if context.confidence_model_id is None:
             return tuple()

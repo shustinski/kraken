@@ -83,13 +83,27 @@ def test_catalog_exposes_karakal_analysis_profiles() -> None:
         "model_comparison",
         "confidence_audit",
         "grid_defects",
+        "single_result_risk",
     }
-    assert all(capability.modes == ("interactive",) for capability in karakal.analysis_capabilities)
+    model_comparison = next(
+        capability for capability in karakal.analysis_capabilities if capability.profile == "model_comparison"
+    )
+    assert model_comparison.modes == ("interactive", "headless")
+    assert all(
+        capability.modes == ("interactive",)
+        for capability in karakal.analysis_capabilities
+        if capability.profile != "model_comparison"
+    )
     grid_capability = next(
         capability for capability in karakal.analysis_capabilities if capability.profile == "grid_defects"
     )
     assert grid_capability.required_roles == ()
     assert grid_capability.required_any_role_groups == (("original", "model_output"),)
+    single_result_capability = next(
+        capability for capability in karakal.analysis_capabilities if capability.profile == "single_result_risk"
+    )
+    assert single_result_capability.required_roles == ("model_output",)
+    assert single_result_capability.optional_roles == ("original", "confidence")
 
 
 @pytest.mark.parametrize(

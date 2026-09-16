@@ -4,7 +4,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path

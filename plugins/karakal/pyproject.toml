@@ -31,6 +31,7 @@ kraken = { workspace = true }
 
 [project.scripts]
 karakal = "karakal.__main__:main"
+karakal-worker = "karakal.worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

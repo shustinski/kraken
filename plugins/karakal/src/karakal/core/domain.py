@@ -117,6 +117,7 @@ class BuildOptions:
     export_neighbor_radius: int = 1
     comparison_pairs: tuple[ComparisonPairSelection, ...] = ()
     comparison_target: ComparisonTarget = ComparisonTarget.OUTPUTS
+    single_result_sensitivity: str = "balanced"
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,6 +433,7 @@ class FrameAnalysisSummary:
     pairwise_metrics: tuple[dict[str, Any], ...] = ()
     notes: tuple[str, ...] = ()
     frame_type: str = "polygon"
+    single_result_risk: Any | None = None
 
 
 @dataclass(slots=True)

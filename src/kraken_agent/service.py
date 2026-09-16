@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from kraken_core.plugin_protocol import PluginResultPublicationV2, parse_plugin_job
+from kraken_core.plugin_protocol import PluginResultPublicationV2
 
 from .jobs import (
     AgentJob,
@@ -26,6 +26,7 @@ from .jobs import (
     DurableJobStore,
     JobStateError,
 )
+from .protocols import parse_manifest_payload
 
 
 AGENT_API_VERSION = "v1"
@@ -39,6 +40,10 @@ def _job_payload(job: AgentJob) -> dict[str, Any]:
         "updated_at": job.updated_at,
         "revision": job.revision,
         "error": job.error,
+        "manifest_schema": job.manifest.to_payload().get("schema")
+        if hasattr(job.manifest, "to_payload")
+        else job.manifest.to_dict().get("schema"),
+        "progress": job.progress,
     }
 
 
@@ -237,7 +242,7 @@ class AgentControlServer:
                     self._send(HTTPStatus.NOT_FOUND, {"code": "agent.route_not_found"})
                     return
                 try:
-                    manifest = parse_plugin_job(self._body())
+                    manifest = parse_manifest_payload(self._body())
                     job = store.enqueue(manifest)
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
                     self._send(HTTPStatus.BAD_REQUEST, {"code": "agent.invalid_manifest", "detail": str(exc)})

@@ -20,6 +20,7 @@ class AnalysisProfileKind(StrEnum):
     GROUND_TRUTH_VALIDATION = "ground_truth_validation"
     CONFIDENCE_AUDIT = "confidence_audit"
     GRID_DEFECTS = "grid_defects"
+    SINGLE_RESULT_RISK = "single_result_risk"
 
 
 class AnalysisSourceRole(StrEnum):
@@ -33,6 +34,7 @@ class AnalysisSourceRole(StrEnum):
 class AnalysisScaleMode(StrEnum):
     ABSOLUTE = "absolute"
     WITHIN_RUN = "within_run"
+    PERCENTILE = "percentile"
 
 
 class AnalysisOutcome(StrEnum):
@@ -322,6 +324,7 @@ class AnalysisFrameResult:
     status: str
     metrics: tuple[AnalysisMetricValue, ...]
     anomalies: tuple[AnalysisAnomalyRegion, ...] = ()
+    message: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "frame_id", _required_text(self.frame_id, "result.frame_id"))
@@ -340,6 +343,7 @@ class AnalysisFrameResult:
             "status": self.status,
             "metrics": [metric.to_payload() for metric in self.metrics],
             "anomalies": [anomaly.to_payload() for anomaly in self.anomalies],
+            "message": self.message,
         }
 
     @classmethod
@@ -353,6 +357,7 @@ class AnalysisFrameResult:
             status=str(payload.get("status", "")),
             metrics=tuple(AnalysisMetricValue.from_payload(item) for item in raw_metrics),
             anomalies=tuple(AnalysisAnomalyRegion.from_payload(item) for item in raw_anomalies),
+            message=str(payload.get("message", "")),
         )
 
 

@@ -57,6 +57,7 @@ from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.profiling_dialog import ProfilingDialog
+from ..ui.history_dialog import StandaloneHistoryDialog
 from ..ui.ui_constants import (
     BOUNDARY_RADIUS_RANGE,
     COMPARISON_TARGET_OPTIONS,
@@ -66,6 +67,7 @@ from ..ui.ui_constants import (
     DEFAULT_CELL_SIZE,
     DEFAULT_COMPARISON_TARGET,
     DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
+    DEFAULT_SINGLE_RESULT_SENSITIVITY,
     DEFAULT_ANALYSIS_MODE,
     DEFAULT_FRAMES_PER_ROW,
     DEFAULT_GEOMETRY_MODE,
@@ -115,6 +117,7 @@ from ..ui.ui_constants import (
     SETTINGS_APP,
     SETTINGS_LABEL_MIN_WIDTH,
     SETTINGS_ORG,
+    SINGLE_RESULT_SENSITIVITY_OPTIONS,
     TOTAL_FRAMES_RANGE,
 )
 from .presenter import KarakalPresenter
@@ -437,6 +440,7 @@ class KarakalWidget(QWidget):
     """Embeddable widget for multi-model segmentation quality evaluation."""
 
     qualityPublicationRequested = pyqtSignal(object)
+    standaloneAnalysisRepeatRequested = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None, *, settings: QSettings | None = None) -> None:
         super().__init__(parent)
@@ -543,6 +547,8 @@ class KarakalWidget(QWidget):
         self._populate_polygon_compare_profile_combo(DEFAULT_POLYGON_COMPARE_PROFILE)
         self.confidence_uncertainty_profile_combo = _NoWheelComboBox(self)
         self._populate_confidence_uncertainty_profile_combo(DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+        self.single_result_sensitivity_combo = _NoWheelComboBox(self)
+        self._populate_single_result_sensitivity_combo(DEFAULT_SINGLE_RESULT_SENSITIVITY)
         self.polygon_confidence_summary_combo = _NoWheelComboBox(self)
         self._populate_polygon_confidence_summary_combo(DEFAULT_POLYGON_CONFIDENCE_SUMMARY)
         self.point_match_radius_spin = _NoWheelDoubleSpinBox(self)
@@ -588,6 +594,10 @@ class KarakalWidget(QWidget):
         self.analysis_setup_panel = AnalysisSetupPanel(self._t, control_host)
         self.analysis_setup_panel.set_profile(DEFAULT_ANALYSIS_PROFILE)
         control_layout.addWidget(self.analysis_setup_panel)
+
+        self.persistent_history_button = QPushButton("История анализов в БД", control_host)
+        self.persistent_history_button.setObjectName("persistentAnalysisHistoryButton")
+        control_layout.addWidget(self.persistent_history_button)
 
         self.run_history_group = QGroupBox(self._t("run_history.group"), control_host)
         run_history_layout = QVBoxLayout(self.run_history_group)
@@ -1408,6 +1418,16 @@ class KarakalWidget(QWidget):
         self.confidence_uncertainty_profile_combo.setCurrentIndex(index if index >= 0 else 0)
         self.confidence_uncertainty_profile_combo.blockSignals(False)
 
+    def _populate_single_result_sensitivity_combo(self, selected_value: str | None) -> None:
+        current = str(selected_value or DEFAULT_SINGLE_RESULT_SENSITIVITY)
+        self.single_result_sensitivity_combo.blockSignals(True)
+        self.single_result_sensitivity_combo.clear()
+        for label_key, key in SINGLE_RESULT_SENSITIVITY_OPTIONS:
+            self.single_result_sensitivity_combo.addItem(self._t(label_key), key)
+        index = self.single_result_sensitivity_combo.findData(current)
+        self.single_result_sensitivity_combo.setCurrentIndex(index if index >= 0 else 1)
+        self.single_result_sensitivity_combo.blockSignals(False)
+
     def _metric_scope_label(self, spec, *, output_only: bool = False) -> str:
         base_name = str(getattr(spec, "display_name", "") or getattr(getattr(spec, "mask_folder", None), "name", "") or getattr(spec, "model_id", ""))
         confidence_folder = getattr(spec, "prob_folder", None)
@@ -1520,6 +1540,9 @@ class KarakalWidget(QWidget):
         self._matrix_geometry_row = self._build_setting_row(self._t("analysis.object_type"), self.geometry_mode_combo)
         self._matrix_polygon_compare_profile_row = self._build_setting_row(self._t("matrix.polygon_compare_profile"), self.polygon_compare_profile_combo)
         self._matrix_confidence_delta_row = self._build_setting_row(self._t('matrix.confidence_delta'), self.confidence_uncertainty_profile_combo)
+        self._matrix_single_result_sensitivity_row = self._build_setting_row(
+            self._t("single_result.sensitivity.label"), self.single_result_sensitivity_combo
+        )
         self._matrix_polygon_confidence_summary_row = self._build_setting_row(self._t('matrix.polygon_confidence_summary'), self.polygon_confidence_summary_combo)
         self._matrix_point_radius_row = self._build_setting_row(self._t('matrix.point_match_radius'), self.point_match_radius_spin)
         self._matrix_point_confidence_radius_row = self._build_setting_row(self._t('matrix.point_confidence_radius'), self.point_confidence_radius_spin)
@@ -1556,6 +1579,7 @@ class KarakalWidget(QWidget):
             self._matrix_geometry_row,
             self._matrix_polygon_compare_profile_row,
             self._matrix_confidence_delta_row,
+            self._matrix_single_result_sensitivity_row,
             self._matrix_polygon_confidence_summary_row,
             self._matrix_point_radius_row,
             self._matrix_point_confidence_radius_row,
@@ -1671,6 +1695,9 @@ class KarakalWidget(QWidget):
                 if state.legend is not None:
                     state.legend.retranslate()
         self._populate_confidence_uncertainty_profile_combo(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
+        self._populate_single_result_sensitivity_combo(
+            self.single_result_sensitivity_combo.currentData() or DEFAULT_SINGLE_RESULT_SENSITIVITY
+        )
         self.folders_group.setTitle(self._t("folders.group"))
         if hasattr(self, "pair_matrix_group"):
             title = (
@@ -1745,6 +1772,7 @@ class KarakalWidget(QWidget):
             (getattr(self, "_matrix_geometry_row", None), "analysis.object_type"),
             (getattr(self, "_matrix_polygon_compare_profile_row", None), "matrix.polygon_compare_profile"),
             (getattr(self, "_matrix_confidence_delta_row", None), "matrix.confidence_delta"),
+            (getattr(self, "_matrix_single_result_sensitivity_row", None), "single_result.sensitivity.label"),
             (getattr(self, "_matrix_polygon_confidence_summary_row", None), "matrix.polygon_confidence_summary"),
             (getattr(self, "_matrix_point_radius_row", None), "matrix.point_match_radius"),
             (getattr(self, "_matrix_point_confidence_radius_row", None), "matrix.point_confidence_radius"),
@@ -2091,6 +2119,7 @@ class KarakalWidget(QWidget):
         self.matrix_gradient_combo.currentIndexChanged.connect(self._presenter._on_matrix_gradient_changed)
         self.analysis_setup_panel.profileChanged.connect(self._presenter._on_analysis_profile_changed)
         self.analysis_setup_panel.runRequested.connect(self._presenter._on_primary_run_requested)
+        self.persistent_history_button.clicked.connect(self._open_persistent_analysis_history)
         self.run_history_list.itemClicked.connect(self._presenter._on_run_history_selected)
         self.thumbnail_size_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
         self.analysis_mode_combo.currentIndexChanged.connect(self._presenter._on_analysis_mode_changed)
@@ -2098,6 +2127,9 @@ class KarakalWidget(QWidget):
         self.geometry_mode_combo.currentIndexChanged.connect(self._presenter._on_object_type_changed)
         self.polygon_compare_profile_combo.currentIndexChanged.connect(self._presenter._on_polygon_compare_profile_changed)
         self.confidence_uncertainty_profile_combo.currentIndexChanged.connect(self._presenter._sync_action_buttons)
+        self.single_result_sensitivity_combo.currentIndexChanged.connect(
+            self._presenter._on_single_result_sensitivity_changed
+        )
         self.polygon_confidence_summary_combo.currentIndexChanged.connect(self._presenter._sync_action_buttons)
         self.point_match_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
         self.point_confidence_radius_spin.valueChanged.connect(self._presenter._sync_action_buttons)
@@ -2109,6 +2141,12 @@ class KarakalWidget(QWidget):
         self.language_toggle_button.clicked.connect(self._toggle_language)
         self.matrix_tabs.currentChanged.connect(self._presenter._on_current_tab_changed)
         self.matrix_tabs.tabCloseRequested.connect(self._presenter._close_matrix_tab)
+
+    def _open_persistent_analysis_history(self) -> StandaloneHistoryDialog:
+        dialog = StandaloneHistoryDialog(parent=self)
+        dialog.repeatRequested.connect(self.standaloneAnalysisRepeatRequested)
+        dialog.exec()
+        return dialog
 
     def set_workflow_summary(self, payload: dict[str, tuple[str, str, str]]) -> None:
         self.analysis_setup_panel.set_workflow_summary(payload)
@@ -2180,6 +2218,9 @@ class KarakalWidget(QWidget):
             analysis_mode=str(snapshot.get("analysis_mode") or DEFAULT_ANALYSIS_MODE),
             object_type=str(snapshot.get("object_type") or "polygon"),
             confidence_model_id=str(snapshot.get("confidence_model_id") or snapshot.get("metric_scope") or "") or None,
+            single_result_sensitivity=str(
+                snapshot.get("single_result_sensitivity") or DEFAULT_SINGLE_RESULT_SENSITIVITY
+            ),
             frame_type_filter=str(snapshot.get("frame_type_filter") or snapshot.get("object_type") or "all"),
             preview=preview,
             percentile_filter_full_matrix=bool(percentile_full_matrix_check.isChecked()),

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any, Iterator
+from typing import Any
 
 from kraken_manager.domain.common import PrincipalId
 

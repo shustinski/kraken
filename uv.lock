@@ -503,6 +503,20 @@ wheels = [
 ]
 
 [[package]]
+name = "django"
+version = "6.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "asgiref", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "sqlparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f8/d4/8314b5bdef20832f0ac6ae3b3e4d4924e4759fa3b4af27609dd747e7a6be/django-6.1.1.tar.gz", hash = "sha256:7ab93536d8e677aa14554c56426290c69480bf2ee68d7513d4a22f57d6bfeb84", size = 11284905, upload-time = "2026-09-02T17:20:45.621Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/ca/c1040a4fd15754ede7df15fd72fc2e123045b473b253ab5f5284e11c651e/django-6.1.1-py3-none-any.whl", hash = "sha256:585fb82bf15053c42cf52e67c2f1b54a032dca384759315fd6678ab1870d1d72", size = 8419512, upload-time = "2026-09-02T17:20:39.153Z" },
+]
+
+[[package]]
 name = "et-xmlfile"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -954,6 +968,18 @@ wheels = [
 ]
 
 [[package]]
+name = "ldap3"
+version = "2.9.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyasn1", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/ac/96bd5464e3edbc61595d0d69989f5d9969ae411866427b2500a8e5b812c0/ldap3-2.9.1.tar.gz", hash = "sha256:f3e7fc4718e3f09dda568b57100095e0ce58633bcabbed8667ce3f8fbaa4229f", size = 398830, upload-time = "2021-07-18T06:34:21.786Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/f6/71d6ec9f18da0b2201287ce9db6afb1a1f637dedb3f0703409558981c723/ldap3-2.9.1-py2.py3-none-any.whl", hash = "sha256:5869596fc4948797020d3f03b7939da938778a0f9e2009f7a072ccf92b8e8d70", size = 432192, upload-time = "2021-07-18T06:34:12.905Z" },
+]
+
+[[package]]
 name = "librt"
 version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1110,8 +1136,12 @@ dependencies = [
     { name = "kraken", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "networkx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "numpy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "opencv-python", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "opencv-python-headless", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pillow", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pyinstaller", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pyqtgraph", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "scikit-image", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "scipy", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
@@ -1141,14 +1171,14 @@ dev = [
     { name = "pytest", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pytest-cov", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-ml = [
+full = [
+    { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "pyqtgraph", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "timm", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-full = [
-    { name = "pyqt6", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "pyqtgraph", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+ml = [
     { name = "timm", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torch", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -1163,27 +1193,37 @@ server = [
     { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "uvicorn", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
+web = [
+    { name = "django", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "ldap3", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "cython", marker = "extra == 'build'", specifier = ">=3.0" },
     { name = "cython", marker = "extra == 'dev'", specifier = ">=3.0" },
+    { name = "django", marker = "extra == 'web'", specifier = ">=5.1" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
     { name = "huggingface-hub", marker = "extra == 'build'", specifier = ">=0.30" },
     { name = "huggingface-hub", marker = "extra == 'dev'", specifier = ">=0.30" },
     { name = "kraken", editable = "." },
+    { name = "ldap3", marker = "extra == 'web'", specifier = ">=2.9" },
     { name = "networkx", specifier = ">=3.2" },
     { name = "networkx", marker = "extra == 'build'", specifier = ">=3.2" },
     { name = "networkx", marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "opencv-python-headless", specifier = ">=5.0" },
+    { name = "opencv-python", specifier = ">=5.0" },
+    { name = "opencv-python-headless", specifier = ">=4.8" },
     { name = "pillow", specifier = ">=10.0" },
     { name = "psutil", marker = "extra == 'dev'", specifier = ">=5.9" },
     { name = "psutil", marker = "extra == 'monitoring'", specifier = ">=5.9" },
+    { name = "pyinstaller", specifier = ">=6.0" },
     { name = "pyinstaller", marker = "extra == 'build'", specifier = ">=6.0" },
     { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "pyqt6", specifier = ">=6.6" },
     { name = "pyqt6", marker = "extra == 'client'", specifier = ">=6.6" },
     { name = "pyqt6", marker = "extra == 'full'", specifier = ">=6.6" },
+    { name = "pyqtgraph", specifier = ">=0.13" },
     { name = "pyqtgraph", marker = "extra == 'client'", specifier = ">=0.13" },
     { name = "pyqtgraph", marker = "extra == 'full'", specifier = ">=0.13" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
@@ -1192,22 +1232,27 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.14" },
     { name = "timm", marker = "extra == 'compute'", specifier = ">=1.0" },
     { name = "timm", marker = "extra == 'full'", specifier = ">=1.0" },
+    { name = "timm", marker = "extra == 'ml'", specifier = ">=1.0" },
     { name = "timm", marker = "extra == 'server'", specifier = ">=1.0" },
     { name = "torch", marker = "(sys_platform == 'linux' and extra == 'compute') or (sys_platform == 'win32' and extra == 'compute')", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
     { name = "torch", marker = "(sys_platform == 'linux' and extra == 'full') or (sys_platform == 'win32' and extra == 'full')", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torch", marker = "(sys_platform == 'linux' and extra == 'ml') or (sys_platform == 'win32' and extra == 'ml')", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
     { name = "torch", marker = "(sys_platform == 'linux' and extra == 'server') or (sys_platform == 'win32' and extra == 'server')", specifier = "==2.12.0", index = "https://download.pytorch.org/whl/cu132" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'compute'", specifier = "==2.12.0" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'full'", specifier = "==2.12.0" },
+    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'ml'", specifier = "==2.12.0" },
     { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'server'", specifier = "==2.12.0" },
     { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'compute') or (sys_platform == 'win32' and extra == 'compute')", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
     { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'full') or (sys_platform == 'win32' and extra == 'full')", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
+    { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'ml') or (sys_platform == 'win32' and extra == 'ml')", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
     { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'server') or (sys_platform == 'win32' and extra == 'server')", specifier = "==0.27.0", index = "https://download.pytorch.org/whl/cu132" },
     { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'compute'", specifier = "==0.27.0" },
     { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'full'", specifier = "==0.27.0" },
+    { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'ml'", specifier = "==0.27.0" },
     { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'server'", specifier = "==0.27.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30" },
 ]
-provides-extras = ["ml", "client", "compute", "server", "full", "monitoring", "build", "dev"]
+provides-extras = ["ml", "web", "client", "compute", "server", "full", "monitoring", "build", "dev"]
 
 [[package]]
 name = "nodeenv"
@@ -1580,6 +1625,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyasn1"
+version = "0.6.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a4/9a/23310166d960def5897e91fe20e5b724601b02a22e84ba1f94232c0b7f67/pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81", size = 151262, upload-time = "2026-07-09T01:12:33.988Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b", size = 84410, upload-time = "2026-07-09T01:12:32.92Z" },
+]
+
+[[package]]
 name = "pycparser"
 version = "3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1930,18 +1984,6 @@ dependencies = [
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a1/b4/2528bb43c67d48053a7a649a9666432dc307d66ba02e3a6d5c40f46655df/scikit_image-0.26.0.tar.gz", hash = "sha256:f5f970ab04efad85c24714321fcc91613fcb64ef2a892a13167df2f3e59199fa", size = 22729739, upload-time = "2025-12-20T17:12:21.824Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/a9/9564250dfd65cb20404a611016db52afc6268b2b371cd19c7538ea47580f/scikit_image-0.26.0-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:915bb3ba66455cf8adac00dc8fdf18a4cd29656aec7ddd38cb4dda90289a6f21", size = 13094910, upload-time = "2025-12-20T17:11:16.2Z" },
-    { url = "https://files.pythonhosted.org/packages/a3/b8/0d8eeb5a9fd7d34ba84f8a55753a0a3e2b5b51b2a5a0ade648a8db4a62f7/scikit_image-0.26.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b36ab5e778bf50af5ff386c3ac508027dc3aaeccf2161bdf96bde6848f44d21b", size = 13660939, upload-time = "2025-12-20T17:11:18.464Z" },
-    { url = "https://files.pythonhosted.org/packages/2f/d6/91d8973584d4793d4c1a847d388e34ef1218d835eeddecfc9108d735b467/scikit_image-0.26.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:09bad6a5d5949c7896c8347424c4cca899f1d11668030e5548813ab9c2865dcb", size = 14138938, upload-time = "2025-12-20T17:11:20.919Z" },
-    { url = "https://files.pythonhosted.org/packages/39/9a/7e15d8dc10d6bbf212195fb39bdeb7f226c46dd53f9c63c312e111e2e175/scikit_image-0.26.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:aeb14db1ed09ad4bee4ceb9e635547a8d5f3549be67fc6c768c7f923e027e6cd", size = 14752243, upload-time = "2025-12-20T17:11:23.347Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/58/2b11b933097bc427e42b4a8b15f7de8f24f2bac1fd2779d2aea1431b2c31/scikit_image-0.26.0-cp313-cp313-win_amd64.whl", hash = "sha256:ac529eb9dbd5954f9aaa2e3fe9a3fd9661bfe24e134c688587d811a0233127f1", size = 11906770, upload-time = "2025-12-20T17:11:25.297Z" },
-    { url = "https://files.pythonhosted.org/packages/ad/ec/96941474a18a04b69b6f6562a5bd79bd68049fa3728d3b350976eccb8b93/scikit_image-0.26.0-cp313-cp313-win_arm64.whl", hash = "sha256:a2d211bc355f59725efdcae699b93b30348a19416cc9e017f7b2fb599faf7219", size = 11342506, upload-time = "2025-12-20T17:11:27.399Z" },
-    { url = "https://files.pythonhosted.org/packages/d4/4a/f1cbd1357caef6c7993f7efd514d6e53d8fd6f7fe01c4714d51614c53289/scikit_image-0.26.0-cp313-cp313t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a07200fe09b9d99fcdab959859fe0f7db8df6333d6204344425d476850ce3604", size = 12942086, upload-time = "2025-12-20T17:11:33.683Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/6f/74d9fb87c5655bd64cf00b0c44dc3d6206d9002e5f6ba1c9aeb13236f6bf/scikit_image-0.26.0-cp313-cp313t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:92242351bccf391fc5df2d1529d15470019496d2498d615beb68da85fe7fdf37", size = 13265667, upload-time = "2025-12-20T17:11:36.11Z" },
-    { url = "https://files.pythonhosted.org/packages/a7/73/faddc2413ae98d863f6fa2e3e14da4467dd38e788e1c23346cf1a2b06b97/scikit_image-0.26.0-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:52c496f75a7e45844d951557f13c08c81487c6a1da2e3c9c8a39fcde958e02cc", size = 14001966, upload-time = "2025-12-20T17:11:38.55Z" },
-    { url = "https://files.pythonhosted.org/packages/02/94/9f46966fa042b5d57c8cd641045372b4e0df0047dd400e77ea9952674110/scikit_image-0.26.0-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:20ef4a155e2e78b8ab973998e04d8a361d49d719e65412405f4dadd9155a61d9", size = 14359526, upload-time = "2025-12-20T17:11:41.087Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/b4/2840fe38f10057f40b1c9f8fb98a187a370936bf144a4ac23452c5ef1baf/scikit_image-0.26.0-cp313-cp313t-win_amd64.whl", hash = "sha256:c9087cf7d0e7f33ab5c46d2068d86d785e70b05400a891f73a13400f1e1faf6a", size = 12287629, upload-time = "2025-12-20T17:11:43.11Z" },
-    { url = "https://files.pythonhosted.org/packages/22/ba/73b6ca70796e71f83ab222690e35a79612f0117e5aaf167151b7d46f5f2c/scikit_image-0.26.0-cp313-cp313t-win_arm64.whl", hash = "sha256:27d58bc8b2acd351f972c6508c1b557cfed80299826080a4d803dd29c51b707e", size = 11647755, upload-time = "2025-12-20T17:11:45.279Z" },
     { url = "https://files.pythonhosted.org/packages/72/48/253e7cf5aee6190459fe136c614e2cbccc562deceb4af96e0863f1b8ee29/scikit_image-0.26.0-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:6381edf972b32e4f54085449afde64365a57316637496c1325a736987083e2ab", size = 13161520, upload-time = "2025-12-20T17:11:51.58Z" },
     { url = "https://files.pythonhosted.org/packages/73/c3/cec6a3cbaadfdcc02bd6ff02f3abfe09eaa7f4d4e0a525a1e3a3f4bce49c/scikit_image-0.26.0-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c6624a76c6085218248154cc7e1500e6b488edcd9499004dd0d35040607d7505", size = 13684340, upload-time = "2025-12-20T17:11:53.708Z" },
     { url = "https://files.pythonhosted.org/packages/d4/0d/39a776f675d24164b3a267aa0db9f677a4cb20127660d8bf4fd7fef66817/scikit_image-0.26.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:f775f0e420faac9c2aa6757135f4eb468fb7b70e0b67fa77a5e79be3c30ee331", size = 14203839, upload-time = "2025-12-20T17:11:55.89Z" },
@@ -2056,6 +2098,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/0d/c9/f14fdf71bb8957e0c7e39db69bbdf12b5c80f4ef775fdfa127bf4e0d6760/sqlalchemy-2.0.51-cp314-cp314t-win32.whl", hash = "sha256:9161cfc9efce70d1715f47d6ff40f79c6778c00d53be4fbc09d70301e4b83ba7", size = 2151313, upload-time = "2026-06-15T16:03:39.127Z" },
     { url = "https://files.pythonhosted.org/packages/6a/c6/673e618e6f4f297e126d9b56ea2f6478708f6c1af4e3223835c22e2c3697/sqlalchemy-2.0.51-cp314-cp314t-win_amd64.whl", hash = "sha256:159bb6ba32059f57ad7375a8f50d844dd2f19d14954ecf820cd33e20debd46b2", size = 2186280, upload-time = "2026-06-15T16:03:40.569Z" },
     { url = "https://files.pythonhosted.org/packages/e2/22/dbf013a12ec759e54a34a119e9e217435b3f71b2dd5c61a7ade0a25dae87/sqlalchemy-2.0.51-py3-none-any.whl", hash = "sha256:bb024d8b621d0be75f4f44ecc7c950450026e76d66dc8f791bb5331d7fed59d5", size = 1944334, upload-time = "2026-06-15T16:09:22.418Z" },
+]
+
+[[package]]
+name = "sqlparse"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/d3/3f06a1006f2261d1342aefb3c71eed02f5d4ca5bdbecd86ebc12ad38306e/sqlparse-0.6.0.tar.gz", hash = "sha256:113c35c75365ab9cc9c7231d68c6428fb11c085fc8e9eb1ad659b7ddbf6cd2b9", size = 178477, upload-time = "2026-08-13T19:16:06.396Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d9/50/f00935da0ec7cbf325f8dc4f772ae46fbc7b672dd62876e73f0a94adda57/sqlparse-0.6.0-py3-none-any.whl", hash = "sha256:b861c0288ce2fa56209a9a6412d2e066ac664b3873b89c26c9d8415e8e32996f", size = 50070, upload-time = "2026-08-13T19:16:04.062Z" },
 ]
 
 [[package]]

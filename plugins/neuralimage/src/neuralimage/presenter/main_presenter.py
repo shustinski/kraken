@@ -175,8 +175,6 @@ class MainPresenter(QObject):
 
         # Инициализируем главное окно
         self.view = MainView(side_panel=self.settings_panel)
-        from neuralimage.remote.ui import install_remote_controls
-        install_remote_controls(self)
         self.view.configure_update_channels(
             self._update_client_config.available_channels,
             self._selected_update_channel,
@@ -221,6 +219,8 @@ class MainPresenter(QObject):
         self._load_initial_state()
         self._set_initial_sample_count_state()
         self.view.show()
+        from neuralimage.remote.ui import install_remote_controls
+        install_remote_controls(self)
         QtCore.QTimer.singleShot(0, self._calculate_expected_samples)
         if _should_schedule_startup_update_check():
             QtCore.QTimer.singleShot(0, self._start_update_check)

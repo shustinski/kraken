@@ -436,7 +436,6 @@ def _run_recognition(
     # validation and standalone UI startup do not eagerly load torch.
     from .lib.data_interfaces import RecognitionParameters
     from .lib.message_bus import MessageBus
-    from .model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer
 
     native_directory = session.output_directory / ".neuralimage-native"
     if native_directory.is_symlink():
@@ -478,8 +477,21 @@ def _run_recognition(
         confidence_save_mode="off",
         lossless_binary_png=True,
     )
-    recognizer = NeuralRecognizer(parameters, bus)
-    recognizer.run(multithreading=False)
+    remote_address = os.environ.get("NEURALIMAGE_SERVER_URL")
+    if os.environ.get("NEURALIMAGE_REMOTE_ONLY") and not remote_address:
+        from PyQt6.QtCore import QSettings
+
+        remote_address = str(QSettings("INME", "NeuralImage").value("execution/url", "http://localhost:8765"))
+    if remote_address is not None:
+        from .remote.managed import run_recognition
+
+        applied_threshold = run_recognition(parameters, bus, remote_address, session.manifest.job_id)
+    else:
+        from .model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer
+
+        recognizer = NeuralRecognizer(parameters, bus)
+        recognizer.run(multithreading=False)
+        applied_threshold = getattr(recognizer, "_resolved_output_threshold", options.threshold)
 
     outputs: list[PluginFrameOutput] = []
     frame_positions = dict(session.manifest.parameters.get("frame_positions", {}))
@@ -513,7 +525,6 @@ def _run_recognition(
                 role="binary-image",
             )
         )
-    applied_threshold = getattr(recognizer, "_resolved_output_threshold", options.threshold)
     return outputs, None if applied_threshold is None else float(applied_threshold)
 
 

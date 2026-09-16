@@ -16,7 +16,8 @@ from neuralimage.remote.server import create_app
 pytestmark = pytest.mark.skipif(os.environ.get("NEURALIMAGE_RUN_GPU_TESTS") != "1", reason="opt-in GPU integration")
 
 
-def test_train_then_recognize_over_http(tmp_path):
+@pytest.mark.parametrize("pause_and_resume", [False, True])
+def test_train_then_recognize_over_http(tmp_path, pause_and_resume, monkeypatch):
     images, labels = tmp_path / "images", tmp_path / "labels"
     images.mkdir()
     labels.mkdir()
@@ -31,7 +32,7 @@ def test_train_then_recognize_over_http(tmp_path):
         label_folder=str(labels),
         source_folder=str(images),
         result_folder=str(tmp_path / "results"),
-        epochs=1,
+        epochs=30 if pause_and_resume else 1,
     )
     settings = SettingsState(
         model="M 720k",
@@ -62,6 +63,8 @@ def test_train_then_recognize_over_http(tmp_path):
         client.post(f"/api/v1/jobs/{job}/submit")
         deadline = time.monotonic() + 240
         cursor = 0
+        pause_requested = False
+        resumed = False
         while time.monotonic() < deadline:
             for event in client.get(f"/api/v1/jobs/{job}/events?after={cursor}").json():
                 cursor = event["seq"]
@@ -70,10 +73,21 @@ def test_train_then_recognize_over_http(tmp_path):
                 elif event["topic"] in {"error", "logging"}:
                     print(event["payload"], flush=True)
             status = client.get(f"/api/v1/jobs/{job}").json()
+            checkpoints = list((app.state.store.root / job / "outputs" / "training").glob("*.ckpt"))
+            if pause_and_resume and not pause_requested and checkpoints and status["status"] == "running":
+                response = client.post(f"/api/v1/jobs/{job}/pause")
+                assert response.status_code == 200, response.text
+                pause_requested = True
+            if status["status"] == "paused":
+                assert checkpoints, "Pause must persist a training checkpoint"
+                response = client.post(f"/api/v1/jobs/{job}/resume")
+                assert response.status_code == 200, response.text
+                resumed = True
             if status["status"] in {"succeeded", "failed"}:
                 break
             time.sleep(0.2)
         assert status["status"] == "succeeded", status
+        assert resumed == pause_and_resume
         manifest = client.get(f"/api/v1/jobs/{job}/artifacts").json()
         assert any(item["path"].endswith(".pth") for item in manifest)
         outputs = [
@@ -106,3 +120,38 @@ def test_train_then_recognize_over_http(tmp_path):
             remote_image = np.asarray(Image.open(io.BytesIO(raw)))
             local_file = tmp_path / "local" / Path(item["path"]).relative_to("recognition")
             assert np.array_equal(remote_image, np.asarray(Image.open(local_file)))
+
+        if not pause_and_resume:
+            # Exercise the lightweight Kraken Agent adapter against the real worker.
+            from neuralimage.remote import managed
+            from neuralimage.remote.client import RemoteClient
+            from neuralimage.remote.contracts import safe_path
+
+            class InProcessClient(RemoteClient):
+                def request(self, method, route, payload=None, *, raw=None):
+                    response = client.request(method, "/api/v1" + route, json=payload, content=raw)
+                    response.raise_for_status()
+                    return response.json()
+
+                def download(self, job, destination, cancelled=None):
+                    result = destination / job
+                    for item in self.request("GET", f"/jobs/{job}/artifacts"):
+                        path = safe_path(result, item["path"])
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(client.get(f"/api/v1/jobs/{job}/artifacts/{item['path']}").content)
+                    return result
+
+            monkeypatch.setattr(managed, "RemoteClient", InProcessClient)
+            recognition.result_folder = tmp_path / "managed"
+            recognition.source_files = sorted(images.glob("*.png"))
+            completed = []
+            managed_bus = MessageBus()
+            managed_bus.subscribe("metrics", completed.append)
+            managed.run_recognition(recognition, managed_bus, "http://testserver", "managed-gpu")
+            frames = [value for value in completed if value.get("type") == "recognition_completed"]
+            assert len(frames) == 2
+            for value in frames:
+                with Image.open(value["output_path"]) as result:
+                    assert result.format == "PNG"
+                    assert result.mode == "L"
+                    assert set(np.unique(np.asarray(result))) <= {0, 255}

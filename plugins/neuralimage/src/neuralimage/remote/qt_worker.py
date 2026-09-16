@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QSettings, QThread, pyqtSignal
 
 from .client import RemoteClient
 from .contracts import TERMINAL, package_inputs
@@ -22,6 +22,9 @@ class RemoteJobThread(QThread):
 
     def __init__(self, *, url, main_state, settings_state, message_bus, job_id=None, request_key=None):
         super().__init__()
+        preferences = QSettings()
+        self.client_id = str(preferences.value("execution/client_id", "")) or uuid.uuid4().hex
+        preferences.setValue("execution/client_id", self.client_id)
         self.url = url
         self.client = None
         self.main_state = main_state
@@ -55,10 +58,15 @@ class RemoteJobThread(QThread):
         try:
             self.client = RemoteClient(self.url, timeout=10)
             self.client.capabilities()
-            destination = (Path(self.main_state.result_folder) if self.main_state.result_folder else Path(self.main_state.sample_folder).parent / "NeuralImageResults").resolve()
+            destination = (
+                Path(self.main_state.result_folder)
+                if self.main_state.result_folder
+                else Path(self.main_state.sample_folder).parent / "NeuralImageResults"
+            ).resolve()
             destination.mkdir(parents=True, exist_ok=True)
             if self.job_id is None:
                 payload, sources = package_inputs(self.main_state, self.settings_state, self.cancel_upload)
+                payload["client_id"] = self.client_id
                 record = destination / f".neuralimage-remote-{self.request_key}.json"
                 recovery = {
                     "url": self.client.url.removesuffix("/api/v1"),

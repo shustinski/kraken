@@ -82,9 +82,11 @@ def start_pending(dialog):
     thread = PreviewThread(*pending)
     app = QApplication.instance()
     thread.setParent(app)
+
     def shutdown():
         thread.requestInterruption()
         thread.wait()
+
     app.aboutToQuit.connect(shutdown)
     dialog._preview_thread = thread
 

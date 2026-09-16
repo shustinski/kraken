@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .contracts import INPUT_FIELDS, safe_path
+from .contracts import input_bindings, safe_path
 from .store import JobStore
 
 
@@ -57,10 +57,17 @@ def run_job(root: str, job: str) -> None:
 
     class RemoteBus(MessageBus):
         def publish(self, topic, payload=None):
+            if topic in {"logging", "error"}:
+                with (output / "run.log").open("a", encoding="utf-8") as log:
+                    log.write(f"[{topic}] {payload}\n")
             if topic == "error":
                 errors.append(str(payload))
             if topic == "metrics" and isinstance(payload, dict) and payload.get("type") == "training_completed":
                 (output / "training-completed.json").write_text(json.dumps(payload), encoding="utf-8")
+            if topic == "metrics" and isinstance(payload, dict) and payload.get("type") == "recognition_completed":
+                payload = dict(payload)
+                payload["source_input"] = Path(payload["source_path"]).relative_to(folder / "inputs").as_posix()
+                payload["output_artifact"] = Path(payload["output_path"]).relative_to(output).as_posix()
             store.event(job, topic, encode(payload))
             super().publish(topic, payload)
 
@@ -107,15 +114,14 @@ def run_job(root: str, job: str) -> None:
             if entry["path"].endswith(".ckpt"):
                 with torch.serialization.safe_globals(numpy_globals):
                     torch.load(safe_path(folder / "inputs", entry["path"]), map_location="cpu", weights_only=True)
-        for section, names in INPUT_FIELDS.items():
-            for name in names:
-                if payload[section].get(name):
-                    payload[section][name] = str(safe_path(folder / "inputs", payload[section][name]))
-                else:
-                    missing = folder / "inputs" / section / name
-                    if name != "model_path":
-                        missing.mkdir(parents=True, exist_ok=True)
-                    payload[section][name] = str(missing)
+        for container, name, prefix in input_bindings(payload):
+            if container.get(name):
+                container[name] = str(safe_path(folder / "inputs", container[name]))
+            elif name != "offline_manifest":
+                missing = folder / "inputs" / prefix
+                if name != "model_path":
+                    missing.mkdir(parents=True, exist_ok=True)
+                container[name] = str(missing)
         payload["main"]["result_folder"] = str(output / "recognition")
         mode, training, recognition = build_workflow_parameters(
             MainWindowState(**payload["main"]), SettingsState(**payload["settings"])
@@ -138,21 +144,33 @@ def run_job(root: str, job: str) -> None:
         recognition.resume_manifest_path = output / "recognition" / ".neuralimage-recognition-progress.json"
         recognition.resume_from_manifest = recognition.resume_manifest_path.exists()
         os.environ["NEURALIMAGE_TORCH_COMPILE"] = "1" if payload["settings"].get("torch_compile_enabled") else "0"
-        handler = GeneralNeuralHandler(mode, question, RemoteBus(), recognition, training)
+        managed = payload.get("managed_recognition", False)
+        if managed:
+            from neuralimage.model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer
+
+            recognition.lossless_binary_png = True
+            recognition.recognition_multiprocessing_enabled = False
+            handler = NeuralRecognizer(recognition, RemoteBus())
+        else:
+            handler = GeneralNeuralHandler(mode, question, RemoteBus(), recognition, training)
 
         def monitor():
             while not finished.wait(0.2):
                 command = store.get(job)["command"]
                 if command:
                     if command == "pause":
-                        handler.pause_execution()
+                        handler.stop() if managed else handler.pause_execution()
                     else:
-                        handler.stop_execution()
+                        handler.stop() if managed else handler.stop_execution()
                     return
 
         control = threading.Thread(target=monitor, daemon=True)
         control.start()
-        handler.start()
+        if managed:
+            handler.run(multithreading=False)
+            store.event(job, "managed_threshold", getattr(handler, "_resolved_output_threshold", recognition.threshold))
+        else:
+            handler.start()
         # Handler may return after its timeout; do not free the queue while its
         # non-daemon worker is still alive (process exit is the final barrier).
         command = store.get(job)["command"]

@@ -54,33 +54,41 @@ def test_stale_preview_cannot_replace_newer_settings(tmp_path, monkeypatch):
     from neuralimage.remote import preview_qt
     from neuralimage.remote.client import RemoteClient
     from PyQt6.QtWidgets import QLabel
+
     app = QApplication.instance() or QApplication([])
     first_started = threading.Event()
     release_first = threading.Event()
     calls = []
+
     class PreviewView:
         _remote_preview_serial = 0
         _preview_thread = None
         _original_image_array = None
         _panel = None
+
         def __init__(self):
             self.resample_button = QLabel()
             self.status_label = QLabel()
             self.displays = []
+
         def _update_preview_mode_label(self):
             pass
+
         def _update_visible_preview(self):
             self.displays.append(int(self._original_image_array[0, 0]))
+
     view = PreviewView()
     monkeypatch.setattr(preview_qt, "snapshot", lambda dialog: {"serial": dialog._remote_preview_serial})
     monkeypatch.setattr(preview_qt, "remote_url", lambda: "http://localhost:8765")
+
     def request(client, method, route, payload):
         calls.append(payload["serial"])
         if len(calls) == 1:
             first_started.set()
             assert release_first.wait(5)
-        array = encode_array(np.full((8,8), payload["serial"], dtype=np.uint8))
+        array = encode_array(np.full((8, 8), payload["serial"], dtype=np.uint8))
         return [array] * 4
+
     monkeypatch.setattr(RemoteClient, "request", request)
     preview_qt.request_preview(view)
     assert first_started.wait(5)
@@ -92,3 +100,29 @@ def test_stale_preview_cannot_replace_newer_settings(tmp_path, monkeypatch):
         time.sleep(0.01)
     assert calls == [1, 2]
     assert view.displays == [2]
+
+
+def test_remote_toolbar_survives_restored_window_layout(tmp_path, monkeypatch):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QToolBar
+    from neuralimage.bootstrap.composition_root import create_main_presenter
+
+    monkeypatch.setenv("NEURALIMAGE_SETTINGS_DIR", str(tmp_path / "settings"))
+    monkeypatch.setenv("NEURALIMAGE_REMOTE_ONLY", "1")
+    app = QApplication.instance() or QApplication([])
+    for _ in range(2):
+        presenter = create_main_presenter()
+        try:
+            for _ in range(10):
+                app.processEvents()
+            view = presenter.view
+            toolbar = view.findChild(QToolBar, "remote_execution_toolbar")
+            assert toolbar is not None
+            assert view.toolBarArea(toolbar) == Qt.ToolBarArea.TopToolBarArea
+            assert toolbar.isVisible()
+            assert toolbar.width() > 400
+            assert toolbar.y() >= view.menuBar().height()
+            view._save_window_layout()
+        finally:
+            presenter.shutdown()
+            presenter.view.hide()

@@ -193,6 +193,7 @@ def test_real_http_client_recovers_lost_upload_ack_and_downloads(tmp_path, monke
     import uvicorn
     from urllib.error import URLError
     from neuralimage.remote.client import RemoteClient
+
     app = create_app(tmp_path / "server", require_cuda=False, execute=False)
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
@@ -210,16 +211,24 @@ def test_real_http_client_recovers_lost_upload_ack_and_downloads(tmp_path, monke
         source = tmp_path / "input.bin"
         source.write_bytes(b"abc" * (2 * 1024 * 1024))
         body = payload()
-        body["files"] = [{"path": "data/input.bin", "size": source.stat().st_size, "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}]
+        body["files"] = [
+            {
+                "path": "data/input.bin",
+                "size": source.stat().st_size,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        ]
         job = client.request("POST", "/jobs", {"request_key": "network", "payload": body})["id"]
         original_request = client.request
         lost_ack = []
+
         def request(method, route, payload=None, **kwargs):
             value = original_request(method, route, payload, **kwargs)
             if method == "PUT" and not lost_ack:
                 lost_ack.append(True)
                 raise URLError("Acknowledgement lost after server committed chunk")
             return value
+
         monkeypatch.setattr(client, "request", request)
         client.upload(job, {"data/input.bin": source})
         assert lost_ack
@@ -235,3 +244,56 @@ def test_real_http_client_recovers_lost_upload_ack_and_downloads(tmp_path, monke
         thread.join(10)
         listener.close()
     assert not thread.is_alive()
+
+
+def test_packages_nested_offline_manifest(tmp_path):
+    manifest = tmp_path / "mining.json"
+    manifest.write_text('{"scores": []}')
+    settings = SettingsState(sem_segmentation_config={"hard_mining": {"offline_manifest": str(manifest)}})
+    body, sources = package_inputs(MainWindowState(work_mode="train_only"), settings)
+    relative = body["settings"]["sem_segmentation_config"]["hard_mining"]["offline_manifest"]
+    assert sources[relative] == manifest
+    assert relative.startswith("settings/sem_segmentation_config/")
+    assert settings.sem_segmentation_config["hard_mining"]["offline_manifest"] == str(manifest)
+
+
+def test_lifespan_releases_ownership_after_exception(tmp_path, monkeypatch):
+    import asyncio
+    from neuralimage.remote.ownership import server_ownership
+
+    from neuralimage.remote import server
+
+    schedulers = []
+    scheduler_type = server.Scheduler
+
+    def capture_scheduler(store, lock):
+        scheduler = scheduler_type(store, lock)
+        schedulers.append(scheduler)
+        return scheduler
+
+    monkeypatch.setattr(server, "Scheduler", capture_scheduler)
+    root = tmp_path / "server"
+    app = create_app(root, require_cuda=False)
+
+    async def fail():
+        with pytest.raises(RuntimeError, match="application failure"):
+            async with app.router.lifespan_context(app):
+                raise RuntimeError("application failure")
+
+    asyncio.run(fail())
+    assert schedulers[0].stop.is_set()
+    assert not schedulers[0].thread.is_alive()
+    with server_ownership(root):
+        pass
+
+
+def test_client_identifier_only_groups_jobs(api):
+    client, _ = api
+    body = payload()
+    body["client_id"] = "workstation-a"
+    first = create(client, body, "a")
+    body["client_id"] = "workstation-b"
+    second = create(client, body, "b")
+    assert [row["id"] for row in client.get("/api/v1/jobs?client_id=workstation-a").json()] == [first]
+    assert len(client.get("/api/v1/jobs").json()) == 2
+    assert client.get(f"/api/v1/jobs/{second}").status_code == 200

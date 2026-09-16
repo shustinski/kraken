@@ -75,6 +75,7 @@ def create_app(
     retention_days: int = 0,
 ) -> FastAPI:
     from neuralimage.application.dto import MainWindowState, SettingsState
+
     main_validator = TypeAdapter(MainWindowState)
     settings_validator = TypeAdapter(SettingsState)
     store = JobStore(root)
@@ -101,23 +102,25 @@ def create_app(
                 cleanup(store, retention_days)
             if execute:
                 scheduler.thread.start()
-            yield
-            scheduler.stop.set()
-            if execute:
-                await asyncio.to_thread(scheduler.thread.join, 60)
-                if scheduler.thread.is_alive():
-                    process = scheduler.process
-                    if process is not None and process.is_alive():
-                        if os.name == "nt":
-                            await asyncio.to_thread(
-                                subprocess.run,
-                                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                                check=True,
-                                capture_output=True,
-                            )
-                        else:
-                            os.killpg(process.pid, signal.SIGKILL)
-                    await asyncio.to_thread(scheduler.thread.join)
+            try:
+                yield
+            finally:
+                scheduler.stop.set()
+                if execute:
+                    await asyncio.to_thread(scheduler.thread.join, 60)
+                    if scheduler.thread.is_alive():
+                        process = scheduler.process
+                        if process is not None and process.is_alive():
+                            if os.name == "nt":
+                                await asyncio.to_thread(
+                                    subprocess.run,
+                                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                    check=True,
+                                    capture_output=True,
+                                )
+                            else:
+                                os.killpg(process.pid, signal.SIGKILL)
+                        await asyncio.to_thread(scheduler.thread.join)
 
     app = FastAPI(title="NeuralImage compute server", lifespan=lifespan)
     app.state.store = store
@@ -177,8 +180,15 @@ def create_app(
             raise HTTPException(422, str(error)) from error
 
     @app.get("/api/v1/jobs")
-    def jobs():
-        return [{k: v for k, v in row.items() if k not in {"payload", "request_key"}} for row in store.list()]
+    def jobs(client_id: str | None = None):
+        result = []
+        for row in store.list():
+            owner = json.loads(row["payload"]).get("client_id", "")
+            if client_id is None or client_id == owner:
+                result.append(
+                    {**{k: v for k, v in row.items() if k not in {"payload", "request_key"}}, "client_id": owner}
+                )
+        return result
 
     @app.get("/api/v1/jobs/{job}")
     def status(job: str):

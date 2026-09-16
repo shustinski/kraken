@@ -40,6 +40,12 @@ function Get-Sha256ManifestEntries {
         }
 }
 
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $repositoryRoot
 try {
@@ -79,7 +85,7 @@ try {
     Invoke-External git (@("bundle", "create", $bundlePath) + $bundleRefs)
     Invoke-External git @("bundle", "verify", $bundlePath)
     $headsPath = Join-Path $sourceDirectory "bundle-heads.txt"
-    & git bundle list-heads $bundlePath | Set-Content -LiteralPath $headsPath -Encoding utf8NoBOM
+    Write-Utf8NoBom -Path $headsPath -Content ((& git bundle list-heads $bundlePath) -join [Environment]::NewLine)
 
     # This is an auditable, exact dependency list. Local workspace packages are restored from the bundle.
     $requirementsPath = Join-Path $dependencyDirectory "requirements-windows-x64.txt"
@@ -137,7 +143,9 @@ try {
         "",
         "[source.offline-vendor]",
         "directory = 'vendor'"
-    ) | Set-Content -LiteralPath (Join-Path $cargoConfigDirectory "config.toml") -Encoding utf8NoBOM
+    ) | ForEach-Object { $_ } | Out-String | ForEach-Object {
+        Write-Utf8NoBom -Path (Join-Path $cargoConfigDirectory "config.toml") -Content $_
+    }
 
     if ([string]::IsNullOrWhiteSpace($ToolchainDirectory)) {
         throw "ToolchainDirectory is required. It must contain the pinned offline installers and the VS Build Tools layout listed in offline/README.md."
@@ -174,7 +182,7 @@ try {
             throw "Git LFS tracks files, but its object store is unavailable: $lfsStorage"
         }
         Invoke-External tar @("-cf", $lfsArchive, "-C", (Split-Path $lfsStorage -Parent), (Split-Path $lfsStorage -Leaf))
-        $lfsFiles | Set-Content -LiteralPath (Join-Path $sourceDirectory "lfs-files.txt") -Encoding utf8NoBOM
+        Write-Utf8NoBom -Path (Join-Path $sourceDirectory "lfs-files.txt") -Content ($lfsFiles -join [Environment]::NewLine)
     }
 
     $pythonVersion = (& $pythonPath --version).Trim()
@@ -198,7 +206,7 @@ try {
         lfsObjectArchiveIncluded = ($lfsFiles.Count -gt 0)
         files = @(Get-Sha256ManifestEntries -Root $outputFullPath)
     }
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $outputFullPath "manifest.json") -Encoding utf8NoBOM
+    Write-Utf8NoBom -Path (Join-Path $outputFullPath "manifest.json") -Content ($manifest | ConvertTo-Json -Depth 8)
     Write-Host "Offline kit created: $outputFullPath"
 } catch {
     if ($null -ne $outputFullPath -and (Test-Path -LiteralPath $outputFullPath)) {

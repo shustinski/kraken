@@ -16,6 +16,12 @@ function Invoke-External {
     if ($LASTEXITCODE -ne 0) { throw "Command failed ($LASTEXITCODE): $FilePath $($Arguments -join ' ')" }
 }
 
+function Write-Utf8NoBom {
+    param([string]$Path, [string]$Content)
+
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+}
+
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $repositoryRoot
 try {
@@ -39,7 +45,7 @@ try {
         sourceCommit = (git rev-parse HEAD).Trim()
         sha256 = $sha
         createdUtc = (Get-Date).ToUniversalTime().ToString("o")
-    } | ConvertTo-Json | Set-Content -LiteralPath "$output.json" -Encoding utf8NoBOM
+    } | ConvertTo-Json | ForEach-Object { Write-Utf8NoBom -Path "$output.json" -Content $_ }
     Write-Host "Update bundle created: $output"
 } finally {
     Pop-Location

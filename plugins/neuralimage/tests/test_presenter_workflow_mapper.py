@@ -1,5 +1,8 @@
+import pytest
+
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services.workflow_mapper import build_workflow_parameters, resolve_work_mode
+from neuralimage.configuration import get_sem_preset
 from tests.helpers import make_test_dir
 
 
@@ -23,6 +26,28 @@ def test_resolve_work_mode_legacy_value_aliases():
     mode = resolve_work_mode('recognintion_only')
     assert mode is not None
     assert mode.value == 'recognition_only'
+
+
+def test_sem_topology_config_maps_to_training_and_recognition_runtime():
+    root = make_test_dir('workflow_sem_topology')
+    main = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(root),
+        result_folder=str(root),
+        sample_folder=str(root),
+        label_folder=str(root),
+        epochs=1,
+    )
+    config = get_sem_preset('sem_topology_experimental_v1')
+    settings = SettingsState(sem_segmentation_config=config.to_dict())
+
+    _mode, training, recognition = build_workflow_parameters(main, settings)
+
+    assert training.supervision_targets.basic.skeleton
+    assert training.preprocessing.stable_hash() == recognition.preprocessing.stable_hash()
+    assert training.loss_weighting_strategy == 'static'
+    assert recognition.sem_config_hash == config.stable_hash()
+    assert training.hard_mining.enabled
 
 
 def test_build_workflow_parameters_falls_back_to_adam_for_unknown_optimizer():
@@ -172,6 +197,31 @@ def test_build_workflow_parameters_maps_separate_crop_and_resize_flags():
     assert training.generation.augmentation_blur_radius == 1.4
     assert training.prepare.edge_cut == (12, 12)
     assert training.prepare.target_size == (1024, 768)
+
+
+def test_build_workflow_parameters_maps_per_operation_augmentation_probability():
+    source = make_test_dir('workflow_source_aug_probability')
+    result = make_test_dir('workflow_result_aug_probability')
+    sample = make_test_dir('workflow_sample_aug_probability')
+    label = make_test_dir('workflow_label_aug_probability')
+    main = MainWindowState(
+        work_mode='train_only', source_folder=str(source), result_folder=str(result),
+        sample_folder=str(sample), label_folder=str(label), epochs=1,
+    )
+    settings = SettingsState(
+        training_augmentation={
+            'rotate_90': {'enabled': True, 'probability': 0.35},
+            'brightness': {'enabled': False, 'probability': 0.8},
+            'contrast': {'enabled': True, 'probability': 0.45},
+        }
+    )
+
+    _, training, _ = build_workflow_parameters(main, settings)
+
+    assert training.generation.horizontal_rotation_probability == pytest.approx(0.35)
+    assert training.generation.augmentation_brightness_enabled is False
+    assert training.generation.augmentation_brightness_probability == pytest.approx(0.8)
+    assert training.generation.augmentation_contrast_probability == pytest.approx(0.45)
 
 
 def test_build_workflow_parameters_maps_recursive_search_and_compression_factor():

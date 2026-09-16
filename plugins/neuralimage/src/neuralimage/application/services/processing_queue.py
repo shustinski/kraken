@@ -40,8 +40,14 @@ class TaskRuntimeContext:
     validation_progress: TaskProgress = TaskProgress()
     training_completed: bool = False
     trained_model_path: Path | None = None
+    execution_mode: str | None = None
+    remote_request_key: str | None = None
+    remote_job_id: str | None = None
+    remote_url: str = ""
 
     def clear_resume_state(self) -> None:
+        self.remote_request_key = None
+        self.remote_job_id = None
         self.training_checkpoint = None
         self.next_epoch = 0
         self.next_batch = 0

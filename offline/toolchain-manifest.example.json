@@ -1,0 +1,41 @@
+{
+  "formatVersion": 1,
+  "platform": "windows-x64",
+  "files": [
+    {
+      "role": "python",
+      "path": "python-3.14.2-amd64.exe",
+      "version": "3.14.2"
+    },
+    {
+      "role": "uv",
+      "path": "uv-0.10.2-x86_64-pc-windows-msvc.zip",
+      "version": "0.10.2"
+    },
+    {
+      "role": "git",
+      "path": "Git-2.x.x-64-bit.exe",
+      "version": "record actual version"
+    },
+    {
+      "role": "git-lfs",
+      "path": "git-lfs-windows-amd64-v3.x.x.exe",
+      "version": "record actual version"
+    },
+    {
+      "role": "rust",
+      "path": "rustup-init.exe",
+      "version": "record rustc and cargo versions"
+    },
+    {
+      "role": "vs-build-tools-layout",
+      "path": "vs-build-tools-layout",
+      "version": "record Visual Studio channel/build"
+    },
+    {
+      "role": "inno-setup",
+      "path": "innosetup-6.x.x.exe",
+      "version": "record actual version"
+    }
+  ]
+}

@@ -32,6 +32,7 @@ from neuralimage.lib.data_interfaces import (
     parse_work_mode,
 )
 from neuralimage.lib.loss_config import resolve_loss_term_weights
+from neuralimage.configuration import build_sem_segmentation_config
 
 
 def resolve_work_mode(value: str) -> WorkMode | None:
@@ -44,7 +45,9 @@ def build_workflow_parameters(
 ) -> tuple[WorkMode | None, TrainingParameters, RecognitionParameters]:
     work_mode = resolve_work_mode(main_window.work_mode)
     channels = 3 if settings.color_mode == 'RGB' else 1
-    cut_mode = SampleCutMode.online if settings.sample_cut_mode == SampleCutMode.online.value else SampleCutMode.disk
+    if settings.sample_cut_mode != SampleCutMode.online.value:
+        raise ValueError('Disk-cut datasets are no longer supported. Use sample_cut_mode="online".')
+    cut_mode = SampleCutMode.online
     train_patch_size = tuple(getattr(settings, 'train_patch_size', None) or settings.sample_size)
     recognition_patch_size = tuple(getattr(settings, 'recognition_patch_size', None) or settings.sample_size)
     train_batch_size = int(getattr(settings, 'train_batch_size', None) or settings.batch_size)
@@ -59,6 +62,11 @@ def build_workflow_parameters(
     context_crop_size = getattr(settings, 'context_crop_size', None)
     context_input_size = getattr(settings, 'context_input_size', None)
     requested_context_branch = getattr(settings, 'use_context_branch', None)
+    sem_raw = getattr(settings, 'sem_segmentation_config', {})
+    sem_config = build_sem_segmentation_config(sem_raw)
+    sem_enabled = bool(sem_raw)
+    if sem_enabled:
+        requested_context_branch = sem_config.context.enabled
     if requested_context_branch is None:
         requested_context_branch = settings.model in {'quasi_dual_scale_unet', 'UNetWithContextBranch'}
     model = (
@@ -79,6 +87,12 @@ def build_workflow_parameters(
         compression_factor=max(1, int(getattr(settings, 'compression_factor', 1))),
     )
 
+    augmentation_operations = getattr(settings, 'training_augmentation', {}) or {}
+
+    def _operation(name: str, field: str, default):
+        raw = augmentation_operations.get(name, {})
+        return raw.get(field, default) if isinstance(raw, dict) else default
+
     generation = SampleGenerationSettings(
         step=settings.step,
         segment_size=train_patch_size,
@@ -87,13 +101,26 @@ def build_workflow_parameters(
         channels=channels,
         flip_x=bool(getattr(settings, 'flip_x', False)),
         flip_y=bool(getattr(settings, 'flip_y', False)),
+        horizontal_rotation_probability=float(_operation('rotate_90', 'probability', 1.0)),
+        vertical_rotation_probability=float(_operation('rotate_180', 'probability', 1.0)),
+        flip_x_probability=float(_operation('flip_x', 'probability', 1.0)),
+        flip_y_probability=float(_operation('flip_y', 'probability', 1.0)),
         additional_augmentation=settings.additional_augmentation,
+        augmentation_multiplier=float(getattr(settings, 'augmentation_multiplier', 0.0)),
         augmentation_brightness_strength=settings.augmentation_brightness_strength,
+        augmentation_brightness_enabled=bool(_operation('brightness', 'enabled', True)),
+        augmentation_brightness_probability=float(_operation('brightness', 'probability', 1.0)),
         augmentation_contrast_strength=settings.augmentation_contrast_strength,
+        augmentation_contrast_enabled=bool(_operation('contrast', 'enabled', True)),
+        augmentation_contrast_probability=float(_operation('contrast', 'probability', 1.0)),
         augmentation_gamma_strength=float(getattr(settings, 'augmentation_gamma_strength', 0.15)),
+        augmentation_gamma_enabled=bool(_operation('gamma', 'enabled', True)),
+        augmentation_gamma_probability=float(_operation('gamma', 'probability', 1.0)),
+        augmentation_noise_enabled=bool(_operation('noise', 'enabled', True)),
         augmentation_noise_probability=settings.augmentation_noise_probability,
         augmentation_noise_sigma=settings.augmentation_noise_sigma,
         augmentation_blur_probability=float(getattr(settings, 'augmentation_blur_probability', 0.25)),
+        augmentation_blur_enabled=bool(_operation('blur', 'enabled', True)),
         augmentation_blur_radius=float(getattr(settings, 'augmentation_blur_radius', 1.0)),
         shuffle_patches_in_frame=bool(
             getattr(settings, 'shuffle_patches_in_frame', getattr(settings, 'shuffle', True))
@@ -101,6 +128,7 @@ def build_workflow_parameters(
         random_crop=bool(getattr(settings, 'random_crop', False)),
         crops_per_image=int(getattr(settings, 'crops_per_image', 64)),
         scale_augmentation=bool(getattr(settings, 'scale_augmentation', False)),
+        scale_augmentation_probability=float(_operation('scale', 'probability', 1.0)),
         scale_augmentation_strength=float(getattr(settings, 'scale_augmentation_strength', 0.2)),
         tech_aug=build_tech_augmentation_config(getattr(settings, 'tech_aug', None)),
     )
@@ -176,8 +204,18 @@ def build_workflow_parameters(
         ),
         dice_loss_weight=settings.dice_loss_weight,
         iou_loss_weight=settings.iou_loss_weight,
+        topograph_enabled=bool(getattr(settings, 'topograph_enabled', False)),
+        topograph_loss_weight=float(getattr(settings, 'topograph_loss_weight', 0.1)),
+        topograph_debug_viz=bool(getattr(settings, 'topograph_debug_viz', False)),
+        topograph_num_processes=max(1, int(getattr(settings, 'topograph_num_processes', 1))),
+        topograph_use_c=bool(getattr(settings, 'topograph_use_c', False)),
         early_stopping=EarlyStoppingParameters(
             enabled=settings.early_stopping_enabled,
+            patience=int(getattr(settings, 'early_stopping_patience', 10)),
+            min_delta=float(getattr(settings, 'early_stopping_min_delta', 0.0)),
+            restore_best_weights=bool(
+                getattr(settings, 'early_stopping_restore_best_weights', True)
+            ),
         ),
         warmup=WarmupParameters(
             enabled=settings.warmup_enabled,
@@ -210,9 +248,22 @@ def build_workflow_parameters(
             step_lr_gamma=float(min(max(getattr(settings, 'scheduler_step_lr_gamma', 0.1), 0.0), 1.0)),
         ),
         hard_mining=HardMiningParameters(
-            enabled=settings.hard_mining_enabled,
+            enabled=(settings.hard_mining_enabled or (sem_enabled and sem_config.hard_mining.mode != 'off')),
+            strength=float(getattr(settings, 'hard_mining_strength', 2.0)),
             pixel_enabled=getattr(settings, 'hard_pixel_mining_enabled', False),
             pixel_keep_ratio=float(getattr(settings, 'hard_pixel_mining_ratio', 0.25)),
+            mode=sem_config.hard_mining.mode if sem_enabled else 'online',
+            geometry_weight=sem_config.hard_mining.geometry_weight if sem_enabled else 0.5,
+            loss_weight=sem_config.hard_mining.loss_weight if sem_enabled else 0.5,
+            exploration_floor=sem_config.hard_mining.exploration_floor if sem_enabled else 0.1,
+            ema_alpha=(
+                sem_config.hard_mining.ema_alpha
+                if sem_enabled
+                else float(getattr(settings, 'hard_mining_ema_alpha', 0.3))
+            ),
+            score_clip=sem_config.hard_mining.score_clip if sem_enabled else 5.0,
+            refresh_epochs=sem_config.hard_mining.refresh_epochs if sem_enabled else 1,
+            offline_manifest=sem_config.hard_mining.offline_manifest if sem_enabled else None,
         ),
         random_patch_size=RandomPatchSizeParameters(
             enabled=(
@@ -260,13 +311,29 @@ def build_workflow_parameters(
         context_crop_size=tuple(context_crop_size) if context_crop_size is not None else None,
         context_input_size=tuple(context_input_size) if context_input_size is not None else None,
         context_branch_channels=tuple(getattr(settings, 'context_branch_channels', (16, 32, 64, 128))),
-        fusion_type=str(getattr(settings, 'fusion_type', 'concat')),
+        fusion_type=(sem_config.context.fusion_type if sem_enabled else str(getattr(settings, 'fusion_type', 'concat'))),
         use_context_branch=bool(requested_context_branch),
+        use_cross_attention=(sem_config.context.cross_attention if sem_enabled else True),
+        attention_dim=(sem_config.context.attention_dim if sem_enabled else 128),
+        attention_heads=(sem_config.context.attention_heads if sem_enabled else 4),
+        attention_max_global_tokens=(sem_config.context.max_global_tokens if sem_enabled else 1024),
         deep_supervision=bool(getattr(settings, 'deep_supervision', False)),
         dataloader_num_workers=int(getattr(settings, 'dataloader_num_workers', -1)),
         recursive_file_search=bool(getattr(settings, 'recursive_file_search', False)),
         pcb_defects=pcb_defects,
         synthetic_defect_generator=synthetic_defect_generator,
+        supervision_targets=sem_config.targets,
+        preprocessing=sem_config.preprocessing,
+        sem_augmentation=sem_config.augmentation,
+        uncertainty=sem_config.uncertainty,
+        active_learning=sem_config.active_learning,
+        advanced_validation=sem_config.validation.enabled,
+        advanced_validation_full_frame=sem_config.validation.full_frame,
+        advanced_validation_boundary_tolerance=sem_config.validation.boundary_tolerance,
+        advanced_validation_include_hd95=sem_config.validation.include_hd95,
+        advanced_validation_confidence_bins=sem_config.validation.confidence_bins,
+        loss_weighting_strategy=sem_config.losses.weighting_strategy,
+        mask_loss_weight_floor=sem_config.losses.mask_weight_floor,
     )
 
     recognition = RecognitionParameters(
@@ -303,10 +370,15 @@ def build_workflow_parameters(
             if getattr(settings, 'use_context_branch', None) is not None
             else None
         ),
+        use_cross_attention=(sem_config.context.cross_attention if sem_enabled else None),
         context_crop_size=tuple(context_crop_size) if context_crop_size is not None else None,
         context_input_size=tuple(context_input_size) if context_input_size is not None else None,
         recursive_file_search=bool(getattr(settings, 'recursive_file_search', False)),
         compression_factor=max(1, int(getattr(settings, 'compression_factor', 1))),
+        preprocessing=sem_config.preprocessing,
+        uncertainty=sem_config.uncertainty,
+        active_learning=sem_config.active_learning,
+        sem_config_hash=sem_config.stable_hash() if sem_enabled else None,
     )
 
     return work_mode, training, recognition

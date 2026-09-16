@@ -32,8 +32,12 @@
   #define OutputDir ProjectDir + "\dist\installer"
 #endif
 
+#ifndef AppIdentity
+  #define AppIdentity "{{9D56A9E1-465A-4C2A-9FBA-ED7E0060F3C0}"
+#endif
+
 [Setup]
-AppId={{9D56A9E1-465A-4C2A-9FBA-ED7E0060F3C0}
+AppId={#AppIdentity}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}

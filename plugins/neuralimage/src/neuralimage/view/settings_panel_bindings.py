@@ -31,6 +31,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.flip_y.toggled,
             panel.random_crop_check_box.toggled,
             panel.crops_per_image_spinbox.valueChanged,
+            panel.augmentation_multiplier_spinbox.valueChanged,
             panel.scale_augmentation_check_box.toggled,
             panel.scale_augmentation_strength_spinbox.valueChanged,
             panel.synthetic_defect_generator_check_box.toggled,
@@ -144,8 +145,6 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.random_patch_max_y_size.valueChanged,
             panel.enable_crop_processing.toggled,
             panel.enable_resize_processing.toggled,
-            panel.cut_dataset_type.toggled,
-            panel.no_cut_dataset_type.toggled,
             panel.cut_corner_spinbox.valueChanged,
             panel.compression_factor_spinbox.valueChanged,
             *(checkbox.toggled for checkbox in getattr(panel, 'random_artifact_type_checkboxes', {}).values()),
@@ -175,12 +174,11 @@ def connect_settings_panel_signals(panel: Any) -> None:
             panel.flip_y.toggled,
             panel.random_crop_check_box.toggled,
             panel.crops_per_image_spinbox.valueChanged,
+            panel.augmentation_multiplier_spinbox.valueChanged,
             panel.scale_augmentation_check_box.toggled,
             panel.synthetic_defect_generator_check_box.toggled,
             panel.synthetic_image_width_spinbox.valueChanged,
             panel.synthetic_image_height_spinbox.valueChanged,
-            panel.cut_dataset_type.toggled,
-            panel.no_cut_dataset_type.toggled,
             panel.shift_spinbox.valueChanged,
             panel.compression_factor_spinbox.valueChanged,
         ),
@@ -204,7 +202,7 @@ def connect_settings_panel_signals(panel: Any) -> None:
     )
     _connect_noarg(panel.validation_image_path_label.clicked, panel.validation_image_path_requested.emit)
     _connect_noarg(panel.validation_label_path_label.clicked, panel.validation_label_path_requested.emit)
-    _connect_noarg(panel.reset_defaults_button.clicked, panel.reset_defaults_requested.emit)
+    _connect_noarg(panel.reset_defaults_button.clicked, panel._request_reset_defaults)
     _connect_noarg(panel.augmentation_preview_button.clicked, panel.augmentation_preview_requested.emit)
     _connect_noarg(panel.edit_rare_regions_button.clicked, panel.rare_patch_editor_requested.emit)
 
@@ -222,12 +220,6 @@ def connect_settings_panel_signals(panel: Any) -> None:
     )
     panel.synthetic_defect_generator_check_box.toggled.connect(panel._sync_synthetic_defect_generator_controls)
     panel.synthetic_topology_domain_combo.currentIndexChanged.connect(panel._sync_synthetic_domain_controls)
-    panel.cut_dataset_type.toggled.connect(
-        lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
-    )
-    panel.no_cut_dataset_type.toggled.connect(
-        lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
-    )
     panel.augmentation_blur_probability_spinbox.valueChanged.connect(
         lambda *_args, **_kwargs: panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
     )
@@ -235,8 +227,6 @@ def connect_settings_panel_signals(panel: Any) -> None:
     panel.random_artifacts_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.mixup_check_box.toggled.connect(panel._sync_training_augmentation_controls)
     panel.synthetic_defect_generator_check_box.toggled.connect(panel._sync_training_augmentation_controls)
-    panel.cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)
-    panel.no_cut_dataset_type.toggled.connect(panel._sync_rare_patch_oversampling_controls)
     panel.recognition_binarize_output_check_box.toggled.connect(panel._sync_recognition_output_controls)
     panel.recognition_use_auto_threshold_check_box.toggled.connect(panel._sync_recognition_output_controls)
     panel.recognition_postprocess_check_box.toggled.connect(panel._sync_recognition_output_controls)

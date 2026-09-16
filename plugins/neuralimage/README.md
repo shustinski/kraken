@@ -42,3 +42,7 @@ pytest
 ```bash
 ./scripts/build_linux.sh
 ```
+
+## Удалённое выполнение
+
+[Qt-клиент, HTTP-сервер и Docker](REMOTE.md).

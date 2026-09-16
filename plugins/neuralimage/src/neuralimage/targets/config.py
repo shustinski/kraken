@@ -35,9 +35,12 @@ class SupervisionTargetConfig:
     distance_transform: bool = False
     thickness: bool = False
     boundary_kernel_size: int = 3
-    skeleton_iterations: int = 10
+    skeleton_iterations: int = 0
     sdf_clip: float = 32.0
+    distance_clip: float = 32.0
     thickness_max: float = 64.0
+    border_ignore: int = 2
+    cldice_iterations: int = 10
 
     def enabled_basic_targets(self) -> tuple[str, ...]:
         enabled: list[str] = []
@@ -64,7 +67,9 @@ class GeometrySupervisionConfig:
     topology: bool = False
     corner_sigma: float = 1.5
     junction_min_degree: int = 3
-    orientation_bins: int = 36
+    orientation_bins: int = 0
+    orientation_radius: int = 5
+    border_ignore: int = 3
 
     def enabled_geometry_targets(self) -> tuple[str, ...]:
         enabled: list[str] = []
@@ -84,6 +89,9 @@ class SupervisionTargetsParameters:
     basic: SupervisionTargetConfig = field(default_factory=SupervisionTargetConfig)
     geometry: GeometrySupervisionConfig = field(default_factory=GeometrySupervisionConfig)
     auxiliary_head_weights: dict[str, float] = field(default_factory=dict)
+    distance_boundary_weight: float = 0.0
+    cache_enabled: bool = False
+    cache_size: int = 256
 
     def enabled_targets(self) -> tuple[str, ...]:
         return self.basic.enabled_basic_targets() + self.geometry.enabled_geometry_targets()
@@ -113,9 +121,12 @@ def build_supervision_targets_parameters(raw: Mapping[str, Any] | None) -> Super
         distance_transform=_coerce_bool(basic_raw.get('distance_transform')),
         thickness=_coerce_bool(basic_raw.get('thickness')),
         boundary_kernel_size=int(basic_raw.get('boundary_kernel_size', 3)),
-        skeleton_iterations=int(basic_raw.get('skeleton_iterations', 10)),
+        skeleton_iterations=int(basic_raw.get('skeleton_iterations', 0)),
         sdf_clip=float(basic_raw.get('sdf_clip', 32.0)),
+        distance_clip=float(basic_raw.get('distance_clip', 32.0)),
         thickness_max=float(basic_raw.get('thickness_max', 64.0)),
+        border_ignore=int(basic_raw.get('border_ignore', 2)),
+        cldice_iterations=int(basic_raw.get('cldice_iterations', 10)),
     )
     geometry = GeometrySupervisionConfig(
         vertex=_coerce_bool(geometry_raw.get('vertex')),
@@ -128,7 +139,9 @@ def build_supervision_targets_parameters(raw: Mapping[str, Any] | None) -> Super
         topology=_coerce_bool(geometry_raw.get('topology')),
         corner_sigma=float(geometry_raw.get('corner_sigma', 1.5)),
         junction_min_degree=int(geometry_raw.get('junction_min_degree', 3)),
-        orientation_bins=int(geometry_raw.get('orientation_bins', 36)),
+        orientation_bins=int(geometry_raw.get('orientation_bins', 0)),
+        orientation_radius=int(geometry_raw.get('orientation_radius', 5)),
+        border_ignore=int(geometry_raw.get('border_ignore', 3)),
     )
     auxiliary_head_weights: dict[str, float] = {}
     if isinstance(weights_raw, Mapping):
@@ -143,4 +156,7 @@ def build_supervision_targets_parameters(raw: Mapping[str, Any] | None) -> Super
         basic=basic,
         geometry=geometry,
         auxiliary_head_weights=auxiliary_head_weights,
+        distance_boundary_weight=max(0.0, float(raw.get('distance_boundary_weight', 0.0))),
+        cache_enabled=bool(raw.get('cache_enabled', False)),
+        cache_size=max(1, int(raw.get('cache_size', 256))),
     )

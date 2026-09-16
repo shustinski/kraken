@@ -43,11 +43,6 @@ def _build_parser() -> argparse.ArgumentParser:
         description='Build Linux desktop bundle for NeuralImage via PyInstaller.',
     )
     parser.add_argument(
-        '--with-webui',
-        action='store_true',
-        help='Include optional Django web UI dependencies and assets in the build.',
-    )
-    parser.add_argument(
         '--dist-path',
         type=Path,
         default=default_dist_path(),
@@ -101,8 +96,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     os.environ['NEURALIMAGE_BUILD_TARGET'] = 'linux'
     os.environ['NEURALIMAGE_APP_NAME'] = str(args.app_name or 'NeuralImage').strip() or 'NeuralImage'
-    os.environ['NEURALIMAGE_INCLUDE_WEBUI'] = '1' if bool(args.with_webui) else '0'
-
     from PyInstaller.__main__ import run as pyinstaller_run
 
     pyinstaller_run(

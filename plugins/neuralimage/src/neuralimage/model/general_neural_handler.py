@@ -6,7 +6,8 @@ import hashlib
 import math
 import random
 import time
-from dataclasses import replace
+import json
+from dataclasses import asdict, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -27,18 +28,22 @@ from neuralimage.lib.data_interfaces import (
 )
 from neuralimage.lib.file_func import filter_files, filter_images
 from neuralimage.lib.func import get_input_channels
+from neuralimage.lib.images import ImagePreparator
 from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.model.NeuralNetwork import create_model, model_supports_init_kwarg
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
 from neuralimage.model.NeuralNetwork.dataset import (
-    CustomDataset,
     NoCutDataset,
     PatchSampleRequest,
     SyntheticDefectDataset,
 )
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
 from neuralimage.model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, ModelTrainer
-from neuralimage.model.image_workers import ConvertCifThread, CutImageThread
+from neuralimage.model.image_workers import ConvertCifThread
+from neuralimage.preprocessing.config import PreprocessingConfig, build_preprocessing_config
+from neuralimage.preprocessing.pipeline import image_to_channel_first_float01
+from neuralimage.preprocessing.statistics import compute_dataset_statistics
+from neuralimage.training.hard_mining import compute_geometry_difficulty_score
 
 
 _VALIDATION_SPLIT_SEED = 1337
@@ -175,6 +180,17 @@ class IndexedDataset(Dataset):
         resolver = getattr(self._base_dataset, 'sample_key', None)
         return str(resolver(int(index))) if callable(resolver) else self.describe_sample(int(index))
 
+    def geometry_score(self, index: int) -> float:
+        resolver = getattr(self._base_dataset, 'geometry_score', None)
+        if callable(resolver):
+            return float(resolver(int(index)))
+        _image, label = self._base_dataset[int(index)]
+        if isinstance(label, dict):
+            label = label['mask']
+        if torch.is_tensor(label):
+            label = label.detach().cpu().numpy()
+        return compute_geometry_difficulty_score(label)
+
 
 class CompositeDataset(Dataset):
     def __init__(self, *datasets: Dataset):
@@ -243,11 +259,23 @@ class CompositeDataset(Dataset):
         value = resolver(local_index) if callable(resolver) else self.describe_sample(int(index))
         return f'{dataset_number}::{value}'
 
+    def geometry_score(self, index: int) -> float:
+        dataset, local_index, _dataset_number = self._resolve_dataset_index(int(index))
+        resolver = getattr(dataset, 'geometry_score', None)
+        if callable(resolver):
+            return float(resolver(local_index))
+        _image, label = dataset[local_index]
+        if isinstance(label, dict):
+            label = label['mask']
+        if torch.is_tensor(label):
+            label = label.detach().cpu().numpy()
+        return compute_geometry_difficulty_score(label)
+
 
 class HardFrameSampler(Sampler[int]):
-    """Repeat every patch of frames whose RMS loss is above population sigma."""
+    """Deterministic online sampler combining geometry and per-sample EMA loss."""
 
-    def __init__(self, dataset: Dataset, *, shuffle: bool = True) -> None:
+    def __init__(self, dataset: Dataset, *, shuffle: bool = True, parameters: Any = None) -> None:
         self.dataset = dataset
         self.size = max(0, int(len(dataset)))
         self.shuffle = bool(shuffle)
@@ -255,20 +283,60 @@ class HardFrameSampler(Sampler[int]):
         self._epoch_losses: dict[str, tuple[str, float]] = {}
         self.last_frame_losses: dict[str, float] = {}
         self.last_sigma: float = 0.0
+        self._parameters = parameters
+        self._ema_losses: dict[str, float] = {}
+        self._geometry_scores: dict[str, float] = {}
+        self._epoch = 0
+
+    def set_geometry_scores(self, scores: dict[str, float]) -> None:
+        self._geometry_scores = {str(key): max(0.0, float(value)) for key, value in scores.items()}
+
+    @staticmethod
+    def _normalize(values: dict[str, float]) -> dict[str, float]:
+        if not values:
+            return {}
+        low, high = min(values.values()), max(values.values())
+        if high <= low:
+            return {key: 0.0 for key in values}
+        return {key: (value - low) / (high - low) for key, value in values.items()}
 
     def __iter__(self):
         base_indices = list(range(self.size))
+        rng = random.Random(1337 + self._epoch)
         if self.shuffle:
-            random.shuffle(base_indices)
-        extra_indices = [
-            index for index in range(self.size)
-            if self._frame_key(index) in self._hard_frame_keys
-        ]
-        if self.shuffle:
-            random.shuffle(extra_indices)
+            rng.shuffle(base_indices)
+        if self._parameters is None:
+            extra_indices = [
+                index for index in range(self.size)
+                if self._frame_key(index) in self._hard_frame_keys
+            ]
+            if self.shuffle:
+                rng.shuffle(extra_indices)
+            return iter(base_indices + extra_indices)
+        weights = self._sampling_weights()
+        exploration = min(max(float(getattr(self._parameters, 'exploration_floor', 0.1)), 0.0), 1.0)
+        extra_count = sum(1 for weight in weights if weight > exploration)
+        extra_indices = rng.choices(range(self.size), weights=weights, k=extra_count) if extra_count else []
         return iter(base_indices + extra_indices)
 
+    def _sampling_weights(self) -> list[float]:
+        geometry = self._normalize(self._geometry_scores)
+        losses = self._normalize(self._ema_losses)
+        geometry_weight = max(0.0, float(getattr(self._parameters, 'geometry_weight', 0.5)))
+        loss_weight = max(0.0, float(getattr(self._parameters, 'loss_weight', 0.5)))
+        exploration = min(max(float(getattr(self._parameters, 'exploration_floor', 0.1)), 0.0), 1.0)
+        score_clip = max(1e-6, float(getattr(self._parameters, 'score_clip', 5.0)))
+        weights = []
+        for index in range(self.size):
+            key = self._sample_key(index)
+            score = geometry_weight * geometry.get(key, 0.0) + loss_weight * losses.get(key, 0.0)
+            weights.append(min(score_clip, max(exploration, score)))
+        return weights
+
     def __len__(self) -> int:
+        if self._parameters is not None:
+            exploration = min(max(float(getattr(self._parameters, 'exploration_floor', 0.1)), 0.0), 1.0)
+            return self.size + sum(1 for weight in self._sampling_weights() if weight > exploration)
         return self.size + sum(
             1 for index in range(self.size)
             if self._frame_key(index) in self._hard_frame_keys
@@ -281,6 +349,7 @@ class HardFrameSampler(Sampler[int]):
 
     def start_epoch(self) -> None:
         self._epoch_losses.clear()
+        self._epoch += 1
 
     def _frame_key(self, index: int) -> str:
         resolver = getattr(self.dataset, 'frame_key', None)
@@ -300,6 +369,9 @@ class HardFrameSampler(Sampler[int]):
             if sample_key in self._epoch_losses:
                 continue
             self._epoch_losses[sample_key] = (self._frame_key(int(index)), float(loss))
+            alpha = min(max(float(getattr(self._parameters, 'ema_alpha', 0.1)), 0.0), 1.0)
+            previous = self._ema_losses.get(sample_key, float(loss))
+            self._ema_losses[sample_key] = previous * (1.0 - alpha) + float(loss) * alpha
 
     def finalize_epoch(self) -> set[str]:
         squared_by_frame: dict[str, list[float]] = {}
@@ -321,7 +393,7 @@ class HardFrameSampler(Sampler[int]):
         self.last_sigma = float(sigma)
         self._hard_frame_keys = {
             frame_key for frame_key, value in frame_losses.items()
-            if value > sigma
+            if value >= mean_value + sigma
         }
         return set(self._hard_frame_keys)
 
@@ -332,6 +404,9 @@ class HardFrameSampler(Sampler[int]):
             'epoch_losses': dict(self._epoch_losses),
             'last_frame_losses': dict(self.last_frame_losses),
             'last_sigma': float(self.last_sigma),
+            'ema_losses': dict(self._ema_losses),
+            'geometry_scores': dict(self._geometry_scores),
+            'epoch': self._epoch,
         }
 
     def load_state_dict(self, state: dict[str, object]) -> None:
@@ -349,6 +424,9 @@ class HardFrameSampler(Sampler[int]):
             for frame_key, value in raw_frame_losses.items()
         } if isinstance(raw_frame_losses, dict) else {}
         self.last_sigma = float(state.get('last_sigma', 0.0))
+        self._ema_losses = {str(key): float(value) for key, value in dict(state.get('ema_losses', {})).items()}
+        self._geometry_scores = {str(key): float(value) for key, value in dict(state.get('geometry_scores', {})).items()}
+        self._epoch = max(0, int(state.get('epoch', 0)))
 
 
 class RandomPatchBatchSampler(Sampler[list[PatchSampleRequest]]):
@@ -490,6 +568,10 @@ class GeneralNeuralHandler:
         self._start_recognition()
 
     def _prepare_training_pipeline(self):
+        if self.tranining_parameters.cut_mode != SampleCutMode.online:
+            raise ValueError(
+                'Disk-cut datasets are no longer supported. Use online patch generation.'
+            )
         dataset_image, dataset_label = self._prepare_dataset_folders()
         validation_image = None
         validation_label = None
@@ -543,16 +625,6 @@ class GeneralNeuralHandler:
             binary_labels = dataset_label.parent / binary_dir_name
             self._start_cif_conversion(dataset_label, binary_labels)
             dataset_label = binary_labels
-
-        if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-            image_dir_name = 'input_dir' if is_training_data else f'input_dir_{normalized_purpose}'
-            label_dir_name = 'label_dir' if is_training_data else f'label_dir_{normalized_purpose}'
-            cut_images = dataset_image.parent / image_dir_name
-            cut_labels = dataset_label.parent / label_dir_name
-            self._start_cut(dataset_image, cut_images)
-            self._start_cut(dataset_label, cut_labels)
-            dataset_image = cut_images
-            dataset_label = cut_labels
 
         return dataset_image, dataset_label
 
@@ -620,12 +692,14 @@ class GeneralNeuralHandler:
             model_kwargs['deep_supervision'] = bool(getattr(self.tranining_parameters, 'deep_supervision', True))
 
         supervision_targets = getattr(self.tranining_parameters, 'supervision_targets', None)
-        if (
-            supervision_targets is not None
-            and getattr(supervision_targets, 'any_enabled', lambda: False)()
-            and model_supports_init_kwarg(resolved_name, 'supervision_heads')
-        ):
-            model_kwargs['supervision_heads'] = tuple(supervision_targets.enabled_targets())
+        if supervision_targets is not None and getattr(supervision_targets, 'any_enabled', lambda: False)():
+            enabled_heads = tuple(supervision_targets.enabled_targets())
+            if not model_supports_init_kwarg(resolved_name, 'supervision_heads'):
+                raise ValueError(
+                    f'Model {resolved_name!r} does not support auxiliary supervision heads: '
+                    f'{", ".join(enabled_heads)}.'
+                )
+            model_kwargs['supervision_heads'] = enabled_heads
 
         return model_kwargs
 
@@ -642,6 +716,7 @@ class GeneralNeuralHandler:
         else:
             model = load_model_artifact(self.recognition_parameters.model, map_location='cpu')
             self._validate_loaded_model_input_channels(model)
+            self._apply_artifact_preprocessing_for_training(model)
             if self.work_mode in (WorkMode.further_training, WorkMode.continue_training) and hasattr(model, 'deep_supervision'):
                 deep_supervision_enabled = bool(getattr(self.tranining_parameters, 'deep_supervision', True))
                 setattr(model, 'deep_supervision', deep_supervision_enabled)
@@ -653,6 +728,21 @@ class GeneralNeuralHandler:
                 setattr(model, '_neuralimage_model_kwargs', model_kwargs)
             model_save_path = artifact_dir / Path(self.recognition_parameters.model).name
         return model, model_save_path
+
+    def _apply_artifact_preprocessing_for_training(self, model: Any) -> None:
+        metadata = getattr(model, '_neuralimage_artifact_metadata', {})
+        payload = metadata.get('preprocessing') if isinstance(metadata, dict) else None
+        if not isinstance(payload, dict) or not isinstance(payload.get('config'), dict):
+            return
+        artifact_config = build_preprocessing_config(payload['config'])
+        artifact_hash = str(payload.get('hash') or artifact_config.stable_hash())
+        requested = getattr(self.tranining_parameters, 'preprocessing', None) or PreprocessingConfig()
+        if requested.any_enabled() and requested.stable_hash() != artifact_hash:
+            raise ValueError(
+                'Training preprocessing is incompatible with the loaded model artifact. '
+                'Use the preprocessing stored with the model or select a compatible checkpoint.'
+            )
+        self.tranining_parameters.preprocessing = artifact_config
 
     def _resolve_loaded_model_input_channels(self, model: Any) -> int:
         declared_channels = getattr(model, '_neuralimage_input_channels', None)
@@ -704,20 +794,6 @@ class GeneralNeuralHandler:
         self.current_thread.start()
         self._wait_for_current_thread('cif conversion')
 
-    def _start_cut(self, source: Path, result: Path):
-        if self._check_folder_existance(result):
-            return
-        self.current_thread = CutImageThread(
-            source,
-            result,
-            self.tranining_parameters.generation,
-            message_bus=self.message_bus,
-            recursive=bool(getattr(self.tranining_parameters, 'recursive_file_search', False)),
-        )
-        self.current_thread.daemon = False
-        self.current_thread.start()
-        self._wait_for_current_thread('dataset cutting')
-
     def _create_dataset(
         self,
         image_folder: Path,
@@ -728,14 +804,6 @@ class GeneralNeuralHandler:
     ):
         if self._need_stop:
             return None, None
-        if (
-            bool(getattr(self.tranining_parameters, 'use_context_branch', False))
-            and self.tranining_parameters.cut_mode == SampleCutMode.disk
-        ):
-            raise ValueError(
-                'Context branch is supported only with online patch generation (cut_mode=online).'
-            )
-
         train_samples = self._collect_matched_samples(image_folder, label_folder)
         if self._need_stop or train_samples is None:
             return None, None
@@ -760,6 +828,8 @@ class GeneralNeuralHandler:
             train_samples, val_samples = self._split_validation_samples(train_samples)
             if self._need_stop:
                 return None, None
+
+        self._resolve_training_preprocessing(train_samples)
 
         training_without_tech_aug = replace(
             self.tranining_parameters,
@@ -794,57 +864,28 @@ class GeneralNeuralHandler:
             getattr(self.tranining_parameters, 'synthetic_defect_generator', None)
         )
 
-        if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-            train_dataset = CustomDataset(
-                train_samples,
-                self.tranining_parameters.generation.channels,
-                pcb_defects=None,
-                tech_aug=None,
-                apply_train_only_transforms=True,
+        train_dataset = NoCutDataset(
+            train_samples,
+            training_without_tech_aug,
+            apply_train_only_transforms=True,
+        )
+        val_dataset = (
+            NoCutDataset(
+                val_samples,
+                evaluation_settings,
+                apply_train_only_transforms=False,
             )
-            val_dataset = (
-                CustomDataset(
-                    val_samples,
-                    self.tranining_parameters.generation.channels,
-                    pcb_defects=None,
-                    tech_aug=None,
-                    apply_train_only_transforms=False,
-                )
-                if val_samples
-                else None
-            )
-        else:
-            train_dataset = NoCutDataset(
-                train_samples,
-                training_without_tech_aug,
-                apply_train_only_transforms=True,
-            )
-            val_dataset = (
-                NoCutDataset(
-                    val_samples,
-                    evaluation_settings,
-                    apply_train_only_transforms=False,
-                )
-                if val_samples
-                else None
-            )
+            if val_samples
+            else None
+        )
 
         self._train_control_dataset = None
         if bool(getattr(self.tranining_parameters.early_stopping, 'enabled', False)) and not val_samples:
-            if self.tranining_parameters.cut_mode == SampleCutMode.disk:
-                self._train_control_dataset = CustomDataset(
-                    train_samples,
-                    self.tranining_parameters.generation.channels,
-                    pcb_defects=None,
-                    tech_aug=None,
-                    apply_train_only_transforms=False,
-                )
-            else:
-                self._train_control_dataset = NoCutDataset(
-                    train_samples,
-                    evaluation_settings,
-                    apply_train_only_transforms=False,
-                )
+            self._train_control_dataset = NoCutDataset(
+                train_samples,
+                evaluation_settings,
+                apply_train_only_transforms=False,
+            )
             self.message_bus.publish(
                 'logging',
                 'Early stopping without validation uses a fixed train-control set. '
@@ -882,6 +923,35 @@ class GeneralNeuralHandler:
 
         return train_dataset, val_dataset
 
+    def _resolve_training_preprocessing(self, train_samples: list[tuple[Path, Path]]) -> None:
+        config = getattr(self.tranining_parameters, 'preprocessing', None) or PreprocessingConfig()
+        if config.mode != 'dataset_zscore':
+            return
+        if config.has_dataset_statistics():
+            return
+        channels = int(self.tranining_parameters.generation.channels)
+
+        def training_images() -> Iterable[Any]:
+            for image_path, _label_path in train_samples:
+                image = ImagePreparator(image_path, self.tranining_parameters.prepare).image
+                yield image_to_channel_first_float01(image, channels)
+
+        statistics = compute_dataset_statistics(training_images())
+        resolved = replace(
+            config,
+            dataset_mean=statistics.mean,
+            dataset_std=statistics.std,
+        )
+        self.tranining_parameters.preprocessing = resolved
+        self.message_bus.publish(
+            'logging',
+            (
+                'Dataset z-score statistics calculated from train split only: '
+                f'mean={statistics.mean:.8f}, std={statistics.std:.8f}, '
+                f'pixels={statistics.pixel_count}.'
+            ),
+        )
+
     def _split_validation_samples(
         self,
         samples: list[tuple[Path, Path]],
@@ -910,7 +980,7 @@ class GeneralNeuralHandler:
         if self._need_stop or train_dataset is None:
             return
 
-        shuffle = self.tranining_parameters.shuffle if self.tranining_parameters.cut_mode == SampleCutMode.disk else False
+        shuffle = False
         workers = self._resolve_dataloader_workers()
         pin_memory = bool(torch.cuda.is_available())
         train_persistent_workers = workers > 0 and not self._dataset_requires_worker_restart(train_dataset)
@@ -942,7 +1012,19 @@ class GeneralNeuralHandler:
         self._hard_mining_active = hard_mining_enabled
         if hard_mining_enabled:
             train_dataset = IndexedDataset(train_dataset)
-            train_loader_kwargs['sampler'] = HardFrameSampler(train_dataset, shuffle=bool(shuffle))
+            hard_sampler = HardFrameSampler(
+                train_dataset,
+                shuffle=bool(shuffle),
+                parameters=hard_mining,
+            )
+            geometry_resolver = getattr(train_dataset, 'geometry_score', None)
+            if callable(geometry_resolver) and float(getattr(hard_mining, 'geometry_weight', 0.0)) > 0.0:
+                geometry_scores = {
+                    hard_sampler._sample_key(index): float(geometry_resolver(index))
+                    for index in range(len(train_dataset))
+                }
+                hard_sampler.set_geometry_scores(geometry_scores)
+            train_loader_kwargs['sampler'] = hard_sampler
             train_loader_kwargs['shuffle'] = False
             self.message_bus.publish(
                 'logging',
@@ -1188,6 +1270,7 @@ class GeneralNeuralHandler:
 
     def _start_training(self, model, model_save_path: Path):
         self.message_bus.publish('metrics', {'type': 'workflow_phase', 'phase': 'training'})
+        self._write_training_manifest(model_save_path)
         resume_from_checkpoint = bool(
             self.work_mode in (WorkMode.further_training, WorkMode.continue_training)
             or getattr(self.tranining_parameters, 'resume_from_checkpoint', False)
@@ -1196,12 +1279,6 @@ class GeneralNeuralHandler:
             getattr(self.tranining_parameters, 'multi_gpu_mode', ''),
             use_multi_gpu_fallback=bool(getattr(self.tranining_parameters, 'use_multi_gpu', False)),
         )
-        if self._hard_mining_active and multi_gpu_mode == 'distributeddataparallel':
-            multi_gpu_mode = 'dataparallel'
-            self.message_bus.publish(
-                'logging',
-                'Hard mining включен: DistributedDataParallel заменен на nn.DataParallel для этого запуска.',
-            )
         self.current_thread = ModelTrainer(
             self.train_loader,
             self.val_loader,
@@ -1233,7 +1310,21 @@ class GeneralNeuralHandler:
             save_validation_binary_images=bool(
                 getattr(self.tranining_parameters, 'save_validation_binary_images', False)
             ),
-            control_dataloader=self.control_loader,
+            control_dataloader=getattr(self, 'control_loader', None),
+            loss_weighting_strategy=str(
+                getattr(self.tranining_parameters, 'loss_weighting_strategy', 'static')
+            ),
+            mask_loss_weight_floor=float(
+                getattr(self.tranining_parameters, 'mask_loss_weight_floor', 0.25)
+            ),
+            topograph_enabled=bool(getattr(self.tranining_parameters, 'topograph_enabled', False)),
+            topograph_loss_weight=float(getattr(self.tranining_parameters, 'topograph_loss_weight', 0.1)),
+            topograph_debug_viz=bool(getattr(self.tranining_parameters, 'topograph_debug_viz', False)),
+            topograph_num_processes=max(
+                1,
+                int(getattr(self.tranining_parameters, 'topograph_num_processes', 1)),
+            ),
+            topograph_use_c=bool(getattr(self.tranining_parameters, 'topograph_use_c', False)),
         )
         self.current_thread.daemon = False
         self.current_thread.start()
@@ -1252,6 +1343,33 @@ class GeneralNeuralHandler:
         # The process/thread lifecycle is over; drop heavy references eagerly.
         model = None
         self._release_torch_memory()
+
+    def _write_training_manifest(self, model_save_path: Path) -> None:
+        def normalize(value: Any) -> Any:
+            if is_dataclass(value):
+                return normalize(asdict(value))
+            if isinstance(value, dict):
+                return {str(key): normalize(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [normalize(item) for item in value]
+            if isinstance(value, Path):
+                return str(value)
+            if hasattr(value, 'value'):
+                return normalize(value.value)
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                return value
+            return str(value)
+
+        payload = {
+            'schema': 'neuralimage_training_run',
+            'version': 1,
+            'model_path': str(model_save_path),
+            'training': normalize(self.tranining_parameters),
+        }
+        manifest_path = model_save_path.parent / 'training_manifest.json'
+        temporary_path = manifest_path.with_suffix('.json.tmp')
+        temporary_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
+        os.replace(temporary_path, manifest_path)
 
     def _stop_training_callback(self):
         if self._need_stop:

@@ -68,7 +68,7 @@ class AppController:
         # due to conflicting native DLL initialization order.
         self._torch_available = True
         self._backend_unavailable_message: str | None = None
-        if not ui_only:
+        if not ui_only and not os.environ.get("NEURALIMAGE_REMOTE_ONLY"):
             try:
                 self._preload_torch()
             except RuntimeError as exc:

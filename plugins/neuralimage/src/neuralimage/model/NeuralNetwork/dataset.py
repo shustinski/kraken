@@ -10,7 +10,6 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, get_worker_info
-from torchvision.transforms import ToTensor
 
 from neuralimage.augmentations import (
     ICDefectAugmentor,
@@ -25,7 +24,6 @@ from neuralimage.lib.data_interfaces import (
     build_synthetic_defect_generator_parameters,
     build_tech_augmentation_config,
 )
-from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.lib.images import ImagePreparator, SampleCalculator, SampleFastCutter
 from neuralimage.lib.rare_patch_masks import resolve_rare_patch_mask_path
 from neuralimage.model.NeuralNetwork.context_utils import (
@@ -35,6 +33,7 @@ from neuralimage.model.NeuralNetwork.context_utils import (
     normalize_patch_coords,
     normalize_size_pair,
 )
+from neuralimage.preprocessing.pipeline import image_to_channel_first_float01
 from neuralimage.targets.dataset_hooks import (
     apply_dataset_preprocessing,
     apply_dataset_sem_augmentation,
@@ -245,6 +244,23 @@ class NoCutDataset(Dataset):
         )
         self._pcb_defects = build_pcb_defect_parameters(getattr(settings, 'pcb_defects', None))
         self._apply_train_only_transforms = bool(apply_train_only_transforms)
+        self._supervision_targets = getattr(settings, 'supervision_targets', None)
+        self._preprocessing = getattr(settings, 'preprocessing', None)
+        self._sem_augmentation = getattr(settings, 'sem_augmentation', None)
+        self._uncertainty = getattr(settings, 'uncertainty', None)
+        self._advanced_validation = bool(getattr(settings, 'advanced_validation', True))
+        self._advanced_validation_full_frame = bool(
+            getattr(settings, 'advanced_validation_full_frame', True)
+        )
+        self._advanced_validation_boundary_tolerance = max(
+            0, int(getattr(settings, 'advanced_validation_boundary_tolerance', 2))
+        )
+        self._advanced_validation_include_hd95 = bool(
+            getattr(settings, 'advanced_validation_include_hd95', True)
+        )
+        self._advanced_validation_confidence_bins = max(
+            2, int(getattr(settings, 'advanced_validation_confidence_bins', 10))
+        )
         self._tech_augmentor = (
             TechVariationAugmentor(self._tech_aug_config)
             if self._apply_train_only_transforms and self._tech_aug_config.enabled
@@ -255,10 +271,6 @@ class NoCutDataset(Dataset):
             if self._apply_train_only_transforms and self._pcb_defects.enabled
             else None
         )
-        self._supervision_targets = getattr(settings, 'supervision_targets', None)
-        self._preprocessing = getattr(settings, 'preprocessing', None)
-        self._sem_augmentation = getattr(settings, 'sem_augmentation', None)
-        self._advanced_validation = bool(getattr(settings, 'advanced_validation', True))
         self._use_defect_mask_as_label = bool(self._pcb_defects.use_defect_mask_as_label)
         self.shuffle_patches_in_frame = bool(
             getattr(self._cut_settings, 'shuffle_patches_in_frame', self.shuffle_frames)
@@ -319,9 +331,6 @@ class NoCutDataset(Dataset):
             frame=frame,
             part=part,
         )
-        if self._apply_train_only_transforms:
-            image, label = apply_dataset_sem_augmentation(image, label, self._sem_augmentation)
-        image = apply_dataset_preprocessing(image, self._preprocessing)
         label = maybe_build_supervision_target(label, self._supervision_targets)
         if not self._use_context_branch:
             return image, label
@@ -447,11 +456,6 @@ class NoCutDataset(Dataset):
         prepared_image = ImagePreparator(image_path, self._prep_settings).image
         prepared_label = ImagePreparator(label_path, self._prep_settings).image
 
-        if self.colors == 1:
-            prepared_image = prepared_image.convert('L')
-        else:
-            prepared_image = prepared_image.convert('RGB')
-
         prepared_label = prepared_label.convert('L')
         prepared_rare_mask = self._load_prepared_rare_mask(image_path, prepared_image.size)
         return image_path, prepared_image, prepared_label, prepared_rare_mask
@@ -466,7 +470,7 @@ class NoCutDataset(Dataset):
         random.seed(self._frame_seed(frame_index))
         try:
             np.random.seed(self._frame_seed(frame_index))
-            image_matrix = SampleFastCutter.get_matrix_from_image(prepared_image, self.colors)
+            image_matrix = image_to_channel_first_float01(prepared_image, self.colors)
             label_matrix = SampleFastCutter.get_matrix_from_image(prepared_label, 1)
             image_matrix, label_matrix = _apply_binary_tech_augmentation_to_pair(
                 image_matrix,
@@ -474,6 +478,15 @@ class NoCutDataset(Dataset):
                 self._tech_augmentor,
                 binary_tolerance=self._tech_aug_binary_tolerance,
             )
+            if self._apply_train_only_transforms:
+                image_matrix, label_matrix = apply_dataset_sem_augmentation(
+                    image_matrix,
+                    label_matrix,
+                    self._sem_augmentation,
+                )
+            # Deterministic SEM preprocessing is frame-scoped so local patches
+            # and every context view are sampled from the identical signal.
+            image_matrix = apply_dataset_preprocessing(image_matrix, self._preprocessing)
             rare_mask_matrix = None
             if prepared_rare_mask is not None:
                 rare_mask_matrix = SampleFastCutter.get_matrix_from_image(prepared_rare_mask, 1)
@@ -720,6 +733,23 @@ class SyntheticDefectDataset(Dataset):
             getattr(settings, 'context_input_size', None),
             fallback=self._local_crop_size,
         )
+        self._supervision_targets = getattr(settings, 'supervision_targets', None)
+        self._preprocessing = getattr(settings, 'preprocessing', None)
+        self._sem_augmentation = getattr(settings, 'sem_augmentation', None)
+        self._uncertainty = getattr(settings, 'uncertainty', None)
+        self._advanced_validation = bool(getattr(settings, 'advanced_validation', True))
+        self._advanced_validation_full_frame = bool(
+            getattr(settings, 'advanced_validation_full_frame', True)
+        )
+        self._advanced_validation_boundary_tolerance = max(
+            0, int(getattr(settings, 'advanced_validation_boundary_tolerance', 2))
+        )
+        self._advanced_validation_include_hd95 = bool(
+            getattr(settings, 'advanced_validation_include_hd95', True)
+        )
+        self._advanced_validation_confidence_bins = max(
+            2, int(getattr(settings, 'advanced_validation_confidence_bins', 10))
+        )
         self._frame_size_xy = (
             max(int(self._local_crop_size[0]), int(self._config.image_size_xy[0])),
             max(int(self._local_crop_size[1]), int(self._config.image_size_xy[1])),
@@ -808,7 +838,8 @@ class SyntheticDefectDataset(Dataset):
                 size_xy=requested_size,
             )
         image_tensor = torch.from_numpy(np.ascontiguousarray(image)).float()
-        label_tensor = torch.from_numpy(np.ascontiguousarray(label)).float()
+        base_label_tensor = torch.from_numpy(np.ascontiguousarray(label)).float()
+        label_tensor = maybe_build_supervision_target(base_label_tensor, self._supervision_targets)
 
         if not self._use_context_branch:
             return image_tensor, label_tensor
@@ -892,6 +923,13 @@ class SyntheticDefectDataset(Dataset):
             base_label,
             seed=self._sample_seed(resolved_frame, salt=1),
         )
+        if self._apply_train_only_transforms:
+            augmented_image, augmented_label = apply_dataset_sem_augmentation(
+                augmented_image,
+                augmented_label,
+                self._sem_augmentation,
+            )
+        augmented_image = apply_dataset_preprocessing(augmented_image, self._preprocessing)
         random_state = random.getstate()
         np_random_state = np.random.get_state()
         frame_seed = self._sample_seed(resolved_frame, salt=2)
@@ -1063,133 +1101,3 @@ def index_in_list(index: int, datalist: list[int]):
         return frame, index - datalist[frame - 1]
 
     raise IndexError('dataset index out of range')
-
-
-class CustomDataset(Dataset):
-    def __init__(
-        self,
-        samples,
-        channels: int,
-        transform=None,
-        *,
-        pcb_defects=None,
-        apply_train_only_transforms: bool = True,
-        tech_aug=None,
-    ):
-        self.samples: list[tuple[Path, Path]] = samples
-        self.channels = channels
-        self.transform = transform
-        self._epoch_index: int = 0
-        self._tech_aug_config = build_tech_augmentation_config(tech_aug)
-        self._tech_aug_binary_tolerance = float(
-            getattr(self._tech_aug_config, 'binary_tolerance', 0.15)
-        )
-        self._tech_augmentor = (
-            TechVariationAugmentor(self._tech_aug_config)
-            if bool(apply_train_only_transforms) and self._tech_aug_config.enabled
-            else None
-        )
-        self._pcb_defects = build_pcb_defect_parameters(pcb_defects)
-        self._defect_augmentor = (
-            PCBDefectAugmentor(self._pcb_defects)
-            if bool(apply_train_only_transforms) and self._pcb_defects.enabled
-            else None
-        )
-        self._use_defect_mask_as_label = bool(self._pcb_defects.use_defect_mask_as_label)
-
-    def __len__(self):
-        return len(self.samples)
-
-    def describe_sample(self, idx: int) -> str:
-        image_path, _label_path = self.samples[int(idx)]
-        return str(image_path.stem)
-
-    def frame_key(self, idx: int) -> str:
-        image_path, _label_path = self.samples[int(idx)]
-        return str(image_path.resolve())
-
-    def sample_key(self, idx: int) -> str:
-        return self.frame_key(idx)
-
-    def set_epoch(self) -> None:
-        self._epoch_index += 1
-
-    def __getitem__(self, idx):
-        if self._defect_augmentor is not None:
-            image_path = self.samples[idx][0]
-            label_path = self.samples[idx][1]
-            image_pil = retry_file_read(
-                lambda: Image.open(image_path).convert("RGB" if self.channels == 3 else "L"),
-                path=image_path,
-            )
-            label_pil = retry_file_read(
-                lambda: Image.open(label_path).convert("L"),
-                path=label_path,
-            )
-            image_array = np.asarray(image_pil, dtype=np.float32)
-            if self.channels == 1:
-                image_array = (image_array / 255.0)[None, :, :]
-            else:
-                image_array = np.transpose(image_array, (2, 0, 1)) / 255.0
-            label_array = (np.asarray(label_pil, dtype=np.float32) / 255.0)[None, :, :]
-            image_array, label_array = _apply_binary_tech_augmentation_to_pair_with_seed(
-                image_array,
-                label_array,
-                self._tech_augmentor,
-                binary_tolerance=self._tech_aug_binary_tolerance,
-                seed=self._sample_seed(idx),
-            )
-            augmented_image, defect_mask, augmented_mask = self._defect_augmentor(
-                image_array,
-                label_array,
-                seed=self._sample_seed(idx),
-                return_augmented_mask=True,
-            )
-            target_array = defect_mask if self._use_defect_mask_as_label else augmented_mask
-            return (
-                torch.from_numpy(np.asarray(augmented_image, dtype=np.float32)).float(),
-                torch.from_numpy(np.asarray(target_array, dtype=np.float32)).float(),
-            )
-
-        image_path = self.samples[idx][0]
-        label_path = self.samples[idx][1]
-        image = retry_file_read(
-            lambda: Image.open(image_path).convert("RGB" if self.channels == 3 else "L"),
-            path=image_path,
-        )
-
-        # Convert to tensor and normalize to [0., 1.]
-        image_tensor = ToTensor()(image)
-
-        # If needed, ensure the data type is float32
-        image_tensor = image_tensor.float()
-
-        label = retry_file_read(
-            lambda: Image.open(label_path).convert("L"),
-            path=label_path,
-        )
-
-        # Convert to tensor and normalize to [0., 1.]
-        label_tensor = ToTensor()(label)
-
-        # If needed, ensure the data type is float32
-        label_tensor = label_tensor.float()
-        if self._tech_augmentor is not None:
-            augmented_image, augmented_label = _apply_binary_tech_augmentation_to_pair_with_seed(
-                image_tensor.numpy(),
-                label_tensor.numpy(),
-                self._tech_augmentor,
-                binary_tolerance=self._tech_aug_binary_tolerance,
-                seed=self._sample_seed(idx),
-            )
-            image_tensor = torch.from_numpy(np.ascontiguousarray(augmented_image)).float()
-            label_tensor = torch.from_numpy(np.ascontiguousarray(augmented_label)).float()
-
-        # if self.transform:
-        #     image = self.transform(image)
-        #     label = self.transform(label)
-
-        return image_tensor, label_tensor
-
-    def _sample_seed(self, idx: int) -> int:
-        return hash((self._epoch_index, int(idx), len(self.samples), 2741)) & 0xFFFFFFFF

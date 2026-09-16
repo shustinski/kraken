@@ -42,6 +42,35 @@ def test_collect_matching_sample_label_pairs_reports_missing_pairs():
     assert 'mismatch' in error_message.lower()
 
 
+def test_collect_matching_sample_label_pairs_supports_recursive_dataset():
+    root = make_test_dir('rare_patch_editor_recursive_pairs')
+    sample_dir = root / 'samples'
+    label_dir = root / 'labels'
+    (sample_dir / 'wafer_a').mkdir(parents=True)
+    (label_dir / 'wafer_a').mkdir(parents=True)
+
+    Image.fromarray(np.zeros((4, 4), dtype=np.uint16)).save(
+        sample_dir / 'wafer_a' / 'frame.tif'
+    )
+    Image.fromarray(np.zeros((4, 4), dtype=np.uint8), mode='L').save(
+        label_dir / 'wafer_a' / 'frame.png'
+    )
+
+    pairs, error_message = collect_matching_sample_label_pairs(
+        sample_dir,
+        label_dir,
+        recursive=True,
+    )
+
+    assert error_message is None
+    assert pairs == [
+        (
+            sample_dir / 'wafer_a' / 'frame.tif',
+            label_dir / 'wafer_a' / 'frame.png',
+        )
+    ]
+
+
 def test_prepare_label_folder_for_rare_patch_editor_converts_cif_to_binary_cif():
     root = make_test_dir('rare_patch_editor_cif_labels')
     sample_dir = root / 'samples'
@@ -60,6 +89,28 @@ def test_prepare_label_folder_for_rare_patch_editor_converts_cif_to_binary_cif()
     assert (resolved_label_dir / 'frame.jpg').exists()
     assert pair_error is None
     assert len(pairs) == 1
+
+
+def test_prepare_label_folder_reuses_unchanged_cif_raster(monkeypatch):
+    root = make_test_dir('rare_patch_editor_cached_cif_labels')
+    label_dir = root / 'labels'
+    label_dir.mkdir()
+    cif_path = label_dir / 'frame.cif'
+    cif_path.write_text('0 0 S 8 8 \nB 4 4 4 4;;\n', encoding='utf-8')
+
+    resolved_label_dir, error_message = prepare_label_folder_for_rare_patch_editor(label_dir)
+    assert error_message is None
+    cached_path = resolved_label_dir / 'frame.jpg'
+    assert cached_path.exists()
+
+    def _unexpected_conversion(_path):
+        raise AssertionError('unchanged CIF must use the cached raster')
+
+    monkeypatch.setattr('neuralimage.lib.rare_patch_masks.backend.cif_to_jpg', _unexpected_conversion)
+    second_resolved_dir, second_error = prepare_label_folder_for_rare_patch_editor(label_dir)
+
+    assert second_error is None
+    assert second_resolved_dir == resolved_label_dir
 
 
 def test_rare_patch_editor_dialog_saves_mask(qapp):

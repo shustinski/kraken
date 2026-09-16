@@ -164,7 +164,8 @@ def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, mo
     assert presenter.settings_panel.epochs_spinbox.value() == 9
     assert presenter.view.rb_recognition.isChecked() is True
     assert presenter.settings_panel.shift_spinbox.value() == 72
-    assert presenter.settings_panel.cut_dataset_type.isChecked() is True
+    assert not hasattr(presenter.settings_panel, 'cut_dataset_type')
+    assert presenter._update_cut_mode() == 'online'
     assert presenter.settings_panel.sync_patch_sizes_check_box.isChecked() is False
     assert presenter.settings_panel.train_patch_x_size.value() == 128
     assert presenter.settings_panel.train_patch_y_size.value() == 256

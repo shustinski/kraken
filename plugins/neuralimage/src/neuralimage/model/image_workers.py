@@ -7,8 +7,6 @@ from typing import Any, List, Optional
 from PIL import Image
 
 from neuralimage.lib import backend
-from neuralimage.lib.data_interfaces import SampleGenerationSettings
-from neuralimage.lib.file_func import filter_images
 from neuralimage.lib.message_bus import AbstractMessageBus
 
 
@@ -63,59 +61,6 @@ class ConvertCifThread(threading.Thread):
             output_dir.mkdir(parents=True, exist_ok=True)
             save_path = output_dir / f'{file.stem}.jpg'
             converted.save(save_path)
-
-        if self.callback is not None:
-            self.callback()
-
-    def stop(self):
-        self._stop_event.set()
-
-
-class CutImageThread(threading.Thread):
-    def __init__(
-        self,
-        source: Path,
-        target: Path,
-        sample_generation_settings: SampleGenerationSettings,
-        message_bus: AbstractMessageBus,
-        callback: Callable[..., None] | None = None,
-        recursive: bool = False,
-    ):
-        super().__init__()
-        self.setting = sample_generation_settings
-        self.bus = message_bus
-        self.callback = callback
-        self.source = source
-        self.target = target
-        self.recursive = bool(recursive)
-        self._stop_event = threading.Event()
-
-    def run(self):
-        self.bus.publish('logging', f'Начинаю производить нарезку кадров из {self.source}')
-        image_files = sorted(filter_images(self.source, recursive=self.recursive))
-        total_files = len(image_files)
-        for index, file in enumerate(image_files, start=1):
-            if self._stop_event.is_set():
-                break
-
-            if index == 1 or index == total_files or index % _PROGRESS_LOG_STEP == 0:
-                self.bus.publish('logging', f'Нарезка кадров: {index}/{total_files} ({file.stem})')
-            output_dir = self.target
-            if self.recursive:
-                try:
-                    output_dir = self.target / file.relative_to(self.source).parent
-                except ValueError:
-                    output_dir = self.target
-            backend.frame_cut(
-                file,
-                output_dir,
-                self.setting.segment_size,
-                self.setting.horizontal_rotation,
-                self.setting.vertical_rotation,
-                bool(getattr(self.setting, 'flip_x', False)),
-                bool(getattr(self.setting, 'flip_y', False)),
-                self.setting.step,
-            )
 
         if self.callback is not None:
             self.callback()

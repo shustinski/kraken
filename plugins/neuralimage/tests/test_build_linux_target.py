@@ -32,6 +32,17 @@ def test_default_linux_paths_are_scoped_under_project_root(tmp_path):
     assert build_linux.default_work_path(tmp_path) == Path(tmp_path) / 'build' / 'linux'
 
 
+def test_linux_build_parser_has_no_web_ui_option():
+    parser = build_linux._build_parser()
+    option_strings = {
+        option
+        for action in parser._actions
+        for option in action.option_strings
+    }
+
+    assert '--with-webui' not in option_strings
+
+
 def test_validate_linux_host_rejects_non_linux_without_override(monkeypatch):
     monkeypatch.setattr(build_linux.sys, 'platform', 'win32')
     monkeypatch.delenv('NEURALIMAGE_ALLOW_CROSS_BUILD', raising=False)

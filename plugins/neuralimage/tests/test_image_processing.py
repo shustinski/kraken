@@ -56,6 +56,12 @@ def test_cut_image_small_source_with_large_segment():
     assert np.all(parts[0, 0, :, 64:] == 0.0)
 
 
+def test_cut_image_can_preserve_preprocessed_model_domain():
+    base = np.array([[[-2.0, -1.0], [1.0, 2.0]]], dtype=np.float32)
+    parts = cut_image(base, (1, 2, 2), overlap=0, normalize=False)
+    assert np.array_equal(parts[0], base)
+
+
 def test_sew_image_small_source_with_large_segment():
     pred = np.ones((1, 1, 512, 512), dtype=np.float32)
     res = sew_image((64, 64), pred, overlap=32)

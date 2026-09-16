@@ -43,7 +43,6 @@ from neuralimage.lib.data_interfaces import (
     TrainingParameters,
     RecognitionParameters,
     build_synthetic_defect_generator_parameters,
-    build_tech_augmentation_config,
     normalize_work_mode,
     normalize_multi_gpu_mode,
     normalize_validation_source,
@@ -72,10 +71,8 @@ from neuralimage.lib.update_checker import (
 )
 from neuralimage.lib.version import APP_VERSION
 from neuralimage.model.NeuralNetwork import get_registered_model_names_by_type
-from neuralimage.model.general_neural_handler import GeneralNeuralHandler
 from neuralimage.lib.ui_texts import get_ui_section
 from neuralimage.view import MainView, SettingsPanel
-from neuralimage.view.developer_tools_dialog import DeveloperToolsDialog
 from neuralimage.view.task_properties_dialog import TaskPropertiesDialog
 import neuralimage.presenter.dialogs as presenter_dialogs
 import neuralimage.presenter.plugin_flow as plugin_flow
@@ -162,6 +159,9 @@ class MainPresenter(QObject):
 
         # Инициализируем панель с настройками нейросети
         self.settings_panel = SettingsPanel()
+        self._settings_configuration_valid = not bool(
+            getattr(self.settings_panel, '_configuration_errors', ())
+        )
 
         # Получаем список активных моделей нейросетей
         self.active_nn_models = {}
@@ -189,7 +189,6 @@ class MainPresenter(QObject):
         self._update_download_thread: AppUpdateDownloadThread | None = None
         self._validation_gradient_plugin = None
         self._validation_gradient_window: _ValidationGradientPluginWindow | None = None
-        self._developer_tools_dialog: DeveloperToolsDialog | None = None
         self._shutdown_requested = False
         self._shutdown_complete = False
         self._update_check_manual = False
@@ -220,6 +219,8 @@ class MainPresenter(QObject):
         self._load_initial_state()
         self._set_initial_sample_count_state()
         self.view.show()
+        from neuralimage.remote.ui import install_remote_controls
+        install_remote_controls(self)
         QtCore.QTimer.singleShot(0, self._calculate_expected_samples)
         if _should_schedule_startup_update_check():
             QtCore.QTimer.singleShot(0, self._start_update_check)
@@ -267,7 +268,6 @@ class MainPresenter(QObject):
         v.batch_preview_visibility_changed.connect(self._on_batch_preview_visibility_changed)
         v.release_memory_requested.connect(self._on_release_memory_requested)
         v.open_validation_gradient_requested.connect(self._on_open_validation_gradient_requested)
-        v.developer_tools_requested.connect(self._on_developer_tools_requested)
         v.update_check_requested.connect(self._on_update_check_requested)
         v.update_channel_selected.connect(self._on_update_channel_selected)
         v.ui_language_selected.connect(self._on_ui_language_selected)
@@ -295,6 +295,12 @@ class MainPresenter(QObject):
         v.augmentation_preview_requested.connect(self._open_augmentation_preview)
         v.ui_language_changed.connect(self.view.apply_ui_language)
         v.rare_patch_editor_requested.connect(self._open_rare_patch_editor)
+        if hasattr(v, 'configuration_validity_changed'):
+            v.configuration_validity_changed.connect(self._on_settings_configuration_validity_changed)
+
+    def _on_settings_configuration_validity_changed(self, valid: bool, _messages: object) -> None:
+        self._settings_configuration_valid = bool(valid)
+        self._validate_start_button()
 
     def _on_recursive_file_search_changed(self) -> None:
         self._update_settings_window_state()
@@ -391,6 +397,7 @@ class MainPresenter(QObject):
         s.augmentation_noise_sigma_spinbox.setValue(state.augmentation_noise_sigma)
         s.augmentation_blur_probability_spinbox.setValue(float(getattr(state, 'augmentation_blur_probability', 0.25)))
         s.augmentation_blur_radius_spinbox.setValue(float(getattr(state, 'augmentation_blur_radius', 1.0)))
+        s.set_training_augmentation_config(getattr(state, 'training_augmentation', {}))
         if hasattr(s, '_sync_augmentation_controls'):
             s._sync_augmentation_controls(state.additional_augmentation)
 
@@ -431,6 +438,7 @@ class MainPresenter(QObject):
         )
         s.random_crop_check_box.setChecked(bool(getattr(state, 'random_crop', False)))
         s.crops_per_image_spinbox.setValue(int(getattr(state, 'crops_per_image', 64)))
+        s.augmentation_multiplier_spinbox.setValue(float(getattr(state, 'augmentation_multiplier', 0.0)))
         s.scale_augmentation_check_box.setChecked(bool(getattr(state, 'scale_augmentation', False)))
         s.scale_augmentation_strength_spinbox.setValue(float(getattr(state, 'scale_augmentation_strength', 0.2)))
         if hasattr(s, 'set_synthetic_defect_generator_config'):
@@ -504,6 +512,10 @@ class MainPresenter(QObject):
         s.optimizer_type.setCurrentText(state.optimizer_name)
         s.mixed_precision_type.setCurrentText(state.mixed_precision)
         s.deep_supervision_check_box.setChecked(bool(getattr(state, 'deep_supervision', False)))
+        s.topograph_enabled_check_box.setChecked(bool(getattr(state, 'topograph_enabled', False)))
+        s.topograph_loss_weight_spinbox.setValue(float(getattr(state, 'topograph_loss_weight', 0.1)))
+        s.topograph_debug_viz_check_box.setChecked(bool(getattr(state, 'topograph_debug_viz', False)))
+        s._on_topograph_enabled_toggled(s.topograph_enabled_check_box.isChecked())
         if hasattr(s, 'set_loss_term_weights'):
             s.set_loss_term_weights(
                 resolve_loss_term_weights(
@@ -548,6 +560,8 @@ class MainPresenter(QObject):
         s.hard_mining_check_box.setChecked(state.hard_mining_enabled)
         s.hard_pixel_mining_check_box.setChecked(bool(getattr(state, 'hard_pixel_mining_enabled', False)))
         s.hard_pixel_mining_ratio_spinbox.setValue(float(getattr(state, 'hard_pixel_mining_ratio', 0.25)))
+        if hasattr(s, 'set_sem_segmentation_config'):
+            s.set_sem_segmentation_config(getattr(state, 'sem_segmentation_config', {}))
         s.skip_uniform_labels_check_box.setChecked(state.skip_uniform_labels)
         s.rare_patch_oversampling_check_box.setChecked(
             bool(getattr(state, 'rare_patch_oversampling_enabled', False))
@@ -604,6 +618,7 @@ class MainPresenter(QObject):
         flip_x = s.flip_x.isChecked()
         flip_y = s.flip_y.isChecked()
         additional_augmentation = s.additional_augmentation_check_box.isChecked()
+        augmentation_multiplier = float(s.augmentation_multiplier_spinbox.value())
         augmentation_brightness_strength = s.augmentation_brightness_spinbox.value()
         augmentation_contrast_strength = s.augmentation_contrast_spinbox.value()
         augmentation_gamma_strength = s.augmentation_gamma_spinbox.value()
@@ -611,6 +626,7 @@ class MainPresenter(QObject):
         augmentation_noise_sigma = s.augmentation_noise_sigma_spinbox.value()
         augmentation_blur_probability = s.augmentation_blur_probability_spinbox.value()
         augmentation_blur_radius = s.augmentation_blur_radius_spinbox.value()
+        training_augmentation = s.get_training_augmentation_config()
         step = s.shift_spinbox.value()
         train_patch_size = (s.train_patch_x_size.value(), s.train_patch_y_size.value())
         random_patch_size_enabled = s.random_patch_size_check_box.isChecked()
@@ -681,6 +697,9 @@ class MainPresenter(QObject):
         optimizer_name = s.optimizer_type.currentText()
         mixed_precision = s.mixed_precision_type.currentText()
         deep_supervision = s.deep_supervision_check_box.isChecked()
+        topograph_enabled = s.topograph_enabled_check_box.isChecked()
+        topograph_loss_weight = float(s.topograph_loss_weight_spinbox.value())
+        topograph_debug_viz = s.topograph_debug_viz_check_box.isChecked()
         current_state = getattr(self, 'settings_state', SettingsState())
         loss_term_weights = (
             s.get_loss_term_weights()
@@ -718,6 +737,11 @@ class MainPresenter(QObject):
         hard_mining_enabled = s.hard_mining_check_box.isChecked()
         hard_pixel_mining_enabled = s.hard_pixel_mining_check_box.isChecked()
         hard_pixel_mining_ratio = s.hard_pixel_mining_ratio_spinbox.value()
+        sem_segmentation_config = (
+            s.get_sem_segmentation_config()
+            if hasattr(s, 'get_sem_segmentation_config')
+            else dict(getattr(self.settings_state, 'sem_segmentation_config', {}))
+        )
         skip_uniform_labels = s.skip_uniform_labels_check_box.isChecked()
         rare_patch_oversampling_enabled = s.rare_patch_oversampling_check_box.isChecked()
         rare_patch_oversampling_factor = s.rare_patch_oversampling_factor_spinbox.value()
@@ -738,6 +762,7 @@ class MainPresenter(QObject):
                               flip_x=flip_x,
                               flip_y=flip_y,
                               additional_augmentation=additional_augmentation,
+                              augmentation_multiplier=augmentation_multiplier,
                               augmentation_brightness_strength=augmentation_brightness_strength,
                               augmentation_contrast_strength=augmentation_contrast_strength,
                               augmentation_gamma_strength=augmentation_gamma_strength,
@@ -745,6 +770,7 @@ class MainPresenter(QObject):
                               augmentation_noise_sigma=augmentation_noise_sigma,
                               augmentation_blur_probability=augmentation_blur_probability,
                               augmentation_blur_radius=augmentation_blur_radius,
+                              training_augmentation=training_augmentation,
                               sample_size=train_patch_size,
                               train_patch_size=train_patch_size,
                               random_patch_size_enabled=random_patch_size_enabled,
@@ -818,6 +844,9 @@ class MainPresenter(QObject):
                               loss_term_weights=loss_term_weights,
                               dice_loss_weight=dice_loss_weight,
                               iou_loss_weight=iou_loss_weight,
+                              topograph_enabled=topograph_enabled,
+                              topograph_loss_weight=topograph_loss_weight,
+                              topograph_debug_viz=topograph_debug_viz,
                               learning_rate=learning_rate,
                               weight_decay=weight_decay,
                               early_stopping_enabled=early_stopping_enabled,
@@ -843,6 +872,7 @@ class MainPresenter(QObject):
                               hard_mining_enabled=hard_mining_enabled,
                               hard_pixel_mining_enabled=hard_pixel_mining_enabled,
                               hard_pixel_mining_ratio=hard_pixel_mining_ratio,
+                              sem_segmentation_config=sem_segmentation_config,
                               log_update_frequency=log_update_frequency,
                               skip_uniform_labels=skip_uniform_labels,
                               rare_patch_oversampling_enabled=rare_patch_oversampling_enabled,
@@ -864,36 +894,6 @@ class MainPresenter(QObject):
             self.main_window_state,
             self.settings_state,
         )
-        training_parameters = replace(
-            training_parameters,
-            generation=replace(
-                training_parameters.generation,
-                tech_aug=build_tech_augmentation_config(None),
-            ),
-        )
-        if training_parameters.label_path.is_dir() and filter_files(training_parameters.label_path, ('.cif',)):
-            from neuralimage.lib.rare_patch_masks import prepare_label_folder_for_rare_patch_editor
-
-            message_bus = self.__dict__.get('message_bus')
-            try:
-                resolved_label_folder, error_message = prepare_label_folder_for_rare_patch_editor(
-                    training_parameters.label_path,
-                    log_callback=(
-                        (lambda message: message_bus.publish('logging', message))
-                        if message_bus is not None
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                self.view.show_warning.emit(
-                    f'Не удалось подготовить CIF-маски для предпросмотра аугментаций: {exc}'
-                )
-                return
-            if error_message is not None:
-                self.view.show_warning.emit(str(error_message))
-                return
-            training_parameters = replace(training_parameters, label_path=resolved_label_folder)
-
         from neuralimage.view.augmentation_preview_dialog import AugmentationPreviewDialog
 
         existing_dialog = getattr(self, '_augmentation_preview_dialog', None)
@@ -903,7 +903,7 @@ class MainPresenter(QObject):
             finally:
                 self._augmentation_preview_dialog = None
 
-        dialog = AugmentationPreviewDialog(training_parameters, self.view)
+        dialog = AugmentationPreviewDialog(training_parameters, self.settings_panel)
         dialog.apply_to_main_requested.connect(self._apply_augmentation_preview_settings)
         dialog.destroyed.connect(lambda *_args: setattr(self, '_augmentation_preview_dialog', None))
         self._augmentation_preview_dialog = dialog
@@ -923,7 +923,9 @@ class MainPresenter(QObject):
         panel.flip_x.setChecked(bool(payload.get('flip_x', False)))
         panel.flip_y.setChecked(bool(payload.get('flip_y', False)))
         panel.random_crop_check_box.setChecked(bool(payload.get('random_crop', False)))
+        panel.shift_spinbox.setValue(int(payload.get('step', panel.shift_spinbox.value())))
         panel.crops_per_image_spinbox.setValue(int(payload.get('crops_per_image', 64)))
+        panel.augmentation_multiplier_spinbox.setValue(float(payload.get('augmentation_multiplier', 0.0)))
         panel.scale_augmentation_check_box.setChecked(bool(payload.get('scale_augmentation', False)))
         panel.scale_augmentation_strength_spinbox.setValue(float(payload.get('scale_augmentation_strength', 0.2)))
         panel.additional_augmentation_check_box.setChecked(bool(payload.get('additional_augmentation', False)))
@@ -934,8 +936,16 @@ class MainPresenter(QObject):
         panel.augmentation_noise_sigma_spinbox.setValue(float(payload.get('augmentation_noise_sigma', 0.0)))
         panel.augmentation_blur_probability_spinbox.setValue(float(payload.get('augmentation_blur_probability', 0.0)))
         panel.augmentation_blur_radius_spinbox.setValue(float(payload.get('augmentation_blur_radius', 0.0)))
+        panel.set_training_augmentation_config(payload.get('training_augmentation', {}))
         if hasattr(panel, 'set_synthetic_defect_generator_config'):
             panel.set_synthetic_defect_generator_config(payload.get('synthetic_defect_generator', {}))
+        if hasattr(panel, 'set_tech_aug_config'):
+            panel.set_tech_aug_config(payload.get('tech_aug', {}))
+        if hasattr(panel, 'get_sem_segmentation_config') and hasattr(panel, 'set_sem_segmentation_config'):
+            sem_config = panel.get_sem_segmentation_config()
+            sem_config['preprocessing'] = dict(payload.get('preprocessing', {}))
+            sem_config['augmentation'] = dict(payload.get('sem_augmentation', {}))
+            panel.set_sem_segmentation_config(sem_config)
 
         panel.cutout_check_box.setChecked(bool(payload.get('cutout_enabled', False)))
         panel.cutout_probability_spinbox.setValue(float(payload.get('cutout_probability', 1.0)))
@@ -1334,20 +1344,6 @@ class MainPresenter(QObject):
     def _shutdown_validation_gradient_plugin(self) -> None:
         plugin_flow.shutdown_validation_gradient_plugin(self)
 
-    def _on_developer_tools_requested(self) -> None:
-        if self._developer_tools_dialog is None:
-            self._developer_tools_dialog = DeveloperToolsDialog(self.view)
-        self._developer_tools_dialog.show()
-        self._developer_tools_dialog.raise_()
-        self._developer_tools_dialog.activateWindow()
-
-    def _shutdown_developer_tools(self) -> None:
-        if self._developer_tools_dialog is not None:
-            try:
-                self._developer_tools_dialog.shutdown()
-            finally:
-                self._developer_tools_dialog = None
-
     def shutdown(self, *, wait_ms: int = 15000) -> None:
         if self._shutdown_complete:
             return
@@ -1368,6 +1364,7 @@ class MainPresenter(QObject):
             if not self._is_qthread_running(handler):
                 self.neuaral_handler = None
 
+        self._stop_owned_qthread('_remote_connection_check', wait_ms, 'remote connection check')
         self._stop_owned_qthread('_rare_patch_editor_prepare_thread', wait_ms, 'rare patch preparation')
         self._stop_owned_qthread('_update_check_thread', min(wait_ms, 3000), 'update check')
         self._stop_owned_qthread('_update_download_thread', min(wait_ms, 3000), 'update download')
@@ -1379,8 +1376,6 @@ class MainPresenter(QObject):
             self._sample_count_worker_thread = None
 
         self._shutdown_validation_gradient_plugin()
-        self._shutdown_developer_tools()
-
     def _stop_owned_qthread(self, attr_name: str, wait_ms: int, operation_name: str) -> None:
         thread = getattr(self, attr_name, None)
         if thread is None:
@@ -1391,7 +1386,7 @@ class MainPresenter(QObject):
             setattr(self, attr_name, None)
 
     def _stop_worker_object(self, worker: object, operation_name: str = 'worker') -> None:
-        stop = getattr(worker, 'stop', None)
+        stop = getattr(worker, 'detach', None) or getattr(worker, 'stop', None)
         try:
             if callable(stop):
                 stop()
@@ -1524,7 +1519,8 @@ class MainPresenter(QObject):
         """Проверяем, что все обязательные поля заполнены."""
         self._update_main_window_state()
         self._update_settings_window_state()
-        self.view.enable_start.emit(can_start_processing(self.main_window_state, self.settings_state))
+        valid_state = can_start_processing(self.main_window_state, self.settings_state)
+        self.view.enable_start.emit(valid_state and getattr(self, '_settings_configuration_valid', True))
 
     # ------------------------------------------------------------------ #
     #   Управление началом потоков
@@ -1678,6 +1674,8 @@ class GeneralNeuralHandlerThread(QThread):
         super().__init__()
         self._last_answer = False
         self._waiting_for_answer = False
+        from neuralimage.model.general_neural_handler import GeneralNeuralHandler
+
         self.main_logic = GeneralNeuralHandler(work_mode=work_mode,
                                                recogniton_parameters=recognition_parameters,
                                                tranining_parameters=tranining_parameters,

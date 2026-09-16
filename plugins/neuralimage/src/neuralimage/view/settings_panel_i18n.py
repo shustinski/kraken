@@ -2,6 +2,17 @@
 
 from typing import Any
 
+from neuralimage.configuration import (
+    SEM_UI_FIELDS,
+    SEM_UI_SECTIONS,
+    sem_ui_choice_label,
+    sem_ui_field_help,
+    sem_ui_field_label,
+    sem_ui_section_help,
+    sem_ui_section_label,
+)
+from neuralimage.lib.ui_texts import get_ui_language
+
 TEXT_FIELD_LOG_UPDATE_FREQUENCY = 'log_update_frequency'
 TEXT_FIELD_RECOGNITION_JPEG_QUALITY = 'recognition_jpeg_quality'
 
@@ -890,10 +901,10 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.flip_x.setToolTip(str(t.get('flip_x_tip', 'Mirror frames relative to the X axis.')))
     panel.flip_y.setText(str(t.get('flip_y', 'Flip across Y axis')))
     panel.flip_y.setToolTip(str(t.get('flip_y_tip', 'Mirror frames relative to the Y axis.')))
-    panel.additional_augmentation_check_box.setText(
+    panel.photometric_groupbox.setTitle(
         str(t.get('photometric_augmentation_toggle', t.get('extra_aug', 'Photometric augmentation')))
     )
-    panel.additional_augmentation_check_box.setToolTip(
+    panel.photometric_groupbox.setToolTip(
         str(t.get('photometric_augmentation_toggle_tip', t.get('extra_aug_tip', '')))
     )
     panel.random_crop_check_box.setText(str(t.get('random_crop', 'Random crop in online mode')))
@@ -914,7 +925,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.synthetic_defect_generator_check_box.setText(
+    panel.synthetic_defect_generator_groupbox.setTitle(
         str(
             t.get(
                 'synthetic_defect_generator_enabled',
@@ -922,7 +933,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.synthetic_defect_generator_check_box.setToolTip(
+    panel.synthetic_defect_generator_groupbox.setToolTip(
         str(
             t.get(
                 'synthetic_defect_generator_enabled_tip',
@@ -930,28 +941,28 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
-    panel.cutout_check_box.setText(
+    panel.cutout_groupbox.setTitle(
         _read_text_from_mappings(
             (t, labels_map),
             ('cutout_enabled', 'cutout_enable'),
             'Enable cutout',
         )
     )
-    panel.cutout_check_box.setToolTip(
+    panel.cutout_groupbox.setToolTip(
         _read_text_from_mappings(
             (t, descriptions),
             ('cutout_tip', 'cutout_enabled'),
             'Randomly erase rectangular regions in training images only.',
         )
     )
-    panel.random_artifacts_check_box.setText(
+    panel.random_artifacts_groupbox.setTitle(
         _read_text_from_mappings(
             (t, labels_map),
             ('random_artifacts_enabled', 'random_artifacts_enable'),
             'Enable random artifacts',
         )
     )
-    panel.random_artifacts_check_box.setToolTip(
+    panel.random_artifacts_groupbox.setToolTip(
         _read_text_from_mappings(
             (t, descriptions),
             ('random_artifacts_tip', 'random_artifacts_enabled'),
@@ -975,14 +986,14 @@ def apply_settings_panel_texts(panel: Any) -> None:
                 )
             )
         )
-    panel.mixup_check_box.setText(
+    panel.mixup_groupbox.setTitle(
         _read_text_from_mappings(
             (t, labels_map),
             ('mixup_enabled', 'mixup_enable'),
             'Enable mixup',
         )
     )
-    panel.mixup_check_box.setToolTip(
+    panel.mixup_groupbox.setToolTip(
         _read_text_from_mappings(
             (t, descriptions),
             ('mixup_tip', 'mixup_enabled'),
@@ -1108,6 +1119,10 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.shuffle_groupbox.setTitle(str(t.get('shuffle_group', 'Shuffle order')))
     panel.spatial_groupbox.setTitle(str(t.get('spatial_group', 'Spatial augmentations')))
     panel.photometric_groupbox.setTitle(str(t.get('photometric_group', 'Photometric augmentations')))
+    if hasattr(panel, 'tech_augmentation_groupbox'):
+        panel.tech_augmentation_groupbox.setTitle(
+            str(t.get('tech_augmentation', 'Topology variation augmentation'))
+        )
     panel.cutout_groupbox.setTitle(str(t.get('cutout', 'Cutout')))
     panel.random_artifacts_groupbox.setTitle(str(t.get('random_artifacts', 'Random artifacts')))
     panel.mixup_groupbox.setTitle(str(t.get('mixup', 'Mixup')))
@@ -1126,10 +1141,6 @@ def apply_settings_panel_texts(panel: Any) -> None:
         )
     )
     panel.validation_groupbox.setTitle(str(t.get('validation_group', 'Validation')))
-    panel.sample_type_groupbox.setTitle(str(t.get('sample_group', 'Dataset mode')))
-    panel.sample_type_groupbox.setToolTip(str(t.get('sample_group_tip', '')))
-    panel.cut_dataset_type.setText(str(t.get('cut_to_disk', 'Cut to files')))
-    panel.no_cut_dataset_type.setText(str(t.get('cut_online', 'Cut online')))
     panel.prepare_samples_groupbox.setTitle(str(t.get('preprocess_group', 'Sample preprocessing')))
     panel.enable_crop_processing.setText(str(t.get('preprocess_crop_enable', 'Enable edge crop')))
     panel.enable_resize_processing.setText(str(t.get('preprocess_resize_enable', 'Enable compression resize')))
@@ -1140,24 +1151,88 @@ def apply_settings_panel_texts(panel: Any) -> None:
     panel.optimizer_advanced_groupbox.setTitle(str(t.get('advanced_group', 'Advanced settings')))
     panel.loss_advanced_groupbox.setTitle(str(t.get('advanced_group', 'Advanced settings')))
     panel.rare_patch_groupbox.setTitle(str(t.get('rare_patch_group', 'Rare patch oversampling')))
-    panel.expert_groupbox.setTitle(str(t.get('expert_group', 'Expert settings')))
     panel.model_variants_groupbox.setTitle(str(t.get('model_variants_group', 'Additional model families')))
     panel.recognition_groupbox.setTitle(str(t.get('recognition_group', 'Recognition')))
     panel.runtime_groupbox.setTitle(str(t.get('runtime_group', 'Runtime and filtering')))
     panel.warmup_groupbox.setTitle(str(t.get('warmup_group', 'Warmup')))
     panel.scheduler_groupbox.setTitle(str(t.get('scheduler_group', 'Scheduler')))
     panel.hard_mining_groupbox.setTitle(str(t.get('hard_mining_group', 'Hard mining')))
+    if hasattr(panel, 'sem_segmentation_groupbox'):
+        language = get_ui_language()
+        panel.sem_segmentation_groupbox.setTitle(
+            str(t.get('sem_segmentation_group', 'SEM topology segmentation'))
+        )
+        if hasattr(panel, 'sem_segmentation_section_groupboxes'):
+            for section_key, english_label in SEM_UI_SECTIONS:
+                groupbox = panel.sem_segmentation_section_groupboxes.get(section_key)
+                if groupbox is None:
+                    continue
+                editor = panel.sem_segmentation_section_editors.get(section_key)
+                if editor is not None and hasattr(editor, 'set_language'):
+                    editor.set_language(language)
+                elif groupbox is not editor:
+                    groupbox.setTitle(sem_ui_section_label(section_key, english_label, language))
+                    groupbox.setToolTip(sem_ui_section_help(section_key, language))
     panel.early_stopping_groupbox.setTitle(str(t.get('early_stopping_group', 'Early stopping')))
     if hasattr(panel, 'settings_tabs'):
+        language = get_ui_language()
+        data_index = panel._page_indexes.get('data')
         training_index = panel._page_indexes.get('training')
         recognition_index = panel._page_indexes.get('recognition')
+        if data_index is not None:
+            panel.settings_tabs.setTabText(data_index, 'Данные' if language == 'ru' else 'Data')
         if training_index is not None:
-            panel.settings_tabs.setTabText(training_index, str(t.get('tab_training', 'Обучение')))
+            panel.settings_tabs.setTabText(
+                training_index,
+                'Модель и обучение' if language == 'ru' else 'Model and training',
+            )
         if recognition_index is not None:
             panel.settings_tabs.setTabText(
                 recognition_index,
                 str(t.get('tab_recognition', 'Распознавание')),
             )
+        panel.settings_search.setPlaceholderText(
+            'Поиск настроек…' if language == 'ru' else 'Search settings…'
+        )
+        panel.settings_search.setToolTip(
+            'Поиск по русским и английским названиям и описаниям. Ctrl+F.'
+            if language == 'ru'
+            else 'Search Russian and English labels and descriptions. Ctrl+F.'
+        )
+        panel.expert_mode_check_box.setText('Экспертный режим' if language == 'ru' else 'Expert mode')
+        panel.expert_mode_check_box.setToolTip(
+            'Показывает редкие и ресурсоёмкие параметры, не изменяя их значения.'
+            if language == 'ru'
+            else 'Shows uncommon and resource-intensive settings without changing their values.'
+        )
+        card_titles = {
+            'data_source': ('Датасет и патчи', 'Dataset and patches'),
+            'preprocessing': ('Нормализация SEM', 'SEM normalization'),
+            'augmentation': ('Аугментация обучения', 'Training augmentation'),
+            'sampling': ('Выбор патчей', 'Patch sampling'),
+            'validation_data': ('Данные валидации', 'Validation data'),
+            'architecture': ('Архитектура', 'Architecture'),
+            'training': ('Процесс обучения', 'Training process'),
+            'supervision': ('Топологический надзор', 'Topology supervision'),
+            'losses': ('Функции потерь', 'Loss functions'),
+            'schedule': ('Расписание learning rate', 'Learning-rate schedule'),
+            'confidence_training': ('Обучение уверенности', 'Confidence-head training'),
+            'validation_metrics': ('Метрики и эксперимент', 'Validation metrics and experiment'),
+            'runtime': ('Ресурсы и GPU', 'Runtime and GPU'),
+            'recognition': ('Предсказание маски', 'Mask prediction'),
+            'inference_uncertainty': ('Неопределённость прогноза', 'Prediction uncertainty'),
+            'active_learning': ('Экспорт NeedsAnnotation', 'NeedsAnnotation export'),
+        }
+        for key, (ru_title, en_title) in card_titles.items():
+            card = panel._settings_cards.get(key)
+            if card is not None:
+                card.set_title(ru_title if language == 'ru' else en_title)
+                card.reset_button.setText('Сбросить' if language == 'ru' else 'Reset')
+                card.reset_button.setToolTip(
+                    'Вернуть значения этой карточки по умолчанию.'
+                    if language == 'ru'
+                    else 'Restore this card to its default values.'
+                )
     panel.optimizer_type.setToolTip(str(t.get('optimizer_tip', '')))
     panel.learning_rate_spinbox.setToolTip(str(t.get('lr_tip', '')))
     panel.weight_decay_spinbox.setToolTip(str(t.get('wd_tip', '')))
@@ -1312,6 +1387,36 @@ def apply_settings_panel_texts(panel: Any) -> None:
             )
         )
     )
+    panel.topograph_term_label.setText(str(t.get('topograph_loss_weight', 'Topograph')))
+    panel.topograph_term_label.setToolTip(
+        str(
+            t.get(
+                'topograph_enabled_tip',
+                'Add an optional topology-preserving loss term on top of the selected mask losses. Binary segmentation only.',
+            )
+        )
+    )
+    panel.topograph_enabled_check_box.setToolTip(panel.topograph_term_label.toolTip())
+    panel.topograph_loss_weight_spinbox.setToolTip(
+        str(
+            t.get(
+                'topograph_loss_weight_tip',
+                'Additive weight for the Topograph loss term. It is added on top of the configured BCE/Dice terms.',
+            )
+        )
+    )
+    panel.topograph_debug_viz_label.setText(
+        str(t.get('topograph_debug_viz', 'Show Topograph critical regions'))
+    )
+    panel.topograph_debug_viz_label.setToolTip(
+        str(
+            t.get(
+                'topograph_debug_viz_tip',
+                'Overlay topologically critical regions on the training batch preview output.',
+            )
+        )
+    )
+    panel.topograph_debug_viz_check_box.setToolTip(panel.topograph_debug_viz_label.toolTip())
     loss_tip = str(t.get('loss_function_tip', ''))
     loss_group_title = str(labels_map.get('loss_function', t.get('loss_function', 'Loss terms')))
     panel.loss_terms_groupbox.setTitle(loss_group_title)
@@ -1405,5 +1510,7 @@ def apply_settings_panel_texts(panel: Any) -> None:
         panel.set_color_mode_items([(str(v), str(v)) for v in color_modes])
     apply_description_tooltips(panel, descriptions, labels_map)
     panel._sync_validation_path_labels()
+    if hasattr(panel, '_rebuild_settings_registry') and hasattr(panel, 'settings_search_model'):
+        panel._rebuild_settings_registry()
 
 

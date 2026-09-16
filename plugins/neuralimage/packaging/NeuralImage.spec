@@ -1,20 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import sys
-from importlib.util import find_spec
+import os
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files
 
-APP_NAME = 'NeuralImage'
-INCLUDE_WEBUI = True
+REMOTE_CLIENT = os.environ.get('NEURALIMAGE_BUILD_CLIENT') == '1'
+APP_NAME = 'NeuralImageClient' if REMOTE_CLIENT else 'NeuralImage'
 BUILD_TARGET = 'auto'  # Supported values: 'auto', 'linux', 'windows', 'native'.
 
 block_cipher = None
 _spec_file = globals().get('__file__')
-project_root = Path(_spec_file).resolve().parent.parent if _spec_file else Path.cwd()
-
-
-include_webui = bool(INCLUDE_WEBUI)
+project_root = Path(SPECPATH).resolve().parent
 
 
 def _resolve_build_target() -> str:
@@ -58,32 +55,12 @@ if update_client_path.exists():
     datas.append((str(update_client_path), 'resources'))
 
 offline_timm_root = project_root / 'resources' / 'internal' / 'models' / 'timm'
-if offline_timm_root.exists():
+if not REMOTE_CLIENT and offline_timm_root.exists():
     for source_path in offline_timm_root.rglob('model.safetensors'):
         relative_parent = source_path.parent.relative_to(project_root / 'resources' / 'internal')
         datas.append((str(source_path), str(relative_parent)))
 
-if include_webui:
-    # WebUI assets for optional --web mode.
-    datas += collect_data_files('neuralimage.webui', includes=['templates/**/*.html', 'static/**/*'])
-    datas += collect_data_files('django', includes=['contrib/admin/templates/**/*', 'contrib/admin/static/**/*'])
-    datas += copy_metadata('django')
-
 hiddenimports = []
-if include_webui:
-    hiddenimports += [
-        'django',
-        'django.core.management',
-        'neuralimage.webui',
-        'neuralimage.webui_project',
-        'neuralimage.webui_project.settings',
-        'neuralimage.webui_project.urls',
-    ]
-    hiddenimports += collect_submodules('django')
-    hiddenimports += collect_submodules('neuralimage.webui')
-    hiddenimports += collect_submodules('neuralimage.webui_project')
-    if find_spec('ldap3') is not None:
-        hiddenimports += collect_submodules('ldap3')
 
 datas += collect_data_files(
     'kraken_core',
@@ -93,16 +70,7 @@ datas += collect_data_files(
     ],
 )
 
-base_excludes = []
-
-
-if not include_webui:
-    # Optional web mode is disabled in this build.
-    base_excludes += [
-        'django',
-        'neuralimage.webui',
-        'neuralimage.webui_project',
-    ]
+base_excludes = ['torch', 'torchvision', 'timm', 'triton', 'nvidia', 'fastapi', 'uvicorn'] if REMOTE_CLIENT else []
 
 icon_path = None
 if build_target == 'windows':
@@ -115,7 +83,7 @@ elif build_target == 'linux':
         icon_path = [str(icon_candidate)]
 
 a = Analysis(
-    [str(project_root / 'src' / 'neuralimage' / 'main.py')],
+    [str(project_root / 'src' / 'neuralimage' / ('remote/client_main.py' if REMOTE_CLIENT else 'main.py'))],
     pathex=[str(project_root / 'src')],
     binaries=[],          # <-- torch DLLs / pyds
     datas=datas ,

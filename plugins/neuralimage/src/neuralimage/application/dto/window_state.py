@@ -26,6 +26,7 @@ class SettingsState:
     flip_x: bool = False
     flip_y: bool = False
     additional_augmentation: bool = False
+    augmentation_multiplier: float = 0.0
     augmentation_brightness_strength: float = 0.1
     augmentation_contrast_strength: float = 0.1
     augmentation_gamma_strength: float = 0.15
@@ -33,6 +34,7 @@ class SettingsState:
     augmentation_noise_sigma: float = 0.01
     augmentation_blur_probability: float = 0.25
     augmentation_blur_radius: float = 1.0
+    training_augmentation: dict[str, Any] = field(default_factory=dict)
     sample_size: tuple[int, int] = (256, 256)
     train_patch_size: tuple[int, int] | None = None
     recognition_patch_size: tuple[int, int] | None = None
@@ -80,9 +82,17 @@ class SettingsState:
     loss_term_weights: dict[str, float] = field(default_factory=lambda: {'bce': 1.0})
     dice_loss_weight: float = 0.5
     iou_loss_weight: float = 0.5
+    topograph_enabled: bool = False
+    topograph_loss_weight: float = 0.1
+    topograph_debug_viz: bool = False
+    topograph_num_processes: int = 1
+    topograph_use_c: bool = False
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
     early_stopping_enabled: bool = False
+    early_stopping_patience: int = 10
+    early_stopping_min_delta: float = 0.0
+    early_stopping_restore_best_weights: bool = True
     warmup_enabled: bool = False
     warmup_epochs: int = 3
     warmup_start_factor: float = 0.1
@@ -103,6 +113,10 @@ class SettingsState:
     scheduler_step_lr_step_size: int = 10
     scheduler_step_lr_gamma: float = 0.1
     hard_mining_enabled: bool = False
+    # Retained for old workflow/state snapshots. New topology configurations
+    # use hard_mining.score_clip and hard_mining.ema_alpha.
+    hard_mining_strength: float = 2.0
+    hard_mining_ema_alpha: float = 0.3
     random_patch_size_enabled: bool = False
     random_patch_min_size: tuple[int, int] = (128, 128)
     random_patch_max_size: tuple[int, int] = (512, 512)
@@ -142,6 +156,7 @@ class SettingsState:
     synthetic_defect_generator: dict[str, Any] = field(default_factory=dict)
     tech_aug: dict[str, Any] = field(default_factory=dict)
     pcb_defects: dict[str, Any] = field(default_factory=dict)
+    sem_segmentation_config: dict[str, Any] = field(default_factory=dict)
 
 
 _MODE_STATE_SUPPORTED_MODES = {

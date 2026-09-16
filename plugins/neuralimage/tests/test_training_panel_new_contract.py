@@ -35,11 +35,9 @@ def test_early_stopping_is_single_toggle_and_disables_epochs(app):
     assert not hasattr(panel, 'early_stopping_patience_spinbox')
     assert not hasattr(panel, 'early_stopping_min_delta_spinbox')
     assert not hasattr(panel, 'restore_best_weights_check_box')
-    epochs_row, _ = panel.general_form.getWidgetPosition(panel._field_rows[panel.epochs_spinbox])
-    toggles_row, _ = panel.general_form.getWidgetPosition(panel.training_feature_toggles_widget)
-    assert toggles_row == epochs_row - 1
-    assert panel.training_feature_toggles_widget.isAncestorOf(panel.early_stopping_check_box)
-    assert panel.training_feature_toggles_widget.isAncestorOf(panel.validation_check_box)
+    assert panel._settings_cards['training'].isAncestorOf(panel.epochs_spinbox)
+    assert panel._settings_cards['training'].isAncestorOf(panel.early_stopping_check_box)
+    assert panel._settings_cards['validation_data'].isAncestorOf(panel.validation_check_box)
 
     panel.early_stopping_check_box.setChecked(True)
 
@@ -48,10 +46,10 @@ def test_early_stopping_is_single_toggle_and_disables_epochs(app):
     assert not panel.early_stopping_control_warning.isHidden()
 
 
-def test_validation_toggle_is_basic_but_parameters_remain_expert(app):
+def test_validation_controls_have_one_owner_on_data_page(app):
     panel = SettingsPanel()
 
-    assert panel.general_groupbox.isAncestorOf(panel.validation_check_box)
+    assert panel._settings_cards['validation_data'].isAncestorOf(panel.validation_check_box)
     assert not panel.validation_groupbox.isAncestorOf(panel.validation_check_box)
     assert panel.validation_groupbox.isAncestorOf(panel.validation_mode_combo)
     assert panel.validation_groupbox.isAncestorOf(panel.validation_spinbox)
@@ -59,11 +57,10 @@ def test_validation_toggle_is_basic_but_parameters_remain_expert(app):
     assert panel.validation_groupbox.isAncestorOf(panel.validation_label_path_label)
 
     panel.validation_check_box.setChecked(True)
-    panel.expert_groupbox.setChecked(True)
     assert panel.validation_spinbox.isEnabled()
 
 
-def test_random_patch_size_is_online_only_and_hidden_until_enabled(app):
+def test_random_patch_size_is_available_for_online_dataset_and_hidden_until_enabled(app):
     panel = SettingsPanel()
     assert _field_is_hidden(panel, panel.random_patch_min_size_widget)
     panel.torch_compile_check_box.setChecked(True)
@@ -73,10 +70,8 @@ def test_random_patch_size_is_online_only_and_hidden_until_enabled(app):
     assert not panel.torch_compile_check_box.isEnabled()
     assert not panel.torch_compile_check_box.isChecked()
 
-    panel.cut_dataset_type.setChecked(True)
-
-    assert not panel.random_patch_size_check_box.isEnabled()
-    assert _field_is_hidden(panel, panel.random_patch_min_size_widget)
+    assert not hasattr(panel, 'cut_dataset_type')
+    assert panel.random_patch_size_check_box.isEnabled()
 
 
 def test_dependent_augmentation_and_validation_fields_are_hidden(app):

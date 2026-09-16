@@ -43,7 +43,7 @@ def _build_handler() -> GeneralNeuralHandler:
     return handler
 
 
-def test_start_training_preserves_multi_gpu_via_dataparallel_when_hard_mining_is_enabled(monkeypatch):
+def test_start_training_preserves_distributed_mode_when_hard_mining_is_enabled(monkeypatch):
     import neuralimage.model.general_neural_handler as target
     captured: dict[str, object] = {}
 
@@ -64,9 +64,9 @@ def test_start_training_preserves_multi_gpu_via_dataparallel_when_hard_mining_is
     handler = _build_handler()
     target.GeneralNeuralHandler._start_training(handler, model=object(), model_save_path=Path('model.pth'))
 
-    assert captured['multi_gpu_mode'] == 'dataparallel'
+    assert captured['multi_gpu_mode'] == 'distributeddataparallel'
     assert captured['use_multi_gpu'] is True
-    assert any(
+    assert not any(
         'DistributedDataParallel заменен на nn.DataParallel' in payload
         for topic, payload in handler.message_bus.messages
         if topic == 'logging'

@@ -9,7 +9,6 @@ from PyQt6.QtCore import QThread
 from neuralimage.lib.data_interfaces import RecognitionParameters, TrainingParameters, WorkMode
 from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.lib.update_checker import ReleaseInfo, download_update_installer, fetch_update_info
-from neuralimage.model.general_neural_handler import GeneralNeuralHandler
 
 
 class RarePatchEditorPreparationThread(QThread):
@@ -69,6 +68,8 @@ class GeneralNeuralHandlerThread(QThread):
         super().__init__()
         self._last_answer = False
         self._waiting_for_answer = False
+        from neuralimage.model.general_neural_handler import GeneralNeuralHandler
+
         self.main_logic = GeneralNeuralHandler(
             work_mode=work_mode,
             recogniton_parameters=recognition_parameters,

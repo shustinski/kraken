@@ -7,9 +7,10 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader, Dataset, SequentialSampler
 
-from neuralimage.lib.data_interfaces import SampleGenerationSettings
+from neuralimage.lib.data_interfaces import HardMiningParameters, SampleGenerationSettings
 from neuralimage.lib.images import SampleFastCutter
 from neuralimage.model.general_neural_handler import HardFrameSampler, RandomPatchBatchSampler
+from neuralimage.model.NeuralNetwork.model_train_and_recognition import _DistributedLossAwareSampler
 
 
 class _FrameDataset(Dataset):
@@ -66,6 +67,34 @@ def test_hard_frame_sampler_restores_partial_epoch_without_double_counting():
 
     assert restored.last_frame_losses['frame-a'] == 4.0
     assert restored.last_frame_losses['frame-b'] == 1.0
+
+
+def test_geometry_and_ema_sampler_is_deterministic_and_keeps_exploration():
+    parameters = HardMiningParameters(
+        enabled=True,
+        geometry_weight=0.5,
+        loss_weight=0.5,
+        exploration_floor=0.1,
+    )
+    first = HardFrameSampler(_FrameDataset(), shuffle=True, parameters=parameters)
+    first.set_geometry_scores({'sample-0': 1.0, 'sample-1': 0.8, 'sample-2': 0.0, 'sample-3': 0.0})
+    first.update_batch_losses(torch.arange(4), torch.tensor([4.0, 3.0, 1.0, 1.0]))
+    second = HardFrameSampler(_FrameDataset(), shuffle=True, parameters=parameters)
+    second.load_state_dict(first.state_dict())
+    assert list(first) == list(second)
+    assert set(range(4)).issubset(list(first))
+
+
+def test_distributed_loss_aware_sampler_shards_one_deterministic_plan():
+    rank_zero_base = HardFrameSampler(_FrameDataset(), shuffle=False)
+    rank_one_base = HardFrameSampler(_FrameDataset(), shuffle=False)
+    rank_zero = _DistributedLossAwareSampler(rank_zero_base, rank=0, world_size=2, drop_last=False)
+    rank_one = _DistributedLossAwareSampler(rank_one_base, rank=1, world_size=2, drop_last=False)
+
+    assert list(rank_zero) == [0, 2]
+    assert list(rank_one) == [1, 3]
+    rank_zero.update_batch_losses(torch.tensor([0, 2]), torch.tensor([4.0, 1.0]))
+    assert rank_zero_base.state_dict()['epoch_losses']
 
 
 def test_random_patch_batch_sampler_uses_one_aligned_size_per_batch():

@@ -19,10 +19,20 @@ def test_filter_images_uses_supported_extensions():
     (tmp_path / 'a.jpg').write_text('x', encoding='utf-8')
     (tmp_path / 'b.bmp').write_text('x', encoding='utf-8')
     (tmp_path / 'c.png').write_text('x', encoding='utf-8')
+    (tmp_path / 'd.jpeg').write_text('x', encoding='utf-8')
+    (tmp_path / 'e.tif').write_text('x', encoding='utf-8')
+    (tmp_path / 'f.TIFF').write_text('x', encoding='utf-8')
 
     result = filter_images(tmp_path)
 
-    assert sorted(p.name for p in result) == ['a.jpg', 'b.bmp', 'c.png']
+    assert sorted(p.name for p in result) == [
+        'a.jpg',
+        'b.bmp',
+        'c.png',
+        'd.jpeg',
+        'e.tif',
+        'f.TIFF',
+    ]
 
 
 def test_filter_images_can_search_recursively():

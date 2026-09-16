@@ -1,30 +1,43 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 
 
-DEFAULT_HEAD_OUTPUT_CHANNELS: dict[str, int] = {
-    'boundary': 1,
-    'skeleton': 1,
-    'sdf': 1,
-    'distance_transform': 1,
-    'thickness': 1,
-    'vertex': 1,
-    'corner': 1,
-    'endpoint': 1,
-    'junction': 1,
-    'orientation': 1,
-    'tangent': 2,
-    'curvature': 1,
-    'topology': 1,
+@dataclass(frozen=True)
+class HeadSpec:
+    name: str
+    channels: int = 1
+    target_kind: str = 'binary'
+    loss_adapter: str = 'focal_dice'
+
+
+HEAD_SPECS: dict[str, HeadSpec] = {
+    'boundary': HeadSpec('boundary'),
+    'skeleton': HeadSpec('skeleton'),
+    'sdf': HeadSpec('sdf', target_kind='regression', loss_adapter='smooth_l1'),
+    'distance_transform': HeadSpec('distance_transform', target_kind='regression', loss_adapter='smooth_l1'),
+    'thickness': HeadSpec('thickness', target_kind='regression', loss_adapter='smooth_l1'),
+    'vertex': HeadSpec('vertex'),
+    'corner': HeadSpec('corner'),
+    'endpoint': HeadSpec('endpoint'),
+    'junction': HeadSpec('junction', channels=3),
+    'orientation': HeadSpec('orientation', channels=2, target_kind='axial_vector', loss_adapter='axial_cosine'),
+    'tangent': HeadSpec('tangent', channels=2, target_kind='axial_vector', loss_adapter='axial_cosine'),
+    'curvature': HeadSpec('curvature', target_kind='regression', loss_adapter='smooth_l1'),
+    'topology': HeadSpec('topology', channels=2),
 }
 
 
 def resolve_head_output_channels(head_name: str) -> int:
-    return int(DEFAULT_HEAD_OUTPUT_CHANNELS.get(str(head_name), 1))
+    return int(HEAD_SPECS.get(str(head_name), HeadSpec(str(head_name))).channels)
+
+
+def resolve_head_spec(head_name: str) -> HeadSpec:
+    return HEAD_SPECS.get(str(head_name), HeadSpec(str(head_name)))
 
 
 class MultiTargetHeadBundle(nn.Module):
@@ -59,8 +72,8 @@ class MultiTargetHeadBundle(nn.Module):
                 str(name): nn.Conv2d(
                     int(primary_channels),
                     resolve_head_output_channels(name),
-                    kernel_size=int(primary_kernel_size),
-                    padding=int(primary_kernel_size) // 2,
+                    kernel_size=int(aux_kernel_size),
+                    padding=int(aux_kernel_size) // 2,
                 )
                 for name in supervision_heads
             }

@@ -204,6 +204,31 @@ def test_sample_fast_cutter_returns_original_and_augmented_pair():
     assert not np.allclose(original_image, augmented_image)
 
 
+def test_sample_fast_cutter_respects_per_operation_probability_zero():
+    image = np.linspace(0.0, 1.0, 16 * 16, dtype=np.float32).reshape(1, 16, 16)
+    label = (image > 0.5).astype(np.float32)
+    params = SampleGenerationSettings(
+        step=16,
+        segment_size=(16, 16),
+        vertical_rotation=False,
+        horizontal_rotation=False,
+        channels=1,
+        additional_augmentation=True,
+        augmentation_brightness_strength=0.5,
+        augmentation_brightness_probability=0.0,
+        augmentation_contrast_probability=0.0,
+        augmentation_gamma_probability=0.0,
+        augmentation_noise_probability=0.0,
+        augmentation_blur_probability=0.0,
+    )
+
+    cutter = SampleFastCutter((image, label), params, shuffle=False)
+    original_image, _ = cutter[0]
+    augmented_image, _ = cutter[1]
+
+    assert np.array_equal(original_image, augmented_image)
+
+
 def test_sample_fast_cutter_returns_original_and_scaled_pair(monkeypatch):
     monkeypatch.setattr(random, 'uniform', lambda _min, _max: 0.5)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import copy
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,8 +32,12 @@ def on_start_requested(presenter) -> None:
 
     task = presenter._processing_session.enqueue_task(
         main_state=clone_main_window_state(presenter.main_window_state),
-        settings_state=replace(presenter.settings_state),
+        settings_state=copy.deepcopy(presenter.settings_state),
     )
+    from neuralimage.remote.ui import remote_url
+    selected_url = remote_url()
+    task.runtime.execution_mode = "remote" if selected_url is not None else "local"
+    task.runtime.remote_url = selected_url or ""
     presenter.message_bus.publish('logging', f'Задача #{task.task_id} добавлена в очередь.')
     presenter._refresh_queue_view(selected_task_id=task.task_id)
     presenter._start_next_task_if_possible()
@@ -339,6 +344,23 @@ def start_task(
     workflow_snapshot_saver=save_workflow_snapshot,
     workflow_snapshot_filename: str = WORKFLOW_SNAPSHOT_FILENAME,
 ) -> None:
+    from neuralimage.remote.ui import remote_url
+    url = task.runtime.remote_url or remote_url()
+    if task.runtime.execution_mode is not None:
+        url = task.runtime.remote_url if task.runtime.execution_mode == "remote" else None
+    if url is not None:
+        from neuralimage.remote.qt_worker import RemoteJobThread
+        presenter.neuaral_handler = RemoteJobThread(
+            url=url, main_state=task.main_window_state, settings_state=task.settings_state,
+            message_bus=presenter.message_bus, job_id=task.runtime.remote_job_id,
+            request_key=task.runtime.remote_request_key,
+        )
+        task.runtime.remote_url = url
+        presenter.neuaral_handler.job_created.connect(lambda job: setattr(task.runtime, "remote_job_id", job))
+        presenter.neuaral_handler.ask.connect(presenter._thread_ask)
+        presenter.neuaral_handler.finished.connect(presenter._on_task_finished)
+        presenter.neuaral_handler.start()
+        return
     runtime = getattr(task, 'runtime', None)
     if runtime is None:
         runtime = TaskRuntimeContext()
@@ -416,6 +438,11 @@ def start_task(
 
 
 def on_task_finished(presenter) -> None:
+    remote_status = getattr(presenter.neuaral_handler, "remote_status", None)
+    if remote_status == "paused":
+        presenter._processing_session.request_pause_active()
+    elif remote_status == "cancelled":
+        presenter._processing_session.request_stop()
     result = presenter._processing_session.complete_active_task()
     if result.task is not None:
         if result.paused:

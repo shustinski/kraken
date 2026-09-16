@@ -12,6 +12,17 @@ from neuralimage.lib.file_func import filter_files
 from neuralimage.lib.file_retry import retry_file_read
 
 
+def resolved_augmentation_variant_count(parameters: SampleGenerationSettings | object) -> int:
+    multiplier = max(0.0, min(20.0, float(getattr(parameters, 'augmentation_multiplier', 0.0) or 0.0)))
+    if multiplier <= 0.0 and bool(getattr(parameters, 'additional_augmentation', False)):
+        return 1
+    return int(round(multiplier))
+
+
+def _augmentation_slot_count(parameters: SampleGenerationSettings | object) -> int:
+    return resolved_augmentation_variant_count(parameters) + 1
+
+
 def _build_enabled_transform_variants(
     *,
     enable_rotate_180: bool,
@@ -213,8 +224,9 @@ class SampleWorker:
         frames_in_frame *= len(transform_variants)
         if getattr(params, 'scale_augmentation', False):
             frames_in_frame *= 2
-        if getattr(params, 'additional_augmentation', False):
-            frames_in_frame *= 2
+        augmentation_slots = _augmentation_slot_count(params)
+        if augmentation_slots > 1:
+            frames_in_frame *= augmentation_slots
 
         return frames_in_frame
 
@@ -265,8 +277,9 @@ class SampleCalculator:
         frames_in_frame *= len(transform_variants)
         if self._params.scale_augmentation:
             frames_in_frame *= 2
-        if self._params.additional_augmentation:
-            frames_in_frame *= 2
+        augmentation_slots = _augmentation_slot_count(self._params)
+        if augmentation_slots > 1:
+            frames_in_frame *= augmentation_slots
 
         return frames_in_frame
 
@@ -373,23 +386,54 @@ class SampleFastCutter:
         self._horizontal_rotation = bool(parameters.horizontal_rotation)
         self._flip_x = bool(getattr(parameters, 'flip_x', False))
         self._flip_y = bool(getattr(parameters, 'flip_y', False))
+        self._transform_probabilities = {
+            'rotate_90': self._probability(parameters, 'horizontal_rotation_probability', 1.0),
+            'rotate_270': self._probability(parameters, 'horizontal_rotation_probability', 1.0),
+            'rotate_180': self._probability(parameters, 'vertical_rotation_probability', 1.0),
+            'flip_x': self._probability(parameters, 'flip_x_probability', 1.0),
+            'flip_y': self._probability(parameters, 'flip_y_probability', 1.0),
+        }
         self._skip_uniform_labels = bool(skip_uniform_labels)
         self._rare_patch_oversampling_factor = max(1, int(rare_patch_oversampling_factor))
         self._random_crop = bool(getattr(parameters, 'random_crop', False))
         self._scale_augmentation = bool(getattr(parameters, 'scale_augmentation', False))
+        self._scale_augmentation_probability = self._probability(
+            parameters, 'scale_augmentation_probability', 1.0
+        )
         self._scale_augmentation_strength = max(
             0.0, float(getattr(parameters, 'scale_augmentation_strength', 0.2))
         )
         self._additional_augmentation = bool(getattr(parameters, 'additional_augmentation', False))
+        self._augmentation_variant_count = resolved_augmentation_variant_count(parameters)
+        self._augmentation_slots = self._augmentation_variant_count + 1
         self._augmentation_brightness_strength = max(
             0.0, float(getattr(parameters, 'augmentation_brightness_strength', 0.1))
+        )
+        self._augmentation_brightness_enabled = bool(
+            getattr(parameters, 'augmentation_brightness_enabled', True)
+        )
+        self._augmentation_brightness_probability = self._probability(
+            parameters, 'augmentation_brightness_probability', 1.0
         )
         self._augmentation_contrast_strength = max(
             0.0, float(getattr(parameters, 'augmentation_contrast_strength', 0.1))
         )
+        self._augmentation_contrast_enabled = bool(
+            getattr(parameters, 'augmentation_contrast_enabled', True)
+        )
+        self._augmentation_contrast_probability = self._probability(
+            parameters, 'augmentation_contrast_probability', 1.0
+        )
         self._augmentation_gamma_strength = max(
             0.0, float(getattr(parameters, 'augmentation_gamma_strength', 0.15))
         )
+        self._augmentation_gamma_enabled = bool(
+            getattr(parameters, 'augmentation_gamma_enabled', True)
+        )
+        self._augmentation_gamma_probability = self._probability(
+            parameters, 'augmentation_gamma_probability', 1.0
+        )
+        self._augmentation_noise_enabled = bool(getattr(parameters, 'augmentation_noise_enabled', True))
         self._augmentation_noise_probability = float(getattr(parameters, 'augmentation_noise_probability', 0.5))
         self._augmentation_noise_probability = min(1.0, max(0.0, self._augmentation_noise_probability))
         self._augmentation_noise_sigma = max(0.0, float(getattr(parameters, 'augmentation_noise_sigma', 0.01)))
@@ -397,6 +441,7 @@ class SampleFastCutter:
             1.0,
             max(0.0, float(getattr(parameters, 'augmentation_blur_probability', 0.25))),
         )
+        self._augmentation_blur_enabled = bool(getattr(parameters, 'augmentation_blur_enabled', True))
         self._augmentation_blur_radius = max(
             0.0,
             float(getattr(parameters, 'augmentation_blur_radius', 1.0)),
@@ -413,6 +458,12 @@ class SampleFastCutter:
             enable_flip_y=self._flip_y,
             square_patch=self._square_patch,
         )
+        self._transform_variants = [
+            variant
+            if variant == 'identity' or random.random() < self._transform_probabilities.get(variant, 1.0)
+            else 'identity'
+            for variant in self._transform_variants
+        ]
         self._scale_variants = 2 if self._scale_augmentation else 1
         self._base_crop_specs = (
             self._build_base_crop_specs()
@@ -432,7 +483,7 @@ class SampleFastCutter:
         # fail on non-square 90/270 rotations.
         self._use_accelerator = (
             is_sample_fast_cutter_accelerated()
-            and not self._additional_augmentation
+            and self._augmentation_variant_count <= 0
             and self.image_matrix.shape[0] == 1
             and (self._square_patch or not self._horizontal_rotation)
         )
@@ -487,9 +538,9 @@ class SampleFastCutter:
                     if self._is_rare_location(location, scale_variant=scale_variant):
                         repeat_count = self._rare_patch_oversampling_factor
                     for _ in range(repeat_count):
-                        if self._additional_augmentation:
-                            parts_list.append(scaled_variant * 2)
-                            parts_list.append(scaled_variant * 2 + 1)
+                        if self._augmentation_variant_count > 0:
+                            for aug_variant in range(self._augmentation_slots):
+                                parts_list.append((scaled_variant * self._augmentation_slots) + aug_variant)
                         else:
                             parts_list.append(scaled_variant)
         return parts_list
@@ -518,7 +569,10 @@ class SampleFastCutter:
         for base_left, base_top, _base_w, _base_h in self._base_crop_specs:
             crop_w = self._sample_x
             crop_h = self._sample_y
-            if self._scale_augmentation_strength > 0.0:
+            if (
+                self._scale_augmentation_strength > 0.0
+                and random.random() < self._scale_augmentation_probability
+            ):
                 scale = random.uniform(
                     max(0.05, 1.0 - self._scale_augmentation_strength),
                     1.0 + self._scale_augmentation_strength,
@@ -641,8 +695,8 @@ class SampleFastCutter:
 
         loc = self._parts_list[item]
         augmentation_variant = 0
-        if self._additional_augmentation:
-            loc, augmentation_variant = divmod(loc, 2)
+        if self._augmentation_variant_count > 0:
+            loc, augmentation_variant = divmod(loc, self._augmentation_slots)
         scale_variant = 0
         if self._scale_augmentation:
             loc, scale_variant = divmod(loc, 2)
@@ -711,7 +765,7 @@ class SampleFastCutter:
             image = _apply_transform_variant(image, transform_variant)
             label = _apply_transform_variant(label, transform_variant)
 
-        if self._additional_augmentation and augmentation_variant == 1:
+        if self._augmentation_variant_count > 0 and augmentation_variant > 0:
             image = self._apply_additional_augmentation(image)
 
         return image,label
@@ -785,39 +839,49 @@ class SampleFastCutter:
                 (width, height),
                 resample=Image.Resampling.NEAREST,
             )
-        if self._additional_augmentation and augmentation_variant == 1:
+        if self._augmentation_variant_count > 0 and augmentation_variant > 0:
             image = self._apply_additional_augmentation(image)
         return image, label, bounds
 
     def _apply_additional_augmentation(self, image: np.ndarray) -> np.ndarray:
         # Lightweight photometric augmentation; labels remain unchanged.
         img = image.copy()
-        if self._augmentation_blur_probability > 0.0 and self._augmentation_blur_radius > 0.0:
+        if self._augmentation_blur_enabled and self._augmentation_blur_probability > 0.0 and self._augmentation_blur_radius > 0.0:
             if random.random() < self._augmentation_blur_probability:
                 blur_radius = random.uniform(0.0, self._augmentation_blur_radius)
                 if blur_radius > 0.0:
                     img = self._apply_gaussian_blur(img, blur_radius)
-        brightness = random.uniform(
-            1.0 - self._augmentation_brightness_strength,
-            1.0 + self._augmentation_brightness_strength,
-        )
-        contrast = random.uniform(
-            1.0 - self._augmentation_contrast_strength,
-            1.0 + self._augmentation_contrast_strength,
-        )
-        img *= brightness
-        mean = img.mean(axis=(1, 2), keepdims=True)
-        img = (img - mean) * contrast + mean
-        if self._augmentation_gamma_strength > 0.0:
+        if self._augmentation_brightness_enabled and random.random() < self._augmentation_brightness_probability:
+            brightness = random.uniform(
+                1.0 - self._augmentation_brightness_strength,
+                1.0 + self._augmentation_brightness_strength,
+            )
+            img *= brightness
+        if self._augmentation_contrast_enabled and random.random() < self._augmentation_contrast_probability:
+            contrast = random.uniform(
+                1.0 - self._augmentation_contrast_strength,
+                1.0 + self._augmentation_contrast_strength,
+            )
+            mean = img.mean(axis=(1, 2), keepdims=True)
+            img = (img - mean) * contrast + mean
+        if (
+            self._augmentation_gamma_enabled
+            and self._augmentation_gamma_strength > 0.0
+            and random.random() < self._augmentation_gamma_probability
+        ):
             gamma = random.uniform(
                 max(0.1, 1.0 - self._augmentation_gamma_strength),
                 1.0 + self._augmentation_gamma_strength,
             )
             img = np.power(np.clip(img, 0.0, 1.0), gamma).astype(np.float32, copy=False)
-        if random.random() < self._augmentation_noise_probability and self._augmentation_noise_sigma > 0.0:
+        if self._augmentation_noise_enabled and random.random() < self._augmentation_noise_probability and self._augmentation_noise_sigma > 0.0:
             img += np.random.normal(0.0, self._augmentation_noise_sigma, size=img.shape).astype(np.float32)
         np.clip(img, 0.0, 1.0, out=img)
         return img.astype(np.float32, copy=False)
+
+    @staticmethod
+    def _probability(parameters: object, name: str, default: float) -> float:
+        return min(1.0, max(0.0, float(getattr(parameters, name, default))))
 
     @staticmethod
     def _apply_gaussian_blur(image: np.ndarray, radius: float) -> np.ndarray:

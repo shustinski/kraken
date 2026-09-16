@@ -230,6 +230,9 @@ class OptimizerParameters:
 @dataclass
 class EarlyStoppingParameters:
     enabled: bool = False
+    patience: int = 10
+    min_delta: float = 0.0
+    restore_best_weights: bool = True
 
 
 @dataclass(frozen=True)
@@ -285,8 +288,17 @@ class SchedulerParameters:
 @dataclass
 class HardMiningParameters:
     enabled: bool = False
+    strength: float = 2.0
     pixel_enabled: bool = False
     pixel_keep_ratio: float = 0.25
+    mode: str = 'online'
+    geometry_weight: float = 0.5
+    loss_weight: float = 0.5
+    exploration_floor: float = 0.1
+    ema_alpha: float = 0.1
+    score_clip: float = 5.0
+    refresh_epochs: int = 1
+    offline_manifest: Path | None = None
 
 
 @dataclass
@@ -1152,6 +1164,10 @@ def build_tech_augmentation_config(raw: Any | None) -> TechAugmentationParameter
     local_payload = _nested_mapping('local_morphology')
     gap_payload = _nested_mapping('gap_variation')
 
+    def _operation_probability(nested: Mapping[str, Any], default: float) -> float:
+        probability = _coerce_probability(nested.get('probability', default), default)
+        return probability if bool(nested.get('enabled', True)) else 0.0
+
     min_operations = _coerce_positive_int(
         payload.get('min_operations', defaults.min_operations),
         defaults.min_operations,
@@ -1185,10 +1201,7 @@ def build_tech_augmentation_config(raw: Any | None) -> TechAugmentationParameter
             defaults.max_foreground_ratio_delta,
         ),
         global_width=TechGlobalWidthVariationParameters(
-            probability=_coerce_probability(
-                global_width_payload.get('probability', defaults.global_width.probability),
-                defaults.global_width.probability,
-            ),
+            probability=_operation_probability(global_width_payload, defaults.global_width.probability),
             kernel_size_range=_coerce_int_range(
                 global_width_payload.get('kernel_size_range', defaults.global_width.kernel_size_range),
                 defaults.global_width.kernel_size_range,
@@ -1200,10 +1213,7 @@ def build_tech_augmentation_config(raw: Any | None) -> TechAugmentationParameter
             ),
         ),
         scale_rethreshold=TechScaleRethresholdParameters(
-            probability=_coerce_probability(
-                scale_payload.get('probability', defaults.scale_rethreshold.probability),
-                defaults.scale_rethreshold.probability,
-            ),
+            probability=_operation_probability(scale_payload, defaults.scale_rethreshold.probability),
             scale_range=_coerce_float_range(
                 scale_payload.get('scale_range', defaults.scale_rethreshold.scale_range),
                 defaults.scale_rethreshold.scale_range,
@@ -1215,10 +1225,7 @@ def build_tech_augmentation_config(raw: Any | None) -> TechAugmentationParameter
             ),
         ),
         blur_threshold=TechBlurThresholdParameters(
-            probability=_coerce_probability(
-                blur_payload.get('probability', defaults.blur_threshold.probability),
-                defaults.blur_threshold.probability,
-            ),
+            probability=_operation_probability(blur_payload, defaults.blur_threshold.probability),
             blur_radius_range=_coerce_float_range(
                 blur_payload.get('blur_radius_range', defaults.blur_threshold.blur_radius_range),
                 defaults.blur_threshold.blur_radius_range,
@@ -1230,10 +1237,7 @@ def build_tech_augmentation_config(raw: Any | None) -> TechAugmentationParameter
             ),
         ),
         boundary_aware=TechBoundaryAwareVariationParameters(
-            probability=_coerce_probability(
-                boundary_payload.get('probability', defaults.boundary_aware.probability),
-                defaults.boundary_aware.probability,
-            ),
+            probability=_operation_probability(boundary_payload, defaults.boundary_aware.probability),
             band_width_range=_coerce_int_range(
                 boundary_payload.get('band_width_range', defaults.boundary_aware.band_width_range),
                 defaults.boundary_aware.band_width_range,
@@ -1267,10 +1271,7 @@ def build_tech_augmentation_config(raw: Any | None) -> TechAugmentationParameter
             ),
         ),
         local_morphology=TechLocalMorphologyParameters(
-            probability=_coerce_probability(
-                local_payload.get('probability', defaults.local_morphology.probability),
-                defaults.local_morphology.probability,
-            ),
+            probability=_operation_probability(local_payload, defaults.local_morphology.probability),
             roi_count_range=_coerce_int_range(
                 local_payload.get('roi_count_range', defaults.local_morphology.roi_count_range),
                 defaults.local_morphology.roi_count_range,
@@ -1293,10 +1294,7 @@ def build_tech_augmentation_config(raw: Any | None) -> TechAugmentationParameter
             ),
         ),
         gap_variation=TechGapVariationParameters(
-            probability=_coerce_probability(
-                gap_payload.get('probability', defaults.gap_variation.probability),
-                defaults.gap_variation.probability,
-            ),
+            probability=_operation_probability(gap_payload, defaults.gap_variation.probability),
             kernel_size_range=_coerce_int_range(
                 gap_payload.get('kernel_size_range', defaults.gap_variation.kernel_size_range),
                 defaults.gap_variation.kernel_size_range,
@@ -1329,18 +1327,32 @@ class SampleGenerationSettings:
     channels: int
     flip_x: bool = False
     flip_y: bool = False
+    horizontal_rotation_probability: float = 1.0
+    vertical_rotation_probability: float = 1.0
+    flip_x_probability: float = 1.0
+    flip_y_probability: float = 1.0
     additional_augmentation: bool = False
+    augmentation_multiplier: float = 0.0
     augmentation_brightness_strength: float = 0.1
+    augmentation_brightness_enabled: bool = True
+    augmentation_brightness_probability: float = 1.0
     augmentation_contrast_strength: float = 0.1
+    augmentation_contrast_enabled: bool = True
+    augmentation_contrast_probability: float = 1.0
     augmentation_gamma_strength: float = 0.15
+    augmentation_gamma_enabled: bool = True
+    augmentation_gamma_probability: float = 1.0
+    augmentation_noise_enabled: bool = True
     augmentation_noise_probability: float = 0.5
     augmentation_noise_sigma: float = 0.01
     augmentation_blur_probability: float = 0.25
+    augmentation_blur_enabled: bool = True
     augmentation_blur_radius: float = 1.0
     shuffle_patches_in_frame: bool = True
     random_crop: bool = False
     crops_per_image: int = 64
     scale_augmentation: bool = False
+    scale_augmentation_probability: float = 1.0
     scale_augmentation_strength: float = 0.2
     recursive_file_search: bool = False
     tech_aug: TechAugmentationParameters = field(default_factory=TechAugmentationParameters)
@@ -1416,6 +1428,17 @@ class TrainingParameters:
     uncertainty: UncertaintyConfig = field(default_factory=_default_uncertainty_config)
     active_learning: ActiveLearningConfig = field(default_factory=_default_active_learning_config)
     advanced_validation: bool = True
+    advanced_validation_full_frame: bool = True
+    advanced_validation_boundary_tolerance: int = 2
+    advanced_validation_include_hd95: bool = True
+    advanced_validation_confidence_bins: int = 10
+    loss_weighting_strategy: str = 'static'
+    mask_loss_weight_floor: float = 0.25
+    topograph_enabled: bool = False
+    topograph_loss_weight: float = 0.1
+    topograph_debug_viz: bool = False
+    topograph_num_processes: int = 1
+    topograph_use_c: bool = False
 
 @dataclass
 class RecognitionParameters:
@@ -1447,6 +1470,7 @@ class RecognitionParameters:
     preprocessing: PreprocessingConfig = field(default_factory=_default_preprocessing_config)
     uncertainty: UncertaintyConfig = field(default_factory=_default_uncertainty_config)
     active_learning: ActiveLearningConfig = field(default_factory=_default_active_learning_config)
+    sem_config_hash: str | None = None
 
 
 @dataclass

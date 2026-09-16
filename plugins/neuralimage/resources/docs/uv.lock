@@ -162,20 +162,6 @@ wheels = [
 ]
 
 [[package]]
-name = "django"
-version = "6.0.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "asgiref", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "sqlparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/e1/894115c6bd70e2c8b66b0c40a3c367d83a5a48c034a4d904d31b62f7c53a/django-6.0.3.tar.gz", hash = "sha256:90be765ee756af8a6cbd6693e56452404b5ad15294f4d5e40c0a55a0f4870fe1", size = 10872701, upload-time = "2026-03-03T13:55:15.026Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/72/b1/23f2556967c45e34d3d3cf032eb1bd3ef925ee458667fb99052a0b3ea3a6/django-6.0.3-py3-none-any.whl", hash = "sha256:2e5974441491ddb34c3f13d5e7a9f97b07ba03bf70234c0a9c68b79bbb235bc3", size = 8358527, upload-time = "2026-03-03T13:55:10.552Z" },
-]
-
-[[package]]
 name = "filelock"
 version = "3.25.2"
 source = { registry = "https://pypi.org/simple" }
@@ -307,18 +293,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ldap3"
-version = "2.9.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pyasn1", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/43/ac/96bd5464e3edbc61595d0d69989f5d9969ae411866427b2500a8e5b812c0/ldap3-2.9.1.tar.gz", hash = "sha256:f3e7fc4718e3f09dda568b57100095e0ce58633bcabbed8667ce3f8fbaa4229f", size = 398830, upload-time = "2021-07-18T06:34:21.786Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/f6/71d6ec9f18da0b2201287ce9db6afb1a1f637dedb3f0703409558981c723/ldap3-2.9.1-py2.py3-none-any.whl", hash = "sha256:5869596fc4948797020d3f03b7939da938778a0f9e2009f7a072ccf92b8e8d70", size = 432192, upload-time = "2021-07-18T06:34:12.905Z" },
-]
-
-[[package]]
 name = "markdown-it-py"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -425,9 +399,7 @@ build = [
 ]
 dev = [
     { name = "cython", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "django", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "huggingface-hub", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "ldap3", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "networkx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "psutil", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "pyinstaller", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
@@ -437,21 +409,12 @@ dev = [
 monitoring = [
     { name = "psutil", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
-web = [
-    { name = "django", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-    { name = "ldap3", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "cython", marker = "extra == 'build'", specifier = ">=3.0" },
     { name = "cython", marker = "extra == 'dev'", specifier = ">=3.0" },
-    { name = "django", marker = "extra == 'dev'", specifier = ">=5.1" },
-    { name = "django", marker = "extra == 'web'", specifier = ">=5.1" },
     { name = "huggingface-hub", marker = "extra == 'build'", specifier = ">=0.30" },
     { name = "huggingface-hub", marker = "extra == 'dev'", specifier = ">=0.30" },
-    { name = "ldap3", marker = "extra == 'dev'", specifier = ">=2.9" },
-    { name = "ldap3", marker = "extra == 'web'", specifier = ">=2.9" },
     { name = "networkx", marker = "extra == 'build'", specifier = ">=3.2" },
     { name = "networkx", marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "numpy", specifier = ">=1.26" },

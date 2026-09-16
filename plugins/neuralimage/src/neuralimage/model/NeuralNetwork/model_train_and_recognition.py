@@ -9,7 +9,8 @@ import random
 import re
 import csv
 import json
-from dataclasses import dataclass
+import hashlib
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from queue import Empty
 
@@ -29,12 +30,12 @@ import torch.distributed as dist
 import torch.multiprocessing as torch_mp
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader, RandomSampler, Sampler
 from torch.utils.data.distributed import DistributedSampler
 from PIL import Image, ImageDraw, ImageFont
 
 from neuralimage.lib import System
-from neuralimage.model.NeuralNetwork.dataset import CustomDataset, NoCutDataset, index_in_list
+from neuralimage.model.NeuralNetwork.dataset import NoCutDataset, index_in_list
 from neuralimage.lib.data_interfaces import (
     CutoutParameters,
     RecognitionParameters,
@@ -54,15 +55,32 @@ from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.lib.file_func import filter_images
 from neuralimage.lib.func import get_input_channels
 from neuralimage.lib.images import ImagePreparator, SampleCalculator
+from neuralimage.lib.image_processing import sew_image
 from neuralimage.lib.images import _build_enabled_transform_variants
 from neuralimage.lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
 from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.lib.optimizer_availability import MUON_UNAVAILABLE_MESSAGE, resolve_muon_optimizer_class
 from neuralimage.lib.random_artifacts import generate_random_artifact_patch
-from neuralimage.losses.composite import compute_auxiliary_head_loss, resolve_auxiliary_head_weights
+from neuralimage.losses.boundary import compute_boundary_loss, compute_soft_boundary_map
+from neuralimage.losses.cldice import compute_cldice_loss, soft_skeletonize
+from neuralimage.losses.composite import (
+    AuxiliaryHeadLoss,
+    HomoscedasticLossWeighter,
+    compute_auxiliary_head_loss,
+    resolve_auxiliary_head_weights,
+)
+from neuralimage.losses.distance_boundary import compute_distance_boundary_loss
+from neuralimage.losses.topograph import (
+    build_topograph_loss,
+    compute_topograph_loss_per_sample,
+    extract_critical_region_mask,
+)
+from neuralimage.losses.topograph_viz import render_critical_regions_overlay
 from neuralimage.metrics.segmentation import compute_segmentation_metrics
+from neuralimage.preprocessing.config import build_preprocessing_config
 from neuralimage.model.NeuralNetwork.blocks import extract_confidence_output, extract_mask_outputs
 from neuralimage.targets.dataset_hooks import extract_primary_label
+from neuralimage.training.batch_transfer import move_batch_to_device
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
 from neuralimage.model.NeuralNetwork.early_stopping import (
     CheckpointManager,
@@ -353,6 +371,101 @@ class _SupportsLossAwareSampling(Protocol):
         ...
 
 
+class _DistributedLossAwareSampler(Sampler[int]):
+    """Shard one deterministic loss-aware sampling plan and synchronize its epoch state."""
+
+    def __init__(self, sampler: Sampler[int], *, rank: int, world_size: int, drop_last: bool) -> None:
+        self.sampler = sampler
+        self.rank = int(rank)
+        self.world_size = max(1, int(world_size))
+        self.drop_last = bool(drop_last)
+        self.epoch = 0
+
+    def __iter__(self) -> Iterator[int]:
+        indices = [int(index) for index in self.sampler]
+        if self.drop_last:
+            usable = len(indices) - (len(indices) % self.world_size)
+            indices = indices[:usable]
+        elif indices:
+            padding = (-len(indices)) % self.world_size
+            indices.extend(indices[:padding])
+        return iter(indices[self.rank::self.world_size])
+
+    def __len__(self) -> int:
+        size = int(len(self.sampler))
+        return size // self.world_size if self.drop_last else math.ceil(size / self.world_size)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = max(0, int(epoch))
+        if hasattr(self.sampler, '_epoch'):
+            setattr(self.sampler, '_epoch', self.epoch)
+
+    def resize(self, size: int, *, reset: bool = False) -> None:
+        resize = getattr(self.sampler, 'resize', None)
+        if callable(resize):
+            resize(size, reset=reset)
+
+    def start_epoch(self) -> None:
+        start = getattr(self.sampler, 'start_epoch', None)
+        if callable(start):
+            start()
+
+    def update_batch_losses(self, sample_indices: torch.Tensor, sample_losses: torch.Tensor) -> None:
+        update = getattr(self.sampler, 'update_batch_losses', None)
+        if callable(update):
+            update(sample_indices, sample_losses)
+
+    def finalize_epoch(self) -> set[str]:
+        state_fn = getattr(self.sampler, 'state_dict', None)
+        load_fn = getattr(self.sampler, 'load_state_dict', None)
+        if dist.is_available() and dist.is_initialized() and callable(state_fn) and callable(load_fn):
+            local_state = state_fn()
+            gathered: list[dict[str, object] | None] = [None] * self.world_size
+            dist.all_gather_object(gathered, local_state)
+            merged_state = dict(local_state)
+            merged_epoch_losses: dict[str, object] = {}
+            merged_ema = dict(local_state.get('ema_losses', {}))
+            for state in gathered:
+                if not isinstance(state, dict):
+                    continue
+                epoch_losses = state.get('epoch_losses', {})
+                if not isinstance(epoch_losses, dict):
+                    continue
+                merged_epoch_losses.update(epoch_losses)
+                state_ema = state.get('ema_losses', {})
+                if isinstance(state_ema, dict):
+                    for sample_key in epoch_losses:
+                        if sample_key in state_ema:
+                            merged_ema[str(sample_key)] = state_ema[sample_key]
+            merged_state['epoch_losses'] = merged_epoch_losses
+            merged_state['ema_losses'] = merged_ema
+            load_fn(merged_state)
+        finalize = getattr(self.sampler, 'finalize_epoch', None)
+        return set(finalize()) if callable(finalize) else set()
+
+    def state_dict(self) -> dict[str, object]:
+        state_fn = getattr(self.sampler, 'state_dict', None)
+        return {
+            'epoch': self.epoch,
+            'sampler': state_fn() if callable(state_fn) else {},
+        }
+
+    def load_state_dict(self, state: dict[str, object]) -> None:
+        self.epoch = max(0, int(state.get('epoch', 0)))
+        load_fn = getattr(self.sampler, 'load_state_dict', None)
+        sampler_state = state.get('sampler')
+        if callable(load_fn) and isinstance(sampler_state, dict):
+            load_fn(sampler_state)
+
+    @property
+    def last_frame_losses(self) -> dict[str, float]:
+        return dict(getattr(self.sampler, 'last_frame_losses', {}))
+
+    @property
+    def last_sigma(self) -> float:
+        return float(getattr(self.sampler, 'last_sigma', 0.0))
+
+
 @dataclass(frozen=True)
 class _TrainLoopStrides:
     metric: int
@@ -466,7 +579,7 @@ class _PreparedTrainBatch:
     inputs: Any
     image: torch.Tensor
     context_image: torch.Tensor | None
-    label: torch.Tensor
+    label: torch.Tensor | Mapping[str, torch.Tensor]
     batch_start: float
     data_wait_ms: float
     augmentation_ms: float = 0.0
@@ -478,6 +591,7 @@ class _TrainStepResult:
     per_sample_loss: torch.Tensor
     metric_loss: torch.Tensor | float | None = None
     batch_loss: torch.Tensor | float | None = None
+    loss_components: dict[str, float] | None = None
     batch_samples: int = 0
     forward_ms: float = 0.0
     backward_ms: float = 0.0
@@ -684,13 +798,14 @@ class _ValidationNoCutFrameExportCache:
     parts_count: int
     part_lookup: list[int] | None
     patches: dict[int, np.ndarray]
+    label_path: Path | None = None
+    confidence_patches: dict[int, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass
 class _ValidationExportCache:
     mode: str
     dataset: Any
-    sample_predictions: dict[int, np.ndarray] | None = None
     frame_predictions: dict[int, _ValidationNoCutFrameExportCache] | None = None
 
 
@@ -891,7 +1006,14 @@ class ModelTrainer(threading.Thread):
                  show_batch_preview: bool = True,
                  log_update_frequency: int = 0,
                  save_validation_binary_images: bool = False,
-                 control_dataloader: DataLoader | None = None):
+                 control_dataloader: DataLoader | None = None,
+                 loss_weighting_strategy: str = 'static',
+                 mask_loss_weight_floor: float = 0.25,
+                 topograph_enabled: bool = False,
+                 topograph_loss_weight: float = 0.1,
+                 topograph_debug_viz: bool = False,
+                 topograph_num_processes: int = 1,
+                 topograph_use_c: bool = False):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -931,6 +1053,13 @@ class ModelTrainer(threading.Thread):
         self.succeeded = False
         self.error_message: str | None = None
         self._recommended_inference_threshold = 0.5
+        self._loss_weighting_strategy = str(loss_weighting_strategy).strip().lower()
+        self._mask_loss_weight_floor = float(mask_loss_weight_floor)
+        self._topograph_enabled = bool(topograph_enabled)
+        self._topograph_loss_weight = max(0.0, float(topograph_loss_weight))
+        self._topograph_debug_viz = bool(topograph_debug_viz)
+        self._topograph_num_processes = max(1, int(topograph_num_processes))
+        self._topograph_use_c = bool(topograph_use_c)
 
 
     def _validate_training_inputs(self) -> bool:
@@ -974,6 +1103,13 @@ class ModelTrainer(threading.Thread):
             save_validation_binary_images=self._save_validation_binary_images,
             control_dataloader=self._control_dataloader,
             pause_event=self._pause_event,
+            loss_weighting_strategy=self._loss_weighting_strategy,
+            mask_loss_weight_floor=self._mask_loss_weight_floor,
+            topograph_enabled=self._topograph_enabled,
+            topograph_loss_weight=self._topograph_loss_weight,
+            topograph_debug_viz=self._topograph_debug_viz,
+            topograph_num_processes=self._topograph_num_processes,
+            topograph_use_c=self._topograph_use_c,
         )
 
     @staticmethod
@@ -1122,7 +1258,14 @@ class TrainerProcess(mp.Process):
                  log_update_frequency: int = 0,
                  save_validation_binary_images: bool = False,
                  pause_event: Any | None = None,
-                 control_dataloader: DataLoader | None = None):
+                 control_dataloader: DataLoader | None = None,
+                 loss_weighting_strategy: str = 'static',
+                 mask_loss_weight_floor: float = 0.25,
+                 topograph_enabled: bool = False,
+                 topograph_loss_weight: float = 0.1,
+                 topograph_debug_viz: bool = False,
+                 topograph_num_processes: int = 1,
+                 topograph_use_c: bool = False):
         super().__init__()
         self._train_dataloader = train_dataloader
         self._val_dataloader = val_dataloader
@@ -1166,6 +1309,17 @@ class TrainerProcess(mp.Process):
         self._uncompiled_model: nn.Module | None = None
         self._torch_compile_active = False
         self._recommended_inference_threshold = 0.5
+        self._loss_weighting_strategy = str(loss_weighting_strategy).strip().lower()
+        self._mask_loss_weight_floor = float(mask_loss_weight_floor)
+        self._topograph_enabled = bool(topograph_enabled)
+        self._topograph_loss_weight = max(0.0, float(topograph_loss_weight))
+        self._topograph_debug_viz = bool(topograph_debug_viz)
+        self._topograph_num_processes = max(1, int(topograph_num_processes))
+        self._topograph_use_c = bool(topograph_use_c)
+        self._topograph_loss_module = None
+        self._topograph_binary_skip_logged = False
+        self._last_batch_loss_components: dict[str, float] = {}
+        self._loss_weighter: HomoscedasticLossWeighter | None = None
         self._train_epoch_history: list[tuple[float, float]] = []
         self._val_epoch_history: list[tuple[float, float]] = []
         self._val_iou_history: list[tuple[float, float]] = []
@@ -1205,11 +1359,21 @@ class TrainerProcess(mp.Process):
 
     def _resolve_artifact_runtime_metadata(self) -> dict[str, Any]:
         threshold = float(min(max(getattr(self, '_recommended_inference_threshold', 0.5), 0.0), 1.0))
-        return {
+        metadata: dict[str, Any] = {
             'inference': {
                 'recommended_threshold': threshold,
             },
         }
+        preprocessing = self._resolve_dataset_attribute(self._train_dataloader, '_preprocessing')
+        if preprocessing is not None:
+            metadata['preprocessing'] = {
+                'config': asdict(preprocessing),
+                'hash': preprocessing.stable_hash(),
+            }
+        supervision = self._resolved_supervision_targets()
+        if supervision is not None:
+            metadata['supervision_targets'] = asdict(supervision)
+        return metadata
 
     def _save_model_artifact(self) -> None:
         model_name, input_channels, model_kwargs = self._resolve_model_artifact_metadata()
@@ -1448,13 +1612,22 @@ class TrainerProcess(mp.Process):
     @staticmethod
     def _build_distributed_loader(base_loader: DataLoader, rank: int, world_size: int, shuffle: bool) -> DataLoader:
         dataset = base_loader.dataset
-        sampler = DistributedSampler(
-            dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=shuffle,
-            drop_last=bool(getattr(base_loader, 'drop_last', False)),
-        )
+        original_sampler = getattr(base_loader, 'sampler', None)
+        if hasattr(original_sampler, 'update_batch_losses'):
+            sampler: Sampler[int] = _DistributedLossAwareSampler(
+                original_sampler,
+                rank=rank,
+                world_size=world_size,
+                drop_last=bool(getattr(base_loader, 'drop_last', False)),
+            )
+        else:
+            sampler = DistributedSampler(
+                dataset,
+                num_replicas=world_size,
+                rank=rank,
+                shuffle=shuffle,
+                drop_last=bool(getattr(base_loader, 'drop_last', False)),
+            )
         loader_kwargs: dict[str, Any] = {
             'dataset': dataset,
             'batch_size': int(getattr(base_loader, 'batch_size', 1) or 1),
@@ -1605,12 +1778,26 @@ class TrainerProcess(mp.Process):
             sampler = wrapped_sampler
         sampler_state_fn = getattr(sampler, 'state_dict', None)
         sampler_state = sampler_state_fn() if callable(sampler_state_fn) else None
+        preprocessing = self._resolve_dataset_attribute(train_dataloader, '_preprocessing')
+        preprocessing_payload = (
+            {
+                'config': asdict(preprocessing),
+                'hash': preprocessing.stable_hash(),
+            }
+            if preprocessing is not None
+            else None
+        )
         checkpoint = {
             'version': 2,
             'completed_epoch': completed_epoch,
             'epochs': self._epochs,
             'model_state_dict': self._base_model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'loss_weighter_state_dict': (
+                getattr(self, '_loss_weighter', None).state_dict()
+                if getattr(self, '_loss_weighter', None) is not None
+                else None
+            ),
             'scaler_state_dict': scaler.state_dict(),
             'optimizer_name': self._optimizer_params.name.value,
             'learning_rate': self._optimizer_params.learning_rate,
@@ -1633,6 +1820,7 @@ class TrainerProcess(mp.Process):
             'torch_rng_state': torch.get_rng_state(),
             'cuda_rng_state_all': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             'sampler_state_dict': sampler_state,
+            'preprocessing': preprocessing_payload,
             'epoch_start_torch_rng_state': getattr(self, '_epoch_start_torch_rng_state', None),
             'global_batch': int(getattr(self, '_global_batch', 0)),
             'automatic_early_stopping_state': (
@@ -1696,8 +1884,28 @@ class TrainerProcess(mp.Process):
                 lambda: torch.load(checkpoint_path, map_location='cpu', weights_only=False),
                 path=checkpoint_path,
             )
+            checkpoint_preprocessing = checkpoint.get('preprocessing')
+            current_preprocessing = self._resolve_dataset_attribute(
+                getattr(self, '_train_dataloader', None),
+                '_preprocessing',
+            )
+            if (
+                isinstance(checkpoint_preprocessing, dict)
+                and isinstance(checkpoint_preprocessing.get('config'), dict)
+                and current_preprocessing is not None
+            ):
+                saved_config = build_preprocessing_config(checkpoint_preprocessing['config'])
+                saved_hash = str(checkpoint_preprocessing.get('hash') or saved_config.stable_hash())
+                if saved_hash != current_preprocessing.stable_hash():
+                    self._bus.put([
+                        'logging',
+                        'Checkpoint preprocessing does not match the current training dataset. '
+                        'The checkpoint will not be resumed.',
+                    ])
+                    return 0, {}
             model_state = checkpoint.get('model_state_dict')
             optimizer_state = checkpoint.get('optimizer_state_dict')
+            loss_weighter_state = checkpoint.get('loss_weighter_state_dict')
             scaler_state = checkpoint.get('scaler_state_dict')
             legacy_scheduler_state = checkpoint.get('scheduler_state_dict')
             warmup_scheduler_state = checkpoint.get('warmup_scheduler_state_dict', legacy_scheduler_state)
@@ -1707,6 +1915,8 @@ class TrainerProcess(mp.Process):
                 self._base_model.load_state_dict(model_state)
             if optimizer_state:
                 optimizer.load_state_dict(optimizer_state)
+            if loss_weighter_state and self._loss_weighter is not None:
+                self._loss_weighter.load_state_dict(loss_weighter_state)
             if scaler_state:
                 scaler.load_state_dict(scaler_state)
             if warmup_scheduler is not None and warmup_scheduler_state:
@@ -1960,9 +2170,85 @@ class TrainerProcess(mp.Process):
     def _loss_supports_hard_pixel_mining(self, loss_mode: str) -> bool:
         return loss_mode not in ('dice', 'cldice', 'iou', 'boundary', 'focal_tversky')
 
+    def _topograph_is_active(self) -> bool:
+        return bool(
+            getattr(self, '_topograph_enabled', False)
+            and float(getattr(self, '_topograph_loss_weight', 0.0)) > 0.0
+        )
+
+    def _ensure_topograph_loss(self) -> Any:
+        if getattr(self, '_topograph_loss_module', None) is None:
+            self._topograph_loss_module = build_topograph_loss(
+                num_processes=max(1, int(getattr(self, '_topograph_num_processes', 1))),
+                use_c=bool(getattr(self, '_topograph_use_c', False)),
+            )
+        return self._topograph_loss_module
+
+    def _compute_topograph_component_loss(
+        self,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+    ) -> torch.Tensor | None:
+        if not self._topograph_is_active():
+            return None
+        if int(outputs.shape[1]) != 1:
+            if not getattr(self, '_topograph_binary_skip_logged', False):
+                self._bus.put([
+                    'logging',
+                    'Topograph loss skipped: binary single-channel outputs are required.',
+                ])
+                self._topograph_binary_skip_logged = True
+            return None
+        return compute_topograph_loss_per_sample(
+            outputs,
+            label,
+            self._ensure_topograph_loss(),
+        )
+
+    def _update_batch_loss_components(
+        self,
+        *,
+        outputs: torch.Tensor,
+        label: torch.Tensor,
+        bce_criterion: nn.Module,
+        combined_loss: torch.Tensor,
+        topograph_loss: torch.Tensor | None,
+        apply_pixel_mining: bool,
+    ) -> dict[str, float]:
+        components: dict[str, float] = {'bce': 0.0, 'dice': 0.0, 'topograph': 0.0, 'total': 0.0}
+        sanitized_outputs = self._sanitize_outputs_for_loss(outputs)
+        sanitized_label = self._sanitize_labels_for_loss(label)
+        for loss_mode, coefficient in self._resolved_loss_term_weights().items():
+            if coefficient <= 0.0:
+                continue
+            single_loss = self._compute_single_per_sample_loss(
+                loss_mode,
+                sanitized_outputs,
+                sanitized_label,
+                bce_criterion,
+                apply_pixel_mining=apply_pixel_mining,
+            )
+            value = self._loss_value_to_float(single_loss.mean())
+            if loss_mode in ('bce', 'focal_bce'):
+                components['bce'] = value
+            elif loss_mode == 'dice':
+                components['dice'] = value
+        if topograph_loss is not None:
+            components['topograph'] = self._loss_value_to_float(topograph_loss.mean())
+        components['total'] = self._loss_value_to_float(combined_loss.mean())
+        self._last_batch_loss_components = components
+        return components
+
     @staticmethod
-    def _is_finite_tensor(tensor: torch.Tensor) -> bool:
-        return bool(torch.isfinite(tensor).all())
+    def _is_finite_tensor(value: Any) -> bool:
+        """Return whether every tensor contained in *value* is finite."""
+        if torch.is_tensor(value):
+            return bool(torch.isfinite(value).all())
+        if isinstance(value, Mapping):
+            return all(ModelTrainer._is_finite_tensor(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return all(ModelTrainer._is_finite_tensor(item) for item in value)
+        return True
 
     @staticmethod
     def _extract_primary_output_tensor(outputs: Any) -> torch.Tensor:
@@ -2047,13 +2333,33 @@ class TrainerProcess(mp.Process):
         return None
 
     def _resolved_supervision_targets(self) -> Any:
-        return self._resolve_dataset_attribute(self._train_dataloader, '_supervision_targets')
+        return self._resolve_dataset_attribute(getattr(self, '_train_dataloader', None), '_supervision_targets')
 
     def _advanced_validation_enabled(self) -> bool:
-        value = self._resolve_dataset_attribute(self._val_dataloader or self._train_dataloader, '_advanced_validation')
+        loader = getattr(self, '_val_dataloader', None) or getattr(self, '_train_dataloader', None)
+        value = self._resolve_dataset_attribute(loader, '_advanced_validation')
         if value is None:
             return True
         return bool(value)
+
+    def _advanced_validation_options(self) -> tuple[int, bool, int]:
+        loader = getattr(self, '_val_dataloader', None) or getattr(self, '_train_dataloader', None)
+        tolerance = self._resolve_dataset_attribute(loader, '_advanced_validation_boundary_tolerance')
+        include_hd95 = self._resolve_dataset_attribute(loader, '_advanced_validation_include_hd95')
+        confidence_bins = self._resolve_dataset_attribute(loader, '_advanced_validation_confidence_bins')
+        return (
+            max(0, int(tolerance if tolerance is not None else 2)),
+            bool(True if include_hd95 is None else include_hd95),
+            max(2, int(confidence_bins if confidence_bins is not None else 10)),
+        )
+
+    def _advanced_validation_full_frame(self) -> bool:
+        loader = getattr(self, '_val_dataloader', None) or getattr(self, '_train_dataloader', None)
+        value = self._resolve_dataset_attribute(
+            loader,
+            '_advanced_validation_full_frame',
+        )
+        return bool(True if value is None else value)
 
     def _resolved_auxiliary_head_weights(self) -> dict[str, float]:
         supervision = self._resolved_supervision_targets()
@@ -2064,6 +2370,10 @@ class TrainerProcess(mp.Process):
             enabled,
             getattr(supervision, 'auxiliary_head_weights', None),
         )
+
+    def _resolved_confidence_loss_weight(self) -> float:
+        uncertainty = self._resolve_dataset_attribute(getattr(self, '_train_dataloader', None), '_uncertainty')
+        return max(0.0, float(getattr(uncertainty, 'confidence_loss_weight', CONFIDENCE_LOSS_WEIGHT)))
 
     def _compute_auxiliary_supervision_loss(
         self,
@@ -2086,6 +2396,46 @@ class TrainerProcess(mp.Process):
             if str(key) not in {'mask', 'confidence'} and torch.is_tensor(value)
         }
         return compute_auxiliary_head_loss(output_tensors, target_tensors, head_weights=head_weights)
+
+    def _compute_auxiliary_supervision_terms(
+        self,
+        outputs: Any,
+        label: torch.Tensor | Mapping[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        if not isinstance(label, Mapping) or not isinstance(outputs, dict):
+            return {}
+        terms: dict[str, torch.Tensor] = {}
+        for head_name in self._resolved_auxiliary_head_weights():
+            prediction = outputs.get(head_name)
+            target = label.get(head_name)
+            if not torch.is_tensor(prediction) or not torch.is_tensor(target):
+                continue
+            terms[head_name] = AuxiliaryHeadLoss.compute_single_head(
+                prediction,
+                target,
+                head_name=head_name,
+                valid_mask=label.get(f'{head_name}__valid'),
+            )
+        return terms
+
+    def _uses_homoscedastic_loss_weighting(self) -> bool:
+        return getattr(self, '_loss_weighting_strategy', 'static') == 'homoscedastic_uncertainty'
+
+    def _prepare_loss_weighter(self, device: torch.device) -> None:
+        if not self._uses_homoscedastic_loss_weighting():
+            self._loss_weighter = None
+            return
+        term_names = ['mask', *self._resolved_auxiliary_head_weights().keys()]
+        uncertainty = self._resolve_dataset_attribute(self._train_dataloader, '_uncertainty')
+        if bool(getattr(uncertainty, 'uses_confidence_head', lambda: False)()):
+            term_names.append('confidence')
+        supervision = self._resolved_supervision_targets()
+        if float(getattr(supervision, 'distance_boundary_weight', 0.0)) > 0.0:
+            term_names.append('distance_boundary')
+        self._loss_weighter = HomoscedasticLossWeighter(
+            tuple(dict.fromkeys(term_names)),
+            mask_weight_floor=float(self._mask_loss_weight_floor),
+        ).to(device)
 
     def _resolved_cutout_parameters(self) -> tuple[bool, float, int, float]:
         params = getattr(self, '_cutout_params', None)
@@ -2292,43 +2642,14 @@ class TrainerProcess(mp.Process):
         *,
         kernel_size: int = BOUNDARY_LOSS_KERNEL_SIZE,
     ) -> torch.Tensor:
-        kernel_size = max(1, int(kernel_size))
-        if kernel_size <= 1:
-            return torch.clamp(torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0), min=0.0, max=1.0)
-
-        pad = kernel_size // 2
-        padded_mask = F.pad(mask, (pad, pad, pad, pad), mode='constant', value=0.0)
-        dilation = F.max_pool2d(padded_mask, kernel_size=kernel_size, stride=1)
-        erosion = -F.max_pool2d(-padded_mask, kernel_size=kernel_size, stride=1)
-        boundary_map = dilation - erosion
-        boundary_map = torch.nan_to_num(boundary_map, nan=0.0, posinf=1.0, neginf=0.0)
-        return torch.clamp(boundary_map, min=0.0, max=1.0)
+        return compute_soft_boundary_map(mask, kernel_size=kernel_size)
 
     def _compute_boundary_loss_per_sample(
         self,
         outputs: torch.Tensor,
         label: torch.Tensor,
     ) -> torch.Tensor:
-        probs = torch.sigmoid(outputs)
-        label_bin = (label >= 0.5).to(dtype=probs.dtype)
-        pred_boundary = self._compute_soft_boundary_map(probs)
-        target_boundary = self._compute_soft_boundary_map(label_bin)
-        pred_boundary_flat = pred_boundary.view(pred_boundary.shape[0], -1)
-        target_boundary_flat = target_boundary.view(target_boundary.shape[0], -1)
-        eps = 1e-6
-        intersection = (pred_boundary_flat * target_boundary_flat).sum(dim=1)
-        pred_boundary_mass = pred_boundary_flat.sum(dim=1)
-        target_boundary_mass = target_boundary_flat.sum(dim=1)
-        denom = pred_boundary_mass + target_boundary_mass
-        boundary_loss = 1.0 - ((2.0 * intersection + eps) / (denom + eps))
-        empty_target_mask = target_boundary_mass <= eps
-        if bool(empty_target_mask.any()):
-            pixel_count = max(1, int(pred_boundary_flat.shape[1]))
-            empty_target_penalty = pred_boundary_mass / float(pixel_count)
-            empty_target_penalty = torch.clamp(empty_target_penalty, min=0.0, max=1.0)
-            boundary_loss = torch.where(empty_target_mask, empty_target_penalty, boundary_loss)
-        boundary_loss = torch.nan_to_num(boundary_loss, nan=1.0, posinf=50.0, neginf=0.0)
-        return torch.clamp(boundary_loss, min=0.0, max=50.0)
+        return compute_boundary_loss(outputs, label, kernel_size=BOUNDARY_LOSS_KERNEL_SIZE)
 
     @staticmethod
     def _soft_erode(mask: torch.Tensor) -> torch.Tensor:
@@ -2353,41 +2674,16 @@ class TrainerProcess(mp.Process):
         *,
         iterations: int = CLDICE_SKELETON_ITERATIONS,
     ) -> torch.Tensor:
-        work = torch.clamp(torch.nan_to_num(mask, nan=0.0, posinf=1.0, neginf=0.0), min=0.0, max=1.0)
-        skeleton = F.relu(work - self._soft_open(work))
-        for _ in range(max(0, int(iterations))):
-            work = self._soft_erode(work)
-            delta = F.relu(work - self._soft_open(work))
-            skeleton = skeleton + F.relu(delta - (skeleton * delta))
-        skeleton = torch.nan_to_num(skeleton, nan=0.0, posinf=1.0, neginf=0.0)
-        return torch.clamp(skeleton, min=0.0, max=1.0)
+        return soft_skeletonize(mask, iterations=iterations)
 
     def _compute_cldice_loss_per_sample(
         self,
         outputs: torch.Tensor,
         label: torch.Tensor,
     ) -> torch.Tensor:
-        probs = torch.sigmoid(outputs)
-        target = (label >= 0.5).to(dtype=probs.dtype)
-        pred_skeleton = self._soft_skeletonize(probs)
-        target_skeleton = self._soft_skeletonize(target)
-        pred_flat = probs.view(probs.shape[0], -1)
-        target_flat = target.view(target.shape[0], -1)
-        pred_skeleton_flat = pred_skeleton.view(pred_skeleton.shape[0], -1)
-        target_skeleton_flat = target_skeleton.view(target_skeleton.shape[0], -1)
-        eps = 1e-6
-        topology_precision = ((pred_skeleton_flat * target_flat).sum(dim=1) + eps) / (
-            pred_skeleton_flat.sum(dim=1) + eps
-        )
-        topology_sensitivity = ((target_skeleton_flat * pred_flat).sum(dim=1) + eps) / (
-            target_skeleton_flat.sum(dim=1) + eps
-        )
-        cldice = (2.0 * topology_precision * topology_sensitivity + eps) / (
-            topology_precision + topology_sensitivity + eps
-        )
-        cldice_loss = 1.0 - cldice
-        cldice_loss = torch.nan_to_num(cldice_loss, nan=1.0, posinf=50.0, neginf=0.0)
-        return torch.clamp(cldice_loss, min=0.0, max=50.0)
+        supervision = self._resolved_supervision_targets()
+        iterations = int(getattr(getattr(supervision, 'basic', None), 'cldice_iterations', CLDICE_SKELETON_ITERATIONS))
+        return compute_cldice_loss(outputs, label, iterations=max(0, iterations))
 
     @staticmethod
     def _compute_focal_tversky_loss_per_sample(
@@ -2610,6 +2906,11 @@ class TrainerProcess(mp.Process):
             combined_loss = torch.nan_to_num(combined_loss, nan=1.0, posinf=50.0, neginf=0.0)
             combined_loss = torch.clamp(combined_loss, min=0.0, max=50.0)
 
+        learned_terms: dict[str, torch.Tensor] | None = (
+            {'mask': combined_loss}
+            if self._uses_homoscedastic_loss_weighting() and getattr(self, '_loss_weighter', None) is not None
+            else None
+        )
         confidence_output = self._extract_confidence_output_tensor(outputs)
         if confidence_output is not None:
             confidence_output = self._resize_output_like_label(confidence_output, label)
@@ -2636,15 +2937,57 @@ class TrainerProcess(mp.Process):
                 neginf=0.0,
             )
             confidence_loss_per_sample = torch.clamp(confidence_loss_per_sample, min=0.0, max=50.0)
+            if learned_terms is not None:
+                learned_terms['confidence'] = confidence_loss_per_sample
+            else:
+                combined_loss = torch.clamp(
+                    combined_loss + (confidence_loss_per_sample * self._resolved_confidence_loss_weight()),
+                    min=0.0,
+                    max=50.0,
+                )
+
+        if learned_terms is not None:
+            learned_terms.update(self._compute_auxiliary_supervision_terms(outputs, raw_label))
+        else:
+            auxiliary_loss = self._compute_auxiliary_supervision_loss(outputs, raw_label)
+            if auxiliary_loss is not None:
+                combined_loss = torch.clamp(combined_loss + auxiliary_loss, min=0.0, max=50.0)
+        if isinstance(raw_label, Mapping):
+            supervision = self._resolved_supervision_targets()
+            distance_weight = max(0.0, float(getattr(supervision, 'distance_boundary_weight', 0.0)))
+            sdf_target = raw_label.get('sdf')
+            if distance_weight > 0.0 and torch.is_tensor(sdf_target):
+                distance_loss = compute_distance_boundary_loss(
+                    primary_output,
+                    sdf_target,
+                    valid_mask=raw_label.get('sdf__valid'),
+                )
+                if learned_terms is not None:
+                    learned_terms['distance_boundary'] = distance_loss
+                else:
+                    combined_loss = torch.clamp(combined_loss + distance_weight * distance_loss, min=0.0, max=50.0)
+        if learned_terms is not None:
+            combined_loss = getattr(self, '_loss_weighter')(learned_terms)
             combined_loss = torch.clamp(
-                combined_loss + (confidence_loss_per_sample * float(CONFIDENCE_LOSS_WEIGHT)),
+                torch.nan_to_num(combined_loss, nan=1.0, posinf=50.0, neginf=0.0),
                 min=0.0,
                 max=50.0,
             )
-
-        auxiliary_loss = self._compute_auxiliary_supervision_loss(outputs, raw_label)
-        if auxiliary_loss is not None:
-            combined_loss = torch.clamp(combined_loss + auxiliary_loss, min=0.0, max=50.0)
+        topograph_loss = self._compute_topograph_component_loss(primary_output, label)
+        if topograph_loss is not None:
+            combined_loss = torch.clamp(
+                combined_loss + (float(getattr(self, '_topograph_loss_weight', 0.0)) * topograph_loss),
+                min=0.0,
+                max=50.0,
+            )
+        self._update_batch_loss_components(
+            outputs=primary_output,
+            label=label,
+            bce_criterion=bce_criterion,
+            combined_loss=combined_loss,
+            topograph_loss=topograph_loss,
+            apply_pixel_mining=apply_pixel_mining,
+        )
         return combined_loss
 
     @staticmethod
@@ -2741,29 +3084,6 @@ class TrainerProcess(mp.Process):
                 for image_path, _label_path in getattr(base_dataset, 'samples', [])
             ]
 
-        if isinstance(base_dataset, CustomDataset):
-            export_items: list[dict[str, Any]] = []
-            channels = int(getattr(base_dataset, 'channels', 1))
-            for image_path, _label_path in getattr(base_dataset, 'samples', []):
-                image_file = Path(image_path)
-                try:
-                    with retry_file_read(lambda: Image.open(image_file), path=image_file) as source_image:
-                        width, height = source_image.size
-                except OSError:
-                    continue
-                export_items.append(
-                    {
-                        'image_path': image_file,
-                        'segment_shape': (channels, int(width), int(height)),
-                        'overlap': 0,
-                        'use_context_branch': False,
-                        'use_cross_attention': False,
-                        'context_crop_size': None,
-                        'context_input_size': None,
-                    }
-                )
-            return export_items
-
         return []
 
     @staticmethod
@@ -2837,31 +3157,16 @@ class TrainerProcess(mp.Process):
         return [int(item) for item in parts]
 
     def _create_validation_export_cache(self) -> _ValidationExportCache | None:
-        if (not self._save_validation_binary_images) or self._val_dataloader is None:
+        if (
+            not self._save_validation_binary_images
+            and not (self._advanced_validation_enabled() and self._advanced_validation_full_frame())
+        ) or self._val_dataloader is None:
             return None
 
         dataset = self._resolve_validation_dataset()
         base_dataset = self._unwrap_validation_dataset(dataset)
         if dataset is None or base_dataset is None:
             return None
-
-        if isinstance(base_dataset, CustomDataset):
-            estimated_bytes = 0
-            for image_path, _label_path in getattr(base_dataset, 'samples', []):
-                image_file = Path(image_path)
-                try:
-                    with retry_file_read(lambda: Image.open(image_file), path=image_file) as source_image:
-                        width, height = source_image.size
-                except OSError:
-                    return None
-                estimated_bytes += int(width) * int(height) * 2
-                if estimated_bytes > VALIDATION_EXPORT_CACHE_MAX_BYTES:
-                    return None
-            return _ValidationExportCache(
-                mode='custom',
-                dataset=dataset,
-                sample_predictions={},
-            )
 
         if not isinstance(base_dataset, NoCutDataset):
             return None
@@ -2875,7 +3180,7 @@ class TrainerProcess(mp.Process):
 
         frame_predictions: dict[int, _ValidationNoCutFrameExportCache] = {}
         estimated_bytes = 0
-        for frame_index, (image_path, _label_path) in enumerate(getattr(base_dataset, 'samples', [])):
+        for frame_index, (image_path, label_path) in enumerate(getattr(base_dataset, 'samples', [])):
             prepared_size = ImagePreparator(Path(image_path), getattr(base_dataset, '_prep_settings')).size
             if len(prepared_size) != 2:
                 return None
@@ -2895,6 +3200,7 @@ class TrainerProcess(mp.Process):
             frame_predictions[frame_index] = _ValidationNoCutFrameExportCache(
                 frame_index=int(frame_index),
                 image_path=Path(image_path),
+                label_path=Path(label_path),
                 baseim_size=(base_width, base_height),
                 overlap=max(0, int(segment_size[0]) - int(getattr(cut_settings, 'step', segment_size[0]))),
                 parts_count=int(parts_count),
@@ -2904,6 +3210,7 @@ class TrainerProcess(mp.Process):
                     parts_count=int(frame_length),
                 ),
                 patches={},
+                confidence_patches={},
             )
 
         if not frame_predictions:
@@ -2914,12 +3221,127 @@ class TrainerProcess(mp.Process):
             frame_predictions=frame_predictions,
         )
 
+    @staticmethod
+    def _stack_validation_patches(
+        frame_cache: _ValidationNoCutFrameExportCache,
+        patches: Mapping[int, np.ndarray],
+    ) -> np.ndarray | None:
+        if len(patches) < int(frame_cache.parts_count):
+            return None
+        sample_patch = next(iter(patches.values()), None)
+        if sample_patch is None or np.asarray(sample_patch).ndim != 3:
+            return None
+        sample_array = np.asarray(sample_patch)
+        stacked = np.zeros(
+            (
+                int(frame_cache.parts_count),
+                int(sample_array.shape[0]),
+                int(sample_array.shape[1]),
+                int(sample_array.shape[2]),
+            ),
+            dtype=np.float32,
+        )
+        for location, patch in patches.items():
+            if 0 <= int(location) < int(frame_cache.parts_count):
+                stacked[int(location)] = np.asarray(patch, dtype=np.float32)
+        return stacked
+
+    def _compute_stitched_validation_metrics(
+        self,
+        export_cache: _ValidationExportCache | None,
+        *,
+        threshold: float,
+    ) -> tuple[dict[str, float], int]:
+        if export_cache is None or export_cache.mode != 'no_cut':
+            return {}, 0
+        base_dataset = self._unwrap_validation_dataset(export_cache.dataset)
+        if not isinstance(base_dataset, NoCutDataset):
+            return {}, 0
+
+        count_metrics = {
+            'connected_component_difference',
+            'wire_break_count',
+            'false_bridge_count',
+            'missed_component_count',
+            'spurious_component_count',
+            'foreground_component_delta',
+            'background_component_delta',
+            'topology_violation_count',
+        }
+        totals: dict[str, float] = {}
+        frame_count = 0
+        confidence_histogram: dict[str, int] = {}
+        boundary_tolerance, include_hd95, confidence_bins = self._advanced_validation_options()
+        for frame_cache in (export_cache.frame_predictions or {}).values():
+            predicted = self._stack_validation_patches(frame_cache, frame_cache.patches)
+            if predicted is None:
+                return {}, 0
+            probability = np.asarray(
+                sew_image(
+                    frame_cache.baseim_size,
+                    predicted,
+                    int(frame_cache.overlap),
+                    threshold=None,
+                    postprocess_kernel_size=0,
+                ),
+                dtype=np.float32,
+            ) / 255.0
+            confidence = None
+            confidence_patches = self._stack_validation_patches(
+                frame_cache,
+                frame_cache.confidence_patches,
+            )
+            if confidence_patches is not None:
+                confidence = np.asarray(
+                    sew_image(
+                        frame_cache.baseim_size,
+                        confidence_patches,
+                        int(frame_cache.overlap),
+                        threshold=None,
+                        postprocess_kernel_size=0,
+                    ),
+                    dtype=np.float32,
+                ) / 255.0
+
+            _image_path, _prepared_image, prepared_label, _rare_mask = (
+                base_dataset._prepare_frame_images(int(frame_cache.frame_index))
+            )
+            target = np.asarray(prepared_label.convert('L'), dtype=np.float32) / 255.0
+            frame_metrics = compute_segmentation_metrics(
+                probability,
+                target,
+                threshold=float(threshold),
+                confidence=confidence,
+                boundary_tolerance=boundary_tolerance,
+                include_hd95=include_hd95,
+                confidence_bins=confidence_bins,
+            ).as_dict()
+            for metric_name, metric_value in frame_metrics.items():
+                if metric_name == 'confidence_histogram':
+                    for bin_name, bin_count in dict(metric_value or {}).items():
+                        confidence_histogram[str(bin_name)] = (
+                            confidence_histogram.get(str(bin_name), 0) + int(bin_count)
+                        )
+                elif isinstance(metric_value, (int, float)):
+                    totals[metric_name] = totals.get(metric_name, 0.0) + float(metric_value)
+            frame_count += 1
+
+        if frame_count <= 0:
+            return {}, 0
+        for metric_name in tuple(totals):
+            if metric_name not in count_metrics:
+                totals[metric_name] /= float(frame_count)
+        for bin_name, bin_count in confidence_histogram.items():
+            totals[f'confidence_histogram/{bin_name}'] = float(bin_count)
+        return totals, frame_count
+
     def _collect_validation_export_batch(
         self,
         export_cache: _ValidationExportCache | None,
         *,
         sample_indices: Any,
         probs: torch.Tensor,
+        confidence: torch.Tensor | None = None,
         saved_images: int,
     ) -> None:
         if export_cache is None or probs.ndim < 4:
@@ -2934,16 +3356,6 @@ class TrainerProcess(mp.Process):
             return
 
         cpu_probs = probs.detach().cpu().to(dtype=torch.float16).numpy()
-        if export_cache.mode == 'custom':
-            sample_predictions = export_cache.sample_predictions
-            if sample_predictions is None:
-                return
-            for batch_offset, sample_index in enumerate(resolved_indices):
-                if batch_offset >= int(cpu_probs.shape[0]):
-                    break
-                sample_predictions[int(sample_index)] = np.ascontiguousarray(cpu_probs[batch_offset])
-            return
-
         if export_cache.mode != 'no_cut':
             return
 
@@ -2980,6 +3392,10 @@ class TrainerProcess(mp.Process):
             if location < 0 or location >= frame_cache.parts_count or location in frame_cache.patches:
                 continue
             frame_cache.patches[int(location)] = np.ascontiguousarray(cpu_probs[batch_offset])
+            if confidence is not None and batch_offset < int(confidence.shape[0]):
+                frame_cache.confidence_patches[int(location)] = np.ascontiguousarray(
+                    confidence[batch_offset].detach().cpu().to(dtype=torch.float16).numpy()
+                )
 
     def _save_validation_binary_predictions_from_cache(
         self,
@@ -2990,26 +3406,6 @@ class TrainerProcess(mp.Process):
     ) -> int | None:
         if export_cache is None:
             return None
-
-        dataset = export_cache.dataset
-        if export_cache.mode == 'custom':
-            sample_predictions = export_cache.sample_predictions or {}
-            if not sample_predictions:
-                return None
-            if isinstance(dataset, Sized) and len(sample_predictions) < int(len(dataset)):
-                return None
-
-            saved_images = 0
-            for sample_index in sorted(sample_predictions):
-                sample_name = self._describe_validation_sample(dataset, int(sample_index), saved_images)
-                sample_path = epoch_dir / f'{saved_images:06d}_{sample_name}.png'
-                sample_tensor = np.asarray(sample_predictions[int(sample_index)], dtype=np.float32)
-                if sample_tensor.ndim == 3:
-                    sample_tensor = sample_tensor[0]
-                sample_array = (sample_tensor >= float(threshold)).astype(np.uint8) * 255
-                Image.fromarray(sample_array, mode='L').save(sample_path)
-                saved_images += 1
-            return int(saved_images)
 
         if export_cache.mode != 'no_cut':
             return None
@@ -3023,20 +3419,9 @@ class TrainerProcess(mp.Process):
 
         saved_images = 0
         for frame_cache in frame_predictions.values():
-            sample_patch = next(iter(frame_cache.patches.values()), None)
-            if sample_patch is None:
+            predicted = self._stack_validation_patches(frame_cache, frame_cache.patches)
+            if predicted is None:
                 continue
-            predicted = np.zeros(
-                (
-                    int(frame_cache.parts_count),
-                    int(sample_patch.shape[0]),
-                    int(sample_patch.shape[1]),
-                    int(sample_patch.shape[2]),
-                ),
-                dtype=np.float32,
-            )
-            for location, patch in frame_cache.patches.items():
-                predicted[int(location)] = np.asarray(patch, dtype=np.float32)
             _sew(
                 epoch_dir,
                 {
@@ -3215,6 +3600,9 @@ class TrainerProcess(mp.Process):
             for threshold in VALIDATION_THRESHOLD_CANDIDATES
         }
         skipped_non_finite_batches = 0
+        advanced_metrics_enabled = self._advanced_validation_enabled()
+        advanced_metric_totals: dict[str, float] = {}
+        advanced_metric_count = 0
         validation_export_cache = self._create_validation_export_cache()
         export_saved_images = 0
         evaluation_model = self._base_model if isinstance(self._model, DDP) else self._model
@@ -3242,7 +3630,7 @@ class TrainerProcess(mp.Process):
                 data, target, _sample_indices = self._split_batch(batch)
                 inputs = self._move_batch_input_to_device(data, device)
                 image = self._extract_local_image(inputs)
-                label = target.to(device, non_blocking=True)
+                label = self._move_batch_target_to_device(target, device)
                 with autocast_ctx():
                     outputs = evaluation_model(inputs)
                     per_sample_loss = self._compute_per_sample_loss(outputs, label, bce_criterion)
@@ -3280,21 +3668,32 @@ class TrainerProcess(mp.Process):
                     frame_loss_sums[frame_key] = frame_loss_sums.get(frame_key, 0.0) + float(sample_loss)
                     frame_loss_counts[frame_key] = frame_loss_counts.get(frame_key, 0) + 1
                 probs = torch.sigmoid(self._sanitize_outputs_for_loss(outputs))
+                confidence_output = self._extract_confidence_output_tensor(outputs)
+                confidence_tensor = (
+                    torch.sigmoid(confidence_output)
+                    if confidence_output is not None
+                    else None
+                )
                 self._collect_validation_export_batch(
                     validation_export_cache,
                     sample_indices=_sample_indices,
                     probs=probs,
+                    confidence=confidence_tensor,
                     saved_images=export_saved_images,
                 )
                 export_saved_images += int(probs.shape[0])
                 preds = probs >= 0.5
                 primary_label = extract_primary_label(label) if isinstance(label, Mapping) else label
                 label_bin = self._sanitize_labels_for_loss(primary_label) >= 0.5
-                if advanced_metrics_enabled:
-                    confidence_output = self._extract_confidence_output_tensor(outputs)
+                if advanced_metrics_enabled and (
+                    not self._advanced_validation_full_frame()
+                    or
+                    validation_export_cache is None or validation_export_cache.mode != 'no_cut'
+                ):
                     confidence_np = None
-                    if confidence_output is not None:
-                        confidence_np = torch.sigmoid(confidence_output).detach().cpu().numpy()
+                    boundary_tolerance, include_hd95, confidence_bins = self._advanced_validation_options()
+                    if confidence_tensor is not None:
+                        confidence_np = confidence_tensor.detach().cpu().numpy()
                     batch_size = int(probs.shape[0])
                     for sample_index in range(batch_size):
                         sample_metrics = compute_segmentation_metrics(
@@ -3306,6 +3705,9 @@ class TrainerProcess(mp.Process):
                                 if confidence_np is not None
                                 else None
                             ),
+                            boundary_tolerance=boundary_tolerance,
+                            include_hd95=include_hd95,
+                            confidence_bins=confidence_bins,
                         )
                         for metric_name, metric_value in sample_metrics.as_dict().items():
                             if metric_name == 'confidence_histogram':
@@ -3382,6 +3784,17 @@ class TrainerProcess(mp.Process):
         }
         best_threshold, best_threshold_metrics = self._pick_best_validation_threshold(threshold_metrics)
         self._recommended_inference_threshold = float(best_threshold)
+        stitched_metrics, stitched_frame_count = (
+            self._compute_stitched_validation_metrics(
+                validation_export_cache,
+                threshold=float(best_threshold),
+            )
+            if self._advanced_validation_full_frame()
+            else ({}, 0)
+        )
+        if stitched_frame_count > 0:
+            advanced_metric_totals = stitched_metrics
+            advanced_metric_count = 1
         self._save_validation_binary_predictions(
             epoch=epoch,
             device=device,
@@ -3404,7 +3817,20 @@ class TrainerProcess(mp.Process):
             'best_threshold_f1': float(best_threshold_metrics['f1']),
             **(
                 {
-                    metric_name: float(metric_total / max(1, advanced_metric_count))
+                    metric_name: float(
+                        metric_total
+                        if metric_name in {
+                            'connected_component_difference',
+                            'wire_break_count',
+                            'false_bridge_count',
+                            'missed_component_count',
+                            'spurious_component_count',
+                            'foreground_component_delta',
+                            'background_component_delta',
+                            'topology_violation_count',
+                        }
+                        else metric_total / max(1, advanced_metric_count)
+                    )
                     for metric_name, metric_total in advanced_metric_totals.items()
                 }
                 if advanced_metrics_enabled and advanced_metric_count > 0
@@ -3419,15 +3845,20 @@ class TrainerProcess(mp.Process):
             if self._can_use_fused_optim():
                 adam_kwargs['fused'] = True
             try:
-                return optim.Adam(self._model.parameters(), **adam_kwargs)
+                return optim.Adam(self._all_trainable_parameters(), **adam_kwargs)
             except TypeError:
                 adam_kwargs.pop('fused', None)
-                return optim.Adam(self._model.parameters(), **adam_kwargs)
+                return optim.Adam(self._all_trainable_parameters(), **adam_kwargs)
         if params.name == OptimizerName.adamw:
             return self._create_adamw_optimizer(params)
         if params.name == OptimizerName.adamw_muon:
             return self._create_adamw_muon_optimizer(params)
         raise ValueError(f'Unsupported optimizer: {params.name}')
+
+    def _all_trainable_parameters(self) -> Iterator[torch.nn.Parameter]:
+        yield from self._model.parameters()
+        if self._loss_weighter is not None:
+            yield from self._loss_weighter.parameters()
 
     def _can_use_fused_optim(self) -> bool:
         if not torch.cuda.is_available():
@@ -3458,7 +3889,7 @@ class TrainerProcess(mp.Process):
         return MixedPrecisionMode.off, None, False
 
     def _build_adamw_param_groups(self, params: OptimizerParameters) -> list[dict[str, Any]]:
-        return self._build_adamw_param_groups_for(params, self._model.parameters())
+        return self._build_adamw_param_groups_for(params, self._all_trainable_parameters())
 
     def _build_adamw_param_groups_for(
         self,
@@ -3474,6 +3905,8 @@ class TrainerProcess(mp.Process):
                 for p in module.parameters(recurse=False):
                     if p.requires_grad:
                         norm_param_ids.add(id(p))
+        if self._loss_weighter is not None:
+            norm_param_ids.update(id(parameter) for parameter in self._loss_weighter.parameters())
 
         decay_params: list[torch.nn.Parameter] = []
         no_decay_params: list[torch.nn.Parameter] = []
@@ -3512,10 +3945,10 @@ class TrainerProcess(mp.Process):
         if use_fused:
             adamw_kwargs['fused'] = True
         try:
-            return optim.AdamW(self._model.parameters(), **adamw_kwargs)
+            return optim.AdamW(self._all_trainable_parameters(), **adamw_kwargs)
         except TypeError:
             adamw_kwargs.pop('fused', None)
-            return optim.AdamW(self._model.parameters(), **adamw_kwargs)
+            return optim.AdamW(self._all_trainable_parameters(), **adamw_kwargs)
 
     def _create_adamw_muon_optimizer(self, params: OptimizerParameters):
         muon_cls = resolve_muon_optimizer_class()
@@ -3538,7 +3971,7 @@ class TrainerProcess(mp.Process):
     ) -> optim.Optimizer:
         muon_params: list[torch.nn.Parameter] = []
         adamw_params: list[torch.nn.Parameter] = []
-        for param in self._model.parameters():
+        for param in self._all_trainable_parameters():
             if not param.requires_grad:
                 continue
             if param.ndim == 2:
@@ -4082,6 +4515,17 @@ class TrainerProcess(mp.Process):
                     ),
                 ])
         self._bus.put(['logging', 'Loss normalization: per-sample mean (batch-size invariant).'])
+        if self._topograph_is_active():
+            self._bus.put([
+                'logging',
+                (
+                    f'Topograph loss enabled: weight={self._topograph_loss_weight:.2f}, '
+                    f'connectivity=4, use_c={self._topograph_use_c}, '
+                    f'num_processes={self._topograph_num_processes}.'
+                ),
+            ])
+            if self._topograph_debug_viz:
+                self._bus.put(['logging', 'Topograph debug visualization is enabled for batch previews.'])
 
     def _log_sampling_configuration(self, *, train_sampler: Any, supports_loss_aware_sampling: bool) -> None:
         if self._skip_uniform_labels:
@@ -4171,6 +4615,7 @@ class TrainerProcess(mp.Process):
         self._prepare_training_device(device, is_main_process=is_main_process, distributed=distributed)
 
         bce_criterion = nn.BCEWithLogitsLoss(reduction='none')
+        self._prepare_loss_weighter(device)
         optimizer = self._create_optimizer()
         train_size, train_sampler, supports_loss_aware_sampling, strides = self._resolve_train_loader_context()
         self._publish_training_start_metrics(train_size)
@@ -4307,8 +4752,9 @@ class TrainerProcess(mp.Process):
         self._model.train()
         if distributed:
             sampler = getattr(self._train_dataloader, 'sampler', None)
-            if isinstance(sampler, DistributedSampler):
-                sampler.set_epoch(epoch)
+            set_epoch = getattr(sampler, 'set_epoch', None)
+            if callable(set_epoch):
+                set_epoch(epoch)
         self._bus.put(['logging', f'Начало эпохи [{epoch + 1}/{self._epochs}]'])
         current_lr = float(run_context.optimizer.param_groups[0]['lr'])
         self._bus.put(['logging', f'Текущий learning rate: {current_lr:.8f}'])
@@ -4339,17 +4785,15 @@ class TrainerProcess(mp.Process):
 
     @staticmethod
     def _move_batch_input_to_device(data: Any, device: torch.device) -> Any:
-        if isinstance(data, Mapping):
-            moved: dict[str, Any] = {}
-            for key, value in data.items():
-                if torch.is_tensor(value):
-                    moved[str(key)] = value.to(device, non_blocking=True)
-                else:
-                    moved[str(key)] = value
-            return moved
-        if torch.is_tensor(data):
-            return data.to(device, non_blocking=True)
-        raise TypeError(f'Unsupported batch input type: {type(data)!r}')
+        if not torch.is_tensor(data) and not isinstance(data, Mapping):
+            raise TypeError(f'Unsupported batch input type: {type(data)!r}')
+        return move_batch_to_device(data, device)
+
+    @staticmethod
+    def _move_batch_target_to_device(target: Any, device: torch.device) -> Any:
+        if not torch.is_tensor(target) and not isinstance(target, Mapping):
+            raise TypeError(f'Unsupported batch target type: {type(target)!r}')
+        return move_batch_to_device(target, device)
 
     @staticmethod
     def _create_cuda_timing_events(device: torch.device, count: int) -> tuple[Any, ...] | None:
@@ -4429,7 +4873,16 @@ class TrainerProcess(mp.Process):
 
         image = self._filter_batch_input(image, valid_mask)
         if isinstance(label, Mapping):
-            label = {key: value[valid_mask] for key, value in label.items()}
+            label = {
+                key: (
+                    value[valid_mask.detach().to(device=value.device)]
+                    if torch.is_tensor(value)
+                    and value.ndim > 0
+                    and int(value.shape[0]) == int(valid_mask.shape[0])
+                    else value
+                )
+                for key, value in label.items()
+            }
         else:
             label = label[valid_mask]
         if sample_indices is None:
@@ -4453,9 +4906,9 @@ class TrainerProcess(mp.Process):
     def _apply_mixup_to_batch(
         self,
         image: Any,
-        label: torch.Tensor,
+        label: torch.Tensor | Mapping[str, torch.Tensor],
         sample_indices: Any,
-    ) -> tuple[Any, torch.Tensor, Any, torch.Tensor | None]:
+    ) -> tuple[Any, torch.Tensor | Mapping[str, torch.Tensor], Any, torch.Tensor | None]:
         enabled, probability, alpha = self._resolved_mixup_parameters()
         local_image = self._extract_local_image(image)
         batch_size = int(local_image.size(0))
@@ -4479,7 +4932,18 @@ class TrainerProcess(mp.Process):
         lambda_tensor = local_image.new_full((batch_size,), lambda_value)
         lambda_view = lambda_tensor.view(batch_size, 1, 1, 1)
         mixed_image = self._mixup_batch_input(image, permutation, lambda_view)
-        mixed_label = (lambda_view * label) + ((1.0 - lambda_view) * label[permutation])
+        if isinstance(label, Mapping):
+            mixed_label: torch.Tensor | Mapping[str, torch.Tensor] = {}
+            for key, value in label.items():
+                if not torch.is_tensor(value) or value.ndim < 1 or int(value.shape[0]) != batch_size:
+                    mixed_label[str(key)] = value
+                    continue
+                if str(key).endswith('__valid'):
+                    mixed_label[str(key)] = torch.minimum(value, value[permutation])
+                else:
+                    mixed_label[str(key)] = (lambda_view * value) + ((1.0 - lambda_view) * value[permutation])
+        else:
+            mixed_label = (lambda_view * label) + ((1.0 - lambda_view) * label[permutation])
         pair_indices = self._permute_sample_indices(sample_indices, permutation)
         return mixed_image, mixed_label, pair_indices, lambda_tensor
 
@@ -4690,9 +5154,9 @@ class TrainerProcess(mp.Process):
     def _apply_training_batch_augmentations(
         self,
         image: Any,
-        label: torch.Tensor,
+        label: torch.Tensor | Mapping[str, torch.Tensor],
         sample_indices: Any,
-    ) -> tuple[Any, torch.Tensor, Any, torch.Tensor | None]:
+    ) -> tuple[Any, torch.Tensor | Mapping[str, torch.Tensor], Any, torch.Tensor | None]:
         image, label, mixup_pair_indices, mixup_lambdas = self._apply_mixup_to_batch(
             image,
             label,
@@ -4719,21 +5183,34 @@ class TrainerProcess(mp.Process):
         if not ((batch_index % preview_stride == 0) or (batch_index == train_size - 1)):
             return
         preview_image = self._tensor_to_preview_array(data[0])
-        preview_label = self._tensor_to_preview_array(target[0])
+        preview_target = extract_primary_label(target) if isinstance(target, Mapping) else target
+        preview_label = self._tensor_to_preview_array(preview_target[0])
         primary_outputs = self._sanitize_outputs_for_loss(outputs)
         preview_outputs = self._tensor_to_preview_array(torch.sigmoid(primary_outputs[0].detach()))
-        self._bus.put([
-            'metrics',
-            {
-                'type': 'train_batch_preview',
-                'epoch': int(epoch + 1),
-                'batch_index': int(batch_index + 1),
-                'sample_name': self._describe_train_preview_sample(sample_indices, batch_index),
-                'image': preview_image,
-                'label': preview_label,
-                'outputs': preview_outputs,
-            },
-        ])
+        preview_payload: dict[str, Any] = {
+            'type': 'train_batch_preview',
+            'epoch': int(epoch + 1),
+            'batch_index': int(batch_index + 1),
+            'sample_name': self._describe_train_preview_sample(sample_indices, batch_index),
+            'image': preview_image,
+            'label': preview_label,
+            'outputs': preview_outputs,
+        }
+        if self._topograph_is_active() and bool(getattr(self, '_topograph_debug_viz', False)):
+            preview_label_tensor = preview_target[0:1]
+            if preview_label_tensor.ndim == 3:
+                preview_label_tensor = preview_label_tensor.unsqueeze(1)
+            with torch.no_grad():
+                critical_mask = extract_critical_region_mask(
+                    primary_outputs[0:1],
+                    preview_label_tensor,
+                    use_c=bool(getattr(self, '_topograph_use_c', False)),
+                )
+            preview_payload['topograph_overlay'] = render_critical_regions_overlay(
+                preview_outputs,
+                critical_mask.cpu().numpy(),
+            )
+        self._bus.put(['metrics', preview_payload])
 
     def _update_loss_aware_sampling(
         self,
@@ -4850,12 +5327,13 @@ class TrainerProcess(mp.Process):
                 f'Training debug [{stage}]: first non-finite input tensor "{input_name}": '
                 f'{self._format_tensor_debug_stats(input_tensor)}',
             ])
-        label_issue = None if self._is_finite_tensor(batch.label) else batch.label
+        label_issue = self._find_first_non_finite_input_tensor(batch.label)
         if label_issue is not None:
+            label_name, label_tensor = label_issue
             self._bus.put([
                 'logging',
-                f'Training debug [{stage}]: label tensor is non-finite: '
-                f'{self._format_tensor_debug_stats(label_issue)}',
+                f'Training debug [{stage}]: label tensor "{label_name}" is non-finite: '
+                f'{self._format_tensor_debug_stats(label_tensor)}',
             ])
         if outputs is not None:
             primary_output = self._extract_primary_output_tensor(outputs)
@@ -4898,7 +5376,27 @@ class TrainerProcess(mp.Process):
             ])
 
     def _has_non_finite_gradients(self) -> bool:
-        return self._find_first_non_finite_gradient() is not None
+        if self._find_first_non_finite_gradient() is not None:
+            return True
+        loss_weighter = getattr(self, '_loss_weighter', None)
+        return bool(
+            loss_weighter is not None
+            and any(
+                parameter.grad is not None and not bool(torch.isfinite(parameter.grad).all())
+                for parameter in loss_weighter.parameters()
+            )
+        )
+
+    def _synchronize_loss_weighter_gradients(self) -> None:
+        loss_weighter = getattr(self, '_loss_weighter', None)
+        if loss_weighter is None or not dist.is_available() or not dist.is_initialized():
+            return
+        world_size = max(1, int(dist.get_world_size()))
+        for parameter in loss_weighter.parameters():
+            if parameter.grad is None:
+                continue
+            dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
+            parameter.grad.div_(float(world_size))
 
     def _prepare_train_batch(
         self,
@@ -4910,7 +5408,7 @@ class TrainerProcess(mp.Process):
     ) -> tuple[_PreparedTrainBatch | None, int]:
         data, target, sample_indices = self._split_batch(batch)
         inputs = self._move_batch_input_to_device(data, device)
-        label = target.to(device, non_blocking=True)
+        label = self._move_batch_target_to_device(target, device)
         inputs, label, sample_indices, skipped_here, has_valid_samples = self._filter_uniform_batch_samples(
             inputs,
             label,
@@ -5025,6 +5523,7 @@ class TrainerProcess(mp.Process):
         backward_start = time.perf_counter()
         run_context.scaler.scale(loss).backward()
         run_context.scaler.unscale_(run_context.optimizer)
+        self._synchronize_loss_weighter_gradients()
         if self._has_non_finite_gradients():
             self._bus.put(['logging', 'Training warning: non-finite gradients detected, optimizer step skipped.'])
             self._non_finite_gradient_skip_count = int(
@@ -5046,12 +5545,13 @@ class TrainerProcess(mp.Process):
                 outputs=outputs,
                 per_sample_loss=per_sample_loss,
                 metric_loss=metric_loss.detach(),
+                loss_components=dict(getattr(self, '_last_batch_loss_components', {})),
                 batch_samples=int(batch.image.size(0)),
                 forward_ms=forward_ms,
                 backward_ms=backward_ms,
                 optimizer_ms=0.0,
             )
-        torch.nn.utils.clip_grad_norm_(self._model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(tuple(self._all_trainable_parameters()), 1.0)
         if step_events is not None:
             self._record_cuda_timing_event(backward_end_event, step_device)
             backward_ms = 0.0
@@ -5075,6 +5575,7 @@ class TrainerProcess(mp.Process):
             outputs=outputs,
             per_sample_loss=per_sample_loss,
             metric_loss=metric_loss.detach(),
+            loss_components=dict(getattr(self, '_last_batch_loss_components', {})),
             batch_samples=int(batch.image.size(0)),
             forward_ms=forward_ms,
             backward_ms=backward_ms,
@@ -5104,17 +5605,29 @@ class TrainerProcess(mp.Process):
 
         if (batch_index % run_context.strides.metric == 0) or (batch_index == run_context.train_size - 1):
             batch_loss = self._loss_value_to_float(cast(torch.Tensor | float, step_result.metric_loss))
+            loss_components = dict(step_result.loss_components or getattr(self, '_last_batch_loss_components', {}))
             epoch_points = self._batch_points_by_epoch.setdefault(int(epoch + 1), [])
             epoch_points.append((float(batch_index + 1), batch_loss))
-            self._bus.put([
-                'metrics',
-                {
-                    'type': 'train_batch',
-                    'epoch': epoch + 1,
-                    'batch_index': batch_index + 1,
-                    'loss': batch_loss,
-                },
-            ])
+            train_batch_metric: dict[str, Any] = {
+                'type': 'train_batch',
+                'epoch': epoch + 1,
+                'batch_index': batch_index + 1,
+                'loss': batch_loss,
+            }
+            if loss_components:
+                train_batch_metric['loss_components'] = loss_components
+            self._bus.put(['metrics', train_batch_metric])
+            if loss_components:
+                self._bus.put([
+                    'logging',
+                    (
+                        'Loss components: '
+                        f'BCE={loss_components.get("bce", 0.0):.4f} '
+                        f'Dice={loss_components.get("dice", 0.0):.4f} '
+                        f'Topograph={loss_components.get("topograph", 0.0):.4f} '
+                        f'Total={loss_components.get("total", batch_loss):.4f}'
+                    ),
+                ])
             self._bus.put([
                 'metrics',
                 {
@@ -5150,11 +5663,11 @@ class TrainerProcess(mp.Process):
         if dataloader is None:
             raise RuntimeError('Early stopping requires validation or train-control dataloader')
 
-        def adapt_batch(batch: Any, target_device: torch.device) -> tuple[Any, torch.Tensor]:
+        def adapt_batch(batch: Any, target_device: torch.device) -> tuple[Any, Any]:
             data, target, _sample_indices = self._split_batch(batch)
             return (
                 self._move_batch_input_to_device(data, target_device),
-                target.to(target_device, non_blocking=True),
+                self._move_batch_target_to_device(target, target_device),
             )
 
         evaluator = MetricEvaluator()
@@ -6241,6 +6754,7 @@ class NeuralRecognizer(threading.Thread):
             loaded_model = load_model_artifact(loaded_model, map_location='cpu')
         if not isinstance(loaded_model, nn.Module):
             raise TypeError('Recognition model must be a torch.nn.Module or a model path.')
+        self._apply_artifact_preprocessing(loaded_model)
         self._resolve_output_threshold(loaded_model)
         if not bool(getattr(sys, 'frozen', False)):
             compile_enabled = str(os.getenv('NEURALIMAGE_TORCH_COMPILE', '0')).strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -6284,6 +6798,21 @@ class NeuralRecognizer(threading.Thread):
         self.colors = get_input_channels(loaded_model)
         self._resolve_context_branch_settings(loaded_model)
 
+    def _apply_artifact_preprocessing(self, model: nn.Module) -> None:
+        metadata = getattr(model, '_neuralimage_artifact_metadata', None)
+        preprocessing_payload = metadata.get('preprocessing') if isinstance(metadata, dict) else None
+        if not isinstance(preprocessing_payload, dict) or not isinstance(preprocessing_payload.get('config'), dict):
+            return
+        artifact_config = build_preprocessing_config(preprocessing_payload['config'])
+        artifact_hash = str(preprocessing_payload.get('hash') or artifact_config.stable_hash())
+        requested = getattr(self._parameters, 'preprocessing', None)
+        if requested is not None and requested.any_enabled() and requested.stable_hash() != artifact_hash:
+            raise ValueError(
+                'Recognition preprocessing override is incompatible with the model artifact. '
+                f'artifact={artifact_hash}, requested={requested.stable_hash()}.'
+            )
+        self._parameters.preprocessing = artifact_config
+
     def run_multiprocessing(self, runtime_plan: RecognitionRuntimePlan | None = None):
         if runtime_plan is None:
             runtime_plan = self._build_runtime_plan(multithreading=True)
@@ -6316,6 +6845,9 @@ class NeuralRecognizer(threading.Thread):
                 else None
             ),
             preprocessing=getattr(self._parameters, 'preprocessing', None),
+            active_learning=getattr(self._parameters, 'active_learning', None),
+            active_learning_metadata=self._build_active_learning_metadata(),
+            uncertainty=getattr(self._parameters, 'uncertainty', None),
         )
         run_multiprocessing_recognition(
             workload=workload,
@@ -6369,7 +6901,27 @@ class NeuralRecognizer(threading.Thread):
                 else None
             ),
             preprocessing=getattr(self._parameters, 'preprocessing', None),
+            active_learning=getattr(self._parameters, 'active_learning', None),
+            active_learning_metadata=self._build_active_learning_metadata(),
+            uncertainty=getattr(self._parameters, 'uncertainty', None),
         )
+
+    def _build_active_learning_metadata(self) -> dict[str, object]:
+        metadata: dict[str, object] = {}
+        model_source = getattr(self._parameters, 'model', None)
+        if isinstance(model_source, (str, Path)) and Path(model_source).is_file():
+            digest = hashlib.sha256()
+            with Path(model_source).open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    digest.update(chunk)
+            metadata['model_hash'] = digest.hexdigest()
+        preprocessing = getattr(self._parameters, 'preprocessing', None)
+        if preprocessing is not None and hasattr(preprocessing, 'stable_hash'):
+            metadata['preprocessing_hash'] = preprocessing.stable_hash()
+        sem_config_hash = getattr(self._parameters, 'sem_config_hash', None)
+        if sem_config_hash:
+            metadata['config_hash'] = str(sem_config_hash)
+        return metadata
 
     def stop(self):
         self._thread_stop_event.set()

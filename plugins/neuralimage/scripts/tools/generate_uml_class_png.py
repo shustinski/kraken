@@ -44,7 +44,7 @@ SKIP_ROOTS = {
 
 PACKAGE_LAYERS: list[list[str]] = [
     ["main", "manage", "main_code_version"],
-    ["controller", "bootstrap", "webui_project", "neuralimage.webui"],
+    ["controller", "bootstrap"],
     ["presenter", "view", "UI", "application"],
     ["model", "augmentations", "infrastructure", "Validation_gradient_widget_lite"],
     ["lib"],
@@ -67,8 +67,6 @@ GROUP_BY_ROOT = {
     "main_code_version": "entry",
     "controller": "orchestration",
     "bootstrap": "orchestration",
-    "webui_project": "orchestration",
-    "neuralimage.webui": "orchestration",
     "presenter": "presentation",
     "view": "presentation",
     "UI": "presentation",

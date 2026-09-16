@@ -1,9 +1,6 @@
-import threading
-
 import pytest
 
-from neuralimage.lib.logging_policy import MAX_LOG_MESSAGES, should_forward_log_event
-from neuralimage.webui.services.training_session import TrainingSessionService
+from neuralimage.lib.logging_policy import should_forward_log_event
 
 torch = pytest.importorskip("torch")
 
@@ -35,19 +32,3 @@ def test_progress_reporter_publishes_metrics_without_frame_logs():
         ("metrics", {"type": "recognition_progress", "current": 0, "total": 5}),
         ("metrics", {"type": "recognition_progress", "current": 3, "total": 5}),
     ]
-
-
-def test_training_session_service_caps_and_filters_log_events():
-    service = TrainingSessionService.__new__(TrainingSessionService)
-    service._lock = threading.RLock()
-    service._events = []
-    service._next_event_id = 1
-
-    service._on_logging("Frame: 1/10. Per-frame time: 0.10 sec. Elapsed: 0:00:01")
-    assert service._events == []
-
-    for i in range(MAX_LOG_MESSAGES + 7):
-        service._append_event("logging", f"event {i}")
-
-    assert len(service._events) == MAX_LOG_MESSAGES
-    assert service._events[0]["message"] == "event 7"

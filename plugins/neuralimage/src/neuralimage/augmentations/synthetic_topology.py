@@ -2305,8 +2305,14 @@ class SyntheticTopologyGenerator:
         if len(points) < 2:
             return
         resolved_thickness = max(1, int(thickness))
-        for start_point, end_point in zip(points[:-1], points[1:]):
-            cv2.line(canvas, start_point, end_point, 255, thickness=resolved_thickness)
+        cv2.polylines(
+            canvas,
+            [np.asarray(points, dtype=np.int32)],
+            isClosed=False,
+            color=255,
+            thickness=resolved_thickness,
+            lineType=cv2.LINE_8,
+        )
 
     def _build_fallback_mask(self, height: int, width: int) -> np.ndarray:
         mask_u8 = np.zeros((height, width), dtype=np.uint8)

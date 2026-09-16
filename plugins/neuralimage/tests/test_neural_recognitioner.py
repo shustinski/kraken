@@ -235,6 +235,29 @@ def test_prepare_model_resolves_recommended_threshold_from_artifact_metadata(mon
     assert any("recommended model threshold" in str(payload) for topic, payload in bus.messages if topic == "logging")
 
 
+def test_prepare_model_applies_artifact_preprocessing_and_rejects_override(monkeypatch):
+    from dataclasses import asdict
+
+    from neuralimage.preprocessing.config import PreprocessingConfig
+
+    base_dir = make_test_dir("neural_rec_preprocessing_artifact")
+    artifact_config = PreprocessingConfig(percentile_normalization=True)
+    model = nn.Conv2d(1, 1, kernel_size=1)
+    setattr(model, "_neuralimage_artifact_metadata", {
+        "preprocessing": {"config": asdict(artifact_config), "hash": artifact_config.stable_hash()}
+    })
+    params = _build_params(base_dir, model=model)
+    recognizer = NeuralRecognizer(params, _StubBus())
+    monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
+    recognizer.prepare_model()
+    assert params.preprocessing.stable_hash() == artifact_config.stable_hash()
+
+    incompatible = _build_params(base_dir, model=model)
+    incompatible.preprocessing = PreprocessingConfig(clahe=True)
+    with pytest.raises(ValueError, match="incompatible"):
+        NeuralRecognizer(incompatible, _StubBus()).prepare_model()
+
+
 def test_prepare_model_uses_manual_threshold_and_postprocess_settings(monkeypatch):
     base_dir = make_test_dir("neural_rec_threshold_manual")
     bus = _StubBus()

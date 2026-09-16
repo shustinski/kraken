@@ -29,7 +29,7 @@ def test_workflow_mapper_applies_boolean_and_mode_combinations():
             "further_training",
         ),
         ("RGB", "ЧБ"),
-        ("online", "disk"),
+        ("online",),
         (False, True),
         (False, True),
         (False, True),
@@ -73,4 +73,22 @@ def test_workflow_mapper_applies_boolean_and_mode_combinations():
 
         combinations_checked += 1
 
-    assert combinations_checked == 128
+    assert combinations_checked == 64
+
+
+def test_workflow_mapper_rejects_removed_disk_cut_mode():
+    root = make_test_dir('workflow_removed_disk_cut')
+    main_state = MainWindowState(
+        work_mode='train_only',
+        source_folder=str(root),
+        result_folder=str(root),
+        sample_folder=str(root),
+        label_folder=str(root),
+        epochs=1,
+    )
+    settings_state = SettingsState(sample_cut_mode='disk')
+
+    import pytest
+
+    with pytest.raises(ValueError, match='no longer supported'):
+        build_workflow_parameters(main_state, settings_state)

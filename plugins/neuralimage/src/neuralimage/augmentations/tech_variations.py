@@ -11,45 +11,34 @@ import numpy as np
 from neuralimage.lib.data_interfaces import TechAugmentationParameters, build_tech_augmentation_config
 
 
-def _shift_array(array: np.ndarray, dy: int, dx: int, fill_value: int | bool = 0) -> np.ndarray:
-    shifted = np.full(array.shape, fill_value, dtype=array.dtype)
-    height, width = array.shape
-
-    src_y0 = max(0, -int(dy))
-    src_y1 = min(height, height - max(0, int(dy)))
-    src_x0 = max(0, -int(dx))
-    src_x1 = min(width, width - max(0, int(dx)))
-    if src_y0 >= src_y1 or src_x0 >= src_x1:
-        return shifted
-
-    dst_y0 = max(0, int(dy))
-    dst_y1 = dst_y0 + (src_y1 - src_y0)
-    dst_x0 = max(0, int(dx))
-    dst_x1 = dst_x0 + (src_x1 - src_x0)
-    shifted[dst_y0:dst_y1, dst_x0:dst_x1] = array[src_y0:src_y1, src_x0:src_x1]
-    return shifted
-
-
 def _binary_dilation(mask: np.ndarray, kernel_size: int) -> np.ndarray:
     radius = max(0, int(kernel_size))
     if radius == 0:
         return mask.copy()
-    dilated = np.zeros(mask.shape, dtype=bool)
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            dilated |= _shift_array(mask, dy, dx, fill_value=False)
-    return dilated
+    size = radius * 2 + 1
+    kernel = np.ones((size, size), dtype=np.uint8)
+    return cv2.dilate(
+        np.asarray(mask, dtype=np.uint8),
+        kernel,
+        iterations=1,
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ) > 0
 
 
 def _binary_erosion(mask: np.ndarray, kernel_size: int) -> np.ndarray:
     radius = max(0, int(kernel_size))
     if radius == 0:
         return mask.copy()
-    eroded = np.ones(mask.shape, dtype=bool)
-    for dy in range(-radius, radius + 1):
-        for dx in range(-radius, radius + 1):
-            eroded &= _shift_array(mask, dy, dx, fill_value=False)
-    return eroded
+    size = radius * 2 + 1
+    kernel = np.ones((size, size), dtype=np.uint8)
+    return cv2.erode(
+        np.asarray(mask, dtype=np.uint8),
+        kernel,
+        iterations=1,
+        borderType=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    ) > 0
 
 
 def _extract_single_channel(mask: np.ndarray, threshold: float) -> tuple[np.ndarray, np.ndarray]:
@@ -120,8 +109,14 @@ def _draw_polyline(shape: tuple[int, int], points_xy: list[tuple[int, int]], thi
     if len(points_xy) < 2:
         return canvas
     resolved_thickness = max(1, int(thickness))
-    for start_point, end_point in zip(points_xy[:-1], points_xy[1:]):
-        cv2.line(canvas, start_point, end_point, 255, thickness=resolved_thickness)
+    cv2.polylines(
+        canvas,
+        [np.asarray(points_xy, dtype=np.int32)],
+        isClosed=False,
+        color=255,
+        thickness=resolved_thickness,
+        lineType=cv2.LINE_8,
+    )
     return canvas
 
 

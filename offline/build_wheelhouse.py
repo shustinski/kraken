@@ -9,9 +9,12 @@ import sys
 import tomllib
 import time
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
+
+# files.pythonhosted.org rejects the default Python-urllib User-Agent with HTTP 403.
+_USER_AGENT = "kraken-offline-build-wheelhouse/1.0 (+https://github.com/)"
 
 
 def is_windows_x64_wheel(url: str) -> bool:
@@ -35,19 +38,20 @@ def download(url: str, expected_hash: str, output: Path) -> None:
     if destination.exists() and sha256(destination) == expected_hash:
         return
     partial = destination.with_suffix(destination.suffix + ".partial")
+    request = Request(url, headers={"User-Agent": _USER_AGENT})
     for attempt in range(4):
         try:
-            with urlopen(url) as response, partial.open("wb") as stream:
+            with urlopen(request) as response, partial.open("wb") as stream:
                 shutil.copyfileobj(response, stream)
             actual_hash = sha256(partial)
             if actual_hash != expected_hash:
                 raise ValueError(f"SHA-256 mismatch for {url}: expected {expected_hash}, got {actual_hash}")
             partial.replace(destination)
             return
-        except (OSError, URLError):
+        except (OSError, URLError, HTTPError) as error:
             partial.unlink(missing_ok=True)
             if attempt == 3:
-                raise
+                raise RuntimeError(f"Failed to download {url}") from error
             time.sleep(2**attempt)
 
 

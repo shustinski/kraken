@@ -36,7 +36,7 @@ function Get-Sha256ManifestEntries {
         } |
         Sort-Object FullName |
         ForEach-Object {
-            $relativePath = $_.FullName.Substring($Root.Length).TrimStart("\\", "/").Replace("\\", "/")
+            $relativePath = $_.FullName.Substring($Root.Length).TrimStart([char]'\', [char]'/').Replace('\', '/')
             [ordered]@{
                 path = $relativePath
                 sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()

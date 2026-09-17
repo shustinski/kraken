@@ -1,103 +1,117 @@
-# Kraken offline kit (Windows x64)
+# Offline kit — шаги
 
-`offline/` creates a reproducible, air-gapped transfer kit. It deliberately
-does not copy `.venv`, UV's developer cache, `target/`, build output, models,
-or user data. Those paths are machine-specific or outside source control.
+## 0. Один раз на ПК с интернетом: toolchains
 
-## Prepare the internet-connected source PC
+Папка (пример `D:\Kraken-offline-toolchains-2026-09-16`) + `toolchain-manifest.json`:
 
-Use a clean, committed repository. Install the exact tool versions that will
-be included in the kit, then stage their offline installers/layout in a
-separate directory. The source script copies that directory without guessing
-download URLs or silently selecting newer releases.
+- Python 3.14.2 x64 installer  
+- uv 0.10.2 (zip или `uv.exe`)  
+- Git + Git LFS installers  
+- Rust (`rustup-init` / toolchain)  
+- `vs-build-tools-layout\` (VCTools + SDK)  
+- Inno Setup installer  
 
-The toolchain directory must contain these items and a completed
-`toolchain-manifest.json` (start from `offline/toolchain-manifest.example.json`):
+Шаблон манифеста: `toolchain-manifest.example.json`.
 
-- CPython **3.14.2 x64** installer;
-- UV **0.10.2** Windows executable or installer;
-- Git for Windows and Git LFS installers;
-- Rust toolchain installer matching the installed `cargo --version`;
-- a Visual Studio Build Tools offline layout with
-  `Microsoft.VisualStudio.Workload.VCTools`, recommended components, and a
-  Windows SDK;
-- an Inno Setup 6 offline installer.
+---
 
-Rust must be installed before creating a kit, because `Create-OfflineKit.ps1`
-uses `cargo vendor --locked` to vendor the exact `blob_gateway/Cargo.lock`
-graph. The script stops rather than generating a kit with missing Rust
-dependencies.
+## 1. Первый раз: собрать kit (ПК с интернетом)
+
+Репозиторий чистый (`git status` пустой).
 
 ```powershell
-pwsh .\offline\Create-OfflineKit.ps1 `
-  -OutputPath E:\Kraken-offline-kit-2026-09-16 `
-  -ToolchainDirectory E:\offline-toolchains
+.\offline\Create-OfflineKit.ps1 `
+  -OutputPath D:\Kraken-offline-kit-2026-09-16 `
+  -ToolchainDirectory D:\Kraken-offline-toolchains-2026-09-16
 ```
 
-The command creates a complete Git bundle of every local branch and tag, a
-hash-verified Windows x64 wheelhouse derived directly from `uv.lock`, a fresh
-UV cache populated with `uv sync --frozen --all-packages --all-extras
---all-groups`, the exact requirements export, Cargo vendor data, and a SHA-256
-manifest. It requires network access only on this source PC while dependencies
-are populated.
+Если упало — тот же `-OutputPath` снова (докачка). Скопировать kit на флешку.
 
-If the run fails or is interrupted, re-run with the **same** `-OutputPath`.
-The script resumes: wheelhouse files that already match `uv.lock` hashes are
-kept, the UV cache is reused, and an existing Cargo vendor tree is skipped.
-Failed runs no longer delete the kit directory. A previous `manifest.json` is
-removed at the start of a resume and rewritten only when the kit completes.
+---
 
-## Install on the offline PC
+## 2. Первый раз: поставить на ПК без интернета
 
-First install the bundled CPython, UV, Git/Git LFS, Rust, Visual Studio Build
-Tools/SDK and Inno Setup from `toolchains/`. Their installers may require an
-administrator depending on local policy. Then run:
+1. Из `kit\toolchains\` поставить Python, uv, Git, Git LFS, Rust, VS Build Tools, Inno Setup.  
+2. Установить репо:
 
 ```powershell
-pwsh .\offline\Install-OfflineKit.ps1 `
+.\offline\Install-OfflineKit.ps1 `
   -KitPath E:\Kraken-offline-kit-2026-09-16 `
   -DestinationPath D:\code\kraken
 ```
 
-The installer verifies every manifest hash, clones from the bundle, runs
-`git fsck`, confirms the recorded commit, and creates `.venv` with
-`uv sync --offline --frozen`. It never contacts a package index and disables
-automatic Python downloads.
+`DestinationPath` ещё не должен существовать.
 
-For Rust builds, point `CARGO_HOME` to the vendor configuration shipped in the
-kit before calling the normal Windows packaging script:
+3. Создать пустой проект в локальном GitLab, затем:
+
+```powershell
+cd D:\code\kraken
+git remote add origin http://<gitlab>/<group>/kraken.git
+git push -u origin --all
+git push origin --tags
+```
+
+Rust при сборке:
 
 ```powershell
 $env:CARGO_HOME = "E:\Kraken-offline-kit-2026-09-16\dependencies\cargo"
 ```
 
-The current repository build script invokes Cargo with `--locked`; use
-`cargo build --locked --offline --manifest-path blob_gateway\Cargo.toml` once
-before packaging to prove the vendor setup. The kit does not alter global Cargo
-configuration automatically.
+---
 
-## Exchange committed changes by USB
+## 3. Дальше только бандлы (не копировать папку проекта)
 
-On the sending PC, use the last common commit (shown by `git merge-base`):
+Не переносить весь `kraken\` с флешки поверх существующего репо. Только `.bundle`.
 
-```powershell
-pwsh .\offline\Export-GitUpdate.ps1 -Since <common-commit> -OutputPath E:\updates\alice-to-bob.bundle
-```
+Перед export: всё закоммичено, `git status` чистый.
 
-On the receiving PC:
+### 3a. Офлайн → онлайн (правки в GitHub)
+
+**Офлайн** (после `git pull` с GitLab):
 
 ```powershell
-pwsh .\offline\Import-GitUpdate.ps1 -BundlePath E:\updates\alice-to-bob.bundle
-git branch -r
-git merge offline-bundle/<branch>
+# общий коммит с онлайн-ПК (после первого sync — merge-base)
+pwsh .\offline\Export-GitUpdate.ps1 -Since <общий-коммит> -OutputPath E:\updates\offline-to-online.bundle
 ```
 
-The bundle declares `<common-commit>` as a prerequisite. Import therefore
-fails before changing refs if the wrong base is used. Imported branches stay
-under `offline-bundle/`; merge or rebase explicitly. Do not transfer a working
-folder over another working folder. Commit first, and transfer uncommitted work
-only through an explicitly reviewed patch.
+**Онлайн:**
 
-If Git LFS files are introduced later, `Create-OfflineKit.ps1` archives local
-LFS objects and lists them in the manifest. The current repository has no LFS
-objects.
+```powershell
+cd D:\code\kraken
+git pull origin
+pwsh .\offline\Import-GitUpdate.ps1 -BundlePath E:\updates\offline-to-online.bundle
+git merge offline-bundle/<ветка>
+git push origin
+```
+
+### 3b. Онлайн → офлайн (правки с GitHub в GitLab)
+
+**Онлайн** (после `git pull` с GitHub):
+
+```powershell
+pwsh .\offline\Export-GitUpdate.ps1 -Since <общий-коммит> -OutputPath E:\updates\online-to-offline.bundle
+```
+
+**Офлайн:**
+
+```powershell
+cd D:\code\kraken
+git pull origin
+pwsh .\offline\Import-GitUpdate.ps1 -BundlePath E:\updates\online-to-offline.bundle
+git merge offline-bundle/<ветка>
+git push origin
+```
+
+Общий коммит после merge:
+
+```powershell
+git merge-base HEAD offline-bundle/<ветка>
+```
+
+Этот SHA — `-Since` для следующего круга. Повторять 3a/3b сколько нужно.
+
+---
+
+## Когда снова полный kit
+
+Только если сменились зависимости (`uv.lock`), toolchain или нужен новый чистый ПК. Код между ПК — всегда через §3.

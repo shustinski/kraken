@@ -15,7 +15,7 @@
 
 ---
 
-## 1. Первый раз: собрать kit (ПК с интернетом)
+## 1. Первый раз / обновление deps: собрать kit (ПК с интернетом)
 
 Репозиторий чистый (`git status` пустой).
 
@@ -25,7 +25,9 @@
   -ToolchainDirectory D:\Kraken-offline-toolchains-2026-09-16
 ```
 
-Если упало — тот же `-OutputPath` снова (докачка). В корне kit появятся `README.md` и `Install-OfflineKit.ps1`. Скопировать весь kit на флешку.
+Кэш wheels/uv/cargo: **`offline/dep-cache/`** в проекте (не в git).  
+При следующем kit докачивается только новое. Другой путь: `-CacheDirectory ...`.  
+Если сборка упала — тот же `-OutputPath` снова. В корне kit: `README.md`, `Install-OfflineKit.ps1`.
 
 ---
 

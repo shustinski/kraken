@@ -6,6 +6,9 @@ param(
 
     [string]$ToolchainDirectory,
 
+    # Persistent local cache under offline/ (wheels + uv-cache + cargo vendor).
+    [string]$CacheDirectory = "",
+
     [string]$Python = ".venv\\Scripts\\python.exe",
 
     [string]$Uv = "uv"
@@ -60,6 +63,15 @@ function Copy-ToolchainTree {
     }
 }
 
+function Copy-DirectoryContents {
+    param([string]$Source, [string]$Destination)
+
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    Get-ChildItem -LiteralPath $Source -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Destination $_.Name) -Recurse -Force
+    }
+}
+
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $repositoryRoot
 try {
@@ -85,6 +97,17 @@ try {
     } else {
         New-Item -ItemType Directory -Path $outputFullPath | Out-Null
     }
+
+    $cacheFullPath = if ([string]::IsNullOrWhiteSpace($CacheDirectory)) {
+        [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "dep-cache"))
+    } else {
+        [System.IO.Path]::GetFullPath($CacheDirectory)
+    }
+    $cacheWheelhouse = Join-Path $cacheFullPath "wheelhouse"
+    $cacheUv = Join-Path $cacheFullPath "uv-cache"
+    $cacheCargo = Join-Path $cacheFullPath "cargo"
+    New-Item -ItemType Directory -Path $cacheWheelhouse, $cacheUv, $cacheCargo -Force | Out-Null
+    Write-Host "Persistent dependency cache: $cacheFullPath"
 
     $sourceDirectory = Join-Path $outputFullPath "source"
     $dependencyDirectory = Join-Path $outputFullPath "dependencies"
@@ -116,14 +139,15 @@ try {
         "--output-file", $requirementsPath
     )
     $wheelhouse = Join-Path $dependencyDirectory "wheelhouse"
-    Write-Host "Building wheelhouse (skips files that already match uv.lock hashes)..."
+    Write-Host "Building wheelhouse (uses $cacheWheelhouse; downloads only missing/changed)..."
     Invoke-External $pythonPath @(
         (Join-Path $PSScriptRoot "build_wheelhouse.py"),
         "--lock", (Join-Path $repositoryRoot "uv.lock"),
+        "--cache", $cacheWheelhouse,
         "--output", $wheelhouse
     )
 
-    # Populate a UV cache in the kit. Re-runs reuse archive entries already on disk.
+    # Populate UV cache on this PC, then copy into the kit.
     $uvCache = Join-Path $dependencyDirectory "uv-cache"
     $stagingEnvironment = Join-Path $outputFullPath ".staging-venv"
     if (Test-Path -LiteralPath $stagingEnvironment) {
@@ -132,9 +156,9 @@ try {
     $previousCache = $env:UV_CACHE_DIR
     $previousEnvironment = $env:UV_PROJECT_ENVIRONMENT
     try {
-        $env:UV_CACHE_DIR = $uvCache
+        $env:UV_CACHE_DIR = $cacheUv
         $env:UV_PROJECT_ENVIRONMENT = $stagingEnvironment
-        Write-Host "Populating UV cache via sync (reuses $uvCache when present)..."
+        Write-Host "Populating UV cache via sync (reuses $cacheUv)..."
         Invoke-External $uvCommand.Source @(
             "sync", "--frozen", "--all-packages", "--all-extras", "--all-groups", "--link-mode=copy",
             "--python", $pythonPath
@@ -147,6 +171,11 @@ try {
         }
         $stagingEnvironment = $null
     }
+    Write-Host "Copying UV cache into the kit..."
+    if (Test-Path -LiteralPath $uvCache) {
+        Remove-Item -LiteralPath $uvCache -Recurse -Force
+    }
+    Copy-DirectoryContents -Source $cacheUv -Destination $uvCache
 
     # Cargo vendor is deliberately generated from Cargo.lock so an offline build cannot update Rust dependencies.
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
@@ -158,18 +187,27 @@ try {
             throw "cargo was not found. Install the pinned Rust toolchain, then run this script again."
         }
     }
+    $cacheCargoVendor = Join-Path $cacheCargo "vendor"
+    $cacheCargoConfig = Join-Path $cacheCargo "config.toml"
+    $cacheCargoLockStamp = Join-Path $cacheCargo "Cargo.lock.sha256"
+    $cargoLockPath = Join-Path $repositoryRoot "blob_gateway\\Cargo.lock"
+    $cargoLockHash = (Get-FileHash -LiteralPath $cargoLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
     $cargoConfigDirectory = Join-Path $dependencyDirectory "cargo"
-    $cargoVendorDirectory = Join-Path $cargoConfigDirectory "vendor"
-    $cargoConfigPath = Join-Path $cargoConfigDirectory "config.toml"
-    New-Item -ItemType Directory -Path $cargoConfigDirectory -Force | Out-Null
-    if ((Test-Path -LiteralPath $cargoVendorDirectory) -and (Test-Path -LiteralPath $cargoConfigPath)) {
-        Write-Host "Cargo vendor directory already present; skipping cargo vendor."
+    New-Item -ItemType Directory -Path $cacheCargo, $cargoConfigDirectory -Force | Out-Null
+    $cargoCacheFresh = (
+        (Test-Path -LiteralPath $cacheCargoVendor) -and
+        (Test-Path -LiteralPath $cacheCargoConfig) -and
+        (Test-Path -LiteralPath $cacheCargoLockStamp) -and
+        ((Get-Content -LiteralPath $cacheCargoLockStamp -Raw).Trim() -eq $cargoLockHash)
+    )
+    if ($cargoCacheFresh) {
+        Write-Host "Cargo vendor already in cache for this Cargo.lock; copying into the kit."
     } else {
-        if (Test-Path -LiteralPath $cargoVendorDirectory) {
-            Remove-Item -LiteralPath $cargoVendorDirectory -Recurse -Force
+        if (Test-Path -LiteralPath $cacheCargoVendor) {
+            Remove-Item -LiteralPath $cacheCargoVendor -Recurse -Force
         }
-        Write-Host "Vendoring Cargo dependencies..."
-        $null = & $cargo.Source vendor --locked --manifest-path (Join-Path $repositoryRoot "blob_gateway\\Cargo.toml") $cargoVendorDirectory
+        Write-Host "Vendoring Cargo dependencies into cache..."
+        $null = & $cargo.Source vendor --locked --manifest-path (Join-Path $repositoryRoot "blob_gateway\\Cargo.toml") $cacheCargoVendor
         if ($LASTEXITCODE -ne 0) {
             throw "cargo vendor failed with exit code $LASTEXITCODE"
         }
@@ -180,9 +218,11 @@ try {
             "[source.offline-vendor]",
             "directory = 'vendor'"
         ) | ForEach-Object { $_ } | Out-String | ForEach-Object {
-            Write-Utf8NoBom -Path $cargoConfigPath -Content $_
+            Write-Utf8NoBom -Path $cacheCargoConfig -Content $_
         }
+        Write-Utf8NoBom -Path $cacheCargoLockStamp -Content $cargoLockHash
     }
+    Copy-DirectoryContents -Source $cacheCargo -Destination $cargoConfigDirectory
 
     if ([string]::IsNullOrWhiteSpace($ToolchainDirectory)) {
         throw "ToolchainDirectory is required. It must contain the pinned offline installers and the VS Build Tools layout listed in offline/README.md."

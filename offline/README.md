@@ -27,7 +27,8 @@
 
 Кэш wheels/uv/cargo: **`offline/dep-cache/`** в проекте (не в git).  
 При следующем kit докачивается только новое. Другой путь: `-CacheDirectory ...`.  
-Если сборка упала — тот же `-OutputPath` снова. В корне kit: `README.md`, `Install-OfflineKit.ps1`.
+Если сборка упала — тот же `-OutputPath` снова. В корне kit: `README.md`, `Install-OfflineKit.ps1`.  
+SHA-256 по умолчанию **выключен**; включить: `-IncludeHashes` (сборка) / `-VerifyHashes` (установка).
 
 ---
 

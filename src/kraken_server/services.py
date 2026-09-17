@@ -16,6 +16,11 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import uuid4
 
+from kraken_manager.domain.common import LayerId, PrincipalId, ProjectId, RepresentationId
+from kraken_manager.domain.selection import FrameRowRange, FrameSelectionV1
+from kraken_manager.domain.workflows import PluginJob, PluginJobState
+from kraken_manager.infrastructure.filesystem._codec import encode_model
+
 
 class ConflictError(RuntimeError):
     pass
@@ -250,6 +255,7 @@ class InMemoryServerServices:
         self._representations: dict[str, list[dict[str, Any]]] = {}
         self._acl: dict[tuple[str, str], set[str]] = {}
         self._acl_revisions: dict[tuple[str, str], int] = {}
+        self._plugin_jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     def health(self) -> dict[str, Any]:
@@ -280,7 +286,7 @@ class InMemoryServerServices:
         return [
             {
                 "principal_id": identifier,
-                "provider": "gitlab",
+                "provider": "local",
                 "subject": identifier,
                 "issuer": None,
                 "display_name": identifier,
@@ -888,6 +894,119 @@ class InMemoryServerServices:
             payload={key: value for key, value in payload.items() if key != "event_type"},
             context=context,
         )
+
+    def list_plugin_jobs(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            jobs = [
+                dict(job)
+                for job in self._plugin_jobs.values()
+                if project_id is None or str(job.get("project_id")) == project_id
+            ]
+        jobs.sort(key=lambda item: (str(item.get("updated_at", "")), str(item.get("id", ""))), reverse=True)
+        return jobs
+
+    def submit_plugin_job(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]:
+        key = (f"plugin-job:{project_id}:{context.actor_id}", context.idempotency_key)
+        with self._lock:
+            if key in self._idempotency:
+                return dict(self._idempotency[key])
+            if project_id not in self._projects:
+                raise NotFoundError(project_id)
+            layer_id = str(payload.get("layer_id", "")).strip()
+            target_id = str(payload.get("target_representation_id", "")).strip()
+            capability = str(payload.get("capability", "")).strip()
+            if not layer_id or not target_id or not capability:
+                raise ValidationError(
+                    "layer_id, target_representation_id and capability are required"
+                )
+            layers = self._layers.get(project_id, [])
+            if layers and not any(str(item.get("layer_id")) == layer_id for item in layers):
+                raise NotFoundError(layer_id)
+            raw_coordinates = payload.get("coordinates", ())
+            if not isinstance(raw_coordinates, list):
+                raise ValidationError("coordinates must be an array")
+            coordinates = sorted(
+                {(int(item[0]), int(item[1])) for item in raw_coordinates},
+                key=lambda item: (item[1], item[0]),
+            )
+            selection = FrameSelectionV1(
+                row_ranges=tuple(
+                    FrameRowRange(y=y, x_start=x, x_end=x) for x, y in coordinates
+                )
+            )
+            job = PluginJob.create(
+                project_id=ProjectId(project_id),
+                layer_id=LayerId(layer_id),
+                selection=selection,
+                actor_principal_id=PrincipalId(context.actor_id),
+                target_representation_id=RepresentationId(target_id),
+                capability=capability,
+            )
+            encoded = encode_model(job)
+            self._plugin_jobs[str(job.id)] = encoded
+            self._idempotency[key] = encoded
+            return dict(encoded)
+
+    def cancel_plugin_job(
+        self, project_id: str, job_id: str, context: CommandContext
+    ) -> dict[str, Any]:
+        key = (f"plugin-job-cancel:{job_id}:{context.actor_id}", context.idempotency_key)
+        with self._lock:
+            if key in self._idempotency:
+                return dict(self._idempotency[key])
+            job = self._plugin_jobs.get(job_id)
+            if job is None or str(job.get("project_id")) != project_id:
+                raise NotFoundError(job_id)
+            if context.expected_revision is not None and int(job.get("revision", -1)) != context.expected_revision:
+                raise ConflictError("Plugin job revision changed")
+            if str(job.get("state")) in {
+                PluginJobState.SUCCEEDED.value,
+                PluginJobState.FAILED.value,
+                PluginJobState.CANCELLED.value,
+            }:
+                raise ConflictError("Plugin job is already terminal")
+            now = datetime.now(UTC).isoformat()
+            updated = dict(job)
+            updated["state"] = PluginJobState.CANCELLED.value
+            updated["revision"] = int(job.get("revision", 0)) + 1
+            updated["updated_at"] = now
+            updated["finished_at"] = now
+            self._plugin_jobs[job_id] = updated
+            self._idempotency[key] = updated
+            return dict(updated)
+
+    def fail_agent_job(self, job_id: str, error: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._plugin_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError(job_id)
+            now = datetime.now(UTC).isoformat()
+            updated = dict(job)
+            updated["state"] = PluginJobState.FAILED.value
+            updated["error"] = str(error)
+            updated["revision"] = int(job.get("revision", 0)) + 1
+            updated["updated_at"] = now
+            updated["finished_at"] = now
+            self._plugin_jobs[job_id] = updated
+            return dict(updated)
+
+    def import_agent_result(self, job_id: str, agent: Any) -> dict[str, Any]:
+        del agent
+        with self._lock:
+            job = self._plugin_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError(job_id)
+            now = datetime.now(UTC).isoformat()
+            updated = dict(job)
+            updated["state"] = PluginJobState.SUCCEEDED.value
+            updated["progress"] = 1.0
+            updated["revision"] = int(job.get("revision", 0)) + 1
+            updated["updated_at"] = now
+            updated["finished_at"] = now
+            self._plugin_jobs[job_id] = updated
+            return dict(updated)
 
 
 __all__ = [

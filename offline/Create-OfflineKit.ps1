@@ -11,7 +11,10 @@ param(
 
     [string]$Python = ".venv\\Scripts\\python.exe",
 
-    [string]$Uv = "uv"
+    [string]$Uv = "uv",
+
+    # Off by default: full-kit SHA-256 is slow for multi-GB trees.
+    [switch]$IncludeHashes
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,24 +31,109 @@ function Invoke-External {
     }
 }
 
+function Get-RelativeKitPath {
+    param([string]$Root, [string]$FullName)
+    return $FullName.Substring($Root.Length).TrimStart([char]'\', [char]'/').Replace('\', '/')
+}
+
+function Test-PathUnderPrefix {
+    param([string]$RelativePath, [string[]]$Prefixes)
+    foreach ($prefix in $Prefixes) {
+        if ($RelativePath -eq $prefix -or $RelativePath.StartsWith("$prefix/")) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-TreeListingDigest {
+    param([string]$Root, [string]$RelativeTreePath)
+
+    $treeFullPath = Join-Path $Root ($RelativeTreePath.Replace('/', '\'))
+    if (-not (Test-Path -LiteralPath $treeFullPath)) {
+        throw "Expected kit tree is missing: $RelativeTreePath"
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $fileCount = 0
+    $totalBytes = [int64]0
+    Get-ChildItem -LiteralPath $treeFullPath -File -Recurse |
+        Sort-Object FullName |
+        ForEach-Object {
+            $rel = Get-RelativeKitPath -Root $Root -FullName $_.FullName
+            $lines.Add("$rel`t$($_.Length)")
+            $fileCount++
+            $totalBytes += $_.Length
+        }
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+        $hash = ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join ""
+    } finally {
+        $sha.Dispose()
+    }
+
+    [ordered]@{
+        path = $RelativeTreePath
+        fileCount = $fileCount
+        totalBytes = $totalBytes
+        listingSha256 = $hash
+    }
+}
+
 function Get-Sha256ManifestEntries {
     param([string]$Root)
 
-    Get-ChildItem -LiteralPath $Root -File -Recurse |
-        Where-Object {
-            $_.FullName -ne (Join-Path $Root "manifest.json") -and
-            $_.Name -notlike "*.partial" -and
-            $_.FullName -notlike "*\.staging-venv\*"
-        } |
-        Sort-Object FullName |
-        ForEach-Object {
-            $relativePath = $_.FullName.Substring($Root.Length).TrimStart([char]'\', [char]'/').Replace('\', '/')
-            [ordered]@{
-                path = $relativePath
-                sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-                size = $_.Length
-            }
+    # These trees are huge; content is covered by a path+size listing digest instead of per-file SHA-256.
+    $listingOnlyTrees = @(
+        "dependencies/uv-cache",
+        "dependencies/cargo/vendor",
+        "toolchains/vs-build-tools-layout"
+    )
+
+    $allFiles = @(
+        Get-ChildItem -LiteralPath $Root -File -Recurse |
+            Where-Object {
+                $_.FullName -ne (Join-Path $Root "manifest.json") -and
+                $_.Name -notlike "*.partial" -and
+                $_.FullName -notlike "*\.staging-venv\*"
+            } |
+            Sort-Object FullName
+    )
+
+    $entries = New-Object System.Collections.Generic.List[object]
+    $hashed = 0
+    foreach ($file in $allFiles) {
+        $relativePath = Get-RelativeKitPath -Root $Root -FullName $file.FullName
+        if (Test-PathUnderPrefix -RelativePath $relativePath -Prefixes $listingOnlyTrees) {
+            continue
         }
+        $hashed++
+        if (($hashed % 25) -eq 1) {
+            Write-Host "Hashing kit files: $hashed ..."
+        }
+        $entries.Add([ordered]@{
+            path = $relativePath
+            sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            size = $file.Length
+        })
+    }
+    Write-Host "Hashed $hashed individual kit files."
+    return @($entries.ToArray())
+}
+
+function Get-KitTreeDigests {
+    param([string]$Root)
+
+    @(
+        "dependencies/uv-cache",
+        "dependencies/cargo/vendor",
+        "toolchains/vs-build-tools-layout"
+    ) | ForEach-Object {
+        Write-Host "Digesting tree listing: $_"
+        Get-TreeListingDigest -Root $Root -RelativeTreePath $_
+    }
 }
 
 function Write-Utf8NoBom {
@@ -297,8 +385,18 @@ try {
         }
         toolchainManifest = $toolchainManifest
         lfsObjectArchiveIncluded = ($lfsFiles.Count -gt 0)
-        files = @(Get-Sha256ManifestEntries -Root $outputFullPath)
+        hashesIncluded = [bool]$IncludeHashes
+        files = @()
+        trees = @()
     }
+    if ($IncludeHashes) {
+        Write-Host "Computing kit hashes (-IncludeHashes)..."
+        $manifest.files = @(Get-Sha256ManifestEntries -Root $outputFullPath)
+        $manifest.trees = @(Get-KitTreeDigests -Root $outputFullPath)
+    } else {
+        Write-Host "Skipping kit hashes (default). Pass -IncludeHashes to enable."
+    }
+    Write-Host "Writing manifest.json..."
     Write-Utf8NoBom -Path (Join-Path $outputFullPath "manifest.json") -Content ($manifest | ConvertTo-Json -Depth 8)
     Write-Host "Offline kit created: $outputFullPath"
 } catch {

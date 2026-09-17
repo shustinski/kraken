@@ -53,7 +53,7 @@ class PluginRegistry:
 
     @classmethod
     def from_json(cls, path: Path | str) -> "PluginRegistry":
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
         if not isinstance(payload, dict) or not isinstance(payload.get("plugins"), list):
             raise ValueError("Agent plugin config must contain a plugins array")
         specs: dict[str, PluginProcessSpec] = {}

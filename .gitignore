@@ -35,3 +35,4 @@ _internal/
 dist/
 build/
 .test_runtime/vscode-project-manager/accounts.sqlite3
+offline/

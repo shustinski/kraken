@@ -35,7 +35,8 @@ def test_quick_setup_is_visible_and_advanced_controls_start_collapsed(tmp_path, 
 
     assert widget.analysis_setup_panel.isVisibleTo(widget)
     assert len(profile_buttons) == 4
-    assert widget.folders_info_label.isVisibleTo(widget)
+    assert not hasattr(widget, "folders_info_label")
+    assert not hasattr(widget.analysis_setup_panel, "intro_label")
     assert not widget.pair_matrix_group.isChecked()
     assert widget.pair_matrix_body.isHidden()
     assert Translator().tr("pairs.summary", count=0) in widget.pair_matrix_group.title()
@@ -251,6 +252,7 @@ def test_single_result_details_show_reasons_and_anomaly_layers(tmp_path, qtbot) 
         structure_risk=80.0,
         batch_outlier_risk=None,
         source_alignment_risk=50.0,
+        source_mask_agreement_risk=None,
         confidence_risk=40.0,
         sensitivity="balanced",
         evidence=("mask", "original", "confidence"),
@@ -293,3 +295,33 @@ def test_single_result_details_show_reasons_and_anomaly_layers(tmp_path, qtbot) 
     assert "tiny_components" in dialog.comparison_events_label.text()
     for kind in ("risk_structure", "risk_source", "risk_confidence"):
         assert not dialog._single_result_risk_pixmap(kind).isNull()
+
+
+def test_grid_details_exposes_confidence_layer_when_uploaded(tmp_path, qtbot) -> None:
+    confidence_path = tmp_path / "confidence.png"
+    image = _grayscale_array_to_qimage(np.full((32, 32), 180, dtype=np.uint8))
+    assert image.save(str(confidence_path))
+    record = FrameRecord(
+        "frame-1",
+        "Frame 1",
+        model_mask_paths={"model": str(confidence_path)},
+        model_prob_paths={"model": str(confidence_path)},
+    )
+    result = BuildResult(records=(record,), options=BuildOptions())
+    dialog = ExtendFrameDetailsDialog(
+        record,
+        result,
+        session_view_state={"preferred_model_id": "model", "result_kind": "grid_cell_defects"},
+        allowed_result_kinds=("grid_cell_defects",),
+    )
+    qtbot.addWidget(dialog)
+    dialog._payload["model_confidence_output_available"] = {"model": True}
+    dialog._payload["model_output_probabilities"] = {"model": np.full((32, 32), 0.7, dtype=np.float32)}
+    dialog._refresh_result_kind_options("grid_cell_defects")
+    dialog._update_result_controls()
+
+    assert dialog._grid_confidence_available()
+    assert not dialog.second_source_layer_row.isHidden()
+    assert dialog.second_source_layer_title.text() == dialog._t("details.grid_confidence_layer")
+    assert dialog.result_layer_title.text() == dialog._t("details.grid_cell_defects")
+    assert dialog.first_source_layer_row.isHidden()

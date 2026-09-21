@@ -291,6 +291,110 @@ def test_binary_representation_accepts_filled_rectangular_cells(invert: bool) ->
     assert not any("filled_cell" in cell.reasons or "partial_filled_cell" in cell.reasons for cell in result.cells)
 
 
+def test_binary_standalone_flags_small_dirt_without_reference() -> None:
+    image = _synthetic_binary_grid_frame()
+    # Compact dirt blobs that should be artifacts even without a reference frame.
+    cv2.rectangle(image, (40, 40), (46, 46), 255, -1)
+    cv2.rectangle(image, (900, 600), (905, 607), 255, -1)
+    # Tiny few-pixel debris that previously fell under extraction floors.
+    cv2.rectangle(image, (512, 384), (514, 386), 255, -1)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=3.0,
+            min_cell_size=2,
+            blur_radius=1,
+        ),
+    )
+    assert result.grid_detected
+    assert any("small_artifact" in cell.reasons for cell in result.cells)
+    # Good filled cells must remain normal.
+    assert result.bad_cells >= 1
+    assert result.detected_cells >= 12 * 16
+
+
+def test_confidence_standalone_flags_tiny_debris_without_reference() -> None:
+    image = np.zeros((768, 1024), dtype=np.uint8)
+    rows, cols = 8, 10
+    cell_w = 1024 // (cols + 2)
+    cell_h = 768 // (rows + 2)
+    margin_x = (1024 - cols * cell_w) // 2
+    margin_y = (768 - rows * cell_h) // 2
+    for r in range(rows):
+        for c in range(cols):
+            x = margin_x + c * cell_w
+            y = margin_y + r * cell_h
+            # Hollow outline cells typical for confidence maps.
+            cv2.rectangle(image, (x + 2, y + 2), (x + cell_w - 3, y + cell_h - 3), 255, 2)
+    cv2.rectangle(image, (480, 360), (486, 366), 255, -1)
+    cv2.rectangle(image, (500, 370), (503, 373), 255, -1)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="confidence",
+            min_contour_area=3.0,
+            min_cell_size=2,
+            blur_radius=1,
+        ),
+    )
+    assert result.grid_detected
+    assert any("small_artifact" in cell.reasons for cell in result.cells)
+    assert any(cell.status == "normal" for cell in result.cells)
+
+
+def test_binary_standalone_flags_wrong_aspect_geometry() -> None:
+    image = _synthetic_binary_grid_frame()
+    # Replace one square cell with a clearly elongated slot-sized blob.
+    cell_w = 1024 // (16 + 2)
+    cell_h = 768 // (12 + 2)
+    margin_x = (1024 - 16 * cell_w) // 2
+    margin_y = (768 - 12 * cell_h) // 2
+    x = margin_x + 3 * cell_w
+    y = margin_y + 4 * cell_h
+    cv2.rectangle(image, (x + 2, y + 2), (x + cell_w - 3, y + cell_h - 3), 0, -1)
+    # Horizontal bar spanning nearly full cell width but only ~1/3 height.
+    cv2.rectangle(image, (x + 2, y + cell_h // 3), (x + cell_w - 3, y + 2 * cell_h // 3), 255, -1)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=4.0,
+            min_cell_size=3,
+            blur_radius=1,
+        ),
+    )
+    assert result.grid_detected
+    bad_reasons = [cell.reasons for cell in result.cells if cell.reasons]
+    assert any(
+        "broken_geometry" in reasons or "small_artifact" in reasons for reasons in bad_reasons
+    ), bad_reasons
+
+
+def test_binary_standalone_flags_stretched_slot_cell() -> None:
+    image = _synthetic_binary_grid_frame()
+    cell_w = 1024 // (16 + 2)
+    cell_h = 768 // (12 + 2)
+    margin_x = (1024 - 16 * cell_w) // 2
+    margin_y = (768 - 12 * cell_h) // 2
+    x = margin_x + 5 * cell_w
+    y = margin_y + 3 * cell_h
+    # Stretch a normal cell into a wide rectangle (wrong aspect, still slot-sized).
+    cv2.rectangle(image, (x + 2, y + 2), (x + cell_w - 3, y + cell_h - 3), 0, -1)
+    cv2.rectangle(image, (x - cell_w // 4, y + 8), (x + cell_w + cell_w // 4, y + cell_h - 9), 255, -1)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=4.0,
+            min_cell_size=3,
+            blur_radius=1,
+        ),
+    )
+    assert result.grid_detected
+    assert any("broken_geometry" in cell.reasons or "merged_contour" in cell.reasons for cell in result.cells)
+
+
 def test_confidence_binary_comparison_finds_missing_binary_cell() -> None:
     confidence = detect_grid_cell_anomalies(_synthetic_grid_frame(0))
     binary = detect_grid_cell_anomalies(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from math import pi
 from pathlib import Path
@@ -15,18 +17,26 @@ from .image_io import load_grayscale_image, resize_grayscale_image
 from .mask_primitives import _binary_dilate, _boundary_mask, _label_components, _mask_structure
 from .metric_keys import compute_metric_percentiles
 from .repository_shared import BuildCancelledError
+from .source_mask_from_gray import (
+    SOURCE_MASK_ALGO_VERSION,
+    build_source_mask,
+    mask_dice,
+    mask_iou,
+)
 
 
 SINGLE_RESULT_RISK_METRIC = "single_result_risk_score"
 MASK_STRUCTURE_RISK_METRIC = "mask_structure_risk"
 BATCH_OUTLIER_RISK_METRIC = "batch_outlier_risk"
 SOURCE_ALIGNMENT_RISK_METRIC = "source_alignment_risk"
+SOURCE_MASK_AGREEMENT_RISK_METRIC = "source_mask_agreement_risk"
 CONFIDENCE_RISK_METRIC = "confidence_risk"
 SINGLE_RESULT_RISK_METRICS = (
     SINGLE_RESULT_RISK_METRIC,
     MASK_STRUCTURE_RISK_METRIC,
     BATCH_OUTLIER_RISK_METRIC,
     SOURCE_ALIGNMENT_RISK_METRIC,
+    SOURCE_MASK_AGREEMENT_RISK_METRIC,
     CONFIDENCE_RISK_METRIC,
 )
 
@@ -49,6 +59,7 @@ class SingleResultRiskSummary:
     structure_risk: float
     batch_outlier_risk: float | None
     source_alignment_risk: float | None
+    source_mask_agreement_risk: float | None
     confidence_risk: float | None
     sensitivity: str
     evidence: tuple[str, ...]
@@ -64,6 +75,7 @@ class _FeatureRow:
     features: dict[str, float]
     structure_raw: float
     source_raw: float | None
+    source_mask_raw: float | None
     confidence_raw: float | None
     reasons: list[RiskReason]
     error: str = ""
@@ -293,22 +305,33 @@ def _mask_features(mask: np.ndarray) -> tuple[dict[str, float], float, list[Risk
 def _extract_row(record: FrameRecord, model_id: str) -> _FeatureRow:
     path_text = str((record.model_mask_paths or {}).get(model_id) or "")
     if not path_text:
-        return _FeatureRow(record, {}, 0.0, None, None, [], "missing_model_output")
+        return _FeatureRow(record, {}, 0.0, None, None, None, [], "missing_model_output")
     try:
         gray = load_grayscale_image(Path(path_text))
         unique_values = np.unique(gray)
         if unique_values.size > 2:
-            return _FeatureRow(record, {}, 0.0, None, None, [], "non_binary_mask")
+            return _FeatureRow(record, {}, 0.0, None, None, None, [], "non_binary_mask")
         if unique_values.size == 1:
             mask = np.asarray(gray > 0, dtype=bool)
         else:
             mask = np.asarray(gray == unique_values[-1], dtype=bool)
         features, structure_raw, reasons = _mask_features(mask)
         source_raw = None
+        source_mask_raw = None
         if record.original_path:
             source_gray = load_grayscale_image(Path(record.original_path))
             source_raw, source_reasons = _source_alignment(mask, source_gray)
             reasons.extend(source_reasons)
+            source_mask = build_source_mask(source_gray, target_shape=mask.shape)
+            iou = mask_iou(source_mask, mask)
+            dice = mask_dice(source_mask, mask)
+            source_mask_raw = _clip01(1.0 - iou)
+            features["source_iou"] = float(iou)
+            features["source_dice"] = float(dice)
+            features["source_mask_algo_version"] = float(str(SOURCE_MASK_ALGO_VERSION).lstrip("v") or 1.0)
+            if source_mask_raw >= 0.25:
+                mismatch = np.logical_xor(source_mask, mask)
+                reasons.extend(_region_reasons(mismatch, "source_mask_mismatch", source_mask_raw))
         confidence_raw = None
         confidence_path = str((record.model_prob_paths or {}).get(model_id) or "")
         if confidence_path:
@@ -320,9 +343,9 @@ def _extract_row(record: FrameRecord, model_id: str) -> _FeatureRow:
             uncertainty = 1.0 - np.abs(2.0 * confidence - 1.0)
             if confidence_raw >= 0.35:
                 reasons.extend(_region_reasons(uncertainty >= 0.5, "low_confidence", confidence_raw))
-        return _FeatureRow(record, features, structure_raw, source_raw, confidence_raw, reasons)
+        return _FeatureRow(record, features, structure_raw, source_raw, source_mask_raw, confidence_raw, reasons)
     except Exception:
-        return _FeatureRow(record, {}, 0.0, None, None, [], "decode_error")
+        return _FeatureRow(record, {}, 0.0, None, None, None, [], "decode_error")
 
 
 def _robust_baseline(rows: list[_FeatureRow]) -> dict[str, tuple[float, float]]:
@@ -370,6 +393,79 @@ def _scaled(value: float | None, multiplier: float) -> float | None:
     return None if value is None else _clip01(float(value) / max(0.1, multiplier))
 
 
+def _risk_extract_worker_count(max_workers: int, record_count: int) -> int:
+    if record_count <= 1:
+        return 1
+    requested = max(1, int(max_workers))
+    cpu_limit = max(1, os.cpu_count() or requested)
+    return min(requested, cpu_limit, record_count)
+
+
+def _extract_rows(
+    source_records: list[FrameRecord],
+    model_id: str,
+    *,
+    max_workers: int,
+    total_work: int,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    state_callback: Callable[[str, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> list[_FeatureRow]:
+    """Extract per-frame features, optionally in parallel via ThreadPool."""
+
+    if not source_records:
+        return []
+    worker_count = _risk_extract_worker_count(max_workers, len(source_records))
+    if worker_count <= 1:
+        rows: list[_FeatureRow] = []
+        for index, record in enumerate(source_records, start=1):
+            if cancel_check is not None and cancel_check():
+                raise BuildCancelledError("Build cancelled")
+            if state_callback is not None:
+                state_callback(str(record.key), "processing")
+            row = _extract_row(record, model_id)
+            rows.append(row)
+            if progress_callback is not None:
+                progress_callback(index, total_work, str(record.key))
+        return rows
+
+    ordered: list[_FeatureRow | None] = [None] * len(source_records)
+    completed = 0
+    executor = ThreadPoolExecutor(max_workers=worker_count)
+    shutdown_wait = True
+    try:
+        future_to_index = {}
+        for index, record in enumerate(source_records):
+            if cancel_check is not None and cancel_check():
+                raise BuildCancelledError("Build cancelled")
+            if state_callback is not None:
+                state_callback(str(record.key), "processing")
+            future = executor.submit(_extract_row, record, model_id)
+            future_to_index[future] = index
+
+        pending = set(future_to_index.keys())
+        while pending:
+            if cancel_check is not None and cancel_check():
+                shutdown_wait = False
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise BuildCancelledError("Build cancelled")
+            done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            if not done:
+                continue
+            for future in done:
+                index = future_to_index[future]
+                record = source_records[index]
+                ordered[index] = future.result()
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(completed, total_work, str(record.key))
+    finally:
+        if shutdown_wait:
+            executor.shutdown(wait=True, cancel_futures=False)
+
+    return [row for row in ordered if row is not None]
+
+
 def compute_single_result_risk(
     build_result: BuildResult,
     *,
@@ -390,16 +486,16 @@ def compute_single_result_risk(
     model = build_result.model_specs[0]
     source_records = [record for record in build_result.records if str(record.key) not in excluded]
     total_work = max(1, len(source_records) * 2)
-    rows: list[_FeatureRow] = []
-    for index, record in enumerate(source_records, start=1):
-        if cancel_check is not None and cancel_check():
-            raise BuildCancelledError("Build cancelled")
-        if state_callback is not None:
-            state_callback(str(record.key), "processing")
-        row = _extract_row(record, str(model.model_id))
-        rows.append(row)
-        if progress_callback is not None:
-            progress_callback(index, total_work, str(record.key))
+    max_workers = int(getattr(build_result.options, "max_workers", 0) or (os.cpu_count() or 4))
+    rows = _extract_rows(
+        source_records,
+        str(model.model_id),
+        max_workers=max_workers,
+        total_work=total_work,
+        progress_callback=progress_callback,
+        state_callback=state_callback,
+        cancel_check=cancel_check,
+    )
 
     valid_rows = [row for row in rows if not row.error and row.features]
     baseline = _robust_baseline(valid_rows)
@@ -418,17 +514,20 @@ def compute_single_result_risk(
         critical_absolute = any(reason.code in {"empty_mask", "full_mask"} for reason in row.reasons)
         structure_risk = 1.0 if critical_absolute else (_scaled(row.structure_raw, multiplier) or 0.0)
         source_risk = _scaled(row.source_raw, multiplier)
+        source_mask_risk = _scaled(row.source_mask_raw, multiplier)
         confidence_risk = row.confidence_raw
         component_values = {
             MASK_STRUCTURE_RISK_METRIC: structure_risk,
             BATCH_OUTLIER_RISK_METRIC: batch_raw,
             SOURCE_ALIGNMENT_RISK_METRIC: source_risk,
+            SOURCE_MASK_AGREEMENT_RISK_METRIC: source_mask_risk,
             CONFIDENCE_RISK_METRIC: confidence_risk,
         }
         nominal_weights = {
-            MASK_STRUCTURE_RISK_METRIC: 0.40,
-            BATCH_OUTLIER_RISK_METRIC: 0.30,
-            SOURCE_ALIGNMENT_RISK_METRIC: 0.20,
+            MASK_STRUCTURE_RISK_METRIC: 0.35,
+            BATCH_OUTLIER_RISK_METRIC: 0.25,
+            SOURCE_ALIGNMENT_RISK_METRIC: 0.15,
+            SOURCE_MASK_AGREEMENT_RISK_METRIC: 0.15,
             CONFIDENCE_RISK_METRIC: 0.10,
         }
         available = [(key, value) for key, value in component_values.items() if value is not None]
@@ -469,7 +568,7 @@ def compute_single_result_risk(
         reasons.sort(key=lambda item: item.contribution, reverse=True)
         reasons = reasons[:8]
         evidence = ["model_output"]
-        if source_risk is not None:
+        if source_risk is not None or source_mask_risk is not None:
             evidence.append("original")
         if confidence_risk is not None:
             evidence.append("confidence")
@@ -478,6 +577,7 @@ def compute_single_result_risk(
             structure_risk=100.0 * structure_risk,
             batch_outlier_risk=None if batch_raw is None else 100.0 * batch_raw,
             source_alignment_risk=None if source_risk is None else 100.0 * source_risk,
+            source_mask_agreement_risk=None if source_mask_risk is None else 100.0 * source_mask_risk,
             confidence_risk=None if confidence_risk is None else 100.0 * confidence_risk,
             sensitivity=sensitivity_key,
             evidence=tuple(evidence),
@@ -493,6 +593,7 @@ def compute_single_result_risk(
         for key, value in (
             (BATCH_OUTLIER_RISK_METRIC, risk_summary.batch_outlier_risk),
             (SOURCE_ALIGNMENT_RISK_METRIC, risk_summary.source_alignment_risk),
+            (SOURCE_MASK_AGREEMENT_RISK_METRIC, risk_summary.source_mask_agreement_risk),
             (CONFIDENCE_RISK_METRIC, risk_summary.confidence_risk),
         ):
             if value is not None:
@@ -528,7 +629,12 @@ def compute_single_result_risk(
     )
     scores = [float(record.absolute_score) for record in records if record.score_ready and record.absolute_score is not None]
     available_metrics = [SINGLE_RESULT_RISK_METRIC, MASK_STRUCTURE_RISK_METRIC]
-    for key in (BATCH_OUTLIER_RISK_METRIC, SOURCE_ALIGNMENT_RISK_METRIC, CONFIDENCE_RISK_METRIC):
+    for key in (
+        BATCH_OUTLIER_RISK_METRIC,
+        SOURCE_ALIGNMENT_RISK_METRIC,
+        SOURCE_MASK_AGREEMENT_RISK_METRIC,
+        CONFIDENCE_RISK_METRIC,
+    ):
         if any(record.summary is not None and key in record.summary.metric_values for record in records):
             available_metrics.append(key)
     return replace(
@@ -561,6 +667,7 @@ __all__ = [
     "SINGLE_RESULT_RISK_METRIC",
     "SINGLE_RESULT_RISK_METRICS",
     "SOURCE_ALIGNMENT_RISK_METRIC",
+    "SOURCE_MASK_AGREEMENT_RISK_METRIC",
     "SingleResultRiskSummary",
     "compute_single_result_risk",
 ]

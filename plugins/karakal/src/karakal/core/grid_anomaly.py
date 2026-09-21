@@ -980,7 +980,8 @@ def analyze_grid_frame_single_source_path(
             1 if result.grid_detected else 0,
             -float(result.damage_score),
             int(result.detected_cells),
-            1 if layer == "confidence" else 0,
+            # Untyped mask paths are usually binary fills; outlines already win via damage_score.
+            1 if layer == "binary" else 0,
         )
 
     return max(valid, key=quality)
@@ -1143,8 +1144,7 @@ def _extract_candidates(
     height, width = shape
     candidates: list[_ContourCandidate] = []
     for index, contour in enumerate(contours):
-        if index < len(hierarchy_array) and int(hierarchy_array[index][3]) >= 0:
-            continue
+        parent_idx = int(hierarchy_array[index][3]) if index < len(hierarchy_array) else -1
         x, y, w, h = cv2.boundingRect(contour)
         if w < config.min_cell_size or h < config.min_cell_size:
             continue
@@ -1153,6 +1153,17 @@ def _extract_candidates(
         area = float(abs(cv2.contourArea(contour)))
         if area < float(config.min_contour_area):
             continue
+        if parent_idx >= 0:
+            # Nested contours are usually holes; keep only compact debris inside a parent cell.
+            if parent_idx >= len(contours):
+                continue
+            _px, _py, parent_w, parent_h = cv2.boundingRect(contours[parent_idx])
+            parent_area = max(1.0, float(abs(cv2.contourArea(contours[parent_idx]))))
+            axis_ratio = max(float(w) / max(1.0, float(parent_w)), float(h) / max(1.0, float(parent_h)))
+            if area >= 0.40 * parent_area or axis_ratio >= 0.70:
+                continue
+            if max(w, h) > 64 and area > max(120.0, 0.18 * parent_area):
+                continue
         bbox_area = float(max(1, w * h))
         moments = cv2.moments(contour)
         if abs(float(moments.get("m00", 0.0))) > 1e-6:
@@ -1246,6 +1257,19 @@ def _normal_seed_candidates(
 ) -> list[_ContourCandidate]:
     representation = str(getattr(config, "cell_representation", "confidence") or "confidence")
     if representation == "binary":
+        # Prefer near-square filled cells so bad aspect ratios do not poison the
+        # same-frame median when a reference frame is not available.
+        preferred = [
+            item
+            for item in candidates
+            if 0.78 <= item.aspect_ratio <= 1.30
+            and 0.42 <= item.fill_ratio <= 0.98
+            and item.interior_fill_ratio >= 0.38
+            and item.solidity >= 0.76
+            and item.approx_vertices <= 14
+        ]
+        if len(preferred) >= 3:
+            return preferred
         filtered = [
             item
             for item in candidates
@@ -1521,6 +1545,7 @@ def _classify_binary_cell(
     median_area: float,
     median_fill: float,
     median_interior_fill: float,
+    median_aspect: float,
     config: GridDamageAnalysisConfig,
 ) -> tuple[float, tuple[str, ...]]:
     width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
@@ -1556,14 +1581,29 @@ def _classify_binary_cell(
         reasons.append("merged_contour")
         score = max(score, min(1.0, 0.82 + 0.12 * max(0.0, largest_axis - 1.35)))
 
-    slot_sized = 0.50 <= smallest_axis and largest_axis <= 1.62 and 0.30 <= area_ratio <= 2.25
+    # Allow slightly undersized / elongated slot occupants so wrong geometry is
+    # still scored when the same-frame seed is built without a reference frame.
+    slot_sized = 0.40 <= smallest_axis and largest_axis <= 1.80 and 0.20 <= area_ratio <= 2.40
     fill_loss = max(
         0.0,
         max(0.34, float(median_fill) * 0.64) - float(candidate.fill_ratio),
         max(0.28, float(median_interior_fill) * 0.58) - float(candidate.interior_fill_ratio),
     )
-    broken = slot_sized and (
-        float(candidate.solidity) < 0.80 or int(candidate.approx_vertices) >= 12 or fill_loss > 0.08
+    aspect = float(candidate.aspect_ratio)
+    aspect_ref = max(0.1, float(median_aspect) if float(median_aspect) > 0.0 else 1.0)
+    aspect_mismatch = abs(aspect - aspect_ref) >= max(0.18, aspect_ref * 0.20)
+    aspect_slot_damage = (
+        aspect_mismatch
+        and largest_axis <= 1.95
+        and smallest_axis >= 0.18
+        and area_ratio >= 0.12
+        and max(width_ratio, height_ratio) >= 0.48
+    )
+    broken = (slot_sized or aspect_slot_damage) and (
+        float(candidate.solidity) < 0.80
+        or int(candidate.approx_vertices) >= 12
+        or fill_loss > 0.08
+        or aspect_mismatch
     )
     if broken:
         reasons.append("broken_geometry")
@@ -1574,7 +1614,8 @@ def _classify_binary_cell(
                 0.74
                 + 0.55 * fill_loss
                 + 0.35 * max(0.0, 0.82 - float(candidate.solidity))
-                + 0.015 * max(0, int(candidate.approx_vertices) - 8),
+                + 0.015 * max(0, int(candidate.approx_vertices) - 8)
+                + (0.12 if aspect_mismatch else 0.0),
             ),
         )
 
@@ -1586,6 +1627,7 @@ def _classify_binary_cell(
         median_fill=median_fill,
         median_interior_fill=median_interior_fill,
         median_center_fill=max(0.0, float(candidate.center_fill_ratio)),
+        config=config,
     )
     if small_artifact:
         reasons.append("small_artifact")
@@ -1629,6 +1671,7 @@ def _classify_detected_cell(
             median_area=median_area,
             median_fill=median_fill,
             median_interior_fill=median_interior_fill,
+            median_aspect=median_aspect,
             config=config,
         )
     fill_limit = max(
@@ -1816,6 +1859,7 @@ def _classify_detected_cell(
         median_fill=median_fill,
         median_interior_fill=median_interior_fill,
         median_center_fill=median_center_fill,
+        config=config,
     )
     border_merged_signal = _border_merged_cell_signal(
         candidate,
@@ -2012,6 +2056,7 @@ def _small_artifact_signal(
     median_fill: float,
     median_interior_fill: float,
     median_center_fill: float,
+    config: GridDamageAnalysisConfig | None = None,
 ) -> bool:
     width = float(candidate.bbox[2])
     height = float(candidate.bbox[3])
@@ -2021,16 +2066,28 @@ def _small_artifact_signal(
     bbox_area_ratio = float(candidate.bbox_area) / max(1.0, float(median_width) * float(median_height))
     smallest_axis_ratio = min(width_ratio, height_ratio)
     largest_axis_ratio = max(width_ratio, height_ratio)
-    if width <= 2.0 and height <= 2.0:
+    if width < 2.0 or height < 2.0:
         return False
-    if float(candidate.area) < max(5.0, min(14.0, float(median_area) * 0.035)):
+    binary = config is not None and str(config.cell_representation) == "binary"
+    # Tiny NN debris can be a few pixels; keep a slightly stricter confidence floor.
+    if binary:
+        min_area = max(2.0, min(6.0, float(median_area) * 0.015))
+        max_largest_axis = 1.45
+        elongated_largest_cap = 1.22
+        compact_largest_cap = 0.62
+    else:
+        min_area = max(2.0, min(8.0, float(median_area) * 0.02))
+        max_largest_axis = 1.28
+        elongated_largest_cap = 1.05
+        compact_largest_cap = 0.55
+    if float(candidate.area) < min_area:
         return False
     if candidate.child_count > 0:
         return False
-    if smallest_axis_ratio < 0.06 or largest_axis_ratio > 1.32:
+    if smallest_axis_ratio < 0.04 or largest_axis_ratio > max_largest_axis:
         return False
     line_like_fragment = (
-        smallest_axis_ratio <= 0.20
+        smallest_axis_ratio <= (0.14 if binary else 0.18)
         and largest_axis_ratio >= 0.38
         and float(candidate.area) <= max(18.0, float(median_area) * 0.42)
     )
@@ -2068,10 +2125,13 @@ def _small_artifact_signal(
     if border_cell_fragment:
         return False
     compact_debris = (
-        smallest_axis_ratio >= 0.12 and largest_axis_ratio <= 0.58 and area_ratio <= 0.34 and bbox_area_ratio <= 0.36
+        smallest_axis_ratio >= 0.06
+        and largest_axis_ratio <= compact_largest_cap
+        and area_ratio <= 0.34
+        and bbox_area_ratio <= 0.36
     )
     elongated_or_blurred_debris = (
-        largest_axis_ratio <= 0.96
+        largest_axis_ratio <= elongated_largest_cap
         and area_ratio <= 0.42
         and bbox_area_ratio <= 0.48
         and (
@@ -2081,13 +2141,21 @@ def _small_artifact_signal(
             or candidate.approx_vertices >= 8
         )
     )
-    if not (compact_debris or elongated_or_blurred_debris):
+    tiny_compact_blob = (
+        float(candidate.area) <= max(12.0, float(median_area) * 0.08)
+        and largest_axis_ratio <= 0.34
+        and smallest_axis_ratio <= 0.28
+        and float(candidate.solidity) >= 0.55
+        and float(candidate.fill_ratio) >= 0.35
+    )
+    if not (compact_debris or elongated_or_blurred_debris or tiny_compact_blob):
         return False
     foreground_signal = (
-        candidate.fill_ratio >= max(0.18, float(median_fill) + 0.04)
-        or candidate.extent >= 0.42
-        or candidate.solidity >= 0.62
+        candidate.fill_ratio >= max(0.16, float(median_fill) * 0.55)
+        or candidate.extent >= 0.38
+        or candidate.solidity >= 0.58
         or elongated_or_blurred_debris
+        or tiny_compact_blob
     )
     return bool(foreground_signal)
 

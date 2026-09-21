@@ -469,6 +469,8 @@ def _prepare_mask_pairwise_descriptors(
     probabilities_by_model: dict[str, np.ndarray],
     masks_by_model: dict[str, np.ndarray],
     model_structures: dict[str, dict[str, object]] | None = None,
+    *,
+    include_boundary_distance: bool = True,
 ) -> dict[str, dict[str, object]]:
     """Precompute reusable per-model structures for symmetric mask agreement metrics."""
 
@@ -494,7 +496,7 @@ def _prepare_mask_pairwise_descriptors(
         pixel_count = max(1.0, float(prob.size))
         mask = np.asarray(masks_by_model.get(model_id), dtype=bool)
         current_structure = (model_structures or {}).get(str(model_id)) or _mask_structure(
-            mask, include_boundary_distance=True
+            mask, include_boundary_distance=include_boundary_distance
         )
         boundary = (
             np.asarray(current_structure.get("boundary"), dtype=bool)
@@ -504,7 +506,7 @@ def _prepare_mask_pairwise_descriptors(
         dist_to_boundary = current_structure.get("boundary_dist")
         if dist_to_boundary is not None:
             dist_to_boundary = np.asarray(dist_to_boundary, dtype=np.float32)
-        elif np.any(boundary) and _has_distance_transform_backend():
+        elif include_boundary_distance and np.any(boundary) and _has_distance_transform_backend():
             dist_to_boundary = _distance_transform(~boundary)
         descriptors[str(model_id)] = {
             "prob": prob,
@@ -709,12 +711,18 @@ def _pairwise_model_comparisons(
     model_views: dict[str, object] | None = None,
     model_structures: dict[str, dict[str, object]] | None = None,
     point_match_radius: float = 3.0,
+    include_boundary_distance: bool = True,
 ) -> tuple[dict[str, object], ...]:
     model_ids = list(probabilities_by_model.keys())
     rows: list[dict[str, object]] = []
     current_views = model_views or {}
     mask_descriptors = (
-        _prepare_mask_pairwise_descriptors(probabilities_by_model, masks_by_model, model_structures=model_structures)
+        _prepare_mask_pairwise_descriptors(
+            probabilities_by_model,
+            masks_by_model,
+            model_structures=model_structures,
+            include_boundary_distance=include_boundary_distance,
+        )
         if geometry_mode != GeometryMode.POINT
         else {}
     )

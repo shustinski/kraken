@@ -9,11 +9,18 @@ from .analysis_cache import (
 )
 
 from .confidence_analysis import (
+    _internal_confidence_probability_map,
     _mask_from_gray,
     _model_output_confidence_metrics,
     _point_internal_confidence,
     _polygon_frame_confidence,
     _prob_from_gray,
+)
+
+from .attention_issues import (
+    ATTENTION_COMPUTE_STANDARD,
+    attention_issues_to_payload,
+    build_attention_issues,
 )
 
 from .image_io import (
@@ -326,6 +333,7 @@ def _build_model_payloads(
     include_original_gray: bool = True,
     include_model_confidence: bool = True,
     include_pairwise_metrics: bool = True,
+    include_boundary_distance: bool = True,
     include_model_diagnostics: bool = True,
     include_structure_details: bool = True,
     include_model_output_probabilities: bool = True,
@@ -348,7 +356,7 @@ def _build_model_payloads(
     include_model_output_probabilities = bool(include_model_output_probabilities)
     include_source_grays = bool(include_source_grays)
     include_mask_structures = include_pairwise_metrics or include_model_diagnostics
-    include_boundary_distance = include_pairwise_metrics
+    include_boundary_distance = bool(include_boundary_distance) and include_pairwise_metrics
 
     original_gray = (
         _load_optional_gray(record.original_path, max_side=analysis_max_side) if include_original_gray else None
@@ -694,6 +702,37 @@ def _metric_requires_pairwise_metrics(metric_key: str | None) -> bool:
     }
 
 
+def _metric_requires_boundary_distance(metric_key: str | None) -> bool:
+    """True when Hausdorff / surface-distance terms are needed for the active metric."""
+
+    metric_key_text = str(metric_key or "overall_frame_score")
+    if metric_key_text in {
+        "overall_frame_score",
+        "export_priority_score",
+        "model_model_score",
+        "disagreement_score",
+        "overall_polygon_score",
+        "hausdorff_distance",
+        "hausdorff_score",
+        "hausdorff",
+        "assd",
+        "assd_ab",
+    }:
+        return True
+    pair = parse_pair_metric_key(metric_key_text)
+    if pair is not None:
+        _model_a, _model_b, operation = pair
+        return str(operation) in {"hausdorff", "hausdorff_distance", "assd", "assd_ab"}
+    combined = parse_combined_pair_metric_key(metric_key_text)
+    if combined is not None:
+        return True
+    parsed = _parse_model_metric_key(metric_key_text)
+    if parsed is not None:
+        family, _model_id = parsed
+        return family in {"hausdorff", "hausdorff_distance", "assd"}
+    return False
+
+
 def _analyze_record_payload(
     record: FrameRecord,
     model_specs: tuple[ModelSpec, ...],
@@ -708,7 +747,9 @@ def _analyze_record_payload(
     include_model_confidence: bool = True,
     include_model_output_confidence: bool = False,
     include_pairwise_metrics: bool = True,
+    include_boundary_distance: bool = True,
     comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
+    include_attention_issues: bool = False,
 ) -> dict[str, object] | None:
     timings_ms: dict[str, float] = {}
     cache_key = None
@@ -726,6 +767,8 @@ def _analyze_record_payload(
             include_model_confidence=bool(include_model_confidence),
             include_model_output_confidence=bool(include_model_output_confidence),
             include_pairwise_metrics=bool(include_pairwise_metrics),
+            include_boundary_distance=bool(include_boundary_distance),
+            include_attention_issues=bool(include_attention_issues),
             comparison_pairs=comparison_pairs,
         )
         with profile_stage("validation.cache.record.read", frame_id=record.key):
@@ -754,7 +797,7 @@ def _analyze_record_payload(
             model_diagnostics,
             model_confidence,
             model_confidence_output_available,
-            _original_gray,
+            original_gray,
             resolved_geometry_mode,
             model_views,
         ) = _build_model_payloads(
@@ -768,12 +811,13 @@ def _analyze_record_payload(
             point_confidence_radius=point_confidence_radius,
             polygon_confidence_summary=polygon_confidence_summary,
             include_confidence_objects=False,
-            include_original_gray=False,
+            include_original_gray=bool(include_attention_issues),
             include_model_confidence=include_model_confidence,
             include_pairwise_metrics=include_pairwise_metrics,
+            include_boundary_distance=include_boundary_distance,
             include_model_diagnostics=include_model_diagnostics,
             include_structure_details=False,
-            include_model_output_probabilities=include_model_output_confidence,
+            include_model_output_probabilities=include_model_output_confidence or include_attention_issues,
             include_source_grays=False,
         )
     timings_ms["loading_preprocess"] = 1000.0 * (perf_counter() - load_started)
@@ -794,6 +838,7 @@ def _analyze_record_payload(
                 model_views=model_views,
                 model_structures=model_structures,
                 point_match_radius=point_match_radius,
+                include_boundary_distance=include_boundary_distance,
             )
         agreement_scores = np.asarray(
             [float(row.get("agreement_score", 0.0)) for row in pairwise_rows], dtype=np.float64
@@ -845,6 +890,43 @@ def _analyze_record_payload(
                 model_confidence_output[str(model_id)] = _model_output_confidence_metrics(probability)
     timings_ms["metrics"] = 1000.0 * (perf_counter() - metrics_started)
 
+    attention_issues_by_model: dict[str, list[dict[str, object]]] = {}
+    if include_attention_issues and resolved_geometry_mode != GeometryMode.POINT:
+        with profile_stage("validation.metrics.attention_issues", frame_id=record.key):
+            for model_id, mask in masks_by_model.items():
+                model_key = str(model_id)
+                if include_model_output_confidence and model_key in output_probabilities_by_model:
+                    if bool(model_confidence_output_available.get(model_key, False)):
+                        issues = build_attention_issues(
+                            output_probabilities_by_model[model_key],
+                            mask,
+                            original=original_gray,
+                            source="confidence",
+                            model_id=model_key,
+                            compute_mode=ATTENTION_COMPUTE_STANDARD,
+                        )
+                        attention_issues_by_model[model_key] = attention_issues_to_payload(issues)
+                        continue
+                probability = probabilities_by_model.get(model_key)
+                if probability is None:
+                    continue
+                mask_bool = np.asarray(mask, dtype=bool)
+                probability_proxy = _internal_confidence_probability_map(
+                    probability,
+                    support_mask=mask_bool,
+                    allow_binary_proxy=True,
+                )
+                issues = build_attention_issues(
+                    probability,
+                    mask,
+                    original=original_gray,
+                    source="output",
+                    model_id=model_key,
+                    compute_mode=ATTENTION_COMPUTE_STANDARD,
+                    probability_proxy=probability_proxy,
+                )
+                attention_issues_by_model[model_key] = attention_issues_to_payload(issues)
+
     assemble_started = perf_counter()
     payload = {
         "key": record.key,
@@ -860,6 +942,7 @@ def _analyze_record_payload(
         "combined_pair_metric_values": combined_pair_metric_values,
         "pair_metric_values": pair_metric_values,
         "model_confidence_output_available": model_confidence_output_available,
+        "attention_issues_by_model": attention_issues_by_model,
         "pairwise_rows": pairwise_rows,
         "timings_ms": timings_ms,
     }
@@ -885,7 +968,9 @@ def _analyze_record_payload_for_executor(
         bool,
         bool,
         bool,
+        bool,
         tuple[ComparisonPairSelection, ...],
+        bool,
     ],
 ) -> tuple[str, dict[str, object] | None]:
     (
@@ -902,7 +987,9 @@ def _analyze_record_payload_for_executor(
         include_model_confidence,
         include_model_output_confidence,
         include_pairwise_metrics,
+        include_boundary_distance,
         comparison_pairs,
+        include_attention_issues,
     ) = args
     return record.key, _analyze_record_payload(
         record,
@@ -918,7 +1005,9 @@ def _analyze_record_payload_for_executor(
         include_model_confidence,
         include_model_output_confidence,
         include_pairwise_metrics,
+        include_boundary_distance,
         comparison_pairs,
+        include_attention_issues=include_attention_issues,
     )
 
 
@@ -938,7 +1027,9 @@ def _analyze_record_payload_batch_for_executor(
             bool,
             bool,
             bool,
+            bool,
             tuple[ComparisonPairSelection, ...],
+            bool,
         ],
         ...,
     ],
@@ -966,7 +1057,9 @@ def _iter_record_payloads(
     include_model_confidence: bool = True,
     include_model_output_confidence: bool = False,
     include_pairwise_metrics: bool = True,
+    include_boundary_distance: bool = True,
     comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
+    include_attention_issues: bool = False,
     progress_callback=None,
     state_callback=None,
     cancel_check=None,
@@ -1016,7 +1109,9 @@ def _iter_record_payloads(
                 include_model_confidence,
                 include_model_output_confidence,
                 include_pairwise_metrics,
+                include_boundary_distance,
                 comparison_pairs,
+                include_attention_issues=include_attention_issues,
             )
             if state_callback is not None:
                 state_callback(record.key, "done")
@@ -1049,7 +1144,9 @@ def _iter_record_payloads(
                 include_model_confidence,
                 include_model_output_confidence,
                 include_pairwise_metrics,
+                include_boundary_distance,
                 comparison_pairs,
+                include_attention_issues,
             )
 
         def make_batch(order_index: int):
@@ -1423,6 +1520,7 @@ def compute_build_result_analytics(
     progress_callback=None,
     state_callback=None,
     cancel_check=None,
+    include_attention_issues: bool = False,
 ) -> BuildResult:
     from .single_result_risk import SINGLE_RESULT_RISK_METRICS, compute_single_result_risk
 
@@ -1486,6 +1584,7 @@ def compute_build_result_analytics(
         active_metric
     ) or comparison_target_value in {ComparisonTarget.CONFIDENCE.value, ComparisonTarget.BOTH.value}
     include_pairwise_metrics = _metric_requires_pairwise_metrics(active_metric) or bool(comparison_pairs)
+    include_boundary_distance = include_pairwise_metrics and _metric_requires_boundary_distance(active_metric)
     excluded_keys = {str(key) for key in (excluded_record_keys or set()) if str(key)}
     records_to_analyze = [record for record in records if str(record.key) not in excluded_keys]
     records_by_key = {str(record.key): record for record in records}
@@ -1527,7 +1626,9 @@ def compute_build_result_analytics(
             include_model_confidence=include_model_confidence,
             include_model_output_confidence=include_model_output_confidence,
             include_pairwise_metrics=include_pairwise_metrics,
+            include_boundary_distance=include_boundary_distance,
             comparison_pairs=comparison_pairs,
+            include_attention_issues=bool(include_attention_issues),
             progress_callback=progress_callback,
             state_callback=state_callback,
             cancel_check=cancel_check,
@@ -1550,6 +1651,10 @@ def compute_build_result_analytics(
             pair_metric_values = payload.get("pair_metric_values") or {}
             comparison_result = payload.get("comparison_result")
             pairwise_rows = tuple(payload.get("pairwise_rows", ()))
+            attention_issues_by_model = {
+                str(model_id): tuple(rows) if isinstance(rows, (list, tuple)) else ()
+                for model_id, rows in dict(payload.get("attention_issues_by_model") or {}).items()
+            }
             polygon_scores = _aggregate_inter_model_polygon_scores(pairwise_rows) if frame_type != "point" else {}
             point_scores = (
                 _aggregate_inter_model_point_scores(pairwise_rows, float(build_result.options.point_match_radius))
@@ -1607,6 +1712,7 @@ def compute_build_result_analytics(
                 pairwise_metrics=pairwise_rows,
                 notes=(),
                 frame_type=frame_type,
+                attention_issues_by_model=attention_issues_by_model,
             )
             updated_records_by_key[str(record.key)] = replace(record, summary=summary)
     finally:

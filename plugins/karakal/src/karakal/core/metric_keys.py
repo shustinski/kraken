@@ -150,6 +150,7 @@ def _available_metric_keys_for_models(
                 "mask_structure_risk",
                 "batch_outlier_risk",
                 "source_alignment_risk",
+                "source_mask_agreement_risk",
                 "confidence_risk",
             ]
         )

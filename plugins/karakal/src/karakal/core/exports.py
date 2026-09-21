@@ -1935,6 +1935,7 @@ def export_ranked_frames(
                 "mask_structure_risk": float(getattr(risk_summary, "structure_risk", 0.0)),
                 "batch_outlier_risk": getattr(risk_summary, "batch_outlier_risk", None),
                 "source_alignment_risk": getattr(risk_summary, "source_alignment_risk", None),
+                "source_mask_agreement_risk": getattr(risk_summary, "source_mask_agreement_risk", None),
                 "confidence_risk": getattr(risk_summary, "confidence_risk", None),
             },
             "component_weights": dict(getattr(risk_summary, "component_weights", {}) or {}),

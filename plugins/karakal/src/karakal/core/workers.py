@@ -255,11 +255,13 @@ class AnalyticsWorker(WorkerBase):
         excluded_record_keys: set[str] | None = None,
         *,
         performance_config: PerformanceConfig | None = None,
+        include_attention_issues: bool = False,
     ) -> None:
         super().__init__(performance_config=performance_config, analysis_type="validation_metrics")
         self._build_result = build_result
         self._metric_key = metric_key
         self._excluded_record_keys = {str(key) for key in (excluded_record_keys or set()) if str(key)}
+        self._include_attention_issues = bool(include_attention_issues)
 
     def run(self) -> None:
         with activate_profiler(self._profiler):
@@ -273,6 +275,7 @@ class AnalyticsWorker(WorkerBase):
                         progress_callback=self._emit_progress,
                         state_callback=self._emit_frame_state,
                         cancel_check=self._is_cancelled,
+                        include_attention_issues=self._include_attention_issues,
                     )
             except Exception as error:
                 _LOGGER.exception("Validation analytics failed")
@@ -638,7 +641,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
             )
             if selected is not None:
                 votes[selected[0]] = int(votes.get(selected[0], 0) + 1)
-        return "binary" if votes["binary"] > votes["confidence"] else "confidence"
+        return "binary" if votes["binary"] >= votes["confidence"] else "confidence"
 
     def _apply_pair_chunk_result(
         self,
@@ -894,6 +897,61 @@ class DetailConfidenceWorker(WorkerBase):
                     )
             except Exception as error:
                 _LOGGER.exception("Detail confidence loading failed for %s", self._record.key)
+                self.failed.emit(str(error))
+                return
+            finally:
+                self._finish_profiling()
+        self.finished.emit(payload)
+
+
+class AttentionIssuesWorker(WorkerBase):
+    """Build attention markers off the UI thread for the details dialog."""
+
+    def __init__(
+        self,
+        *,
+        values,
+        mask,
+        original,
+        source: str,
+        model_id: str,
+        compute_mode: str,
+        performance_config: PerformanceConfig | None = None,
+    ) -> None:
+        super().__init__(performance_config=performance_config, analysis_type="validation_detail_attention")
+        self._values = values
+        self._mask = mask
+        self._original = original
+        self._source = str(source or "output")
+        self._model_id = str(model_id or "")
+        self._compute_mode = str(compute_mode or "lightweight")
+
+    def run(self) -> None:
+        from .attention_issues import attention_issues_to_payload, build_attention_issues
+
+        with activate_profiler(self._profiler):
+            try:
+                self._emit_progress(0, 0, "", force=True)
+                with self._profiler.stage(
+                    "validation.ui.detail.attention",
+                    frame_id=self._model_id or "attention",
+                    frame_count=1,
+                ):
+                    issues = build_attention_issues(
+                        self._values,
+                        self._mask,
+                        original=self._original,
+                        source=self._source,
+                        model_id=self._model_id,
+                        compute_mode=self._compute_mode,
+                    )
+                    payload = {
+                        "model_id": self._model_id,
+                        "compute_mode": self._compute_mode,
+                        "issues": attention_issues_to_payload(issues),
+                    }
+            except Exception as error:
+                _LOGGER.exception("Attention issues loading failed for %s", self._model_id)
                 self.failed.emit(str(error))
                 return
             finally:

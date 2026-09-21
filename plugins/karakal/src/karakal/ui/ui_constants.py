@@ -18,6 +18,35 @@ SETTINGS_PERFORMANCE_KEY = "performance/settings_v1"
 SETTINGS_VALIDATION_MASK_KEY = "ui/validation_mask"
 SETTINGS_ANALYSIS_PROFILE_KEY = "analysis/profile_v1"
 SETTINGS_ORIGINAL_FOLDER_KEY = "ui/original_folder"
+SETTINGS_ATTENTION_COMPUTE_MODE_KEY = "ui/attention_compute_mode"
+
+ATTENTION_ISSUE_TYPE_OPTIONS = (
+    ("attention.issue.break", "break"),
+    ("attention.issue.merge", "merge"),
+    ("attention.issue.uncertain_boundary", "uncertain_boundary"),
+    ("attention.issue.uncertain_fill", "uncertain_fill"),
+    ("attention.issue.artifact", "artifact"),
+    ("attention.issue.original_mismatch", "original_mismatch"),
+)
+ATTENTION_ISSUE_TYPE_COLORS = {
+    "break": "#38bdf8",
+    "merge": "#a855f7",
+    "uncertain_boundary": "#facc15",
+    "uncertain_fill": "#eb4052",
+    "artifact": "#ec4899",
+    "original_mismatch": "#f97316",
+}
+
+
+def attention_issue_type_color(issue_type: str) -> QColor:
+    return QColor(ATTENTION_ISSUE_TYPE_COLORS.get(str(issue_type), "#94a3b8"))
+
+
+def attention_issue_type_icon(issue_type: str, *, size: int = 12) -> QIcon:
+    side = max(8, int(size))
+    pixmap = QPixmap(side, side)
+    pixmap.fill(attention_issue_type_color(issue_type))
+    return QIcon(pixmap)
 
 FOLDER_CHECKED_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 FOLDER_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 2
@@ -295,9 +324,12 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QGroupBox { background-color: #1a2028; border: 1px solid #304050; border-radius: 10px; margin-top: 10px; padding: 10px; font-weight: 600; }
 #KarakalRoot QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #d7e2ef; }
 #KarakalRoot QListWidget, #KarakalRoot QTableWidget, #KarakalRoot QTableView, #KarakalRoot QHeaderView, #KarakalRoot QHeaderView::section, #KarakalRoot QTabWidget::pane, #KarakalRoot QScrollArea, #KarakalRoot QMenu, #KarakalRoot QMenuBar, #KarakalRoot QSplitter::handle { background-color: #11161d; color: #edf3fb; }
-#KarakalRoot QListWidget { border: 1px solid #28384b; border-radius: 8px; outline: none; }
-#KarakalRoot QListWidget::item { border-radius: 8px; margin: 1px 0px; padding: 1px; }
+#KarakalRoot QListWidget { border: 1px solid #28384b; border-radius: 8px; outline: none; alternate-background-color: #18212b; }
+#KarakalRoot QListWidget::item { background-color: #11161d; color: #edf3fb; border-radius: 6px; margin: 1px 0px; padding: 4px 6px; }
+#KarakalRoot QListWidget::item:alternate { background-color: #18212b; color: #edf3fb; }
+#KarakalRoot QListWidget::item:hover { background-color: #1d2a38; color: #edf3fb; }
 #KarakalRoot QListWidget::item:selected { background-color: #275fbb; color: #ffffff; }
+#KarakalRoot QListWidget::item:selected:alternate { background-color: #275fbb; color: #ffffff; }
 #KarakalRoot QTableWidget { border: 1px solid #28384b; border-radius: 8px; gridline-color: #30445a; outline: none; selection-background-color: #275fbb; selection-color: #ffffff; alternate-background-color: #11161d; }
 #KarakalRoot QTableWidget QTableCornerButton::section { background-color: #18212b; border: 1px solid #30445a; }
 #KarakalRoot QHeaderView::section { background-color: #18212b; color: #dfe8f2; border: 1px solid #30445a; padding: 4px; font-weight: 600; }

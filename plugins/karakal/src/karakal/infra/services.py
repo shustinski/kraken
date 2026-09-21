@@ -7,7 +7,12 @@ import logging
 from PyQt6.QtCore import QSettings
 
 from ..core.performance import PerformanceConfig, load_performance_config
+from ..core.attention_issues import (
+    DEFAULT_ATTENTION_COMPUTE_MODE,
+    normalize_attention_compute_mode,
+)
 from ..ui.ui_constants import (
+    SETTINGS_ATTENTION_COMPUTE_MODE_KEY,
     SETTINGS_BUILD_KEY,
     SETTINGS_ANALYSIS_PROFILE_KEY,
     SETTINGS_DETAILS_VIEW_KEY,
@@ -73,6 +78,16 @@ class KarakalSettingsService:
 
     def save_language(self, language: str) -> None:
         self._settings.setValue(SETTINGS_LANGUAGE_KEY, str(language))
+
+    def load_attention_compute_mode(self) -> str:
+        value = self._settings.value(SETTINGS_ATTENTION_COMPUTE_MODE_KEY, DEFAULT_ATTENTION_COMPUTE_MODE, str)
+        return normalize_attention_compute_mode(value)
+
+    def save_attention_compute_mode(self, mode: str) -> None:
+        self._settings.setValue(
+            SETTINGS_ATTENTION_COMPUTE_MODE_KEY,
+            normalize_attention_compute_mode(mode),
+        )
 
     def sync(self) -> None:
         self._settings.sync()

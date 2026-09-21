@@ -496,6 +496,27 @@ class RemoteSyncClient:
                 break
 
 
+def _principal_from_server_payload(payload: Mapping[str, Any]) -> Principal:
+    """Map a Kraken Server principal/session document into the domain Principal."""
+    provider_raw = str(payload.get("provider", "local") or "local")
+    issuer = None if payload.get("issuer") is None else str(payload["issuer"])
+    if provider_raw == PrincipalProvider.GITLAB.value and not issuer:
+        # Development memory backends historically emitted gitlab without an OIDC issuer.
+        provider_raw = PrincipalProvider.LOCAL.value
+    return Principal(
+        id=str(payload.get("principal_id") or payload.get("id") or ""),
+        provider=PrincipalProvider(provider_raw),
+        subject=str(payload.get("subject", "")),
+        issuer=issuer,
+        display_name=str(payload.get("display_name", "")),
+        email=None if payload.get("email") is None else str(payload["email"]),
+        active=bool(payload.get("active", True)),
+        system_roles=frozenset(
+            SystemRole(str(role)) for role in payload.get("system_roles", ())
+        ),
+    )
+
+
 class RemoteServerProjectService:
     """Shared/PostgreSQL projects via kraken-server REST (+ optional WS sync)."""
 
@@ -567,18 +588,7 @@ class RemoteServerProjectService:
         payload = self._call("GET", "/api/v1/session")
         if not isinstance(payload, Mapping):
             raise RemoteServerError("Kraken Server returned an invalid session")
-        return Principal(
-            id=str(payload.get("principal_id", "")),
-            provider=PrincipalProvider(str(payload.get("provider", "gitlab"))),
-            subject=str(payload.get("subject", "")),
-            issuer=None if payload.get("issuer") is None else str(payload["issuer"]),
-            display_name=str(payload.get("display_name", "")),
-            email=None if payload.get("email") is None else str(payload["email"]),
-            active=bool(payload.get("active", True)),
-            system_roles=frozenset(
-                SystemRole(str(role)) for role in payload.get("system_roles", ())
-            ),
-        )
+        return _principal_from_server_payload(payload)
 
     def list_principals(
         self,
@@ -589,18 +599,7 @@ class RemoteServerProjectService:
         payload = self._call("GET", f"/api/v1/principals{suffix}")
         values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
         return tuple(
-            Principal(
-                id=str(item.get("principal_id") or item.get("id")),
-                provider=PrincipalProvider(str(item.get("provider", "gitlab"))),
-                subject=str(item.get("subject", "")),
-                issuer=None if item.get("issuer") is None else str(item["issuer"]),
-                display_name=str(item.get("display_name", "")),
-                email=None if item.get("email") is None else str(item["email"]),
-                active=bool(item.get("active", True)),
-                system_roles=frozenset(
-                    SystemRole(str(role)) for role in item.get("system_roles", ())
-                ),
-            )
+            _principal_from_server_payload(item)
             for item in values
             if isinstance(item, Mapping)
         )

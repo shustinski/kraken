@@ -7315,16 +7315,22 @@ def _server_administration_panel(remote):
 
 
 def _configure_administration_page(shell, service, session: DesktopSession) -> None:
-    del session
     remote = getattr(service, "remote", None)
-    is_admin = (
+    is_server_admin = (
         remote is not None
         and SystemRole.SERVER_ADMIN in remote.auth.principal.system_roles
     )
-    shell.set_page_visible("administration", is_admin)
     page = shell.page("administration")
-    if is_admin and page is not None:
-        page.set_content(_server_administration_panel(remote))
+    if is_server_admin:
+        shell.set_page_visible("administration", True)
+        if page is not None:
+            page.set_content(_server_administration_panel(remote))
+        return
+
+    local = service.local if isinstance(service, DualCatalogService) else service
+    shell.set_page_visible("administration", True)
+    if page is not None:
+        page.set_content(_administration_panel(local, session))
 
 
 def _connect_saved_server(parent, service, principal) -> None:

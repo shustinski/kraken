@@ -183,7 +183,6 @@ class ProjectWorkspacePage(_TitledPage):
     imageRepresentationChanged = pyqtSignal(str)
     vectorRepresentationChanged = pyqtSignal(str)
     selectionCountChanged = pyqtSignal(int)
-    reviewRequested = pyqtSignal()
     analysisRequested = pyqtSignal(object)
 
     def __init__(
@@ -395,8 +394,9 @@ class ProjectWorkspacePage(_TitledPage):
 
     def _update_minimap_summary(self, _visible_rect) -> None:
         width, height = self.matrix_view.matrix_size()
-        self.matrix_minimap.setText(
-            f"{width:n} × {height:n}\n{self.matrix_view.lod_level().value}"
+        self.matrix_minimap.setToolTip(
+            f"{width:n} × {height:n}\n{self.matrix_view.lod_level().value}\n"
+            "Нажмите или перетащите, чтобы перейти к нужной области"
         )
 
 

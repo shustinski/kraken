@@ -35,6 +35,7 @@ from kraken_hub import manager_app, windows_credentials
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.manager_app import (
     DesktopController,
+    _configure_administration_page,
     _count_regular_files,
     _development_session,
     _event_belongs_to_layer,
@@ -1583,3 +1584,25 @@ def test_contour_vectorize_receives_staged_base_layer_path(tmp_path: Path) -> No
     assert (input_directory / "3_4.png").read_bytes() == b"image"
     assert output_directory.is_dir()
     assert parameters["input_representation_id"] == "binary-representation-1"
+
+
+def test_local_administration_page_is_wired_for_desktop_session(qapp, tmp_path) -> None:
+    service = EmbeddedProjectService(tmp_path)
+    session = service.create_initial_account(
+        username="admin",
+        display_name="Administrator",
+        password="",
+    )
+    shell = ProjectManagerShell()
+
+    _configure_administration_page(shell, service, session)
+
+    administration_item = shell._navigation_items["administration"]
+    assert not administration_item.isHidden()
+    page = shell.page("administration")
+    assert page is not None
+    labels = [button.text() for button in page.findChildren(QPushButton)]
+    assert "Проверить целостность" in labels
+    assert "Создать резервную копию" in labels
+    assert "Восстановить резервную копию" in labels
+    assert "Подключить проект из локального каталога…" in labels

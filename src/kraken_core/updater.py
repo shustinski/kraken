@@ -180,7 +180,9 @@ def download_update_installer(release: ReleaseInfo, *, app_id: str, manifest_url
 def launch_installer(path: str | Path) -> None:
     installer = Path(path)
     if os.name == "nt":
-        subprocess.Popen([str(installer)], close_fds=True)
+        from kraken_core.process_lifetime import detached_creationflags
+
+        subprocess.Popen([str(installer)], close_fds=True, creationflags=detached_creationflags())
     else:
         ensure_posix_executable(installer)
         subprocess.Popen([str(installer)], close_fds=True)

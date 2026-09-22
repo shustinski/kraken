@@ -1532,6 +1532,11 @@ class RemoteServerProjectService:
                     "If-Match": str(
                         self.artifact_stream_revision(project_id, series_id)
                     ),
+                    **(
+                        {"X-Kraken-Role": str(self.acting_role)}
+                        if getattr(self, "acting_role", None)
+                        else {}
+                    ),
                 },
             )
         except RemoteServerError as exc:

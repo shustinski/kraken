@@ -16,6 +16,9 @@ def _add_source_paths() -> None:
 
 def main() -> None:
     _add_source_paths()
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     from csliser.application.cli import main as csliser_main
 
     mp.freeze_support()

@@ -353,6 +353,9 @@ def load_plugins(catalog_path: str, plugins_dir: Path) -> list[PluginMetadata]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     mp.freeze_support()
     parser = argparse.ArgumentParser(prog="kraken-hub")
     parser.add_argument("--catalog", help="Path to plugins.json catalog.")

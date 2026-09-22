@@ -427,8 +427,10 @@ def launch_update_installer(installer_path: str | Path) -> None:
         subprocess.Popen([str(installer)], close_fds=True)
         return
     launcher_path = _write_update_launcher_script()
-    creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
-        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    from kraken_core.process_lifetime import detached_creationflags
+
+    creationflags = detached_creationflags(
+        int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     )
     subprocess.Popen(
         ["cmd.exe", "/d", "/c", str(launcher_path), str(installer), str(installer.parent)],

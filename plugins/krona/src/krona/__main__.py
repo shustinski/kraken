@@ -8,6 +8,9 @@ from krona.bootstrap import logic_functions_to_dict, parse_to_dict, run_gui, str
 
 
 def main() -> None:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     parser = argparse.ArgumentParser(description="Visualize or export top-level netlist from an EDIF file.")
     parser.add_argument(
         "edf_path",

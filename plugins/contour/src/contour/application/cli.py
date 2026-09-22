@@ -8,6 +8,9 @@ from time import perf_counter
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     args = list(argv) if argv is not None else sys.argv[1:]
     if any(item in {"-h", "--help"} for item in args):
         from ..infrastructure.runtime_config import config_int

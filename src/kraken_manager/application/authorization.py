@@ -138,16 +138,6 @@ class AuthorizationPolicy:
             return AuthorizationDecision(False, "principal_inactive", "The account is inactive")
         if storage.scope is StorageScope.SHARED and self.access_mode == "trusted_network":
             return AuthorizationDecision(True, "allowed", "Trusted-network access is enabled")
-        if (
-            storage.scope is StorageScope.SHARED
-            and principal.provider is PrincipalProvider.LOCAL
-            and SystemRole.SERVER_ADMIN not in principal.system_roles
-        ):
-            return AuthorizationDecision(
-                False,
-                "server_admin_required",
-                "Only a Server Administrator may create a shared project with a local account",
-            )
         if principal.provider is PrincipalProvider.GITLAB and not gitlab_identity_verified:
             return AuthorizationDecision(
                 False,

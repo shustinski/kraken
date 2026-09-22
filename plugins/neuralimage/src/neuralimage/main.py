@@ -111,6 +111,9 @@ def _run_desktop_ui(*, ui_only: bool, workspace_session=None) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     _configure_multiprocessing_start_method()
     parser = _build_parser()
     args = parser.parse_args(argv)

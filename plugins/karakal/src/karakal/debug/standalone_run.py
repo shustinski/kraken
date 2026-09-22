@@ -95,6 +95,9 @@ def _load_main_window_class():
 
 
 def main() -> int:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     if any(arg == "--benchmark-comparison" for arg in sys.argv[1:]):
         if __package__ in {None, ""}:
             ensure_package_parent_on_sys_path(__file__)

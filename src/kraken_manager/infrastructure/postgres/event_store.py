@@ -249,8 +249,9 @@ class PostgresEventStore:
                     .on_conflict_do_nothing(
                         index_elements=[self.command_keys.c.project_id, self.command_keys.c.idempotency_key]
                     )
-                )
-                if inserted.rowcount != 1:
+                    .returning(self.command_keys.c.idempotency_key)
+                ).first()
+                if inserted is None:
                     raise PostgresRevisionConflict("Idempotency key was already committed")
             values = [_event_values(event) for event in events]
             connection.execute(sa.insert(self.events), values)

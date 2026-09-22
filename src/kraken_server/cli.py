@@ -363,7 +363,7 @@ def _doctor(args: argparse.Namespace) -> int:
             with engine.connect() as connection:
                 connection.execute(text("SELECT 1"))
                 tables = set(inspect(connection).get_table_names())
-            required = {"accounts", "domain_events", "alembic_version"}
+            required = {"server_accounts", "domain_events", "alembic_version"}
             missing = sorted(required - tables)
             record(
                 "database",
@@ -905,6 +905,9 @@ def _execute(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     args = _parser().parse_args()
     try:
         return _execute(args)

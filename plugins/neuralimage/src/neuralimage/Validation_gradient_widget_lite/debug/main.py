@@ -15,6 +15,9 @@ else:
 
 
 def main() -> int:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     mp.freeze_support()
     app = QApplication(sys.argv)
     window = ValidationGradientLiteMainWindow()

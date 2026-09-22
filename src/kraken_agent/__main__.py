@@ -21,6 +21,9 @@ def _default_data_dir() -> Path:
 
 
 def main() -> int:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     parser = argparse.ArgumentParser(description="Kraken durable local plugin agent")
     parser.add_argument("--data-dir", type=Path, default=_default_data_dir())
     parser.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "::1"))

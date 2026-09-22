@@ -523,6 +523,9 @@ def _load_settings(path: Path, work_mode_override: str | None = None) -> tuple[W
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     args = _build_parser().parse_args(argv)
 
     if args.print_config_template:

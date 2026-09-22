@@ -10,6 +10,9 @@ from .configuration import ServerConfig, default_config_path
 
 
 def main() -> int:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     parser = argparse.ArgumentParser(description="Kraken shared project server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)

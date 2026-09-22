@@ -105,6 +105,9 @@ def _path_argument(value: str | None, environment_key: str) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     parser = argparse.ArgumentParser(description="Karakal headless analysis worker")
     parser.add_argument("--job")
     parser.add_argument("--result")

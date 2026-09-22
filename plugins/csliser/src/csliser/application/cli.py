@@ -11,6 +11,9 @@ from csliser.domain.planner import build_operation_plan
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     parser = _build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
 

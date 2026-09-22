@@ -11,6 +11,9 @@ from .store import JobStore
 
 
 def main():
+    from kraken_core.process_lifetime import bind_child_process_lifetime
+
+    bind_child_process_lifetime()
     parser = argparse.ArgumentParser(description="NeuralImage headless compute server")
     parser.add_argument(
         "--data-dir", type=Path, default=Path(os.environ.get("NEURALIMAGE_DATA_DIR", "./neuralimage-data"))

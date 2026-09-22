@@ -349,12 +349,20 @@ try {
         Write-Host "Merged extra VS layout certificates into toolchains\\vs-build-tools-layout\\certificates."
     }
 
-    # Instructions and installer must sit in the kit root (not only inside the git bundle).
-    $readmeSource = Join-Path $PSScriptRoot "README.md"
-    $installSource = Join-Path $PSScriptRoot "Install-OfflineKit.ps1"
-    Copy-Item -LiteralPath $readmeSource -Destination (Join-Path $outputFullPath "README.md") -Force
-    Copy-Item -LiteralPath $installSource -Destination (Join-Path $outputFullPath "Install-OfflineKit.ps1") -Force
-
+    # Instructions and installer scripts must sit in the kit root (not only inside the git bundle).
+    $kitRootScripts = @(
+        "README.md",
+        "Install-OfflineKit.ps1",
+        "_lib.ps1",
+        "03-Install-Toolchains.ps1",
+        "04-Install-Repo.ps1"
+    )
+    foreach ($name in $kitRootScripts) {
+        $src = Join-Path $PSScriptRoot $name
+        if (Test-Path -LiteralPath $src) {
+            Copy-Item -LiteralPath $src -Destination (Join-Path $outputFullPath $name) -Force
+        }
+    }
     $lfsFiles = @(git lfs ls-files -n)
     if ($lfsFiles.Count -gt 0) {
         $lfsArchive = Join-Path $sourceDirectory "lfs-objects.tar"

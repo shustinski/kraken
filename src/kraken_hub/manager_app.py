@@ -1022,105 +1022,68 @@ class DesktopController:
     def manage_project_participants(self, item: ProjectListItem | None) -> None:
         if item is None:
             return
-        from PyQt6.QtWidgets import (
-            QCheckBox,
-            QDialog,
-            QDialogButtonBox,
-            QMessageBox,
-            QTableWidget,
-            QTableWidgetItem,
-            QVBoxLayout,
-        )
+        from kraken_manager.domain.identity import SystemRole, parse_project_role
+        from kraken_manager.domain.roles import bind_acting_role
+        from kraken_manager.presentation.qt.role_management import RoleManagementDialog
 
         project = self.service.get_project(item.project_id)
         if project is None:
             self._error("Проект больше не доступен.")
             return
-        project_principals = getattr(
-            self.service,
-            "list_project_principals",
-            None,
-        )
-        principals = (
+        project_principals = getattr(self.service, "list_project_principals", None)
+        principals = list(
             project_principals(project.id)
             if callable(project_principals)
             else self.service.list_principals()
         )
-        roles = (
-            ProjectRole.OWNER,
-            ProjectRole.MANAGER,
-            ProjectRole.CONTRIBUTOR,
-            ProjectRole.REVIEWER,
-            ProjectRole.VIEWER,
-        )
-        role_labels = {
-            ProjectRole.OWNER: "Владелец",
-            ProjectRole.MANAGER: "Руководитель",
-            ProjectRole.CONTRIBUTOR: "Участник",
-            ProjectRole.REVIEWER: "Проверяющий",
-            ProjectRole.VIEWER: "Наблюдатель",
-        }
-        dialog = QDialog(self.shell)
-        dialog.setWindowTitle(f"Участники и роли — {project.name}")
-        dialog.resize(800, 420)
-        layout = QVBoxLayout(dialog)
-        table = QTableWidget(len(principals), 1 + len(roles), dialog)
-        table.setHorizontalHeaderLabels(
-            ("Участник", *(role_labels[role] for role in roles))
-        )
-        table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(table)
 
-        def change(principal, role: ProjectRole, enabled: bool, checkbox: QCheckBox) -> None:
-            try:
-                revision = self.service.project_role_revision(project.id, principal.id)
-                if enabled:
-                    self.service.assign_project_role(
-                        principal=self.session.principal,
-                        project=project,
-                        target_principal_id=principal.id,
-                        role=role,
-                        expected_revision=revision,
-                        idempotency_key=str(uuid4()),
-                    )
-                else:
-                    self.service.revoke_project_role(
-                        principal=self.session.principal,
-                        project=project,
-                        target_principal_id=principal.id,
-                        role=role,
-                        expected_revision=revision,
-                        idempotency_key=str(uuid4()),
-                    )
-            except Exception as exc:
-                checkbox.blockSignals(True)
-                checkbox.setChecked(not enabled)
-                checkbox.blockSignals(False)
-                QMessageBox.warning(dialog, "Не удалось изменить роль", str(exc))
-
-        for row, principal in enumerate(principals):
-            label = principal.display_name
-            if principal.email:
-                label += f"\n{principal.email}"
-            table.setItem(row, 0, QTableWidgetItem(label))
+        def roles_for(principal) -> frozenset[ProjectRole]:
             assigned = self.service.project_roles(project.id, principal.id)
-            for column, role in enumerate(roles, start=1):
-                checkbox = QCheckBox(table)
-                checkbox.setChecked(role in assigned)
-                checkbox.toggled.connect(
-                    lambda enabled, value=principal, selected=role, control=checkbox: change(
-                        value,
-                        selected,
-                        enabled,
-                        control,
-                    )
+            if isinstance(assigned, dict):
+                return frozenset(parse_project_role(role) for role in assigned.get("roles", ()))
+            return frozenset(assigned)
+
+        def change(principal, role: ProjectRole, enabled: bool) -> None:
+            revision = self.service.project_role_revision(project.id, principal.id)
+            if enabled:
+                self.service.assign_project_role(
+                    principal=self.session.principal,
+                    project=project,
+                    target_principal_id=principal.id,
+                    role=role,
+                    expected_revision=revision,
+                    idempotency_key=str(uuid4()),
                 )
-                table.setCellWidget(row, column, checkbox)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
-        buttons.button(QDialogButtonBox.StandardButton.Close).setText("Закрыть")
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        dialog.exec()
+            else:
+                self.service.revoke_project_role(
+                    principal=self.session.principal,
+                    project=project,
+                    target_principal_id=principal.id,
+                    role=role,
+                    expected_revision=revision,
+                    idempotency_key=str(uuid4()),
+                )
+
+        actor_roles = list(roles_for(self.session.principal))
+        if SystemRole.SERVER_ADMIN in self.session.principal.system_roles and ProjectRole.ADMIN not in actor_roles:
+            actor_roles.append(ProjectRole.ADMIN)
+        rank = {role.value: index for index, role in enumerate(ProjectRole)}
+        actor_roles.sort(key=lambda role: rank.get(role.value, 100))
+
+        def remember(role: ProjectRole) -> None:
+            bind_acting_role(self.service, role.value)
+
+        if actor_roles:
+            remember(actor_roles[0])
+        RoleManagementDialog(
+            self.shell,
+            project_name=project.name,
+            principals=principals,
+            roles_for=roles_for,
+            change_role=change,
+            acting_roles=actor_roles,
+            on_acting_role=remember,
+        ).exec()
 
     def refresh_projects(self) -> None:
         label_for = getattr(self.service, "project_storage_label", None)

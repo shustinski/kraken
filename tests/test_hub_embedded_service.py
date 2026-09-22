@@ -489,7 +489,7 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             recovered = service.list_projects()
             self.assertEqual((command.project_id,), tuple(item.id for item in recovered))
             self.assertEqual(
-                frozenset({ProjectRole.OWNER}),
+                frozenset({ProjectRole.MAINTAINER}),
                 service.identities.roles_for(command.project_id, session.principal.id),
             )
 
@@ -869,18 +869,18 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 principal=owner.principal,
                 project=project,
                 target_principal_id=worker.principal.id,
-                role=ProjectRole.CONTRIBUTOR,
+                role=ProjectRole.ELEMENTER,
                 expected_revision=0,
                 idempotency_key="assign",
             )
-            self.assertEqual(frozenset({ProjectRole.CONTRIBUTOR}), roles)
+            self.assertEqual(frozenset({ProjectRole.ELEMENTER}), roles)
             self.assertEqual(
                 roles,
                 service.assign_project_role(
                     principal=owner.principal,
                     project=project,
                     target_principal_id=worker.principal.id,
-                    role=ProjectRole.CONTRIBUTOR,
+                    role=ProjectRole.ELEMENTER,
                     expected_revision=0,
                     idempotency_key="assign",
                 ),
@@ -889,7 +889,7 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 principal=owner.principal,
                 project=project,
                 target_principal_id=worker.principal.id,
-                role=ProjectRole.CONTRIBUTOR,
+                role=ProjectRole.ELEMENTER,
                 expected_revision=1,
                 idempotency_key="revoke",
             )
@@ -910,12 +910,12 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 idempotency_key="project",
             )
 
-            with self.assertRaisesRegex(ValueError, "последнего владельца"):
+            with self.assertRaisesRegex(ValueError, "последнего сопровождающего"):
                 service.revoke_project_role(
                     principal=owner.principal,
                     project=project,
                     target_principal_id=owner.principal.id,
-                    role=ProjectRole.OWNER,
+                    role=ProjectRole.MAINTAINER,
                     expected_revision=service.project_role_revision(
                         project.id,
                         owner.principal.id,
@@ -924,7 +924,7 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 )
 
             self.assertEqual(
-                frozenset({ProjectRole.OWNER}),
+                frozenset({ProjectRole.MAINTAINER}),
                 service.project_roles(project.id, owner.principal.id),
             )
 
@@ -1080,7 +1080,7 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
                 "New Owner",
                 "",
             )
-            with self.assertRaisesRegex(ValueError, "принятие владения"):
+            with self.assertRaisesRegex(ValueError, "принятие проекта"):
                 restored_service.import_backup(
                     bundle,
                     principal=new_owner.principal,
@@ -1094,7 +1094,7 @@ class EmbeddedProjectServiceTests(unittest.TestCase):
             )
             self.assertEqual(project.id, restored.id)
             self.assertEqual(
-                frozenset({ProjectRole.OWNER}),
+                frozenset({ProjectRole.MAINTAINER}),
                 restored_service.project_roles(
                     restored.id,
                     new_owner.principal.id,

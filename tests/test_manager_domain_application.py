@@ -261,7 +261,7 @@ class AuthorizationPolicyTests(unittest.TestCase):
             principal=Principal.local(subject="alice", display_name="Alice"),
             storage=profile(StorageScope.SHARED, profile_id="shared"),
             permission=Permission.MANAGE_STRUCTURE,
-            roles={ProjectRole.OWNER},
+            roles={ProjectRole.MAINTAINER},
         )
 
         self.assertTrue(decision.allowed)
@@ -285,7 +285,7 @@ class AuthorizationPolicyTests(unittest.TestCase):
                 principal=principal,
                 storage=shared,
                 permission=Permission.MANAGE_STRUCTURE,
-                roles={ProjectRole.OWNER},
+                roles={ProjectRole.MAINTAINER},
                 gitlab_identity_verified=False,
             ).allowed
         )

@@ -31,7 +31,7 @@ from kraken_manager.domain.project import (
     StructureState,
 )
 from kraken_manager.domain.artifacts import ArtifactScope
-from kraken_manager.domain.identity import ProjectRole, ProjectRoleAssignment
+from kraken_manager.domain.identity import ProjectRole, ProjectRoleAssignment, parse_project_role
 from kraken_manager.domain.selection import FrameSelectionV1
 from kraken_manager.domain.workflows import PluginJob, PluginJobState, ReviewBatch, ReviewBatchState, ReviewItem
 from kraken_manager.infrastructure.filesystem._atomic import fsync_directory
@@ -121,7 +121,7 @@ class ProjectionRebuilder:
                     ProjectRoleAssignment.create(
                         project_id=project.id,
                         principal_id=event.actor.principal_id,
-                        role=ProjectRole.OWNER,
+                        role=ProjectRole.MAINTAINER,
                         assigned_by=event.actor.principal_id,
                         assigned_at=event.recorded_at,
                     )
@@ -133,7 +133,7 @@ class ProjectionRebuilder:
                     ProjectRoleAssignment.create(
                         project_id=event.project_id,
                         principal_id=PrincipalId(str(payload["principal_id"])),
-                        role=ProjectRole(str(payload["role"])),
+                        role=parse_project_role(payload["role"]),
                         assigned_by=PrincipalId(str(payload.get("assigned_by", event.actor.principal_id))),
                         assigned_at=self._time(payload, "changed_at", event.recorded_at),
                     )
@@ -144,7 +144,7 @@ class ProjectionRebuilder:
                 self.acl.revoke(
                     event.project_id,
                     PrincipalId(str(payload["principal_id"])),
-                    ProjectRole(str(payload["role"])),
+                    parse_project_role(payload["role"]),
                 )
             return True
         if event.event_type in {"ProjectRenamed", "ProjectArchived", "ProjectRestored"}:

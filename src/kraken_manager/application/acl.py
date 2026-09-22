@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import AssignProjectRoleCommand, RevokeProjectRoleCommand
-from kraken_manager.application.errors import ConcurrencyError, ConflictError, NotFoundError
+from kraken_manager.application.errors import AuthorizationError, ConcurrencyError, ConflictError, NotFoundError
 from kraken_manager.application.ports import Clock, StorageProfileCatalog, UnitOfWorkFactory
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope
-from kraken_manager.domain.identity import Permission, ProjectRole, ProjectRoleAssignment
+from kraken_manager.domain.common import PrincipalId
+from kraken_manager.domain.identity import Permission, ProjectRole, ProjectRoleAssignment, SystemRole
+from kraken_manager.domain.roles import CATALOG, cascade_lost_assignments
 
 
 def _stream(command: AssignProjectRoleCommand | RevokeProjectRoleCommand) -> str:
@@ -70,6 +72,23 @@ class _AclHandler:
                 raise ConflictError("The principal already has this project role")
             if self.event_type == "ProjectRoleRevoked" and command.role not in current:
                 raise ConflictError("The principal does not have this project role")
+            actor_roles = uow.acl.roles_for(project.id, command.context.actor.id)
+            server_admin = SystemRole.SERVER_ADMIN in command.context.actor.system_roles
+            if not CATALOG.can_grant(actor_roles, command.role.value, is_server_admin=server_admin):
+                raise AuthorizationError(
+                    f"Недостаточно прав: нельзя изменить роль «{CATALOG.roles[command.role.value].title}»."
+                )
+            if self.event_type == "ProjectRoleRevoked" and command.role is ProjectRole.MAINTAINER:
+                list_assignments = getattr(uow.acl, "assignments_for", None)
+                if list_assignments is not None:
+                    maintainers = {
+                        assignment.principal_id
+                        for assignment in list_assignments(project.id)
+                        if assignment.role is ProjectRole.MAINTAINER and assignment.active
+                    }
+                    actor_is_admin = server_admin or ProjectRole.ADMIN in actor_roles
+                    if command.principal_id in maintainers and len(maintainers) <= 1 and not actor_is_admin:
+                        raise AuthorizationError("Нельзя отозвать роль последнего сопровождающего проекта.")
             now = self._clock.now()
             event = EventEnvelope.create(
                 stream_id=stream_id,
@@ -114,8 +133,51 @@ class RevokeProjectRoleHandler(_AclHandler):
     event_type = "ProjectRoleRevoked"
 
     def _apply(self, uow: object, command: RevokeProjectRoleCommand, now: object) -> None:
-        del now
+        list_assignments = getattr(uow.acl, "assignments_for", None)
+        snapshot = () if list_assignments is None else tuple(list_assignments(command.project_id))
         uow.acl.revoke(command.project_id, command.principal_id, command.role)
+        if list_assignments is None:
+            return
+        target = uow.identities.get(command.principal_id)
+        remaining = uow.acl.roles_for(command.project_id, command.principal_id)
+        lost = cascade_lost_assignments(
+            tuple(
+                (str(assignment.principal_id), assignment.role.value, str(assignment.assigned_by))
+                for assignment in snapshot
+                if assignment.active
+            ),
+            principal_id=str(command.principal_id),
+            revoked_role=command.role.value,
+            remaining_roles={role.value for role in remaining},
+            grantor_is_admin=target is not None and SystemRole.SERVER_ADMIN in target.system_roles,
+            catalog=CATALOG,
+        )
+        for holder_id, role_id in lost:
+            holder = PrincipalId(holder_id)
+            role = ProjectRole(role_id)
+            uow.acl.revoke(command.project_id, holder, role)
+            stream_id = f"acl:{command.project_id}:{holder}"
+            revision = uow.event_store.current_revision(stream_id)
+            event = EventEnvelope.create(
+                stream_id=stream_id,
+                project_id=command.project_id,
+                revision=revision + 1,
+                event_type="ProjectRoleRevoked",
+                payload={
+                    "principal_id": holder_id,
+                    "role": role_id,
+                    "assigned_by": str(command.context.actor.id),
+                    "changed_at": now.isoformat(),
+                    "cascade": True,
+                },
+                actor=ActorSnapshot.from_principal(command.context.actor),
+                recorded_at=now,
+                effective_at=command.context.effective_at,
+                performer_id=command.context.performer_id,
+                correlation_id=command.context.correlation_id,
+                idempotency_key=f"{command.context.idempotency_key}:cascade:{holder_id}:{role_id}",
+            )
+            uow.event_store.append(stream_id, expected_revision=revision, events=(event,))
 
 
 __all__ = ["AssignProjectRoleHandler", "RevokeProjectRoleHandler"]

@@ -17,6 +17,7 @@ from kraken_manager.domain.identity import (
     SystemRole,
     permissions_for_roles,
 )
+from kraken_manager.domain.roles import CATALOG, current_acting_role
 
 _IMPLICIT_READ_PERMISSIONS = frozenset(
     {Permission.VIEW_PROJECT, Permission.VIEW_HISTORY, Permission.EXPORT_STATISTICS}
@@ -74,7 +75,13 @@ class AuthorizationPolicy:
             return AuthorizationDecision(True, "allowed", "Trusted-network access is enabled")
         if permission in _IMPLICIT_READ_PERMISSIONS:
             return AuthorizationDecision(True, "allowed", "Every authenticated account may read projects")
-        if permission is Permission.MANAGE_ACL and SystemRole.SERVER_ADMIN in principal.system_roles:
+        acting = current_acting_role()
+        server_admin = SystemRole.SERVER_ADMIN in principal.system_roles
+        if (
+            permission is Permission.MANAGE_ACL
+            and server_admin
+            and acting in {None, "admin"}
+        ):
             return AuthorizationDecision(True, "allowed", "Server Administrator override")
         if principal.provider is PrincipalProvider.GITLAB and not gitlab_identity_verified:
             return AuthorizationDecision(
@@ -82,12 +89,22 @@ class AuthorizationPolicy:
                 "gitlab_live_check_required",
                 "GitLab identity must be verified immediately before every mutation",
             )
+        if acting is not None:
+            decision = CATALOG.resolve(
+                held_roles={role.value if isinstance(role, ProjectRole) else str(role) for role in roles},
+                acting_role=acting,
+                action=permission.value,
+                is_server_admin=server_admin,
+            )
+            if not decision.allowed:
+                return AuthorizationDecision(False, "project_permission_missing", decision.message)
+            return AuthorizationDecision(True, "allowed", decision.message)
         granted = permissions_for_roles(set(roles))
         if permission not in granted:
             return AuthorizationDecision(
                 False,
                 "project_permission_missing",
-                f"The account does not have the {permission.value!r} project permission",
+                f"Недостаточно прав: нет доступа к действию «{permission.value}».",
             )
         return AuthorizationDecision(True, "allowed", "Permission granted by Kraken project ACL")
 

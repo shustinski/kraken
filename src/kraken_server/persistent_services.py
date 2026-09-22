@@ -133,7 +133,7 @@ from kraken_manager.domain.common import (
     validate_uuid,
 )
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope, ProgramSnapshot
-from kraken_manager.domain.identity import Permission, ProjectRole
+from kraken_manager.domain.identity import Permission, parse_project_role
 from kraken_manager.domain.project import (
     GridOrientation,
     Layer,
@@ -697,7 +697,7 @@ class PostgresServerServices:
                     context=self._application_context(context),
                     project_id=_project_id(project_id),
                     principal_id=PrincipalId(validate_uuid(principal_id, field="principal_id")),
-                    role=ProjectRole(role),
+                    role=parse_project_role(role),
                     expected_revision=self._require_revision(context),
                 )
             )
@@ -719,7 +719,7 @@ class PostgresServerServices:
                     context=self._application_context(context),
                     project_id=_project_id(project_id),
                     principal_id=PrincipalId(validate_uuid(principal_id, field="principal_id")),
-                    role=ProjectRole(role),
+                    role=parse_project_role(role),
                     expected_revision=self._require_revision(context),
                 )
             )

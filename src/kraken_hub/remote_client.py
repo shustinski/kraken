@@ -40,6 +40,7 @@ from kraken_manager.domain.identity import (
     PrincipalProvider,
     ProjectRole,
     SystemRole,
+    parse_project_role,
     permissions_for_roles,
 )
 from kraken_manager.domain.project import (
@@ -751,6 +752,9 @@ class RemoteServerProjectService:
             headers["Idempotency-Key"] = idempotency_key
         if if_match is not None:
             headers["If-Match"] = str(if_match)
+        acting_role = getattr(self, "acting_role", None)
+        if acting_role:
+            headers["X-Kraken-Role"] = str(acting_role)
         try:
             return self._http.request(
                 method,
@@ -1295,7 +1299,7 @@ class RemoteServerProjectService:
         roles: set[ProjectRole] = set()
         for role_name in roles_raw:
             try:
-                roles.add(ProjectRole(str(role_name)))
+                roles.add(parse_project_role(role_name))
             except ValueError:
                 continue
         return permissions_for_roles(roles)
@@ -1310,7 +1314,7 @@ class RemoteServerProjectService:
             f"/api/v1/projects/{project_id}/acl/{principal_id}",
         )
         raw_roles = payload.get("roles", ()) if isinstance(payload, Mapping) else ()
-        return frozenset(ProjectRole(str(role)) for role in raw_roles)
+        return frozenset(parse_project_role(role) for role in raw_roles)
 
     def project_role_revision(
         self,
@@ -1341,7 +1345,7 @@ class RemoteServerProjectService:
             if_match=expected_revision,
         )
         raw_roles = payload.get("roles", ()) if isinstance(payload, Mapping) else ()
-        return frozenset(ProjectRole(str(value)) for value in raw_roles)
+        return frozenset(parse_project_role(value) for value in raw_roles)
 
     def assign_project_role(
         self,

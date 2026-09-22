@@ -28,7 +28,7 @@ class AuthorizationMatrixTests(unittest.TestCase):
         allowed = AuthorizationPolicy("acl").decide(
             principal=Principal.local(subject="operator", display_name="Operator"),
             storage=self.SHARED,
-            roles={ProjectRole.OWNER},
+            roles={ProjectRole.MAINTAINER},
             permission=Permission.MANAGE_STRUCTURE,
         )
         denied = AuthorizationPolicy("acl").decide(
@@ -67,14 +67,14 @@ class AuthorizationMatrixTests(unittest.TestCase):
         denied = AuthorizationPolicy().decide(
             principal=principal,
             storage=self.SHARED,
-            roles={ProjectRole.OWNER},
+            roles={ProjectRole.MAINTAINER},
             permission=Permission.MANAGE_STRUCTURE,
         )
         self.assertEqual("gitlab_live_check_required", denied.code)
         allowed = AuthorizationPolicy().decide(
             principal=principal,
             storage=self.SHARED,
-            roles={ProjectRole.MANAGER},
+            roles={ProjectRole.MAINTAINER},
             permission=Permission.MANAGE_STRUCTURE,
             gitlab_identity_verified=True,
         )

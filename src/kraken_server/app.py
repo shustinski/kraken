@@ -71,6 +71,16 @@ def create_app(
 
     hub = connection_hub or ConnectionHub()
     app = FastAPI(title="Kraken Server", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    from kraken_manager.domain.roles import reset_acting_role, set_acting_role
+
+    @app.middleware("http")
+    async def _remember_acting_role(request: Request, call_next):  # type: ignore[no-untyped-def]
+        token = set_acting_role(request.headers.get("x-kraken-role"))
+        try:
+            return await call_next(request)
+        finally:
+            reset_acting_role(token)
+
     app.state.connection_hub = hub
     app.state.outbox_publisher = outbox_publisher
 
@@ -188,14 +198,46 @@ def create_app(
             )
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    def shared_mutation_actor(subject: SessionPrincipal = Depends(principal)) -> SessionPrincipal:
-        if development and subject.provider == "development":
-            return subject
-        if subject.provider == "gitlab":
-            if live_gitlab_verifier is None or not live_gitlab_verifier(subject):
-                raise HTTPException(status_code=503, detail="Live GitLab identity verification failed")
-        elif subject.provider != "local":
-            raise HTTPException(status_code=403, detail="Unsupported identity provider")
+    def enforce_acting_role(request: Request, subject: SessionPrincipal) -> None:
+        from kraken_manager.domain.roles import CATALOG, action_for_request, current_acting_role
+
+        acting = current_acting_role()
+        if not acting:
+            return
+        action = action_for_request(request.method, request.url.path)
+        if not action:
+            return
+        project_id = ""
+        marker = f"{API_PREFIX}/projects/"
+        path = request.url.path
+        if marker in path:
+            project_id = path.split(marker, 1)[1].split("/", 1)[0]
+        held: set[str] = set()
+        if project_id:
+            try:
+                held = set(backend.project_roles(project_id, subject.principal_id).get("roles", ()))
+            except (NotFoundError, ValidationError):
+                held = set()
+        decision = CATALOG.resolve(
+            held_roles=held,
+            acting_role=acting,
+            action=action,
+            is_server_admin="server_admin" in system_roles(subject),
+        )
+        if not decision.allowed:
+            raise ForbiddenError(decision.message)
+
+    def shared_mutation_actor(
+        request: Request,
+        subject: SessionPrincipal = Depends(principal),
+    ) -> SessionPrincipal:
+        if not (development and subject.provider == "development"):
+            if subject.provider == "gitlab":
+                if live_gitlab_verifier is None or not live_gitlab_verifier(subject):
+                    raise HTTPException(status_code=503, detail="Live GitLab identity verification failed")
+            elif subject.provider != "local":
+                raise HTTPException(status_code=403, detail="Unsupported identity provider")
+        enforce_acting_role(request, subject)
         return subject
 
     def system_roles(subject: SessionPrincipal) -> frozenset[str]:
@@ -239,11 +281,13 @@ def create_app(
         return actor is not None and "server_admin" in actor.get("system_roles", ())
 
     def acl_mutation_actor(
+        request: Request,
         subject: SessionPrincipal = Depends(principal),
     ) -> SessionPrincipal:
-        if "server_admin" in system_roles(subject):
+        if "server_admin" in system_roles(subject) or (development and subject.provider == "development"):
+            enforce_acting_role(request, subject)
             return subject
-        return shared_mutation_actor(subject)
+        return shared_mutation_actor(request, subject)
 
     def project_reader(
         project_id: str,

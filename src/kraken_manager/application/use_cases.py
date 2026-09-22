@@ -183,7 +183,7 @@ class CreateProjectHandler(_ProjectHandler):
                 ProjectRoleAssignment.create(
                     project_id=project.id,
                     principal_id=command.context.actor.id,
-                    role=ProjectRole.OWNER,
+                    role=ProjectRole.MAINTAINER,
                     assigned_by=command.context.actor.id,
                     assigned_at=now,
                 )

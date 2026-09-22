@@ -352,8 +352,8 @@ class Fixture:
         self.projections.save_project(self.project)
         self.projections.save_layer(self.layer)
         self.projections.save_representation(self.vector_representation)
-        self.acl.grant(self.project.id, self.manager.id, ProjectRole.MANAGER)
-        self.acl.grant(self.project.id, self.reviewer.id, ProjectRole.REVIEWER)
+        self.acl.grant(self.project.id, self.manager.id, ProjectRole.MAINTAINER)
+        self.acl.grant(self.project.id, self.reviewer.id, ProjectRole.CORRECTOR)
         self.performer_id = PerformerId(str(uuid4()))
         self.performers = Performers(
             Performer.create(name="Reviewer", color="#336699", performer_id=self.performer_id)

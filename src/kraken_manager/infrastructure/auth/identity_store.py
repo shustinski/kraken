@@ -13,9 +13,9 @@ from kraken_manager.domain.common import PrincipalId, ProjectId
 from kraken_manager.domain.identity import (
     Principal,
     PrincipalProvider,
-    ProjectRole,
     ProjectRoleAssignment,
     SystemRole,
+    parse_project_role,
 )
 
 
@@ -131,7 +131,29 @@ class LocalIdentityAclStore:
                 "SELECT role FROM project_acl WHERE project_id=? AND principal_id=? AND revoked_at IS NULL",
                 (str(project_id), str(principal_id)),
             ).fetchall()
-        return frozenset(ProjectRole(str(row["role"])) for row in rows)
+        return frozenset(parse_project_role(row["role"]) for row in rows)
+
+    def assignments_for(self, project_id: ProjectId) -> tuple[ProjectRoleAssignment, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT principal_id, role, assigned_by, assigned_at, revoked_at
+                FROM project_acl
+                WHERE project_id=? AND revoked_at IS NULL
+                """,
+                (str(project_id),),
+            ).fetchall()
+        return tuple(
+            ProjectRoleAssignment(
+                project_id=project_id,
+                principal_id=PrincipalId(str(row["principal_id"])),
+                role=parse_project_role(row["role"]),
+                assigned_by=PrincipalId(str(row["assigned_by"])),
+                assigned_at=datetime.fromisoformat(str(row["assigned_at"])),
+                revoked_at=None,
+            )
+            for row in rows
+        )
 
     def assign(self, assignment: ProjectRoleAssignment) -> None:
         with self._connect() as connection:

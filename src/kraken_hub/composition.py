@@ -443,17 +443,17 @@ class EmbeddedProjectService:
         expected_revision: int,
         idempotency_key: str,
     ) -> frozenset[ProjectRole]:
-        if role is ProjectRole.OWNER:
+        if role is ProjectRole.MAINTAINER:
             owners = tuple(
                 candidate
                 for candidate in self.identities.list()
-                if ProjectRole.OWNER
+                if ProjectRole.MAINTAINER
                 in self.identities.roles_for(project.id, candidate.id)
             )
             if len(owners) <= 1 and any(
                 candidate.id == target_principal_id for candidate in owners
             ):
-                raise ValueError("Нельзя отозвать роль последнего владельца проекта.")
+                raise ValueError("Нельзя отозвать роль последнего сопровождающего проекта.")
         return RevokeProjectRoleHandler(self._uow(str(project.id)), self.profiles, self.clock)(
             RevokeProjectRoleCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
@@ -3657,7 +3657,7 @@ class EmbeddedProjectService:
         available_owners = tuple(
             candidate
             for candidate in self.identities.list()
-            if ProjectRole.OWNER
+            if ProjectRole.MAINTAINER
             in self.project_roles(manifest.project_id, candidate.id)
         )
         if principal is not None:
@@ -3670,8 +3670,8 @@ class EmbeddedProjectService:
                 )
             elif not take_ownership:
                 raise ValueError(
-                    "В локальном хранилище нет доступного владельца. "
-                    "Для восстановления явно подтвердите принятие владения."
+                    "В локальном хранилище нет доступного сопровождающего. "
+                    "Для восстановления явно подтвердите принятие проекта."
                 )
         events = FilesystemEventStore(self.catalog_root, manifest.project_id)
         blobs = FilesystemBlobStore.for_project(self.catalog_root, manifest.project_id)
@@ -3685,7 +3685,7 @@ class EmbeddedProjectService:
                 ProjectRoleAssignment.create(
                     project_id=project.id,
                     principal_id=principal.id,
-                    role=ProjectRole.OWNER,
+                    role=ProjectRole.MAINTAINER,
                     assigned_by=principal.id,
                     assigned_at=self.clock.now(),
                 )
@@ -3712,7 +3712,7 @@ class EmbeddedProjectService:
             available_owners = tuple(
                 candidate
                 for candidate in self.identities.list()
-                if ProjectRole.OWNER in self.project_roles(project.id, candidate.id)
+                if ProjectRole.MAINTAINER in self.project_roles(project.id, candidate.id)
             )
             if available_owners:
                 AuthorizationPolicy().require(
@@ -3723,15 +3723,15 @@ class EmbeddedProjectService:
                 )
             elif not take_ownership:
                 raise ValueError(
-                    "В локальном хранилище нет доступного владельца. "
-                    "Для подключения явно подтвердите принятие владения."
+                    "В локальном хранилище нет доступного сопровождающего. "
+                    "Для подключения явно подтвердите принятие проекта."
                 )
             else:
                 self.identities.assign(
                     ProjectRoleAssignment.create(
                         project_id=project.id,
                         principal_id=principal.id,
-                        role=ProjectRole.OWNER,
+                        role=ProjectRole.MAINTAINER,
                         assigned_by=principal.id,
                         assigned_at=self.clock.now(),
                     )

@@ -14,6 +14,23 @@ uv sync --extra server --extra postgres --extra reports
 
 Отладка: **Run and Debug** → **Kraken Server (development)**, **Kraken Server (local config)** или **Kraken Admin**.
 
+## Роли проекта
+
+Роль, от имени которой выполняется действие, уходит на сервер заголовком `X-Kraken-Role`. Сервер проверяет, что роль назначена, и что ей разрешено это действие. Отказ приходит как уведомление «Недостаточно прав».
+
+| Роль | Что включает | Кого может назначать и отзывать |
+|---|---|---|
+| admin | все остальные | любую роль в любом проекте |
+| maintainer | elementer, sewer, viewer и через них corrector | maintainer, sewer, corrector, elementer, viewer |
+| elementer | corrector и viewer | никого, в том числе corrector |
+| corrector | viewer | никого |
+| sewer | viewer | никого |
+| viewer | — | никого |
+
+Создатель проекта становится его maintainer. Если maintainer отозван и другой назначающей роли у него не осталось, снимаются и роли, которые он выдал. Новую роль или действие можно добавить через `RoleCatalog.register_role` и `register_action` в `kraken_manager.domain.roles`: у действия `roles=None` означает «доступно всем ролям».
+
+Дерево ролей в Desktop: участники проекта, прямоугольники и стрелки включения.
+
 ## kraken-server
 
 ```powershell

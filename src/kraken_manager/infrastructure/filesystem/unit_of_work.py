@@ -334,6 +334,30 @@ class _StagedAclStore:
     def revoke(self, project_id: Any, principal_id: Any, role: Any) -> None:
         self._operations.append(("revoke", (project_id, principal_id, role)))
 
+    def assignments_for(self, project_id: Any) -> tuple[Any, ...]:
+        listing = getattr(self.backing, "assignments_for", None)
+        rows = [] if listing is None else list(listing(project_id))
+        for operation, arguments in self._operations:
+            if operation == "assign":
+                assignment = arguments[0]
+                if assignment.project_id == project_id and assignment.active:
+                    rows = [
+                        item
+                        for item in rows
+                        if not (
+                            item.principal_id == assignment.principal_id and item.role == assignment.role
+                        )
+                    ]
+                    rows.append(assignment)
+            elif arguments[0] == project_id:
+                _project_id, principal_id, role = arguments
+                rows = [
+                    item
+                    for item in rows
+                    if not (item.principal_id == principal_id and item.role == role)
+                ]
+        return tuple(rows)
+
     def commit(self) -> None:
         for operation, arguments in self._operations:
             getattr(self.backing, operation)(*arguments)

@@ -31,11 +31,18 @@ class SystemRole(StrEnum):
 
 
 class ProjectRole(StrEnum):
-    OWNER = "owner"
-    MANAGER = "manager"
-    CONTRIBUTOR = "contributor"
-    REVIEWER = "reviewer"
+    ADMIN = "admin"
+    MAINTAINER = "maintainer"
+    SEWER = "sewer"
+    CORRECTOR = "corrector"
+    ELEMENTER = "elementer"
     VIEWER = "viewer"
+
+
+def parse_project_role(value: object) -> ProjectRole:
+    from kraken_manager.domain.roles import parse_role_id
+
+    return ProjectRole(parse_role_id(value))
 
 
 class Permission(StrEnum):
@@ -56,30 +63,18 @@ class Permission(StrEnum):
     RETURN_REVIEW = "return_review"
 
 
-_VIEW: Final = frozenset(
-    {Permission.VIEW_PROJECT, Permission.VIEW_HISTORY, Permission.EXPORT_STATISTICS}
-)
-ROLE_PERMISSIONS: Final = MappingProxyType(
-    {
-        ProjectRole.VIEWER: _VIEW,
-        ProjectRole.REVIEWER: _VIEW | {Permission.ADD_NOTE, Permission.RETURN_REVIEW},
-        ProjectRole.CONTRIBUTOR: _VIEW
-        | {Permission.IMPORT_ARTIFACT, Permission.RUN_PLUGIN, Permission.ADD_NOTE, Permission.RETURN_REVIEW},
-        ProjectRole.MANAGER: _VIEW
-        | {
-            Permission.MANAGE_STRUCTURE,
-            Permission.ASSIGN_WORK,
-            Permission.MANAGE_REVIEW,
-            Permission.ACCEPT_REVIEW,
-            Permission.IMPORT_ARTIFACT,
-            Permission.RUN_PLUGIN,
-            Permission.ADD_NOTE,
-            Permission.RETURN_REVIEW,
-            Permission.RENAME_PROJECT,
-        },
-        ProjectRole.OWNER: frozenset(Permission),
-    }
-)
+def _role_permissions() -> MappingProxyType[ProjectRole, frozenset[Permission]]:
+    from kraken_manager.domain.roles import CATALOG
+
+    return MappingProxyType(
+        {
+            role: frozenset(Permission(name) for name in CATALOG.permission_names(role.value))
+            for role in ProjectRole
+        }
+    )
+
+
+ROLE_PERMISSIONS: Final = _role_permissions()
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +218,7 @@ class ProjectRoleAssignment:
             PrincipalId(validate_uuid(str(self.principal_id), field="role_assignment.principal_id")),
         )
         if not isinstance(self.role, ProjectRole):
-            object.__setattr__(self, "role", ProjectRole(self.role))
+            object.__setattr__(self, "role", parse_project_role(self.role))
         object.__setattr__(
             self,
             "assigned_by",
@@ -269,7 +264,7 @@ class ProjectRoleAssignment:
 def permissions_for_roles(roles: frozenset[ProjectRole] | set[ProjectRole]) -> frozenset[Permission]:
     permissions: set[Permission] = set()
     for role in roles:
-        permissions.update(ROLE_PERMISSIONS[ProjectRole(role)])
+        permissions.update(ROLE_PERMISSIONS[parse_project_role(role)])
     return frozenset(permissions)
 
 
@@ -280,6 +275,7 @@ __all__ = [
     "PrincipalProvider",
     "ProjectRole",
     "ProjectRoleAssignment",
+    "parse_project_role",
     "ROLE_PERMISSIONS",
     "SystemRole",
     "permissions_for_roles",

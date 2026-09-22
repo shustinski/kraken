@@ -14,6 +14,7 @@ from kraken_manager.domain.identity import (
     ProjectRole,
     ProjectRoleAssignment,
     SystemRole,
+    parse_project_role,
 )
 
 from .event_store import _sqlalchemy
@@ -140,7 +141,28 @@ class PostgresIdentityAclStore:
                     self.acl.c.revoked_at.is_(None),
                 )
             ).scalars().all()
-        return frozenset(ProjectRole(str(role)) for role in roles)
+        return frozenset(parse_project_role(role) for role in roles)
+
+    def assignments_for(self, project_id: ProjectId) -> tuple[ProjectRoleAssignment, ...]:
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            rows = connection.execute(
+                sa.select(self.acl).where(
+                    self.acl.c.project_id == str(project_id),
+                    self.acl.c.revoked_at.is_(None),
+                )
+            ).mappings().all()
+        return tuple(
+            ProjectRoleAssignment(
+                project_id=project_id,
+                principal_id=PrincipalId(str(row["principal_id"])),
+                role=parse_project_role(row["role"]),
+                assigned_by=PrincipalId(str(row["granted_by"])),
+                assigned_at=row["granted_at"],
+                revoked_at=None,
+            )
+            for row in rows
+        )
 
     def assign(self, assignment: ProjectRoleAssignment) -> None:
         _, pg_insert = _sqlalchemy()

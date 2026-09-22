@@ -283,7 +283,7 @@ class Fixture:
             ProjectRoleAssignment.create(
                 project_id=self.project.id,
                 principal_id=self.actor.id,
-                role=ProjectRole.OWNER,
+                role=ProjectRole.MAINTAINER,
                 assigned_by=self.actor.id,
                 assigned_at=NOW,
             )

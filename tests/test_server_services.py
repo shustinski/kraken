@@ -119,14 +119,14 @@ class ServerServiceTests(unittest.TestCase):
         acl = service.assign_project_role(
             project["project_id"],
             "worker",
-            "contributor",
+            "elementer",
             CommandContext("actor", "acl-assign", 0),
         )
-        self.assertEqual((["contributor"], 1), (acl["roles"], acl["revision"]))
+        self.assertEqual((["elementer"], 1), (acl["roles"], acl["revision"]))
         acl = service.revoke_project_role(
             project["project_id"],
             "worker",
-            "contributor",
+            "elementer",
             CommandContext("actor", "acl-revoke", 1),
         )
         self.assertEqual(([], 2), (acl["roles"], acl["revision"]))

@@ -1,0 +1,35 @@
+# Шаблон промышленного Kraken Server.
+# Рабочий файл создаёт `kraken-admin init` или `kraken-admin setup-server`.
+# Пароль базы здесь хранить нельзя.
+
+[server]
+# 127.0.0.1, если HTTPS завершает reverse proxy на этой машине.
+# Сетевой интерфейс указывайте только вместе с TLS.
+host = "127.0.0.1"
+port = 8080
+project_access_mode = "acl"
+
+# tls_cert_file = "C:/ProgramData/Kraken/Server/tls/server.crt"
+# tls_key_file = "C:/ProgramData/Kraken/Server/tls/server.key"
+
+[database]
+url_secret = "database-url.secret"
+
+[storage]
+# Резервируйте каталог вместе с PostgreSQL и конфигурацией сервера.
+blob_root = "D:/KrakenData/blobs"
+
+[blob_gateway]
+# Клиенты ходят на public_url напрямую. Вне loopback разрешён только HTTPS.
+enabled = true
+public_url = "https://kraken-files.example.org"
+bind = "0.0.0.0:8081"
+executable = "C:/Program Files/Kraken Server/KrakenBlobGateway.exe"
+secret = "blob-gateway.secret"
+ticket_lifetime_seconds = 900
+tls_cert_file = "C:/ProgramData/Kraken/Server/tls/server.crt"
+tls_key_file = "C:/ProgramData/Kraken/Server/tls/server.key"
+
+[identity]
+# gitlab_issuer = "https://gitlab.example.org"
+# gitlab_ca_file = "C:/ProgramData/Kraken/Server/ca/internal-ca.pem"

@@ -185,10 +185,14 @@ PostgreSQL хранит только метаданные объекта.
 как к основному серверу, так и к Blob Gateway. Секрет Gateway хранится в
 `blob-gateway.secret`, защищённом DPAPI, и никогда не передаётся Desktop.
 
-В каталоге `config` поставляются два справочных файла:
+В каталоге `packaging/config` установщик кладёт два справочных файла:
 
 - `server.local.example.toml` — безопасные настройки локального теста;
 - `server.production.example.toml` — TLS, reverse proxy, хранилище и GitLab.
+
+Для запуска из исходников те же поля лежат в [`config/templates`](../../config/templates/README.md).
+Список команд `kraken-server` и `kraken-admin` — в
+[`src/kraken_server/README.md`](../../src/kraken_server/README.md).
 
 Это справочные шаблоны. Рабочую конфигурацию создаёт `init` или
 расширенная команда `setup-server`.

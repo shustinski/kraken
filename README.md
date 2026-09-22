@@ -202,9 +202,20 @@ Same pattern for `krona`, `neuralimage`, `csliser`, `karakal` (replace the folde
 
 ### Debugging in VS Code / Cursor
 
-1. In the repo root: `uv sync` (creates `.venv` with dependencies).
+1. In the repo root: `uv sync --extra dev` (creates `.venv`; add `--extra server --extra postgres` before debugging the server).
 2. **Python: Select Interpreter** → `.\.venv\Scripts\python.exe` (or `.venv/bin/python` on Linux/macOS), **not** `Program Files\Python...`.
-3. **Run and Debug** → **Kraken Hub** → F5. The launch config forces this `.venv` so it still works if the wrong interpreter is selected.
+3. **Run and Debug** → one of the configurations below → F5. Each configuration points at this `.venv`.
+
+| Configuration | Process |
+|---|---|
+| Kraken Server (development) | `kraken-server --development` on `127.0.0.1:8080`, no PostgreSQL |
+| Kraken Server (local config) | `kraken-server --config` at the local `server.toml` written by `kraken-admin init` |
+| Kraken Admin | `kraken-admin`; the debug session asks which command to run |
+| Kraken Hub | Desktop |
+| Kraken Project Manager (dev auto-login) | Desktop with a local `vscode` account |
+| Kraken Agent | Local plugin agent |
+
+Command lists and flags: [`src/kraken_server/README.md`](src/kraken_server/README.md), [`src/kraken_hub/README.md`](src/kraken_hub/README.md), [`src/kraken_agent/README.md`](src/kraken_agent/README.md). Config templates: [`config/templates`](config/templates/README.md).
 
 If you see `No module named kraken_hub`, the global/system Python is being used. Use `uv run python -m kraken_hub` from the repo root, or select the project `.venv` as above.
 

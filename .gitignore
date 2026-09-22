@@ -18,7 +18,6 @@ blob_gateway/target/
 .coverage
 htmlcov/
 .idea/
-.vscode/
 *.log
 *.tmp
 *.bak
@@ -36,3 +35,9 @@ dist/
 build/
 .test_runtime/vscode-project-manager/accounts.sqlite3
 offline/*/
+config/local/
+
+# .* and the rules above hide the editor directory. Keep the shared debugger entry.
+!.vscode/
+.vscode/*
+!.vscode/launch.json

@@ -1,0 +1,48 @@
+# Шаблон локального Kraken Server для запуска из исходников.
+#
+# Это не рабочий файл. Скопируйте его и создайте секреты командой:
+#   uv run kraken-admin init --config config/local/server.toml
+# Либо оставьте путь по умолчанию: %LOCALAPPDATA%\Kraken\LocalServer\server.toml
+#
+# Пароль PostgreSQL в этот файл не записывается. Поле database.url_secret
+# ссылается на соседний файл, который KrakenAdmin шифрует (DPAPI на Windows).
+
+[server]
+# Принимать подключения только на этом компьютере.
+# Адрес Desktop: http://127.0.0.1:8080
+host = "127.0.0.1"
+port = 8080
+
+# acl — каждое изменение проверяется по ролям проекта.
+# trusted_network — любой вошедший пользователь считается доверенным.
+# Допустимо только в изолированной сети.
+project_access_mode = "acl"
+
+# Прямой TLS для этого процесса. Для локального теста оставьте строки закомментированными.
+# tls_cert_file = "tls/server.crt"
+# tls_key_file = "tls/server.key"
+
+[database]
+# Относительный путь разбирается от каталога этого файла.
+url_secret = "database-url.secret"
+
+[storage]
+# Неизменяемые файлы сервера. Desktop не открывает этот каталог напрямую.
+blob_root = "blobs"
+
+[blob_gateway]
+# false — сервер сам проксирует файлы через Python API.
+# true — гигабайтные объекты идут в Rust gateway по HMAC-разрешению.
+enabled = false
+# public_url = "http://127.0.0.1:8081"
+# bind = "127.0.0.1:8081"
+# Для запуска из репозитория укажите собранный бинарник:
+#   cargo build --release --manifest-path blob_gateway/Cargo.toml
+# executable = "blob_gateway/target/release/kraken-blob-gateway.exe"
+# secret = "blob-gateway.secret"
+# ticket_lifetime_seconds = 900
+
+[identity]
+# Необязательный вход через корпоративный GitLab.
+# gitlab_issuer = "https://gitlab.example.com"
+# gitlab_ca_file = "ca/internal-ca.pem"

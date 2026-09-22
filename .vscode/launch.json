@@ -2,6 +2,61 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Kraken Server (development)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "kraken_server",
+      "args": ["--development", "--host", "127.0.0.1", "--port", "8080"],
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    {
+      "name": "Kraken Server (local config)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "kraken_server",
+      "args": ["--config", "${env:LOCALAPPDATA}/Kraken/LocalServer/server.toml"],
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    {
+      "name": "Kraken Admin",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "kraken_server.cli",
+      "args": ["${input:krakenAdminCommand}"],
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    {
+      "name": "Kraken Agent",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "kraken_agent",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
+    },
+    {
       "name": "Contour",
       "type": "debugpy",
       "request": "launch",
@@ -102,6 +157,23 @@
         "KRAKEN_DEV_DISPLAY_NAME": "VS Code Developer",
         "KRAKEN_DEV_PASSWORD": ""
       }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "krakenAdminCommand",
+      "type": "pickString",
+      "description": "Команда Kraken Admin. Команды с обязательными аргументами описаны в src/kraken_server/README.md",
+      "options": [
+        "--help",
+        "doctor",
+        "init",
+        "project-list",
+        "blob-benchmark",
+        "setup-server",
+        "install-service"
+      ],
+      "default": "doctor"
     }
   ]
 }

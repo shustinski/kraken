@@ -12,6 +12,12 @@ port = 8080
 # Каждое изменение проверяется по ролям проекта Kraken.
 project_access_mode = "acl"
 
+# none — без журнала обращений.
+# low — создание проектов и учётных записей.
+# medium — дополнительно создание слоёв и загрузка данных.
+# high — каждое обращение к серверу.
+log_level = "low"
+
 [database]
 # Защищённые на уровне компьютера данные подключения, созданные KrakenAdmin.
 url_secret = "database-url.secret"
@@ -19,6 +25,10 @@ url_secret = "database-url.secret"
 [storage]
 # Неизменяемые файлы Kraken Server. Desktop не открывает этот каталог напрямую.
 blob_root = "blobs"
+# Исходные типы img, ssc, prv, aux и производные dataset, result, vector.
+# Корни могут совпадать.
+source_root = "source"
+derived_root = "derived"
 
 [blob_gateway]
 # Rust-шлюз принимает гигабайтные файлы напрямую, не пропуская их через Python API.

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import threading
 from ctypes import wintypes
 
 _SYNCHRONIZE = 0x00100000
 _PROCESS_TERMINATE = 0x0001
+_WAIT_TIMEOUT = 0x00000102
 _WAIT_FAILED = 0xFFFFFFFF
 _INFINITE = 0xFFFFFFFF
 _TH32CS_SNAPPROCESS = 0x00000002
@@ -80,7 +82,7 @@ class _ProcessEntry(ctypes.Structure):
 def bind_child_process_lifetime() -> None:
     """Terminate descendant processes when this process or its console ends."""
     global _bound
-    if os.name != "nt" or _bound or os.environ.get("PYTEST_CURRENT_TEST"):
+    if os.name != "nt" or _bound or _called_from_pytest():
         return
     _bound = True
     # Closing a window ends only the process attached to it. Workers started
@@ -89,6 +91,10 @@ def bind_child_process_lifetime() -> None:
     _arm_kill_on_job_close()
     _install_console_close_handler()
     _watch_parent_process()
+
+
+def _called_from_pytest() -> bool:
+    return "pytest" in sys.modules
 
 
 def detached_creationflags(existing: int = 0) -> int:
@@ -113,6 +119,8 @@ def _kernel32() -> ctypes.WinDLL:
     kernel32.TerminateProcess.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
     kernel32.WaitForMultipleObjects.argtypes = [
         wintypes.DWORD,
         ctypes.POINTER(wintypes.HANDLE),
@@ -177,11 +185,13 @@ def _watch_parent_process() -> None:
 
 def _exit_when_an_ancestor_exits() -> None:
     kernel32 = _kernel32()
-    handles = _open_ancestor_handles()
+    handles = _running_ancestor_handles()
     if not handles:
         return
     # Python on Windows keeps a launcher process between the console and the
     # interpreter, so the shell can die without being the immediate parent.
+    # Ancestors that have already exited must be ignored: uv's process chain
+    # contains one, and treating it as a closed console stops the server at once.
     array = (wintypes.HANDLE * len(handles))(*handles)
     waited = kernel32.WaitForMultipleObjects(len(handles), array, False, _INFINITE)
     for handle in handles:
@@ -192,7 +202,7 @@ def _exit_when_an_ancestor_exits() -> None:
     kernel32.ExitProcess(1)
 
 
-def _open_ancestor_handles() -> list[int]:
+def _running_ancestor_handles() -> list[int]:
     kernel32 = _kernel32()
     parents = dict(_process_parents())
     handles: list[int] = []
@@ -201,8 +211,10 @@ def _open_ancestor_handles() -> list[int]:
     while pid > 0 and pid not in seen and len(handles) < 64:
         seen.add(pid)
         handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
-        if handle:
+        if handle and kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT:
             handles.append(int(handle))
+        elif handle:
+            kernel32.CloseHandle(handle)
         pid = parents.get(pid, 0)
     return handles
 

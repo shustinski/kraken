@@ -51,6 +51,7 @@ def main() -> int:
         host=configuration.host if configuration is not None else args.host,
         port=configuration.port if configuration is not None else args.port,
         reload=args.reload,
+        access_log=False,
         factory=True,
         ssl_certfile=(
             None if configuration is None or configuration.tls_cert_file is None

@@ -156,6 +156,8 @@ def postgresql_composition() -> dict[str, Any]:
 
     database_url = _required("KRAKEN_DATABASE_URL")
     blob_root = Path(_required("KRAKEN_BLOB_ROOT"))
+    source_root = _required("KRAKEN_SOURCE_ROOT")
+    derived_root = _required("KRAKEN_DERIVED_ROOT")
     engine = create_engine(database_url, pool_pre_ping=True)
     blobs = FilesystemBlobStore(blob_root)
     profiles = ServerStorageProfiles(max_frames=None)
@@ -167,6 +169,8 @@ def postgresql_composition() -> dict[str, Any]:
     agent_gateway = PostgresAgentGateway(engine, agent_tokens, blobs)
     performers = PostgresPerformerStore(engine)
     review_keys = _review_key_pair(blob_root)
+    from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
+
     services = PostgresServerServices(
         engine,
         uow_factory,
@@ -174,6 +178,9 @@ def postgresql_composition() -> dict[str, Any]:
         agent_gateway=agent_gateway,
         performer_store=performers,
         review_key_pair=review_keys,
+        workspace_files=WorkspaceFileService(WorkspaceRegistry(blob_root / "workspaces")),
+        source_root=source_root,
+        derived_root=derived_root,
     )
 
     accounts = PostgresAccountStore(engine, Argon2PasswordHasher())

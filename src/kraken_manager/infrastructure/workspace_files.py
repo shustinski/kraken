@@ -230,6 +230,59 @@ class WorkspaceFileService:
             raise
         return binding
 
+    def create_server_project(
+        self,
+        *,
+        project_id: str,
+        project_name: str,
+        source_root: Path | str,
+        derived_root: Path | str,
+    ) -> ProjectWorkspaceBinding:
+        """Place each folder type under the root selected by that type.
+
+        Source types live in ``source_root/<project>/<type>``. Derived types live
+        in ``derived_root/<project>/<type>``. The two roots may be the same directory.
+        """
+
+        name = validate_workspace_name(project_name, field_name="Название проекта")
+        source = Path(source_root).expanduser().resolve(strict=True)
+        derived = Path(derived_root).expanduser().resolve(strict=True)
+        if not source.is_dir() or not derived.is_dir():
+            raise WorkspaceValidationError("Оба корня хранилищ должны быть существующими папками.")
+        source_project = source / name
+        derived_project = derived / name
+        same_project_dir = source_project == derived_project
+        if source_project.exists() or (not same_project_dir and derived_project.exists()):
+            raise FileExistsError(f"Папка проекта «{name}» уже существует.")
+        try:
+            for category in ("img", "ssc", "prv", "aux"):
+                (source_project / category).mkdir(parents=True, exist_ok=False)
+            for category in ("dataset", "result", "vector"):
+                (derived_project / category).mkdir(parents=True, exist_ok=False)
+        except Exception:
+            self._remove_created_project_dirs(source_project, derived_project)
+            raise
+        binding = ProjectWorkspaceBinding(
+            project_id=str(project_id),
+            project_name=name,
+            source_root=str(source),
+            derived_root=str(derived),
+            source_project_dir=str(source_project),
+            derived_project_dir=str(derived_project),
+        )
+        try:
+            self.registry.save_project(binding)
+        except Exception:
+            self._remove_created_project_dirs(source_project, derived_project)
+            raise
+        return binding
+
+    @staticmethod
+    def _remove_created_project_dirs(source_project: Path, derived_project: Path) -> None:
+        for path in (source_project, derived_project):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+
     @staticmethod
     def remove_project_layout(binding: ProjectWorkspaceBinding) -> None:
         for path in (Path(binding.source_project_dir), Path(binding.derived_project_dir)):

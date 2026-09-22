@@ -160,6 +160,17 @@ def _bootstrap(
     return str(account.account_id)
 
 
+def _data_root(value: object, *, flag: str, non_interactive: bool) -> Path:
+    supplied = str(value or "").strip()
+    if not supplied:
+        if non_interactive:
+            raise SystemExit(f"Укажите {flag}: каталог для папок проекта")
+        supplied = input(f"{flag} (каталог): ").strip()
+    if not supplied:
+        raise SystemExit(f"Укажите {flag}: каталог для папок проекта")
+    return Path(supplied)
+
+
 def _default_blob_root() -> Path:
     return default_config_path().parent / "blobs"
 
@@ -307,6 +318,8 @@ def _initialize_local_server(args: argparse.Namespace) -> None:
             config_path,
             database_url=request.database_url,
             blob_root=args.blob_root,
+            source_root=_data_root(args.source_root, flag="--source-root", non_interactive=args.non_interactive),
+            derived_root=_data_root(args.derived_root, flag="--derived-root", non_interactive=args.non_interactive),
             host=args.host,
             port=args.port,
             project_access_mode="acl",
@@ -378,6 +391,12 @@ def _doctor(args: argparse.Namespace) -> int:
             blob_ready,
             str(configuration.blob_root) if blob_ready else "каталог не существует",
         )
+        for check, root in (
+            ("source_root", configuration.source_root),
+            ("derived_root", configuration.derived_root),
+        ):
+            ready = root.is_dir()
+            record(check, ready, str(root) if ready else "каталог не существует")
         if configuration.blob_gateway_public_url is not None:
             gateway_ready = (
                 configuration.blob_gateway_executable is not None
@@ -577,6 +596,14 @@ def _parser() -> argparse.ArgumentParser:
         default=_default_local_blob_root(),
         help="Каталог серверного файлового хранилища",
     )
+    local_setup.add_argument(
+        "--source-root",
+        help="Каталог исходных типов img, ssc, prv, aux",
+    )
+    local_setup.add_argument(
+        "--derived-root",
+        help="Каталог производных типов dataset, result, vector",
+    )
     local_setup.add_argument("--host", default="127.0.0.1", help="Интерфейс Kraken Server")
     local_setup.add_argument("--port", type=int, default=8080, help="Порт Kraken Server")
     local_setup.add_argument(
@@ -711,6 +738,8 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--config", type=Path, default=default_config_path(), help="Файл server.toml")
     setup.add_argument("--database-url", help="URL существующей PostgreSQL; безопасно запрашивается, если не указан")
     setup.add_argument("--blob-root", type=Path, default=_default_blob_root(), help="Файловое хранилище сервера")
+    setup.add_argument("--source-root", help="Каталог исходных типов img, ssc, prv, aux")
+    setup.add_argument("--derived-root", help="Каталог производных типов dataset, result, vector")
     setup.add_argument("--host", default="127.0.0.1", help="Интерфейс Kraken Server")
     setup.add_argument("--port", type=int, default=8080, help="Порт Kraken Server")
     setup.add_argument("--tls-cert-file", type=Path, help="PEM-сертификат TLS")
@@ -836,6 +865,8 @@ def _execute(args: argparse.Namespace) -> int:
             args.config,
             database_url=database_url,
             blob_root=args.blob_root,
+            source_root=_data_root(args.source_root, flag="--source-root", non_interactive=False),
+            derived_root=_data_root(args.derived_root, flag="--derived-root", non_interactive=False),
             host=args.host,
             port=args.port,
             project_access_mode="acl",

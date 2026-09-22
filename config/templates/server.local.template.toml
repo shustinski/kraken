@@ -18,6 +18,12 @@ port = 8080
 # Допустимо только в изолированной сети.
 project_access_mode = "acl"
 
+# none — без журнала обращений.
+# low — создание проектов и учётных записей.
+# medium — дополнительно создание слоёв и загрузка данных.
+# high — каждое обращение к серверу.
+log_level = "low"
+
 # Прямой TLS для этого процесса. Для локального теста оставьте строки закомментированными.
 # tls_cert_file = "tls/server.crt"
 # tls_key_file = "tls/server.key"
@@ -29,6 +35,11 @@ url_secret = "database-url.secret"
 [storage]
 # Неизменяемые файлы сервера. Desktop не открывает этот каталог напрямую.
 blob_root = "blobs"
+# Исходные типы img, ssc, prv, aux: source_root/<проект>/<тип>.
+# Производные типы dataset, result, vector: derived_root/<проект>/<тип>.
+# Корни могут совпадать и быть локальным диском или UNC.
+source_root = "source"
+derived_root = "derived"
 
 [blob_gateway]
 # false — сервер сам проксирует файлы через Python API.

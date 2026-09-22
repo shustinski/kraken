@@ -329,3 +329,20 @@ def test_headless_run_failure_is_persisted_with_error_provenance(
 
     assert failed.state.value == "failed"
     assert failed.provenance["error"] == "model is unavailable"
+
+
+def test_server_project_places_folder_types_in_one_root(tmp_path: Path) -> None:
+    shared = tmp_path / "data"
+    shared.mkdir()
+    service = _service(tmp_path)
+    binding = service.create_server_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=shared,
+        derived_root=shared,
+    )
+    project_dir = shared / "Chip"
+    assert Path(binding.source_project_dir) == project_dir
+    assert Path(binding.derived_project_dir) == project_dir
+    for folder_type in ("img", "ssc", "prv", "aux", "dataset", "result", "vector"):
+        assert (project_dir / folder_type).is_dir()

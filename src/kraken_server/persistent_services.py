@@ -281,6 +281,9 @@ class PostgresServerServices:
         agent_gateway: Any | None = None,
         performer_store: Any | None = None,
         review_key_pair: Any | None = None,
+        workspace_files: Any | None = None,
+        source_root: str | None = None,
+        derived_root: str | None = None,
     ) -> None:
         self.engine = engine
         self.uow_factory = uow_factory
@@ -288,6 +291,9 @@ class PostgresServerServices:
         self.agent_gateway = agent_gateway
         self.performer_store = performer_store
         self.review_key_pair = review_key_pair
+        self.workspace_files = workspace_files
+        self.source_root = source_root
+        self.derived_root = derived_root
         self.projections = PostgresProjectionStore(engine)
         self.events = PostgresEventStore(engine)
         self.identities = PostgresIdentityAclStore(engine)
@@ -455,7 +461,9 @@ class PostgresServerServices:
                 storage_profile_id=str(payload.get("storage_profile_id", self.profiles.profile.id)),
                 project_id=ProjectId(str(stable_id)),
             )
-            return _project_dict(self._create_project(command))
+            project = self._create_project(command)
+            self._ensure_server_workspace(project)
+            return _project_dict(project)
         except ApplicationNotFoundError as exc:
             raise NotFoundError(str(exc)) from exc
         except (ApplicationConcurrencyError, ApplicationConflictError) as exc:
@@ -464,6 +472,37 @@ class PostgresServerServices:
             raise ForbiddenError(str(exc)) from exc
         except (StorageCapabilityError, ValueError, TypeError) as exc:
             raise ValidationError(str(exc)) from exc
+
+    def _ensure_server_workspace(self, project: Any) -> None:
+        files = self.workspace_files
+        if files is None:
+            return
+        if not self.source_root or not self.derived_root:
+            raise ValidationError(
+                "В server.toml не заданы storage.source_root и storage.derived_root"
+            )
+        if files.registry.get_project(str(project.id)) is not None:
+            return
+        from kraken_manager.workspace import WorkspaceValidationError
+
+        try:
+            files.create_server_project(
+                project_id=str(project.id),
+                project_name=project.name,
+                source_root=self.source_root,
+                derived_root=self.derived_root,
+            )
+        except (WorkspaceValidationError, FileExistsError, OSError) as exc:
+            raise ValidationError(str(exc)) from exc
+
+    def project_workspace(self, project_id: str) -> dict[str, Any] | None:
+        files = self.workspace_files
+        if files is None:
+            return None
+        from kraken_manager.workspace import project_workspace_to_dict
+
+        binding = files.registry.get_project(project_id)
+        return None if binding is None else project_workspace_to_dict(binding)
 
     def get_project(self, project_id: str) -> dict[str, Any]:
         try:

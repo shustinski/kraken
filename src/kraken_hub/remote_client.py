@@ -558,6 +558,54 @@ class RemoteServerProjectService:
             token="",
             payload={"username": username, "password": password},
         )
+        return cls._from_local_session(
+            base_url,
+            payload,
+            username=username,
+            data_dir=data_dir,
+            http=client,
+        )
+
+    @classmethod
+    def register_local(
+        cls,
+        base_url: str,
+        *,
+        username: str,
+        password: str,
+        display_name: str = "",
+        data_dir: Path | str | None = None,
+        http: RemoteHttpClient | None = None,
+    ) -> RemoteServerProjectService:
+        client = http or RemoteHttpClient(base_url)
+        payload = client.request(
+            "POST",
+            "/api/v1/auth/accounts",
+            token="",
+            payload={
+                "username": username,
+                "password": password,
+                "display_name": display_name or username,
+            },
+        )
+        return cls._from_local_session(
+            base_url,
+            payload,
+            username=username,
+            data_dir=data_dir,
+            http=client,
+        )
+
+    @classmethod
+    def _from_local_session(
+        cls,
+        base_url: str,
+        payload: object,
+        *,
+        username: str,
+        data_dir: Path | str | None,
+        http: RemoteHttpClient,
+    ) -> RemoteServerProjectService:
         if not isinstance(payload, Mapping) or not str(payload.get("access_token", "")):
             raise RemoteServerError("Kraken Server returned an invalid local session")
         raw = payload.get("principal", {})
@@ -571,7 +619,7 @@ class RemoteServerProjectService:
             base_url,
             auth=RemoteAuth(str(payload["access_token"]), principal),
             data_dir=data_dir,
-            http=client,
+            http=http,
         )
 
     @property
@@ -2219,8 +2267,18 @@ class RemoteServerProjectService:
         del principal, gateway
         return self.plugin_jobs()
 
-    def project_workspace(self, project_id: object) -> None:
-        return None
+    def project_workspace(self, project_id: object):
+        from kraken_manager.workspace import ProjectWorkspaceBinding
+
+        try:
+            payload = self._call("GET", f"/api/v1/projects/{project_id}/workspace")
+        except RemoteServerError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(payload, Mapping):
+            return None
+        return ProjectWorkspaceBinding(**dict(payload))
 
     def project_storage_label(self, project_id: object) -> str:
         return "Сервер PostgreSQL"

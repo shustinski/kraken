@@ -149,6 +149,8 @@ def test_configuration_protects_gateway_secret(tmp_path: Path) -> None:
         tmp_path / "server.toml",
         database_url="postgresql+psycopg://kraken:secret@localhost/kraken",
         blob_root=tmp_path / "blobs",
+        source_root=tmp_path / "source",
+        derived_root=tmp_path / "derived",
         blob_gateway_public_url="http://127.0.0.1:8081",
         blob_gateway_executable=executable,
     )
@@ -171,6 +173,8 @@ def test_configuration_requires_tls_files_for_https_gateway(tmp_path: Path) -> N
             tmp_path / "server.toml",
             database_url="postgresql+psycopg://kraken:secret@localhost/kraken",
             blob_root=tmp_path / "blobs",
+            source_root=tmp_path / "source",
+            derived_root=tmp_path / "derived",
             blob_gateway_public_url="https://files.example.test:8081",
             blob_gateway_executable=executable,
         )
@@ -258,6 +262,8 @@ def test_blob_benchmark_runs_parallel_streams(tmp_path: Path) -> None:
         tmp_path / "server.toml",
         database_url="postgresql+psycopg://unused:unused@localhost/unused",
         blob_root=tmp_path / "blobs",
+        source_root=tmp_path / "source",
+        derived_root=tmp_path / "derived",
         blob_gateway_public_url=f"http://127.0.0.1:{port}",
         blob_gateway_bind=f"127.0.0.1:{port}",
         blob_gateway_executable=executable,

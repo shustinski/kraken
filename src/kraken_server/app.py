@@ -81,6 +81,16 @@ def create_app(
         finally:
             reset_acting_role(token)
 
+    from .operation_log import configure_operation_log, record_http_request
+
+    configure_operation_log(os.environ.get("KRAKEN_LOG_LEVEL", "none"))
+
+    @app.middleware("http")
+    async def _journal_request(request: Request, call_next):  # type: ignore[no-untyped-def]
+        response = await call_next(request)
+        record_http_request(request.method, request.url.path, response.status_code)
+        return response
+
     app.state.connection_hub = hub
     app.state.outbox_publisher = outbox_publisher
 
@@ -447,15 +457,44 @@ def create_app(
             session = None
         if session is None:
             raise HTTPException(status_code=401, detail="Invalid credentials")
+        return local_session_payload(session)
+
+    def local_session_payload(session: Any) -> dict[str, Any]:
         return {
             "provider": "local",
             "access_token": session.token,
             "expires_at": session.expires_at,
             "principal": {
                 "id": session.account.account_id,
+                "username": session.account.username,
                 "display_name": session.account.display_name,
             },
         }
+
+    @app.post(f"{API_PREFIX}/auth/accounts", status_code=201)
+    async def register_local_account(payload: dict[str, Any]) -> dict[str, Any]:
+        """Create an ordinary account, or sign in when the same password is already registered."""
+        store = require_account_store()
+        username = str(payload.get("username", "")).strip()
+        password = str(payload.get("password", ""))
+        display_name = str(payload.get("display_name", "")).strip() or username
+        if not username or not password:
+            raise ValidationError("Username and password are required")
+        try:
+            store.create_account(username, display_name, password)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        except Exception as exc:
+            if exc.__class__.__name__ != "IntegrityError":
+                raise
+            session = store.authenticate(username, password)
+            if session is None:
+                raise HTTPException(status_code=401, detail="Invalid credentials") from exc
+            return local_session_payload(session)
+        session = store.authenticate(username, password)
+        if session is None:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        return local_session_payload(session)
 
     def account_payload(account: Any) -> dict[str, Any]:
         return {
@@ -641,6 +680,15 @@ def create_app(
     @app.get(f"{API_PREFIX}/projects/{{project_id}}")
     async def get_project(project_id: str, _: SessionPrincipal = Depends(project_reader)) -> dict[str, Any]:
         return backend.get_project(project_id)
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/workspace")
+    async def get_project_workspace(
+        project_id: str, _: SessionPrincipal = Depends(project_reader)
+    ) -> dict[str, Any]:
+        workspace = getattr(backend, "project_workspace", lambda _project_id: None)(project_id)
+        if workspace is None:
+            raise NotFoundError(project_id)
+        return workspace
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}")
     async def rename_project(

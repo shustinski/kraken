@@ -133,6 +133,8 @@ class ServerConfig:
     path: Path
     database_url_secret: Path
     blob_root: Path
+    source_root: Path
+    derived_root: Path
     host: str = "127.0.0.1"
     port: int = 8080
     project_access_mode: str = "acl"
@@ -147,6 +149,7 @@ class ServerConfig:
     blob_gateway_tls_cert_file: Path | None = None
     blob_gateway_tls_key_file: Path | None = None
     blob_ticket_lifetime_seconds: int = 900
+    log_level: str = "none"
 
     @classmethod
     def load(cls, path: Path | str) -> ServerConfig:
@@ -173,6 +176,9 @@ class ServerConfig:
         mode = str(server.get("project_access_mode", "acl")).strip().lower()
         if mode not in {"acl", "trusted_network"}:
             raise ValueError("project_access_mode must be 'acl' or 'trusted_network'")
+        from .operation_log import parse_log_level
+
+        log_level = parse_log_level(str(server.get("log_level", "none")))
         port = int(server.get("port", 8080))
         if not 1 <= port <= 65535:
             raise ValueError("server.port must be between 1 and 65535")
@@ -189,10 +195,14 @@ class ServerConfig:
         ticket_lifetime = int(gateway.get("ticket_lifetime_seconds", 900))
         if not 30 <= ticket_lifetime <= 86_400:
             raise ValueError("blob_gateway.ticket_lifetime_seconds must be between 30 and 86400")
+        source_root = resolve(storage.get("source_root"))
+        derived_root = resolve(storage.get("derived_root"))
         return cls(
             path=config_path,
             database_url_secret=resolve(database.get("url_secret")),  # type: ignore[arg-type]
             blob_root=resolve(storage.get("blob_root")),  # type: ignore[arg-type]
+            source_root=source_root,
+            derived_root=derived_root,
             host=str(server.get("host", "127.0.0.1")).strip() or "127.0.0.1",
             port=port,
             project_access_mode=mode,
@@ -207,6 +217,7 @@ class ServerConfig:
             blob_gateway_tls_cert_file=gateway_tls_cert,
             blob_gateway_tls_key_file=gateway_tls_key,
             blob_ticket_lifetime_seconds=ticket_lifetime,
+            log_level=log_level,
         )
 
     @property
@@ -221,7 +232,10 @@ class ServerConfig:
         os.environ["KRAKEN_SERVER_COMPOSITION"] = "kraken_server.composition:postgresql_composition"
         os.environ["KRAKEN_DATABASE_URL"] = self.database_url
         os.environ["KRAKEN_BLOB_ROOT"] = str(self.blob_root)
+        os.environ["KRAKEN_SOURCE_ROOT"] = str(self.source_root)
+        os.environ["KRAKEN_DERIVED_ROOT"] = str(self.derived_root)
         os.environ["KRAKEN_PROJECT_ACCESS_MODE"] = self.project_access_mode
+        os.environ["KRAKEN_LOG_LEVEL"] = self.log_level
         if self.gitlab_issuer:
             os.environ["KRAKEN_GITLAB_ISSUER"] = self.gitlab_issuer
         if self.gitlab_ca_file:
@@ -254,14 +268,26 @@ class ServerConfig:
                 os.environ.pop(name, None)
 
 
+def _storage_directory(value: Path, *, config_path: Path) -> Path:
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = config_path.parent / candidate
+    resolved = candidate.resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
 def write_config(
     path: Path,
     *,
     database_url: str,
     blob_root: Path,
+    source_root: Path,
+    derived_root: Path,
     host: str = "127.0.0.1",
     port: int = 8080,
     project_access_mode: str = "acl",
+    log_level: str = "low",
     tls_cert_file: Path | None = None,
     tls_key_file: Path | None = None,
     blob_gateway_public_url: str | None = None,
@@ -271,8 +297,11 @@ def write_config(
 ) -> ServerConfig:
     import json
 
+    from .operation_log import parse_log_level
+
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
+    log_level = parse_log_level(log_level)
     secret_path = path.parent / "database-url.secret"
     protect_secret(database_url, secret_path)
     gateway_enabled = blob_gateway_public_url is not None
@@ -293,8 +322,9 @@ def write_config(
         else:
             gateway_secret = secrets.token_urlsafe(48)
         protect_secret(gateway_secret, gateway_secret_path)
-    blob_root = blob_root.expanduser().resolve()
-    blob_root.mkdir(parents=True, exist_ok=True)
+    blob_root = _storage_directory(blob_root, config_path=path)
+    source_root = _storage_directory(source_root, config_path=path)
+    derived_root = _storage_directory(derived_root, config_path=path)
     server_lines = [
         "# Конфигурация Kraken Server.",
         "# Создана KrakenAdmin. Данные подключения к БД хранятся отдельно",
@@ -309,6 +339,9 @@ def write_config(
         "# acl проверяет роли проекта. trusted_network допустим только в изолированной сети,",
         "# где каждый вошедший пользователь считается полностью доверенным.",
         f"project_access_mode = {json.dumps(project_access_mode)}",
+        "# none — журнал пуст. low — проекты и учётные записи.",
+        "# medium — ещё слои и загрузка данных. high — каждое обращение.",
+        f"log_level = {json.dumps(log_level)}",
     ]
     if tls_cert_file is not None:
         server_lines.append(f"tls_cert_file = {json.dumps(str(tls_cert_file.resolve()))}")
@@ -324,6 +357,11 @@ def write_config(
             "[storage]",
             "# Неизменяемые файлы сервера. Рабочие станции не открывают этот каталог напрямую.",
             f"blob_root = {json.dumps(str(blob_root))}",
+            "# Исходные типы img, ssc, prv, aux: source_root/<проект>/<тип>.",
+            f"source_root = {json.dumps(str(source_root))}",
+            "# Производные типы dataset, result, vector: derived_root/<проект>/<тип>.",
+            "# Корни могут совпадать: тогда все типы лежат в одном каталоге проекта.",
+            f"derived_root = {json.dumps(str(derived_root))}",
             "",
     ]
     sections.extend(

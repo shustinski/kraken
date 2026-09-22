@@ -157,8 +157,8 @@ class DualCatalogService:
         if profile_id == REMOTE_STORAGE_PROFILE.id:
             if self.remote is None:
                 raise RuntimeError(
-                    "Kraken Server не настроен. Укажите адрес сервера и GitLab-токен "
-                    "в форме создания проекта."
+                    "Kraken Server не настроен. Укажите адрес сервера и учётную запись "
+                    "по умолчанию в меню Вид → Настройки."
                 )
             actor = self.remote.auth.principal
             project = self.remote.create_project(
@@ -185,8 +185,8 @@ class DualCatalogService:
         )
 
     def project_workspace(self, project_id: object) -> object | None:
-        if self.is_remote_project(project_id):
-            return None
+        if self.is_remote_project(project_id) and self.remote is not None:
+            return self.remote.project_workspace(project_id)
         return self.local.project_workspace(project_id)
 
     def start_sync(self) -> None:
@@ -251,6 +251,7 @@ class DualCatalogService:
         base_url: str,
         username: str,
         password: str,
+        register_if_unknown: bool = False,
     ) -> RemoteServerProjectService:
         url = str(base_url).strip().rstrip("/")
         if not url or not username.strip() or not password:
@@ -260,12 +261,30 @@ class DualCatalogService:
         parsed = urlparse(url)
         if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("Network sign-in to Kraken Server requires HTTPS")
-        candidate = RemoteServerProjectService.authenticate_local(
-            url,
-            username=username.strip(),
-            password=password,
-            data_dir=self.local.data_dir,
-        )
+        try:
+            candidate = RemoteServerProjectService.authenticate_local(
+                url,
+                username=username.strip(),
+                password=password,
+                data_dir=self.local.data_dir,
+            )
+        except RemoteServerError as exc:
+            if not register_if_unknown or exc.status != 401:
+                raise
+            try:
+                candidate = RemoteServerProjectService.register_local(
+                    url,
+                    username=username.strip(),
+                    password=password,
+                    display_name=username.strip(),
+                    data_dir=self.local.data_dir,
+                )
+            except RemoteServerError as register_error:
+                if register_error.status == 401:
+                    raise ValueError(
+                        "Пароль не подходит к уже существующей учётной записи"
+                    ) from register_error
+                raise
         return self._install_remote(candidate)
 
     def _install_remote(

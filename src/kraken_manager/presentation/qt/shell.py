@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -38,6 +39,7 @@ class ProjectManagerShell(QMainWindow):
     navigationRequested = pyqtSignal(str)
     layersRequested = pyqtSignal()
     cellVisualModeChanged = pyqtSignal(str, str)
+    preferencesRequested = pyqtSignal()
     reviewReturnRequested = pyqtSignal()
     framePropertiesRequested = pyqtSignal()
 
@@ -94,7 +96,11 @@ class ProjectManagerShell(QMainWindow):
         self.actions_menu.addAction(self.frame_properties_action)
 
         self.view_menu = self.menuBar().addMenu("Вид")
-        self.view_menu.setEnabled(False)
+        self.preferences_action = QAction("Настройки…", self)
+        self.preferences_action.triggered.connect(self.preferencesRequested.emit)
+        self.view_menu.addAction(self.preferences_action)
+        self.view_menu.addSeparator()
+        self._visual_menus: dict[str, QMenu] = {}
         self._visual_actions: dict[tuple[str, str], QAction] = {}
         labels = {
             "time": "Время",
@@ -109,6 +115,7 @@ class ProjectManagerShell(QMainWindow):
             ("fill", "Заполнение ячейки", ("time", "performer", "quality", "status", "thumbnail")),
         ):
             submenu = self.view_menu.addMenu(title)
+            self._visual_menus[channel] = submenu
             group = QActionGroup(self)
             group.setExclusive(True)
             selected = str(self._ui_settings.value(f"matrix/{channel}-mode", defaults[channel]))
@@ -239,7 +246,8 @@ class ProjectManagerShell(QMainWindow):
             self.pageChanged.emit(normalized)
         workspace_active = normalized == "workspace"
         self.layers_action.setEnabled(workspace_active)
-        self.view_menu.setEnabled(workspace_active)
+        for menu in self._visual_menus.values():
+            menu.setEnabled(workspace_active)
         self.actions_menu.setEnabled(workspace_active)
         if not workspace_active:
             self.frame_properties_action.setEnabled(False)

@@ -136,6 +136,8 @@ def test_packaged_configuration_round_trip(tmp_path: Path) -> None:
         tmp_path / "server.toml",
         database_url=database_url,
         blob_root=tmp_path / "blobs",
+        source_root=tmp_path / "source",
+        derived_root=tmp_path / "derived",
         host="127.0.0.1",
         port=9080,
         project_access_mode="acl",
@@ -144,10 +146,79 @@ def test_packaged_configuration_round_trip(tmp_path: Path) -> None:
     assert loaded.database_url == database_url
     assert loaded.port == 9080
     assert loaded.blob_root == (tmp_path / "blobs").resolve()
+    assert loaded.source_root == (tmp_path / "source").resolve()
+    assert loaded.derived_root == (tmp_path / "derived").resolve()
     generated = config.path.read_text(encoding="utf-8")
     assert "никогда не записывайте пароль" in generated
     assert "Windows DPAPI" in generated
     assert "Неизменяемые файлы сервера" in generated
+
+
+def test_server_data_roots_may_be_the_same_directory(tmp_path: Path) -> None:
+    shared = tmp_path / "data"
+    config = write_config(
+        tmp_path / "server.toml",
+        database_url="postgresql+psycopg://kraken:secret@db/kraken",
+        blob_root=tmp_path / "blobs",
+        source_root=shared,
+        derived_root=shared,
+    )
+    loaded = ServerConfig.load(config.path)
+    assert loaded.source_root == loaded.derived_root == shared.resolve()
+
+
+def test_unknown_account_registers_and_sees_only_its_projects(tmp_path: Path) -> None:
+    store = LocalAccountStore(tmp_path / "accounts.sqlite3", ScryptPasswordHasher())
+    app = create_app(
+        services=InMemoryServerServices(),
+        account_store=store,
+        project_access_mode="acl",
+    )
+    client = TestClient(app)
+
+    def register(username: str, password: str) -> dict:
+        response = client.post(
+            "/api/v1/auth/accounts",
+            json={"username": username, "password": password, "display_name": username},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    alice = register("alice", "secret")
+    assert store.global_roles_for(alice["principal"]["id"]) == frozenset()
+    created = client.post(
+        "/api/v1/projects",
+        headers={
+            "Authorization": f"Bearer {alice['access_token']}",
+            "Idempotency-Key": "alice-project",
+        },
+        json={"name": "Проект Alice", "width": 2, "height": 2},
+    )
+    assert created.status_code == 201, created.text
+
+    bob = register("bob", "secret")
+    visible = client.get(
+        "/api/v1/projects",
+        headers={"Authorization": f"Bearer {bob['access_token']}"},
+    )
+    assert visible.status_code == 200
+    assert visible.json()["items"] == []
+    denied = client.get(
+        "/api/v1/admin/accounts",
+        headers={"Authorization": f"Bearer {bob['access_token']}"},
+    )
+    assert denied.status_code == 403
+
+    alice_projects = client.get(
+        "/api/v1/projects",
+        headers={"Authorization": f"Bearer {alice['access_token']}"},
+    )
+    assert [item["name"] for item in alice_projects.json()["items"]] == ["Проект Alice"]
+    assert client.post(
+        "/api/v1/auth/accounts",
+        json={"username": "alice", "password": "wrong", "display_name": "Alice"},
+    ).status_code == 401
+    assert register("alice", "secret")["principal"]["id"] == alice["principal"]["id"]
 
 
 def test_initial_setup_accepts_a_new_config_path(monkeypatch, tmp_path: Path) -> None:

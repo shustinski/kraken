@@ -752,6 +752,7 @@ class DesktopController:
         self.catalog_page.propertiesRequested.connect(self.show_project_properties)
         self.catalog_page.selectionChanged.connect(self._sync_project_permissions)
         self.shell.layersRequested.connect(self.open_layer_manager)
+        self.shell.preferencesRequested.connect(self.open_preferences)
         self.shell.cellVisualModeChanged.connect(self._set_matrix_visual_mode)
         self.shell.reviewReturnRequested.connect(self.load_review_return)
         self.shell.framePropertiesRequested.connect(self.show_selected_frame)
@@ -1300,6 +1301,53 @@ class DesktopController:
             "Проект и его кэш удалены из Kraken. Файлы в папках проекта сохранены.",
         )
 
+    def open_preferences(self) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        from kraken_hub.preferences_dialog import ProgramPreferencesDialog
+
+        dialog = ProgramPreferencesDialog(self.shell)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        try:
+            self._connect_program_account(register_if_unknown=True)
+        except Exception as exc:  # noqa: BLE001 - UI boundary reports connection failures
+            QMessageBox.warning(self.shell, "Не удалось подключиться к серверу", str(exc))
+            return
+        _configure_administration_page(self.shell, self.service, self.session)
+        self.refresh_projects()
+
+    def _connect_program_account(self, *, register_if_unknown: bool) -> None:
+        from PyQt6.QtCore import QSettings
+
+        from kraken_hub.preferences_dialog import default_program_account, program_server_url
+
+        if not isinstance(self.service, DualCatalogService):
+            raise ValueError("Подключение к Kraken Server недоступно в этой сборке")
+        settings = QSettings("Kraken", "KrakenHub")
+        account = default_program_account(settings)
+        url = program_server_url(settings)
+        if account is None or not url:
+            raise ValueError(
+                "Укажите адрес сервера и учётную запись по умолчанию в меню Вид → Настройки."
+            )
+        current = self.service.remote
+        current_principal = getattr(getattr(current, "auth", None), "principal", None)
+        same_account = (
+            current is not None
+            and str(getattr(current, "base_url", "")).rstrip("/") == url
+            and str(getattr(current_principal, "subject", "")) == account.username
+        )
+        if same_account:
+            return
+        _sign_in_program_account(
+            self.service,
+            url,
+            account,
+            principal=self.session.principal,
+            register_if_unknown=register_if_unknown,
+        )
+
     def create_project(self) -> None:
         from PyQt6.QtCore import QSettings
         from PyQt6.QtWidgets import (
@@ -1312,6 +1360,8 @@ class DesktopController:
             QMessageBox,
             QVBoxLayout,
         )
+
+        from kraken_hub.preferences_dialog import program_server_url
 
         profiles = list(
             getattr(self.service, "list_storage_profiles", lambda: (self.service.profile,))()
@@ -1329,42 +1379,6 @@ class DesktopController:
             profile_box.addItem(label, profile.id)
         form.addRow("Хранилище", profile_box)
         settings = QSettings("Kraken", "KrakenHub")
-        configured_remote = getattr(self.service, "remote", None)
-        server_url = QLineEdit(dialog)
-        server_url.setObjectName("serverUrl")
-        server_url.setPlaceholderText("https://kraken.example.ru")
-        server_url.setText(
-            str(
-                getattr(configured_remote, "base_url", "")
-                or settings.value("server/url", "")
-                or os.environ.get("KRAKEN_SERVER_URL", "")
-            ).strip()
-        )
-        server_token = QLineEdit(dialog)
-        server_token.setObjectName("serverToken")
-        server_token.setEchoMode(QLineEdit.EchoMode.Password)
-        server_token.setPlaceholderText(
-            "уже настроен" if configured_remote is not None else "GitLab access token"
-        )
-        server_auth = QComboBox(dialog)
-        server_auth.setObjectName("serverAuthentication")
-        server_auth.addItem("Учётная запись Kraken", "local")
-        server_auth.addItem("GitLab-токен", "gitlab")
-        if str(
-            getattr(
-                getattr(getattr(configured_remote, "auth", None), "principal", None),
-                "provider",
-                "",
-            )
-        ) == "gitlab":
-            server_auth.setCurrentIndex(1)
-        server_username = QLineEdit(dialog)
-        server_username.setObjectName("serverUsername")
-        server_username.setPlaceholderText("Логин")
-        form.addRow("Адрес сервера", server_url)
-        form.addRow("Способ входа", server_auth)
-        form.addRow("Логин", server_username)
-        form.addRow("Токен доступа", server_token)
         layout.addLayout(form)
         dimensions = GridDimensionsWidget(maximum_frames=None)
         layout.addWidget(dimensions)
@@ -1383,47 +1397,45 @@ class DesktopController:
         source_root = None
         derived_root = None
 
+        def _saved_workspace_roots() -> tuple[str, str] | None:
+            saved_source = str(settings.value("workspace/source-root", "") or "")
+            saved_derived = str(settings.value("workspace/derived-root", "") or "")
+            if not saved_source or not saved_derived:
+                return None
+            try:
+                source, derived = validate_workspace_roots(saved_source, saved_derived)
+            except Exception:
+                return None
+            return str(source), str(derived)
+
         def _update_storage_hint(_index: int = 0) -> None:
-            nonlocal source_root, derived_root, configured_remote
+            nonlocal source_root, derived_root
             profile_id = str(profile_box.currentData() or "")
             is_server = profile_id == REMOTE_STORAGE_PROFILE.id
-            form.setRowVisible(server_url, is_server)
-            form.setRowVisible(server_auth, is_server)
-            form.setRowVisible(
-                server_username, is_server and server_auth.currentData() == "local"
-            )
-            form.setRowVisible(server_token, is_server)
-            server_token.setPlaceholderText(
-                "Пароль" if server_auth.currentData() == "local" else "GitLab access token"
-            )
             if is_server:
                 source_root = None
                 derived_root = None
-                if configured_remote is not None:
-                    storage.setText(
-                        "Сервер настроен. PostgreSQL хранит данные проекта, "
-                        "а изменения синхронизируются автоматически."
-                    )
-                else:
-                    storage.setText(
-                        "Введите адрес Kraken Server и данные для входа. "
-                        "Пароль или токен используется только в текущем сеансе и не сохраняется на диске."
-                    )
+                storage.setText(_server_project_hint(settings))
                 return
-            roots = _configure_workspace_roots(self.shell, self.service)
-            if roots is None:
-                storage.setText("Выберите локальные каталоги исходных и производных данных.")
+            saved = _saved_workspace_roots()
+            if saved is None:
                 source_root = None
                 derived_root = None
+                storage.setText(
+                    "Каталоги исходных и производных данных будут запрошены при создании локального проекта."
+                )
                 return
-            source_root, derived_root = roots
+            source_root, derived_root = saved
             storage.setText(
                 f"Исходные данные: {source_root}\n"
                 f"Производные данные: {derived_root}"
             )
 
+        if getattr(self.service, "remote", None) is not None or program_server_url(settings):
+            server_index = profile_box.findData(REMOTE_STORAGE_PROFILE.id)
+            if server_index >= 0:
+                profile_box.setCurrentIndex(server_index)
         profile_box.currentIndexChanged.connect(_update_storage_hint)
-        server_auth.currentIndexChanged.connect(_update_storage_hint)
         _update_storage_hint()
 
         while dialog.exec() == QDialog.DialogCode.Accepted:
@@ -1435,50 +1447,16 @@ class DesktopController:
                 if profile_id != REMOTE_STORAGE_PROFILE.id and (
                     source_root is None or derived_root is None
                 ):
-                    _update_storage_hint()
-                    if source_root is None or derived_root is None:
+                    roots = _configure_workspace_roots(self.shell, self.service)
+                    if roots is None:
                         raise ValueError("Выберите каталоги хранилища для локального проекта")
+                    source_root, derived_root = roots
+                    _update_storage_hint()
                 if profile_id == REMOTE_STORAGE_PROFILE.id:
-                    current_remote = getattr(self.service, "remote", None)
-                    entered_url = server_url.text().strip().rstrip("/")
-                    entered_token = server_token.text().strip()
-                    remote_url = str(getattr(current_remote, "base_url", "")).rstrip("/")
-                    must_connect = (
-                        current_remote is None
-                        or entered_url != remote_url
-                        or bool(entered_token)
+                    self._connect_program_account(register_if_unknown=True)
+                    _configure_administration_page(
+                        self.shell, self.service, self.session
                     )
-                    if must_connect:
-                        if server_auth.currentData() == "local":
-                            configure_local = getattr(
-                                self.service, "configure_remote_local", None
-                            )
-                            if not callable(configure_local):
-                                raise ValueError("Вход в Kraken Server недоступен в этой сборке")
-                            configure_local(
-                                base_url=entered_url,
-                                username=server_username.text().strip(),
-                                password=entered_token,
-                            )
-                        else:
-                            token = entered_token or os.environ.get(
-                                "KRAKEN_GITLAB_TOKEN", ""
-                            ).strip()
-                            configure = getattr(self.service, "configure_remote", None)
-                            if not callable(configure):
-                                raise ValueError("Настройка Kraken Server недоступна в этой сборке")
-                            configure(
-                                base_url=entered_url,
-                                access_token=token,
-                                principal=self.session.principal,
-                            )
-                        settings.setValue("server/url", entered_url)
-                        configured_remote = getattr(self.service, "remote", None)
-                        server_token.clear()
-                        server_token.setPlaceholderText("уже настроен")
-                        _configure_administration_page(
-                            self.shell, self.service, self.session
-                        )
                 project = self.service.create_project(
                     principal=self.session.principal,
                     name=name.text(),
@@ -7296,73 +7274,68 @@ def _configure_administration_page(shell, service, session: DesktopSession) -> N
         page.set_content(_administration_panel(local, session))
 
 
-def _connect_saved_server(parent, service, principal) -> None:
-    from PyQt6.QtCore import QSettings
-    from PyQt6.QtWidgets import (
-        QComboBox,
-        QDialog,
-        QDialogButtonBox,
-        QFormLayout,
-        QLineEdit,
-        QMessageBox,
+def _server_project_hint(settings) -> str:
+    from kraken_hub.preferences_dialog import (
+        PROVIDER_LABELS,
+        default_program_account,
+        program_server_url,
     )
+
+    url = program_server_url(settings)
+    account = default_program_account(settings)
+    if url and account is not None:
+        kind = PROVIDER_LABELS.get(account.provider, account.provider)
+        return (
+            f"Сервер: {url}\n"
+            f"Учётная запись по умолчанию: {account.display_name} ({kind}).\n"
+            "Если такой записи ещё нет на сервере, она будет создана. "
+            "Без назначения ролей администратором видны только свои проекты."
+        )
+    return "Адрес сервера и учётная запись задаются в меню Вид → Настройки."
+
+
+def _sign_in_program_account(service, url: str, account, *, principal, register_if_unknown: bool):
+    if account.provider == "local":
+        configure_local = getattr(service, "configure_remote_local", None)
+        if not callable(configure_local):
+            raise ValueError("Вход в Kraken Server недоступен в этой сборке")
+        configure_local(
+            base_url=url,
+            username=account.username,
+            password=account.secret,
+            register_if_unknown=register_if_unknown,
+        )
+        return
+    configure = getattr(service, "configure_remote", None)
+    if not callable(configure):
+        raise ValueError("Настройка Kraken Server недоступна в этой сборке")
+    configure(base_url=url, access_token=account.secret, principal=principal)
+
+
+def _connect_saved_server(parent, service, principal) -> None:
+    del parent
+    from PyQt6.QtCore import QSettings
+
+    from kraken_hub.preferences_dialog import default_program_account, program_server_url
+    from kraken_hub.remote_client import RemoteServerError
 
     if not isinstance(service, DualCatalogService) or service.remote is not None:
         return
     settings = QSettings("Kraken", "KrakenHub")
-    configured_url = str(settings.value("server/url", "") or "").strip()
-    if not configured_url:
+    account = default_program_account(settings)
+    url = program_server_url(settings)
+    if account is None or not url:
         return
-    dialog = QDialog(parent)
-    dialog.setWindowTitle("Вход в Kraken Server")
-    form = QFormLayout(dialog)
-    server_url = QLineEdit(configured_url, dialog)
-    provider = QComboBox(dialog)
-    provider.addItem("Учётная запись Kraken", "local")
-    provider.addItem("GitLab-токен", "gitlab")
-    username = QLineEdit(dialog)
-    secret = QLineEdit(dialog)
-    secret.setEchoMode(QLineEdit.EchoMode.Password)
-    form.addRow("Адрес сервера", server_url)
-    form.addRow("Способ входа", provider)
-    form.addRow("Логин", username)
-    form.addRow("Пароль", secret)
-    buttons = QDialogButtonBox(
-        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-        dialog,
-    )
-    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Подключиться")
-    buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Работать локально")
-    buttons.accepted.connect(dialog.accept)
-    buttons.rejected.connect(dialog.reject)
-    form.addRow(buttons)
-
-    def provider_changed() -> None:
-        local = provider.currentData() == "local"
-        form.setRowVisible(username, local)
-        secret.setPlaceholderText("Пароль" if local else "GitLab access token")
-
-    provider.currentIndexChanged.connect(provider_changed)
-    provider_changed()
-    while dialog.exec() == QDialog.DialogCode.Accepted:
-        try:
-            url = server_url.text().strip().rstrip("/")
-            if provider.currentData() == "local":
-                service.configure_remote_local(
-                    base_url=url,
-                    username=username.text(),
-                    password=secret.text(),
-                )
-            else:
-                service.configure_remote(
-                    base_url=url,
-                    access_token=secret.text(),
-                    principal=principal,
-                )
-            settings.setValue("server/url", url)
-            return
-        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
-            QMessageBox.warning(dialog, "Не удалось подключиться к серверу", str(exc))
+    try:
+        _sign_in_program_account(
+            service,
+            url,
+            account,
+            principal=principal,
+            register_if_unknown=True,
+        )
+    except (OSError, RemoteServerError, ValueError):
+        return
 
 
 def _administration_panel(

@@ -302,8 +302,10 @@ class KarakalPresenter(QObject):
         return GridDamageAnalysisConfig(
             include_debug_payload=False,
             debug=False,
-            min_contour_area=4.0 + 20.0 * noise,
-            min_cell_size=max(2, int(round(2.0 + 5.0 * noise))),
+            # Keep tiny NN debris visible without a reference frame; noise=100 → area=4, size=2.
+            blur_radius=1,
+            min_contour_area=3.0 + 1.0 * noise,
+            min_cell_size=2,
             filled_ratio_delta=max(0.04, 0.35 - 0.26 * fill - 0.08 * strict_boost),
             bad_score_threshold=max(0.30, min(0.98, threshold - 0.10 * strict_boost)),
             merged_size_ratio=max(1.10, 1.87 - 0.58 * merge - 0.14 * strict_boost),
@@ -2213,6 +2215,7 @@ class KarakalPresenter(QObject):
             "mask_structure_risk",
             "batch_outlier_risk",
             "source_alignment_risk",
+            "source_mask_agreement_risk",
             "confidence_risk",
         }:
             return not any(
@@ -2452,6 +2455,7 @@ class KarakalPresenter(QObject):
             "mask_structure_risk",
             "batch_outlier_risk",
             "source_alignment_risk",
+            "source_mask_agreement_risk",
             "confidence_risk",
         }:
             return self._t("hint.single_result_risk")
@@ -2561,6 +2565,7 @@ class KarakalPresenter(QObject):
             "mask_structure_risk": self._t("hint.single_result_risk"),
             "batch_outlier_risk": self._t("hint.single_result_risk"),
             "source_alignment_risk": self._t("hint.single_result_risk"),
+            "source_mask_agreement_risk": self._t("hint.single_result_risk"),
             "confidence_risk": self._t("hint.single_result_risk"),
         }
         return defaults.get(family, self._metric_label(metric_key_text, build_result))
@@ -2574,6 +2579,7 @@ class KarakalPresenter(QObject):
             "mask_structure_risk",
             "batch_outlier_risk",
             "source_alignment_risk",
+            "source_mask_agreement_risk",
             "confidence_risk",
         }:
             risk = getattr(summary, "single_result_risk", None)
@@ -3826,6 +3832,9 @@ class KarakalPresenter(QObject):
                 item = QListWidgetItem(text)
                 item.setIcon(grid_inspection_error_type_icon(str(payload.get("error_type") or "")))
                 item.setData(Qt.ItemDataRole.UserRole, dict(payload))
+                # Explicit brushes: Win10 alternating-row palette can wash out stylesheet text.
+                item.setForeground(QBrush(QColor("#edf3fb")))
+                item.setBackground(QBrush(QColor("#11161d" if error_list.count() % 2 == 0 else "#18212b")))
                 reason_text = ", ".join(str(reason) for reason in payload.get("reasons", ()) or ())
                 tooltip_parts = [part for part in (reason_text, cluster_label) if part]
                 item.setToolTip(" | ".join(tooltip_parts) or label)
@@ -4222,6 +4231,7 @@ class KarakalPresenter(QObject):
             metric_key,
             self._excluded_record_keys_for_state(state),
             performance_config=self._view.performance_config,
+            include_attention_issues=self._should_compute_attention_issues_during_analytics(state),
         )
         self._connect_worker_profiling(self._worker)
         generation = self._begin_worker_request(state=state)
@@ -4997,6 +5007,9 @@ class KarakalPresenter(QObject):
             risk_kinds = ["risk_structure"]
             if risk_summary is not None and getattr(risk_summary, "source_alignment_risk", None) is not None:
                 risk_kinds.append("risk_source")
+            if risk_summary is not None and getattr(risk_summary, "source_mask_agreement_risk", None) is not None:
+                if "risk_source" not in risk_kinds:
+                    risk_kinds.append("risk_source")
             if risk_summary is not None and getattr(risk_summary, "confidence_risk", None) is not None:
                 risk_kinds.append("risk_confidence")
             allowed_result_kinds = tuple(risk_kinds)
@@ -5878,16 +5891,25 @@ class KarakalPresenter(QObject):
         metric_key = str(
             getattr(state, "metric_key", "") or getattr(state.build_result, "selected_metric_key", "") or ""
         )
+        analysis_mode = str(getattr(state, "analysis_mode", "") or INTER_MODEL_ANALYSIS_MODE)
+        if analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}:
+            return "attention_issues"
         if confidence_metric_family(metric_key) is not None:
             return "confidence"
-        analysis_mode = str(getattr(state, "analysis_mode", "") or INTER_MODEL_ANALYSIS_MODE)
         if analysis_mode == CONFIDENCE_COMPARISON_MODE:
             return "diff"
-        if analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}:
-            return "confidence"
         if str(getattr(state, "object_type", "") or POLYGON_OBJECT_TYPE) == POINT_OBJECT_TYPE:
             return "point_matches"
         return "diff"
+
+    def _should_compute_attention_issues_during_analytics(self, state: ExtendMatrixTabState) -> bool:
+        from ..core.attention_issues import ATTENTION_COMPUTE_STANDARD, normalize_attention_compute_mode
+
+        mode = normalize_attention_compute_mode(self._settings_service.load_attention_compute_mode())
+        if mode != ATTENTION_COMPUTE_STANDARD:
+            return False
+        analysis_mode = str(getattr(state, "analysis_mode", "") or self._selected_analysis_mode())
+        return analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}
 
     @staticmethod
     def _default_details_layer_view_for_state(_state: ExtendMatrixTabState) -> str:

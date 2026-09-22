@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMenuBar,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -611,11 +612,6 @@ class KarakalWidget(QWidget):
         folders_group = QGroupBox(self._t("folders.group"), control_host)
         self.folders_group = folders_group
         folders_layout = QVBoxLayout(folders_group)
-        folders_info = QLabel(self._t("folders.info"), folders_group)
-        self.folders_info_label = folders_info
-        folders_info.setWordWrap(True)
-        folders_info.show()
-        folders_layout.addWidget(folders_info)
 
         toolbar_layout = QHBoxLayout()
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
@@ -1095,6 +1091,10 @@ class KarakalWidget(QWidget):
         self.grid_inspection_error_list = QListWidget(self.grid_inspection_errors_group)
         self.grid_inspection_error_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.grid_inspection_error_list.setAlternatingRowColors(True)
+        self.grid_inspection_error_list.setUniformItemSizes(False)
+        self.grid_inspection_error_list.setWordWrap(True)
+        self.grid_inspection_error_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self.grid_inspection_error_list.setSpacing(1)
         self.grid_inspection_error_list.setMinimumHeight(180)
         errors_layout.addWidget(self.grid_inspection_error_filter)
         errors_layout.addWidget(self.grid_inspection_error_counter)
@@ -1191,6 +1191,21 @@ class KarakalWidget(QWidget):
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
+        view_menu = self._menu_bar.addMenu(self._t("menu.view"))
+        attention_menu = view_menu.addMenu(self._t("menu.attention_compute"))
+        self._attention_compute_action_group = QActionGroup(attention_menu)
+        self._attention_compute_action_group.setExclusive(True)
+        current_attention_mode = self._settings_service.load_attention_compute_mode()
+        for mode_key, label_key in (
+            ("lightweight", "menu.attention_compute.lightweight"),
+            ("standard", "menu.attention_compute.standard"),
+        ):
+            action = attention_menu.addAction(self._t(label_key))
+            action.setCheckable(True)
+            action.setData(mode_key)
+            action.setChecked(mode_key == current_attention_mode)
+            self._attention_compute_action_group.addAction(action)
+        self._attention_compute_action_group.triggered.connect(self._on_attention_compute_mode_triggered)
         diagnostics_menu = self._menu_bar.addMenu("Diagnostics" if self._i18n.language == "en" else "Диагностика")
         profiling_action = QAction(
             "Validation profiling…" if self._i18n.language == "en" else "Профилирование Validation…",
@@ -1212,6 +1227,17 @@ class KarakalWidget(QWidget):
         )
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
         self._setup_update_menu()
+
+    def _on_attention_compute_mode_triggered(self, action) -> None:
+        mode = str(action.data() or "lightweight")
+        self._settings_service.save_attention_compute_mode(mode)
+        self._settings_service.sync()
+        if mode == "standard":
+            QMessageBox.information(
+                self,
+                self._t("dialog.info_title") if hasattr(self, "_t") else "Info",
+                self._t("menu.attention_compute.recompute_hint"),
+            )
 
     @property
     def performance_config(self) -> PerformanceConfig:
@@ -1706,7 +1732,6 @@ class KarakalWidget(QWidget):
                 else self._t("pairs.group")
             )
             self.pair_matrix_group.setTitle(title)
-        self.folders_info_label.setText(self._t("folders.info"))
         self.btn_add_folder.setToolTip(self._t("folders.add_model"))
         self.btn_clear_folders.setToolTip(self._t("folders.clear_models"))
         self.btn_build.setToolTip(self._t("folders.build"))

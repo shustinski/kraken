@@ -47,9 +47,6 @@ class AnalysisSetupPanel(QGroupBox):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
-        self.intro_label = QLabel(self)
-        self.intro_label.setWordWrap(True)
-        layout.addWidget(self.intro_label)
 
         profile_host = QWidget(self)
         profile_layout = QGridLayout(profile_host)
@@ -103,7 +100,6 @@ class AnalysisSetupPanel(QGroupBox):
     def retranslate(self, translate: Translate) -> None:
         self._t = translate
         self.setTitle(self._t("setup.group"))
-        self.intro_label.setText(self._t("setup.intro"))
         self.role_table.setHorizontalHeaderLabels(
             (self._t("setup.role"), self._t("setup.source_coverage"), self._t("setup.status"))
         )

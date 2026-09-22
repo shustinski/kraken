@@ -20,6 +20,7 @@ from karakal.core.single_result_risk import (
     MASK_STRUCTURE_RISK_METRIC,
     SINGLE_RESULT_RISK_METRIC,
     SOURCE_ALIGNMENT_RISK_METRIC,
+    SOURCE_MASK_AGREEMENT_RISK_METRIC,
     compute_single_result_risk,
 )
 from karakal.plugin.result_adapter import build_analysis_result_manifest
@@ -222,15 +223,24 @@ def test_zero_mad_uses_iqr_when_the_feature_is_not_constant(tmp_path: Path) -> N
     ("with_original", "with_confidence", "expected_weights"),
     [
         (False, False, {MASK_STRUCTURE_RISK_METRIC: 1.0}),
-        (True, False, {MASK_STRUCTURE_RISK_METRIC: 2.0 / 3.0, SOURCE_ALIGNMENT_RISK_METRIC: 1.0 / 3.0}),
-        (False, True, {MASK_STRUCTURE_RISK_METRIC: 0.8, CONFIDENCE_RISK_METRIC: 0.2}),
+        (
+            True,
+            False,
+            {
+                MASK_STRUCTURE_RISK_METRIC: 0.35 / 0.65,
+                SOURCE_ALIGNMENT_RISK_METRIC: 0.15 / 0.65,
+                SOURCE_MASK_AGREEMENT_RISK_METRIC: 0.15 / 0.65,
+            },
+        ),
+        (False, True, {MASK_STRUCTURE_RISK_METRIC: 0.35 / 0.45, CONFIDENCE_RISK_METRIC: 0.10 / 0.45}),
         (
             True,
             True,
             {
-                MASK_STRUCTURE_RISK_METRIC: 4.0 / 7.0,
-                SOURCE_ALIGNMENT_RISK_METRIC: 2.0 / 7.0,
-                CONFIDENCE_RISK_METRIC: 1.0 / 7.0,
+                MASK_STRUCTURE_RISK_METRIC: 0.35 / 0.75,
+                SOURCE_ALIGNMENT_RISK_METRIC: 0.15 / 0.75,
+                SOURCE_MASK_AGREEMENT_RISK_METRIC: 0.15 / 0.75,
+                CONFIDENCE_RISK_METRIC: 0.10 / 0.75,
             },
         ),
     ],
@@ -259,6 +269,7 @@ def test_missing_components_renormalize_weights(
     assert sum(summary.component_weights.values()) == pytest.approx(1.0)
     assert sum(summary.component_contributions.values()) == pytest.approx(summary.total_risk)
     assert (SOURCE_ALIGNMENT_RISK_METRIC in result.available_metric_keys) is with_original
+    assert (SOURCE_MASK_AGREEMENT_RISK_METRIC in result.available_metric_keys) is with_original
     assert (CONFIDENCE_RISK_METRIC in result.available_metric_keys) is with_confidence
 
 
@@ -273,10 +284,11 @@ def test_all_four_components_keep_nominal_weights(tmp_path: Path) -> None:
 
     assert result.records[0].summary.single_result_risk.component_weights == pytest.approx(
         {
-            MASK_STRUCTURE_RISK_METRIC: 0.4,
-            BATCH_OUTLIER_RISK_METRIC: 0.3,
-            SOURCE_ALIGNMENT_RISK_METRIC: 0.2,
-            CONFIDENCE_RISK_METRIC: 0.1,
+            MASK_STRUCTURE_RISK_METRIC: 0.35,
+            BATCH_OUTLIER_RISK_METRIC: 0.25,
+            SOURCE_ALIGNMENT_RISK_METRIC: 0.15,
+            SOURCE_MASK_AGREEMENT_RISK_METRIC: 0.15,
+            CONFIDENCE_RISK_METRIC: 0.10,
         }
     )
 
@@ -361,3 +373,57 @@ def test_single_result_engine_requires_exactly_one_model(tmp_path: Path) -> None
         compute_single_result_risk(empty_result)
     with pytest.raises(ValueError, match="exactly one"):
         compute_single_result_risk(two_models)
+
+
+def test_source_mask_agreement_absent_without_original(tmp_path: Path) -> None:
+    result = compute_single_result_risk(_build_result(tmp_path, [_normal_mask()]))
+    summary = result.records[0].summary.single_result_risk
+    assert summary is not None
+    assert summary.source_mask_agreement_risk is None
+    assert SOURCE_MASK_AGREEMENT_RISK_METRIC not in result.available_metric_keys
+    assert SOURCE_MASK_AGREEMENT_RISK_METRIC not in result.records[0].summary.metric_values
+
+
+def test_source_mask_agreement_low_when_model_matches_original(tmp_path: Path) -> None:
+    mask = _normal_mask()
+    original = np.where(mask > 0, 230, 20).astype(np.uint8)
+    result = compute_single_result_risk(_build_result(tmp_path, [mask], originals=[original]))
+    summary = result.records[0].summary.single_result_risk
+    assert summary is not None
+    assert summary.source_mask_agreement_risk is not None
+    assert summary.source_mask_agreement_risk < 50.0
+    assert summary.feature_values["source_iou"] > 0.5
+    assert summary.feature_values["source_dice"] > 0.5
+    assert summary.feature_values["source_mask_algo_version"] == pytest.approx(1.0)
+
+
+def test_source_mask_agreement_higher_for_shifted_model(tmp_path: Path) -> None:
+    mask = _normal_mask(inset=24)
+    shifted = np.zeros_like(mask)
+    shifted[8:56, 8:56] = 255
+    original = np.where(mask > 0, 230, 20).astype(np.uint8)
+    matched = compute_single_result_risk(_build_result(tmp_path / "matched", [mask], originals=[original]))
+    mismatched = compute_single_result_risk(
+        _build_result(tmp_path / "shifted", [shifted], originals=[original])
+    )
+    matched_risk = matched.records[0].summary.single_result_risk.source_mask_agreement_risk
+    shifted_risk = mismatched.records[0].summary.single_result_risk.source_mask_agreement_risk
+    assert matched_risk is not None and shifted_risk is not None
+    assert shifted_risk > matched_risk
+
+
+def test_parallel_extract_preserves_frame_order_and_scores(tmp_path: Path) -> None:
+    masks = [_normal_mask(), _noisy_mask(), _fragmented_mask(), _broken_mask(), _normal_mask(inset=18)]
+    build_result = _build_result(tmp_path, masks)
+    build_result = replace(
+        build_result,
+        options=replace(build_result.options, max_workers=4),
+    )
+    result = compute_single_result_risk(build_result)
+    assert [record.key for record in result.records] == [record.key for record in build_result.records]
+    assert all(record.score_ready for record in result.records)
+    risks = [_risk(result, index) for index in range(len(result.records))]
+    # Noisy / fragmented / broken should rank above a clean rectangle.
+    assert risks[1] > risks[0]
+    assert risks[2] > risks[0]
+    assert risks[3] > risks[0]

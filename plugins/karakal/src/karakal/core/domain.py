@@ -434,6 +434,7 @@ class FrameAnalysisSummary:
     notes: tuple[str, ...] = ()
     frame_type: str = "polygon"
     single_result_risk: Any | None = None
+    attention_issues_by_model: dict[str, tuple[Any, ...]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

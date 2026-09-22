@@ -55,6 +55,8 @@ def _record_payload_cache_key(
     include_model_confidence: bool,
     include_model_output_confidence: bool,
     include_pairwise_metrics: bool,
+    include_boundary_distance: bool = True,
+    include_attention_issues: bool = False,
     comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
 ) -> str:
     payload = {
@@ -70,6 +72,8 @@ def _record_payload_cache_key(
         "include_model_confidence": bool(include_model_confidence),
         "include_model_output_confidence": bool(include_model_output_confidence),
         "include_pairwise_metrics": bool(include_pairwise_metrics),
+        "include_boundary_distance": bool(include_boundary_distance),
+        "include_attention_issues": bool(include_attention_issues),
         "comparison_pairs": [
             {
                 "model_a_id": pair.model_a_id,

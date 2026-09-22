@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import numpy as np
 from pathlib import Path
-from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSettings, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -19,6 +20,8 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QProgressBar,
     QScrollArea,
@@ -31,6 +34,12 @@ from PyQt6.QtWidgets import (
 )
 
 from ..core.analysis_modes import CONFIDENCE_COMPARISON_MODE, metric_level_key, metric_visual_ratio
+from ..core.attention_issues import (
+    AttentionIssue,
+    DEFAULT_ATTENTION_COMPUTE_MODE,
+    attention_issues_from_payload,
+    normalize_attention_compute_mode,
+)
 from ..core.backend_constants import (
     BCE_SCORE_CAP,
     MODEL_CONFIDENCE_UNCERTAIN_DELTA,
@@ -46,7 +55,7 @@ from ..core.confidence_analysis import (
     _frame_uncertainty_components_from_probability,
     _support_weights_from_probability,
 )
-from ..core.image_io import load_grayscale_image
+from ..core.image_io import load_grayscale_image, resize_grayscale_image
 from ..core.mask_metrics import _point_map_from_view, compute_comparison
 from ..core.mask_primitives import _boundary_mask, _distance_transform
 from ..core.metric_keys import metric_higher_is_better
@@ -57,12 +66,17 @@ from ..core.confidence_maps import (
     combine_uncertainty_maps,
     confidence_bad_area_intensity,
 )
-from ..core.workers import DetailConfidenceWorker, DetailPayloadWorker
+from ..core.workers import AttentionIssuesWorker, DetailConfidenceWorker, DetailPayloadWorker
 from ..ui.i18n import Translator
 from ..ui.ui_constants import (
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
     GRID_INSPECTION_DAMAGE_METRIC_KEY,
     GRID_INSPECTION_ERROR_TYPE_OPTIONS,
+    SETTINGS_APP,
+    SETTINGS_ATTENTION_COMPUTE_MODE_KEY,
+    SETTINGS_ORG,
+    attention_issue_type_color,
+    attention_issue_type_icon,
     grid_inspection_error_type_color,
     grid_inspection_error_type_icon,
 )
@@ -257,12 +271,19 @@ class ExtendFrameDetailsDialog(QDialog):
         self._pending_initial_fit = True
         self._detail_thread: QThread | None = None
         self._detail_worker: DetailPayloadWorker | None = None
+        self._retired_detail_workers: list[tuple[DetailPayloadWorker, QThread]] = []
         self._confidence_thread: QThread | None = None
         self._confidence_worker: DetailConfidenceWorker | None = None
         self._retired_confidence_workers: list[tuple[DetailConfidenceWorker, QThread]] = []
+        self._attention_thread: QThread | None = None
+        self._attention_worker = None
+        self._retired_attention_workers: list[tuple[object, QThread]] = []
+        self._attention_request_generation = 0
+        self._loading_attention_model_id: str | None = None
         self._loading_confidence_model_id: str | None = None
         self._detail_request_generation = 0
         self._confidence_request_generation = 0
+        self._attention_issue_list_ids: tuple[str, ...] | None = None
         self._payload_loading = False
         self._legacy_base_hold_active = False
         self._hold_preview_mode: str | None = None
@@ -431,7 +452,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.first_source_opacity = self._opacity_slider(42)
         self.second_source_visible = QCheckBox(layers_group)
         self.second_source_visible.setChecked(True)
-        self.second_source_opacity = self._opacity_slider(55)
+        self.second_source_opacity = self._opacity_slider(48)
         self.result_visible = QCheckBox(layers_group)
         self.result_visible.setChecked(True)
         self.result_opacity = self._opacity_slider(78)
@@ -497,8 +518,23 @@ class ExtendFrameDetailsDialog(QDialog):
         self.comparison_events_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         comparison_result_layout.addWidget(self.comparison_metrics_label)
         comparison_result_layout.addWidget(self.comparison_events_label)
+        self.attention_issues_list = QListWidget(comparison_result_group)
+        self.attention_issues_list.setMaximumHeight(160)
+        self.attention_issues_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.attention_issues_list.itemSelectionChanged.connect(self._on_attention_issue_selected)
+        comparison_result_layout.addWidget(self.attention_issues_list)
+        attention_nav = QHBoxLayout()
+        self.attention_prev_button = QPushButton(self._t("details.attention_prev"), comparison_result_group)
+        self.attention_next_button = QPushButton(self._t("details.attention_next"), comparison_result_group)
+        self.attention_prev_button.clicked.connect(lambda: self._step_attention_issue(-1))
+        self.attention_next_button.clicked.connect(lambda: self._step_attention_issue(+1))
+        attention_nav.addWidget(self.attention_prev_button)
+        attention_nav.addWidget(self.attention_next_button)
+        comparison_result_layout.addLayout(attention_nav)
         overview_layout.addWidget(comparison_result_group)
         overview_layout.addStretch(1)
+        self._attention_issues: tuple[AttentionIssue, ...] = ()
+        self._pending_attention_focus: dict[str, object] | None = None
         layers_layout.addStretch(1)
 
         splitter.addWidget(viewer_widget)
@@ -516,6 +552,7 @@ class ExtendFrameDetailsDialog(QDialog):
     def closeEvent(self, event) -> None:
         self._stop_detail_worker()
         self._stop_confidence_worker()
+        self._stop_attention_worker()
         super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:
@@ -548,8 +585,12 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _deactivate_base_hold(self) -> None:
         self._legacy_base_hold_active = False
+        was_grid_model_hold = self._hold_preview_mode == "grid_model_output"
         self._hold_preview_mode = None
         self.hold_preview_item.setPixmap(QPixmap())
+        self._hold_preview_pixmap = QPixmap()
+        if was_grid_model_hold:
+            self.first_source_item.setPixmap(QPixmap())
         self._update_layer_states()
 
     def _legacy_update_frame_id_value(self) -> None:
@@ -613,7 +654,7 @@ class ExtendFrameDetailsDialog(QDialog):
             shortcut.activated.connect(lambda delta=delta: self._legacy_step_record(delta))
 
     def _connect_signals(self) -> None:
-        self.result_kind_combo.currentIndexChanged.connect(self._refresh_scene_from_controls)
+        self.result_kind_combo.currentIndexChanged.connect(self._refresh_result_from_controls)
         self.layer_view_combo.currentIndexChanged.connect(self._refresh_scene_from_controls)
         self.grayscale_diff_checkbox.toggled.connect(self._refresh_scene_from_controls)
         self.overlay_view.middlePressed.connect(self._activate_context_hold)
@@ -851,7 +892,9 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("hint.boundary_difference")
         if (not self._is_point_geometry()) and result_kind == "input_output":
             return self._t("hint.input_output_heatmap")
-        if (not self._is_point_geometry()) and result_kind == "grid_cell_defects":
+        if result_kind == "attention_issues":
+            return self._t("hint.attention_issues")
+        if result_kind == "grid_cell_defects":
             return self._t("hint.grid_cell_defects")
         if (not self._is_point_geometry()) and result_kind == "confidence":
             return self._t("hint.polygon_confidence")
@@ -996,6 +1039,7 @@ class ExtendFrameDetailsDialog(QDialog):
     def _start_loading_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
         self._stop_detail_worker()
         self._stop_confidence_worker()
+        self._stop_attention_worker()
         self._detail_request_generation += 1
         generation = int(self._detail_request_generation)
         self._payload_loading = True
@@ -1038,7 +1082,9 @@ class ExtendFrameDetailsDialog(QDialog):
         )
         self._detail_worker.finished.connect(self._detail_thread.quit)
         self._detail_worker.failed.connect(self._detail_thread.quit)
-        self._detail_thread.finished.connect(self._cleanup_detail_worker)
+        worker = self._detail_worker
+        thread = self._detail_thread
+        self._detail_thread.finished.connect(lambda w=worker, t=thread: self._cleanup_detail_worker(w, t))
         self._detail_thread.start()
 
     def _on_payload_loaded(
@@ -1056,6 +1102,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self._payload = payload
         self._overlay_cache.clear()
         self._derived_cache.clear()
+        self._attention_issue_list_ids = None
         self._set_confidence_loading_state(False)
         preferred_kind = (
             previous_result_kind if preserve_selection else (self._sticky_result_kind or self._restored_result_kind)
@@ -1070,25 +1117,47 @@ class ExtendFrameDetailsDialog(QDialog):
     def _load_current_payload(self, *, reset_view: bool, preserve_selection: bool) -> None:
         self._start_loading_payload(reset_view=reset_view, preserve_selection=preserve_selection)
 
-    def _cleanup_detail_worker(self) -> None:
-        if self._detail_worker is not None:
-            self._detail_worker.deleteLater()
-        if self._detail_thread is not None:
-            self._detail_thread.deleteLater()
-        self._detail_worker = None
-        self._detail_thread = None
+    def _cleanup_detail_worker(
+        self,
+        worker: DetailPayloadWorker | None = None,
+        thread: QThread | None = None,
+    ) -> None:
+        target_worker = worker
+        target_thread = thread
+        if target_worker is None and target_thread is None:
+            target_worker = self._detail_worker
+            target_thread = self._detail_thread
+        if target_worker is not None:
+            target_worker.deleteLater()
+        if target_thread is not None:
+            target_thread.deleteLater()
+        self._retired_detail_workers = [
+            (retired_worker, retired_thread)
+            for retired_worker, retired_thread in self._retired_detail_workers
+            if retired_worker is not target_worker and retired_thread is not target_thread
+        ]
+        if (worker is None and thread is None) or (
+            worker is self._detail_worker and thread is self._detail_thread
+        ):
+            self._detail_worker = None
+            self._detail_thread = None
 
     def _stop_detail_worker(self) -> None:
         worker = self._detail_worker
+        thread = self._detail_thread
         if worker is not None:
             request_cancel = getattr(worker, "request_cancel", None)
             if callable(request_cancel):
                 request_cancel()
-        thread = self._detail_thread
         if thread is not None:
             thread.quit()
-            if thread.isRunning():
-                thread.wait(30000)
+            if thread.isRunning() and worker is not None:
+                # Keep alive until the existing finished→cleanup handler runs.
+                self._retired_detail_workers.append((worker, thread))
+            elif worker is not None or thread is not None:
+                self._cleanup_detail_worker(worker, thread)
+        self._detail_worker = None
+        self._detail_thread = None
 
     def _cleanup_confidence_worker(
         self,
@@ -1122,23 +1191,23 @@ class ExtendFrameDetailsDialog(QDialog):
                 request_cancel()
 
     def _stop_confidence_worker(self) -> None:
-        active_pairs: list[tuple[DetailConfidenceWorker | None, QThread | None]] = [
-            (self._confidence_worker, self._confidence_thread),
-            *list(self._retired_confidence_workers),
-        ]
-        for worker, _thread in active_pairs:
-            if worker is None:
-                continue
-            request_cancel = getattr(worker, "request_cancel", None)
-            if callable(request_cancel):
-                request_cancel()
-        for _worker, thread in active_pairs:
-            if thread is None:
-                continue
-            thread.quit()
-            if thread.isRunning():
-                thread.wait(30000)
-        self._retired_confidence_workers.clear()
+        previous_worker = self._confidence_worker
+        previous_thread = self._confidence_thread
+        self._cancel_confidence_worker()
+        if previous_thread is not None:
+            previous_thread.quit()
+        if previous_worker is not None and previous_thread is not None:
+            if previous_thread.isRunning():
+                self._retired_confidence_workers.append((previous_worker, previous_thread))
+            else:
+                self._cleanup_confidence_worker(previous_worker, previous_thread)
+        for worker, thread in list(self._retired_confidence_workers):
+            if worker is not None:
+                request_cancel = getattr(worker, "request_cancel", None)
+                if callable(request_cancel):
+                    request_cancel()
+            if thread is not None and thread.isRunning():
+                thread.quit()
         self._confidence_worker = None
         self._confidence_thread = None
         self._loading_confidence_model_id = None
@@ -1225,11 +1294,32 @@ class ExtendFrameDetailsDialog(QDialog):
         if model_id is None or confidence_row is None:
             return
         (self._payload.setdefault("model_confidence", {}))[model_id] = confidence_row
-        self._overlay_cache.clear()
-        self._derived_cache.clear()
+        self._invalidate_caches_preserving_attention()
         self._set_confidence_loading_state(False)
         self._refresh_scene(reset_view=False)
         self._refresh_info()
+
+    def _invalidate_caches_preserving_attention(self) -> None:
+        preserved_derived = {
+            key: value
+            for key, value in self._derived_cache.items()
+            if isinstance(key, tuple) and key and str(key[0]).startswith("attention_issues")
+        }
+        preserved_overlay = {
+            key: value
+            for key, value in self._overlay_cache.items()
+            if isinstance(key, tuple) and key and str(key[0]) == "attention_issues_pixmap"
+        }
+        self._derived_cache.clear()
+        self._overlay_cache.clear()
+        self._derived_cache.update(preserved_derived)
+        self._overlay_cache.update(preserved_overlay)
+
+    def _attention_compute_mode(self) -> str:
+        settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        return normalize_attention_compute_mode(
+            settings.value(SETTINGS_ATTENTION_COMPUTE_MODE_KEY, DEFAULT_ATTENTION_COMPUTE_MODE, str)
+        )
 
     def _ensure_confidence_ready(self) -> None:
         if not self._result_kind_requires_confidence():
@@ -1877,6 +1967,18 @@ class ExtendFrameDetailsDialog(QDialog):
         self._ensure_confidence_ready()
         self._store_view_settings()
 
+    def _refresh_result_from_controls(self, *_args) -> None:
+        self._refresh_result_layer()
+        self._refresh_dynamic_labels()
+        self._update_result_controls()
+        self._update_layer_states()
+        self._refresh_info()
+        if self._result_kind_requires_confidence():
+            self._ensure_confidence_ready()
+        else:
+            self._set_confidence_loading_state(False)
+        self._store_view_settings()
+
     def _refresh_scene_from_controls(self, *_args) -> None:
         self._refresh_scene(reset_view=False)
         self._refresh_info()
@@ -1940,18 +2042,91 @@ class ExtendFrameDetailsDialog(QDialog):
     def _base_array(self) -> np.ndarray:
         return self._full_base_array()
 
+    def _grid_has_original(self) -> bool:
+        """True when an original/base photo is available for the grid detail base layer."""
+
+        original = str(getattr(self._record, "original_path", "") or getattr(self._record, "base_path", "") or "")
+        if not original:
+            return False
+        try:
+            if not Path(original).is_file():
+                return False
+        except OSError:
+            return False
+        display = str(self._grid_inspection_source_path or "")
+        if not display:
+            return True
+        try:
+            return Path(display).resolve() == Path(original).resolve()
+        except OSError:
+            return display == original
+
     def _base_hold_available(self) -> bool:
+        if self._selected_result_kind() == "grid_cell_defects":
+            # Middle-click swaps original → model output; only useful when original is the base.
+            return self._grid_has_original() and bool(self._grid_model_output_path())
         if self._payload.get("original_gray") is not None:
             return True
-        if self._selected_result_kind() == "grid_cell_defects":
-            path_text = str(self._grid_inspection_source_path or "")
-            if path_text and Path(path_text).is_file():
-                return True
-            result = self._grid_cell_analysis_result()
-            return bool(
-                int(getattr(result, "image_width", 0) or 0) > 0 and int(getattr(result, "image_height", 0) or 0) > 0
-            )
         return False
+
+    def _activate_context_hold(self) -> None:
+        if not self._base_hold_available():
+            return
+        if self._selected_result_kind() == "grid_cell_defects":
+            self._hold_preview_mode = "grid_model_output"
+            self._hold_preview_pixmap = self._grid_model_output_pixmap()
+            self._legacy_base_hold_active = True
+            self._update_layer_states()
+            return
+        self._hold_preview_mode = "base"
+        self._activate_base_hold()
+
+    def _update_layer_states(self) -> None:
+        grid_details = self._selected_result_kind() == "grid_cell_defects"
+        if self._legacy_base_hold_active and self._hold_preview_mode == "grid_model_output":
+            # Hold: show model output under defect overlays (defects stay visible).
+            self.original_item.setVisible(False)
+            self.second_source_item.setVisible(False)
+            self.hold_preview_item.setVisible(False)
+            if not self._hold_preview_pixmap.isNull():
+                self.first_source_item.setPixmap(self._hold_preview_pixmap)
+                self.first_source_item.setVisible(True)
+                self.first_source_item.setOpacity(1.0)
+            else:
+                self.first_source_item.setVisible(False)
+            self.result_item.setVisible(self.result_visible.isChecked())
+            self.result_item.setOpacity(self.result_opacity.value() / 100.0)
+            return
+        if self._legacy_base_hold_active:
+            show_base = self._hold_preview_mode != "confidence_source"
+            self.original_item.setVisible(show_base)
+            self.original_item.setOpacity(self.original_opacity.value() / 100.0)
+            self.first_source_item.setVisible(False)
+            self.second_source_item.setVisible(False)
+            self.result_item.setVisible(False)
+            if self._hold_preview_mode == "confidence_source" and not self._hold_preview_pixmap.isNull():
+                self.hold_preview_item.setPixmap(self._hold_preview_pixmap)
+                self.hold_preview_item.setVisible(True)
+                self.hold_preview_item.setOpacity(1.0)
+            else:
+                self.hold_preview_item.setVisible(False)
+                return
+        self.hold_preview_item.setVisible(False)
+        self.original_item.setVisible(self.original_visible.isChecked())
+        self.original_item.setOpacity(self.original_opacity.value() / 100.0)
+        if grid_details:
+            self.first_source_item.setVisible(False)
+            show_confidence = self._grid_confidence_available() and self.second_source_visible.isChecked()
+            self.second_source_item.setVisible(show_confidence)
+            if show_confidence:
+                self.second_source_item.setOpacity(self.second_source_opacity.value() / 100.0)
+        else:
+            self.first_source_item.setVisible(self.first_source_visible.isChecked())
+            self.first_source_item.setOpacity(self.first_source_opacity.value() / 100.0)
+            self.second_source_item.setVisible(self.second_source_visible.isChecked())
+            self.second_source_item.setOpacity(self.second_source_opacity.value() / 100.0)
+        self.result_item.setVisible(self.result_visible.isChecked())
+        self.result_item.setOpacity(self.result_opacity.value() / 100.0)
 
     def _source_mask(self, source_key: str | None) -> np.ndarray | None:
         cache_key = ("source_mask", source_key, bool(self._is_point_geometry()))
@@ -2286,6 +2461,150 @@ class ExtendFrameDetailsDialog(QDialog):
         self._derived_cache[cache_key] = fallback
         return fallback
 
+    def _grid_confidence_path(self) -> str:
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        prob_paths = getattr(self._record, "model_prob_paths", {}) or {}
+        if model_id and model_id in prob_paths:
+            return str(prob_paths.get(model_id) or "")
+        if prob_paths:
+            return str(next(iter(prob_paths.values())) or "")
+        return ""
+
+    def _grid_confidence_available(self) -> bool:
+        model_id = self._selected_model_for_current_comparison()
+        if self._model_confidence_output_available(model_id):
+            return True
+        path_text = self._grid_confidence_path()
+        if not path_text:
+            return False
+        try:
+            return Path(path_text).is_file()
+        except OSError:
+            return False
+
+    def _grid_confidence_probability_map(self) -> np.ndarray | None:
+        result = self._grid_cell_analysis_result()
+        width = max(1, int(getattr(result, "image_width", 0) or 1))
+        height = max(1, int(getattr(result, "image_height", 0) or 1))
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        path_text = self._grid_confidence_path()
+        cache_key = ("grid_confidence_probability", model_id, path_text, width, height)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+
+        values: np.ndarray | None = None
+        output_probabilities = self._payload.get("model_output_probabilities") or {}
+        if (
+            model_id
+            and self._model_confidence_output_available(model_id)
+            and isinstance(output_probabilities, dict)
+            and model_id in output_probabilities
+        ):
+            candidate = np.asarray(output_probabilities.get(model_id), dtype=np.float32)
+            if candidate.ndim == 2 and candidate.size > 0:
+                values = np.clip(candidate, 0.0, 1.0)
+        if values is None and path_text:
+            try:
+                gray = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.float32)
+                if gray.ndim == 2 and gray.size > 0:
+                    peak = float(np.nanmax(gray)) if gray.size else 0.0
+                    values = np.clip(gray / 255.0 if peak > 1.0 else gray, 0.0, 1.0).astype(np.float32)
+            except (OSError, TypeError, ValueError, RuntimeError) as error:
+                _LOGGER.warning("Could not load grid confidence %s: %s", path_text, error)
+                values = None
+        if values is None:
+            return None
+        if tuple(values.shape) != (height, width):
+            scaled = resize_grayscale_image(
+                np.clip(np.rint(values * 255.0), 0, 255).astype(np.uint8),
+                (height, width),
+            )
+            values = (np.asarray(scaled, dtype=np.float32) / 255.0).astype(np.float32)
+        self._derived_cache[cache_key] = values
+        return values
+
+    def _grid_confidence_overlay_pixmap(self) -> QPixmap:
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        path_text = self._grid_confidence_path()
+        result = self._grid_cell_analysis_result()
+        width = max(1, int(getattr(result, "image_width", 0) or 1))
+        height = max(1, int(getattr(result, "image_height", 0) or 1))
+        cache_key = ("grid_confidence_overlay", model_id, path_text, width, height)
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap) and not cached.isNull():
+            return cached
+        probability = self._grid_confidence_probability_map()
+        if probability is None:
+            return QPixmap()
+        red, green, blue = self._confidence_color_arrays(probability)
+        alpha = np.clip(np.round(40.0 + 200.0 * probability), 0.0, 255.0).astype(np.uint8)
+        support = probability > 0.02
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        rgba[..., 0][support] = red[support]
+        rgba[..., 1][support] = green[support]
+        rgba[..., 2][support] = blue[support]
+        rgba[..., 3][support] = alpha[support]
+        image = QImage(rgba.data, width, height, int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
+        pixmap = QPixmap.fromImage(image)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _grid_model_output_path(self) -> str:
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        mask_paths = getattr(self._record, "model_mask_paths", {}) or {}
+        if model_id and model_id in mask_paths:
+            return str(mask_paths.get(model_id) or "")
+        if mask_paths:
+            return str(next(iter(mask_paths.values())) or "")
+        return ""
+
+    def _grid_model_output_array(self) -> np.ndarray:
+        """Grayscale neural-network output aligned to the grid inspection frame size."""
+
+        result = self._grid_cell_analysis_result()
+        width = max(1, int(getattr(result, "image_width", 0) or 1))
+        height = max(1, int(getattr(result, "image_height", 0) or 1))
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        path_text = self._grid_model_output_path()
+        cache_key = ("grid_model_output_array", model_id, path_text, width, height)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+
+        values: np.ndarray | None = None
+        source_grays = self._payload.get("model_source_grays") or {}
+        if model_id and isinstance(source_grays, dict) and model_id in source_grays:
+            gray = np.asarray(source_grays.get(model_id), dtype=np.float32)
+            if gray.ndim == 2 and gray.size > 0:
+                values = np.clip(np.rint(gray * 255.0), 0, 255).astype(np.uint8)
+        if values is None and path_text:
+            try:
+                values = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
+            except (OSError, TypeError, ValueError, RuntimeError) as error:
+                _LOGGER.warning("Could not load grid model output %s: %s", path_text, error)
+                values = None
+        if values is None or values.ndim != 2 or values.size == 0:
+            values = np.zeros((height, width), dtype=np.uint8)
+        elif tuple(values.shape) != (height, width):
+            values = np.asarray(resize_grayscale_image(values, (height, width)), dtype=np.uint8)
+        self._derived_cache[cache_key] = values
+        return values
+
+    def _grid_model_output_pixmap(self) -> QPixmap:
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        path_text = self._grid_model_output_path()
+        result = self._grid_cell_analysis_result()
+        width = max(1, int(getattr(result, "image_width", 0) or 1))
+        height = max(1, int(getattr(result, "image_height", 0) or 1))
+        cache_key = ("grid_model_output_pixmap", model_id, path_text, width, height)
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap) and not cached.isNull():
+            return cached
+        pixmap = self._grayscale_to_pixmap(self._grid_model_output_array())
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
     def _grid_cell_defects_pixmap(self, model_id: str | None) -> QPixmap:
         selected_model = self._selected_model_for_current_comparison() if model_id is None else model_id
         cache_key = (
@@ -2428,6 +2747,8 @@ class ExtendFrameDetailsDialog(QDialog):
             append_item(self._t("details.risk_structure_regions"), "risk_structure")
             if getattr(risk_summary, "source_alignment_risk", None) is not None:
                 append_item(self._t("details.risk_source_regions"), "risk_source")
+            elif getattr(risk_summary, "source_mask_agreement_risk", None) is not None:
+                append_item(self._t("details.risk_source_regions"), "risk_source")
             if getattr(risk_summary, "confidence_risk", None) is not None:
                 append_item(self._t("details.risk_confidence_regions"), "risk_confidence")
 
@@ -2446,6 +2767,7 @@ class ExtendFrameDetailsDialog(QDialog):
             append_item(self._t("details.boundary_difference"), "boundary")
             append_item(self._t("details.grid_cell_defects"), "grid_cell_defects")
         append_header(self._t("details.result_group_confidence_maps"))
+        append_item(self._t("details.attention_issues"), "attention_issues")
         append_item(self._t("details.model_confidence_map"), "confidence")
         if confidence_output_available:
             append_item(self._t("details.confidence_bad_areas"), "confidence_bad_areas")
@@ -2763,21 +3085,31 @@ class ExtendFrameDetailsDialog(QDialog):
     def _set_grid_detail_layer_rows(self, grid_details: bool) -> None:
         self.original_layer_title.setVisible(True)
         self.original_layer_row.setVisible(True)
-        self.first_source_layer_title.setVisible(True)
-        self.first_source_layer_row.setVisible(True)
+        self.first_source_layer_title.setVisible(not bool(grid_details))
+        self.first_source_layer_row.setVisible(not bool(grid_details))
         self.result_layer_title.setVisible(True)
         self.result_layer_row.setVisible(True)
-        self.second_source_layer_title.setVisible(not bool(grid_details))
-        self.second_source_layer_row.setVisible(not bool(grid_details))
+        show_grid_confidence = bool(grid_details) and self._grid_confidence_available()
+        self.second_source_layer_title.setVisible(show_grid_confidence or not bool(grid_details))
+        self.second_source_layer_row.setVisible(show_grid_confidence or not bool(grid_details))
         if grid_details:
-            self.original_layer_title.setText(self._t("details.original"))
-            self.first_source_layer_title.setText(self._t("details.selected_source"))
+            if self._grid_has_original():
+                self.original_layer_title.setText(self._t("details.original"))
+            else:
+                model_id = self._selected_model_for_current_comparison()
+                self.original_layer_title.setText(
+                    self._model_display_name(model_id) if model_id else self._t("details.model_output_layer")
+                )
+            self.second_source_layer_title.setText(self._t("details.grid_confidence_layer"))
             self.result_layer_title.setText(self._t("details.grid_cell_defects"))
+            self.first_mask_color_button.setVisible(False)
+            self.second_mask_color_button.setVisible(False)
         else:
             self.original_layer_title.setText(self._t("details.original"))
             self.first_source_layer_title.setText(self._t("details.selected_source"))
             self.second_source_layer_title.setText(self._t("details.comparison_source"))
             self.result_layer_title.setText(self._result_overlay_title())
+            self.first_mask_color_button.setVisible(True)
 
     def _refresh_grid_cell_defects_layer(self, *_args) -> None:
         if self._selected_result_kind() != "grid_cell_defects":
@@ -2826,7 +3158,7 @@ class ExtendFrameDetailsDialog(QDialog):
         summary = self._payload.get("single_result_risk")
         prefixes = {
             "risk_structure": ("empty_mask", "full_mask", "tiny_components", "fragmented_mask", "rough_boundary", "excess_holes", "skeleton_complexity", "edge_clipping", "batch_outlier."),
-            "risk_source": ("unsupported_boundary",),
+            "risk_source": ("unsupported_boundary", "source_mask_mismatch"),
             "risk_confidence": ("low_confidence",),
         }.get(str(kind), ())
         height, width = intensity.shape
@@ -3172,7 +3504,10 @@ class ExtendFrameDetailsDialog(QDialog):
         prefer_grayscale = self._selected_result_kind() == "diff" and mode == ComparisonMode.GRAYSCALE_DIFF
         if grid_details:
             self.first_source_item.setPixmap(QPixmap())
-            self.second_source_item.setPixmap(QPixmap())
+            if self._grid_confidence_available():
+                self.second_source_item.setPixmap(self._grid_confidence_overlay_pixmap())
+            else:
+                self.second_source_item.setPixmap(QPixmap())
         else:
             self.first_source_item.setPixmap(
                 self._source_pixmap(first_key, self._named_color("first_mask"), prefer_grayscale=prefer_grayscale)
@@ -3210,6 +3545,281 @@ class ExtendFrameDetailsDialog(QDialog):
             return
         self._refresh_scene(reset_view=False)
         self._apply_pending_grid_defect_focus()
+
+    def focus_attention_issue(self, payload: dict[str, object] | None) -> None:
+        self._pending_attention_focus = dict(payload or {})
+        index = self.result_kind_combo.findData("attention_issues")
+        if index >= 0 and self.result_kind_combo.currentIndex() != index:
+            self.result_kind_combo.setCurrentIndex(index)
+        if self._payload_loading:
+            return
+        self._refresh_scene(reset_view=False)
+        self._apply_pending_attention_focus()
+
+    def _apply_pending_attention_focus(self) -> None:
+        payload = self._pending_attention_focus
+        if not payload or self._payload_loading:
+            return
+        bbox_value = payload.get("bbox")
+        if not isinstance(bbox_value, (tuple, list)) or len(bbox_value) < 4:
+            return
+        try:
+            nx, ny, nw, nh = (float(bbox_value[0]), float(bbox_value[1]), float(bbox_value[2]), float(bbox_value[3]))
+        except Exception:
+            return
+        if nw <= 0.0 or nh <= 0.0:
+            return
+        base = self._base_array()
+        height, width = base.shape[:2]
+        x = nx * width
+        y = ny * height
+        w = max(1.0, nw * width)
+        h = max(1.0, nh * height)
+        scene = self.overlay_view.scene()
+        if scene is None:
+            return
+        self._clear_selection_overlay_items()
+        rect = QRectF(x, y, w, h)
+        pen = QPen(QColor(255, 230, 72, 255), 2.0)
+        pen.setCosmetic(True)
+        item = scene.addRect(rect, pen, QBrush(Qt.BrushStyle.NoBrush))
+        item.setZValue(50.0)
+        self._selection_overlay_items = [item]
+        margin = max(18.0, max(w, h) * 3.0)
+        target = rect.adjusted(-margin, -margin, margin, margin).intersected(scene.sceneRect())
+        if target.isNull():
+            target = rect.adjusted(-margin, -margin, margin, margin)
+        self.overlay_view.fitInView(target, Qt.AspectRatioMode.KeepAspectRatio)
+        self.overlay_view.centerOn(rect.center())
+
+    def _resolve_attention_issues(self, model_id: str | None = None) -> tuple[AttentionIssue, ...]:
+        target_model = str(model_id or self._confidence_model_id() or self._selected_model_for_current_comparison() or "")
+        compute_mode = self._attention_compute_mode()
+        cache_key = ("attention_issues_resolved", target_model, compute_mode)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, tuple):
+            return cached
+        by_model = self._payload.get("attention_issues_by_model") or {}
+        raw_issues: tuple[AttentionIssue, ...] = ()
+        if isinstance(by_model, dict) and target_model in by_model:
+            raw_issues = attention_issues_from_payload(by_model.get(target_model))
+            self._derived_cache[cache_key] = tuple(raw_issues)
+            return tuple(raw_issues)
+        self._ensure_attention_issues_ready(target_model, compute_mode)
+        return ()
+
+    def _ensure_attention_issues_ready(self, model_id: str, compute_mode: str) -> None:
+        if not model_id or not self._payload:
+            return
+        cache_key = ("attention_issues_resolved", model_id, compute_mode)
+        if isinstance(self._derived_cache.get(cache_key), tuple):
+            return
+        if self._loading_attention_model_id == model_id and self._attention_thread is not None:
+            return
+        masks = self._payload.get("model_masks") or {}
+        mask = masks.get(model_id) if isinstance(masks, dict) else None
+        output_probs = self._payload.get("model_output_probabilities") or {}
+        probs = self._payload.get("model_probabilities") or {}
+        original = self._payload.get("original_gray")
+        available = self._payload.get("model_confidence_output_available") or {}
+        values = None
+        source = "output"
+        if (
+            isinstance(output_probs, dict)
+            and model_id in output_probs
+            and bool(available.get(model_id, False))
+        ):
+            values = output_probs[model_id]
+            source = "confidence"
+        elif isinstance(probs, dict) and model_id in probs:
+            values = probs[model_id]
+            source = "output"
+        if values is None:
+            self._derived_cache[cache_key] = ()
+            return
+
+        previous_worker = self._attention_worker
+        previous_thread = self._attention_thread
+        if previous_worker is not None:
+            request_cancel = getattr(previous_worker, "request_cancel", None)
+            if callable(request_cancel):
+                request_cancel()
+        if previous_thread is not None:
+            previous_thread.quit()
+            if previous_worker is not None and previous_thread.isRunning():
+                self._retired_attention_workers.append((previous_worker, previous_thread))
+
+        self._attention_request_generation += 1
+        generation = int(self._attention_request_generation)
+        thread = QThread(self)
+        worker = AttentionIssuesWorker(
+            values=values,
+            mask=mask,
+            original=original,
+            source=source,
+            model_id=model_id,
+            compute_mode=compute_mode,
+            performance_config=self._performance_config,
+        )
+        self._attention_thread = thread
+        self._attention_worker = worker
+        self._loading_attention_model_id = model_id
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda payload, mid=model_id, mode=compute_mode, g=generation: self._on_attention_issues_loaded(
+                mid, mode, payload, generation=g
+            )
+        )
+        worker.failed.connect(
+            lambda _message, mid=model_id, mode=compute_mode, g=generation: self._on_attention_issues_loaded(
+                mid, mode, {"issues": []}, generation=g
+            )
+        )
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(lambda w=worker, t=thread: self._cleanup_attention_worker(w, t))
+        thread.start()
+
+    def _on_attention_issues_loaded(
+        self,
+        model_id: str,
+        compute_mode: str,
+        payload: object,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and int(generation) != int(self._attention_request_generation):
+            return
+        issues_payload = payload.get("issues") if isinstance(payload, dict) else ()
+        issues = attention_issues_from_payload(issues_payload)
+        cache_key = ("attention_issues_resolved", model_id, compute_mode)
+        self._derived_cache[cache_key] = tuple(issues)
+        by_model = dict(self._payload.get("attention_issues_by_model") or {})
+        by_model[model_id] = [issue.to_dict() for issue in issues]
+        self._payload["attention_issues_by_model"] = by_model
+        self._loading_attention_model_id = None
+        if self._selected_result_kind() == "attention_issues":
+            self._overlay_cache.pop(("attention_issues_pixmap", model_id, compute_mode), None)
+            self._refresh_result_layer()
+            self._refresh_info()
+
+    def _cleanup_attention_worker(self, worker=None, thread: QThread | None = None) -> None:
+        target_worker = worker or self._attention_worker
+        target_thread = thread or self._attention_thread
+        if target_worker is not None:
+            target_worker.deleteLater()
+        if target_thread is not None:
+            target_thread.deleteLater()
+        self._retired_attention_workers = [
+            (retired_worker, retired_thread)
+            for retired_worker, retired_thread in self._retired_attention_workers
+            if retired_worker is not target_worker and retired_thread is not target_thread
+        ]
+        if worker is None or worker is self._attention_worker:
+            self._attention_worker = None
+        if thread is None or thread is self._attention_thread:
+            self._attention_thread = None
+            self._loading_attention_model_id = None
+
+    def _stop_attention_worker(self) -> None:
+        worker = self._attention_worker
+        thread = self._attention_thread
+        if worker is not None:
+            request_cancel = getattr(worker, "request_cancel", None)
+            if callable(request_cancel):
+                request_cancel()
+        if thread is not None:
+            thread.quit()
+            if thread.isRunning() and worker is not None:
+                self._retired_attention_workers.append((worker, thread))
+            elif worker is not None or thread is not None:
+                self._cleanup_attention_worker(worker, thread)
+        self._attention_worker = None
+        self._attention_thread = None
+        self._loading_attention_model_id = None
+        self._attention_request_generation += 1
+
+    def _attention_issues_pixmap(self, model_id: str | None) -> QPixmap:
+        target_model = str(model_id or self._confidence_model_id() or self._selected_model_for_current_comparison() or "")
+        compute_mode = self._attention_compute_mode()
+        cache_key = ("attention_issues_pixmap", target_model, compute_mode)
+        cached = self._overlay_cache.get(cache_key)
+        issues = self._resolve_attention_issues(model_id)
+        if self._attention_issues != issues:
+            self._attention_issues = issues
+            self._populate_attention_issues_list(issues)
+        elif not hasattr(self, "attention_issues_list") or self.attention_issues_list.count() == 0:
+            self._populate_attention_issues_list(issues)
+        if isinstance(cached, QPixmap) and not cached.isNull():
+            return cached
+        if not issues and self._loading_attention_model_id == target_model:
+            return QPixmap()
+        base = self._base_array()
+        height, width = base.shape[:2]
+        image = QImage(width, height, QImage.Format.Format_ARGB32)
+        image.fill(QColor(0, 0, 0, 0))
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for issue in issues:
+            color = attention_issue_type_color(issue.issue_type)
+            color.setAlpha(90)
+            x = float(issue.bbox[0]) * width
+            y = float(issue.bbox[1]) * height
+            w = max(2.0, float(issue.bbox[2]) * width)
+            h = max(2.0, float(issue.bbox[3]) * height)
+            rect = QRectF(x, y, w, h)
+            painter.fillRect(rect, color)
+            border = QColor(color)
+            border.setAlpha(220)
+            pen = QPen(border, 2.0)
+            painter.setPen(pen)
+            painter.drawRect(rect)
+        painter.end()
+        pixmap = QPixmap.fromImage(image)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _populate_attention_issues_list(self, issues: tuple[AttentionIssue, ...]) -> None:
+        if not hasattr(self, "attention_issues_list"):
+            return
+        issue_ids = tuple(issue.issue_id for issue in issues)
+        if getattr(self, "_attention_issue_list_ids", None) == issue_ids and self.attention_issues_list.count() > 0:
+            return
+        self._attention_issue_list_ids = issue_ids
+        blocker = QSignalBlocker(self.attention_issues_list)
+        self.attention_issues_list.clear()
+        if not issues:
+            item = QListWidgetItem(self._t("details.attention_issues_empty"))
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.attention_issues_list.addItem(item)
+            del blocker
+            return
+        for issue in issues:
+            label = f"{self._t(issue.label_key)} · {issue.severity} · {issue.score:.2f}"
+            item = QListWidgetItem(attention_issue_type_icon(issue.issue_type), label)
+            item.setData(Qt.ItemDataRole.UserRole, issue.to_dict())
+            self.attention_issues_list.addItem(item)
+        del blocker
+        if self.attention_issues_list.count() > 0:
+            self.attention_issues_list.setCurrentRow(0)
+
+    def _on_attention_issue_selected(self) -> None:
+        item = self.attention_issues_list.currentItem() if hasattr(self, "attention_issues_list") else None
+        if item is None:
+            return
+        payload = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(payload, dict):
+            self.focus_attention_issue(payload)
+
+    def _step_attention_issue(self, delta: int) -> None:
+        if not hasattr(self, "attention_issues_list") or self.attention_issues_list.count() <= 0:
+            return
+        row = self.attention_issues_list.currentRow()
+        if row < 0:
+            row = 0
+        next_row = (row + int(delta)) % self.attention_issues_list.count()
+        self.attention_issues_list.setCurrentRow(next_row)
 
     def _apply_pending_grid_defect_focus(self) -> None:
         payload = self._pending_grid_defect_focus
@@ -3263,6 +3873,10 @@ class ExtendFrameDetailsDialog(QDialog):
         elif kind == "confidence":
             self._comparison_score = None
             self.result_item.setPixmap(self._confidence_overlay_pixmap(confidence_model_id))
+        elif kind == "attention_issues":
+            self._comparison_score = None
+            self.result_item.setPixmap(self._attention_issues_pixmap(confidence_model_id))
+            self._apply_pending_attention_focus()
         elif kind == "confidence_bad_areas":
             self._comparison_score = None
             self.result_item.setPixmap(self._confidence_bad_areas_pixmap(confidence_model_id))
@@ -3455,11 +4069,17 @@ class ExtendFrameDetailsDialog(QDialog):
             for label, attribute in (
                 ("batch", "batch_outlier_risk"),
                 ("source", "source_alignment_risk"),
+                ("source_mask", "source_mask_agreement_risk"),
                 ("confidence", "confidence_risk"),
             ):
                 value = getattr(risk_summary, attribute, None)
                 if value is not None:
                     values.append(f"{label}: {float(value):.1f}")
+            feature_values = dict(getattr(risk_summary, "feature_values", {}) or {})
+            if "source_iou" in feature_values:
+                values.append(f"source_iou: {float(feature_values['source_iou']):.3f}")
+            if "source_dice" in feature_values:
+                values.append(f"source_dice: {float(feature_values['source_dice']):.3f}")
             contributions = dict(getattr(risk_summary, "component_contributions", {}) or {})
             if contributions:
                 values.append(
@@ -3599,32 +4219,6 @@ class ExtendFrameDetailsDialog(QDialog):
             self._selected_score_hint() or "",
         )
 
-    def _update_layer_states(self) -> None:
-        if self._legacy_base_hold_active:
-            show_base = self._hold_preview_mode != "confidence_source"
-            self.original_item.setVisible(show_base)
-            self.original_item.setOpacity(self.original_opacity.value() / 100.0)
-            self.first_source_item.setVisible(False)
-            self.second_source_item.setVisible(False)
-            self.result_item.setVisible(False)
-            if self._hold_preview_mode == "confidence_source" and not self._hold_preview_pixmap.isNull():
-                self.hold_preview_item.setPixmap(self._hold_preview_pixmap)
-                self.hold_preview_item.setVisible(True)
-                self.hold_preview_item.setOpacity(1.0)
-            else:
-                self.hold_preview_item.setVisible(False)
-                return
-        self.hold_preview_item.setVisible(False)
-        grid_details = self._selected_result_kind() == "grid_cell_defects"
-        self.original_item.setVisible(self.original_visible.isChecked())
-        self.original_item.setOpacity(self.original_opacity.value() / 100.0)
-        self.first_source_item.setVisible(self.first_source_visible.isChecked())
-        self.first_source_item.setOpacity(self.first_source_opacity.value() / 100.0)
-        self.second_source_item.setVisible(False if grid_details else self.second_source_visible.isChecked())
-        self.second_source_item.setOpacity(self.second_source_opacity.value() / 100.0)
-        self.result_item.setVisible(self.result_visible.isChecked())
-        self.result_item.setOpacity(self.result_opacity.value() / 100.0)
-
     def _grayscale_to_pixmap(self, array: np.ndarray) -> QPixmap:
         contiguous = np.ascontiguousarray(np.asarray(array, dtype=np.uint8))
         height, width = contiguous.shape
@@ -3678,12 +4272,47 @@ class ExtendFrameDetailsDialog(QDialog):
         colors = dict(self._session_view_state.get("colors") or {})
         colors[key] = color.name(QColor.NameFormat.HexArgb)
         self._session_view_state["colors"] = colors
-        self._overlay_cache.clear()
-        self._derived_cache.clear()
+        self._invalidate_color_dependent_caches(key)
         self._update_color_button_styles()
         self._refresh_scene(reset_view=False)
         self._refresh_info()
         self._store_view_settings()
+
+    def _invalidate_color_dependent_caches(self, color_key: str) -> None:
+        """Drop overlays that embed the named color; keep attention and unrelated derived data."""
+
+        color_tokens = {
+            "first_mask": ("first", "source"),
+            "second_mask": ("second", "source"),
+            "difference_mask": ("diff", "difference"),
+            "boundary_mask": ("boundary",),
+            "input_output_mask": ("input_output",),
+        }.get(str(color_key), (str(color_key),))
+
+        def _matches(cache_key: object) -> bool:
+            if not isinstance(cache_key, tuple) or not cache_key:
+                return True
+            text = " ".join(str(part).lower() for part in cache_key)
+            if str(cache_key[0]).startswith("attention_issues"):
+                return False
+            return any(token in text for token in color_tokens)
+
+        self._overlay_cache = {key: value for key, value in self._overlay_cache.items() if not _matches(key)}
+        self._derived_cache = {key: value for key, value in self._derived_cache.items() if not _matches(key)}
+
+    def _invalidate_model_scoped_caches(self, model_id: str | None) -> None:
+        model_token = str(model_id or "")
+
+        def _matches(cache_key: object) -> bool:
+            if not isinstance(cache_key, tuple) or not cache_key:
+                return True
+            if str(cache_key[0]).startswith("attention_issues"):
+                return model_token in {str(part) for part in cache_key}
+            return model_token != "" and model_token in {str(part) for part in cache_key}
+
+        self._overlay_cache = {key: value for key, value in self._overlay_cache.items() if not _matches(key)}
+        self._derived_cache = {key: value for key, value in self._derived_cache.items() if not _matches(key)}
+        self._attention_issue_list_ids = None
 
     def _choose_named_color(self, key: str) -> None:
         initial = self._named_color(key)
@@ -3811,10 +4440,11 @@ class ExtendFrameDetailsDialog(QDialog):
         normalized = str(model_id or "") or None
         if normalized == self._preferred_model_id:
             return
+        previous = self._preferred_model_id
         self._preferred_model_id = normalized
         self._session_view_state["preferred_model_id"] = self._preferred_model_id
-        self._overlay_cache.clear()
-        self._derived_cache.clear()
+        self._invalidate_model_scoped_caches(previous)
+        self._invalidate_model_scoped_caches(normalized)
         self._apply_selected_model(self._selected_model_for_current_comparison())
         self._refresh_result_kind_options(self._selected_result_kind())
         self._refresh_scene(reset_view=False)
@@ -3830,12 +4460,6 @@ class ExtendFrameDetailsDialog(QDialog):
         callback = self._on_view_state_changed
         if callable(callback):
             callback(dict(self._session_view_state))
-
-    def _activate_context_hold(self) -> None:
-        if not self._base_hold_available():
-            return
-        self._hold_preview_mode = "base"
-        self._activate_base_hold()
 
 
 # Backward-compatible alias for legacy lite imports.

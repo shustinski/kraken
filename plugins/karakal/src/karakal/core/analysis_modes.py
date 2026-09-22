@@ -17,6 +17,7 @@ SINGLE_RESULT_RISK_DISPLAY_KEYS: tuple[str, ...] = (
     "mask_structure_risk",
     "batch_outlier_risk",
     "source_alignment_risk",
+    "source_mask_agreement_risk",
     "confidence_risk",
 )
 

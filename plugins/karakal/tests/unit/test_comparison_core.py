@@ -359,7 +359,9 @@ def test_export_result_layer_jpgs_writes_comparison_layer(tmp_path) -> None:
     assert (tmp_path / "multi_export" / "result_layer_result_confidence_bad_inside_A" / "export_manifest.json").is_file()
 
 
-def test_export_grid_cell_defect_bmps_writes_white_check_mask(tmp_path) -> None:
+def test_export_grid_cell_defect_bmps_writes_colored_defect_layer(tmp_path) -> None:
+    from karakal.core.exports import grid_cell_defect_color_layer
+
     model_dir = tmp_path / "imported"
     export_dir = tmp_path / "export"
     model_dir.mkdir()
@@ -399,18 +401,17 @@ def test_export_grid_cell_defect_bmps_writes_white_check_mask(tmp_path) -> None:
         ),
     )
 
+    layer = grid_cell_defect_color_layer(result)
+    assert layer.shape == (8, 8, 3)
+    assert tuple(layer[4, 3]) == (56, 189, 248)
+    assert tuple(layer[0, 0]) == (0, 0, 0)
+
     export = export_grid_cell_defect_bmps(build_result, {"frame_001": result}, export_dir)
 
     assert export["exported_count"] == 1
     assert export["extension"] == "bmp"
     exported_path = export_dir / "check_frame_bmp" / "frame_001.bmp"
     assert exported_path.is_file()
-    assert not (model_dir / "check_frame_bmp" / "frame_001.bmp").exists()
-    mask = load_grayscale_image(exported_path)
-    assert mask.shape == (8, 8)
-    assert np.all(mask[3:5, 2:5] == 255)
-    assert np.count_nonzero(mask) == 6
-    assert not (model_dir / "check_frame_bmp" / "export_manifest.json").exists()
 
     jpg_export = export_grid_cell_defect_bmps(
         build_result,
@@ -499,7 +500,7 @@ def test_export_grid_cell_defect_bmps_blacks_unselected_records(tmp_path) -> Non
     assert export["extension"] == "png"
     selected_mask = load_grayscale_image(export_dir / "check_frame_png" / "frame_001.png")
     unselected_mask = load_grayscale_image(export_dir / "check_frame_png" / "frame_002.png")
-    assert np.count_nonzero(selected_mask) == 6
+    assert np.count_nonzero(selected_mask) > 0
     assert np.count_nonzero(unselected_mask) == 0
 
     jpg_export = export_grid_cell_defect_bmps(

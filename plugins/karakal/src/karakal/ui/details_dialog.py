@@ -590,7 +590,10 @@ class ExtendFrameDetailsDialog(QDialog):
         self.hold_preview_item.setPixmap(QPixmap())
         self._hold_preview_pixmap = QPixmap()
         if was_grid_model_hold:
-            self.first_source_item.setPixmap(QPixmap())
+            if self._grid_model_output_layer_available():
+                self.first_source_item.setPixmap(self._grid_model_output_pixmap())
+            else:
+                self.first_source_item.setPixmap(QPixmap())
         self._update_layer_states()
 
     def _legacy_update_frame_id_value(self) -> None:
@@ -1404,8 +1407,15 @@ class ExtendFrameDetailsDialog(QDialog):
             return cached
         if model_id is None:
             return None
-        model_probabilities = self._payload.get("model_probabilities") or {}
-        model_probability = model_probabilities.get(model_id)
+        # Prefer uploaded confidence JPEG probabilities; mask soft-map is only a fallback.
+        model_probability = None
+        if self._model_confidence_output_available(model_id):
+            output_probabilities = self._payload.get("model_output_probabilities") or {}
+            if isinstance(output_probabilities, dict):
+                model_probability = output_probabilities.get(model_id)
+        if model_probability is None:
+            model_probabilities = self._payload.get("model_probabilities") or {}
+            model_probability = model_probabilities.get(model_id)
         if model_probability is None:
             return None
         probability = np.clip(np.asarray(model_probability, dtype=np.float32), 0.0, 1.0)
@@ -1743,9 +1753,41 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
+    def _confidence_source_grayscale(self, model_id: str | None) -> np.ndarray | None:
+        """Return the uploaded confidence JPEG as grayscale, when available."""
+
+        if model_id is None:
+            return None
+        cache_key = ("confidence_source_gray", model_id)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+        values: np.ndarray | None = None
+        if self._model_confidence_output_available(model_id):
+            output_probabilities = self._payload.get("model_output_probabilities") or {}
+            if isinstance(output_probabilities, dict) and model_id in output_probabilities:
+                candidate = np.asarray(output_probabilities.get(model_id), dtype=np.float32)
+                if candidate.ndim == 2 and candidate.size > 0:
+                    values = np.clip(np.rint(np.clip(candidate, 0.0, 1.0) * 255.0), 0, 255).astype(np.uint8)
+        if values is None:
+            path_text = str((getattr(self._record, "model_prob_paths", {}) or {}).get(model_id) or "")
+            if path_text:
+                try:
+                    values = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
+                except (OSError, TypeError, ValueError, RuntimeError) as error:
+                    _LOGGER.warning("Could not load confidence source %s: %s", path_text, error)
+                    values = None
+        if values is None or values.ndim != 2 or values.size == 0:
+            return None
+        base = self._base_array()
+        if tuple(values.shape) != tuple(base.shape):
+            values = np.asarray(resize_grayscale_image(values, base.shape), dtype=np.uint8)
+        self._derived_cache[cache_key] = values
+        return values
+
     def _confidence_overlay_pixmap(self, model_id: str | None) -> QPixmap:
         crop_rect = None
-        cache_key = ("confidence_frame_overlay", model_id, None)
+        cache_key = ("confidence_frame_overlay", model_id, "source_jpeg" if self._model_confidence_output_available(model_id) else "derived")
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1756,6 +1798,12 @@ class ExtendFrameDetailsDialog(QDialog):
             if not confidence_pixmap.isNull():
                 self._overlay_cache[cache_key] = confidence_pixmap
                 return confidence_pixmap
+        # Show the uploaded confidence JPEG as-is when present (not a binary mask proxy).
+        source_gray = self._confidence_source_grayscale(model_id)
+        if source_gray is not None:
+            pixmap = self._grayscale_to_pixmap(source_gray)
+            self._overlay_cache[cache_key] = pixmap
+            return pixmap
         render_data = self._polygon_confidence_render_data(model_id)
         if render_data is None:
             return QPixmap()
@@ -2115,7 +2163,10 @@ class ExtendFrameDetailsDialog(QDialog):
         self.original_item.setVisible(self.original_visible.isChecked())
         self.original_item.setOpacity(self.original_opacity.value() / 100.0)
         if grid_details:
-            self.first_source_item.setVisible(False)
+            show_model = self._grid_model_output_layer_available() and self.first_source_visible.isChecked()
+            self.first_source_item.setVisible(show_model)
+            if show_model:
+                self.first_source_item.setOpacity(self.first_source_opacity.value() / 100.0)
             show_confidence = self._grid_confidence_available() and self.second_source_visible.isChecked()
             self.second_source_item.setVisible(show_confidence)
             if show_confidence:
@@ -2450,9 +2501,10 @@ class ExtendFrameDetailsDialog(QDialog):
             return cached
         if path_text:
             try:
-                values = load_grayscale_image(Path(path_text))
-                values = np.asarray(values, dtype=np.uint8)
-                if values.ndim == 2 and values.size > 0 and tuple(values.shape) == (height, width):
+                values = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
+                if values.ndim == 2 and values.size > 0:
+                    if tuple(values.shape) != (height, width):
+                        values = np.asarray(resize_grayscale_image(values, (height, width)), dtype=np.uint8)
                     self._derived_cache[cache_key] = values
                     return values
             except (OSError, TypeError, ValueError, RuntimeError) as error:
@@ -2530,23 +2582,20 @@ class ExtendFrameDetailsDialog(QDialog):
         result = self._grid_cell_analysis_result()
         width = max(1, int(getattr(result, "image_width", 0) or 1))
         height = max(1, int(getattr(result, "image_height", 0) or 1))
-        cache_key = ("grid_confidence_overlay", model_id, path_text, width, height)
+        cache_key = ("grid_confidence_overlay", model_id, path_text, width, height, "source_jpeg")
         cached = self._overlay_cache.get(cache_key)
         if isinstance(cached, QPixmap) and not cached.isNull():
             return cached
-        probability = self._grid_confidence_probability_map()
-        if probability is None:
-            return QPixmap()
-        red, green, blue = self._confidence_color_arrays(probability)
-        alpha = np.clip(np.round(40.0 + 200.0 * probability), 0.0, 255.0).astype(np.uint8)
-        support = probability > 0.02
-        rgba = np.zeros((height, width, 4), dtype=np.uint8)
-        rgba[..., 0][support] = red[support]
-        rgba[..., 1][support] = green[support]
-        rgba[..., 2][support] = blue[support]
-        rgba[..., 3][support] = alpha[support]
-        image = QImage(rgba.data, width, height, int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
-        pixmap = QPixmap.fromImage(image)
+        # Prefer the uploaded confidence JPEG grayscale over a false-color/binary proxy.
+        source_gray = self._confidence_source_grayscale(model_id) if model_id else None
+        if source_gray is None:
+            probability = self._grid_confidence_probability_map()
+            if probability is None:
+                return QPixmap()
+            source_gray = np.clip(np.rint(probability * 255.0), 0, 255).astype(np.uint8)
+        if tuple(source_gray.shape) != (height, width):
+            source_gray = np.asarray(resize_grayscale_image(source_gray, (height, width)), dtype=np.uint8)
+        pixmap = self._grayscale_to_pixmap(source_gray)
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
@@ -2558,6 +2607,30 @@ class ExtendFrameDetailsDialog(QDialog):
         if mask_paths:
             return str(next(iter(mask_paths.values())) or "")
         return ""
+
+    def _grid_model_output_layer_available(self) -> bool:
+        """True when NN output should appear as its own details layer (not only as the base)."""
+
+        path_text = self._grid_model_output_path()
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        source_grays = self._payload.get("model_source_grays") or {}
+        has_payload_gray = bool(
+            model_id and isinstance(source_grays, dict) and model_id in source_grays
+        )
+        if not path_text and not has_payload_gray:
+            return False
+        if self._grid_has_original():
+            return True
+        # Without an original photo the base layer already shows the model output — skip duplicate.
+        base = str(self._grid_inspection_source_path or "")
+        if not path_text:
+            return False
+        if not base:
+            return True
+        try:
+            return Path(base).resolve() != Path(path_text).resolve()
+        except OSError:
+            return base != path_text
 
     def _grid_model_output_array(self) -> np.ndarray:
         """Grayscale neural-network output aligned to the grid inspection frame size."""
@@ -3085,8 +3158,9 @@ class ExtendFrameDetailsDialog(QDialog):
     def _set_grid_detail_layer_rows(self, grid_details: bool) -> None:
         self.original_layer_title.setVisible(True)
         self.original_layer_row.setVisible(True)
-        self.first_source_layer_title.setVisible(not bool(grid_details))
-        self.first_source_layer_row.setVisible(not bool(grid_details))
+        show_grid_model = bool(grid_details) and self._grid_model_output_layer_available()
+        self.first_source_layer_title.setVisible(show_grid_model or not bool(grid_details))
+        self.first_source_layer_row.setVisible(show_grid_model or not bool(grid_details))
         self.result_layer_title.setVisible(True)
         self.result_layer_row.setVisible(True)
         show_grid_confidence = bool(grid_details) and self._grid_confidence_available()
@@ -3100,6 +3174,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 self.original_layer_title.setText(
                     self._model_display_name(model_id) if model_id else self._t("details.model_output_layer")
                 )
+            self.first_source_layer_title.setText(self._t("details.model_output_layer"))
             self.second_source_layer_title.setText(self._t("details.grid_confidence_layer"))
             self.result_layer_title.setText(self._t("details.grid_cell_defects"))
             self.first_mask_color_button.setVisible(False)
@@ -3503,7 +3578,10 @@ class ExtendFrameDetailsDialog(QDialog):
         mode = self._current_operation_mode()
         prefer_grayscale = self._selected_result_kind() == "diff" and mode == ComparisonMode.GRAYSCALE_DIFF
         if grid_details:
-            self.first_source_item.setPixmap(QPixmap())
+            if self._grid_model_output_layer_available():
+                self.first_source_item.setPixmap(self._grid_model_output_pixmap())
+            else:
+                self.first_source_item.setPixmap(QPixmap())
             if self._grid_confidence_available():
                 self.second_source_item.setPixmap(self._grid_confidence_overlay_pixmap())
             else:

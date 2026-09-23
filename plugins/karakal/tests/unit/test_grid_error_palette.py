@@ -23,3 +23,9 @@ def test_grid_detail_overlay_uses_the_selectable_error_palette() -> None:
         actual = ExtendFrameDetailsDialog._grid_cell_color(None, cell)
 
         assert actual.name() == grid_inspection_error_type_color(error_type).name()
+
+
+def test_edge_clipped_color_wins_over_broken_geometry() -> None:
+    cell = SimpleNamespace(reasons=("broken_geometry", "edge_clipped_cell"), status="broken")
+    actual = ExtendFrameDetailsDialog._grid_cell_color(None, cell)
+    assert actual.name() == grid_inspection_error_type_color("edge_clipped_cell").name()

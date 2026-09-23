@@ -572,6 +572,23 @@ class KarakalWidget(QWidget):
             checkbox.setIcon(grid_inspection_error_type_icon(error_type))
             checkbox.setChecked(str(error_type) in GRID_INSPECTION_DEFAULT_ERROR_TYPES)
             self.grid_error_type_checks[str(error_type)] = checkbox
+        self.grid_layer_compute_checks: dict[str, QCheckBox] = {}
+        for layer_key, label_key in (
+            ("confidence", "grid_layer.confidence"),
+            ("binary", "grid_layer.binary"),
+            ("comparison", "grid_layer.comparison"),
+        ):
+            checkbox = QCheckBox(self._t(label_key), self)
+            checkbox.setChecked(True)
+            self.grid_layer_compute_checks[str(layer_key)] = checkbox
+        self.grid_layer_display_combo = _NoWheelComboBox(self)
+        for layer_key, label_key in (
+            ("confidence", "grid_layer.confidence"),
+            ("binary", "grid_layer.binary"),
+            ("comparison", "grid_layer.comparison"),
+        ):
+            self.grid_layer_display_combo.addItem(self._t(label_key), layer_key)
+        self.grid_layer_display_combo.setCurrentIndex(self.grid_layer_display_combo.findData("confidence"))
         self.metric_group_combo = _NoWheelComboBox(self)
         for label, key in MATRIX_METRIC_GROUP_OPTIONS:
             self.metric_group_combo.addItem(self._t(label), key)
@@ -1630,6 +1647,19 @@ class KarakalWidget(QWidget):
         grid_tuning_layout.setContentsMargins(8, 8, 8, 8)
         grid_tuning_layout.setSpacing(8)
         grid_tuning_layout.addWidget(self._grid_reference_frame_row)
+        self._grid_layer_compute_title = QLabel(self._t("grid_tuning.compute_layers"), self._grid_inspection_tuning_group)
+        self._grid_layer_compute_title.setWordWrap(True)
+        grid_tuning_layout.addWidget(self._grid_layer_compute_title)
+        for layer_key in ("confidence", "binary", "comparison"):
+            checkbox = self.grid_layer_compute_checks.get(str(layer_key))
+            if checkbox is not None:
+                checkbox.setParent(self._grid_inspection_tuning_group)
+                grid_tuning_layout.addWidget(checkbox)
+        self._grid_layer_display_row = self._build_setting_row(
+            self._t("grid_tuning.display_layer"),
+            self.grid_layer_display_combo,
+        )
+        grid_tuning_layout.addWidget(self._grid_layer_display_row)
         self._grid_error_type_checks_title = QLabel(self._t("grid_tuning.enabled_errors"), self._grid_inspection_tuning_group)
         self._grid_error_type_checks_title.setWordWrap(True)
         grid_tuning_layout.addWidget(self._grid_error_type_checks_title)
@@ -1695,12 +1725,27 @@ class KarakalWidget(QWidget):
             self._grid_inspection_tuning_group.setTitle(self._t("grid_tuning.group"))
             if hasattr(self, "_grid_error_type_checks_title"):
                 self._grid_error_type_checks_title.setText(self._t("grid_tuning.enabled_errors"))
+            if hasattr(self, "_grid_layer_compute_title"):
+                self._grid_layer_compute_title.setText(self._t("grid_tuning.compute_layers"))
+            for layer_key, label_key in (
+                ("confidence", "grid_layer.confidence"),
+                ("binary", "grid_layer.binary"),
+                ("comparison", "grid_layer.comparison"),
+            ):
+                checkbox = getattr(self, "grid_layer_compute_checks", {}).get(str(layer_key))
+                if checkbox is not None:
+                    checkbox.setText(self._t(label_key))
+                if hasattr(self, "grid_layer_display_combo"):
+                    index = self.grid_layer_display_combo.findData(layer_key)
+                    if index >= 0:
+                        self.grid_layer_display_combo.setItemText(index, self._t(label_key))
             for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
                 checkbox = getattr(self, "grid_error_type_checks", {}).get(str(error_type))
                 if checkbox is not None:
                     checkbox.setText(self._t(label_key))
             grid_tuning_labels = {
                 "_grid_reference_frame_row": "grid_reference.label",
+                "_grid_layer_display_row": "grid_tuning.display_layer",
             }
             for row_name, label_key in grid_tuning_labels.items():
                 label = getattr(getattr(self, row_name, None), "_title_label", None)
@@ -2076,6 +2121,9 @@ class KarakalWidget(QWidget):
         self.grid_inspection_error_list.itemActivated.connect(self._presenter._on_grid_inspection_error_item_clicked)
         self.grid_reference_frame_select_button.clicked.connect(self._presenter._on_grid_reference_select_requested)
         self.grid_reference_frame_clear_button.clicked.connect(self._presenter._on_grid_reference_clear_requested)
+        for checkbox in self.grid_layer_compute_checks.values():
+            checkbox.toggled.connect(self._presenter._on_grid_layer_compute_selection_changed)
+        self.grid_layer_display_combo.currentIndexChanged.connect(self._presenter._on_grid_layer_display_selection_changed)
         for _metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "binClicked"):
                 card.binClicked.connect(

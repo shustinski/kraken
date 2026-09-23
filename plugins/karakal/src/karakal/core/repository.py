@@ -538,6 +538,7 @@ from .exports import (
     export_result_layer_jpgs,
     export_result_layers_jpgs,
     grid_cell_defect_check_mask,
+    grid_cell_defect_color_layer,
     grid_cell_presence_mask,
 )
 
@@ -749,6 +750,7 @@ __all__ = [
     "extract_frame_id",
     "extract_original_frame_features",
     "grid_cell_defect_check_mask",
+    "grid_cell_defect_color_layer",
     "grid_cell_presence_mask",
     "hashlib",
     "iter_image_paths",

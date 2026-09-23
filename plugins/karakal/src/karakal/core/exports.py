@@ -696,6 +696,61 @@ def grid_cell_defect_check_mask(
     return mask
 
 
+def _grid_defect_reason_rgb(reasons: tuple[str, ...] | list[str], *, status: str = "") -> tuple[int, int, int]:
+    """Map defect reasons to the stable palette used by the UI (color encodes defect type)."""
+
+    from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS, GRID_INSPECTION_ERROR_TYPE_OPTIONS
+
+    reason_set = {str(reason) for reason in reasons if str(reason)}
+    for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
+        if str(error_type) in reason_set:
+            hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get(str(error_type), "#94a3b8")
+            break
+    else:
+        if str(status) == "suspicious":
+            hex_color = "#fbbf24"
+        elif str(status) == "artifact":
+            hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get("small_artifact", "#ec4899")
+        else:
+            hex_color = "#94a3b8"
+    value = str(hex_color).lstrip("#")
+    if len(value) != 6:
+        return (148, 163, 184)
+    return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+def grid_cell_defect_color_layer(
+    result: GridFrameAnalysisResult,
+    *,
+    enabled_reason_types: tuple[str, ...] | list[str] | set[str] | None = None,
+) -> np.ndarray:
+    """Render defects as an opaque RGB layer: color identifies the defect type for grid overlay."""
+
+    height = max(1, int(getattr(result, "image_height", 0) or 1))
+    width = max(1, int(getattr(result, "image_width", 0) or 1))
+    layer = np.zeros((height, width, 3), dtype=np.uint8)
+    enabled_set = (
+        None if enabled_reason_types is None else {str(reason) for reason in enabled_reason_types if str(reason)}
+    )
+    for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ():
+        if str(getattr(cell, "status", "") or "") == "normal":
+            continue
+        reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()) if str(reason))
+        if enabled_set is not None and reasons and not any(reason in enabled_set for reason in reasons):
+            continue
+        x = max(0, min(width - 1, int(getattr(cell, "left", 0))))
+        y = max(0, min(height - 1, int(getattr(cell, "top", 0))))
+        w = max(1, int(getattr(cell, "width", 1)))
+        h = max(1, int(getattr(cell, "height", 1)))
+        x1 = min(width, x + w)
+        y1 = min(height, y + h)
+        if x1 <= x or y1 <= y:
+            continue
+        color = _grid_defect_reason_rgb(reasons, status=str(getattr(cell, "status", "") or ""))
+        layer[y:y1, x:x1] = color
+    return layer
+
+
 def grid_cell_presence_mask(result: GridFrameAnalysisResult) -> np.ndarray:
     """Render every detected grid cell in white on a black background."""
 
@@ -767,7 +822,7 @@ def export_grid_cell_defect_bmps(
     progress_callback=None,
     cancel_check=None,
 ) -> dict[str, object]:
-    """Export computed grid-cell error highlights as black/white masks into the export folder."""
+    """Export grid-cell defects as RGB frames where color encodes the defect type."""
 
     payloads = {str(key): value for key, value in (results_by_key or {}).items()}
     qt_format, extension = _normalize_grid_check_export_format(image_format)
@@ -816,11 +871,11 @@ def export_grid_cell_defect_bmps(
             if render_key_set is not None and record_key not in render_key_set:
                 height = max(1, int(getattr(result, "image_height", 0) or 1))
                 width = max(1, int(getattr(result, "image_width", 0) or 1))
-                mask = np.zeros((height, width), dtype=np.uint8)
+                layer = np.zeros((height, width, 3), dtype=np.uint8)
             else:
-                mask = grid_cell_defect_check_mask(result, enabled_reason_types=enabled_reason_types)
+                layer = grid_cell_defect_color_layer(result, enabled_reason_types=enabled_reason_types)
             quality = 100 if qt_format == "JPG" else -1
-            if not _grayscale_array_to_qimage(mask).save(str(target_path), qt_format, quality):
+            if not _rgb_array_to_qimage(layer).save(str(target_path), qt_format, quality):
                 errors.append(f"{frame_name}: failed to save {qt_format}")
                 continue
             exported.append(

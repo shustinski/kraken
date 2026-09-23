@@ -250,6 +250,66 @@ class KarakalPresenter(QObject):
                 selected.append(str(error_type))
         return tuple(selected)
 
+    def _selected_grid_compute_layers(self) -> tuple[str, ...]:
+        keys = self._grid_inspection_layer_keys()
+        checks = getattr(self, "grid_layer_compute_checks", {}) or {}
+        selected: list[str] = []
+        for layer_key in keys:
+            checkbox = checks.get(str(layer_key)) if isinstance(checks, dict) else None
+            if checkbox is None:
+                selected.append(str(layer_key))
+                continue
+            try:
+                if checkbox.isChecked():
+                    selected.append(str(layer_key))
+            except Exception:
+                selected.append(str(layer_key))
+        return tuple(selected) or ("confidence",)
+
+    def _selected_grid_display_layer(self) -> str:
+        compute_layers = self._selected_grid_compute_layers()
+        combo = getattr(self, "grid_layer_display_combo", None)
+        preferred = ""
+        if combo is not None:
+            try:
+                preferred = str(combo.currentData() or "")
+            except Exception:
+                preferred = ""
+        if preferred in compute_layers:
+            return preferred
+        return compute_layers[0] if compute_layers else "confidence"
+
+    def _on_grid_layer_compute_selection_changed(self, *_args) -> None:
+        checks = getattr(self, "grid_layer_compute_checks", {}) or {}
+        selected = self._selected_grid_compute_layers()
+        if not selected and isinstance(checks, dict):
+            fallback = checks.get("confidence") or next(iter(checks.values()), None)
+            if fallback is not None:
+                blocker = QSignalBlocker(fallback)
+                fallback.setChecked(True)
+                del blocker
+                selected = self._selected_grid_compute_layers()
+        display = self._selected_grid_display_layer()
+        combo = getattr(self, "grid_layer_display_combo", None)
+        if combo is not None and str(combo.currentData() or "") != display:
+            index = combo.findData(display)
+            if index >= 0:
+                blocker = QSignalBlocker(combo)
+                combo.setCurrentIndex(index)
+                del blocker
+
+    def _on_grid_layer_display_selection_changed(self, *_args) -> None:
+        combo = getattr(self, "grid_layer_display_combo", None)
+        checks = getattr(self, "grid_layer_compute_checks", {}) or {}
+        if combo is None or not isinstance(checks, dict):
+            return
+        layer_key = str(combo.currentData() or "")
+        checkbox = checks.get(layer_key)
+        if checkbox is not None and not checkbox.isChecked():
+            blocker = QSignalBlocker(checkbox)
+            checkbox.setChecked(True)
+            del blocker
+
     @staticmethod
     def _normalize_grid_error_types(value: object) -> tuple[str, ...]:
         allowed = tuple(str(error_type) for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS)
@@ -272,6 +332,8 @@ class KarakalPresenter(QObject):
     def _grid_inspection_config_payload(self) -> dict[str, object]:
         payload: dict[str, object] = dict(GRID_INSPECTION_FIXED_TUNING)
         payload["enabled_error_types"] = list(self._selected_grid_error_types())
+        payload["requested_layers"] = list(self._selected_grid_compute_layers())
+        payload["display_layer"] = self._selected_grid_display_layer()
         return payload
 
     def _set_grid_inspection_config_controls(self, payload: dict[str, object] | None) -> None:
@@ -286,6 +348,42 @@ class KarakalPresenter(QObject):
                 blocker = QSignalBlocker(checkbox)
                 checkbox.setChecked(str(error_type) in enabled_error_types)
                 del blocker
+        requested_layers = self._normalize_grid_layers(values.get("requested_layers"))
+        layer_checks = getattr(self, "grid_layer_compute_checks", {}) or {}
+        if isinstance(layer_checks, dict) and layer_checks:
+            for layer_key in self._grid_inspection_layer_keys():
+                checkbox = layer_checks.get(str(layer_key))
+                if checkbox is None:
+                    continue
+                blocker = QSignalBlocker(checkbox)
+                checkbox.setChecked(str(layer_key) in requested_layers)
+                del blocker
+        display_layer = str(values.get("display_layer") or "")
+        if display_layer not in requested_layers:
+            display_layer = requested_layers[0] if requested_layers else "confidence"
+        combo = getattr(self, "grid_layer_display_combo", None)
+        if combo is not None:
+            index = combo.findData(display_layer)
+            if index >= 0:
+                blocker = QSignalBlocker(combo)
+                combo.setCurrentIndex(index)
+                del blocker
+
+    @staticmethod
+    def _normalize_grid_layers(value: object) -> tuple[str, ...]:
+        allowed = ("confidence", "binary", "comparison")
+        allowed_set = set(allowed)
+        if value is None:
+            return allowed
+        if isinstance(value, str):
+            raw_values = (value,)
+        else:
+            try:
+                raw_values = tuple(value)  # type: ignore[arg-type]
+            except Exception:
+                return allowed
+        selected = tuple(layer for layer in allowed if layer in {str(item) for item in raw_values} and layer in allowed_set)
+        return selected or ("confidence",)
 
     @staticmethod
     def _grid_damage_config_from_payload(payload: dict[str, object] | None) -> GridDamageAnalysisConfig:
@@ -308,8 +406,9 @@ class KarakalPresenter(QObject):
             min_cell_size=2,
             filled_ratio_delta=max(0.04, 0.35 - 0.26 * fill - 0.08 * strict_boost),
             bad_score_threshold=max(0.30, min(0.98, threshold - 0.10 * strict_boost)),
-            merged_size_ratio=max(1.10, 1.87 - 0.58 * merge - 0.14 * strict_boost),
-            merged_area_ratio=max(1.10, 1.86 - 0.62 * merge - 0.14 * strict_boost),
+            # Fixed@100 → ~1.40 / 1.37: still strict, but avoids mild oversize → merged FP.
+            merged_size_ratio=max(1.10, 1.87 - 0.40 * merge - 0.14 * strict_boost),
+            merged_area_ratio=max(1.10, 1.86 - 0.42 * merge - 0.14 * strict_boost),
             enabled_reason_types=enabled_error_types,
         ).normalized()
 
@@ -356,8 +455,28 @@ class KarakalPresenter(QObject):
         state.grid_inspection_layer = normalized
         layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
         state.grid_inspection_payload_by_key = dict(layers.get(normalized, {}) or {})
+        worker_busy = self._worker_thread is not None and self._worker_kind == "grid_inspection"
+        if worker_busy:
+            self._refresh_grid_inspection_errors_panel(state)
+            self._schedule_metric_histogram_update(state)
+            return
+        self._grid_layer_switch_generation = int(getattr(self, "_grid_layer_switch_generation", 0) or 0) + 1
+        generation = self._grid_layer_switch_generation
+        self._show_progress_bar(visible=True, format_text=self._t("grid_layer.switching"))
+        QApplication.processEvents()
+        QTimer.singleShot(0, lambda s=state, g=generation: self._finish_grid_inspection_layer_switch(s, g))
+
+    def _finish_grid_inspection_layer_switch(self, state: ExtendMatrixTabState, generation: int) -> None:
+        if int(getattr(self, "_grid_layer_switch_generation", 0) or 0) != int(generation):
+            return
+        if state.widget not in self._tab_states or self._current_tab_state() is not state:
+            if self._worker_thread is None:
+                self._show_progress_bar(visible=False)
+            return
         self._refresh_grid_inspection_errors_panel(state)
         self._schedule_metric_histogram_update(state)
+        if self._worker_thread is None:
+            self._show_progress_bar(visible=False)
 
     def _sync_grid_inspection_layer_tabs(self, state: ExtendMatrixTabState | None) -> None:
         tabs = getattr(self, "grid_inspection_layer_tabs", None)
@@ -369,6 +488,8 @@ class KarakalPresenter(QObject):
             layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
             available = {key: bool(layers.get(key)) for key in keys}
         elif state is not None:
+            config = getattr(state, "grid_inspection_config_payload", {}) or {}
+            requested = self._normalize_grid_layers(config.get("requested_layers"))
             model_id = self._grid_inspection_model_id_for_state(state)
             has_binary = bool(
                 model_id
@@ -382,9 +503,9 @@ class KarakalPresenter(QObject):
                     bool((record.model_prob_paths or {}).get(str(model_id))) for record in state.build_result.records
                 )
             )
-            available["confidence"] = has_confidence or has_binary
-            available["binary"] = has_binary
-            available["comparison"] = has_binary and has_confidence
+            available["confidence"] = ("confidence" in requested) and (has_confidence or has_binary)
+            available["binary"] = ("binary" in requested) and has_binary
+            available["comparison"] = ("comparison" in requested) and has_binary and has_confidence
         if not any(available.values()):
             available["confidence"] = True
         for index, key in enumerate(keys):
@@ -398,7 +519,20 @@ class KarakalPresenter(QObject):
             current_key = next(key for key in keys if available[key])
             if state is not None:
                 state.grid_inspection_layer = current_key
-            tabs.setCurrentIndex(keys.index(current_key))
+        target_index = keys.index(current_key)
+        if tabs.currentIndex() != target_index:
+            blocker = QSignalBlocker(tabs)
+            tabs.setCurrentIndex(target_index)
+            del blocker
+        views = getattr(self._view, "grid_inspection_matrix_views", None)
+        if isinstance(views, dict) and current_key in views:
+            active_view = views[current_key]
+            self._view.grid_inspection_matrix_view = active_view
+            if "grid_inspection_matrix_view" in self.__dict__:
+                self.__dict__["grid_inspection_matrix_view"] = active_view
+            legend = getattr(self._view, "grid_inspection_legend", None)
+            if legend is not None and hasattr(active_view, "color_scale_info"):
+                legend.set_scale_info(active_view.color_scale_info())
 
     def _selected_comparison_target(self) -> ComparisonTarget:
         value = str(self.comparison_target_combo.currentData() or DEFAULT_COMPARISON_TARGET)
@@ -4345,6 +4479,11 @@ class KarakalPresenter(QObject):
         state.grid_inspection_results_ready = False
         state.grid_inspection_payload_by_key = {}
         state.grid_inspection_payloads_by_layer = {key: {} for key in self._grid_inspection_layer_keys()}
+        requested_layers = self._normalize_grid_layers(next_config.get("requested_layers"))
+        display_layer = str(next_config.get("display_layer") or "")
+        if display_layer not in requested_layers:
+            display_layer = requested_layers[0]
+        state.grid_inspection_layer = display_layer
         self._sync_grid_inspection_layer_tabs(state)
         for view in self._grid_inspection_views().values():
             view.set_grid_inspection_payloads({}, enabled=True)
@@ -4365,6 +4504,7 @@ class KarakalPresenter(QObject):
                 grid_config,
                 reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
+                requested_layers=requested_layers,
             )
         else:
             self._worker = GridInspectionWorker(

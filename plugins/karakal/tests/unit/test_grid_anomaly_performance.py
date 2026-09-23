@@ -23,9 +23,9 @@ GOLDEN_DIGESTS = (
     "1459a05912216239747feae38365d4d8f8402d878915f08515469d8bdb329e83",
     "f0e6cb5c973f719747009213a44668ea9da0902915c470db76cb61c666ca9360",
     "61f0338b714799f3eec395e617aa6267efdd435080d9ecb6717bf3a80f3693f8",
-    "a0f243616f7c2d38a8519d5d90735e519550e5c023e6bcb3e3bc1468e19128c7",
+    "2f000b3c87d88cd326e22bac843a9402095f90e8149c6ab8ac61ea0bf5001b00",
     "44621366b8f0fd75f9df0bdd93e1276ff919d874ba2cec41e47bba49df6eebed",
-    "666cd197ce437cfbce316b1c7966835b9de7d236a0e47b79bbc66cb0ed120a42",
+    "e2323740fe4e02eefefa4e1514efd3fbd6ce1b0885035e561e645bb672913fab",
     "1459a05912216239747feae38365d4d8f8402d878915f08515469d8bdb329e83",
     "1459a05912216239747feae38365d4d8f8402d878915f08515469d8bdb329e83",
 )
@@ -291,13 +291,13 @@ def test_binary_representation_accepts_filled_rectangular_cells(invert: bool) ->
     assert not any("filled_cell" in cell.reasons or "partial_filled_cell" in cell.reasons for cell in result.cells)
 
 
-def test_binary_standalone_flags_small_dirt_without_reference() -> None:
+def test_binary_standalone_flags_mid_dirt_as_suspicious_without_reference() -> None:
     image = _synthetic_binary_grid_frame()
-    # Compact dirt blobs that should be artifacts even without a reference frame.
-    cv2.rectangle(image, (40, 40), (46, 46), 255, -1)
-    cv2.rectangle(image, (900, 600), (905, 607), 255, -1)
-    # Tiny few-pixel debris that previously fell under extraction floors.
+    # Mid-size inaccurate blob (~0.25 of a typical synthetic cell ~50px).
+    cv2.rectangle(image, (40, 40), (64, 64), 255, -1)
+    # Speckles must be ignored.
     cv2.rectangle(image, (512, 384), (514, 386), 255, -1)
+    cv2.rectangle(image, (900, 600), (902, 601), 255, -1)
     result = detect_grid_cell_anomalies(
         image,
         config=grid_anomaly.GridDamageAnalysisConfig(
@@ -308,13 +308,13 @@ def test_binary_standalone_flags_small_dirt_without_reference() -> None:
         ),
     )
     assert result.grid_detected
-    assert any("small_artifact" in cell.reasons for cell in result.cells)
-    # Good filled cells must remain normal.
-    assert result.bad_cells >= 1
+    dirt = [cell for cell in result.cells if "small_artifact" in cell.reasons]
+    assert dirt
+    assert all(cell.status == "suspicious" for cell in dirt)
     assert result.detected_cells >= 12 * 16
 
 
-def test_confidence_standalone_flags_tiny_debris_without_reference() -> None:
+def test_confidence_standalone_flags_mid_debris_as_suspicious() -> None:
     image = np.zeros((768, 1024), dtype=np.uint8)
     rows, cols = 8, 10
     cell_w = 1024 // (cols + 2)
@@ -325,10 +325,10 @@ def test_confidence_standalone_flags_tiny_debris_without_reference() -> None:
         for c in range(cols):
             x = margin_x + c * cell_w
             y = margin_y + r * cell_h
-            # Hollow outline cells typical for confidence maps.
             cv2.rectangle(image, (x + 2, y + 2), (x + cell_w - 3, y + cell_h - 3), 255, 2)
-    cv2.rectangle(image, (480, 360), (486, 366), 255, -1)
-    cv2.rectangle(image, (500, 370), (503, 373), 255, -1)
+    # Mid inaccurate blob vs tiny speck (placed in frame margin so contours stay separate).
+    cv2.rectangle(image, (10, 10), (34, 34), 255, -1)
+    cv2.rectangle(image, (40, 12), (42, 14), 255, -1)
     result = detect_grid_cell_anomalies(
         image,
         config=grid_anomaly.GridDamageAnalysisConfig(
@@ -339,8 +339,73 @@ def test_confidence_standalone_flags_tiny_debris_without_reference() -> None:
         ),
     )
     assert result.grid_detected
-    assert any("small_artifact" in cell.reasons for cell in result.cells)
+    dirt = [cell for cell in result.cells if "small_artifact" in cell.reasons]
+    assert dirt
+    assert any(cell.status == "suspicious" for cell in dirt)
     assert any(cell.status == "normal" for cell in result.cells)
+
+
+def test_speckle_dirt_is_ignored_on_binary_grid() -> None:
+    image = _synthetic_binary_grid_frame()
+    cv2.rectangle(image, (40, 40), (42, 41), 255, -1)
+    cv2.rectangle(image, (900, 600), (901, 601), 255, -1)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=3.0,
+            min_cell_size=2,
+            blur_radius=1,
+        ),
+    )
+    assert result.grid_detected
+    assert not any("small_artifact" in cell.reasons for cell in result.cells)
+
+
+def test_grainy_mass_without_cells_is_one_conductor_not_many_merged() -> None:
+    image = np.zeros((256, 256), dtype=np.uint8)
+    rng = np.random.default_rng(0)
+    # Dense grainy vertical band — no regular cell grid.
+    band = rng.random((220, 70)) > 0.45
+    image[18:238, 20:90] = np.where(band, 255, 0).astype(np.uint8)
+    # Speckles in empty space.
+    image[200, 200] = 255
+    image[210, 210] = 255
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=4.0,
+            min_cell_size=2,
+            blur_radius=1,
+            min_grid_candidate_cells=6,
+        ),
+    )
+    conductors = [cell for cell in result.cells if "conductor_residue" in cell.reasons]
+    merged = [cell for cell in result.cells if "merged_contour" in cell.reasons]
+    assert conductors
+    assert len(conductors) <= 3
+    assert not merged
+    assert max(cell.bbox[2] * cell.bbox[3] for cell in conductors) >= 70 * 100
+
+
+def test_collapse_adjacent_conductors_into_one_rectangle() -> None:
+    cells = [
+        grid_anomaly.GridCellAnalysisResult(
+            0, 0, (10, 10, 20, 18), (20.0, 19.0), 1, "artifact", 0.9, ("conductor_residue",)
+        ),
+        grid_anomaly.GridCellAnalysisResult(
+            1, 0, (28, 12, 22, 16), (39.0, 20.0), 2, "artifact", 0.88, ("conductor_residue",)
+        ),
+        grid_anomaly.GridCellAnalysisResult(
+            2, 0, (100, 100, 12, 12), (106.0, 106.0), 3, "normal", 0.0, ()
+        ),
+    ]
+    collapsed = grid_anomaly._collapse_conductor_regions(cells, median_width=12.0, median_height=12.0)
+    conductors = [cell for cell in collapsed if "conductor_residue" in cell.reasons]
+    assert len(conductors) == 1
+    assert conductors[0].bbox[2] >= 40
+    assert any(cell.status == "normal" for cell in collapsed)
 
 
 def test_binary_standalone_flags_wrong_aspect_geometry() -> None:
@@ -369,6 +434,122 @@ def test_binary_standalone_flags_wrong_aspect_geometry() -> None:
     assert any(
         "broken_geometry" in reasons or "small_artifact" in reasons for reasons in bad_reasons
     ), bad_reasons
+
+
+def test_binary_border_crop_is_edge_clipped_not_broken_geometry() -> None:
+    image = _synthetic_binary_grid_frame()
+    cell_w = 1024 // (16 + 2)
+    cell_h = 768 // (12 + 2)
+    margin_x = (1024 - 16 * cell_w) // 2
+    # Half-height cells glued to the top frame edge (typical crop).
+    for col in range(4, 10):
+        x = margin_x + col * cell_w
+        cv2.rectangle(image, (x + 2, 0), (x + cell_w - 3, cell_h // 2), 255, -1)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=4.0,
+            min_cell_size=3,
+            blur_radius=1,
+        ),
+    )
+    clipped = [cell for cell in result.cells if "edge_clipped_cell" in cell.reasons]
+    assert clipped
+    assert all("broken_geometry" not in cell.reasons for cell in clipped)
+    from karakal.core.exports import _grid_defect_reason_rgb
+    from karakal.ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS
+
+    rgb = _grid_defect_reason_rgb(clipped[0].reasons, status=clipped[0].status)
+    expected = GRID_INSPECTION_ERROR_TYPE_COLORS["edge_clipped_cell"].lstrip("#")
+    assert rgb == (int(expected[0:2], 16), int(expected[2:4], 16), int(expected[4:6], 16))
+
+
+def test_binary_irregular_mid_cell_is_broken_geometry() -> None:
+    image = _synthetic_binary_grid_frame()
+    cell_w = 1024 // (16 + 2)
+    cell_h = 768 // (12 + 2)
+    margin_x = (1024 - 16 * cell_w) // 2
+    margin_y = (768 - 12 * cell_h) // 2
+    x = margin_x + 7 * cell_w
+    y = margin_y + 5 * cell_h
+    cv2.rectangle(image, (x + 2, y + 2), (x + cell_w - 3, y + cell_h - 3), 0, -1)
+    # C-shaped / bitten occupant: clearly wrong geometry, still near slot size.
+    pts = np.array(
+        [
+            [x + 4, y + 4],
+            [x + cell_w - 6, y + 4],
+            [x + cell_w - 6, y + 14],
+            [x + 14, y + 14],
+            [x + 14, y + cell_h - 16],
+            [x + cell_w - 6, y + cell_h - 16],
+            [x + cell_w - 6, y + cell_h - 6],
+            [x + 4, y + cell_h - 6],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillPoly(image, [pts], 255)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=4.0,
+            min_cell_size=3,
+            blur_radius=1,
+        ),
+    )
+    assert any("broken_geometry" in cell.reasons for cell in result.cells), [
+        cell.reasons for cell in result.cells if cell.reasons
+    ]
+
+
+def test_binary_small_but_significant_dirt_is_flagged() -> None:
+    image = _synthetic_binary_grid_frame()
+    cell_w = 1024 // (16 + 2)
+    cell_h = 768 // (12 + 2)
+    # ~12% of a slot — below the old mid-dirt size, above speckles.
+    dirt = max(8, int(round(min(cell_w, cell_h) * 0.28)))
+    cv2.rectangle(image, (36, 36), (36 + dirt, 36 + dirt), 255, -1)
+    # True speckles must stay ignored.
+    cv2.rectangle(image, (900, 600), (901, 601), 255, -1)
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=3.0,
+            min_cell_size=2,
+            blur_radius=1,
+        ),
+    )
+    dirt_cells = [cell for cell in result.cells if "small_artifact" in cell.reasons]
+    assert dirt_cells
+    assert all(cell.status == "suspicious" for cell in dirt_cells)
+
+
+def test_binary_grainy_corner_dirt_is_flagged_despite_otsu_split() -> None:
+    """Dim/grainy corner debris must survive Otsu fragmentation (critical FP miss)."""
+
+    image = _synthetic_binary_grid_frame()
+    rng = np.random.default_rng(7)
+    # Compact grainy speck near the bottom-right (~critical dirt size), dimmer than cells.
+    ys, xs = np.mgrid[738:750, 990:1004]
+    mask = rng.random(ys.shape) > 0.35
+    image[ys, xs] = np.where(mask, rng.integers(140, 200, size=ys.shape, dtype=np.uint8), image[ys, xs])
+    result = detect_grid_cell_anomalies(
+        image,
+        config=grid_anomaly.GridDamageAnalysisConfig(
+            cell_representation="binary",
+            min_contour_area=3.0,
+            min_cell_size=2,
+            blur_radius=1,
+        ),
+    )
+    dirt = [
+        cell
+        for cell in result.cells
+        if "small_artifact" in cell.reasons and cell.bbox[0] >= 970 and cell.bbox[1] >= 720
+    ]
+    assert dirt, [(cell.bbox, cell.reasons) for cell in result.cells if cell.reasons]
 
 
 def test_binary_standalone_flags_stretched_slot_cell() -> None:

@@ -84,6 +84,7 @@ def _profiled_grid_sources_chunk(
     reference_profile: GridCellReferenceProfile | None,
     single_source_layer: str | None,
     performance: PerformanceConfig,
+    requested_layers: tuple[str, ...] | None = None,
 ) -> tuple[tuple[dict[str, dict[str, GridFrameAnalysisResult]], dict[str, str]], WorkerProfilePacket]:
     profiler = ProfilerRun("validation_grid_worker", performance)
     with (
@@ -100,6 +101,7 @@ def _profiled_grid_sources_chunk(
             use_cache,
             reference_profile=reference_profile,
             single_source_layer=single_source_layer,
+            requested_layers=requested_layers,
         )
     return result, profiler.worker_packet(
         f"pid-{os.getpid()}",
@@ -577,7 +579,7 @@ class GridInspectionWorker(WorkerBase):
 
 
 class PairedGridInspectionWorker(GridInspectionWorker):
-    """Compute all available grid matrices for one model layer."""
+    """Compute selected grid matrices for one model layer."""
 
     def __init__(
         self,
@@ -588,6 +590,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
         reference_profile: GridCellReferenceProfile | None = None,
         use_cache: bool = True,
         performance_config: PerformanceConfig | None = None,
+        requested_layers: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__(
             records,
@@ -597,6 +600,12 @@ class PairedGridInspectionWorker(GridInspectionWorker):
             performance_config=performance_config,
         )
         self._model_id = str(model_id)
+        layers = tuple(
+            str(layer)
+            for layer in (requested_layers or ("confidence", "binary", "comparison"))
+            if str(layer) in {"confidence", "binary", "comparison"}
+        )
+        self._requested_layers = layers or ("confidence", "binary", "comparison")
 
     def _paired_records(self) -> list[tuple[str, str, str]]:
         records: list[tuple[str, str, str]] = []
@@ -688,6 +697,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                 self._use_cache,
                 reference_profile=self._reference_profile,
                 single_source_layer=single_source_layer,
+                requested_layers=self._requested_layers,
             )
             completed = self._apply_pair_chunk_result(chunk, result, payloads, completed=completed, total=total)
         return completed
@@ -775,6 +785,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                                 self._reference_profile,
                                 single_source_layer,
                                 self._performance_config,
+                                self._requested_layers,
                             )
                         else:
                             future = executor.submit(
@@ -784,6 +795,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                                 self._use_cache,
                                 reference_profile=self._reference_profile,
                                 single_source_layer=single_source_layer,
+                                requested_layers=self._requested_layers,
                             )
                     except (OSError, RuntimeError) as error:
                         _LOGGER.warning("Could not submit paired grid batch; scheduling sequential fallback: %s", error)

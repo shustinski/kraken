@@ -124,6 +124,18 @@ def test_grid_analysis_tuning_is_fixed_and_not_exposed_to_operator(tmp_path, qtb
     assert {key: payload[key] for key, _value in GRID_INSPECTION_FIXED_TUNING} == dict(
         GRID_INSPECTION_FIXED_TUNING
     )
+    assert payload["requested_layers"] == ["confidence", "binary", "comparison"]
+    assert payload["display_layer"] == "confidence"
+    assert set(widget.grid_layer_compute_checks) == {"confidence", "binary", "comparison"}
+    assert all(checkbox.isChecked() for checkbox in widget.grid_layer_compute_checks.values())
+    assert widget.grid_layer_display_combo.currentData() == "confidence"
+
+    widget.grid_layer_compute_checks["comparison"].setChecked(False)
+    widget.grid_layer_compute_checks["binary"].setChecked(False)
+    widget.grid_layer_display_combo.setCurrentIndex(widget.grid_layer_display_combo.findData("binary"))
+    narrowed = widget._presenter._grid_inspection_config_payload()
+    assert narrowed["requested_layers"] == ["confidence", "binary"]
+    assert narrowed["display_layer"] == "binary"
 
     legacy_payload = {key: 0 for key, _value in GRID_INSPECTION_FIXED_TUNING}
     fixed_payload = dict(GRID_INSPECTION_FIXED_TUNING)
@@ -313,6 +325,7 @@ def test_grid_details_exposes_confidence_layer_when_uploaded(tmp_path, qtbot) ->
         result,
         session_view_state={"preferred_model_id": "model", "result_kind": "grid_cell_defects"},
         allowed_result_kinds=("grid_cell_defects",),
+        grid_inspection_source_path=str(confidence_path),
     )
     qtbot.addWidget(dialog)
     dialog._payload["model_confidence_output_available"] = {"model": True}
@@ -324,4 +337,82 @@ def test_grid_details_exposes_confidence_layer_when_uploaded(tmp_path, qtbot) ->
     assert not dialog.second_source_layer_row.isHidden()
     assert dialog.second_source_layer_title.text() == dialog._t("details.grid_confidence_layer")
     assert dialog.result_layer_title.text() == dialog._t("details.grid_cell_defects")
+    # Without an original photo the base already shows the model mask — no duplicate layer.
     assert dialog.first_source_layer_row.isHidden()
+
+
+def test_grid_details_exposes_model_output_layer_with_original(tmp_path, qtbot) -> None:
+    original_path = tmp_path / "original.png"
+    mask_path = tmp_path / "mask.png"
+    confidence_path = tmp_path / "confidence.png"
+    assert _grayscale_array_to_qimage(np.full((32, 32), 40, dtype=np.uint8)).save(str(original_path))
+    assert _grayscale_array_to_qimage(np.full((32, 32), 255, dtype=np.uint8)).save(str(mask_path))
+    assert _grayscale_array_to_qimage(np.full((32, 32), 180, dtype=np.uint8)).save(str(confidence_path))
+    record = FrameRecord(
+        "frame-1",
+        "Frame 1",
+        original_path=str(original_path),
+        model_mask_paths={"model": str(mask_path)},
+        model_prob_paths={"model": str(confidence_path)},
+    )
+    result = BuildResult(records=(record,), options=BuildOptions())
+    dialog = ExtendFrameDetailsDialog(
+        record,
+        result,
+        session_view_state={"preferred_model_id": "model", "result_kind": "grid_cell_defects"},
+        allowed_result_kinds=("grid_cell_defects",),
+        grid_inspection_source_path=str(original_path),
+    )
+    qtbot.addWidget(dialog)
+    dialog._payload["model_confidence_output_available"] = {"model": True}
+    dialog._payload["model_output_probabilities"] = {"model": np.full((32, 32), 0.7, dtype=np.float32)}
+    dialog._payload["model_source_grays"] = {"model": np.ones((32, 32), dtype=np.float32)}
+    dialog._refresh_result_kind_options("grid_cell_defects")
+    dialog._update_result_controls()
+    dialog._refresh_scene(reset_view=False)
+
+    assert dialog._grid_has_original()
+    assert dialog._grid_model_output_layer_available()
+    assert not dialog.first_source_layer_row.isHidden()
+    assert dialog.first_source_layer_title.text() == dialog._t("details.model_output_layer")
+    assert not dialog.second_source_layer_row.isHidden()
+    assert not dialog.first_source_item.pixmap().isNull()
+    assert dialog.first_source_item.isVisible()
+
+
+def test_confidence_overlay_prefers_uploaded_jpeg_grayscale(tmp_path, qtbot) -> None:
+    confidence = np.linspace(0, 255, 32 * 32, dtype=np.float32).reshape(32, 32)
+    confidence_path = tmp_path / "confidence.png"
+    image = _grayscale_array_to_qimage(np.clip(np.rint(confidence), 0, 255).astype(np.uint8))
+    assert image.save(str(confidence_path))
+    mask = np.zeros((32, 32), dtype=np.uint8)
+    mask[8:24, 8:24] = 255
+    mask_path = tmp_path / "mask.png"
+    assert _grayscale_array_to_qimage(mask).save(str(mask_path))
+    record = FrameRecord(
+        "frame-1",
+        "Frame 1",
+        model_mask_paths={"model": str(mask_path)},
+        model_prob_paths={"model": str(confidence_path)},
+    )
+    result = BuildResult(records=(record,), options=BuildOptions())
+    dialog = ExtendFrameDetailsDialog(
+        record,
+        result,
+        session_view_state={"preferred_model_id": "model"},
+    )
+    qtbot.addWidget(dialog)
+    dialog._payload["original_gray"] = np.zeros((32, 32), dtype=np.float32)
+    dialog._payload["model_masks"] = {"model": mask.astype(bool)}
+    dialog._payload["model_probabilities"] = {"model": (mask.astype(np.float32) / 255.0)}
+    dialog._payload["model_output_probabilities"] = {"model": (confidence / 255.0).astype(np.float32)}
+    dialog._payload["model_confidence_output_available"] = {"model": True}
+
+    pixmap = dialog._confidence_overlay_pixmap("model")
+    assert not pixmap.isNull()
+    assert pixmap.width() == 32 and pixmap.height() == 32
+    # Must come from uploaded confidence grayscale, not the binary mask.
+    source_gray = dialog._confidence_source_grayscale("model")
+    assert source_gray is not None
+    assert float(np.mean(source_gray)) > 10.0
+    assert float(np.std(source_gray)) > 10.0

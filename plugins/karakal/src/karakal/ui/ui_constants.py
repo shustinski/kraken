@@ -73,9 +73,10 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.partial_filled_cell", "partial_filled_cell"),
     ("grid_error.small_artifact", "small_artifact"),
     ("grid_error.conductor_residue", "conductor_residue"),
+    # Edge clip must win over broken_geometry when both fire (border crops look "broken").
+    ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
     ("grid_error.broken_geometry", "broken_geometry"),
     ("grid_error.merged_contour", "merged_contour"),
-    ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
     ("grid_error.confidence_only_cell", "confidence_only_cell"),
     ("grid_error.binary_only_cell", "binary_only_cell"),
     ("grid_error.geometry_mismatch", "geometry_mismatch"),

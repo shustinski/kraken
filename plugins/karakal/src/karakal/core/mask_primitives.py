@@ -202,10 +202,61 @@ def _transition_count(mask: np.ndarray) -> np.ndarray:
     return transitions
 
 
-def skeletonize(mask: np.ndarray) -> np.ndarray:
-    image = np.asarray(mask, dtype=np.uint8).copy()
-    if image.size == 0:
-        return image.astype(bool)
+def _zhang_suen_removal_tables() -> tuple[np.ndarray, np.ndarray]:
+    """Lookup tables for the two Zhang-Suen sub-iterations, indexed by an 8-neighbor code."""
+
+    remove_first = np.zeros(256, dtype=bool)
+    remove_second = np.zeros(256, dtype=bool)
+    for code in range(256):
+        bits = [(code >> shift) & 1 for shift in range(8)]
+        p2, p3, p4, p5, p6, p7, p8, p9 = bits
+        neighbors = sum(bits)
+        sequence = (p2, p3, p4, p5, p6, p7, p8, p9, p2)
+        transitions = sum(1 for left, right in zip(sequence, sequence[1:]) if left == 0 and right == 1)
+        if not (2 <= neighbors <= 6 and transitions == 1):
+            continue
+        if p2 * p4 * p6 == 0 and p4 * p6 * p8 == 0:
+            remove_first[code] = True
+        if p2 * p4 * p8 == 0 and p2 * p6 * p8 == 0:
+            remove_second[code] = True
+    return remove_first, remove_second
+
+
+_ZHANG_REMOVE_FIRST, _ZHANG_REMOVE_SECOND = _zhang_suen_removal_tables()
+
+
+def _neighborhood_codes(image: np.ndarray) -> np.ndarray:
+    """Pack the clockwise 8-neighborhood of a 0/1 image into one byte per pixel."""
+
+    padded = np.pad(image, 1, mode="constant", constant_values=0)
+    code = padded[:-2, 1:-1].astype(np.uint8, copy=True)
+    code |= (padded[:-2, 2:] << 1).astype(np.uint8)
+    code |= (padded[1:-1, 2:] << 2).astype(np.uint8)
+    code |= (padded[2:, 2:] << 3).astype(np.uint8)
+    code |= (padded[2:, 1:-1] << 4).astype(np.uint8)
+    code |= (padded[2:, :-2] << 5).astype(np.uint8)
+    code |= (padded[1:-1, :-2] << 6).astype(np.uint8)
+    code |= (padded[:-2, :-2] << 7).astype(np.uint8)
+    return code
+
+
+def _skeletonize_binary(image: np.ndarray) -> None:
+    """Zhang-Suen thinning of a contiguous 0/1 image, in place."""
+
+    changed = True
+    while changed:
+        changed = False
+        remove = (image == 1) & _ZHANG_REMOVE_FIRST[_neighborhood_codes(image)]
+        if np.any(remove):
+            image[remove] = 0
+            changed = True
+        remove = (image == 1) & _ZHANG_REMOVE_SECOND[_neighborhood_codes(image)]
+        if np.any(remove):
+            image[remove] = 0
+            changed = True
+
+
+def _skeletonize_legacy(image: np.ndarray) -> np.ndarray:
     changed = True
     while changed:
         changed = False
@@ -246,6 +297,32 @@ def skeletonize(mask: np.ndarray) -> np.ndarray:
             image[remove] = 0
             changed = True
     return image.astype(bool)
+
+
+def skeletonize(mask: np.ndarray) -> np.ndarray:
+    image = np.asarray(mask, dtype=np.uint8)
+    if image.ndim != 2 or image.size == 0:
+        return np.zeros(image.shape if getattr(image, "ndim", 0) == 2 else (0, 0), dtype=bool)
+    if int(np.max(image)) > 1:
+        return _skeletonize_legacy(image.copy())
+    if not np.any(image):
+        return np.zeros(image.shape, dtype=bool)
+    occupied_rows = np.flatnonzero(np.any(image, axis=1))
+    occupied_columns = np.flatnonzero(np.any(image, axis=0))
+    y0 = int(occupied_rows[0])
+    y1 = int(occupied_rows[-1]) + 1
+    x0 = int(occupied_columns[0])
+    x1 = int(occupied_columns[-1]) + 1
+    if (y0, x0, y1, x1) == (0, 0, image.shape[0], image.shape[1]):
+        cropped = image.copy()
+    else:
+        cropped = np.ascontiguousarray(image[y0:y1, x0:x1])
+    _skeletonize_binary(cropped)
+    if cropped.shape == image.shape:
+        return cropped.astype(bool)
+    result = np.zeros(image.shape, dtype=bool)
+    result[y0:y1, x0:x1] = cropped.astype(bool)
+    return result
 
 
 def _endpoint_count(skeleton: np.ndarray) -> int:

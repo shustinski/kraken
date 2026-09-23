@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import pickle
 import time
@@ -25,7 +26,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v64_compact_cache"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v67_critical_small_dirt"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -364,6 +365,68 @@ def _bbox_iou(first: tuple[int, int, int, int], second: tuple[int, int, int, int
     return 0.0 if union <= 0 else float(intersection / union)
 
 
+def _grid_comparison_pairs(
+    confidence_cells: list[GridCellAnalysisResult],
+    binary_cells: list[GridCellAnalysisResult],
+    match_distance: float,
+) -> list[tuple[int, int]]:
+    """Candidate index pairs that can satisfy the distance or overlap test.
+
+    The returned set is a superset of the brute-force pairs that pass
+    ``distance <= match_distance or iou >= 0.08``. Greedy matching still
+    sorts the scored pairs, so the comparison result stays the same.
+    """
+
+    confidence_count = len(confidence_cells)
+    binary_count = len(binary_cells)
+    if confidence_count == 0 or binary_count == 0:
+        return []
+    if confidence_count * binary_count <= 64:
+        return [(left, right) for left in range(confidence_count) for right in range(binary_count)]
+
+    bucket = max(1.0, float(match_distance))
+    bins: dict[tuple[int, int], list[int]] = {}
+
+    def add(bucket_x: int, bucket_y: int, index: int) -> None:
+        bins.setdefault((bucket_x, bucket_y), []).append(index)
+
+    for index, cell in enumerate(binary_cells):
+        left = int(cell.left)
+        top = int(cell.top)
+        right = left + max(0, int(cell.width))
+        bottom = top + max(0, int(cell.height))
+        x0 = math.floor(left / bucket)
+        x1 = math.floor(max(left, right - 1) / bucket)
+        y0 = math.floor(top / bucket)
+        y1 = math.floor(max(top, bottom - 1) / bucket)
+        for bucket_y in range(y0, y1 + 1):
+            for bucket_x in range(x0, x1 + 1):
+                add(bucket_x, bucket_y, index)
+        add(math.floor(float(cell.center_x) / bucket), math.floor(float(cell.center_y) / bucket), index)
+
+    pairs: list[tuple[int, int]] = []
+    for confidence_index, cell in enumerate(confidence_cells):
+        found: set[int] = set()
+        left = int(cell.left)
+        top = int(cell.top)
+        right = left + max(0, int(cell.width))
+        bottom = top + max(0, int(cell.height))
+        x0 = math.floor(left / bucket)
+        x1 = math.floor(max(left, right - 1) / bucket)
+        y0 = math.floor(top / bucket)
+        y1 = math.floor(max(top, bottom - 1) / bucket)
+        for bucket_y in range(y0, y1 + 1):
+            for bucket_x in range(x0, x1 + 1):
+                found.update(bins.get((bucket_x, bucket_y), ()))
+        center_x = math.floor(float(cell.center_x) / bucket)
+        center_y = math.floor(float(cell.center_y) / bucket)
+        for bucket_y in range(center_y - 1, center_y + 2):
+            for bucket_x in range(center_x - 1, center_x + 2):
+                found.update(bins.get((bucket_x, bucket_y), ()))
+        pairs.extend((confidence_index, binary_index) for binary_index in found)
+    return pairs
+
+
 def compare_grid_cell_analyses(
     confidence_result: GridFrameAnalysisResult,
     binary_result: GridFrameAnalysisResult,
@@ -379,17 +442,18 @@ def compare_grid_cell_analyses(
     cell_height = max(1.0, float(confidence_result.cell_height or binary_result.cell_height or 1))
     match_distance = max(1.0, float(np.hypot(cell_width, cell_height)) * float(centroid_tolerance_ratio))
     candidates: list[tuple[float, float, int, int]] = []
-    for confidence_index, confidence_cell in enumerate(confidence_cells):
-        for binary_index, binary_cell in enumerate(binary_cells):
-            distance = float(
-                np.hypot(
-                    confidence_cell.center_x - binary_cell.center_x,
-                    confidence_cell.center_y - binary_cell.center_y,
-                )
+    for confidence_index, binary_index in _grid_comparison_pairs(confidence_cells, binary_cells, match_distance):
+        confidence_cell = confidence_cells[confidence_index]
+        binary_cell = binary_cells[binary_index]
+        distance = float(
+            np.hypot(
+                confidence_cell.center_x - binary_cell.center_x,
+                confidence_cell.center_y - binary_cell.center_y,
             )
-            iou = _bbox_iou(confidence_cell.bbox, binary_cell.bbox)
-            if distance <= match_distance or iou >= 0.08:
-                candidates.append((distance / match_distance, 1.0 - iou, confidence_index, binary_index))
+        )
+        iou = _bbox_iou(confidence_cell.bbox, binary_cell.bbox)
+        if distance <= match_distance or iou >= 0.08:
+            candidates.append((distance / match_distance, 1.0 - iou, confidence_index, binary_index))
     candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
 
     confidence_matches: dict[int, int] = {}
@@ -591,7 +655,15 @@ def detect_grid_cell_anomalies(
             frame_path=frame_path,
         )
     if profile is None:
-        return empty_result
+        return _analyze_conductor_only_frame(
+            candidates,
+            frame_id=frame_id,
+            frame_path=frame_path,
+            width=width,
+            height=height,
+            config=cfg,
+            started=started,
+        )
     median_width = float(profile.median_width)
     median_height = float(profile.median_height)
     median_area = float(profile.median_area)
@@ -620,7 +692,7 @@ def detect_grid_cell_anomalies(
                 config=cfg,
             )
             score, reasons = _filter_disabled_grid_reasons(score, reasons, cfg)
-            if reasons == ("small_artifact",) and _is_detached_confidence_cell_edge(
+            if reasons and set(reasons) <= {"small_artifact", "broken_geometry", "edge_clipped_cell"} and _is_detached_confidence_cell_edge(
                 candidate,
                 candidates,
                 median_width=median_width,
@@ -658,6 +730,44 @@ def detect_grid_cell_anomalies(
                     reasons=tuple(reasons if is_bad else ()),
                 )
             )
+
+    per_cell = _collapse_conductor_regions(
+        per_cell,
+        median_width=median_width,
+        median_height=median_height,
+    )
+    by_contour = {int(item.contour_id): item for item in candidates}
+    defect_entries = []
+    for index, cell in enumerate(per_cell):
+        if not cell.reasons:
+            continue
+        candidate = by_contour.get(int(cell.contour_id))
+        if candidate is None:
+            box_w = max(1, int(cell.bbox[2]))
+            box_h = max(1, int(cell.bbox[3]))
+            candidate = _ContourCandidate(
+                contour_id=int(cell.contour_id),
+                contour=None,
+                bbox=tuple(int(value) for value in cell.bbox[:4]),
+                centroid=cell.centroid,
+                area=float(box_w * box_h) * 0.45,
+                bbox_area=float(box_w * box_h),
+                aspect_ratio=float(box_w) / float(box_h),
+                extent=0.55,
+                solidity=0.70,
+                perimeter=float(2 * (box_w + box_h)),
+                approx_vertices=10,
+                fill_ratio=0.45,
+                interior_fill_ratio=0.20,
+                center_fill_ratio=0.15,
+                outline_min_side_coverage=0.2,
+                outline_mean_side_coverage=0.3,
+                outline_side_imbalance=0.2,
+                inner_hole_ratio=0.0,
+                child_count=0,
+                touches_border=False,
+            )
+        defect_entries.append((index, candidate))
 
     with profile_stage("validation.grid.clustering", frame_id=frame_id):
         feature_clusters, feature_cluster_by_cell = _cluster_defective_cell_features(
@@ -901,43 +1011,69 @@ def analyze_grid_frame_pair_chunk(
     use_cache: bool = True,
     *,
     reference_profile: GridCellReferenceProfile | None = None,
+    requested_layers: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, dict[str, GridFrameAnalysisResult]], dict[str, str]]:
-    """Analyze linked confidence/binary files and return all three matrix payloads."""
+    """Analyze linked confidence/binary files and return selected matrix payloads."""
 
     payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
     errors: dict[str, str] = {}
+    wanted = {
+        str(layer)
+        for layer in (requested_layers or ("confidence", "binary", "comparison"))
+        if str(layer) in {"confidence", "binary", "comparison"}
+    }
+    if not wanted:
+        wanted = {"confidence", "binary", "comparison"}
+    need_confidence = "confidence" in wanted or "comparison" in wanted
+    need_binary = "binary" in wanted or "comparison" in wanted
     confidence_config = replace(config, cell_representation="confidence").normalized()
     binary_config = replace(config, cell_representation="binary").normalized()
     for key, confidence_path, binary_path in entries:
         try:
-            confidence_result = analyze_grid_frame_path(
-                confidence_path,
-                frame_id=key,
-                config=confidence_config,
-                reference_profile=reference_profile,
-                use_cache=use_cache,
+            confidence_result = (
+                analyze_grid_frame_path(
+                    confidence_path,
+                    frame_id=key,
+                    config=confidence_config,
+                    reference_profile=reference_profile,
+                    use_cache=use_cache,
+                )
+                if need_confidence
+                else None
             )
-            binary_result = analyze_grid_frame_path(
-                binary_path,
-                frame_id=key,
-                config=binary_config,
-                reference_profile=None,
-                use_cache=use_cache,
+            binary_result = (
+                analyze_grid_frame_path(
+                    binary_path,
+                    frame_id=key,
+                    config=binary_config,
+                    reference_profile=None,
+                    use_cache=use_cache,
+                )
+                if need_binary
+                else None
             )
         except Exception as error:
             errors[str(key)] = f"{type(error).__name__}: {error}"
             continue
-        if not isinstance(confidence_result, GridFrameAnalysisResult):
+        if need_confidence and not isinstance(confidence_result, GridFrameAnalysisResult):
             errors[str(key)] = "confidence_decode_error"
             continue
-        if not isinstance(binary_result, GridFrameAnalysisResult):
+        if need_binary and not isinstance(binary_result, GridFrameAnalysisResult):
             errors[str(key)] = "binary_decode_error"
             continue
-        payloads[str(key)] = {
-            "confidence": confidence_result,
-            "binary": binary_result,
-            "comparison": compare_grid_cell_analyses(confidence_result, binary_result),
-        }
+        frame_payload: dict[str, GridFrameAnalysisResult] = {}
+        if "confidence" in wanted and isinstance(confidence_result, GridFrameAnalysisResult):
+            frame_payload["confidence"] = confidence_result
+        if "binary" in wanted and isinstance(binary_result, GridFrameAnalysisResult):
+            frame_payload["binary"] = binary_result
+        if (
+            "comparison" in wanted
+            and isinstance(confidence_result, GridFrameAnalysisResult)
+            and isinstance(binary_result, GridFrameAnalysisResult)
+        ):
+            frame_payload["comparison"] = compare_grid_cell_analyses(confidence_result, binary_result)
+        if frame_payload:
+            payloads[str(key)] = frame_payload
     return payloads, errors
 
 
@@ -994,12 +1130,20 @@ def analyze_grid_frame_sources_chunk(
     *,
     reference_profile: GridCellReferenceProfile | None = None,
     single_source_layer: str | None = None,
+    requested_layers: tuple[str, ...] | None = None,
 ) -> tuple[dict[str, dict[str, GridFrameAnalysisResult]], dict[str, str]]:
     """Analyze complete pairs and gracefully handle either source on its own."""
 
     payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
     errors: dict[str, str] = {}
     confidence_config = replace(config, cell_representation="confidence").normalized()
+    wanted = {
+        str(layer)
+        for layer in (requested_layers or ("confidence", "binary", "comparison"))
+        if str(layer) in {"confidence", "binary", "comparison"}
+    }
+    if not wanted:
+        wanted = {"confidence", "binary", "comparison"}
     for key, confidence_path, binary_path in entries:
         if confidence_path and binary_path:
             pair_payloads, pair_errors = analyze_grid_frame_pair_chunk(
@@ -1007,12 +1151,15 @@ def analyze_grid_frame_sources_chunk(
                 config,
                 use_cache,
                 reference_profile=reference_profile,
+                requested_layers=tuple(wanted),
             )
             payloads.update(pair_payloads)
             errors.update(pair_errors)
             continue
         try:
             if confidence_path:
+                if "confidence" not in wanted and "comparison" not in wanted:
+                    continue
                 result = analyze_grid_frame_path(
                     confidence_path,
                     frame_id=key,
@@ -1023,6 +1170,11 @@ def analyze_grid_frame_sources_chunk(
                 selected = ("confidence", result) if isinstance(result, GridFrameAnalysisResult) else None
             elif binary_path:
                 forced_layer = str(single_source_layer or "")
+                if forced_layer not in GRID_CELL_REPRESENTATION_MODES:
+                    if "binary" in wanted:
+                        forced_layer = "binary"
+                    elif "confidence" in wanted:
+                        forced_layer = "confidence"
                 if forced_layer in GRID_CELL_REPRESENTATION_MODES:
                     forced_result = analyze_grid_frame_path(
                         binary_path,
@@ -1051,6 +1203,8 @@ def analyze_grid_frame_sources_chunk(
             errors[str(key)] = "decode_error"
             continue
         layer_key, result = selected
+        if str(layer_key) not in wanted:
+            continue
         payloads[str(key)] = {str(layer_key): result}
     return payloads, errors
 
@@ -1116,8 +1270,9 @@ def _threshold_grid(gray: np.ndarray, config: GridDamageAnalysisConfig) -> np.nd
             int(config.adaptive_block_size),
             float(config.adaptive_c),
         )
+        otsu_level = 127.0
     else:
-        _level, threshold = cv2.threshold(values, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        otsu_level, threshold = cv2.threshold(values, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     foreground_ratio = float(np.count_nonzero(threshold)) / max(1.0, float(threshold.size))
     representation = str(getattr(config, "cell_representation", "confidence") or "confidence")
     border = np.concatenate((threshold[0, :], threshold[-1, :], threshold[:, 0], threshold[:, -1]))
@@ -1125,6 +1280,12 @@ def _threshold_grid(gray: np.ndarray, config: GridDamageAnalysisConfig) -> np.nd
     should_invert = border_foreground_ratio > 0.72 if representation == "binary" else foreground_ratio > 0.62
     if should_invert:
         threshold = cv2.bitwise_not(threshold)
+        values_for_dirt = cv2.bitwise_not(values) if representation == "binary" else values
+    else:
+        values_for_dirt = values
+    # Recover grainy/dim debris that a high Otsu split into sub-speckle fragments.
+    if representation == "binary" and cv2 is not None:
+        threshold = _recover_binary_dirt_components(values_for_dirt, threshold, float(otsu_level))
     if config.morphology_open > 1:
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(config.morphology_open), int(config.morphology_open)))
         threshold = cv2.morphologyEx(threshold, cv2.MORPH_OPEN, kernel)
@@ -1132,6 +1293,107 @@ def _threshold_grid(gray: np.ndarray, config: GridDamageAnalysisConfig) -> np.nd
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(config.morphology_close), int(config.morphology_close)))
         threshold = cv2.morphologyEx(threshold, cv2.MORPH_CLOSE, kernel)
     return np.ascontiguousarray(threshold)
+
+
+def _recover_binary_dirt_components(
+    values: np.ndarray,
+    threshold: np.ndarray,
+    otsu_level: float,
+) -> np.ndarray:
+    """OR in compact low-threshold blobs that Otsu alone would fragment away."""
+
+    if cv2 is None:
+        return threshold
+    low_level = float(max(8.0, min(20.0, float(otsu_level) * 0.18)))
+    if low_level >= float(otsu_level) - 1.0:
+        return threshold
+    _level, low = cv2.threshold(np.ascontiguousarray(values), low_level, 255, cv2.THRESH_BINARY)
+    n_labels, labels, stats, _cents = cv2.connectedComponentsWithStats(low, 8)
+    if n_labels <= 1:
+        return threshold
+    accepted: list[int] = []
+    for index in range(1, n_labels):
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        bw = int(stats[index, cv2.CC_STAT_WIDTH])
+        bh = int(stats[index, cv2.CC_STAT_HEIGHT])
+        if area < 8 or area > 1200:
+            continue
+        if max(bw, bh) > 64 or min(bw, bh) < 2:
+            continue
+        if float(area) < 0.22 * float(max(1, bw * bh)) and area < 24:
+            continue
+        x = int(stats[index, cv2.CC_STAT_LEFT])
+        y = int(stats[index, cv2.CC_STAT_TOP])
+        roi = threshold[y : y + bh, x : x + bw]
+        label_roi = labels[y : y + bh, x : x + bw] == index
+        overlap = float(np.count_nonzero(roi[label_roi])) / max(1.0, float(area))
+        # Keep blobs that Otsu only partially captured (grainy dirt), skip solid cells.
+        if overlap >= 0.62:
+            continue
+        accepted.append(index)
+    if not accepted:
+        return threshold
+    keep = np.zeros(n_labels, dtype=np.uint8)
+    keep[np.asarray(accepted, dtype=np.int32)] = 255
+    recovered = keep[labels]
+    # Close only the recovered dirt mask so grain reconnects without bridging real cells.
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    recovered = cv2.morphologyEx(recovered, cv2.MORPH_CLOSE, kernel)
+    return cv2.bitwise_or(threshold, recovered)
+
+
+def _foreground_count_tables(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Integral image plus column/row prefixes of a nonzero mask."""
+
+    binary = np.asarray(mask > 0, dtype=np.uint8)
+    height, width = binary.shape[:2]
+    if cv2 is not None and binary.size:
+        integral = cv2.integral(binary)
+        if isinstance(integral, tuple):
+            integral = integral[0]
+        integral = np.asarray(integral)
+    else:
+        integral = np.zeros((height + 1, width + 1), dtype=np.int64)
+        if binary.size:
+            integral[1:, 1:] = np.cumsum(np.cumsum(binary, axis=0, dtype=np.int64), axis=1)
+    column_prefix = np.zeros((height + 1, width), dtype=np.int64)
+    row_prefix = np.zeros((height, width + 1), dtype=np.int64)
+    if height and width:
+        np.cumsum(binary, axis=0, out=column_prefix[1:], dtype=np.int64)
+        np.cumsum(binary, axis=1, out=row_prefix[:, 1:], dtype=np.int64)
+    return integral, column_prefix, row_prefix
+
+
+def _rect_nonzero_count(integral: np.ndarray, x: int, y: int, width: int, height: int) -> int:
+    if width <= 0 or height <= 0:
+        return 0
+    return int(integral[y + height, x + width] - integral[y, x + width] - integral[y + height, x] + integral[y, x])
+
+
+def _outline_side_coverages_from_tables(
+    column_prefix: np.ndarray,
+    row_prefix: np.ndarray,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> tuple[float, float, float, float]:
+    if width <= 0 or height <= 0:
+        return (0.0, 0.0, 0.0, 0.0)
+    band = max(1, int(round(min(width, height) * 0.18)))
+    band = min(band, width, height)
+    top = float(np.count_nonzero(column_prefix[y + band, x : x + width] - column_prefix[y, x : x + width]) / width)
+    bottom = float(
+        np.count_nonzero(
+            column_prefix[y + height, x : x + width] - column_prefix[y + height - band, x : x + width]
+        )
+        / width
+    )
+    left = float(np.count_nonzero(row_prefix[y : y + height, x + band] - row_prefix[y : y + height, x]) / height)
+    right = float(
+        np.count_nonzero(row_prefix[y : y + height, x + width] - row_prefix[y : y + height, x + width - band]) / height
+    )
+    return (top, bottom, left, right)
 
 
 def _extract_candidates(
@@ -1142,23 +1404,42 @@ def _extract_candidates(
     else:
         hierarchy_array = np.asarray(hierarchy).reshape(-1, 4)
     height, width = shape
+    integral, column_prefix, row_prefix = _foreground_count_tables(threshold)
+    area_by_index: dict[int, float] = {}
+    rect_by_index: dict[int, tuple[int, int, int, int]] = {}
+
+    def contour_area(contour_index: int) -> float:
+        cached = area_by_index.get(contour_index)
+        if cached is None:
+            cached = float(abs(cv2.contourArea(contours[contour_index])))
+            area_by_index[contour_index] = cached
+        return cached
+
+    def contour_rect(contour_index: int) -> tuple[int, int, int, int]:
+        cached = rect_by_index.get(contour_index)
+        if cached is None:
+            x_value, y_value, width_value, height_value = cv2.boundingRect(contours[contour_index])
+            cached = (int(x_value), int(y_value), int(width_value), int(height_value))
+            rect_by_index[contour_index] = cached
+        return cached
+
     candidates: list[_ContourCandidate] = []
     for index, contour in enumerate(contours):
         parent_idx = int(hierarchy_array[index][3]) if index < len(hierarchy_array) else -1
-        x, y, w, h = cv2.boundingRect(contour)
+        x, y, w, h = contour_rect(index)
         if w < config.min_cell_size or h < config.min_cell_size:
             continue
         if w >= max(1, width - 1) and h >= max(1, height - 1):
             continue
-        area = float(abs(cv2.contourArea(contour)))
+        area = contour_area(index)
         if area < float(config.min_contour_area):
             continue
         if parent_idx >= 0:
             # Nested contours are usually holes; keep only compact debris inside a parent cell.
             if parent_idx >= len(contours):
                 continue
-            _px, _py, parent_w, parent_h = cv2.boundingRect(contours[parent_idx])
-            parent_area = max(1.0, float(abs(cv2.contourArea(contours[parent_idx]))))
+            _px, _py, parent_w, parent_h = contour_rect(parent_idx)
+            parent_area = max(1.0, contour_area(parent_idx))
             axis_ratio = max(float(w) / max(1.0, float(parent_w)), float(h) / max(1.0, float(parent_h)))
             if area >= 0.40 * parent_area or axis_ratio >= 0.70:
                 continue
@@ -1180,27 +1461,32 @@ def _extract_candidates(
         child_areas: list[float] = []
         child = int(hierarchy_array[index][2]) if index < len(hierarchy_array) else -1
         while child >= 0 and child < len(contours):
-            child_areas.append(float(abs(cv2.contourArea(contours[child]))))
+            child_areas.append(contour_area(child))
             next_child = int(hierarchy_array[child][0]) if child < len(hierarchy_array) else -1
             if next_child == child:
                 break
             child = next_child
-        roi = threshold[y : y + h, x : x + w]
-        fill_ratio = float(np.count_nonzero(roi)) / bbox_area
-        side_coverages = _outline_side_coverages(roi)
+        fill_ratio = float(_rect_nonzero_count(integral, x, y, w, h)) / bbox_area
+        side_coverages = _outline_side_coverages_from_tables(column_prefix, row_prefix, x, y, w, h)
         outline_min_side_coverage = float(min(side_coverages, default=0.0))
         outline_mean_side_coverage = float(sum(side_coverages) / len(side_coverages)) if side_coverages else 0.0
         outline_side_imbalance = float(max(side_coverages, default=0.0) - min(side_coverages, default=0.0))
         border = max(2, int(round(min(w, h) * 0.22)))
         if w > border * 2 + 1 and h > border * 2 + 1:
-            inner_roi = roi[border : h - border, border : w - border]
-            interior_fill_ratio = float(np.count_nonzero(inner_roi)) / max(1.0, float(inner_roi.size))
+            inner_width = w - 2 * border
+            inner_height = h - 2 * border
+            interior_fill_ratio = float(
+                _rect_nonzero_count(integral, x + border, y + border, inner_width, inner_height)
+            ) / max(1.0, float(inner_width * inner_height))
         else:
             interior_fill_ratio = fill_ratio
         center_border = max(border + 1, int(round(min(w, h) * 0.36)))
         if w > center_border * 2 + 1 and h > center_border * 2 + 1:
-            center_roi = roi[center_border : h - center_border, center_border : w - center_border]
-            center_fill_ratio = float(np.count_nonzero(center_roi)) / max(1.0, float(center_roi.size))
+            center_width = w - 2 * center_border
+            center_height = h - 2 * center_border
+            center_fill_ratio = float(
+                _rect_nonzero_count(integral, x + center_border, y + center_border, center_width, center_height)
+            ) / max(1.0, float(center_width * center_height))
         else:
             center_fill_ratio = interior_fill_ratio
         inner_hole_ratio = max(child_areas, default=0.0) / max(1.0, area)
@@ -1267,6 +1553,8 @@ def _normal_seed_candidates(
             and item.interior_fill_ratio >= 0.38
             and item.solidity >= 0.76
             and item.approx_vertices <= 14
+            and float(item.area) >= 40.0
+            and min(int(item.bbox[2]), int(item.bbox[3])) >= 8
         ]
         if len(preferred) >= 3:
             return preferred
@@ -1278,13 +1566,19 @@ def _normal_seed_candidates(
             and item.interior_fill_ratio >= 0.38
             and item.solidity >= 0.76
             and item.approx_vertices <= 14
+            and float(item.area) >= 40.0
+            and min(int(item.bbox[2]), int(item.bbox[3])) >= 8
         ]
         if len(filtered) >= 3:
             return filtered
         return [
             item
             for item in candidates
-            if 0.35 <= item.aspect_ratio <= 2.80 and 0.28 <= item.fill_ratio <= 1.0 and item.solidity >= 0.55
+            if 0.35 <= item.aspect_ratio <= 2.80
+            and 0.28 <= item.fill_ratio <= 1.0
+            and item.solidity >= 0.55
+            and float(item.area) >= 40.0
+            and min(int(item.bbox[2]), int(item.bbox[3])) >= 8
         ]
     filtered = [
         item
@@ -1295,6 +1589,8 @@ def _normal_seed_candidates(
         and item.center_fill_ratio <= 0.12
         and item.solidity >= 0.76
         and item.approx_vertices <= 14
+        and float(item.area) >= 24.0
+        and min(int(item.bbox[2]), int(item.bbox[3])) >= 6
     ]
     if len(filtered) >= 3:
         return filtered
@@ -1305,6 +1601,8 @@ def _normal_seed_candidates(
         and item.interior_fill_ratio <= 0.26
         and item.center_fill_ratio <= 0.18
         and item.solidity >= 0.55
+        and float(item.area) >= 24.0
+        and min(int(item.bbox[2]), int(item.bbox[3])) >= 6
     ]
 
 
@@ -1318,13 +1616,19 @@ def _grid_cell_reference_profile_from_candidates(
     if len(candidates) < int(config.min_grid_candidate_cells):
         return None
     normal_seed = _normal_seed_candidates(candidates, config=config)
-    seed = normal_seed if len(normal_seed) >= 3 else candidates
-    if not seed:
+    # Never fall back to the full candidate list: grainy debris would poison the median
+    # and turn large conductor masses into false merged_contour hits.
+    if len(normal_seed) < 3:
+        return None
+    seed = normal_seed
+    median_area = float(np.median([item.area for item in seed]))
+    # Tiny "seed" from grain speckles is not a cell grid.
+    if median_area < 36.0:
         return None
     return GridCellReferenceProfile(
         median_width=float(np.median([item.bbox[2] for item in seed])),
         median_height=float(np.median([item.bbox[3] for item in seed])),
-        median_area=float(np.median([item.area for item in seed])),
+        median_area=median_area,
         median_fill=float(np.median([item.fill_ratio for item in seed])),
         median_interior_fill=float(np.median([item.interior_fill_ratio for item in seed])),
         median_center_fill=float(np.median([item.center_fill_ratio for item in seed])),
@@ -1368,7 +1672,13 @@ def _is_cell_like_candidate(
 
 
 def _status_for_reasons(reasons: tuple[str, ...]) -> str:
-    if {"small_artifact", "conductor_residue"}.intersection(reasons):
+    reason_set = {str(reason) for reason in reasons}
+    if "conductor_residue" in reason_set:
+        return "artifact"
+    if reason_set == {"small_artifact"}:
+        # Mid-size standalone dirt / inaccurate cell: possible inaccuracy, not hard debris.
+        return "suspicious"
+    if "small_artifact" in reason_set:
         return "artifact"
     return "broken"
 
@@ -1477,26 +1787,251 @@ def _conductor_residue_signal(
     median_height: float,
     median_area: float,
 ) -> bool:
-    """Detect large, semantically irrelevant conductor remnants at the frame edge."""
+    """Detect large conductor / grainy masses that must not be labeled as merged cells."""
 
-    if not bool(candidate.touches_border):
-        return False
     width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
     height_ratio = float(candidate.bbox[3]) / max(1.0, float(median_height))
     area_ratio = float(candidate.area) / max(1.0, float(median_area))
     bbox_area_ratio = float(candidate.bbox_area) / max(1.0, float(median_width) * float(median_height))
     largest_axis = max(width_ratio, height_ratio)
     smallest_axis = min(width_ratio, height_ratio)
-    very_large = largest_axis >= 2.75 or bbox_area_ratio >= 3.40 or area_ratio >= 3.10
-    large = largest_axis >= 1.70 and (bbox_area_ratio >= 1.85 or area_ratio >= 1.55)
+    fill_ratio = float(candidate.fill_ratio)
     irregular = (
         float(candidate.solidity) <= 0.88
         or float(candidate.extent) <= 0.68
         or int(candidate.approx_vertices) >= 8
         or smallest_axis <= 0.46
         or largest_axis / max(0.05, smallest_axis) >= 2.45
+        or fill_ratio <= 0.58
     )
+    grainy_mass = (
+        irregular
+        and fill_ratio <= 0.62
+        and (
+            largest_axis >= 1.85
+            or bbox_area_ratio >= 2.10
+            or area_ratio >= 1.90
+            or (largest_axis >= 1.55 and float(candidate.extent) <= 0.58)
+        )
+    )
+    if grainy_mass:
+        return True
+    if not bool(candidate.touches_border):
+        return False
+    very_large = largest_axis >= 2.75 or bbox_area_ratio >= 3.40 or area_ratio >= 3.10
+    large = largest_axis >= 1.70 and (bbox_area_ratio >= 1.85 or area_ratio >= 1.55)
     return bool(very_large or (large and irregular))
+
+
+def _bbox_gap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    ax, ay, aw, ah = (int(a[0]), int(a[1]), int(a[2]), int(a[3]))
+    bx, by, bw, bh = (int(b[0]), int(b[1]), int(b[2]), int(b[3]))
+    horizontal = max(0, max(ax, bx) - min(ax + aw, bx + bw))
+    vertical = max(0, max(ay, by) - min(ay + ah, by + bh))
+    if horizontal == 0 and vertical == 0:
+        return 0.0
+    if horizontal == 0:
+        return float(vertical)
+    if vertical == 0:
+        return float(horizontal)
+    return float(np.hypot(horizontal, vertical))
+
+
+def _collapse_conductor_regions(
+    per_cell: list[GridCellAnalysisResult],
+    *,
+    median_width: float,
+    median_height: float,
+) -> list[GridCellAnalysisResult]:
+    """Merge adjacent conductor fragments into one large rectangle per mass."""
+
+    conductor_indexes = [
+        index for index, cell in enumerate(per_cell) if "conductor_residue" in tuple(cell.reasons or ())
+    ]
+    if len(conductor_indexes) <= 1:
+        return per_cell
+
+    gap_limit = max(6.0, 0.85 * max(float(median_width), float(median_height)))
+    parent = {index: index for index in conductor_indexes}
+
+    def find(value: int) -> int:
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    def unite(left: int, right: int) -> None:
+        root_left = find(left)
+        root_right = find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for position, left in enumerate(conductor_indexes):
+        left_box = tuple(int(value) for value in per_cell[left].bbox[:4])
+        for right in conductor_indexes[position + 1 :]:
+            right_box = tuple(int(value) for value in per_cell[right].bbox[:4])
+            if _bbox_gap(left_box, right_box) <= gap_limit:
+                unite(left, right)
+
+    groups: dict[int, list[int]] = {}
+    for index in conductor_indexes:
+        groups.setdefault(find(index), []).append(index)
+
+    drop_indexes: set[int] = set()
+    replacements: list[GridCellAnalysisResult] = []
+    next_contour_id = max((int(cell.contour_id) for cell in per_cell), default=0) + 1
+    for members in groups.values():
+        if len(members) <= 1:
+            continue
+        boxes = [tuple(int(value) for value in per_cell[index].bbox[:4]) for index in members]
+        left = min(box[0] for box in boxes)
+        top = min(box[1] for box in boxes)
+        right = max(box[0] + box[2] for box in boxes)
+        bottom = max(box[1] + box[3] for box in boxes)
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        score = max(float(per_cell[index].score) for index in members)
+        replacements.append(
+            GridCellAnalysisResult(
+                row=0,
+                col=0,
+                bbox=(int(left), int(top), int(width), int(height)),
+                centroid=(float(left) + 0.5 * float(width), float(top) + 0.5 * float(height)),
+                contour_id=int(next_contour_id),
+                status="artifact",
+                score=float(min(1.0, max(0.86, score))),
+                reasons=("conductor_residue",),
+            )
+        )
+        next_contour_id += 1
+        drop_indexes.update(members)
+
+    if not replacements:
+        return per_cell
+    kept = [cell for index, cell in enumerate(per_cell) if index not in drop_indexes]
+    kept.extend(replacements)
+    return [
+        replace(cell, row=int(index), col=0)
+        for index, cell in enumerate(sorted(kept, key=lambda item: (float(item.centroid[1]), float(item.centroid[0]))))
+    ]
+
+
+def _conductor_like_without_grid(
+    candidate: _ContourCandidate,
+    *,
+    frame_width: int,
+    frame_height: int,
+) -> bool:
+    """Heuristic for grainy conductor masses when no cell-like seed exists."""
+
+    width = float(candidate.bbox[2])
+    height = float(candidate.bbox[3])
+    area = float(candidate.area)
+    frame_area = max(1.0, float(frame_width) * float(frame_height))
+    if area < 80.0 and max(width, height) < 28.0:
+        return False
+    if area < max(120.0, frame_area * 0.00035) and max(width, height) < 40.0:
+        return False
+    fill = float(candidate.fill_ratio)
+    irregular = (
+        float(candidate.solidity) <= 0.90
+        or float(candidate.extent) <= 0.72
+        or int(candidate.approx_vertices) >= 8
+        or fill <= 0.70
+        or max(width, height) / max(1.0, min(width, height)) >= 1.65
+    )
+    large_enough = max(width, height) >= 36.0 or area >= 220.0 or bool(candidate.touches_border and area >= 100.0)
+    return bool(irregular and large_enough)
+
+
+def _analyze_conductor_only_frame(
+    candidates: list[_ContourCandidate],
+    *,
+    frame_id: str,
+    frame_path: str,
+    width: int,
+    height: int,
+    config: GridDamageAnalysisConfig,
+    started: float,
+) -> GridFrameAnalysisResult:
+    """Mark grainy conductor masses when the frame has no reliable cell grid seed."""
+
+    empty = GridFrameAnalysisResult(
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+        image_width=int(width),
+        image_height=int(height),
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=0,
+        detected_cells=0,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=0,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.0,
+        severity_level="OK",
+        grid_detected=False,
+        per_cell_results=(),
+        component_count=int(len(candidates)),
+    )
+    conductor_candidates = [
+        item
+        for item in candidates
+        if _conductor_like_without_grid(item, frame_width=width, frame_height=height)
+    ]
+    if not conductor_candidates:
+        return empty
+
+    provisional = [
+        GridCellAnalysisResult(
+            row=index,
+            col=0,
+            bbox=item.bbox,
+            centroid=item.centroid,
+            contour_id=item.contour_id,
+            status="artifact",
+            score=0.90,
+            reasons=("conductor_residue",),
+        )
+        for index, item in enumerate(conductor_candidates)
+    ]
+    median_width = float(np.median([float(item.bbox[2]) for item in conductor_candidates]))
+    median_height = float(np.median([float(item.bbox[3]) for item in conductor_candidates]))
+    collapsed = _collapse_conductor_regions(
+        provisional,
+        median_width=max(12.0, median_width),
+        median_height=max(12.0, median_height),
+    )
+    enabled = set(config.enabled_reason_types or GRID_DAMAGE_REASON_TYPES)
+    if "conductor_residue" not in enabled:
+        return empty
+    damage_score = _damage_score(collapsed, max(1, len(collapsed)))
+    severity = config.severity_thresholds.level_for_score(damage_score)
+    _ = started
+    return GridFrameAnalysisResult(
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+        image_width=int(width),
+        image_height=int(height),
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=int(len(collapsed)),
+        detected_cells=int(len(collapsed)),
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=0,
+        missing_cells=0,
+        artifact_cells=int(len(collapsed)),
+        damage_score=float(damage_score),
+        severity_level=str(severity),
+        grid_detected=True,
+        per_cell_results=tuple(collapsed),
+        component_count=int(len(candidates)),
+        cell_width=int(round(median_width)),
+        cell_height=int(round(median_height)),
+    )
 
 
 def _border_merged_cell_signal(
@@ -1575,7 +2110,7 @@ def _classify_binary_cell(
     merged = (
         border_merged
         or (largest_axis > float(config.merged_size_ratio) and area_ratio > float(config.merged_area_ratio))
-        or (largest_axis >= 1.42 and smallest_axis >= 0.55 and area_ratio >= 1.32)
+        or (largest_axis >= 1.55 and smallest_axis >= 0.60 and area_ratio >= 1.45)
     )
     if merged:
         reasons.append("merged_contour")
@@ -1583,7 +2118,7 @@ def _classify_binary_cell(
 
     # Allow slightly undersized / elongated slot occupants so wrong geometry is
     # still scored when the same-frame seed is built without a reference frame.
-    slot_sized = 0.40 <= smallest_axis and largest_axis <= 1.80 and 0.20 <= area_ratio <= 2.40
+    slot_sized = 0.28 <= smallest_axis and largest_axis <= 1.85 and 0.12 <= area_ratio <= 2.40
     fill_loss = max(
         0.0,
         max(0.34, float(median_fill) * 0.64) - float(candidate.fill_ratio),
@@ -1599,11 +2134,23 @@ def _classify_binary_cell(
         and area_ratio >= 0.12
         and max(width_ratio, height_ratio) >= 0.48
     )
-    broken = (slot_sized or aspect_slot_damage) and (
+    extent_delta = abs(float(candidate.extent) - 0.74)
+    irregular_mid_geometry = (
+        0.22 <= smallest_axis
+        and largest_axis <= 1.70
+        and 0.12 <= area_ratio <= 1.90
+        and (
+            float(candidate.solidity) < 0.78
+            or int(candidate.approx_vertices) >= 10
+            or (float(candidate.solidity) < 0.88 and extent_delta >= 0.18 and int(candidate.approx_vertices) >= 6)
+        )
+    )
+    broken = (slot_sized or aspect_slot_damage or irregular_mid_geometry) and (
         float(candidate.solidity) < 0.80
-        or int(candidate.approx_vertices) >= 12
+        or int(candidate.approx_vertices) >= 10
         or fill_loss > 0.08
         or aspect_mismatch
+        or (extent_delta >= 0.20 and float(candidate.solidity) < 0.90 and int(candidate.approx_vertices) >= 6)
     )
     if broken:
         reasons.append("broken_geometry")
@@ -1626,16 +2173,29 @@ def _classify_binary_cell(
         median_area=median_area,
         median_fill=median_fill,
         median_interior_fill=median_interior_fill,
-        median_center_fill=max(0.0, float(candidate.center_fill_ratio)),
+        median_center_fill=0.0,
         config=config,
     )
     if small_artifact:
         reasons.append("small_artifact")
         score = max(score, 0.76)
+        # Mid dirt must stay in the debris group, not double-count as geometry.
+        reasons = [reason for reason in reasons if reason != "broken_geometry"]
 
-    if bool(candidate.touches_border) and smallest_axis < 0.78 and largest_axis <= 1.55:
+    edge_clipped = bool(candidate.touches_border) and (
+        (smallest_axis < 0.82 and largest_axis <= 1.70 and area_ratio <= 1.25)
+        or (
+            smallest_axis < 0.90
+            and largest_axis <= 1.55
+            and aspect_mismatch
+            and area_ratio <= 1.05
+        )
+    )
+    if edge_clipped:
         reasons.append("edge_clipped_cell")
         score = max(score, min(0.96, 0.76 + 0.18 * max(0.0, 1.0 - smallest_axis)))
+        # Border crop explains the warped silhouette — keep the dedicated group.
+        reasons = [reason for reason in reasons if reason != "broken_geometry"]
     if not reasons:
         return 0.0, ()
     return float(np.clip(score, 0.0, 1.0)), tuple(dict.fromkeys(reasons))
@@ -1736,7 +2296,7 @@ def _classify_detected_cell(
     )
     partial_fill_signal = centered_partial_fill_signal or off_center_fill_signal or edge_partial_fill_signal
     slot_sized_geometry = (
-        0.52 <= smallest_axis_ratio and largest_axis_ratio <= 1.58 and 0.34 <= float(area_ratio) <= 2.15
+        0.38 <= smallest_axis_ratio and largest_axis_ratio <= 1.65 and 0.22 <= float(area_ratio) <= 2.20
     )
     outline_min = float(candidate.outline_min_side_coverage)
     outline_mean = float(candidate.outline_mean_side_coverage)
@@ -1838,18 +2398,33 @@ def _classify_detected_cell(
             and abs(aspect_ratio - median_aspect) <= max(0.09, median_aspect * 0.10)
         )
     )
-    broken_geometry_signal = slot_sized_geometry and (
-        (candidate.child_count == 0 and candidate.solidity <= 0.70 and candidate.approx_vertices >= 8)
-        or (candidate.solidity <= 0.66 and abs(float(candidate.extent) - 0.74) >= 0.22)
-        or (
-            candidate.approx_vertices >= 18
-            and candidate.solidity <= 0.82
-            and abs(float(candidate.extent) - 0.74) >= 0.16
+    broken_geometry_signal = (
+        slot_sized_geometry
+        and (
+            (candidate.child_count == 0 and candidate.solidity <= 0.70 and candidate.approx_vertices >= 8)
+            or (candidate.solidity <= 0.66 and abs(float(candidate.extent) - 0.74) >= 0.22)
+            or (
+                candidate.approx_vertices >= 16
+                and candidate.solidity <= 0.82
+                and abs(float(candidate.extent) - 0.74) >= 0.14
+            )
+            or outline_damage_signal
+            or pinched_geometry_signal
+            or strict_shape_distortion_signal
+            or warped_slot_signal
         )
-        or outline_damage_signal
-        or pinched_geometry_signal
-        or strict_shape_distortion_signal
-        or warped_slot_signal
+    ) or (
+        # Severely warped mid-size fragments that fall below the normal slot band.
+        0.26 <= smallest_axis_ratio < 0.48
+        and largest_axis_ratio <= 1.50
+        and 0.16 <= float(area_ratio) <= 1.20
+        and candidate.solidity <= 0.74
+        and (
+            candidate.approx_vertices >= 10
+            or outline_imbalance >= 0.26
+            or outline_min <= 0.36
+            or abs(float(candidate.extent) - 0.74) >= 0.18
+        )
     )
     small_artifact_signal = _small_artifact_signal(
         candidate,
@@ -1925,40 +2500,35 @@ def _classify_detected_cell(
 
     near_merged_signal = (
         strict_merge_mode
-        and largest_axis_ratio >= max(1.08, float(config.merged_size_ratio) - 0.16)
-        and smallest_axis_ratio >= 0.42
-        and float(area_ratio) >= max(0.80, float(config.merged_area_ratio) - 0.34)
+        and largest_axis_ratio >= max(1.28, float(config.merged_size_ratio) - 0.08)
+        and smallest_axis_ratio >= 0.50
+        and float(area_ratio) >= max(1.05, float(config.merged_area_ratio) - 0.20)
         and (
-            abs(aspect_ratio - median_aspect) > max(0.08, median_aspect * 0.10)
-            or outline_imbalance >= 0.14
-            or outline_min <= 0.58
-            or candidate.child_count >= 2
-            or candidate.inner_hole_ratio >= 0.035
-        )
-        and (
-            largest_axis_ratio >= 1.16
-            or float(area_ratio) >= 1.02
-            or candidate.fill_ratio >= max(0.16, float(median_fill) + 0.035)
-            or candidate.solidity <= 0.90
+            candidate.child_count >= 2
+            or (
+                abs(aspect_ratio - median_aspect) > max(0.35, median_aspect * 0.40)
+                and largest_axis_ratio >= 1.55
+            )
+            or (candidate.inner_hole_ratio >= 0.050 and outline_imbalance >= 0.22)
         )
     )
     bridge_connected_signal = (
         strict_merge_mode
-        and largest_axis_ratio >= max(1.42, float(config.merged_size_ratio) + 0.10)
-        and smallest_axis_ratio >= 0.28
-        and float(bbox_area_ratio) >= 1.28
-        and float(area_ratio) >= 0.22
+        and largest_axis_ratio >= max(1.55, float(config.merged_size_ratio) + 0.18)
+        and smallest_axis_ratio >= 0.34
+        and float(bbox_area_ratio) >= 1.45
+        and float(area_ratio) >= 0.40
         and (
-            outline_mean >= 0.20
-            or candidate.fill_ratio >= max(0.10, float(median_fill) * 0.60)
-            or candidate.interior_fill_ratio >= max(0.045, normal_interior + 0.012)
-            or candidate.approx_vertices >= 8
+            outline_mean >= 0.28
+            or candidate.fill_ratio >= max(0.14, float(median_fill) * 0.70)
+            or candidate.interior_fill_ratio >= max(0.060, normal_interior + 0.020)
+            or candidate.approx_vertices >= 10
         )
         and (
-            outline_imbalance >= 0.10
-            or outline_min <= 0.64
-            or abs(aspect_ratio - median_aspect) > max(0.10, median_aspect * 0.12)
-            or candidate.solidity <= 0.92
+            outline_imbalance >= 0.16
+            or outline_min <= 0.55
+            or abs(aspect_ratio - median_aspect) > max(0.18, median_aspect * 0.22)
+            or candidate.solidity <= 0.86
         )
     )
     single_intact_cell_signal = (
@@ -2020,12 +2590,24 @@ def _classify_detected_cell(
         area_ratio_clipped = min(1.0, max(0.0, float(area_ratio) / 0.45))
         score = max(score, min(0.86, 0.72 + area_ratio_clipped * 0.12))
         reasons.append("small_artifact")
+        reasons = [reason for reason in reasons if reason != "broken_geometry"]
     edge_filled_signal = (
         center_fill >= max(center_limit, 0.42)
         and candidate.interior_fill_ratio >= max(0.32, interior_limit * 0.86)
         and candidate.fill_ratio >= max(float(median_fill) + 0.14, fill_limit * 0.72)
     )
-    if (
+    edge_size_clip_signal = (
+        getattr(candidate, "touches_border", False)
+        and 0.14 <= smallest_axis_ratio <= 0.88
+        and largest_axis_ratio <= 1.75
+        and float(area_ratio) <= 1.30
+        and (
+            smallest_axis_ratio < 0.78
+            or abs(aspect_ratio - median_aspect) >= max(0.16, median_aspect * 0.18)
+            or float(area_ratio) <= 0.88
+        )
+    )
+    edge_filled_clip_signal = (
         getattr(candidate, "touches_border", False)
         and not _is_cell_like_candidate(
             candidate,
@@ -2037,11 +2619,13 @@ def _classify_detected_cell(
         and 0.22 <= smallest_axis_ratio <= 1.35
         and largest_axis_ratio <= 1.70
         and edge_filled_signal
-    ):
+    )
+    if not conductor_residue_signal and (edge_size_clip_signal or edge_filled_clip_signal):
         edge_loss = max(0.0, 1.0 - smallest_axis_ratio)
         area_loss = max(0.0, 0.74 - float(area_ratio))
         score = max(score, min(0.94, 0.72 + 0.18 * edge_loss + 0.10 * area_loss))
         reasons.append("edge_clipped_cell")
+        reasons = [reason for reason in reasons if reason != "broken_geometry"]
     if not reasons:
         return 0.0, ()
     return float(max(0.0, min(1.0, score))), tuple(dict.fromkeys(reasons))
@@ -2062,29 +2646,44 @@ def _small_artifact_signal(
     height = float(candidate.bbox[3])
     width_ratio = width / max(1.0, float(median_width))
     height_ratio = height / max(1.0, float(median_height))
-    area_ratio = float(candidate.area) / max(1.0, float(median_area))
-    bbox_area_ratio = float(candidate.bbox_area) / max(1.0, float(median_width) * float(median_height))
+    # Prefer slot (bbox) area: confidence hollow outlines report contourArea ≈ full slot.
+    slot_area = max(1.0, float(median_width) * float(median_height))
+    area_ratio = float(candidate.area) / slot_area
+    bbox_area_ratio = float(candidate.bbox_area) / slot_area
     smallest_axis_ratio = min(width_ratio, height_ratio)
     largest_axis_ratio = max(width_ratio, height_ratio)
     if width < 2.0 or height < 2.0:
         return False
     binary = config is not None and str(config.cell_representation) == "binary"
-    # Tiny NN debris can be a few pixels; keep a slightly stricter confidence floor.
+    # Ignore true speckles; keep small-but-critical dirt (~2.5–55% of a cell slot).
+    min_area = max(6.0, slot_area * 0.014)
     if binary:
-        min_area = max(2.0, min(6.0, float(median_area) * 0.015))
         max_largest_axis = 1.45
-        elongated_largest_cap = 1.22
-        compact_largest_cap = 0.62
+        elongated_largest_cap = 1.28
+        compact_largest_cap = 0.85
     else:
-        min_area = max(2.0, min(8.0, float(median_area) * 0.02))
         max_largest_axis = 1.28
-        elongated_largest_cap = 1.05
-        compact_largest_cap = 0.55
+        elongated_largest_cap = 1.12
+        compact_largest_cap = 0.72
     if float(candidate.area) < min_area:
         return False
-    if candidate.child_count > 0:
+    # Hard speckle gate: 1–2 px chips stay ignored even when slot medians are tiny.
+    if float(candidate.area) < 8.0 and max(width, height) <= 3.0:
         return False
-    if smallest_axis_ratio < 0.04 or largest_axis_ratio > max_largest_axis:
+    if area_ratio < 0.025:
+        return False
+    if candidate.child_count > 0:
+        # Confidence outlines use children as holes; binary grain dirt often has speck holes.
+        if not binary:
+            return False
+        if (
+            smallest_axis_ratio >= 0.42
+            and largest_axis_ratio >= 0.52
+            and area_ratio >= 0.28
+            and float(candidate.inner_hole_ratio) >= 0.035
+        ):
+            return False
+    if smallest_axis_ratio < 0.035 or largest_axis_ratio > max_largest_axis:
         return False
     line_like_fragment = (
         smallest_axis_ratio <= (0.14 if binary else 0.18)
@@ -2093,24 +2692,36 @@ def _small_artifact_signal(
     )
     if line_like_fragment:
         return False
-    if area_ratio > 0.62 or bbox_area_ratio > 0.92:
+    # Dense strip along one cell axis is a polygon edge fragment, not dirt.
+    cell_edge_strip = (
+        smallest_axis_ratio <= 0.38
+        and 0.55 <= largest_axis_ratio <= 1.20
+        and float(candidate.solidity) >= 0.82
+        and float(candidate.fill_ratio) >= 0.45
+        and bbox_area_ratio <= 0.48
+    )
+    if cell_edge_strip:
+        return False
+    if area_ratio > 0.58 or bbox_area_ratio > 0.92:
         return False
     normal_interior = max(0.0, float(median_interior_fill))
     normal_center = max(0.0, float(median_center_fill))
     outline_fragment = (
-        largest_axis_ratio >= 0.42
+        not binary
+        and largest_axis_ratio >= 0.42
         and smallest_axis_ratio <= 0.62
         and float(candidate.outline_mean_side_coverage) >= 0.12
         and float(candidate.interior_fill_ratio) <= max(0.14, normal_interior + 0.055)
         and float(candidate.center_fill_ratio) <= max(0.10, normal_center + 0.040)
-        and float(candidate.fill_ratio) <= max(0.32, float(median_fill) + 0.12)
+        and float(candidate.fill_ratio) <= min(0.40, max(0.28, float(median_fill) + 0.08))
     )
     if outline_fragment:
         return False
     cell_sized_fragment = (
-        smallest_axis_ratio >= 0.42
-        and largest_axis_ratio >= 0.52
-        and bbox_area_ratio >= 0.16
+        smallest_axis_ratio >= 0.48
+        and largest_axis_ratio >= 0.58
+        and bbox_area_ratio >= 0.22
+        and area_ratio >= 0.40
         and (0.55 <= float(candidate.aspect_ratio) <= 1.85 or float(candidate.outline_mean_side_coverage) >= 0.10)
     )
     if cell_sized_fragment:
@@ -2127,35 +2738,39 @@ def _small_artifact_signal(
     compact_debris = (
         smallest_axis_ratio >= 0.06
         and largest_axis_ratio <= compact_largest_cap
-        and area_ratio <= 0.34
-        and bbox_area_ratio <= 0.36
+        and 0.025 <= area_ratio <= 0.55
+        and bbox_area_ratio <= 0.65
     )
     elongated_or_blurred_debris = (
         largest_axis_ratio <= elongated_largest_cap
-        and area_ratio <= 0.42
-        and bbox_area_ratio <= 0.48
+        and 0.025 <= area_ratio <= 0.52
+        and bbox_area_ratio <= 0.65
         and (
-            smallest_axis_ratio <= 0.30
-            or float(candidate.solidity) <= 0.72
-            or float(candidate.extent) <= 0.34
-            or candidate.approx_vertices >= 8
+            smallest_axis_ratio <= 0.36
+            or float(candidate.solidity) <= 0.76
+            or float(candidate.extent) <= 0.42
+            or candidate.approx_vertices >= 7
         )
     )
-    tiny_compact_blob = (
-        float(candidate.area) <= max(12.0, float(median_area) * 0.08)
-        and largest_axis_ratio <= 0.34
-        and smallest_axis_ratio <= 0.28
-        and float(candidate.solidity) >= 0.55
-        and float(candidate.fill_ratio) >= 0.35
+    mid_inaccurate_blob = (
+        0.025 <= area_ratio <= 0.55
+        and largest_axis_ratio <= 0.95
+        and smallest_axis_ratio <= 0.88
+        and float(candidate.solidity) >= 0.35
+        and (
+            float(candidate.fill_ratio) >= 0.22
+            or float(candidate.extent) <= 0.75
+            or candidate.approx_vertices >= 6
+        )
     )
-    if not (compact_debris or elongated_or_blurred_debris or tiny_compact_blob):
+    if not (compact_debris or elongated_or_blurred_debris or mid_inaccurate_blob):
         return False
     foreground_signal = (
         candidate.fill_ratio >= max(0.16, float(median_fill) * 0.55)
         or candidate.extent >= 0.38
         or candidate.solidity >= 0.58
         or elongated_or_blurred_debris
-        or tiny_compact_blob
+        or mid_inaccurate_blob
     )
     return bool(foreground_signal)
 

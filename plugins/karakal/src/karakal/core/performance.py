@@ -23,7 +23,9 @@ def _logical_cpu_count() -> int:
 
 
 def _default_cpu_workers() -> int:
-    return max(1, min(4, (_logical_cpu_count() + 1) // 2))
+    # Leave one core for the UI. OpenCV is pinned to one thread per worker, so extra
+    # processes speed up batch analysis without oversubscribing inside each process.
+    return max(1, min(8, _logical_cpu_count() - 1))
 
 
 @dataclass(frozen=True, slots=True)

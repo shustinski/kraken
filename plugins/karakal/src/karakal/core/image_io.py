@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from .mask_primitives import (
     _boundary_mask,
     _label_components,
@@ -130,6 +132,48 @@ def iter_image_paths(folder: Path, *, recursive: bool, extensions: tuple[str, ..
     return sorted(paths, key=lambda item: natural_sort_key(item.as_posix()))
 
 
+def _iter_folder_files(folder: Path, *, recursive: bool, extensions: set[str]):
+    """Yield image files with ``os.scandir``, which avoids a stat per directory entry."""
+
+    def emit(entry: os.DirEntry[str]):
+        if not entry.is_file():
+            return None
+        if Path(entry.name).suffix.lower() not in extensions:
+            return None
+        return Path(entry.path)
+
+    if not recursive:
+        try:
+            iterator = os.scandir(folder)
+        except OSError:
+            return
+        with iterator:
+            for entry in iterator:
+                path = emit(entry)
+                if path is not None:
+                    yield path
+        return
+
+    stack = [folder]
+    while stack:
+        current = stack.pop()
+        try:
+            iterator = os.scandir(current)
+        except OSError:
+            continue
+        with iterator:
+            for entry in iterator:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                        continue
+                    path = emit(entry)
+                except OSError:
+                    continue
+                if path is not None:
+                    yield path
+
+
 def build_folder_index(
     folder: Path,
     *,
@@ -143,15 +187,13 @@ def build_folder_index(
 
     folder = Path(folder)
     normalized_extensions = {str(ext).lower() for ext in extensions}
-    iterator = folder.rglob("*") if recursive else folder.glob("*")
+    iterator = _iter_folder_files(folder, recursive=recursive, extensions=normalized_extensions)
     paths: list[Path] = []
     accepted = 0
     interval = max(1, int(progress_interval))
     for path in iterator:
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
-        if not path.is_file() or path.suffix.lower() not in normalized_extensions:
-            continue
         paths.append(path)
         accepted += 1
         if progress_callback is not None and accepted % interval == 0:

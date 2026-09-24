@@ -6,7 +6,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from PyQt6.QtCore import QPointF, QRectF, QSettings, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -302,6 +302,10 @@ class ExtendFrameDetailsDialog(QDialog):
         self._restored_result_kind: str | None = None
         self._sticky_result_kind: str | None = None
         self._pending_grid_defect_focus: dict[str, object] | None = None
+        self._grid_examples: list[dict[str, object]] = []
+        self._grid_example_candidates: tuple = ()
+        self._grid_example_mode = False
+        self._grid_mark_items: list = []
         self._selection_overlay_items: list = []
         self.frame_id_value = QLabel("-", self)
         self.frame_id_value.hide()
@@ -491,6 +495,33 @@ class ExtendFrameDetailsDialog(QDialog):
         self.grid_tuning_button.clicked.connect(self._request_grid_tuning)
         self.grid_tuning_button.setVisible(False)
         layers_form.addRow(self.grid_tuning_button)
+        self.grid_preview_status = QLabel("", layers_group)
+        self.grid_preview_status.setWordWrap(True)
+        self.grid_preview_status.setVisible(False)
+        layers_form.addRow(self.grid_preview_status)
+        self.grid_example_mode_button = QPushButton(self._t("grid_examples.mode"), layers_group)
+        self.grid_example_mode_button.setCheckable(True)
+        self.grid_example_mode_button.toggled.connect(self._set_grid_example_mode)
+        self.grid_example_mode_button.setVisible(False)
+        layers_form.addRow(self.grid_example_mode_button)
+        self.grid_example_label_combo = QComboBox(layers_group)
+        self.grid_example_label_combo.addItem(self._t("grid_examples.good"), "good")
+        for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
+            self.grid_example_label_combo.addItem(self._t(label_key), str(error_type))
+        self.grid_example_label_combo.setVisible(False)
+        layers_form.addRow(self.grid_example_label_combo)
+        self.grid_examples_open_button = QPushButton(self._t("grid_examples.open"), layers_group)
+        self.grid_examples_open_button.clicked.connect(self._open_grid_examples_dialog)
+        self.grid_examples_open_button.setVisible(False)
+        layers_form.addRow(self.grid_examples_open_button)
+        self.grid_example_clear_button = QPushButton(self._t("grid_examples.clear"), layers_group)
+        self.grid_example_clear_button.clicked.connect(self._clear_grid_examples)
+        self.grid_example_clear_button.setVisible(False)
+        layers_form.addRow(self.grid_example_clear_button)
+        self.grid_example_summary = QLabel(self._t("grid_examples.hint"), layers_group)
+        self.grid_example_summary.setWordWrap(True)
+        self.grid_example_summary.setVisible(False)
+        layers_form.addRow(self.grid_example_summary)
         self.grid_error_type_checks: dict[str, QCheckBox] = {}
         for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             checkbox = QCheckBox(self._t(label_key), layers_group)
@@ -664,6 +695,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.result_kind_combo.currentIndexChanged.connect(self._refresh_result_from_controls)
         self.layer_view_combo.currentIndexChanged.connect(self._refresh_scene_from_controls)
         self.grayscale_diff_checkbox.toggled.connect(self._refresh_scene_from_controls)
+        self.overlay_view.leftClicked.connect(self._on_overlay_left_clicked)
         self.overlay_view.middlePressed.connect(self._activate_context_hold)
         self.overlay_view.middleReleased.connect(self._deactivate_base_hold)
         for widget in (
@@ -2164,13 +2196,13 @@ class ExtendFrameDetailsDialog(QDialog):
                 self.hold_preview_item.setVisible(False)
                 return
         self.hold_preview_item.setVisible(False)
-        self.original_item.setVisible(self.original_visible.isChecked())
-        self.original_item.setOpacity(self.original_opacity.value() / 100.0)
         if grid_details:
-            show_model = self._grid_model_output_layer_available() and self.first_source_visible.isChecked()
-            self.first_source_item.setVisible(show_model)
-            if show_model:
-                self.first_source_item.setOpacity(self.first_source_opacity.value() / 100.0)
+            self.original_item.setVisible(True)
+            self.original_item.setOpacity(1.0)
+            show_reference = self.original_visible.isChecked() and self._grid_has_original()
+            self.first_source_item.setVisible(show_reference)
+            if show_reference:
+                self.first_source_item.setOpacity(self.original_opacity.value() / 100.0)
             show_confidence = self._grid_confidence_available() and self.second_source_visible.isChecked()
             self.second_source_item.setVisible(show_confidence)
             if show_confidence:
@@ -2495,6 +2527,9 @@ class ExtendFrameDetailsDialog(QDialog):
         )
 
     def _grid_scene_base_array(self) -> np.ndarray:
+        mask = self._grid_model_output_native_array()
+        if mask is not None and mask.size > 1:
+            return mask
         result = self._grid_cell_analysis_result()
         width = max(1, int(getattr(result, "image_width", 0) or 1))
         height = max(1, int(getattr(result, "image_height", 0) or 1))
@@ -2603,6 +2638,37 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
+    def _grid_reference_photo_array(self, shape: tuple[int, int]) -> np.ndarray | None:
+        path_text = str(getattr(self._record, "original_path", "") or getattr(self._record, "base_path", "") or "")
+        if not path_text:
+            return None
+        try:
+            values = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
+        except (OSError, TypeError, ValueError, RuntimeError):
+            return None
+        if values.ndim != 2 or values.size <= 1:
+            return None
+        if tuple(values.shape) != tuple(shape):
+            values = np.asarray(resize_grayscale_image(values, shape), dtype=np.uint8)
+        return values
+
+    def _grid_model_output_native_array(self) -> np.ndarray | None:
+        path_text = self._grid_model_output_path()
+        if not path_text:
+            return None
+        cache_key = ("grid_model_output_native", path_text)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+        try:
+            values = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
+        except (OSError, TypeError, ValueError, RuntimeError):
+            return None
+        if values.ndim != 2 or values.size <= 1:
+            return None
+        self._derived_cache[cache_key] = values
+        return values
+
     def _grid_model_output_path(self) -> str:
         model_id = str(self._selected_model_for_current_comparison() or "")
         mask_paths = getattr(self._record, "model_mask_paths", {}) or {}
@@ -2689,6 +2755,7 @@ class ExtendFrameDetailsDialog(QDialog):
             selected_model,
             id(self._grid_inspection_result),
             self._grid_layer_state_key(),
+            tuple((str(item.get("label")), tuple(item.get("bbox", ()))) for item in self._grid_examples),
         )
         result = self._grid_cell_analysis_result(selected_model)
         self._comparison_score = float(getattr(result, "damage_score", getattr(result, "score", 0.0)))
@@ -2709,6 +2776,8 @@ class ExtendFrameDetailsDialog(QDialog):
                 continue
             if status == "broken" and not self.grid_broken_visible.isChecked():
                 continue
+            if status != "normal" and self._grid_good_example_hides_cell(cell):
+                continue
             if status != "normal" and not self._grid_cell_error_type_visible(cell):
                 continue
             x = int(getattr(cell, "left", 0))
@@ -2727,6 +2796,17 @@ class ExtendFrameDetailsDialog(QDialog):
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
+        for example in self._grid_examples:
+            bbox = tuple(example.get("bbox", ()))
+            if len(bbox) < 4:
+                continue
+            label = str(example.get("label") or "good")
+            color = QColor(34, 197, 94) if label == "good" else grid_inspection_error_type_color(label)
+            pen = QPen(color, 3.0, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])))
         painter.end()
         self._overlay_cache[cache_key] = pixmap
         return pixmap
@@ -3154,6 +3234,17 @@ class ExtendFrameDetailsDialog(QDialog):
             self.grid_error_types_title.setVisible(bool(visible))
         if hasattr(self, "grid_tuning_button"):
             self.grid_tuning_button.setVisible(bool(visible))
+        for name in (
+            "grid_preview_status",
+            "grid_example_mode_button",
+            "grid_example_label_combo",
+            "grid_examples_open_button",
+            "grid_example_clear_button",
+            "grid_example_summary",
+        ):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setVisible(bool(visible))
         for widget in self._grid_layer_controls():
             widget.setVisible(bool(visible))
             if isinstance(layout, QFormLayout):
@@ -3164,7 +3255,7 @@ class ExtendFrameDetailsDialog(QDialog):
     def _set_grid_detail_layer_rows(self, grid_details: bool) -> None:
         self.original_layer_title.setVisible(True)
         self.original_layer_row.setVisible(True)
-        show_grid_model = bool(grid_details) and self._grid_model_output_layer_available()
+        show_grid_model = False if grid_details else self._grid_model_output_layer_available()
         self.first_source_layer_title.setVisible(show_grid_model or not bool(grid_details))
         self.first_source_layer_row.setVisible(show_grid_model or not bool(grid_details))
         self.result_layer_title.setVisible(True)
@@ -3173,14 +3264,12 @@ class ExtendFrameDetailsDialog(QDialog):
         self.second_source_layer_title.setVisible(show_grid_confidence or not bool(grid_details))
         self.second_source_layer_row.setVisible(show_grid_confidence or not bool(grid_details))
         if grid_details:
-            if self._grid_has_original():
-                self.original_layer_title.setText(self._t("details.original"))
-            else:
-                model_id = self._selected_model_for_current_comparison()
-                self.original_layer_title.setText(
-                    self._model_display_name(model_id) if model_id else self._t("details.model_output_layer")
-                )
+            self.original_layer_title.setText(self._t("details.grid_reference_layer"))
             self.first_source_layer_title.setText(self._t("details.model_output_layer"))
+            if not getattr(self, "_grid_reference_layer_initialized", False):
+                self._grid_reference_layer_initialized = True
+                self.original_visible.setChecked(False)
+                self.original_opacity.setValue(40)
             self.second_source_layer_title.setText(self._t("details.grid_confidence_layer"))
             self.result_layer_title.setText(self._t("details.grid_cell_defects"))
             self.first_mask_color_button.setVisible(False)
@@ -3197,12 +3286,304 @@ class ExtendFrameDetailsDialog(QDialog):
         if callable(callback):
             callback(self)
 
-    def apply_grid_inspection_preview(self, result) -> None:
+    def set_grid_examples(self, examples: list[dict[str, object]]) -> None:
+        self._grid_examples = list(examples)
+        self._refresh_grid_example_summary()
+
+    def set_grid_example_candidates(self, cells) -> None:
+        self._grid_example_candidates = tuple(cells or ())
+
+    def show_grid_preview_message(self, message: str) -> None:
+        if hasattr(self, "grid_preview_status"):
+            self.grid_preview_status.setText(str(message))
+
+    def apply_grid_inspection_preview(self, result, cells=None) -> None:
         self._grid_inspection_result = result
+        if cells is not None:
+            self._grid_example_candidates = tuple(cells)
+        defect_count = sum(
+            1
+            for cell in (getattr(result, "per_cell_results", ()) or ())
+            if str(getattr(cell, "status", "")) != "normal"
+        )
+        self.show_grid_preview_message(self._t("grid_tuning.preview_count", count=defect_count))
         self._clear_grid_cell_defects_overlay_cache()
+        self._refresh_grid_example_summary()
         if self._selected_result_kind() == "grid_cell_defects":
             self._refresh_result_layer()
             self._refresh_info()
+
+    def _refresh_grid_example_summary(self) -> None:
+        if not hasattr(self, "grid_example_summary"):
+            return
+        defects = [item for item in self._grid_examples if str(item.get("label")) != "good"]
+        good = [item for item in self._grid_examples if str(item.get("label")) == "good"]
+        current = tuple(getattr(self._grid_inspection_result, "per_cell_results", ()) or ())
+        defect_hits = sum(1 for item in defects if self._example_overlaps_defect(item, current))
+        good_hits = sum(1 for item in good if not self._example_overlaps_defect(item, current))
+        similar_defects = 0
+        similar_good = 0
+        for cell in current:
+            if str(getattr(cell, "status", "")) == "normal":
+                continue
+            if any(self._example_similar(item, cell) for item in defects) and not any(
+                self._example_overlaps_cell(item, cell) for item in defects
+            ):
+                similar_defects += 1
+            if any(self._example_similar(item, cell) for item in good):
+                similar_good += 1
+        if not self._grid_examples:
+            self.grid_example_summary.setText(self._t("grid_examples.hint"))
+            return
+        self.grid_example_summary.setText(
+            self._t(
+                "grid_examples.summary",
+                defects=f"{defect_hits}/{len(defects)}",
+                good=f"{good_hits}/{len(good)}",
+                similar_defects=str(similar_defects),
+                similar_good=str(similar_good),
+            )
+        )
+
+    @staticmethod
+    def _example_overlaps_cell(example: dict[str, object], cell) -> bool:
+        bbox = tuple(example.get("bbox", ()))
+        if len(bbox) < 4:
+            return False
+        left, top, width, height = (float(value) for value in bbox[:4])
+        other_left = float(getattr(cell, "left", 0))
+        other_top = float(getattr(cell, "top", 0))
+        other_width = float(getattr(cell, "width", 0))
+        other_height = float(getattr(cell, "height", 0))
+        return not (
+            left + width < other_left
+            or other_left + other_width < left
+            or top + height < other_top
+            or other_top + other_height < top
+        )
+
+    def _grid_good_example_hides_cell(self, cell) -> bool:
+        good = [item for item in self._grid_examples if str(item.get("label")) == "good"]
+        if not good or str(getattr(cell, "status", "")) == "normal":
+            return False
+        cell_reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
+        current = tuple(getattr(self._grid_inspection_result, "per_cell_results", ()) or ())
+        for example in good:
+            if self._example_overlaps_cell(example, cell):
+                return True
+            for other in current:
+                if other is cell or str(getattr(other, "status", "")) == "normal":
+                    continue
+                if not self._example_overlaps_cell(example, other):
+                    continue
+                other_reasons = {str(reason) for reason in (getattr(other, "reasons", ()) or ())}
+                if cell_reasons.intersection(other_reasons) and self._example_similar({"bbox": getattr(other, "bbox", ())}, cell):
+                    return True
+        return False
+
+    def _example_overlaps_defect(self, example: dict[str, object], cells) -> bool:
+        return any(
+            str(getattr(cell, "status", "")) != "normal" and self._example_overlaps_cell(example, cell)
+            for cell in cells
+        )
+
+    @staticmethod
+    def _example_similar(example: dict[str, object], cell) -> bool:
+        bbox = tuple(example.get("bbox", ()))
+        if len(bbox) < 4:
+            return False
+        example_width = max(1.0, float(bbox[2]))
+        example_height = max(1.0, float(bbox[3]))
+        cell_width = max(1.0, float(getattr(cell, "width", 1)))
+        cell_height = max(1.0, float(getattr(cell, "height", 1)))
+        area_ratio = (cell_width * cell_height) / (example_width * example_height)
+        aspect_gap = abs((example_width / example_height) - (cell_width / cell_height))
+        return 0.55 <= area_ratio <= 1.8 and aspect_gap <= 0.45
+
+    def _set_grid_example_mode(self, enabled: bool) -> None:
+        self._grid_example_mode = bool(enabled)
+
+    def _clear_grid_examples(self) -> None:
+        self._grid_examples = []
+        self._publish_grid_examples()
+        self._sync_grid_examples_dialog()
+        self._clear_grid_cell_defects_overlay_cache()
+        self._refresh_grid_example_summary()
+        if self._selected_result_kind() == "grid_cell_defects":
+            self._refresh_result_layer()
+
+    def _example_source_pixmap(self) -> QPixmap:
+        pixmap = self.original_item.pixmap()
+        if pixmap is None or pixmap.isNull():
+            pixmap = self.first_source_item.pixmap()
+        return pixmap if pixmap is not None else QPixmap()
+
+    def _open_grid_examples_dialog(self) -> None:
+        from .grid_examples_dialog import GridExamplesDialog
+
+        existing = getattr(self, "_grid_examples_dialog", None)
+        if existing is not None:
+            existing.close()
+        dialog = GridExamplesDialog(self._t, self._grid_examples, self._example_source_pixmap(), parent=self)
+        dialog.examplesChanged.connect(self._on_grid_examples_dialog_changed)
+        self._grid_examples_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+
+    def _sync_grid_examples_dialog(self) -> None:
+        dialog = getattr(self, "_grid_examples_dialog", None)
+        if dialog is None:
+            return
+        dialog.set_examples(self._grid_examples, self._example_source_pixmap())
+
+    def _on_grid_examples_dialog_changed(self, examples: list) -> None:
+        self._grid_examples = [dict(item) for item in examples]
+        self._publish_grid_examples()
+        self._clear_grid_cell_defects_overlay_cache()
+        self._refresh_grid_example_summary()
+        if self._selected_result_kind() == "grid_cell_defects":
+            self._refresh_result_layer()
+
+    def _publish_grid_examples(self) -> None:
+        callback = getattr(self, "_on_grid_examples_changed", None)
+        if callable(callback):
+            callback(list(self._grid_examples))
+
+    def _publish_grid_defect_count(self) -> None:
+        result = self._grid_inspection_result
+        if result is None:
+            return
+        count = sum(
+            1
+            for cell in (getattr(result, "per_cell_results", ()) or ())
+            if str(getattr(cell, "status", "")) != "normal"
+            and not self._grid_good_example_hides_cell(cell)
+            and self._grid_cell_error_type_visible(cell)
+        )
+        self.show_grid_preview_message(self._t("grid_tuning.preview_count", count=count))
+
+    def _scale_pixmap_item_to_scene(self, item) -> None:
+        pixmap = item.pixmap()
+        scene = self.overlay_view.scene()
+        if pixmap is None or pixmap.isNull() or scene is None:
+            item.setTransform(QTransform())
+            return
+        rect = scene.sceneRect()
+        item.setTransform(
+            QTransform.fromScale(
+                max(rect.width(), 1.0) / max(float(pixmap.width()), 1.0),
+                max(rect.height(), 1.0) / max(float(pixmap.height()), 1.0),
+            )
+        )
+
+    def _grid_scene_scale(self) -> tuple[float, float]:
+        scene = self.overlay_view.scene()
+        result = self._grid_cell_analysis_result()
+        image_width = max(1.0, float(getattr(result, "image_width", 1) or 1))
+        image_height = max(1.0, float(getattr(result, "image_height", 1) or 1))
+        if scene is None:
+            return 1.0, 1.0
+        rect = scene.sceneRect()
+        return max(rect.width(), 1.0) / image_width, max(rect.height(), 1.0) / image_height
+
+    def _clear_grid_mark_items(self) -> None:
+        scene = self.overlay_view.scene()
+        for item in list(getattr(self, "_grid_mark_items", ()) or ()):
+            if scene is not None:
+                scene.removeItem(item)
+        self._grid_mark_items = []
+
+    def _rebuild_grid_mark_items(self) -> None:
+        self._clear_grid_mark_items()
+        scene = self.overlay_view.scene()
+        if scene is None or self._selected_result_kind() != "grid_cell_defects":
+            return
+        scale_x, scale_y = self._grid_scene_scale()
+        result = self._grid_cell_analysis_result()
+        items = []
+        for cell in getattr(result, "per_cell_results", ()) or ():
+            if str(getattr(cell, "status", "")) == "normal":
+                continue
+            if self._grid_good_example_hides_cell(cell):
+                continue
+            if not self._grid_cell_error_type_visible(cell):
+                continue
+            color = self._grid_cell_color(cell)
+            color.setAlpha(230)
+            pen = QPen(color, 3.0)
+            pen.setCosmetic(True)
+            rect = QRectF(
+                float(getattr(cell, "left", 0)) * scale_x,
+                float(getattr(cell, "top", 0)) * scale_y,
+                max(2.0, float(getattr(cell, "width", 1)) * scale_x),
+                max(2.0, float(getattr(cell, "height", 1)) * scale_y),
+            )
+            item = scene.addRect(rect, pen, QBrush(QColor(color.red(), color.green(), color.blue(), 70)))
+            item.setZValue(30.0)
+            items.append(item)
+        for example in self._grid_examples:
+            bbox = tuple(example.get("bbox", ()))
+            if len(bbox) < 4:
+                continue
+            label = str(example.get("label") or "good")
+            color = QColor(34, 197, 94) if label == "good" else grid_inspection_error_type_color(label)
+            pen = QPen(color, 4.0, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            rect = QRectF(
+                float(bbox[0]) * scale_x,
+                float(bbox[1]) * scale_y,
+                max(8.0, float(bbox[2]) * scale_x),
+                max(8.0, float(bbox[3]) * scale_y),
+            )
+            item = scene.addRect(rect, pen, QBrush(Qt.BrushStyle.NoBrush))
+            item.setZValue(40.0)
+            items.append(item)
+        self._grid_mark_items = items
+
+    def _on_overlay_left_clicked(self, scene_pos: QPointF, _modifiers) -> None:
+        if not self._grid_example_mode or self._selected_result_kind() != "grid_cell_defects":
+            return
+        scale_x, scale_y = self._grid_scene_scale()
+        x = float(scene_pos.x()) / max(scale_x, 1e-6)
+        y = float(scene_pos.y()) / max(scale_y, 1e-6)
+        chosen = None
+        chosen_area = None
+        for cell in self._grid_example_candidates:
+            left = float(getattr(cell, "left", 0))
+            top = float(getattr(cell, "top", 0))
+            width = float(getattr(cell, "width", 0))
+            height = float(getattr(cell, "height", 0))
+            if width <= 0 or height <= 0:
+                continue
+            if left <= x <= left + width and top <= y <= top + height:
+                area = width * height
+                if chosen_area is None or area < chosen_area:
+                    chosen = cell
+                    chosen_area = area
+        label = str(self.grid_example_label_combo.currentData() or "good")
+        if chosen is None:
+            side = 48.0
+            bbox = (int(round(x - side / 2)), int(round(y - side / 2)), int(side), int(side))
+        else:
+            bbox = (
+                int(getattr(chosen, "left", 0)),
+                int(getattr(chosen, "top", 0)),
+                max(1, int(getattr(chosen, "width", 1))),
+                max(1, int(getattr(chosen, "height", 1))),
+            )
+        existing = next(
+            (item for item in self._grid_examples if tuple(item.get("bbox", ())) == bbox and str(item.get("label")) == label),
+            None,
+        )
+        if existing is not None:
+            self._grid_examples.remove(existing)
+        else:
+            self._grid_examples.append({"label": label, "bbox": bbox})
+        self._publish_grid_examples()
+        self._sync_grid_examples_dialog()
+        self._clear_grid_cell_defects_overlay_cache()
+        self._refresh_grid_example_summary()
+        self._refresh_result_layer()
 
     def _refresh_grid_cell_defects_layer(self, *_args) -> None:
         if self._selected_result_kind() != "grid_cell_defects":
@@ -3564,7 +3945,7 @@ class ExtendFrameDetailsDialog(QDialog):
         return result
 
     def _refresh_scene(self, *, reset_view: bool) -> None:
-        if self._payload_loading and not self._payload:
+        if self._payload_loading and not self._payload and self._grid_inspection_result is None:
             self.original_item.setPixmap(QPixmap())
             self.first_source_item.setPixmap(QPixmap())
             self.second_source_item.setPixmap(QPixmap())
@@ -3580,7 +3961,7 @@ class ExtendFrameDetailsDialog(QDialog):
         base_pixmap_key = (
             (
                 "grid_base_pixmap",
-                self._grid_inspection_source_path,
+                self._grid_model_output_path(),
                 width,
                 height,
             )
@@ -3596,14 +3977,17 @@ class ExtendFrameDetailsDialog(QDialog):
         mode = self._current_operation_mode()
         prefer_grayscale = self._selected_result_kind() == "diff" and mode == ComparisonMode.GRAYSCALE_DIFF
         if grid_details:
-            if self._grid_model_output_layer_available():
-                self.first_source_item.setPixmap(self._grid_model_output_pixmap())
+            reference = self._grid_reference_photo_array(base_array.shape)
+            if reference is not None:
+                self.first_source_item.setPixmap(self._grayscale_to_pixmap(reference))
             else:
                 self.first_source_item.setPixmap(QPixmap())
             if self._grid_confidence_available():
                 self.second_source_item.setPixmap(self._grid_confidence_overlay_pixmap())
+                self._scale_pixmap_item_to_scene(self.second_source_item)
             else:
                 self.second_source_item.setPixmap(QPixmap())
+                self.second_source_item.setTransform(QTransform())
         else:
             self.first_source_item.setPixmap(
                 self._source_pixmap(first_key, self._named_color("first_mask"), prefer_grayscale=prefer_grayscale)
@@ -3953,7 +4337,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.overlay_view.centerOn(rect.center())
 
     def _refresh_result_layer(self) -> None:
-        if self._payload_loading and not self._payload:
+        if self._payload_loading and not self._payload and self._grid_inspection_result is None:
             self._comparison_score = None
             self.result_item.setPixmap(QPixmap())
             self._clear_selection_overlay_items()
@@ -3991,6 +4375,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self.result_item.setPixmap(self._input_output_heatmap_pixmap(self._input_output_model_id()))
         elif kind == "grid_cell_defects":
             self.result_item.setPixmap(self._grid_cell_defects_pixmap(self._selected_model_for_current_comparison()))
+            self._scale_pixmap_item_to_scene(self.result_item)
         elif kind == "point_matches":
             self._comparison_score = None
             self.result_item.setPixmap(self._point_matches_pixmap(first_key, second_key))
@@ -4015,6 +4400,8 @@ class ExtendFrameDetailsDialog(QDialog):
         self._sync_selection_overlay_items()
         self._update_layer_states()
         if kind == "grid_cell_defects":
+            self._rebuild_grid_mark_items()
+            self._publish_grid_defect_count()
             self._apply_pending_grid_defect_focus()
 
     def _quick_confidence_score(self, model_id: str | None) -> dict[str, float] | None:

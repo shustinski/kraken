@@ -487,6 +487,10 @@ class ExtendFrameDetailsDialog(QDialog):
         self.grid_error_types_title = QLabel(self._t("details.grid_error_types"), layers_group)
         self.grid_error_types_title.setWordWrap(True)
         layers_form.addRow(self.grid_error_types_title)
+        self.grid_tuning_button = QPushButton(self._t("grid_tuning.open"), layers_group)
+        self.grid_tuning_button.clicked.connect(self._request_grid_tuning)
+        self.grid_tuning_button.setVisible(False)
+        layers_form.addRow(self.grid_tuning_button)
         self.grid_error_type_checks: dict[str, QCheckBox] = {}
         for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             checkbox = QCheckBox(self._t(label_key), layers_group)
@@ -3148,6 +3152,8 @@ class ExtendFrameDetailsDialog(QDialog):
         )
         if hasattr(self, "grid_error_types_title"):
             self.grid_error_types_title.setVisible(bool(visible))
+        if hasattr(self, "grid_tuning_button"):
+            self.grid_tuning_button.setVisible(bool(visible))
         for widget in self._grid_layer_controls():
             widget.setVisible(bool(visible))
             if isinstance(layout, QFormLayout):
@@ -3185,6 +3191,18 @@ class ExtendFrameDetailsDialog(QDialog):
             self.second_source_layer_title.setText(self._t("details.comparison_source"))
             self.result_layer_title.setText(self._result_overlay_title())
             self.first_mask_color_button.setVisible(True)
+
+    def _request_grid_tuning(self) -> None:
+        callback = getattr(self, "_on_grid_tuning_requested", None)
+        if callable(callback):
+            callback(self)
+
+    def apply_grid_inspection_preview(self, result) -> None:
+        self._grid_inspection_result = result
+        self._clear_grid_cell_defects_overlay_cache()
+        if self._selected_result_kind() == "grid_cell_defects":
+            self._refresh_result_layer()
+            self._refresh_info()
 
     def _refresh_grid_cell_defects_layer(self, *_args) -> None:
         if self._selected_result_kind() != "grid_cell_defects":

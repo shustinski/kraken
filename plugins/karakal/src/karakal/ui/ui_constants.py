@@ -59,14 +59,42 @@ DEFAULT_GRADIENT_NAME = "accessible_blue_amber"
 DEFAULT_ERROR_WINDOW = (0.0, 1.0)
 DEFAULT_MATRIX_METRIC_KEY = "overall_frame_score"
 GRID_INSPECTION_DAMAGE_METRIC_KEY = "grid_inspection_damage_score"
-# Cell analysis always uses the approved maximum-accuracy profile; operators only
-# choose the reference frame and which defect types are relevant.
-GRID_INSPECTION_FIXED_TUNING: tuple[tuple[str, int], ...] = (
-    ("strictness", 100),
-    ("defect_threshold", 100),
-    ("fill_sensitivity", 100),
-    ("merge_sensitivity", 100),
-    ("noise_filter", 100),
+GRID_INSPECTION_TUNING_KEYS = (
+    "fill_sensitivity",
+    "debris_sensitivity",
+    "geometry_sensitivity",
+    "merge_sensitivity",
+    "mismatch_sensitivity",
+    "disagreement_sensitivity",
+)
+GRID_INSPECTION_PRESET_VALUES: dict[str, dict[str, int]] = {
+    "soft": {
+        "fill_sensitivity": 30,
+        "debris_sensitivity": 40,
+        "geometry_sensitivity": 20,
+        "merge_sensitivity": 15,
+        "mismatch_sensitivity": 25,
+        "disagreement_sensitivity": 25,
+    },
+    "balanced": {
+        "fill_sensitivity": 60,
+        "debris_sensitivity": 75,
+        "geometry_sensitivity": 40,
+        "merge_sensitivity": 35,
+        "mismatch_sensitivity": 50,
+        "disagreement_sensitivity": 50,
+    },
+    "strict": {
+        "fill_sensitivity": 90,
+        "debris_sensitivity": 95,
+        "geometry_sensitivity": 80,
+        "merge_sensitivity": 85,
+        "mismatch_sensitivity": 80,
+        "disagreement_sensitivity": 80,
+    },
+}
+GRID_INSPECTION_FIXED_TUNING: tuple[tuple[str, int], ...] = tuple(
+    (key, int(GRID_INSPECTION_PRESET_VALUES["balanced"][key])) for key in GRID_INSPECTION_TUNING_KEYS
 )
 GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.filled_cell", "filled_cell"),

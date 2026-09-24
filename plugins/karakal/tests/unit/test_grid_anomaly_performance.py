@@ -154,7 +154,7 @@ def test_defect_feature_clusters_assign_human_labels() -> None:
 
 
 @pytest.mark.parametrize("representation", ("confidence", "binary"))
-def test_large_edge_conductor_residue_is_not_classified_as_merged_cell(representation: str) -> None:
+def test_large_edge_mass_is_classified_as_merged_cell(representation: str) -> None:
     candidate = _candidate(
         10,
         (0, 30, 45, 14),
@@ -182,8 +182,9 @@ def test_large_edge_conductor_residue_is_not_classified_as_merged_cell(represent
     )
 
     assert score >= 0.80
-    assert reasons == ("conductor_residue",)
-    assert grid_anomaly._status_for_reasons(reasons) == "artifact"
+    assert "merged_contour" in reasons
+    assert "conductor_residue" not in reasons
+    assert grid_anomaly._status_for_reasons(reasons) == "broken"
 
 
 def _synthetic_border_merged_cells() -> np.ndarray:
@@ -362,7 +363,7 @@ def test_speckle_dirt_is_ignored_on_binary_grid() -> None:
     assert not any("small_artifact" in cell.reasons for cell in result.cells)
 
 
-def test_grainy_mass_without_cells_is_one_conductor_not_many_merged() -> None:
+def test_grainy_mass_without_cells_is_merged_not_conductor() -> None:
     image = np.zeros((256, 256), dtype=np.uint8)
     rng = np.random.default_rng(0)
     # Dense grainy vertical band — no regular cell grid.
@@ -383,28 +384,28 @@ def test_grainy_mass_without_cells_is_one_conductor_not_many_merged() -> None:
     )
     conductors = [cell for cell in result.cells if "conductor_residue" in cell.reasons]
     merged = [cell for cell in result.cells if "merged_contour" in cell.reasons]
-    assert conductors
-    assert len(conductors) <= 3
-    assert not merged
-    assert max(cell.bbox[2] * cell.bbox[3] for cell in conductors) >= 70 * 100
+    assert not conductors
+    assert merged
+    assert len(merged) <= 3
+    assert max(cell.bbox[2] * cell.bbox[3] for cell in merged) >= 70 * 100
 
 
-def test_collapse_adjacent_conductors_into_one_rectangle() -> None:
+def test_collapse_adjacent_merged_masses_into_one_rectangle() -> None:
     cells = [
         grid_anomaly.GridCellAnalysisResult(
-            0, 0, (10, 10, 20, 18), (20.0, 19.0), 1, "artifact", 0.9, ("conductor_residue",)
+            0, 0, (10, 10, 20, 18), (20.0, 19.0), 1, "broken", 0.9, ("merged_contour",)
         ),
         grid_anomaly.GridCellAnalysisResult(
-            1, 0, (28, 12, 22, 16), (39.0, 20.0), 2, "artifact", 0.88, ("conductor_residue",)
+            1, 0, (28, 12, 22, 16), (39.0, 20.0), 2, "broken", 0.88, ("merged_contour",)
         ),
         grid_anomaly.GridCellAnalysisResult(
             2, 0, (100, 100, 12, 12), (106.0, 106.0), 3, "normal", 0.0, ()
         ),
     ]
     collapsed = grid_anomaly._collapse_conductor_regions(cells, median_width=12.0, median_height=12.0)
-    conductors = [cell for cell in collapsed if "conductor_residue" in cell.reasons]
-    assert len(conductors) == 1
-    assert conductors[0].bbox[2] >= 40
+    merged = [cell for cell in collapsed if "merged_contour" in cell.reasons]
+    assert len(merged) == 1
+    assert merged[0].bbox[2] >= 40
     assert any(cell.status == "normal" for cell in collapsed)
 
 
@@ -965,3 +966,39 @@ def test_chunk_partition_does_not_change_results(chunk_size: int, tmp_path) -> N
     assert {key: _result_digest(value) for key, value in actual.items()} == {
         key: _result_digest(value) for key, value in expected.items()
     }
+
+
+def test_nested_small_artifact_is_suppressed_by_broken_geometry() -> None:
+    cells = [
+        grid_anomaly.GridCellAnalysisResult(
+            0, 0, (10, 10, 40, 40), (30.0, 30.0), 1, "broken", 0.88, ("broken_geometry",)
+        ),
+        grid_anomaly.GridCellAnalysisResult(
+            1, 0, (18, 18, 6, 6), (21.0, 21.0), 2, "artifact", 0.76, ("small_artifact",)
+        ),
+        grid_anomaly.GridCellAnalysisResult(
+            2, 0, (100, 100, 12, 12), (106.0, 106.0), 3, "normal", 0.0, ()
+        ),
+    ]
+
+    filtered = grid_anomaly._suppress_overlapping_defect_boxes(cells)
+
+    reasons = [tuple(cell.reasons) for cell in filtered if cell.reasons]
+    assert reasons == [("broken_geometry",)]
+    assert any(cell.status == "normal" for cell in filtered)
+
+
+def test_disjoint_defect_boxes_are_kept() -> None:
+    cells = [
+        grid_anomaly.GridCellAnalysisResult(
+            0, 0, (10, 10, 20, 20), (20.0, 20.0), 1, "broken", 0.88, ("broken_geometry",)
+        ),
+        grid_anomaly.GridCellAnalysisResult(
+            1, 0, (80, 80, 8, 8), (84.0, 84.0), 2, "artifact", 0.76, ("small_artifact",)
+        ),
+    ]
+
+    filtered = grid_anomaly._suppress_overlapping_defect_boxes(cells)
+
+    reasons = {tuple(cell.reasons) for cell in filtered}
+    assert reasons == {("broken_geometry",), ("small_artifact",)}

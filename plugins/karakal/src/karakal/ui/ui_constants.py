@@ -81,6 +81,7 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.binary_only_cell", "binary_only_cell"),
     ("grid_error.geometry_mismatch", "geometry_mismatch"),
     ("grid_error.defect_disagreement", "defect_disagreement"),
+    ("grid_error.class_conflict", "class_conflict"),
 )
 GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "filled_cell": "#eb4052",
@@ -94,6 +95,7 @@ GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "binary_only_cell": "#84cc16",
     "geometry_mismatch": "#6366f1",
     "defect_disagreement": "#f43f5e",
+    "class_conflict": "#e11d48",
 }
 
 

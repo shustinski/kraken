@@ -109,6 +109,8 @@ from ..core.metric_keys import (
 )
 from ..core.workers import (
     AnalyticsWorker,
+    DerivedConflictGridInspectionWorker,
+    DerivedXorGridInspectionWorker,
     FrameIndexWorker,
     GridInspectionWorker,
     PairedGridInspectionWorker,
@@ -158,9 +160,9 @@ from ..ui.ui_constants import (
 from .state import ExtendMatrixTabState
 
 PAIR_ROLE_MODEL_IDS = int(Qt.ItemDataRole.UserRole) + 40
-PAIR_OPERATION_ORDER = ("xor", "iou", "dice")
-PAIR_OPERATION_LABELS = {"xor": "XOR", "iou": "IoU", "dice": "Dice"}
-PAIR_OPERATION_SHORT_LABELS = {"xor": "X", "iou": "I", "dice": "D"}
+PAIR_OPERATION_ORDER = ("xor", "iou", "dice", "and")
+PAIR_OPERATION_LABELS = {"xor": "XOR", "iou": "IoU", "dice": "Dice", "and": "AND"}
+PAIR_OPERATION_SHORT_LABELS = {"xor": "X", "iou": "I", "dice": "D", "and": "∩"}
 GRID_INSPECTION_ERROR_LIST_LIMIT = 1000
 _LOGGER = logging.getLogger(__name__)
 
@@ -371,17 +373,17 @@ class KarakalPresenter(QObject):
 
     @staticmethod
     def _normalize_grid_layers(value: object) -> tuple[str, ...]:
-        allowed = ("confidence", "binary", "comparison")
+        allowed = ("confidence", "binary", "comparison", "derived_conflict")
         allowed_set = set(allowed)
         if value is None:
-            return allowed
+            return ("confidence", "binary", "comparison")
         if isinstance(value, str):
             raw_values = (value,)
         else:
             try:
                 raw_values = tuple(value)  # type: ignore[arg-type]
             except Exception:
-                return allowed
+                return ("confidence", "binary", "comparison")
         selected = tuple(layer for layer in allowed if layer in {str(item) for item in raw_values} and layer in allowed_set)
         return selected or ("confidence",)
 
@@ -417,7 +419,7 @@ class KarakalPresenter(QObject):
 
     @staticmethod
     def _grid_inspection_layer_keys() -> tuple[str, ...]:
-        return ("confidence", "binary", "comparison")
+        return ("confidence", "binary", "comparison", "derived_conflict")
 
     def _grid_inspection_views(self) -> dict[str, object]:
         views = getattr(self, "grid_inspection_matrix_views", None)
@@ -506,10 +508,14 @@ class KarakalPresenter(QObject):
             available["confidence"] = ("confidence" in requested) and (has_confidence or has_binary)
             available["binary"] = ("binary" in requested) and has_binary
             available["comparison"] = ("comparison" in requested) and has_binary and has_confidence
+            model_count = len(tuple(state.build_result.model_specs or ()))
+            available["derived_conflict"] = ("derived_conflict" in requested) and model_count >= 2
         if not any(available.values()):
             available["confidence"] = True
         for index, key in enumerate(keys):
-            tabs.setTabEnabled(index, bool(available[key]))
+            if index >= tabs.count():
+                break
+            tabs.setTabEnabled(index, bool(available.get(key, False)))
         current_key = (
             str(getattr(state, "grid_inspection_layer", "confidence") or "confidence")
             if state is not None
@@ -913,10 +919,14 @@ class KarakalPresenter(QObject):
             self._grid_inspection_tuning_group.setVisible(self._current_app_mode() == "grid_inspection")
         self._sync_grid_reference_controls(state if is_grid_inspection_mode else None)
         if hasattr(self, "pair_matrix_group"):
-            self.pair_matrix_group.setVisible(
+            show_pairs = (
                 context.analysis_mode == INTER_MODEL_ANALYSIS_MODE
                 and self._analysis_profile == AnalysisProfileKind.MODEL_COMPARISON
+            ) or (
+                self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS
+                and len(self._checked_model_specs()) >= 2
             )
+            self.pair_matrix_group.setVisible(show_pairs)
             self._refresh_pair_matrix()
 
     def _checked_model_specs(self) -> tuple[ModelSpec, ...]:
@@ -1034,8 +1044,14 @@ class KarakalPresenter(QObject):
     def _active_pair_model_specs(self) -> tuple[ModelSpec, ...]:
         return tuple(spec for spec in self._checked_model_specs() if str(spec.model_id))
 
+    def _pair_operations_for_profile(self) -> tuple[str, ...]:
+        if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
+            return ("and",)
+        return ("xor", "iou", "dice")
+
     def _ensure_default_pair_selection(self, specs: tuple[ModelSpec, ...]) -> None:
         id_order = {str(spec.model_id): index for index, spec in enumerate(specs)}
+        allowed_operations = set(self._pair_operations_for_profile())
         normalized_operations: dict[tuple[str, str], set[str]] = {}
         for (model_a, model_b), operations in self._comparison_pair_operations.items():
             model_a = str(model_a)
@@ -1044,13 +1060,15 @@ class KarakalPresenter(QObject):
                 continue
             if id_order[model_a] > id_order[model_b]:
                 model_a, model_b = model_b, model_a
-            valid_operations = {operation for operation in operations if operation in PAIR_OPERATION_ORDER}
+            valid_operations = {operation for operation in operations if operation in allowed_operations}
             if valid_operations:
                 normalized_operations.setdefault((model_a, model_b), set()).update(valid_operations)
         self._comparison_pair_operations = normalized_operations
         if self._comparison_pair_operations or len(specs) < 2 or self._pair_defaults_initialized:
             return
-        self._comparison_pair_operations[(str(specs[0].model_id), str(specs[1].model_id))] = set(PAIR_OPERATION_ORDER)
+        self._comparison_pair_operations[(str(specs[0].model_id), str(specs[1].model_id))] = set(
+            self._pair_operations_for_profile()
+        )
         self._pair_defaults_initialized = True
 
     def _on_pair_operation_toggled(self, model_a: str, model_b: str, operation: str, checked: bool) -> None:
@@ -1133,7 +1151,7 @@ class KarakalPresenter(QObject):
                     cell_layout = QHBoxLayout(cell)
                     cell_layout.setContentsMargins(1, 1, 1, 1)
                     cell_layout.setSpacing(1)
-                    for operation in PAIR_OPERATION_ORDER:
+                    for operation in self._pair_operations_for_profile():
                         button = QPushButton(PAIR_OPERATION_SHORT_LABELS[operation], cell)
                         button.setCheckable(True)
                         button.setChecked(operation in operations)
@@ -1174,6 +1192,12 @@ class KarakalPresenter(QObject):
         return "Dice"
 
     def _pair_matrix_title(self) -> str:
+        if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
+            pair_count = len(self._selected_grid_conflict_pairs())
+            return (
+                f"{self._t('pairs.group')} - AND"
+                f" · {self._t('pairs.summary', count=pair_count)}"
+            )
         target = self._selected_comparison_target()
         target_label = {
             ComparisonTarget.OUTPUTS: self._t("comparison_target.outputs"),
@@ -1186,6 +1210,17 @@ class KarakalPresenter(QObject):
             f" · {self._t('pairs.summary', count=pair_count)}"
         )
 
+    def _selected_grid_conflict_pairs(self) -> tuple[ComparisonPairSelection, ...]:
+        return tuple(
+            ComparisonPairSelection(pair.model_a_id, pair.model_b_id, ("and",))
+            for pair in self._selected_comparison_pairs()
+            if "and" in tuple(pair.operations)
+        )
+
+    def _selected_grid_xor_pairs(self) -> tuple[ComparisonPairSelection, ...]:
+        # Back-compat alias for earlier XOR naming.
+        return self._selected_grid_conflict_pairs()
+
     def _selected_comparison_pairs(self) -> tuple[ComparisonPairSelection, ...]:
         specs = self._active_pair_model_specs()
         self._ensure_default_pair_selection(specs)
@@ -1194,7 +1229,13 @@ class KarakalPresenter(QObject):
         for (model_a, model_b), operations in self._comparison_pair_operations.items():
             if model_a not in specs_by_id or model_b not in specs_by_id or model_a == model_b:
                 continue
-            ordered_operations = tuple(operation for operation in PAIR_OPERATION_ORDER if operation in operations)
+            ordered_operations = tuple(
+                operation for operation in self._pair_operations_for_profile() if operation in operations
+            )
+            if not ordered_operations:
+                ordered_operations = tuple(
+                    operation for operation in PAIR_OPERATION_ORDER if operation in operations
+                )
             if ordered_operations:
                 pairs.append(ComparisonPairSelection(model_a, model_b, ordered_operations))
         return tuple(pairs)
@@ -4497,14 +4538,36 @@ class KarakalPresenter(QObject):
         for view in self._grid_inspection_views().values():
             view.set_processing_keys(set())
         self._worker_thread = QThread(self._view)
-        if has_selected_sources and model_id:
+        want_derived_conflict = "derived_conflict" in requested_layers
+        conflict_pairs = self._selected_grid_conflict_pairs() if want_derived_conflict else ()
+        if want_derived_conflict and not conflict_pairs and len(self._checked_model_specs()) >= 2:
+            # Ensure a default AND pair so conflict review can run.
+            self._pair_defaults_initialized = False
+            self._ensure_default_pair_selection(self._active_pair_model_specs())
+            conflict_pairs = self._selected_grid_conflict_pairs()
+        if want_derived_conflict and conflict_pairs:
+            pair = conflict_pairs[0]
+            threshold, _boundary = self._selected_polygon_compare_values()
+            self._worker = DerivedConflictGridInspectionWorker(
+                records,
+                model_a_id=pair.model_a_id,
+                model_b_id=pair.model_b_id,
+                primary_model_id=model_id,
+                threshold=threshold,
+                config=grid_config,
+                reference_profile=reference_profile,
+                performance_config=self._view.performance_config,
+                requested_layers=requested_layers,
+            )
+        elif has_selected_sources and model_id:
+            base_layers = tuple(layer for layer in requested_layers if layer != "derived_conflict")
             self._worker = PairedGridInspectionWorker(
                 records,
                 model_id,
                 grid_config,
                 reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
-                requested_layers=requested_layers,
+                requested_layers=base_layers or ("confidence", "binary", "comparison"),
             )
         else:
             self._worker = GridInspectionWorker(

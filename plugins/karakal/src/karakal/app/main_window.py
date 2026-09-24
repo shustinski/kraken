@@ -577,15 +577,17 @@ class KarakalWidget(QWidget):
             ("confidence", "grid_layer.confidence"),
             ("binary", "grid_layer.binary"),
             ("comparison", "grid_layer.comparison"),
+            ("derived_conflict", "grid_layer.derived_conflict"),
         ):
             checkbox = QCheckBox(self._t(label_key), self)
-            checkbox.setChecked(True)
+            checkbox.setChecked(layer_key != "derived_conflict")
             self.grid_layer_compute_checks[str(layer_key)] = checkbox
         self.grid_layer_display_combo = _NoWheelComboBox(self)
         for layer_key, label_key in (
             ("confidence", "grid_layer.confidence"),
             ("binary", "grid_layer.binary"),
             ("comparison", "grid_layer.comparison"),
+            ("derived_conflict", "grid_layer.derived_conflict"),
         ):
             self.grid_layer_display_combo.addItem(self._t(label_key), layer_key)
         self.grid_layer_display_combo.setCurrentIndex(self.grid_layer_display_combo.findData("confidence"))
@@ -1075,6 +1077,7 @@ class KarakalWidget(QWidget):
             ("confidence", "grid_layer.confidence"),
             ("binary", "grid_layer.binary"),
             ("comparison", "grid_layer.comparison"),
+            ("derived_conflict", "grid_layer.derived_conflict"),
         ):
             layer_page = QWidget(self.grid_inspection_layer_tabs)
             layer_layout = QVBoxLayout(layer_page)
@@ -1517,7 +1520,7 @@ class KarakalWidget(QWidget):
                 str(spec.model_id): str(spec.display_name or spec.model_id)
                 for spec in tuple(getattr(build_result, "model_specs", ()) or ())
             }
-            operation_label = {"xor": "XOR", "iou": "IoU", "dice": "Dice"}.get(operation, operation)
+            operation_label = {"xor": "XOR", "iou": "IoU", "dice": "Dice", "and": "AND"}.get(operation, operation)
             return f"{names.get(model_a, model_a)} -> {names.get(model_b, model_b)} [{operation_label}]"
         if '::' in metric_key_text:
             family, model_id = metric_key_text.split('::', 1)
@@ -1650,7 +1653,7 @@ class KarakalWidget(QWidget):
         self._grid_layer_compute_title = QLabel(self._t("grid_tuning.compute_layers"), self._grid_inspection_tuning_group)
         self._grid_layer_compute_title.setWordWrap(True)
         grid_tuning_layout.addWidget(self._grid_layer_compute_title)
-        for layer_key in ("confidence", "binary", "comparison"):
+        for layer_key in ("confidence", "binary", "comparison", "derived_conflict"):
             checkbox = self.grid_layer_compute_checks.get(str(layer_key))
             if checkbox is not None:
                 checkbox.setParent(self._grid_inspection_tuning_group)
@@ -1731,6 +1734,7 @@ class KarakalWidget(QWidget):
                 ("confidence", "grid_layer.confidence"),
                 ("binary", "grid_layer.binary"),
                 ("comparison", "grid_layer.comparison"),
+                ("derived_conflict", "grid_layer.derived_conflict"),
             ):
                 checkbox = getattr(self, "grid_layer_compute_checks", {}).get(str(layer_key))
                 if checkbox is not None:
@@ -1899,6 +1903,8 @@ class KarakalWidget(QWidget):
             self.grid_inspection_layer_tabs.setTabText(0, self._t("grid_layer.confidence"))
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))
             self.grid_inspection_layer_tabs.setTabText(2, self._t("grid_layer.comparison"))
+            if self.grid_inspection_layer_tabs.count() > 3:
+                self.grid_inspection_layer_tabs.setTabText(3, self._t("grid_layer.derived_conflict"))
         for metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "title_label"):
                 card.title_label.setText(self._metric_text_for_key(metric_key, None))

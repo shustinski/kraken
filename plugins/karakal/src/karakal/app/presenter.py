@@ -80,6 +80,7 @@ from ..core.domain import (
     FrameRecord,
     ModelSpec,
 )
+from ..core.grid_calibration import GridCalibration, GridCellExample, reference_from_normal_examples, reference_pairs
 from ..core.grid_anomaly import (
     GridCellReferenceProfile,
     GridDamageAnalysisConfig,
@@ -111,7 +112,6 @@ from ..core.metric_keys import (
 from ..core.workers import (
     AnalyticsWorker,
     DerivedConflictGridInspectionWorker,
-    DerivedXorGridInspectionWorker,
     FrameIndexWorker,
     GridInspectionWorker,
     PairedGridInspectionWorker,
@@ -162,12 +162,36 @@ from ..ui.ui_constants import (
 )
 from .state import ExtendMatrixTabState
 
+_PRESENTER_ORPHAN_THREADS: set[tuple[QThread, object]] = set()
+
+
+def _release_presenter_orphan(worker: object, thread: QThread) -> None:
+    _PRESENTER_ORPHAN_THREADS.discard((thread, worker))
+    if worker is not None and hasattr(worker, "deleteLater"):
+        worker.deleteLater()
+    thread.deleteLater()
+
+
 PAIR_ROLE_MODEL_IDS = int(Qt.ItemDataRole.UserRole) + 40
 PAIR_OPERATION_ORDER = ("xor", "iou", "dice", "and")
 PAIR_OPERATION_LABELS = {"xor": "XOR", "iou": "IoU", "dice": "Dice", "and": "AND"}
 PAIR_OPERATION_SHORT_LABELS = {"xor": "X", "iou": "I", "dice": "D", "and": "∩"}
 GRID_INSPECTION_ERROR_LIST_LIMIT = 1000
 _LOGGER = logging.getLogger(__name__)
+
+
+def _example_pairs(value: object) -> tuple[tuple[str, tuple[tuple[str, float], ...]], ...]:
+    if not isinstance(value, list):
+        return ()
+    pairs = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        features = item.get("features")
+        if not isinstance(features, dict):
+            continue
+        pairs.append((str(item.get("label") or ""), tuple((str(key), float(number)) for key, number in features.items())))
+    return tuple(pairs)
 
 
 class KarakalPresenter(QObject):
@@ -195,6 +219,14 @@ class KarakalPresenter(QObject):
         self._pending_build_snapshot: dict[str, object] | None = None
         self._details_dialogs: list[ExtendFrameDetailsDialog] = []
         self._grid_tuning_preset = "balanced"
+        try:
+            stored = GridCalibration.from_payload(self._settings_service.load_grid_calibration_payload())
+        except Exception:
+            _LOGGER.warning("Ignoring unreadable grid calibration", exc_info=True)
+            stored = GridCalibration()
+        self._grid_calibration_confirmed = stored
+        self._grid_calibration = stored
+        self._grid_mismatch_enabled = False
         self._grid_custom_tuning = None
         self._grid_preview_tuning = None
         self._grid_tuning_dialog = None
@@ -350,12 +382,28 @@ class KarakalPresenter(QObject):
         values = GRID_INSPECTION_PRESET_VALUES.get(preset) or GRID_INSPECTION_PRESET_VALUES["balanced"]
         return {key: int(values[key]) for key in GRID_INSPECTION_TUNING_KEYS}
 
+    @staticmethod
+    def _put_calibration_in_payload(payload: dict[str, object], calibration: GridCalibration | None) -> None:
+        if calibration is None:
+            return
+        if isinstance(calibration.reference, dict) and calibration.reference:
+            payload["calibration_reference"] = dict(calibration.reference)
+        payload["calibration_fingerprint"] = calibration.fingerprint()
+        payload["example_influence"] = float(calibration.example_influence)
+        payload["calibration_examples"] = [
+            {"label": item["label"], "features": dict(item["features"])} for item in calibration.example_records()
+        ]
+        if calibration.calibration_frame_keys:
+            payload["calibration_frame_keys"] = list(calibration.calibration_frame_keys)
+
     def _grid_inspection_config_payload(self) -> dict[str, object]:
         payload: dict[str, object] = dict(self._grid_tuning_values())
         payload["enabled_error_types"] = list(self._selected_grid_error_types())
         payload["requested_layers"] = list(self._selected_grid_compute_layers())
         payload["display_layer"] = "unified"
         payload["tuning_preset"] = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
+        calibration = getattr(self, "_grid_calibration_confirmed", None)
+        self._put_calibration_in_payload(payload, calibration)
         return payload
 
     def _sync_grid_tuning_slider_labels(self) -> None:
@@ -449,6 +497,15 @@ class KarakalPresenter(QObject):
             geometry_iou_threshold=max(0.20, min(0.90, 0.32 + 0.46 * mismatch)),
             centroid_mismatch_ratio=max(0.15, min(0.90, 0.80 - 0.50 * mismatch)),
             enabled_reason_types=enabled_error_types,
+            scoring_mode="calibrated",
+            fill_sensitivity=int(values.get("fill_sensitivity", 60)),
+            debris_sensitivity=int(values.get("debris_sensitivity", 75)),
+            geometry_sensitivity=int(values.get("geometry_sensitivity", 40)),
+            merge_sensitivity=int(values.get("merge_sensitivity", 35)),
+            calibration_reference=reference_pairs(values.get("calibration_reference") if isinstance(values.get("calibration_reference"), dict) else None),
+            calibration_examples=_example_pairs(values.get("calibration_examples")),
+            example_influence=float(values.get("example_influence") or 0.5),
+            calibration_fingerprint=str(values.get("calibration_fingerprint") or ""),
         ).normalized()
 
     def _selected_grid_damage_config(self) -> GridDamageAnalysisConfig:
@@ -4396,7 +4453,7 @@ class KarakalPresenter(QObject):
         )
         self._pending_build_snapshot = self._capture_view_snapshot()
         self._worker_kind = "build"
-        self._worker_thread = QThread(self._view)
+        self._worker_thread = QThread()
         self._worker = FrameIndexWorker(
             model_specs,
             options,
@@ -4437,7 +4494,7 @@ class KarakalPresenter(QObject):
         request_signature = self._analytics_request_signature(state, metric_key)
         self._worker_kind = "analytics"
         self._active_compute_state = state
-        self._worker_thread = QThread(self._view)
+        self._worker_thread = QThread()
         self._worker = AnalyticsWorker(
             state.build_result,
             metric_key,
@@ -4574,7 +4631,7 @@ class KarakalPresenter(QObject):
         state.matrix_view.set_processing_keys(set())
         for view in self._grid_inspection_views().values():
             view.set_processing_keys(set())
-        self._worker_thread = QThread(self._view)
+        self._worker_thread = QThread()
         want_derived_conflict = "derived_conflict" in requested_layers
         conflict_pairs = self._selected_grid_conflict_pairs() if want_derived_conflict else ()
         if want_derived_conflict and not conflict_pairs and len(self._checked_model_specs()) >= 2:
@@ -4681,15 +4738,38 @@ class KarakalPresenter(QObject):
         if auto_compute_state is not None and auto_compute_state.widget in self._tab_states:
             QTimer.singleShot(0, self._on_compute_requested)
 
-    def _merge_grid_layer_results(self, *results: object) -> GridFrameAnalysisResult | None:
-        available = [result for result in results if isinstance(result, GridFrameAnalysisResult)]
-        if not available:
+    def _merge_grid_layer_results(self, layers: dict[str, object]) -> GridFrameAnalysisResult | None:
+        """Unified matrix uses the mask layer. Confidence verdicts stay out of the defect score."""
+
+        mask_reasons = {
+            "filled_cell",
+            "partial_filled_cell",
+            "small_artifact",
+            "broken_geometry",
+            "merged_contour",
+            "edge_clipped_cell",
+        }
+        mismatch_reasons = {
+            "geometry_mismatch",
+            "defect_disagreement",
+            "confidence_only_cell",
+            "binary_only_cell",
+        }
+        binary = layers.get("binary")
+        base = binary if isinstance(binary, GridFrameAnalysisResult) else None
+        if base is None:
+            for item in layers.values():
+                if isinstance(item, GridFrameAnalysisResult):
+                    base = item
+                    break
+        if base is None:
             return None
         cells = []
         seen: set[tuple[int, int, int, int, str]] = set()
-        for result in available:
+
+        def _take(result: GridFrameAnalysisResult, allowed: set[str]) -> None:
             for cell in getattr(result, "per_cell_results", ()) or ():
-                reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()) if str(reason))
+                reasons = tuple(reason for reason in (getattr(cell, "reasons", ()) or ()) if str(reason) in allowed)
                 if not reasons or str(getattr(cell, "status", "")) == "normal":
                     continue
                 bbox = tuple(int(value) for value in getattr(cell, "bbox", (0, 0, 0, 0))[:4])
@@ -4697,9 +4777,15 @@ class KarakalPresenter(QObject):
                 if key in seen:
                     continue
                 seen.add(key)
-                cells.append(cell)
-        base = available[0]
-        damage_score = max(float(getattr(result, "damage_score", 0.0) or 0.0) for result in available)
+                cells.append(cell if reasons == tuple(getattr(cell, "reasons", ()) or ()) else replace(cell, reasons=reasons))
+
+        if isinstance(binary, GridFrameAnalysisResult):
+            _take(binary, mask_reasons)
+        if getattr(self, "_grid_mismatch_enabled", False):
+            comparison = layers.get("comparison")
+            if isinstance(comparison, GridFrameAnalysisResult):
+                _take(comparison, mismatch_reasons)
+        damage_score = float(getattr(binary if isinstance(binary, GridFrameAnalysisResult) else base, "damage_score", 0.0) or 0.0)
         return replace(
             base,
             per_cell_results=tuple(cells),
@@ -4707,6 +4793,199 @@ class KarakalPresenter(QObject):
             broken_cells=len(cells),
             detected_cells=len(cells),
         )
+
+    def _begin_grid_calibration(self, state, records: tuple) -> None:
+        keys = tuple(str(getattr(record, "key", "") or "") for record in records[:20] if getattr(record, "key", None))
+        self._grid_calibration = replace(self._grid_calibration, calibration_frame_keys=keys)
+        self._prepare_calibration_frames(state, records)
+        if records:
+            self._open_record_details(records[0], state)
+        self._refresh_grid_calibration_summary()
+        self._update_grid_calibration_status()
+
+    def _begin_diverse_grid_calibration(self, state) -> None:
+        from ..core.grid_calibration import select_diverse_calibration_keys
+
+        records = tuple(getattr(getattr(state, "build_result", None), "records", ()) or ())
+        keys = select_diverse_calibration_keys(records, limit=8)
+        selected = tuple(record for record in records if str(getattr(record, "key", "")) in keys)
+        if selected:
+            self._begin_grid_calibration(state, selected)
+
+    def _prepare_calibration_frames(self, state, records: tuple) -> None:
+        if getattr(self, "_grid_prepared_frames", None) is None:
+            self._grid_prepared_frames = {}
+        for record in records:
+            try:
+                self._analyze_grid_record_for_details(record, state, self._grid_tuning_values())
+            except Exception:
+                continue
+
+    def _update_grid_calibration_status(self) -> None:
+        label = getattr(self, "grid_inspection_status_label", None)
+        if label is None:
+            return
+        calibration = getattr(self, "_grid_calibration_confirmed", None) or getattr(self, "_grid_calibration", None)
+        keys = tuple(getattr(calibration, "calibration_frame_keys", ()) or ())
+        examples = tuple(getattr(calibration, "examples", ()) or ())
+        marked = len(getattr(self, "_grid_markup_paths", ()) or ())
+        fingerprint = ""
+        if calibration is not None and hasattr(calibration, "fingerprint"):
+            fingerprint = str(calibration.fingerprint())
+        analyzed = str(getattr(self, "_grid_analyzed_fingerprint", "") or "")
+        if not keys and not examples:
+            label.setText(self._t("grid_tuning.status_preset"))
+        elif analyzed and fingerprint and analyzed != fingerprint:
+            label.setText(self._t("grid_tuning.status_stale"))
+        else:
+            label.setText(
+                self._t(
+                    "grid_tuning.status_confirmed",
+                    frames=len(keys),
+                    marked=marked,
+                    examples=len(examples),
+                )
+            )
+
+    def _choose_grid_markup(self) -> None:
+        paths, _selected = QFileDialog.getOpenFileNames(self._view, self._t("grid_tuning.choose_markup"))
+        if not paths:
+            return
+        self._grid_markup_paths = tuple(str(path) for path in paths)
+        dialog = getattr(self, "_grid_tuning_dialog", None)
+        if dialog is not None and hasattr(dialog, "set_markup_available"):
+            dialog.set_markup_available(True, "")
+
+    def _fit_grid_markup(self, details_dialog=None) -> None:
+        from ..core.grid_ground_truth import fit_markup, match_masks
+
+        frames = []
+        missed = 0
+        for network, truth in self._markup_mask_pairs():
+            try:
+                matched = match_masks(network, truth)
+            except ValueError:
+                continue
+            frames.append(matched)
+            missed += int(matched.get("missed", 0))
+        if not frames:
+            return
+        fitted = fit_markup(frames)
+        sliders = dict(fitted.get("sliders") or {})
+        if sliders:
+            values = dict(self._grid_tuning_values())
+            values.update(sliders)
+            self._grid_preview_tuning = values
+            dialog = getattr(self, "_grid_tuning_dialog", None)
+            if dialog is not None and hasattr(dialog, "set_values"):
+                dialog.set_values(values)
+            self._refresh_grid_details_preview(details_dialog, values)
+        metrics = dict(fitted.get("metrics") or {})
+        text = self._t(
+            "grid_tuning.markup_metrics",
+            found=int(metrics.get("found", 0)),
+            errors=int(metrics.get("errors", 0)),
+            false=int(metrics.get("false", 0)),
+            normals=int(metrics.get("normals", 0)),
+            missed=missed,
+        )
+        warning = str(fitted.get("warning") or "")
+        if warning:
+            text = f"{text} {self._t(warning)}"
+        dialog = getattr(self, "_grid_tuning_dialog", None)
+        if dialog is not None and hasattr(dialog, "set_summary"):
+            dialog.set_summary(text)
+
+    def _markup_mask_pairs(self):
+        import cv2
+
+        paths = tuple(getattr(self, "_grid_markup_paths", ()) or ())
+        state = self._current_tab_state()
+        records = tuple(getattr(getattr(state, "build_result", None), "records", ()) or ())
+        model_id = str(self._grid_inspection_model_id_for_state(state) or "") if state is not None else ""
+        by_stem = {Path(path).stem: path for path in paths}
+        pairs = []
+        for record in records:
+            key = str(getattr(record, "key", "") or "")
+            mask_paths = getattr(record, "model_mask_paths", {}) or {}
+            network_path = str(mask_paths.get(model_id) or "")
+            markup_path = by_stem.get(Path(network_path).stem) or by_stem.get(key) or by_stem.get(Path(key).stem)
+            if not network_path or not markup_path:
+                continue
+            network = cv2.imread(network_path, cv2.IMREAD_GRAYSCALE)
+            truth = cv2.imread(markup_path, cv2.IMREAD_GRAYSCALE)
+            if network is None or truth is None:
+                continue
+            pairs.append((network, truth))
+        return pairs
+
+    def _fit_grid_thresholds(self, details_dialog=None) -> None:
+        from ..core.grid_calibration import fit_sliders_from_examples
+
+        fitted = fit_sliders_from_examples(self._grid_calibration.examples)
+        if not fitted:
+            return
+        values = dict(self._grid_tuning_values())
+        values.update(fitted)
+        self._grid_preview_tuning = values
+        dialog = getattr(self, "_grid_tuning_dialog", None)
+        if dialog is not None and hasattr(dialog, "set_values"):
+            dialog.set_values(values)
+        self._refresh_grid_details_preview(details_dialog, values)
+
+    def _refresh_grid_calibration_summary(self, dialog=None) -> None:
+        from ..core.grid_calibration import calibration_summary
+
+        target = dialog or getattr(self, "_grid_tuning_dialog", None)
+        if target is None or not hasattr(target, "set_summary"):
+            return
+        frames = self._calibration_summary_frames()
+        summary = calibration_summary(frames)
+        target.set_summary(
+            self._t(
+                "grid_tuning.summary",
+                before=summary["before"],
+                after=summary["after"],
+                ok=summary["examples_ok"],
+                total=summary["examples_total"],
+            )
+        )
+
+    def _sync_grid_examples(self, frame_key: str, examples: list, details_dialog=None) -> None:
+        self._grid_frame_examples[str(frame_key)] = list(examples)
+        collected: list[GridCellExample] = []
+        samples: list[dict[str, object]] = []
+        for key, rows in self._grid_frame_examples.items():
+            for row in rows:
+                features = row.get("features") if isinstance(row, dict) else None
+                if not isinstance(features, dict) or not features:
+                    continue
+                label = str(row.get("label") or "normal")
+                if label == "good":
+                    label = "normal"
+                bbox_raw = tuple(row.get("bbox") or (0, 0, 0, 0))
+                bbox = tuple(int(value) for value in bbox_raw[:4])
+                if len(bbox) < 4:
+                    bbox = (0, 0, 0, 0)
+                collected.append(
+                    GridCellExample(
+                        label=label,
+                        features=tuple((str(name), float(value)) for name, value in features.items()),
+                        frame_key=str(key),
+                        bbox=bbox,  # type: ignore[arg-type]
+                    )
+                )
+                samples.append({"label": label, "features": features})
+        reference = reference_from_normal_examples(samples)
+        self._grid_calibration = replace(
+            self._grid_calibration,
+            examples=tuple(collected[:500]),
+            reference=reference,
+        )
+        if details_dialog is not None:
+            tuning = self._grid_preview_tuning or self._grid_tuning_values()
+            self._refresh_grid_details_preview(details_dialog, tuning)
+        self._refresh_grid_calibration_summary()
 
     def _clear_grid_tuning_dialog(self, dialog) -> None:
         if getattr(self, "_grid_tuning_dialog", None) is dialog:
@@ -4719,8 +4998,21 @@ class KarakalPresenter(QObject):
         if existing is not None:
             existing.close()
         dialog = GridTuningDialog(self._t, self._grid_tuning_values(), parent=details_dialog)
+        record = getattr(details_dialog, "_record", None)
+        model_id = ""
+        state = self._current_tab_state()
+        if state is not None:
+            model_id = str(self._grid_inspection_model_id_for_state(state) or "")
+        prob_paths = getattr(record, "model_prob_paths", {}) or {}
+        has_confidence = bool(str(prob_paths.get(model_id) or "")) if model_id else False
+        dialog.set_comparison_available(has_confidence, "" if has_confidence else self._t("grid_tuning.comparison_needs_confidence"))
         dialog.tuningChanged.connect(lambda values, details=details_dialog: self._on_grid_tuning_sliders_changed(values, details))
         dialog.tuningConfirmed.connect(lambda values, details=details_dialog: self._on_grid_tuning_confirmed(values, details))
+        dialog.fitRequested.connect(lambda details=details_dialog: self._fit_grid_thresholds(details))
+        dialog.chooseMarkupRequested.connect(self._choose_grid_markup)
+        dialog.fitMarkupRequested.connect(lambda details=details_dialog: self._fit_grid_markup(details))
+        dialog.set_markup_available(bool(getattr(self, "_grid_markup_paths", ())), self._t("grid_tuning.no_markup"))
+        self._refresh_grid_calibration_summary(dialog)
         dialog.finished.connect(lambda *_args, dialog=dialog, details=details_dialog: self._on_grid_tuning_dialog_closed(dialog, details))
         self._grid_tuning_dialog = dialog
         dialog.show()
@@ -4728,6 +5020,7 @@ class KarakalPresenter(QObject):
 
     def _on_grid_tuning_dialog_closed(self, dialog, details_dialog=None) -> None:
         self._clear_grid_tuning_dialog(dialog)
+        self._grid_calibration = getattr(self, "_grid_calibration_confirmed", self._grid_calibration)
         if self._grid_preview_tuning is None:
             return
         self._grid_preview_tuning = None
@@ -4751,6 +5044,11 @@ class KarakalPresenter(QObject):
         self._grid_custom_tuning = {key: int(values.get(key, 0)) for key in GRID_INSPECTION_TUNING_KEYS}
         self._grid_preview_tuning = None
         self._grid_tuning_preset = "custom"
+        self._grid_calibration_confirmed = self._grid_calibration.confirmed_copy()
+        self._grid_calibration = self._grid_calibration_confirmed
+        service = getattr(self, "_settings_service", None)
+        if service is not None and hasattr(service, "save_grid_calibration_payload"):
+            service.save_grid_calibration_payload(self._grid_calibration_confirmed.to_payload())
         combo = getattr(self, "grid_tuning_preset_combo", None)
         if combo is not None and str(combo.currentData() or "") != "custom":
             index = combo.findData("custom")
@@ -4779,9 +5077,143 @@ class KarakalPresenter(QObject):
             return
         if result is None:
             if hasattr(details_dialog, "show_grid_preview_message"):
-                details_dialog.show_grid_preview_message(self._t("grid_tuning.preview_no_source"))
+                details_dialog.show_grid_preview_message(self._t("grid_tuning.preview_no_mask"))
             return
         details_dialog.apply_grid_inspection_preview(result, cells)
+
+    def _grid_score_thresholds(self, tuning_values: dict[str, int]) -> dict[str, float]:
+        from ..core.grid_scoring import slider_threshold
+
+        return {
+            "fill": slider_threshold(int(tuning_values.get("fill_sensitivity", 0))),
+            "geometry": slider_threshold(int(tuning_values.get("geometry_sensitivity", 0))),
+            "merge": slider_threshold(int(tuning_values.get("merge_sensitivity", 0))),
+            "debris": slider_threshold(int(tuning_values.get("debris_sensitivity", 0))),
+        }
+
+    def _redecide_prepared_frame(self, result, tuning_values: dict[str, int], payload: dict):
+        from ..core.grid_anomaly import _status_for_reasons
+        from ..core.grid_calibration import decide_reasons_batch
+
+        thresholds = self._grid_score_thresholds(tuning_values)
+        examples = list(payload.get("calibration_examples") or ())
+        influence = float(payload.get("example_influence", 0.5))
+        source_cells = tuple(getattr(result, "per_cell_results", ()) or ())
+        feature_rows = [dict(cell.feature_snapshot or ()) for cell in source_cells]
+        score_rows = [
+            {
+                "fill": float(features.get("fill_score", 0.0)),
+                "geometry": float(features.get("geometry_score", 0.0)),
+                "merge": float(features.get("merge_score", 0.0)),
+                "debris": float(features.get("debris_score", 0.0)),
+                "edge": float(features.get("edge_score", 0.0)),
+            }
+            for features in feature_rows
+        ]
+        decided = decide_reasons_batch(
+            score_rows,
+            thresholds,
+            feature_rows=feature_rows,
+            examples=examples,
+            example_influence=influence,
+            edge_enabled=False,
+        )
+        cells = []
+        for cell, scores, reasons in zip(source_cells, score_rows, decided):
+            marked = bool(reasons)
+            cells.append(
+                replace(
+                    cell,
+                    reasons=tuple(reasons),
+                    status=_status_for_reasons(reasons) if marked else "normal",
+                    score=float(max(scores.values()) if marked else 0.0),
+                )
+            )
+        updated = replace(result, per_cell_results=tuple(cells))
+        return updated, tuple(cells)
+
+    def _calibration_summary_frames(self) -> list[dict[str, object]]:
+        from ..core.grid_calibration import decide_reasons
+
+        prepared = getattr(self, "_grid_prepared_frames", {}) or {}
+        confirmed = getattr(self, "_grid_calibration_confirmed", None)
+        working = getattr(self, "_grid_calibration", None)
+        before_values = dict(getattr(confirmed, "sliders", None) or self._grid_tuning_values())
+        after_values = dict(self._grid_preview_tuning or getattr(working, "sliders", None) or self._grid_tuning_values())
+        before_thresholds = self._grid_score_thresholds(before_values)
+        after_thresholds = self._grid_score_thresholds(after_values)
+        examples = list(getattr(working, "examples", ()) or ())
+        influence = float(getattr(working, "example_influence", 0.5))
+        rows = []
+        seen_keys = set()
+        for token, result in prepared.items():
+            frame_key = str(token[0])
+            seen_keys.add(frame_key)
+            before_count = 0
+            after_count = 0
+            for cell in tuple(getattr(result, "per_cell_results", ()) or ()):
+                features = dict(cell.feature_snapshot or ())
+                scores = {
+                    "fill": float(features.get("fill_score", 0.0)),
+                    "geometry": float(features.get("geometry_score", 0.0)),
+                    "merge": float(features.get("merge_score", 0.0)),
+                    "debris": float(features.get("debris_score", 0.0)),
+                }
+                if decide_reasons(scores, before_thresholds, features=features, example_influence=0.0):
+                    before_count += 1
+                if decide_reasons(scores, after_thresholds, features=features, examples=[{"label": item.label, "features": item.feature_map() or {}} for item in examples], example_influence=influence):
+                    after_count += 1
+            frame_examples = [item for item in examples if str(item.frame_key) == frame_key]
+            ok = self._matching_examples(frame_examples, after_thresholds, examples, influence)
+            rows.append(
+                {
+                    "key": frame_key,
+                    "before": before_count,
+                    "after": after_count,
+                    "examples_ok": ok,
+                    "examples_total": len(frame_examples),
+                    "disputed": 0,
+                }
+            )
+        leftover = [item for item in examples if str(item.frame_key) not in seen_keys]
+        if leftover:
+            ok = self._matching_examples(leftover, after_thresholds, examples, influence)
+            rows.append(
+                {
+                    "key": "",
+                    "before": 0,
+                    "after": 0,
+                    "examples_ok": ok,
+                    "examples_total": len(leftover),
+                    "disputed": 0,
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _matching_examples(frame_examples, thresholds, examples, influence) -> int:
+        from ..core.grid_calibration import decide_reasons, example_detector_scores
+
+        example_rows = [{"label": item.label, "features": item.feature_map() or {}} for item in examples]
+        matched = 0
+        for item in frame_examples:
+            features = item.feature_map() or {}
+            if not features:
+                continue
+            reasons = decide_reasons(
+                example_detector_scores(features),
+                thresholds,
+                features=features,
+                examples=example_rows,
+                example_influence=influence,
+            )
+            label = "normal" if item.label == "good" else str(item.label)
+            if label in {"normal", "ignore"}:
+                if not reasons:
+                    matched += 1
+            elif label in reasons:
+                matched += 1
+        return matched
 
     def _analyze_grid_record_for_details(self, record, state, tuning_values: dict[str, int]):
         from ..core.grid_anomaly import analyze_grid_frame_path
@@ -4789,19 +5221,21 @@ class KarakalPresenter(QObject):
         model_id = str(self._grid_inspection_model_id_for_state(state) or "")
         prob_paths = getattr(record, "model_prob_paths", {}) or {}
         mask_paths = getattr(record, "model_mask_paths", {}) or {}
-        confidence_path = str(prob_paths.get(model_id) or "")
-        binary_path = str(mask_paths.get(model_id) or "")
-        if not confidence_path and prob_paths:
-            confidence_path = str(next(iter(prob_paths.values())) or "")
-        if not binary_path and mask_paths:
-            binary_path = str(next(iter(mask_paths.values())) or "")
+        confidence_path = str(prob_paths.get(model_id) or "") if model_id else ""
+        binary_path = str(mask_paths.get(model_id) or "") if model_id else ""
+        if not binary_path:
+            return None, ()
         payload = dict(self._grid_inspection_config_payload())
         payload.update({key: int(tuning_values.get(key, payload.get(key, 0))) for key in GRID_INSPECTION_TUNING_KEYS})
+        self._put_calibration_in_payload(payload, getattr(self, "_grid_calibration", None))
         config = self._grid_damage_config_from_payload(payload)
-        layers: dict[str, object] = {}
         frame_id = str(getattr(record, "key", "") or "")
+        reference_key = json.dumps(payload.get("calibration_reference") or {}, sort_keys=True, default=str)
+        cache_token = (frame_id, binary_path, confidence_path, reference_key)
+        prepared = getattr(self, "_grid_prepared_frames", {}).get(cache_token)
+        if prepared is not None:
+            return self._redecide_prepared_frame(prepared, tuning_values, payload)
         binary_result = None
-        confidence_result = None
         binary_error: Exception | None = None
         if binary_path:
             try:
@@ -4810,55 +5244,21 @@ class KarakalPresenter(QObject):
                     frame_id=frame_id,
                     config=replace(config, cell_representation="binary"),
                     use_cache=False,
+                    confidence_path=confidence_path or None,
                 )
             except Exception as error:
                 binary_error = error
                 binary_result = None
-        if confidence_path:
-            try:
-                confidence_result = analyze_grid_frame_path(
-                    confidence_path,
-                    frame_id=frame_id,
-                    config=replace(config, cell_representation="confidence"),
-                    use_cache=False,
-                )
-            except Exception:
-                confidence_result = None
-        same_shape = (
-            binary_result is not None
-            and confidence_result is not None
-            and int(getattr(binary_result, "image_width", 0) or 0) == int(getattr(confidence_result, "image_width", 0) or 0)
-            and int(getattr(binary_result, "image_height", 0) or 0) == int(getattr(confidence_result, "image_height", 0) or 0)
-        )
-        if binary_result is not None:
-            layers["binary"] = binary_result
-        if same_shape and confidence_result is not None and binary_result is not None:
-            from ..core.grid_anomaly import compare_grid_cell_analyses
-
-            try:
-                comparison = compare_grid_cell_analyses(
-                    confidence_result,
-                    binary_result,
-                    geometry_iou_threshold=float(config.geometry_iou_threshold),
-                    centroid_mismatch_ratio=float(config.centroid_mismatch_ratio),
-                )
-            except Exception:
-                comparison = None
-            if comparison is not None:
-                kept_reasons = {"geometry_mismatch", "defect_disagreement", "confidence_only_cell", "binary_only_cell"}
-                kept_cells = tuple(
-                    cell
-                    for cell in (getattr(comparison, "per_cell_results", ()) or ())
-                    if kept_reasons.intersection(getattr(cell, "reasons", ()) or ())
-                )
-                layers["comparison"] = replace(comparison, per_cell_results=kept_cells, broken_cells=len(kept_cells), detected_cells=len(kept_cells))
-        elif binary_result is None and confidence_result is not None:
-            layers["confidence"] = confidence_result
-        if not layers and binary_error is not None:
+        if binary_result is None and binary_error is not None:
             raise binary_error
-        candidate = binary_result if binary_result is not None else confidence_result
-        cells = tuple(getattr(candidate, "per_cell_results", ()) or ())
-        return self._merge_grid_layer_results(*layers.values()), cells
+        cells = tuple(getattr(binary_result, "per_cell_results", ()) or ())
+        cache = getattr(self, "_grid_prepared_frames", None)
+        if cache is None:
+            cache = {}
+            self._grid_prepared_frames = cache
+        cache[cache_token] = binary_result
+        self._refresh_grid_calibration_summary()
+        return binary_result, cells
 
     def _apply_grid_inspection_worker_payloads(
         self,
@@ -4893,7 +5293,7 @@ class KarakalPresenter(QObject):
         unified_payloads = {
             str(record_key): merged
             for record_key in {key for layer in layers.values() for key in layer}
-            if (merged := self._merge_grid_layer_results(*(layers[layer_key].get(record_key) for layer_key in layers)))
+            if (merged := self._merge_grid_layer_results({layer_key: layers[layer_key].get(record_key) for layer_key in layers}))
             is not None
         }
         state.grid_inspection_layer = "unified"
@@ -4926,6 +5326,10 @@ class KarakalPresenter(QObject):
             return
         payload_map = {str(key): value for key, value in payloads.items()} if isinstance(payloads, dict) else {}
         self._apply_grid_inspection_worker_payloads(state, payload_map, replace_all=True)
+        confirmed = getattr(self, "_grid_calibration_confirmed", None)
+        if confirmed is not None and hasattr(confirmed, "fingerprint"):
+            self._grid_analyzed_fingerprint = confirmed.fingerprint()
+        self._update_grid_calibration_status()
         state.percentile_cache.clear()
         state.repeated_percentile_cache.clear()
         self._active_processing_keys = set()
@@ -5431,11 +5835,20 @@ class KarakalPresenter(QObject):
         grid_inspection_result = None
         grid_example_cells = ()
         grid_inspection_source_path = None
+        grid_detail_message = None
         if is_grid_inspection_details:
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
-            grid_inspection_result, grid_example_cells = self._analyze_grid_record_for_details(
-                record, state, self._grid_tuning_values()
-            )
+            try:
+                grid_inspection_result, grid_example_cells = self._analyze_grid_record_for_details(
+                    record, state, self._grid_tuning_values()
+                )
+            except Exception as error:
+                grid_inspection_result = None
+                grid_example_cells = ()
+                grid_detail_message = self._t("grid_tuning.preview_failed", message=error)
+            else:
+                if grid_inspection_result is None:
+                    grid_detail_message = self._t("grid_tuning.preview_no_mask")
         allowed_result_kinds = None
         if is_grid_inspection_details:
             allowed_result_kinds = ("grid_cell_defects",)
@@ -5467,10 +5880,18 @@ class KarakalPresenter(QObject):
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog._on_grid_tuning_requested = lambda details=dialog: self._open_grid_tuning_dialog(details)
+        if grid_detail_message:
+            dialog.show_grid_preview_message(grid_detail_message)
         record_key = str(getattr(record, "key", "") or "")
         dialog.set_grid_examples(list(self._grid_frame_examples.get(record_key, [])))
+        keys = tuple(getattr(self._grid_calibration, "calibration_frame_keys", ()) or ())
+        if keys and record_key in set(keys):
+            marked_keys = tuple(
+                Path(path).stem for path in tuple(getattr(self, "_grid_markup_paths", ()) or ())
+            )
+            dialog.set_calibration_frame_keys(keys, marked_keys=marked_keys)
         dialog.set_grid_example_candidates(grid_example_cells)
-        dialog._on_grid_examples_changed = lambda examples, key=record_key: self._grid_frame_examples.__setitem__(key, list(examples))
+        dialog._on_grid_examples_changed = lambda examples, key=record_key, details=dialog: self._sync_grid_examples(key, examples, details)
         dialog.destroyed.connect(lambda *_args, dialog=dialog: self._forget_details_dialog(dialog))
         self._details_dialogs.append(dialog)
         dialog.show()
@@ -5510,7 +5931,13 @@ class KarakalPresenter(QObject):
         export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
         export_grid_bmp_selected_action = None
         export_grid_bmp_all_action = None
+        calibrate_action = None
+        diverse_action = None
         if is_grid_inspection_context:
+            calibrate_action = menu.addAction(self._t("context.calibrate_selected", count=len(selected_records)))
+            calibrate_action.setEnabled(1 <= len(selected_records) <= 20)
+            diverse_action = menu.addAction(self._t("context.calibrate_diverse"))
+            diverse_action.setEnabled(bool(getattr(getattr(state, "build_result", None), "records", ())))
             export_menu.addSeparator()
             payload_keys = {str(key) for key in (getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys()}
             selected_result_keys = {str(getattr(item, "key", "") or "") for item in exclude_source if item is not None}
@@ -5561,6 +5988,12 @@ class KarakalPresenter(QObject):
         clear_all_exclusions_action.setEnabled(bool(state.excluded_record_keys))
         selected_action = menu.exec(global_pos)
         if selected_action is None:
+            return
+        if calibrate_action is not None and selected_action is calibrate_action and selected_records:
+            self._begin_grid_calibration(state, tuple(selected_records))
+            return
+        if diverse_action is not None and selected_action is diverse_action:
+            self._begin_diverse_grid_calibration(state)
             return
         if open_action is not None and selected_action is open_action and single_selected_record is not None:
             self._open_record_details(single_selected_record, state)
@@ -6891,16 +7324,28 @@ class KarakalPresenter(QObject):
         self._settings_service.sync()
 
     def shutdown(self) -> None:
-        if self._worker is not None:
-            request_cancel = getattr(self._worker, "request_cancel", None)
+        worker = self._worker
+        thread = self._worker_thread
+        if worker is not None:
+            request_cancel = getattr(worker, "request_cancel", None)
             if callable(request_cancel):
                 request_cancel()
-        thread = self._worker_thread
+            worker.blockSignals(True)
         if thread is not None:
+            try:
+                thread.finished.disconnect(self._cleanup_worker)
+            except TypeError:
+                pass
             thread.quit()
             if thread.isRunning():
                 thread.wait(30000)
-        self._cleanup_worker()
+            if thread.isRunning():
+                _PRESENTER_ORPHAN_THREADS.add((thread, worker))
+                thread.finished.connect(lambda w=worker, t=thread: _release_presenter_orphan(w, t))
+                self._worker = None
+                self._worker_thread = None
+            else:
+                self._cleanup_worker()
         self._close_all_details_dialogs()
         self._persist_state()
 

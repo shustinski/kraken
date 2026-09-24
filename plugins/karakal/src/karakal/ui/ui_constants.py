@@ -14,6 +14,7 @@ SETTINGS_FOLDERS_KEY = "ui/model_folders"
 SETTINGS_BUILD_KEY = "ui/build_settings"
 SETTINGS_DETAILS_VIEW_KEY = "ui/details_view_settings"
 SETTINGS_LANGUAGE_KEY = "ui/language"
+SETTINGS_GRID_CALIBRATION_KEY = "ui/grid_calibration"
 SETTINGS_PERFORMANCE_KEY = "performance/settings_v1"
 SETTINGS_VALIDATION_MASK_KEY = "ui/validation_mask"
 SETTINGS_ANALYSIS_PROFILE_KEY = "analysis/profile_v1"
@@ -100,7 +101,6 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.filled_cell", "filled_cell"),
     ("grid_error.partial_filled_cell", "partial_filled_cell"),
     ("grid_error.small_artifact", "small_artifact"),
-    ("grid_error.conductor_residue", "conductor_residue"),
     # Edge clip must win over broken_geometry when both fire (border crops look "broken").
     ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
     ("grid_error.broken_geometry", "broken_geometry"),
@@ -110,12 +110,14 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.geometry_mismatch", "geometry_mismatch"),
     ("grid_error.defect_disagreement", "defect_disagreement"),
     ("grid_error.class_conflict", "class_conflict"),
+    ("grid_error.low_confidence_cell", "low_confidence_cell"),
+    ("grid_error.possible_missed_region", "possible_missed_region"),
+    ("grid_error.source_mask_mismatch", "source_mask_mismatch"),
 )
 GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "filled_cell": "#eb4052",
     "partial_filled_cell": "#f2994a",
     "small_artifact": "#ec4899",
-    "conductor_residue": "#f97316",
     "broken_geometry": "#38bdf8",
     "merged_contour": "#a855f7",
     "edge_clipped_cell": "#facc15",
@@ -124,6 +126,9 @@ GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "geometry_mismatch": "#6366f1",
     "defect_disagreement": "#f43f5e",
     "class_conflict": "#e11d48",
+    "low_confidence_cell": "#94a3b8",
+    "possible_missed_region": "#64748b",
+    "source_mask_mismatch": "#78716c",
 }
 
 
@@ -139,7 +144,15 @@ def grid_inspection_error_type_icon(error_type: str, *, size: int = 12) -> QIcon
 
 
 GRID_INSPECTION_DEFAULT_ERROR_TYPES = tuple(
-    reason for reason in GRID_DAMAGE_REASON_TYPES if reason in {value for _label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
+    reason
+    for reason in GRID_DAMAGE_REASON_TYPES
+    if reason in {value for _label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
+    and reason
+    not in {
+        "low_confidence_cell",
+        "possible_missed_region",
+        "source_mask_mismatch",
+    }
 )
 DEFAULT_ANALYSIS_MODE = INTER_MODEL_ANALYSIS_MODE
 DEFAULT_METRIC_SCOPE = ""

@@ -19,7 +19,6 @@ from .grid_anomaly import (
     GridFrameAnalysisResult,
     analyze_class_conflict_chunk,
     analyze_grid_frame_chunk,
-    analyze_grid_frame_single_source_path,
     analyze_grid_frame_sources_chunk,
     configure_grid_worker_process,
     load_cached_grid_frame_result,
@@ -624,35 +623,14 @@ class PairedGridInspectionWorker(GridInspectionWorker):
         records: list[tuple[str, str, str]],
         config: GridDamageAnalysisConfig,
     ) -> str | None:
+        _ = config
         has_confidence = any(bool(confidence_path) for _key, confidence_path, _binary_path in records)
         has_binary = any(bool(binary_path) for _key, _confidence_path, binary_path in records)
-        if has_confidence and has_binary:
+        if has_binary:
             return "binary"
         if has_confidence:
             return "confidence"
-        mask_only = [entry for entry in records if entry[2]]
-        if not mask_only:
-            return None
-        sample_count = min(7, len(mask_only))
-        if sample_count == 1:
-            sample_indexes = (0,)
-        else:
-            sample_indexes = tuple(
-                sorted({int(round(index * (len(mask_only) - 1) / (sample_count - 1))) for index in range(sample_count)})
-            )
-        votes = {"confidence": 0, "binary": 0}
-        for sample_index in sample_indexes:
-            key, _confidence_path, binary_path = mask_only[sample_index]
-            selected = analyze_grid_frame_single_source_path(
-                binary_path,
-                frame_id=key,
-                config=config,
-                reference_profile=self._reference_profile,
-                use_cache=self._use_cache,
-            )
-            if selected is not None:
-                votes[selected[0]] = int(votes.get(selected[0], 0) + 1)
-        return "binary" if votes["binary"] >= votes["confidence"] else "confidence"
+        return None
 
     def _apply_pair_chunk_result(
         self,

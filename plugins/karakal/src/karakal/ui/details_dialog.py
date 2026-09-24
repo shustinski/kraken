@@ -217,6 +217,44 @@ class _ExpandableDetailScoreCard(QWidget):
         self.details_label.setToolTip(str(tooltip or ""))
 
 
+_ORPHAN_THREADS: set[tuple[QThread, object]] = set()
+
+
+def _release_orphan(worker: object, thread: QThread) -> None:
+    _ORPHAN_THREADS.discard((thread, worker))
+    if worker is not None:
+        worker.deleteLater()
+    thread.deleteLater()
+
+
+def _detach_running_thread(worker: object, thread: QThread | None) -> None:
+    """Cancel callbacks into a closing window and let a running thread finish alone."""
+
+    if worker is not None:
+        request_cancel = getattr(worker, "request_cancel", None)
+        if callable(request_cancel):
+            request_cancel()
+        block = getattr(worker, "blockSignals", None)
+        if callable(block):
+            block(True)
+    if thread is None:
+        if worker is not None and hasattr(worker, "deleteLater"):
+            worker.deleteLater()
+        return
+    try:
+        thread.finished.disconnect()
+    except TypeError:
+        pass
+    if thread.isRunning():
+        _ORPHAN_THREADS.add((thread, worker))
+        thread.finished.connect(lambda w=worker, t=thread: _release_orphan(w, t))
+        thread.quit()
+        return
+    if worker is not None and hasattr(worker, "deleteLater"):
+        worker.deleteLater()
+    thread.deleteLater()
+
+
 class ExtendFrameDetailsDialog(QDialog):
     """Show standard frame comparisons for two selected models."""
 
@@ -506,6 +544,7 @@ class ExtendFrameDetailsDialog(QDialog):
         layers_form.addRow(self.grid_example_mode_button)
         self.grid_example_label_combo = QComboBox(layers_group)
         self.grid_example_label_combo.addItem(self._t("grid_examples.good"), "good")
+        self.grid_example_label_combo.addItem(self._t("grid_examples.ignore"), "ignore")
         for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             self.grid_example_label_combo.addItem(self._t(label_key), str(error_type))
         self.grid_example_label_combo.setVisible(False)
@@ -585,10 +624,32 @@ class ExtendFrameDetailsDialog(QDialog):
             self._schedule_reset_view()
 
     def closeEvent(self, event) -> None:
-        self._stop_detail_worker()
-        self._stop_confidence_worker()
-        self._stop_attention_worker()
+        self._abandon_background_threads()
         super().closeEvent(event)
+
+    def _abandon_background_threads(self) -> None:
+        pairs = [
+            (self._detail_worker, self._detail_thread),
+            *self._retired_detail_workers,
+            (self._confidence_worker, self._confidence_thread),
+            *self._retired_confidence_workers,
+            (self._attention_worker, self._attention_thread),
+            *self._retired_attention_workers,
+        ]
+        self._detail_worker = None
+        self._detail_thread = None
+        self._retired_detail_workers = []
+        self._confidence_worker = None
+        self._confidence_thread = None
+        self._retired_confidence_workers = []
+        self._attention_worker = None
+        self._attention_thread = None
+        self._retired_attention_workers = []
+        self._detail_request_generation += 1
+        self._confidence_request_generation += 1
+        self._attention_request_generation += 1
+        for worker, thread in pairs:
+            _detach_running_thread(worker, thread)
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Right:
@@ -639,8 +700,39 @@ class ExtendFrameDetailsDialog(QDialog):
         if hasattr(self, "frame_name_value"):
             self.frame_name_value.setText(str(self._record.display_name))
 
+    def set_calibration_frame_keys(self, keys: tuple[str, ...], *, marked_keys: tuple[str, ...] = ()) -> None:
+        self._calibration_frame_keys = tuple(str(key) for key in keys)
+        self._calibration_marked_keys = tuple(str(key) for key in marked_keys)
+        if self._calibration_frame_keys:
+            records = tuple(
+                row
+                for row in tuple(self._build_result.records or ())
+                if str(row.key) in set(self._calibration_frame_keys)
+            )
+            current_index = next(
+                (index for index, row in enumerate(records) if str(row.key) == str(self._record.key)),
+                0,
+            )
+            marked = (
+                self._t("grid_tuning.marked")
+                if str(self._record.key) in set(self._calibration_marked_keys)
+                else self._t("grid_tuning.unmarked")
+            )
+            self.setWindowTitle(
+                self._t(
+                    "grid_tuning.calibration_title",
+                    index=current_index + 1,
+                    count=max(1, len(records)),
+                    marked=marked,
+                )
+            )
+
     def _legacy_step_record(self, delta: int) -> bool:
         records = tuple(self._build_result.records or ())
+        allowed = tuple(getattr(self, "_calibration_frame_keys", ()) or ())
+        if allowed:
+            allowed_set = set(allowed)
+            records = tuple(row for row in records if str(row.key) in allowed_set)
         if len(records) <= 1:
             return False
         current_key = str(self._record.key)
@@ -651,7 +743,22 @@ class ExtendFrameDetailsDialog(QDialog):
         if next_index < 0 or next_index >= len(records):
             return False
         self._record = records[next_index]
-        self.setWindowTitle(self._t("details.window_title", name=self._record.display_name))
+        if allowed:
+            marked = (
+                self._t("grid_tuning.marked")
+                if str(self._record.key) in set(getattr(self, "_calibration_marked_keys", ()) or ())
+                else self._t("grid_tuning.unmarked")
+            )
+            self.setWindowTitle(
+                self._t(
+                    "grid_tuning.calibration_title",
+                    index=next_index + 1,
+                    count=len(records),
+                    marked=marked,
+                )
+            )
+        else:
+            self.setWindowTitle(self._t("details.window_title", name=self._record.display_name))
         self._legacy_update_frame_id_value()
         self._load_current_payload(reset_view=False, preserve_selection=True)
         return True
@@ -1095,7 +1202,7 @@ class ExtendFrameDetailsDialog(QDialog):
         )
         self._refresh_scene(reset_view=reset_view)
         self._refresh_info()
-        self._detail_thread = QThread(self)
+        self._detail_thread = QThread()
         self._detail_worker = DetailPayloadWorker(
             self._record,
             self._build_result,
@@ -1299,7 +1406,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self._confidence_request_generation += 1
         generation = int(self._confidence_request_generation)
         max_side = int(getattr(self._build_result.options, "analysis_max_side", 0) or 0) or None
-        thread = QThread(self)
+        thread = QThread()
         worker = DetailConfidenceWorker(
             self._record,
             self._build_result,
@@ -3578,7 +3685,18 @@ class ExtendFrameDetailsDialog(QDialog):
         if existing is not None:
             self._grid_examples.remove(existing)
         else:
-            self._grid_examples.append({"label": label, "bbox": bbox})
+            features = None
+            snapshot = tuple(getattr(chosen, "feature_snapshot", ()) or ())
+            if snapshot:
+                features = {str(key): float(value) for key, value in snapshot}
+            self._grid_examples.append(
+                {
+                    "label": "normal" if label == "good" else label,
+                    "bbox": bbox,
+                    "features": features,
+                    "frame_key": str(getattr(self._record, "key", "") or ""),
+                }
+            )
         self._publish_grid_examples()
         self._sync_grid_examples_dialog()
         self._clear_grid_cell_defects_overlay_cache()
@@ -4131,7 +4249,7 @@ class ExtendFrameDetailsDialog(QDialog):
 
         self._attention_request_generation += 1
         generation = int(self._attention_request_generation)
-        thread = QThread(self)
+        thread = QThread()
         worker = AttentionIssuesWorker(
             values=values,
             mask=mask,

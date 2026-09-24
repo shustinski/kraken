@@ -1,7 +1,7 @@
 """Main window for the extended validation gradient widget."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -47,13 +47,11 @@ from ..updater import (
     save_karakal_update_channel,
 )
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
-from ..core.domain import BuildResult
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
 from ..core.domain import BuildResult
 from ..core.performance import PerformanceConfig
 from ..ui.app_icon import apply_karakal_icon
 from ..version import __version__
-from ..ui.app_icon import apply_karakal_icon
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
@@ -434,6 +432,26 @@ class _CorrelationColumnWidget(QFrame):
         self._refresh_style(active)
         self.summary_label.clear()
         self.summary_label.hide()
+
+
+_LIVE_UPDATE_THREADS: set[QThread] = set()
+
+
+def _keep_update_thread(thread: QThread) -> None:
+    """Hold a running update check until it finishes. Do not delete it with the window."""
+
+    try:
+        thread.checked.disconnect()
+    except (TypeError, RuntimeError):
+        pass
+    try:
+        thread.finished.disconnect()
+    except (TypeError, RuntimeError):
+        pass
+    if not thread.isRunning():
+        return
+    _LIVE_UPDATE_THREADS.add(thread)
+    thread.finished.connect(lambda t=thread: _LIVE_UPDATE_THREADS.discard(t))
 
 
 class KarakalWidget(QWidget):
@@ -1646,6 +1664,9 @@ class KarakalWidget(QWidget):
             self.grid_tuning_preset_combo,
         )
         grid_tuning_layout.addWidget(self._grid_tuning_preset_row)
+        self.grid_inspection_status_label = QLabel(self._t("grid_tuning.status_preset"), self._grid_inspection_tuning_group)
+        self.grid_inspection_status_label.setWordWrap(True)
+        grid_tuning_layout.addWidget(self.grid_inspection_status_label)
         self._grid_layer_compute_title = QLabel(self._t("grid_tuning.compute_layers"), self._grid_inspection_tuning_group)
         self._grid_layer_compute_title.setWordWrap(True)
         grid_tuning_layout.addWidget(self._grid_layer_compute_title)
@@ -2335,6 +2356,11 @@ class KarakalWidget(QWidget):
         self.matrix_tabs.tabBar().hide()
 
     def shutdown(self) -> None:
+        controller = getattr(self, "_update_controller", None)
+        thread = getattr(controller, "_check_thread", None) if controller is not None else None
+        if thread is not None:
+            _keep_update_thread(thread)
+            controller._check_thread = None
         self._presenter.shutdown()
 
     def closeEvent(self, event) -> None:
@@ -2345,10 +2371,10 @@ class KarakalWidget(QWidget):
 class KarakalMainWindow(QMainWindow):
     """Standalone host window for the extended widget."""
 
-    def __init__(self) -> None:
+    def __init__(self, settings: QSettings | None = None) -> None:
         super().__init__()
         apply_karakal_icon(self)
-        self._widget = KarakalWidget(self)
+        self._widget = KarakalWidget(self, settings=settings)
         self.setWindowTitle(self._widget._t("window.title"))
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         self.setCentralWidget(self._widget)

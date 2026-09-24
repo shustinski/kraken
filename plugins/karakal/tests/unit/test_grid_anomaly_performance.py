@@ -76,6 +76,10 @@ def _result_digest(result) -> str:
         cell.pop("feature_cluster_label", None)
         cell.pop("consistency_score", None)
         cell.pop("consistency_reasons", None)
+        cell.pop("mean_confidence", None)
+        cell.pop("uncertain_pixel_ratio", None)
+        cell.pop("border_uncertainty", None)
+        cell.pop("feature_snapshot", None)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -728,7 +732,8 @@ def test_paired_grid_worker_returns_three_linked_matrices(tmp_path, monkeypatch)
     ("source_kind", "expected_layer"),
     (
         ("binary", "binary"),
-        ("untyped_confidence", "confidence"),
+        # A file stored as a mask is always the binary working layer, even if the pixels look like confidence.
+        ("untyped_confidence", "binary"),
         ("explicit_confidence", "confidence"),
     ),
 )
@@ -777,7 +782,9 @@ def test_single_source_representation_is_selected_once_for_the_whole_dataset(
             FrameRecord(
                 f"frame_{index}",
                 path.name,
-                model_mask_paths={"model": str(path)},
+                # Mask folders are always binary. Explicit confidence stays on model_prob_paths.
+                model_mask_paths={} if dataset_layer == "confidence" else {"model": str(path)},
+                model_prob_paths={"model": str(path)} if dataset_layer == "confidence" else {},
             )
         )
     monkeypatch.setenv("KARAKAL_GRID_INSPECTION_EXECUTION", "sequential")

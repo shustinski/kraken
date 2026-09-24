@@ -3903,6 +3903,24 @@ class MatrixListWidget(QGraphicsView):
                 f"Cell defects: {bad_cells}",
                 score_line,
             ]
+            confidences = [
+                float(cell.mean_confidence)
+                for cell in getattr(result, "per_cell_results", ()) or ()
+                if getattr(cell, "mean_confidence", None) is not None
+            ]
+            if confidences:
+                uncertain = sum(
+                    1
+                    for cell in getattr(result, "per_cell_results", ()) or ()
+                    if float(getattr(cell, "uncertain_pixel_ratio", 0.0) or 0.0) >= 0.25
+                )
+                lines.append(
+                    self._t(
+                        "matrix.model_uncertainty",
+                        mean=sum(confidences) / len(confidences),
+                        ratio=uncertain / max(1, len(confidences)),
+                    )
+                )
             return "\n".join(lines)
         if self._is_record_excluded(record):
             base_text = f"{record.display_name}\n{self._t('matrix.validation_na_excluded')}"

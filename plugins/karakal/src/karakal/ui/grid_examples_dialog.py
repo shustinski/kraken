@@ -49,7 +49,7 @@ class GridExamplesDialog(QDialog):
             self._tabs.setCurrentIndex(current)
 
     def _labels(self) -> list[tuple[str, str]]:
-        return [("good", self._t("grid_examples.good"))] + [
+        return [("good", self._t("grid_examples.good")), ("ignore", self._t("grid_examples.ignore"))] + [
             (str(error_type), self._t(label_key)) for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS
         ]
 
@@ -84,7 +84,10 @@ class GridExamplesDialog(QDialog):
         thumb.setFixedSize(72, 72)
         thumb.setPixmap(self._crop(bbox).scaled(72, 72, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         layout.addWidget(thumb)
-        layout.addWidget(QLabel(self._t("grid_examples.item", index=index, width=width, height=height), row), stretch=1)
+        text = self._t("grid_examples.item", index=index, width=width, height=height)
+        if not example.get("features"):
+            text = f"{text}\n{self._t('grid_examples.no_features')}"
+        layout.addWidget(QLabel(text, row), stretch=1)
         delete_button = QPushButton(self._t("grid_examples.delete"), row)
         delete_button.clicked.connect(lambda *_args, target=example: self._delete(target))
         layout.addWidget(delete_button)

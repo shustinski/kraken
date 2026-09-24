@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QPushButton, QSlider
@@ -7,7 +9,7 @@ from kraken_core.analysis_protocol import AnalysisProfileKind, AnalysisScaleMode
 
 from karakal.app.main_window import KarakalWidget
 from karakal.app.presenter import KarakalPresenter
-from karakal.core.domain import BuildOptions, BuildResult, FrameAnalysisSummary, FrameIdentity, FrameRecord
+from karakal.core.domain import BuildOptions, BuildResult, FrameAnalysisSummary, FrameIdentity, FrameRecord, ModelSpec
 from karakal.core.image_io import _grayscale_array_to_qimage
 from karakal.core.single_result_risk import RiskReason, SingleResultRiskSummary
 from karakal.plugin.matrix_adapter import KarakalMatrixDataSource, project_build_result
@@ -364,11 +366,14 @@ def test_grid_details_exposes_model_output_layer_with_original(tmp_path, qtbot) 
 
     assert dialog._grid_has_original()
     assert dialog._grid_model_output_layer_available()
-    assert not dialog.first_source_layer_row.isHidden()
-    assert dialog.first_source_layer_title.text() == dialog._t("details.model_output_layer")
+    assert dialog.original_layer_title.text() == dialog._t("details.grid_reference_layer")
+    assert not dialog.original_visible.isChecked()
+    assert dialog.first_source_layer_row.isHidden()
+    assert not dialog.first_source_item.isVisible()
+    assert not dialog.original_item.pixmap().isNull()
+    base_pixel = dialog.original_item.pixmap().toImage().pixelColor(16, 16)
+    assert base_pixel.red() > 200
     assert not dialog.second_source_layer_row.isHidden()
-    assert not dialog.first_source_item.pixmap().isNull()
-    assert dialog.first_source_item.isVisible()
 
 
 def test_confidence_overlay_prefers_uploaded_jpeg_grayscale(tmp_path, qtbot) -> None:
@@ -407,3 +412,45 @@ def test_confidence_overlay_prefers_uploaded_jpeg_grayscale(tmp_path, qtbot) -> 
     assert source_gray is not None
     assert float(np.mean(source_gray)) > 10.0
     assert float(np.std(source_gray)) > 10.0
+
+
+def test_details_analysis_does_not_use_another_models_mask(tmp_path, qtbot) -> None:
+    other_mask = tmp_path / "other.png"
+    assert _grayscale_array_to_qimage(np.full((32, 32), 255, dtype=np.uint8)).save(str(other_mask))
+    settings = QSettings(str(tmp_path / "karakal.ini"), QSettings.Format.IniFormat)
+    widget = KarakalWidget(settings=settings)
+    qtbot.addWidget(widget)
+    record = FrameRecord(
+        "frame-1",
+        "Frame 1",
+        model_mask_paths={"other": str(other_mask)},
+    )
+    state = SimpleNamespace(
+        grid_inspection_model_id="selected",
+        build_result=BuildResult(
+            records=(record,),
+            options=BuildOptions(),
+            model_specs=(ModelSpec("selected", "Selected", tmp_path),),
+        ),
+    )
+    result, cells = widget._presenter._analyze_grid_record_for_details(
+        record,
+        state,
+        widget._presenter._grid_tuning_values(),
+    )
+    assert result is None
+    assert cells == ()
+
+    dialog = ExtendFrameDetailsDialog(
+        record,
+        state.build_result,
+        session_view_state={"preferred_model_id": "selected", "result_kind": "grid_cell_defects"},
+        allowed_result_kinds=("grid_cell_defects",),
+    )
+    qtbot.addWidget(dialog)
+    dialog._refresh_result_kind_options("grid_cell_defects")
+    dialog._update_result_controls()
+    message = dialog._t("grid_tuning.preview_no_mask")
+    dialog.show_grid_preview_message(message)
+    assert dialog.grid_preview_status.text() == message
+    assert not dialog.grid_preview_status.isHidden()

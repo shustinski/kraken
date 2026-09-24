@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
 import os
 import pickle
 import time
@@ -26,7 +25,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v71_nonoverlap_defects"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v73_neighbor_geometry"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -36,7 +35,6 @@ GRID_DAMAGE_REASON_TYPES = (
     "filled_cell",
     "partial_filled_cell",
     "small_artifact",
-    "conductor_residue",
     "broken_geometry",
     "merged_contour",
     "edge_clipped_cell",
@@ -105,6 +103,15 @@ class GridDamageAnalysisConfig:
     debug: bool = False
     debug_dir: str | None = None
     enabled_reason_types: tuple[str, ...] | None = GRID_DAMAGE_REASON_TYPES
+    scoring_mode: str = "legacy"
+    fill_sensitivity: int = 60
+    debris_sensitivity: int = 75
+    geometry_sensitivity: int = 40
+    merge_sensitivity: int = 35
+    calibration_reference: tuple[tuple[str, float], ...] = ()
+    calibration_examples: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
+    example_influence: float = 0.5
+    calibration_fingerprint: str = ""
 
     def normalized(self) -> "GridDamageAnalysisConfig":
         block_size = max(3, int(self.adaptive_block_size) | 1)
@@ -145,6 +152,19 @@ class GridDamageAnalysisConfig:
             debug=bool(self.debug),
             debug_dir=self.debug_dir,
             enabled_reason_types=enabled_reason_types,
+            scoring_mode="calibrated" if str(self.scoring_mode or "legacy").strip().lower() == "calibrated" else "legacy",
+            fill_sensitivity=max(0, min(100, int(self.fill_sensitivity))),
+            debris_sensitivity=max(0, min(100, int(self.debris_sensitivity))),
+            geometry_sensitivity=max(0, min(100, int(self.geometry_sensitivity))),
+            merge_sensitivity=max(0, min(100, int(self.merge_sensitivity))),
+            calibration_reference=tuple(
+                (str(key), float(value))
+                for key, value in self.calibration_reference
+                if str(key)
+            ),
+            calibration_examples=tuple(self.calibration_examples),
+            example_influence=max(0.0, min(1.0, float(self.example_influence))),
+            calibration_fingerprint=str(self.calibration_fingerprint or ""),
         )
 
     def cache_payload(self) -> dict[str, Any]:
@@ -199,6 +219,10 @@ class GridCellAnalysisResult:
     feature_cluster_label: str = ""
     consistency_score: float = 0.0
     consistency_reasons: tuple[str, ...] = ()
+    mean_confidence: float | None = None
+    uncertain_pixel_ratio: float | None = None
+    border_uncertainty: float | None = None
+    feature_snapshot: tuple[tuple[str, float], ...] = ()
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
         return (
@@ -216,6 +240,10 @@ class GridCellAnalysisResult:
                 self.feature_cluster_label,
                 self.consistency_score,
                 self.consistency_reasons,
+                self.mean_confidence,
+                self.uncertain_pixel_ratio,
+                self.border_uncertainty,
+                self.feature_snapshot,
             ),
         )
 
@@ -366,6 +394,34 @@ GridCellAnomaly = GridCellAnalysisResult
 GridCellAnomalyResult = GridFrameAnalysisResult
 
 
+def _dedupe_nested_grid_cells(cells: list[GridCellAnalysisResult]) -> list[GridCellAnalysisResult]:
+    """Keep the larger contour when an inner hole shares almost the same box."""
+
+    if len(cells) <= 1:
+        return list(cells)
+    ordered = sorted(cells, key=lambda cell: float(cell.bbox[2]) * float(cell.bbox[3]), reverse=True)
+    points = np.array([[float(cell.centroid[0]), float(cell.centroid[1])] for cell in ordered], dtype=np.float64)
+    sizes = np.array([max(float(cell.bbox[2]), float(cell.bbox[3]), 1.0) for cell in ordered], dtype=np.float64)
+    try:
+        from scipy.spatial import cKDTree
+
+        tree = cKDTree(points)
+    except Exception:
+        tree = None
+    kept: list[GridCellAnalysisResult] = []
+    kept_indexes: set[int] = set()
+    for index, cell in enumerate(ordered):
+        if tree is None:
+            candidates = list(kept_indexes)
+        else:
+            candidates = [other for other in tree.query_ball_point(points[index], r=float(sizes[index]) * 0.85) if other in kept_indexes]
+        if any(_bbox_iou(cell.bbox, ordered[other].bbox) >= 0.70 for other in candidates):
+            continue
+        kept.append(cell)
+        kept_indexes.add(index)
+    return kept
+
+
 def _bbox_iou(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> float:
     first_left, first_top, first_width, first_height = (int(value) for value in first[:4])
     second_left, second_top, second_width, second_height = (int(value) for value in second[:4])
@@ -401,7 +457,6 @@ _DEFECT_REASON_PRIORITY: dict[str, int] = {
     "small_artifact": 30,
     "confidence_only_cell": 28,
     "binary_only_cell": 26,
-    "conductor_residue": 20,
 }
 
 
@@ -463,12 +518,7 @@ def _grid_comparison_pairs(
     binary_cells: list[GridCellAnalysisResult],
     match_distance: float,
 ) -> list[tuple[int, int]]:
-    """Candidate index pairs that can satisfy the distance or overlap test.
-
-    The returned set is a superset of the brute-force pairs that pass
-    ``distance <= match_distance or iou >= 0.08``. Greedy matching still
-    sorts the scored pairs, so the comparison result stays the same.
-    """
+    """Candidate pairs via cKDTree on centroids. Same radius semantics as the old bucket scan."""
 
     confidence_count = len(confidence_cells)
     binary_count = len(binary_cells)
@@ -476,47 +526,30 @@ def _grid_comparison_pairs(
         return []
     if confidence_count * binary_count <= 64:
         return [(left, right) for left in range(confidence_count) for right in range(binary_count)]
+    radius = max(1.0, float(match_distance))
+    points = np.array(
+        [[float(cell.center_x), float(cell.center_y)] for cell in binary_cells],
+        dtype=np.float64,
+    )
+    queries = np.array(
+        [[float(cell.center_x), float(cell.center_y)] for cell in confidence_cells],
+        dtype=np.float64,
+    )
+    try:
+        from scipy.spatial import cKDTree
 
-    bucket = max(1.0, float(match_distance))
-    bins: dict[tuple[int, int], list[int]] = {}
-
-    def add(bucket_x: int, bucket_y: int, index: int) -> None:
-        bins.setdefault((bucket_x, bucket_y), []).append(index)
-
-    for index, cell in enumerate(binary_cells):
-        left = int(cell.left)
-        top = int(cell.top)
-        right = left + max(0, int(cell.width))
-        bottom = top + max(0, int(cell.height))
-        x0 = math.floor(left / bucket)
-        x1 = math.floor(max(left, right - 1) / bucket)
-        y0 = math.floor(top / bucket)
-        y1 = math.floor(max(top, bottom - 1) / bucket)
-        for bucket_y in range(y0, y1 + 1):
-            for bucket_x in range(x0, x1 + 1):
-                add(bucket_x, bucket_y, index)
-        add(math.floor(float(cell.center_x) / bucket), math.floor(float(cell.center_y) / bucket), index)
-
+        tree = cKDTree(points)
+        neighbors = tree.query_ball_point(queries, r=radius * 1.35)
+    except Exception:
+        neighbors = []
+        for query in queries:
+            deltas = points - query
+            distances = np.hypot(deltas[:, 0], deltas[:, 1])
+            neighbors.append(np.flatnonzero(distances <= radius * 1.35).tolist())
     pairs: list[tuple[int, int]] = []
-    for confidence_index, cell in enumerate(confidence_cells):
-        found: set[int] = set()
-        left = int(cell.left)
-        top = int(cell.top)
-        right = left + max(0, int(cell.width))
-        bottom = top + max(0, int(cell.height))
-        x0 = math.floor(left / bucket)
-        x1 = math.floor(max(left, right - 1) / bucket)
-        y0 = math.floor(top / bucket)
-        y1 = math.floor(max(top, bottom - 1) / bucket)
-        for bucket_y in range(y0, y1 + 1):
-            for bucket_x in range(x0, x1 + 1):
-                found.update(bins.get((bucket_x, bucket_y), ()))
-        center_x = math.floor(float(cell.center_x) / bucket)
-        center_y = math.floor(float(cell.center_y) / bucket)
-        for bucket_y in range(center_y - 1, center_y + 2):
-            for bucket_x in range(center_x - 1, center_x + 2):
-                found.update(bins.get((bucket_x, bucket_y), ()))
-        pairs.extend((confidence_index, binary_index) for binary_index in found)
+    for confidence_index, found in enumerate(neighbors):
+        for binary_index in found:
+            pairs.append((confidence_index, int(binary_index)))
     return pairs
 
 
@@ -752,13 +785,22 @@ def detect_grid_cell_anomalies(
         return empty_result
 
     with profile_stage("validation.grid.reference_profile", frame_id=frame_id):
-        normal_seed = _normal_seed_candidates(candidates, config=cfg)
-        profile = reference_profile or _grid_cell_reference_profile_from_candidates(
-            candidates,
-            config=cfg,
-            frame_id=frame_id,
-            frame_path=frame_path,
-        )
+        if str(cfg.scoring_mode) == "calibrated" and not cfg.calibration_reference:
+            if reference_profile is not None:
+                normal_seed = _normal_seed_candidates(candidates, config=cfg)
+                profile = reference_profile
+            else:
+                profile, normal_seed = _calibrated_size_profile(candidates, frame_id=frame_id, frame_path=frame_path)
+        elif str(cfg.scoring_mode) == "calibrated":
+            profile, normal_seed = _calibrated_size_profile(candidates, frame_id=frame_id, frame_path=frame_path)
+        else:
+            normal_seed = _normal_seed_candidates(candidates, config=cfg)
+            profile = reference_profile or _grid_cell_reference_profile_from_candidates(
+                candidates,
+                config=cfg,
+                frame_id=frame_id,
+                frame_path=frame_path,
+            )
     if profile is None:
         return _analyze_conductor_only_frame(
             candidates,
@@ -784,19 +826,147 @@ def detect_grid_cell_anomalies(
         candidates, key=lambda item: (float(item.centroid[1]), float(item.centroid[0]), int(item.contour_id))
     )
     with profile_stage("validation.grid.cells.classify", frame_id=frame_id):
-        for candidate in ordered_candidates:
-            score, reasons = _classify_detected_cell(
-                candidate,
-                median_width=median_width,
-                median_height=median_height,
-                median_area=median_area,
-                median_fill=median_fill,
-                median_interior_fill=median_interior_fill,
-                median_center_fill=median_center_fill,
-                median_aspect=median_aspect,
-                config=cfg,
-                confidence_map=probability,
-            )
+        from .grid_calibration import apply_example_correction, example_distance_matrix, local_neighbor_medians
+        from .grid_scoring import (
+            NORMAL_SCORE_CEILING,
+            CalibratedScores,
+            geometry_agrees_with_neighbors,
+            score_debris,
+            score_edge,
+            score_fill,
+            score_geometry,
+            score_merge,
+            slider_threshold,
+        )
+
+        reference_solidity = float(np.median([float(item.solidity) for item in (normal_seed or candidates)]))
+        reference_extent = float(np.median([float(item.extent) for item in (normal_seed or candidates)]))
+        shared_reference = dict(cfg.calibration_reference)
+        if shared_reference:
+            median_width = float(shared_reference.get("width", median_width))
+            median_height = float(shared_reference.get("height", median_height))
+            median_area = float(shared_reference.get("area", median_area))
+            median_fill = float(shared_reference.get("fill", median_fill))
+            median_interior_fill = float(shared_reference.get("interior_fill", median_interior_fill))
+            median_center_fill = float(shared_reference.get("center_fill", median_center_fill))
+            median_aspect = float(shared_reference.get("aspect", median_aspect))
+            reference_solidity = float(shared_reference.get("solidity", reference_solidity))
+            reference_extent = float(shared_reference.get("extent", reference_extent))
+        calibrated = str(cfg.scoring_mode) == "calibrated"
+        local_medians, neighbor_ids = local_neighbor_medians(ordered_candidates) if calibrated else ([], [])
+        edge_enabled = cfg.enabled_reason_types is None or "edge_clipped_cell" in set(cfg.enabled_reason_types or ())
+        if calibrated:
+            prepared_scores: list[CalibratedScores] = []
+            prepared_features: list[dict[str, float]] = []
+            for candidate_index, candidate in enumerate(ordered_candidates):
+                local = local_medians[candidate_index]
+                width_ratio = float(candidate.bbox[2]) / max(1.0, float(local["width"]))
+                height_ratio = float(candidate.bbox[3]) / max(1.0, float(local["height"]))
+                area_ratio = float(candidate.area) / max(1.0, float(local["area"]))
+                prepared_features.append(
+                    {
+                        "width_ratio": width_ratio,
+                        "height_ratio": height_ratio,
+                        "area_ratio": area_ratio,
+                        "interior_fill": float(candidate.interior_fill_ratio),
+                        "reference_interior": float(median_interior_fill),
+                        "solidity": float(candidate.solidity),
+                        "reference_solidity": float(reference_solidity),
+                        "extent": float(candidate.extent),
+                        "reference_extent": float(reference_extent),
+                    }
+                )
+                prepared_scores.append(
+                    CalibratedScores(
+                        fill=score_fill(candidate.interior_fill_ratio, median_interior_fill),
+                        geometry=score_geometry(candidate.solidity, candidate.extent, reference_solidity, reference_extent),
+                        merge=score_merge(max(width_ratio, height_ratio), area_ratio),
+                        debris=score_debris(area_ratio, max(width_ratio, height_ratio)),
+                        edge=score_edge(bool(candidate.touches_border), min(width_ratio, height_ratio)),
+                    )
+                )
+            other_mark = []
+            for scores in prepared_scores:
+                preliminary = scores.reasons(
+                    fill=slider_threshold(cfg.fill_sensitivity),
+                    geometry=1.0,
+                    merge=slider_threshold(cfg.merge_sensitivity),
+                    debris=slider_threshold(cfg.debris_sensitivity),
+                    edge=1.0,
+                    edge_enabled=False,
+                )
+                other_mark.append(bool(preliminary))
+            for candidate_index, candidate in enumerate(ordered_candidates):
+                ids = neighbor_ids[candidate_index]
+                clean = [index for index in ids if not other_mark[index]]
+                neighbors_unmarked = len(ids) >= 3 and len(clean) * 2 >= len(ids)
+                local = local_medians[candidate_index]
+                if geometry_agrees_with_neighbors(
+                    candidate.solidity,
+                    candidate.extent,
+                    local["solidity"],
+                    local["extent"],
+                    neighbors_unmarked=neighbors_unmarked,
+                ):
+                    prepared_scores[candidate_index] = replace(
+                        prepared_scores[candidate_index],
+                        geometry=min(prepared_scores[candidate_index].geometry, NORMAL_SCORE_CEILING),
+                    )
+            frame_examples = [
+                {"label": label, "features": dict(features)}
+                for label, features in cfg.calibration_examples
+                if features
+            ]
+            example_distances = example_distance_matrix(prepared_features, frame_examples) if frame_examples else None
+        else:
+            frame_examples = []
+            example_distances = None
+        for candidate_index, candidate in enumerate(ordered_candidates):
+            local = local_medians[candidate_index] if calibrated else {}
+            if calibrated:
+                local_width = float(local.get("width", median_width))
+                local_height = float(local.get("height", median_height))
+                local_area = float(local.get("area", median_area))
+                width_ratio = float(candidate.bbox[2]) / max(1.0, local_width)
+                height_ratio = float(candidate.bbox[3]) / max(1.0, local_height)
+                area_ratio = float(candidate.area) / max(1.0, local_area)
+                scores = prepared_scores[candidate_index]
+                reasons = scores.reasons(
+                    fill=slider_threshold(cfg.fill_sensitivity),
+                    geometry=slider_threshold(cfg.geometry_sensitivity),
+                    merge=slider_threshold(cfg.merge_sensitivity),
+                    debris=slider_threshold(cfg.debris_sensitivity),
+                    edge=0.55,
+                    edge_enabled=edge_enabled,
+                )
+                reasons = apply_example_correction(
+                    reasons,
+                    {"fill": scores.fill, "geometry": scores.geometry, "merge": scores.merge, "debris": scores.debris},
+                    {
+                        "fill": slider_threshold(cfg.fill_sensitivity),
+                        "geometry": slider_threshold(cfg.geometry_sensitivity),
+                        "merge": slider_threshold(cfg.merge_sensitivity),
+                        "debris": slider_threshold(cfg.debris_sensitivity),
+                    },
+                    prepared_features[candidate_index],
+                    frame_examples,
+                    example_influence=float(cfg.example_influence),
+                    distance_row=None if example_distances is None else example_distances[candidate_index],
+                )
+                score = max(scores.fill, scores.geometry, scores.merge, scores.debris) if reasons else 0.0
+            else:
+                score, reasons = _classify_detected_cell(
+                    candidate,
+                    median_width=median_width,
+                    median_height=median_height,
+                    median_area=median_area,
+                    median_fill=median_fill,
+                    median_interior_fill=median_interior_fill,
+                    median_center_fill=median_center_fill,
+                    median_aspect=median_aspect,
+                    config=cfg,
+                    confidence_map=probability,
+                )
             score, reasons = _filter_disabled_grid_reasons(score, reasons, cfg)
             if reasons and set(reasons) <= {"small_artifact", "broken_geometry", "edge_clipped_cell"} and _is_detached_confidence_cell_edge(
                 candidate,
@@ -808,22 +978,31 @@ def detect_grid_cell_anomalies(
             ):
                 score, reasons = 0.0, ()
             is_bad = _is_bad_grid_cell(score, reasons, cfg)
-            is_cell_like = int(candidate.contour_id) in normal_seed_ids or _is_cell_like_candidate(
-                candidate,
-                median_width=median_width,
-                median_height=median_height,
-                median_area=median_area,
-                config=cfg,
-            )
+            if calibrated:
+                is_cell_like = bool(
+                    0.50 <= min(width_ratio, height_ratio)
+                    and max(width_ratio, height_ratio) <= 1.85
+                    and 0.35 <= area_ratio <= 2.40
+                    and float(candidate.solidity) >= 0.45
+                )
+            else:
+                is_cell_like = int(candidate.contour_id) in normal_seed_ids or _is_cell_like_candidate(
+                    candidate,
+                    median_width=median_width,
+                    median_height=median_height,
+                    median_area=median_area,
+                    config=cfg,
+                )
             if not is_bad and not is_cell_like:
                 continue
-            if not is_bad and _is_ignored_fragment(
+            if not calibrated and not is_bad and _is_ignored_fragment(
                 candidate, median_width=median_width, median_height=median_height, median_area=median_area
             ):
                 continue
             index = len(per_cell)
             if is_bad:
                 defect_entries.append((index, candidate))
+            uncertainty = _cell_model_uncertainty(probability, candidate.bbox) if calibrated else None
             per_cell.append(
                 GridCellAnalysisResult(
                     row=int(index),
@@ -834,9 +1013,44 @@ def detect_grid_cell_anomalies(
                     status=_status_for_reasons(reasons) if is_bad else "normal",
                     score=float(max(0.0, min(1.0, score if is_bad else 0.0))),
                     reasons=tuple(reasons if is_bad else ()),
+                    mean_confidence=None if uncertainty is None else uncertainty[0],
+                    uncertain_pixel_ratio=None if uncertainty is None else uncertainty[1],
+                    border_uncertainty=None if uncertainty is None else uncertainty[2],
+                    feature_snapshot=(
+                        (
+                            ("width_ratio", float(width_ratio)),
+                            ("height_ratio", float(height_ratio)),
+                            ("area_ratio", float(area_ratio)),
+                            ("interior_fill", float(candidate.interior_fill_ratio)),
+                            ("reference_interior", float(median_interior_fill)),
+                            ("solidity", float(candidate.solidity)),
+                            ("reference_solidity", float(reference_solidity)),
+                            ("extent", float(candidate.extent)),
+                            ("reference_extent", float(reference_extent)),
+                            ("fill_score", float(scores.fill)),
+                            ("geometry_score", float(scores.geometry)),
+                            ("merge_score", float(scores.merge)),
+                            ("debris_score", float(scores.debris)),
+                            ("edge_score", float(scores.edge)),
+                        )
+                        if calibrated
+                        else (
+                            ("width", float(candidate.bbox[2])),
+                            ("height", float(candidate.bbox[3])),
+                            ("area", float(candidate.area)),
+                            ("fill", float(candidate.fill_ratio)),
+                            ("interior_fill", float(candidate.interior_fill_ratio)),
+                            ("center_fill", float(candidate.center_fill_ratio)),
+                            ("aspect", float(candidate.aspect_ratio)),
+                            ("solidity", float(candidate.solidity)),
+                            ("extent", float(candidate.extent)),
+                        )
+                    ),
                 )
             )
 
+    if str(cfg.scoring_mode) == "calibrated":
+        per_cell = _dedupe_nested_grid_cells(per_cell)
     per_cell = _collapse_conductor_regions(
         per_cell,
         median_width=median_width,
@@ -1824,13 +2038,16 @@ def _extract_candidates(
     candidates: list[_ContourCandidate] = []
     for index, contour in enumerate(contours):
         parent_idx = int(hierarchy_array[index][3]) if index < len(hierarchy_array) else -1
+        calibrated = str(getattr(config, "scoring_mode", "legacy") or "legacy") == "calibrated"
+        min_side = 2 if calibrated else int(config.min_cell_size)
+        min_area = 2.0 if calibrated else float(config.min_contour_area)
         x, y, w, h = contour_rect(index)
-        if w < config.min_cell_size or h < config.min_cell_size:
+        if w < min_side or h < min_side:
             continue
         if w >= max(1, width - 1) and h >= max(1, height - 1):
             continue
         area = contour_area(index)
-        if area < float(config.min_contour_area):
+        if area < min_area:
             continue
         if parent_idx >= 0:
             # Nested contours are usually holes; keep only compact debris inside a parent cell.
@@ -1918,6 +2135,9 @@ def _extract_candidates(
                 ),
             )
         )
+    if str(getattr(config, "scoring_mode", "legacy") or "legacy") == "calibrated" and len(candidates) > 4000:
+        candidates.sort(key=lambda item: float(item.area), reverse=True)
+        del candidates[4000:]
     return candidates
 
 
@@ -2004,6 +2224,36 @@ def _normal_seed_candidates(
     ]
 
 
+def _calibrated_size_profile(
+    candidates: list[_ContourCandidate],
+    *,
+    frame_id: str = "",
+    frame_path: str = "",
+) -> tuple[GridCellReferenceProfile | None, list[_ContourCandidate]]:
+    """Size cluster for calibrated scoring when the legacy fill seed does not match outline cells."""
+
+    from .grid_calibration import modal_size_cluster, robust_frame_reference
+
+    reference = robust_frame_reference(candidates)
+    cluster = modal_size_cluster(candidates)
+    if reference is None or len(cluster) < 4:
+        return None, []
+    profile = GridCellReferenceProfile(
+        median_width=float(reference["width"]),
+        median_height=float(reference["height"]),
+        median_area=float(reference["area"]),
+        median_fill=float(reference.get("fill", 0.0)),
+        median_interior_fill=float(reference.get("interior_fill", 0.0)),
+        median_center_fill=float(reference.get("center_fill", 0.0)),
+        median_aspect=float(reference.get("aspect", 1.0)),
+        candidate_count=int(len(candidates)),
+        seed_count=int(len(cluster)),
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+    )
+    return profile, cluster
+
+
 def _grid_cell_reference_profile_from_candidates(
     candidates: list[_ContourCandidate],
     *,
@@ -2071,8 +2321,6 @@ def _is_cell_like_candidate(
 
 def _status_for_reasons(reasons: tuple[str, ...]) -> str:
     reason_set = {str(reason) for reason in reasons}
-    if "conductor_residue" in reason_set:
-        return "artifact"
     if reason_set == {"small_artifact"}:
         # Mid-size standalone dirt / inaccurate cell: possible inaccuracy, not hard debris.
         return "suspicious"
@@ -2176,19 +2424,6 @@ def _wrong_cell_cluster_ids(candidates: list[_ContourCandidate], seed: list[_Con
     if abs(float(cluster_scores[0]) - float(cluster_scores[1])) < 0.12:
         return set()
     return {int(candidate.contour_id) for candidate, label in zip(candidates, labels) if int(label) == wrong_label}
-
-
-def _conductor_residue_signal(
-    candidate: _ContourCandidate,
-    *,
-    median_width: float,
-    median_height: float,
-    median_area: float,
-) -> bool:
-    """Retired: conductor masses are classified as merged_contour instead."""
-
-    _ = (candidate, median_width, median_height, median_area)
-    return False
 
 
 def _bbox_gap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -2469,6 +2704,49 @@ def _local_confidence_stats(
     return float(np.mean(roi, dtype=np.float64)), float(np.min(roi))
 
 
+def _cell_model_uncertainty(
+    confidence_map: np.ndarray | None,
+    bbox: tuple[int, int, int, int],
+) -> tuple[float, float, float] | None:
+    """Mean confidence, fraction of uncertain pixels, and the same fraction on the border band."""
+
+    if confidence_map is None:
+        return None
+    values = np.asarray(confidence_map, dtype=np.float32)
+    if values.ndim != 2 or values.size == 0:
+        return None
+    x, y, width, height = (int(value) for value in bbox[:4])
+    if width <= 0 or height <= 0:
+        return None
+    x0 = max(0, x)
+    y0 = max(0, y)
+    x1 = min(int(values.shape[1]), x + width)
+    y1 = min(int(values.shape[0]), y + height)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    roi = values[y0:y1, x0:x1]
+    if roi.size == 0:
+        return None
+    if float(np.max(roi)) > 1.5:
+        roi = roi / 255.0
+    uncertain = (roi >= 0.35) & (roi <= 0.65)
+    band = max(1, int(round(min(roi.shape) * 0.18)))
+    border = np.concatenate(
+        (
+            roi[:band, :].reshape(-1),
+            roi[-band:, :].reshape(-1),
+            roi[:, :band].reshape(-1),
+            roi[:, -band:].reshape(-1),
+        )
+    )
+    border_uncertain = (border >= 0.35) & (border <= 0.65)
+    return (
+        float(np.mean(roi, dtype=np.float64)),
+        float(np.mean(uncertain)),
+        float(np.mean(border_uncertain)),
+    )
+
+
 def _apply_confidence_geometry_boost(
     candidate: _ContourCandidate,
     score: float,
@@ -2586,13 +2864,6 @@ def _classify_binary_cell(
     aspect = float(candidate.aspect_ratio)
     aspect_ref = max(0.1, float(median_aspect) if float(median_aspect) > 0.0 else 1.0)
     aspect_mismatch = abs(aspect - aspect_ref) >= max(0.18, aspect_ref * 0.20)
-    aspect_slot_damage = (
-        aspect_mismatch
-        and largest_axis <= 1.95
-        and smallest_axis >= 0.18
-        and area_ratio >= 0.12
-        and max(width_ratio, height_ratio) >= 0.48
-    )
     extent_delta = abs(float(candidate.extent) - 0.74)
     solidity_limit = float(config.geometry_solidity_limit)
     # Higher slider raises the limit and admits milder shape faults. A plain
@@ -3730,6 +4001,8 @@ def _grid_damage_cache_key(
         _grid_cache_identity(path),
         config.cache_payload(),
         None if reference_profile is None else reference_profile.cache_payload(),
+        bool(getattr(config, "calibration_fingerprint", "")),
+        str(getattr(config, "calibration_fingerprint", "") or ""),
     )
 
 

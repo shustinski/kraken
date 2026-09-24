@@ -17,6 +17,7 @@ from ..ui.ui_constants import (
     SETTINGS_ANALYSIS_PROFILE_KEY,
     SETTINGS_DETAILS_VIEW_KEY,
     SETTINGS_FOLDERS_KEY,
+    SETTINGS_GRID_CALIBRATION_KEY,
     SETTINGS_LANGUAGE_KEY,
     SETTINGS_PERFORMANCE_KEY,
     SETTINGS_VALIDATION_MASK_KEY,
@@ -71,6 +72,12 @@ class KarakalSettingsService:
 
     def save_performance_config(self, config: PerformanceConfig) -> None:
         self._save_payload(SETTINGS_PERFORMANCE_KEY, config.to_payload())
+
+    def load_grid_calibration_payload(self) -> dict:
+        return self._load_payload(SETTINGS_GRID_CALIBRATION_KEY)
+
+    def save_grid_calibration_payload(self, payload: dict) -> None:
+        self._save_payload(SETTINGS_GRID_CALIBRATION_KEY, payload)
 
     def load_language(self) -> str | None:
         value = self._settings.value(SETTINGS_LANGUAGE_KEY, "", str)

@@ -694,69 +694,6 @@ class RemoteServerProjectService:
             if isinstance(item, Mapping)
         )
 
-    def list_server_accounts(
-        self, *, include_disabled: bool = True
-    ) -> tuple[dict[str, object], ...]:
-        suffix = (
-            "?include_disabled=true" if include_disabled else "?include_disabled=false"
-        )
-        payload = self._call("GET", f"/api/v1/admin/accounts{suffix}")
-        values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
-        return tuple(dict(value) for value in values if isinstance(value, Mapping))
-
-    def create_server_account(
-        self, *, username: str, display_name: str, password: str
-    ) -> dict[str, object]:
-        payload = self._call(
-            "POST",
-            "/api/v1/admin/accounts",
-            payload={
-                "username": username,
-                "display_name": display_name,
-                "password": password,
-            },
-        )
-        return dict(payload) if isinstance(payload, Mapping) else {}
-
-    def set_server_administrator(
-        self, account_id: str, enabled: bool
-    ) -> dict[str, object]:
-        payload = self._call(
-            "PUT" if enabled else "DELETE",
-            f"/api/v1/admin/accounts/{account_id}/roles/server_admin",
-            payload={} if enabled else None,
-        )
-        return dict(payload) if isinstance(payload, Mapping) else {}
-
-    def set_server_account_enabled(
-        self, account_id: str, enabled: bool
-    ) -> dict[str, object]:
-        payload = self._call(
-            "POST",
-            f"/api/v1/admin/accounts/{account_id}/{'enable' if enabled else 'disable'}",
-            payload={},
-        )
-        return dict(payload) if isinstance(payload, Mapping) else {}
-
-    def revoke_server_account_sessions(self, account_id: str) -> None:
-        self._call(
-            "POST", f"/api/v1/admin/accounts/{account_id}/revoke-sessions", payload={}
-        )
-
-    def reset_server_account_password(self, account_id: str, password: str) -> None:
-        self._call(
-            "PUT",
-            f"/api/v1/admin/accounts/{account_id}/password",
-            payload={"password": password},
-        )
-
-    def administration_audit(
-        self, *, limit: int = 500
-    ) -> tuple[dict[str, object], ...]:
-        payload = self._call("GET", f"/api/v1/admin/audit?limit={int(limit)}")
-        values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
-        return tuple(dict(value) for value in values if isinstance(value, Mapping))
-
     def list_project_principals(
         self,
         project_id: object,
@@ -2437,7 +2374,9 @@ class RemoteServerProjectService:
             )
             items = payload.get("items", []) if isinstance(payload, Mapping) else []
             events.extend(
-                _RemoteHistoryEvent(item) for item in items if isinstance(item, Mapping)
+                _RemoteHistoryEvent(item, project_id=str(project_id))
+                for item in items
+                if isinstance(item, Mapping)
             )
             cursor = (
                 None
@@ -2591,7 +2530,7 @@ class RemoteServerProjectService:
             idempotency_key=f"pipeline:{layer_id}:{uuid4()}",
             if_match=self._stream_revision(project_id, stream_id),
         )
-        return _RemoteHistoryEvent(payload)
+        return _RemoteHistoryEvent(payload, project_id=str(project_id))
 
     def remove_layer_pipeline_action(
         self,
@@ -2627,7 +2566,7 @@ class RemoteServerProjectService:
             idempotency_key=f"pipeline-remove:{target.event_id}",
             if_match=self._stream_revision(project_id, stream_id),
         )
-        return _RemoteHistoryEvent(payload)
+        return _RemoteHistoryEvent(payload, project_id=str(project_id))
 
     def matrix_viewport(
         self,
@@ -2720,6 +2659,7 @@ class RemoteServerProjectService:
 @dataclass(frozen=True, slots=True)
 class _RemoteHistoryEvent:
     _payload: Mapping[str, object]
+    project_id: str = ""
 
     @property
     def event_id(self) -> str:

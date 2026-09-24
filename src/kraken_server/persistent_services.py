@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import replace
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -133,7 +134,7 @@ from kraken_manager.domain.common import (
     validate_uuid,
 )
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope, ProgramSnapshot
-from kraken_manager.domain.identity import Permission, parse_project_role
+from kraken_manager.domain.identity import Permission, SystemRole, parse_project_role
 from kraken_manager.domain.project import (
     GridOrientation,
     Layer,
@@ -485,6 +486,13 @@ class PostgresServerServices:
             raise ValidationError("Authenticated principal id is invalid") from exc
         if actor is None or not actor.active:
             raise ValidationError("Authenticated principal is unknown or inactive")
+        # Server administration is a local console concern. A network session
+        # must not carry that role into project commands.
+        if SystemRole.SERVER_ADMIN in actor.system_roles:
+            actor = replace(
+                actor,
+                system_roles=frozenset(role for role in actor.system_roles if role is not SystemRole.SERVER_ADMIN),
+            )
         return actor
 
     def create_project(self, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]:

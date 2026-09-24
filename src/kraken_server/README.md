@@ -1,10 +1,8 @@
 # Kraken Server и Kraken Admin
 
 `kraken-server` — HTTP/WebSocket-сервер общих проектов. `kraken-admin` —
-консоль настройки этого сервера: база, первый администратор, роли восстановления,
-токены агентов и проверка конфигурации. Права на проекты в интерфейсе выдаёт
-Kraken Hub; админская консоль готовит сервер и учётные записи, без которых Hub
-не к чему подключаться.
+отдельный пакет `kraken_admin`: локальное окно и команды. Они читают PostgreSQL
+на машине сервера и не доступны по HTTP. Kraken Hub их не показывает.
 
 Оба входа ставятся из корня репозитория:
 
@@ -72,9 +70,12 @@ uv run kraken-server --config "$env:LOCALAPPDATA\Kraken\LocalServer\server.toml"
 ## kraken-admin
 
 ```powershell
+uv run kraken-admin
 uv run kraken-admin --help
 uv run kraken-admin КОМАНДА --help
 ```
+
+Без команды открывается локальное окно. Оно читает `server.toml` и PostgreSQL на этой машине. Команды ниже остаются для скриптов и первичной установки.
 
 Код возврата: `0` — успех, `2` — ошибка проверки или операции, `130` — отмена.
 
@@ -91,6 +92,10 @@ uv run kraken-admin КОМАНДА --help
 | `setup-server` | Подключает Kraken к уже существующей PostgreSQL, пишет конфиг и первого администратора |
 | `bootstrap-admin` | Создаёт первого `server_admin` в уже подготовленном хранилище учётных записей |
 | `recover-admin` | Возвращает роль `server_admin` существующему логину, включает учётную запись и отзывает её сессии. Новую учётную запись не создаёт |
+| `account-list`, `account-create`, `account-enable`, `account-disable` | Локальные операции с учётными записями. По сети не ходят |
+| `grant-admin`, `revoke-admin` | Назначить или снять локального администратора. Последнего включённого снять нельзя |
+| `reset-password`, `revoke-sessions`, `audit` | Пароль, сеансы и журнал административных действий. Только локально |
+| `revoke-maintainer` | Снять роль maintainer с любого участника, включая последнего в проекте |
 | `install-service` | Регистрирует автозапуск `KrakenServer` в Windows |
 | `bootstrap-local` | Создаёт локальную учётную запись Desktop в SQLite. К серверной PostgreSQL не относится |
 | `create-agent-token` | Выпускает отзывной машинный токен агента. Секрет печатается один раз |

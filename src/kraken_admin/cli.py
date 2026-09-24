@@ -23,14 +23,14 @@ from kraken_manager.infrastructure.auth.local import (
     ScryptPasswordHasher,
 )
 
-from .configuration import (
+from kraken_server.configuration import (
     ServerConfig,
     default_config_path,
     default_local_config_path,
     run_migrations,
     write_config,
 )
-from .provisioning import (
+from kraken_server.provisioning import (
     new_postgres_provisioning,
     provision_postgres,
     remove_provisioned_postgres,
@@ -432,7 +432,7 @@ def _record_migration_check(record, database_url: str) -> None:
         from alembic.script import ScriptDirectory
         from sqlalchemy import create_engine
 
-        from .configuration import migration_root
+        from kraken_server.configuration import migration_root
 
         configuration = Config()
         configuration.set_main_option("script_location", str(migration_root()))
@@ -640,16 +640,16 @@ def _parser() -> argparse.ArgumentParser:
 создаст пользователя и базу PostgreSQL, выполнит миграции, запишет защищённую
 конфигурацию и создаст первого администратора Kraken.""",
         epilog="""Примеры:
+  KrakenAdmin
   KrakenAdmin init
   KrakenAdmin doctor --config "%LOCALAPPDATA%\\Kraken\\LocalServer\\server.toml"
-  KrakenAdmin project-create --name "Тест" --width 10 --height 10
 
-Справка по конкретной команде:
+Без команды открывается локальное окно. Справка по команде:
   KrakenAdmin КОМАНДА --help""",
     )
     subcommands = parser.add_subparsers(
         dest="command",
-        required=True,
+        required=False,
         title="Команды",
         metavar="КОМАНДА",
     )
@@ -891,6 +891,53 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument("--config", type=Path, default=default_config_path(), help="Существующий server.toml")
     recover.add_argument("--username", required=True, help="Существующий логин Kraken")
 
+    def local_admin_command(name: str, help_text: str, description: str, epilog: str):
+        parser = command(name, help=help_text, description=description, epilog=epilog)
+        parser.add_argument("--config", type=Path, default=default_local_config_path(), help="Локальный server.toml")
+        parser.add_argument("--json", action="store_true", help="Машиночитаемый JSON")
+        return parser
+
+    account_list = local_admin_command(
+        "account-list",
+        "Показать учётные записи сервера",
+        "Читает PostgreSQL на этой машине. По сети запрос не уходит.",
+        "Пример:\n  KrakenAdmin account-list",
+    )
+    del account_list
+    account_create = local_admin_command(
+        "account-create",
+        "Создать учётную запись сервера",
+        "Пароль спрашивается локально и не передаётся по сети.",
+        "Пример:\n  KrakenAdmin account-create --username operator --display-name Operator",
+    )
+    account_create.add_argument("--username", required=True)
+    account_create.add_argument("--display-name", required=True)
+    for name, help_text, description in (
+        ("account-enable", "Включить учётную запись", "Локально включает существующий логин."),
+        ("account-disable", "Отключить учётную запись", "Локально отключает логин и его сеансы. Последнего администратора отключить нельзя."),
+        ("grant-admin", "Назначить локального администратора", "Даёт роль server_admin. Сама роль не открывает действий по HTTPS."),
+        ("revoke-admin", "Снять роль локального администратора", "Последнего включённого администратора снять нельзя."),
+        ("reset-password", "Задать новый пароль учётной записи", "Пароль спрашивается локально."),
+        ("revoke-sessions", "Завершить все сеансы учётной записи", "Отзывает выданные этой учётной записи токены."),
+    ):
+        target = local_admin_command(name, help_text, description, f"Пример:\n  KrakenAdmin {name} --username operator")
+        target.add_argument("--username", required=True)
+    audit = local_admin_command(
+        "audit",
+        "Показать журнал локальных административных действий",
+        "Журнал хранится в PostgreSQL и читается только с этой машины.",
+        "Пример:\n  KrakenAdmin audit",
+    )
+    del audit
+    revoke_role = local_admin_command(
+        "revoke-maintainer",
+        "Отозвать maintainer у участника проекта",
+        "Локальный администратор может снять роль у любого сопровождающего, в том числе у последнего в проекте.",
+        "Пример:\n  KrakenAdmin revoke-maintainer --project demo --username operator",
+    )
+    revoke_role.add_argument("--project", required=True, help="Идентификатор или имя проекта")
+    revoke_role.add_argument("--username", required=True, help="Логин сопровождающего")
+
     install = command(
         "install-service",
         help="Установить Kraken Server как Windows-службу",
@@ -975,13 +1022,91 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_local_admin(args: argparse.Namespace) -> None:
+    from kraken_server.configuration import ServerConfig
+    from kraken_admin.local_admin import (
+        create_account,
+        open_project_services,
+        reset_password,
+        revoke_maintainer,
+        revoke_sessions,
+        set_account_enabled,
+        set_server_admin,
+    )
+
+    store = _postgres_store(_database_url(args))
+    command = args.command
+    if command == "account-list":
+        items = [
+            {
+                "account_id": account.account_id,
+                "username": account.username,
+                "display_name": account.display_name,
+                "enabled": account.enabled,
+                "system_roles": sorted(store.global_roles_for(account.account_id)),
+                "created_at": str(account.created_at),
+            }
+            for account in store.list_accounts(include_disabled=True)
+        ]
+        if args.json:
+            print(json.dumps({"items": items}, ensure_ascii=False))
+            return
+        for item in items:
+            roles = ", ".join(item["system_roles"]) or "-"
+            state = "active" if item["enabled"] else "disabled"
+            print(f"{item['username']}\t{state}\t{roles}\t{item['display_name']}")
+        return
+    if command == "account-create":
+        account_id = create_account(
+            store,
+            args.username,
+            args.display_name,
+            _password("Пароль новой учётной записи: "),
+        )
+        print(f"Создана учётная запись {account_id}")
+        return
+    if command == "account-enable":
+        print(f"Учётная запись включена: {set_account_enabled(store, args.username, enabled=True)}")
+        return
+    if command == "account-disable":
+        print(f"Учётная запись отключена: {set_account_enabled(store, args.username, enabled=False)}")
+        return
+    if command == "grant-admin":
+        print(f"Назначен локальный администратор: {set_server_admin(store, args.username, grant=True)}")
+        return
+    if command == "revoke-admin":
+        print(f"Роль администратора снята: {set_server_admin(store, args.username, grant=False)}")
+        return
+    if command == "reset-password":
+        print(f"Пароль обновлён: {reset_password(store, args.username, _password('Новый пароль: '))}")
+        return
+    if command == "revoke-sessions":
+        print(f"Сеансы завершены: {revoke_sessions(store, args.username)}")
+        return
+    if command == "audit":
+        items = list(store.administration_audit(limit=500))
+        if args.json:
+            print(json.dumps({"items": items}, ensure_ascii=False, default=str))
+            return
+        for item in items:
+            print(f"{item.get('recorded_at')}\t{item.get('action')}\t{item.get('target_account_id') or ''}")
+        return
+    if command == "revoke-maintainer":
+        config = ServerConfig.load(args.config)
+        services = open_project_services(config.database_url, config.blob_root)
+        revoke_maintainer(services, store, project=args.project, username=args.username)
+        print(f"Роль maintainer снята с {args.username} в проекте {args.project}")
+        return
+    raise SystemExit(f"Неизвестная локальная команда: {command}")
+
+
 def _execute(args: argparse.Namespace) -> int:
     if args.command in {"init", "init-local-server"}:
         _initialize_local_server(args)
     elif args.command == "doctor":
         return _doctor(args)
     elif args.command == "blob-benchmark":
-        from .blob_benchmark import run_blob_benchmark
+        from kraken_server.blob_benchmark import run_blob_benchmark
 
         result = run_blob_benchmark(args.config, clients=args.clients, size_mib=args.size_mib)
         payload = result.to_dict()
@@ -1041,6 +1166,19 @@ def _execute(args: argparse.Namespace) -> int:
         store.set_enabled(account.account_id, True, actor_id=None)
         store.revoke_all_sessions(account.account_id, actor_id=None)
         print(f"Restored Server Administrator: {account.account_id}")
+    elif args.command in {
+        "account-list",
+        "account-create",
+        "account-enable",
+        "account-disable",
+        "grant-admin",
+        "revoke-admin",
+        "reset-password",
+        "revoke-sessions",
+        "audit",
+        "revoke-maintainer",
+    }:
+        _run_local_admin(args)
     elif args.command == "install-service":
         _install_service(args.server_executable, args.config, start=not args.no_start)
         print("Kraken Server Windows service is installed")
@@ -1050,7 +1188,7 @@ def _execute(args: argparse.Namespace) -> int:
     elif args.command == "service-status":
         print(_service_status())
     elif args.command == "migrate":
-        from .configuration import run_migrations
+        from kraken_server.configuration import run_migrations
 
         run_migrations(_database_url(args))
         print("Migrations are at head")
@@ -1071,7 +1209,7 @@ def _execute(args: argparse.Namespace) -> int:
     elif args.command in {"create-agent-token", "revoke-agent-token", "list-agent-tokens"}:
         from sqlalchemy import create_engine
 
-        from .agent_auth import PostgresAgentTokenStore
+        from kraken_server.agent_auth import PostgresAgentTokenStore
 
         store = PostgresAgentTokenStore(create_engine(_database_url(args), pool_pre_ping=True))
         if args.command == "create-agent-token":
@@ -1102,6 +1240,10 @@ def main() -> int:
 
     bind_child_process_lifetime()
     args = _parser().parse_args()
+    if args.command is None:
+        from kraken_admin.admin_app import main as admin_window
+
+        return admin_window()
     try:
         return _execute(args)
     except KeyboardInterrupt:

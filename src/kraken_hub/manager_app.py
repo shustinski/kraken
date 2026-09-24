@@ -52,7 +52,7 @@ from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.application.imports import ImportMappingMode
 from kraken_manager.application.analysis_runs import AnalysisRunCoordinator
 from kraken_manager.domain.artifacts import ArtifactScope, ArtifactSeries, ArtifactVersion
-from kraken_manager.domain.identity import Performer, Permission, ProjectRole, SystemRole
+from kraken_manager.domain.identity import Performer, Permission, ProjectRole
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
 from kraken_manager.domain.project import LayerType, RepresentationKind, RepresentationPurpose
 from kraken_manager.infrastructure.analysis import FilesystemAnalysisStore
@@ -1028,7 +1028,7 @@ class DesktopController:
     def manage_project_participants(self, item: ProjectListItem | None) -> None:
         if item is None:
             return
-        from kraken_manager.domain.identity import SystemRole, parse_project_role
+        from kraken_manager.domain.identity import parse_project_role
         from kraken_manager.domain.roles import bind_acting_role
         from kraken_manager.presentation.qt.role_management import RoleManagementDialog
 
@@ -1071,8 +1071,6 @@ class DesktopController:
                 )
 
         actor_roles = list(roles_for(self.session.principal))
-        if SystemRole.SERVER_ADMIN in self.session.principal.system_roles and ProjectRole.ADMIN not in actor_roles:
-            actor_roles.append(ProjectRole.ADMIN)
         rank = {role.value: index for index, role in enumerate(ProjectRole)}
         actor_roles.sort(key=lambda role: rank.get(role.value, 100))
 
@@ -7050,244 +7048,9 @@ def _statistics_panel(service: EmbeddedProjectService):
     return host
 
 
-def _server_administration_panel(remote):
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import (
-        QCheckBox,
-        QDialog,
-        QDialogButtonBox,
-        QFormLayout,
-        QHBoxLayout,
-        QInputDialog,
-        QLabel,
-        QLineEdit,
-        QMessageBox,
-        QPushButton,
-        QTableWidget,
-        QTableWidgetItem,
-        QVBoxLayout,
-        QWidget,
-    )
-
-    host = QWidget()
-    host.setObjectName("serverAdministrationPanel")
-    layout = QVBoxLayout(host)
-    title = QLabel(f"Администрирование Kraken Server — {remote.base_url}")
-    title.setObjectName("serverAdministrationTitle")
-    layout.addWidget(title)
-    accounts = QTableWidget(0, 5, host)
-    accounts.setObjectName("serverAccountsTable")
-    accounts.setHorizontalHeaderLabels(
-        ("Пользователь", "Логин", "Активен", "Server Admin", "Создан")
-    )
-    accounts.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-    accounts.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-    accounts.horizontalHeader().setStretchLastSection(True)
-    layout.addWidget(accounts, 2)
-
-    actions = QWidget(host)
-    action_layout = QHBoxLayout(actions)
-    action_layout.setContentsMargins(0, 0, 0, 0)
-    create_button = QPushButton("Создать пользователя…", actions)
-    reset_button = QPushButton("Сбросить пароль…", actions)
-    sessions_button = QPushButton("Завершить все сеансы", actions)
-    refresh_button = QPushButton("Обновить", actions)
-    for button in (create_button, reset_button, sessions_button, refresh_button):
-        action_layout.addWidget(button)
-    action_layout.addStretch(1)
-    layout.addWidget(actions)
-
-    audit_label = QLabel("Журнал административных действий", host)
-    layout.addWidget(audit_label)
-    audit = QTableWidget(0, 4, host)
-    audit.setObjectName("serverAdministrationAuditTable")
-    audit.setHorizontalHeaderLabels(("Время", "Действие", "Инициатор", "Пользователь"))
-    audit.horizontalHeader().setStretchLastSection(True)
-    layout.addWidget(audit, 1)
-
-    refreshing = False
-
-    def selected_account_id() -> str:
-        row = accounts.currentRow()
-        if row < 0:
-            return ""
-        item = accounts.item(row, 0)
-        return "" if item is None else str(item.data(Qt.ItemDataRole.UserRole) or "")
-
-    def report_error(title_text: str, exc: Exception) -> None:
-        QMessageBox.warning(host, title_text, str(exc))
-
-    def change_enabled(account_id: str, checked: bool) -> None:
-        if refreshing:
-            return
-        try:
-            remote.set_server_account_enabled(account_id, checked)
-        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
-            report_error("Не удалось изменить состояние пользователя", exc)
-        refresh()
-
-    def change_admin(account_id: str, checked: bool) -> None:
-        if refreshing:
-            return
-        try:
-            remote.set_server_administrator(account_id, checked)
-        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
-            report_error("Не удалось изменить роль администратора", exc)
-        refresh()
-
-    def refresh() -> None:
-        nonlocal refreshing
-        refreshing = True
-        try:
-            values = remote.list_server_accounts(include_disabled=True)
-            accounts.setRowCount(len(values))
-            for row, value in enumerate(values):
-                account_id = str(value.get("account_id", ""))
-                name_item = QTableWidgetItem(str(value.get("display_name", "")))
-                name_item.setData(Qt.ItemDataRole.UserRole, account_id)
-                accounts.setItem(row, 0, name_item)
-                accounts.setItem(row, 1, QTableWidgetItem(str(value.get("username", ""))))
-                enabled = QCheckBox(accounts)
-                enabled.setChecked(bool(value.get("enabled", False)))
-                enabled.stateChanged.connect(
-                    lambda state, target=account_id: change_enabled(
-                        target, state == Qt.CheckState.Checked.value
-                    )
-                )
-                accounts.setCellWidget(row, 2, enabled)
-                administrator = QCheckBox(accounts)
-                administrator.setChecked("server_admin" in value.get("system_roles", ()))
-                administrator.stateChanged.connect(
-                    lambda state, target=account_id: change_admin(
-                        target, state == Qt.CheckState.Checked.value
-                    )
-                )
-                accounts.setCellWidget(row, 3, administrator)
-                accounts.setItem(row, 4, QTableWidgetItem(str(value.get("created_at", ""))))
-            events = remote.administration_audit(limit=500)
-            audit.setRowCount(len(events))
-            labels = {
-                "account.created": "Создан пользователь",
-                "account.enabled": "Пользователь включён",
-                "account.disabled": "Пользователь отключён",
-                "account.password_reset": "Сброшен пароль",
-                "sessions.revoked": "Завершены сеансы",
-                "global_role.granted": "Назначен Server Admin",
-                "global_role.revoked": "Отозван Server Admin",
-            }
-            for row, event in enumerate(events):
-                values_row = (
-                    event.get("recorded_at", ""),
-                    labels.get(str(event.get("action", "")), event.get("action", "")),
-                    event.get("actor_id", "") or "локальное восстановление",
-                    event.get("target_account_id", "") or "",
-                )
-                for column, value in enumerate(values_row):
-                    audit.setItem(row, column, QTableWidgetItem(str(value)))
-        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
-            report_error("Не удалось загрузить данные администрирования", exc)
-        finally:
-            refreshing = False
-
-    def create_account() -> None:
-        dialog = QDialog(host)
-        dialog.setWindowTitle("Новый пользователь Kraken Server")
-        form = QFormLayout(dialog)
-        username = QLineEdit(dialog)
-        display_name = QLineEdit(dialog)
-        password = QLineEdit(dialog)
-        password.setEchoMode(QLineEdit.EchoMode.Password)
-        confirmation = QLineEdit(dialog)
-        confirmation.setEchoMode(QLineEdit.EchoMode.Password)
-        form.addRow("Логин", username)
-        form.addRow("Отображаемое имя", display_name)
-        form.addRow("Пароль", password)
-        form.addRow("Повтор пароля", confirmation)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-            dialog,
-        )
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        if password.text() != confirmation.text():
-            QMessageBox.warning(host, "Пароли не совпадают", "Повторите ввод пароля.")
-            return
-        try:
-            remote.create_server_account(
-                username=username.text(),
-                display_name=display_name.text(),
-                password=password.text(),
-            )
-        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
-            report_error("Не удалось создать пользователя", exc)
-        refresh()
-
-    def reset_password() -> None:
-        account_id = selected_account_id()
-        if not account_id:
-            QMessageBox.information(host, "Kraken", "Выберите пользователя.")
-            return
-        password, accepted = QInputDialog.getText(
-            host,
-            "Новый пароль",
-            "Пароль:",
-            QLineEdit.EchoMode.Password,
-        )
-        if not accepted or not password:
-            return
-        confirmation, accepted = QInputDialog.getText(
-            host,
-            "Подтверждение пароля",
-            "Повтор пароля:",
-            QLineEdit.EchoMode.Password,
-        )
-        if not accepted:
-            return
-        if password != confirmation:
-            QMessageBox.warning(host, "Пароли не совпадают", "Повторите операцию.")
-            return
-        try:
-            remote.reset_server_account_password(account_id, password)
-        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
-            report_error("Не удалось сбросить пароль", exc)
-        refresh()
-
-    def revoke_sessions() -> None:
-        account_id = selected_account_id()
-        if not account_id:
-            QMessageBox.information(host, "Kraken", "Выберите пользователя.")
-            return
-        try:
-            remote.revoke_server_account_sessions(account_id)
-        except Exception as exc:  # noqa: BLE001 - UI boundary reports transport failures
-            report_error("Не удалось завершить сеансы", exc)
-        refresh()
-
-    create_button.clicked.connect(create_account)
-    reset_button.clicked.connect(reset_password)
-    sessions_button.clicked.connect(revoke_sessions)
-    refresh_button.clicked.connect(refresh)
-    refresh()
-    return host
-
-
 def _configure_administration_page(shell, service, session: DesktopSession) -> None:
-    remote = getattr(service, "remote", None)
-    is_server_admin = (
-        remote is not None
-        and SystemRole.SERVER_ADMIN in remote.auth.principal.system_roles
-    )
-    page = shell.page("administration")
-    if is_server_admin:
-        shell.set_page_visible("administration", True)
-        if page is not None:
-            page.set_content(_server_administration_panel(remote))
-        return
-
     local = service.local if isinstance(service, DualCatalogService) else service
+    page = shell.page("administration")
     shell.set_page_visible("administration", True)
     if page is not None:
         page.set_content(_administration_panel(local, session))

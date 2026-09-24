@@ -7,6 +7,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 common_hidden = (
     collect_submodules("kraken_server")
+    + collect_submodules("kraken_admin")
     + collect_submodules("kraken_manager")
     + collect_submodules("sqlalchemy.dialects.postgresql")
     + collect_submodules("psycopg")

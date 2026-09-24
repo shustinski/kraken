@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
 from kraken_server.app import SessionPrincipal, create_app
-from kraken_server.cli import _database_url
+from kraken_admin.cli import _database_url
 from kraken_server.configuration import ServerConfig, protect_secret, unprotect_secret, write_config
 from kraken_server.services import InMemoryServerServices
 
@@ -35,73 +35,35 @@ def _administration_client(tmp_path: Path):
     return TestClient(app), store, administrator, operator
 
 
-def test_server_admin_manages_accounts_roles_sessions_and_audit(tmp_path: Path) -> None:
+def test_local_admin_manages_accounts_without_http(tmp_path: Path) -> None:
     client, store, administrator, operator = _administration_client(tmp_path)
-    admin_headers = {"Authorization": "Bearer admin-token"}
-
-    denied = client.get("/api/v1/admin/accounts", headers={"Authorization": "Bearer operator-token"})
-    assert denied.status_code == 403
-
-    created = client.post(
-        "/api/v1/admin/accounts",
-        headers=admin_headers,
-        json={"username": "reviewer", "display_name": "Reviewer", "password": "review password"},
+    from kraken_admin.local_admin import (
+        create_account,
+        reset_password,
+        set_account_enabled,
+        set_server_admin,
     )
-    assert created.status_code == 201
-    reviewer_id = created.json()["account_id"]
 
-    granted = client.put(
-        f"/api/v1/admin/accounts/{operator.account_id}/roles/server_admin",
-        headers=admin_headers,
-    )
-    assert granted.status_code == 200
-    assert granted.json()["system_roles"] == ["server_admin"]
+    assert client.get("/api/v1/admin/accounts", headers={"Authorization": "Bearer admin-token"}).status_code == 404
 
-    disabled = client.post(f"/api/v1/admin/accounts/{reviewer_id}/disable", headers=admin_headers, json={})
-    assert disabled.status_code == 200
-    assert disabled.json()["enabled"] is False
-
-    reset = client.put(
-        f"/api/v1/admin/accounts/{operator.account_id}/password",
-        headers=admin_headers,
-        json={"password": "replacement password"},
-    )
-    assert reset.status_code == 200
+    reviewer_id = create_account(store, "reviewer", "Reviewer", "review password")
+    set_server_admin(store, "operator", grant=True)
+    assert store.global_roles_for(operator.account_id) == frozenset({"server_admin"})
+    set_account_enabled(store, "reviewer", enabled=False)
+    assert store.get_account(reviewer_id).enabled is False
+    reset_password(store, "operator", "replacement password")
     assert store.authenticate("operator", "replacement password") is not None
-
-    audit = client.get("/api/v1/admin/audit", headers=admin_headers)
-    assert audit.status_code == 200
-    actions = {item["action"] for item in audit.json()["items"]}
-    assert {
-        "account.created",
-        "account.disabled",
-        "account.password_reset",
-        "global_role.granted",
-    } <= actions
-
-    session = client.get("/api/v1/session", headers=admin_headers)
-    assert session.json()["system_roles"] == ["server_admin"]
     assert administrator.account_id != operator.account_id
 
 
-def test_administrator_cannot_disable_or_demote_self(tmp_path: Path) -> None:
-    client, _store, administrator, _operator = _administration_client(tmp_path)
-    headers = {"Authorization": "Bearer admin-token"}
-    assert (
-        client.post(
-            f"/api/v1/admin/accounts/{administrator.account_id}/disable",
-            headers=headers,
-            json={},
-        ).status_code
-        == 409
-    )
-    assert (
-        client.delete(
-            f"/api/v1/admin/accounts/{administrator.account_id}/roles/server_admin",
-            headers=headers,
-        ).status_code
-        == 409
-    )
+def test_local_admin_cannot_remove_the_last_administrator(tmp_path: Path) -> None:
+    _client, store, _administrator, _operator = _administration_client(tmp_path)
+    from kraken_admin.local_admin import set_account_enabled, set_server_admin
+
+    with pytest.raises(ValueError, match="last active"):
+        set_account_enabled(store, "admin", enabled=False)
+    with pytest.raises(ValueError, match="last active"):
+        set_server_admin(store, "admin", grant=False)
 
 
 def test_account_store_preserves_last_enabled_administrator(tmp_path: Path) -> None:
@@ -207,7 +169,7 @@ def test_self_registered_account_is_ordinary_and_sees_only_its_projects(tmp_path
         "/api/v1/admin/accounts",
         headers={"Authorization": f"Bearer {bob['access_token']}"},
     )
-    assert denied.status_code == 403
+    assert denied.status_code == 404
 
     alice_projects = client.get(
         "/api/v1/projects",
@@ -222,8 +184,41 @@ def test_self_registered_account_is_ordinary_and_sees_only_its_projects(tmp_path
     assert again["principal"]["id"] == alice["principal"]["id"]
 
 
+def test_local_admin_revokes_the_last_maintainer(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from uuid import uuid4
+
+    from kraken_hub.composition import EmbeddedProjectService
+    from kraken_manager.application.acl import RevokeProjectRoleHandler
+    from kraken_manager.application.dto import CommandContext, RevokeProjectRoleCommand
+    from kraken_manager.domain.identity import ProjectRole, SystemRole
+    from kraken_manager.domain.project import GridOrientation
+
+    service = EmbeddedProjectService(tmp_path)
+    owner = service.create_initial_account("owner", "Owner", "")
+    project = service.create_project(
+        principal=owner.principal,
+        name="Protected owner",
+        width=1,
+        height=1,
+        orientation=GridOrientation.Y_DOWN,
+        idempotency_key="project",
+    )
+    actor = replace(owner.principal, system_roles=frozenset({SystemRole.SERVER_ADMIN}))
+    RevokeProjectRoleHandler(service._uow(str(project.id)), service.profiles, service.clock)(
+        RevokeProjectRoleCommand(
+            context=CommandContext(actor=actor, idempotency_key=str(uuid4())),
+            project_id=project.id,
+            principal_id=owner.principal.id,
+            role=ProjectRole.MAINTAINER,
+            expected_revision=service.project_role_revision(project.id, owner.principal.id),
+        )
+    )
+    assert ProjectRole.MAINTAINER not in service.project_roles(project.id, owner.principal.id)
+
+
 def test_initial_setup_accepts_a_new_config_path(monkeypatch, tmp_path: Path) -> None:
     prompted_url = "postgresql+psycopg://kraken@localhost/kraken"
-    monkeypatch.setattr("kraken_server.cli.getpass.getpass", lambda _prompt: prompted_url)
+    monkeypatch.setattr("kraken_admin.cli.getpass.getpass", lambda _prompt: prompted_url)
 
     assert _database_url(Namespace(config=tmp_path / "new-server.toml", database_url=None)) == prompted_url

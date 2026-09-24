@@ -15,7 +15,7 @@ LOGGER = logging.getLogger("kraken_server.access")
 _HANDLER_NAME = "kraken-server-operation"
 
 _PROJECT_CREATE = "/api/v1/projects"
-_ACCOUNT_CREATE = frozenset({"/api/v1/auth/accounts", "/api/v1/admin/accounts"})
+_ACCOUNT_CREATE = frozenset({"/api/v1/auth/accounts"})
 _LAYER_CREATE = re.compile(r"/api/v1/projects/[^/]+/layers\Z")
 
 

@@ -1,3 +1,3 @@
-from kraken_server.cli import main
+from kraken_admin.cli import main
 
 raise SystemExit(main())

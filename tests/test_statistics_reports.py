@@ -316,6 +316,27 @@ class StatisticsReportTests(unittest.TestCase):
         self.assertEqual("Период", daily_rows[0][0])
         self.assertEqual("Импортировано файлов", daily_rows[0][1])
 
+    def test_remote_history_event_supplies_project_id(self) -> None:
+        from kraken_hub.remote_client import _RemoteHistoryEvent
+
+        event = _RemoteHistoryEvent(
+            {
+                "event_id": "e1",
+                "event_type": "ProjectCreated",
+                "stream_id": "project:p1",
+                "revision": 1,
+                "recorded_at": "2026-09-24T10:00:00+00:00",
+                "payload": {},
+                "actor": {"principal_id": "user", "display_name": "User"},
+            },
+            project_id="p1",
+        )
+
+        record = ActivityRecord.from_event(event)
+
+        self.assertEqual("p1", record.project_id)
+        self.assertEqual("ProjectCreated", record.event_type)
+
 
 if __name__ == "__main__":
     unittest.main()

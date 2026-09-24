@@ -212,7 +212,7 @@ Same pattern for `krona`, `neuralimage`, `csliser`, `karakal` (replace the folde
 |---|---|
 | Kraken Server (development) | `kraken-server --development` on `127.0.0.1:8080`, no PostgreSQL |
 | Kraken Server (local config) | `kraken-server --config` at the local `server.toml` written by `kraken-admin init` |
-| Kraken Admin | `kraken-admin`; the debug session asks which command to run |
+| Kraken Admin | `kraken-admin` local window connected to the server database |
 | Kraken Hub | Desktop |
 | Kraken Project Manager (dev auto-login) | Desktop with a local `vscode` account |
 | Kraken Agent | Local plugin agent |

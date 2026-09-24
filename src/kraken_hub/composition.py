@@ -158,7 +158,6 @@ from kraken_manager.domain.identity import (
     ProjectRole,
     ProjectRoleAssignment,
     ROLE_PERMISSIONS,
-    SystemRole,
 )
 from kraken_manager.domain.project import (
     GridOrientation,
@@ -410,8 +409,6 @@ class EmbeddedProjectService:
         project_id: ProjectId | str,
         principal: Principal,
     ) -> frozenset[Permission]:
-        if SystemRole.SERVER_ADMIN in principal.system_roles:
-            return frozenset(Permission)
         permissions: set[Permission] = set()
         for role in self.project_roles(project_id, principal.id):
             permissions.update(ROLE_PERMISSIONS[role])

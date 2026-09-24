@@ -33,8 +33,8 @@
       "name": "Kraken Admin",
       "type": "debugpy",
       "request": "launch",
-      "module": "kraken_server.cli",
-      "args": ["${input:krakenAdminCommand}"],
+      "module": "kraken_admin",
+      "args": [],
       "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
@@ -159,21 +159,4 @@
       }
     }
   ],
-  "inputs": [
-    {
-      "id": "krakenAdminCommand",
-      "type": "pickString",
-      "description": "Команда Kraken Admin. Команды с обязательными аргументами описаны в src/kraken_server/README.md",
-      "options": [
-        "--help",
-        "doctor",
-        "init",
-        "project-list",
-        "blob-benchmark",
-        "setup-server",
-        "install-service"
-      ],
-      "default": "doctor"
-    }
-  ]
 }

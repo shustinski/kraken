@@ -249,7 +249,7 @@ def create_app(
             held_roles=held,
             acting_role=acting,
             action=action,
-            is_server_admin="server_admin" in system_roles(subject),
+            is_server_admin=False,
         )
         if not decision.allowed:
             raise ForbiddenError(decision.message)
@@ -283,34 +283,16 @@ def create_app(
         )
         return frozenset(() if actor is None else actor.get("system_roles", ()))
 
-    def server_administrator(
-        subject: SessionPrincipal = Depends(principal),
-    ) -> SessionPrincipal:
-        if development and subject.provider == "development":
-            return subject
-        if "server_admin" not in system_roles(subject):
-            raise ForbiddenError("Server Administrator permission is required")
-        return subject
-
     def has_project_access(project_id: str, subject: SessionPrincipal) -> bool:
         if development and subject.provider == "development":
             return True
-        if access_mode == "trusted_network" or "server_admin" in system_roles(subject):
+        if access_mode == "trusted_network":
             return True
         lookup = getattr(backend, "project_ids_for_principal", None)
         if lookup is not None:
             return project_id in set(lookup(subject.principal_id))
         roles = backend.project_roles(project_id, subject.principal_id).get("roles", ())
         return bool(roles)
-
-    def acl_mutation_actor(
-        request: Request,
-        subject: SessionPrincipal = Depends(principal),
-    ) -> SessionPrincipal:
-        if "server_admin" in system_roles(subject) or (development and subject.provider == "development"):
-            enforce_acting_role(request, subject)
-            return subject
-        return shared_mutation_actor(request, subject)
 
     def project_reader(
         project_id: str,
@@ -513,148 +495,10 @@ def create_app(
             raise HTTPException(status_code=401, detail="Invalid credentials")
         return local_session_payload(session)
 
-    def account_payload(account: Any) -> dict[str, Any]:
-        return {
-            "account_id": str(account.account_id),
-            "username": str(account.username),
-            "display_name": str(account.display_name),
-            "enabled": bool(account.enabled),
-            "created_at": str(account.created_at),
-            "system_roles": sorted(account_store.global_roles_for(account.account_id)),
-        }
-
     def require_account_store() -> Any:
         if account_store is None or not hasattr(account_store, "list_accounts"):
             raise HTTPException(status_code=503, detail="Server account administration is not configured")
         return account_store
-
-    @app.get(f"{API_PREFIX}/admin/accounts")
-    def list_server_accounts(
-        include_disabled: bool = True,
-        _: SessionPrincipal = Depends(server_administrator),
-    ) -> dict[str, Any]:
-        store = require_account_store()
-        return {
-            "items": [account_payload(account) for account in store.list_accounts(include_disabled=include_disabled)]
-        }
-
-    @app.post(f"{API_PREFIX}/admin/accounts", status_code=201)
-    def create_server_account(
-        payload: dict[str, Any],
-        actor: SessionPrincipal = Depends(server_administrator),
-    ) -> dict[str, Any]:
-        store = require_account_store()
-        password = str(payload.get("password", ""))
-        if not password:
-            raise ValidationError("Password is required")
-        try:
-            account = store.create_account(
-                str(payload.get("username", "")),
-                str(payload.get("display_name", "")),
-                password,
-                actor_id=actor.principal_id,
-            )
-        except ValueError as exc:
-            raise ValidationError(str(exc)) from exc
-        except Exception as exc:
-            if exc.__class__.__name__ == "IntegrityError":
-                raise ConflictError("Username is already registered") from exc
-            raise
-        return account_payload(account)
-
-    @app.put(f"{API_PREFIX}/admin/accounts/{{account_id}}/roles/server_admin")
-    def grant_server_administrator(
-        account_id: str,
-        actor: SessionPrincipal = Depends(server_administrator),
-    ) -> dict[str, Any]:
-        store = require_account_store()
-        try:
-            store.grant_global_role(account_id, "server_admin", actor_id=actor.principal_id)
-            account = store.get_account(account_id)
-        except KeyError as exc:
-            raise NotFoundError(account_id) from exc
-        if account is None:
-            raise NotFoundError(account_id)
-        return account_payload(account)
-
-    @app.delete(f"{API_PREFIX}/admin/accounts/{{account_id}}/roles/server_admin")
-    def revoke_server_administrator(
-        account_id: str,
-        actor: SessionPrincipal = Depends(server_administrator),
-    ) -> dict[str, Any]:
-        store = require_account_store()
-        if account_id == actor.principal_id:
-            raise ConflictError("An administrator cannot revoke their own server role")
-        try:
-            store.revoke_global_role(
-                account_id,
-                "server_admin",
-                actor_id=actor.principal_id,
-                preserve_last_enabled=True,
-            )
-            account = store.get_account(account_id)
-        except KeyError as exc:
-            raise NotFoundError(account_id) from exc
-        except ValueError as exc:
-            raise ConflictError(str(exc)) from exc
-        if account is None:
-            raise NotFoundError(account_id)
-        return account_payload(account)
-
-    @app.post(f"{API_PREFIX}/admin/accounts/{{account_id}}/{{operation}}")
-    def mutate_server_account(
-        account_id: str,
-        operation: str,
-        actor: SessionPrincipal = Depends(server_administrator),
-    ) -> dict[str, Any]:
-        store = require_account_store()
-        try:
-            if operation == "disable":
-                if account_id == actor.principal_id:
-                    raise ConflictError("An administrator cannot disable their own account")
-                account = store.set_enabled(
-                    account_id,
-                    False,
-                    actor_id=actor.principal_id,
-                    preserve_last_admin=True,
-                )
-            elif operation == "enable":
-                account = store.set_enabled(account_id, True, actor_id=actor.principal_id)
-            elif operation == "revoke-sessions":
-                store.revoke_all_sessions(account_id, actor_id=actor.principal_id)
-                account = store.get_account(account_id)
-            else:
-                raise NotFoundError(operation)
-        except KeyError as exc:
-            raise NotFoundError(account_id) from exc
-        except ValueError as exc:
-            raise ConflictError(str(exc)) from exc
-        if account is None:
-            raise NotFoundError(account_id)
-        return account_payload(account)
-
-    @app.put(f"{API_PREFIX}/admin/accounts/{{account_id}}/password")
-    def reset_server_account_password(
-        account_id: str,
-        payload: dict[str, Any],
-        actor: SessionPrincipal = Depends(server_administrator),
-    ) -> dict[str, str]:
-        store = require_account_store()
-        password = str(payload.get("password", ""))
-        if not password:
-            raise ValidationError("Password is required")
-        try:
-            store.reset_password(account_id, password, actor_id=actor.principal_id)
-        except KeyError as exc:
-            raise NotFoundError(account_id) from exc
-        return {"status": "password_reset"}
-
-    @app.get(f"{API_PREFIX}/admin/audit")
-    def administration_audit(
-        limit: int = Query(default=500, ge=1, le=2000),
-        _: SessionPrincipal = Depends(server_administrator),
-    ) -> dict[str, Any]:
-        return {"items": list(require_account_store().administration_audit(limit=limit))}
 
     @app.get(f"{API_PREFIX}/projects")
     def list_projects(
@@ -663,8 +507,6 @@ def create_app(
     ) -> dict[str, Any]:
         items = backend.list_projects(include_archived=include_archived)
         if (development and subject.provider == "development") or access_mode == "trusted_network":
-            return {"items": items}
-        if "server_admin" in system_roles(subject):
             return {"items": items}
         lookup = getattr(backend, "project_ids_for_principal", None)
         if lookup is None:
@@ -772,7 +614,7 @@ def create_app(
         project_id: str,
         principal_id: str,
         role: str,
-        actor: SessionPrincipal = Depends(acl_mutation_actor),
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:
@@ -788,7 +630,7 @@ def create_app(
         project_id: str,
         principal_id: str,
         role: str,
-        actor: SessionPrincipal = Depends(acl_mutation_actor),
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:

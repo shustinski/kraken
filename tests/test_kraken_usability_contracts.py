@@ -15,7 +15,7 @@ from kraken_core.plugin_protocol import (
     PluginOperation,
 )
 from kraken_manager.infrastructure.plugin.agent_gateway import _stage_model
-from kraken_server.cli import _doctor, _parser
+from kraken_admin.cli import _doctor, _parser
 
 
 def _frame() -> PluginFrameInput:

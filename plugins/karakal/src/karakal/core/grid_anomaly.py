@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v67_critical_small_dirt"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v71_nonoverlap_defects"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -44,9 +44,16 @@ GRID_DAMAGE_REASON_TYPES = (
     "binary_only_cell",
     "geometry_mismatch",
     "defect_disagreement",
+    "class_conflict",
 )
 _GRID_DAMAGE_REASON_TYPE_SET = set(GRID_DAMAGE_REASON_TYPES)
 GRID_CELL_REPRESENTATION_MODES = ("confidence", "binary")
+GRID_DERIVED_LAYER_KEYS = ("derived_conflict",)
+GRID_CLASS_CONFLICT_MIN_AREA = 6
+GRID_CLASS_CONFLICT_ALGORITHM_VERSION = "grid_class_conflict.v2"
+# Back-compat aliases for earlier derived-XOR naming.
+GRID_XOR_RESIDUAL_MIN_AREA = GRID_CLASS_CONFLICT_MIN_AREA
+GRID_XOR_RESIDUAL_ALGORITHM_VERSION = GRID_CLASS_CONFLICT_ALGORITHM_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +372,86 @@ def _bbox_iou(first: tuple[int, int, int, int], second: tuple[int, int, int, int
     return 0.0 if union <= 0 else float(intersection / union)
 
 
+def _bbox_intersection_area(first: tuple[int, int, int, int], second: tuple[int, int, int, int]) -> int:
+    first_left, first_top, first_width, first_height = (int(value) for value in first[:4])
+    second_left, second_top, second_width, second_height = (int(value) for value in second[:4])
+    intersection_width = max(
+        0, min(first_left + first_width, second_left + second_width) - max(first_left, second_left)
+    )
+    intersection_height = max(0, min(first_top + first_height, second_top + second_height) - max(first_top, second_top))
+    return int(intersection_width * intersection_height)
+
+
+_DEFECT_REASON_PRIORITY: dict[str, int] = {
+    "merged_contour": 90,
+    "filled_cell": 88,
+    "broken_geometry": 86,
+    "edge_clipped_cell": 84,
+    "partial_filled_cell": 82,
+    "defect_disagreement": 60,
+    "geometry_mismatch": 58,
+    "class_conflict": 56,
+    "xor_residual": 56,
+    "small_artifact": 30,
+    "confidence_only_cell": 28,
+    "binary_only_cell": 26,
+    "conductor_residue": 20,
+}
+
+
+def _defect_priority(reasons: tuple[str, ...] | list[str] | None) -> int:
+    if not reasons:
+        return 0
+    return max((_DEFECT_REASON_PRIORITY.get(str(reason), 10) for reason in reasons), default=0)
+
+
+def _suppress_overlapping_defect_boxes(
+    per_cell: list[GridCellAnalysisResult],
+    *,
+    containment_ratio: float = 0.55,
+    iou_threshold: float = 0.35,
+) -> list[GridCellAnalysisResult]:
+    """Drop weaker/smaller defect boxes nested inside or heavily overlapping stronger ones."""
+
+    if len(per_cell) <= 1:
+        return list(per_cell)
+
+    normals = [cell for cell in per_cell if not tuple(cell.reasons or ())]
+    defects = [cell for cell in per_cell if tuple(cell.reasons or ())]
+    if len(defects) <= 1:
+        return list(per_cell)
+
+    ordered = sorted(
+        defects,
+        key=lambda cell: (
+            _defect_priority(cell.reasons),
+            int(cell.bbox[2]) * int(cell.bbox[3]),
+            float(cell.score),
+        ),
+        reverse=True,
+    )
+    kept: list[GridCellAnalysisResult] = []
+    for candidate in ordered:
+        candidate_area = max(1, int(candidate.bbox[2]) * int(candidate.bbox[3]))
+        suppressed = False
+        for winner in kept:
+            intersection = _bbox_intersection_area(candidate.bbox, winner.bbox)
+            if intersection <= 0:
+                continue
+            contained = float(intersection) / float(candidate_area) >= float(containment_ratio)
+            overlapped = _bbox_iou(candidate.bbox, winner.bbox) >= float(iou_threshold)
+            if contained or overlapped:
+                suppressed = True
+                break
+        if not suppressed:
+            kept.append(candidate)
+
+    merged = list(normals)
+    merged.extend(kept)
+    merged.sort(key=lambda cell: (float(cell.centroid[1]), float(cell.centroid[0]), int(cell.contour_id)))
+    return [replace(cell, row=int(index), col=0) for index, cell in enumerate(merged)]
+
+
 def _grid_comparison_pairs(
     confidence_cells: list[GridCellAnalysisResult],
     binary_cells: list[GridCellAnalysisResult],
@@ -600,6 +687,7 @@ def detect_grid_cell_anomalies(
     frame_path: str = "",
     config: GridDamageAnalysisConfig | None = None,
     reference_profile: GridCellReferenceProfile | None = None,
+    confidence_map: np.ndarray | None = None,
 ) -> GridFrameAnalysisResult:
     """Analyze one image and return compact grid damage metrics."""
 
@@ -607,6 +695,16 @@ def detect_grid_cell_anomalies(
     started = perf_counter()
     with profile_stage("validation.grid.grayscale", frame_id=frame_id):
         gray = _normalize_grayscale(image)
+    probability = _as_probability_map(confidence_map)
+    if probability is None and str(cfg.cell_representation) == "confidence":
+        probability = _as_probability_map(gray)
+    if probability is not None and probability.shape != gray.shape:
+        if cv2 is not None:
+            probability = cv2.resize(
+                probability, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR
+            ).astype(np.float32, copy=False)
+        else:
+            probability = None
     height, width = gray.shape
     empty_result = GridFrameAnalysisResult(
         frame_id=str(frame_id or ""),
@@ -690,6 +788,7 @@ def detect_grid_cell_anomalies(
                 median_center_fill=median_center_fill,
                 median_aspect=median_aspect,
                 config=cfg,
+                confidence_map=probability,
             )
             score, reasons = _filter_disabled_grid_reasons(score, reasons, cfg)
             if reasons and set(reasons) <= {"small_artifact", "broken_geometry", "edge_clipped_cell"} and _is_detached_confidence_cell_edge(
@@ -736,6 +835,7 @@ def detect_grid_cell_anomalies(
         median_width=median_width,
         median_height=median_height,
     )
+    per_cell = _suppress_overlapping_defect_boxes(per_cell)
     by_contour = {int(item.contour_id): item for item in candidates}
     defect_entries = []
     for index, cell in enumerate(per_cell):
@@ -863,6 +963,7 @@ def analyze_grid_frame_path(
     use_cache: bool = True,
     read_cache: bool | None = None,
     write_cache: bool | None = None,
+    confidence_path: Path | str | None = None,
 ) -> GridFrameAnalysisResult | None:
     """Load one image, analyze it, and cache only compact analysis data."""
 
@@ -870,7 +971,10 @@ def analyze_grid_frame_path(
     cfg = (config or GridDamageAnalysisConfig()).normalized()
     should_read_cache = bool(use_cache) if read_cache is None else bool(read_cache)
     should_write_cache = bool(use_cache) if write_cache is None else bool(write_cache)
-    if should_read_cache:
+    confidence_obj = Path(confidence_path) if confidence_path else None
+    # External confidence fusion changes classify outcomes; skip shared path cache for those runs.
+    can_use_shared_cache = confidence_obj is None
+    if should_read_cache and can_use_shared_cache:
         with profile_stage("validation.cache.disk.read", frame_id=frame_id):
             cached = _load_cached_grid_result(
                 path_obj, frame_id=frame_id, config=cfg, reference_profile=reference_profile
@@ -888,6 +992,7 @@ def analyze_grid_frame_path(
         return None
     with profile_stage("validation.image.read_decode", frame_id=frame_id):
         image = _load_cv2_grayscale_image(path_obj)
+        confidence_image = _load_cv2_grayscale_image(confidence_obj) if confidence_obj is not None else None
     if image is None:
         return None
     with profile_stage("validation.grid.frame", frame_id=frame_id, frame_count=1):
@@ -897,8 +1002,9 @@ def analyze_grid_frame_path(
             frame_path=str(path_obj),
             config=cfg,
             reference_profile=reference_profile,
+            confidence_map=confidence_image,
         )
-    if should_write_cache:
+    if should_write_cache and can_use_shared_cache:
         with profile_stage("validation.cache.disk.write", frame_id=frame_id):
             _store_cached_grid_result(
                 path_obj, frame_id=frame_id, config=cfg, reference_profile=reference_profile, result=result
@@ -1048,6 +1154,7 @@ def analyze_grid_frame_pair_chunk(
                     config=binary_config,
                     reference_profile=None,
                     use_cache=use_cache,
+                    confidence_path=confidence_path or None,
                 )
                 if need_binary
                 else None
@@ -1207,6 +1314,285 @@ def analyze_grid_frame_sources_chunk(
             continue
         payloads[str(key)] = {str(layer_key): result}
     return payloads, errors
+
+
+def _as_probability_map(image: np.ndarray | None) -> np.ndarray | None:
+    if image is None:
+        return None
+    values = np.asarray(image)
+    if values.ndim == 3:
+        values = values[..., :3].mean(axis=2)
+    if values.ndim != 2 or values.size == 0:
+        return None
+    if values.dtype == np.uint8:
+        return (np.asarray(values, dtype=np.float32) / 255.0).astype(np.float32, copy=False)
+    finite = np.nan_to_num(values.astype(np.float32, copy=False), nan=0.0, posinf=1.0, neginf=0.0)
+    if float(np.nanmax(finite)) > 1.0 + 1e-6:
+        finite = finite / 255.0
+    return np.clip(finite, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _mask_from_grid_gray(image: np.ndarray, *, threshold: float = 0.5) -> np.ndarray:
+    gray = _normalize_grayscale(image)
+    level = int(round(max(0.0, min(1.0, float(threshold))) * 255.0))
+    return np.asarray(gray >= level, dtype=bool)
+
+
+def _is_conflict_contour_jitter(
+    conflict_roi: np.ndarray,
+    union_boundary_roi: np.ndarray,
+    *,
+    area: int,
+    width: int,
+    height: int,
+) -> bool:
+    """Thin fringe between oversized detections is contour jitter, not a real class clash."""
+
+    if area <= 0 or width <= 0 or height <= 0:
+        return True
+    min_side = min(int(width), int(height))
+    max_side = max(int(width), int(height))
+    # Hairline strips (1–2 px thick) are contour jitter even when they fill their bbox.
+    if min_side <= 2 and max_side >= 6:
+        return True
+    if min_side <= 3 and max_side >= 8 and float(area) <= 0.45 * float(width * height):
+        return True
+    if min_side <= 2 and area <= 24:
+        return True
+    boundary = np.asarray(union_boundary_roi, dtype=bool)
+    conflict = np.asarray(conflict_roi, dtype=bool)
+    if not np.any(conflict):
+        return True
+    if np.any(boundary):
+        overlap = float(np.count_nonzero(conflict & boundary)) / float(max(1, area))
+        if overlap >= 0.62 and min_side <= 5:
+            return True
+        if overlap >= 0.78 and area <= 40:
+            return True
+    return False
+
+
+def analyze_class_conflict_masks(
+    mask_a: np.ndarray,
+    mask_b: np.ndarray,
+    *,
+    frame_id: str = "",
+    frame_path: str = "",
+    min_area: int = GRID_CLASS_CONFLICT_MIN_AREA,
+) -> GridFrameAnalysisResult:
+    """Mark AND-overlap blobs where mutually exclusive classes fire together (e.g. ones ∩ zeros)."""
+
+    first = np.asarray(mask_a, dtype=bool)
+    second = np.asarray(mask_b, dtype=bool)
+    if first.shape != second.shape:
+        raise ValueError(f"Conflict masks have different shapes: {first.shape} vs {second.shape}")
+    height, width = first.shape
+    empty = GridFrameAnalysisResult(
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+        image_width=int(width),
+        image_height=int(height),
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=0,
+        detected_cells=0,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=0,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.0,
+        severity_level="OK",
+        grid_detected=True,
+        per_cell_results=(),
+        component_count=0,
+    )
+    conflict = np.logical_and(first, second)
+    if not np.any(conflict) or cv2 is None:
+        return empty
+
+    union = first | second
+    union_u8 = np.asarray(union, dtype=np.uint8)
+    eroded = cv2.erode(union_u8, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    union_boundary = union_u8.astype(bool) & ~eroded.astype(bool)
+
+    conflict_u8 = np.asarray(conflict, dtype=np.uint8) * 255
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(conflict_u8, connectivity=8)
+    findings: list[GridCellAnalysisResult] = []
+    for index in range(1, int(count)):
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        if area < int(min_area):
+            continue
+        x = int(stats[index, cv2.CC_STAT_LEFT])
+        y = int(stats[index, cv2.CC_STAT_TOP])
+        bw = int(stats[index, cv2.CC_STAT_WIDTH])
+        bh = int(stats[index, cv2.CC_STAT_HEIGHT])
+        component = labels[y : y + bh, x : x + bw] == index
+        boundary_roi = union_boundary[y : y + bh, x : x + bw]
+        if _is_conflict_contour_jitter(component, boundary_roi, area=area, width=bw, height=bh):
+            continue
+        cx = float(centroids[index][0])
+        cy = float(centroids[index][1])
+        score = float(min(1.0, 0.78 + 0.0025 * float(area)))
+        findings.append(
+            GridCellAnalysisResult(
+                row=len(findings),
+                col=0,
+                bbox=(x, y, bw, bh),
+                centroid=(cx, cy),
+                contour_id=int(index),
+                status="suspicious",
+                score=score,
+                reasons=("class_conflict",),
+            )
+        )
+
+    if not findings:
+        return empty
+    findings = _suppress_overlapping_defect_boxes(findings)
+    if not findings:
+        return empty
+    damage_score = _damage_score(findings, max(1, len(findings)))
+    severity = GridDamageSeverityThresholds().level_for_score(damage_score)
+    return GridFrameAnalysisResult(
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+        image_width=int(width),
+        image_height=int(height),
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=int(len(findings)),
+        detected_cells=int(len(findings)),
+        normal_cells=0,
+        suspicious_cells=int(len(findings)),
+        broken_cells=0,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=float(damage_score),
+        severity_level=str(severity),
+        grid_detected=True,
+        per_cell_results=tuple(findings),
+        component_count=int(max(0, count - 1)),
+    )
+
+
+def _class_conflict_cache_key(
+    path_a: Path,
+    path_b: Path,
+    *,
+    frame_id: str,
+    model_a_id: str,
+    model_b_id: str,
+    min_area: int,
+) -> tuple[Any, ...]:
+    return (
+        GRID_CLASS_CONFLICT_ALGORITHM_VERSION,
+        str(frame_id or ""),
+        str(model_a_id),
+        str(model_b_id),
+        int(min_area),
+        _grid_cache_identity(path_a),
+        _grid_cache_identity(path_b),
+    )
+
+
+def analyze_class_conflict_frame_paths(
+    path_a: Path | str,
+    path_b: Path | str,
+    *,
+    frame_id: str = "",
+    model_a_id: str = "",
+    model_b_id: str = "",
+    threshold: float = 0.5,
+    min_area: int = GRID_CLASS_CONFLICT_MIN_AREA,
+    use_cache: bool = True,
+) -> GridFrameAnalysisResult | None:
+    """Load two binary sources, compute filtered ones∩zeros conflicts, and cache the result."""
+
+    first_path = Path(path_a)
+    second_path = Path(path_b)
+    cache_key = _class_conflict_cache_key(
+        first_path,
+        second_path,
+        frame_id=frame_id,
+        model_a_id=model_a_id,
+        model_b_id=model_b_id,
+        min_area=min_area,
+    )
+    cache_path = _grid_damage_cache_path(cache_key)
+    if use_cache and cache_path.is_file():
+        try:
+            with cache_path.open("rb") as handle:
+                payload = pickle.load(handle)
+            if isinstance(payload, GridFrameAnalysisResult):
+                return payload
+        except Exception as error:
+            _LOGGER.warning("Ignoring corrupt class-conflict cache entry %s: %s", cache_path, error)
+
+    image_a = _load_cv2_grayscale_image(first_path)
+    image_b = _load_cv2_grayscale_image(second_path)
+    if image_a is None or image_b is None:
+        return None
+    if image_a.shape != image_b.shape:
+        if cv2 is None:
+            return None
+        image_b = cv2.resize(image_b, (image_a.shape[1], image_a.shape[0]), interpolation=cv2.INTER_NEAREST)
+    result = analyze_class_conflict_masks(
+        _mask_from_grid_gray(image_a, threshold=threshold),
+        _mask_from_grid_gray(image_b, threshold=threshold),
+        frame_id=frame_id,
+        frame_path=f"{first_path.name}|{second_path.name}",
+        min_area=min_area,
+    )
+    if use_cache:
+        try:
+            GRID_DAMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            atomic_pickle_dump(cache_path, result)
+        except (OSError, pickle.PickleError, TypeError, ValueError) as error:
+            _LOGGER.warning("Could not store class-conflict cache for %s: %s", frame_id, error)
+    return result
+
+
+def analyze_class_conflict_chunk(
+    entries: tuple[tuple[str, str, str], ...],
+    *,
+    model_a_id: str,
+    model_b_id: str,
+    threshold: float = 0.5,
+    min_area: int = GRID_CLASS_CONFLICT_MIN_AREA,
+    use_cache: bool = True,
+) -> tuple[dict[str, dict[str, GridFrameAnalysisResult]], dict[str, str]]:
+    """Analyze class conflicts for (frame_key, path_a, path_b) batches."""
+
+    payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
+    errors: dict[str, str] = {}
+    for key, path_a, path_b in entries:
+        try:
+            result = analyze_class_conflict_frame_paths(
+                path_a,
+                path_b,
+                frame_id=key,
+                model_a_id=model_a_id,
+                model_b_id=model_b_id,
+                threshold=threshold,
+                min_area=min_area,
+                use_cache=use_cache,
+            )
+        except Exception as error:
+            errors[str(key)] = f"{type(error).__name__}: {error}"
+            continue
+        if result is None:
+            errors[str(key)] = "decode_error"
+            continue
+        payloads[str(key)] = {"derived_conflict": result}
+    return payloads, errors
+
+
+# Back-compat aliases (previous derived-XOR API).
+_is_xor_contour_jitter = _is_conflict_contour_jitter
+analyze_xor_residual_masks = analyze_class_conflict_masks
+analyze_xor_residual_frame_paths = analyze_class_conflict_frame_paths
+analyze_xor_residual_chunk = analyze_class_conflict_chunk
 
 
 def _load_cv2_grayscale_image(path: Path | str) -> np.ndarray | None:
@@ -1787,40 +2173,10 @@ def _conductor_residue_signal(
     median_height: float,
     median_area: float,
 ) -> bool:
-    """Detect large conductor / grainy masses that must not be labeled as merged cells."""
+    """Retired: conductor masses are classified as merged_contour instead."""
 
-    width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
-    height_ratio = float(candidate.bbox[3]) / max(1.0, float(median_height))
-    area_ratio = float(candidate.area) / max(1.0, float(median_area))
-    bbox_area_ratio = float(candidate.bbox_area) / max(1.0, float(median_width) * float(median_height))
-    largest_axis = max(width_ratio, height_ratio)
-    smallest_axis = min(width_ratio, height_ratio)
-    fill_ratio = float(candidate.fill_ratio)
-    irregular = (
-        float(candidate.solidity) <= 0.88
-        or float(candidate.extent) <= 0.68
-        or int(candidate.approx_vertices) >= 8
-        or smallest_axis <= 0.46
-        or largest_axis / max(0.05, smallest_axis) >= 2.45
-        or fill_ratio <= 0.58
-    )
-    grainy_mass = (
-        irregular
-        and fill_ratio <= 0.62
-        and (
-            largest_axis >= 1.85
-            or bbox_area_ratio >= 2.10
-            or area_ratio >= 1.90
-            or (largest_axis >= 1.55 and float(candidate.extent) <= 0.58)
-        )
-    )
-    if grainy_mass:
-        return True
-    if not bool(candidate.touches_border):
-        return False
-    very_large = largest_axis >= 2.75 or bbox_area_ratio >= 3.40 or area_ratio >= 3.10
-    large = largest_axis >= 1.70 and (bbox_area_ratio >= 1.85 or area_ratio >= 1.55)
-    return bool(very_large or (large and irregular))
+    _ = (candidate, median_width, median_height, median_area)
+    return False
 
 
 def _bbox_gap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
@@ -1843,10 +2199,12 @@ def _collapse_conductor_regions(
     median_width: float,
     median_height: float,
 ) -> list[GridCellAnalysisResult]:
-    """Merge adjacent conductor fragments into one large rectangle per mass."""
+    """Merge adjacent large merged-mass fragments into one rectangle per blob."""
 
     conductor_indexes = [
-        index for index, cell in enumerate(per_cell) if "conductor_residue" in tuple(cell.reasons or ())
+        index
+        for index, cell in enumerate(per_cell)
+        if "merged_contour" in tuple(cell.reasons or ()) or "conductor_residue" in tuple(cell.reasons or ())
     ]
     if len(conductor_indexes) <= 1:
         return per_cell
@@ -1898,9 +2256,9 @@ def _collapse_conductor_regions(
                 bbox=(int(left), int(top), int(width), int(height)),
                 centroid=(float(left) + 0.5 * float(width), float(top) + 0.5 * float(height)),
                 contour_id=int(next_contour_id),
-                status="artifact",
+                status="broken",
                 score=float(min(1.0, max(0.86, score))),
-                reasons=("conductor_residue",),
+                reasons=("merged_contour",),
             )
         )
         next_contour_id += 1
@@ -1954,7 +2312,7 @@ def _analyze_conductor_only_frame(
     config: GridDamageAnalysisConfig,
     started: float,
 ) -> GridFrameAnalysisResult:
-    """Mark grainy conductor masses when the frame has no reliable cell grid seed."""
+    """Mark large irregular masses as merged contours when no cell-grid seed exists."""
 
     empty = GridFrameAnalysisResult(
         frame_id=str(frame_id or ""),
@@ -1976,12 +2334,12 @@ def _analyze_conductor_only_frame(
         per_cell_results=(),
         component_count=int(len(candidates)),
     )
-    conductor_candidates = [
+    mass_candidates = [
         item
         for item in candidates
         if _conductor_like_without_grid(item, frame_width=width, frame_height=height)
     ]
-    if not conductor_candidates:
+    if not mass_candidates:
         return empty
 
     provisional = [
@@ -1991,21 +2349,22 @@ def _analyze_conductor_only_frame(
             bbox=item.bbox,
             centroid=item.centroid,
             contour_id=item.contour_id,
-            status="artifact",
+            status="broken",
             score=0.90,
-            reasons=("conductor_residue",),
+            reasons=("merged_contour",),
         )
-        for index, item in enumerate(conductor_candidates)
+        for index, item in enumerate(mass_candidates)
     ]
-    median_width = float(np.median([float(item.bbox[2]) for item in conductor_candidates]))
-    median_height = float(np.median([float(item.bbox[3]) for item in conductor_candidates]))
+    median_width = float(np.median([float(item.bbox[2]) for item in mass_candidates]))
+    median_height = float(np.median([float(item.bbox[3]) for item in mass_candidates]))
     collapsed = _collapse_conductor_regions(
         provisional,
         median_width=max(12.0, median_width),
         median_height=max(12.0, median_height),
     )
+    collapsed = _suppress_overlapping_defect_boxes(collapsed)
     enabled = set(config.enabled_reason_types or GRID_DAMAGE_REASON_TYPES)
-    if "conductor_residue" not in enabled:
+    if "merged_contour" not in enabled:
         return empty
     damage_score = _damage_score(collapsed, max(1, len(collapsed)))
     severity = config.severity_thresholds.level_for_score(damage_score)
@@ -2021,9 +2380,9 @@ def _analyze_conductor_only_frame(
         detected_cells=int(len(collapsed)),
         normal_cells=0,
         suspicious_cells=0,
-        broken_cells=0,
+        broken_cells=int(len(collapsed)),
         missing_cells=0,
-        artifact_cells=int(len(collapsed)),
+        artifact_cells=0,
         damage_score=float(damage_score),
         severity_level=str(severity),
         grid_detected=True,
@@ -2072,6 +2431,81 @@ def _border_merged_cell_signal(
     return bool(two_slot_geometry and (multiple_chambers or clipped_outline))
 
 
+def _local_confidence_stats(
+    confidence_map: np.ndarray | None,
+    bbox: tuple[int, int, int, int],
+) -> tuple[float, float] | None:
+    """Return (mean, min) probability inside a candidate bbox, or None when unavailable."""
+
+    if confidence_map is None:
+        return None
+    values = np.asarray(confidence_map, dtype=np.float32)
+    if values.ndim != 2 or values.size == 0:
+        return None
+    x, y, width, height = (int(value) for value in bbox[:4])
+    if width <= 0 or height <= 0:
+        return None
+    x0 = max(0, x)
+    y0 = max(0, y)
+    x1 = min(int(values.shape[1]), x + width)
+    y1 = min(int(values.shape[0]), y + height)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    roi = values[y0:y1, x0:x1]
+    if roi.size == 0:
+        return None
+    return float(np.mean(roi, dtype=np.float64)), float(np.min(roi))
+
+
+def _apply_confidence_geometry_boost(
+    candidate: _ContourCandidate,
+    score: float,
+    reasons: list[str],
+    *,
+    median_width: float,
+    median_height: float,
+    median_area: float,
+    confidence_map: np.ndarray | None,
+) -> tuple[float, list[str]]:
+    """Promote broken geometry / debris when the local confidence map is uncertain."""
+
+    stats = _local_confidence_stats(confidence_map, candidate.bbox)
+    if stats is None:
+        return score, reasons
+    mean_prob, min_prob = stats
+    width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
+    height_ratio = float(candidate.bbox[3]) / max(1.0, float(median_height))
+    area_ratio = float(candidate.area) / max(1.0, float(median_area))
+    smallest = min(width_ratio, height_ratio)
+    largest = max(width_ratio, height_ratio)
+    slot_like = 0.22 <= smallest and largest <= 1.85 and 0.10 <= area_ratio <= 2.40
+    if not slot_like:
+        return score, reasons
+    irregular = (
+        float(candidate.solidity) <= 0.90
+        or abs(float(candidate.extent) - 0.74) >= 0.10
+        or int(candidate.approx_vertices) >= 8
+        or float(candidate.outline_min_side_coverage) <= 0.58
+        or float(candidate.outline_side_imbalance) >= 0.18
+    )
+    uncertain = mean_prob <= 0.42 or min_prob <= 0.18
+    strongly_uncertain = mean_prob <= 0.30 or min_prob <= 0.10
+    if not uncertain:
+        return score, reasons
+    if irregular or strongly_uncertain:
+        next_reasons = list(reasons)
+        if "edge_clipped_cell" not in next_reasons:
+            if "broken_geometry" not in next_reasons:
+                next_reasons.append("broken_geometry")
+            score = max(score, min(0.94, 0.78 + 0.30 * max(0.0, 0.45 - mean_prob)))
+        if strongly_uncertain and float(candidate.area) <= max(48.0, 0.55 * float(median_area)):
+            if "small_artifact" not in next_reasons and "merged_contour" not in next_reasons:
+                next_reasons.append("small_artifact")
+                score = max(score, 0.74)
+        return score, next_reasons
+    return score, reasons
+
+
 def _classify_binary_cell(
     candidate: _ContourCandidate,
     *,
@@ -2082,6 +2516,7 @@ def _classify_binary_cell(
     median_interior_fill: float,
     median_aspect: float,
     config: GridDamageAnalysisConfig,
+    confidence_map: np.ndarray | None = None,
 ) -> tuple[float, tuple[str, ...]]:
     width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
     height_ratio = float(candidate.bbox[3]) / max(1.0, float(median_height))
@@ -2097,16 +2532,6 @@ def _classify_binary_cell(
         median_height=median_height,
         median_area=median_area,
     )
-    conductor_residue = not border_merged and _conductor_residue_signal(
-        candidate,
-        median_width=median_width,
-        median_height=median_height,
-        median_area=median_area,
-    )
-    if conductor_residue:
-        residue_scale = max(largest_axis / 2.75, area_ratio / 3.10)
-        return float(np.clip(0.80 + 0.12 * min(1.0, residue_scale), 0.0, 0.96)), ("conductor_residue",)
-
     merged = (
         border_merged
         or (largest_axis > float(config.merged_size_ratio) and area_ratio > float(config.merged_area_ratio))
@@ -2196,6 +2621,15 @@ def _classify_binary_cell(
         score = max(score, min(0.96, 0.76 + 0.18 * max(0.0, 1.0 - smallest_axis)))
         # Border crop explains the warped silhouette — keep the dedicated group.
         reasons = [reason for reason in reasons if reason != "broken_geometry"]
+    score, reasons = _apply_confidence_geometry_boost(
+        candidate,
+        score,
+        reasons,
+        median_width=median_width,
+        median_height=median_height,
+        median_area=median_area,
+        confidence_map=confidence_map,
+    )
     if not reasons:
         return 0.0, ()
     return float(np.clip(score, 0.0, 1.0)), tuple(dict.fromkeys(reasons))
@@ -2212,6 +2646,7 @@ def _classify_detected_cell(
     median_center_fill: float,
     median_aspect: float,
     config: GridDamageAnalysisConfig,
+    confidence_map: np.ndarray | None = None,
 ) -> tuple[float, tuple[str, ...]]:
     score = 0.0
     reasons: list[str] = []
@@ -2233,6 +2668,7 @@ def _classify_detected_cell(
             median_interior_fill=median_interior_fill,
             median_aspect=median_aspect,
             config=config,
+            confidence_map=confidence_map,
         )
     fill_limit = max(
         float(config.filled_ratio_absolute),
@@ -2442,16 +2878,6 @@ def _classify_detected_cell(
         median_height=median_height,
         median_area=median_area,
     )
-    conductor_residue_signal = not border_merged_signal and _conductor_residue_signal(
-        candidate,
-        median_width=median_width,
-        median_height=median_height,
-        median_area=median_area,
-    )
-    if conductor_residue_signal:
-        residue_scale = max(largest_axis_ratio / 2.75, float(area_ratio) / 3.10)
-        score = max(score, min(0.96, 0.80 + 0.12 * min(1.0, residue_scale)))
-        reasons.append("conductor_residue")
     if (
         (not has_hole_signal or candidate.interior_fill_ratio >= max(0.24, interior_limit * 0.78))
         and filled_by_center
@@ -2581,7 +3007,6 @@ def _classify_detected_cell(
     )
     if (
         merged_contour_signal
-        and not conductor_residue_signal
         and not (single_intact_cell_signal and not bridge_connected_signal)
     ):
         score = max(score, 0.86 if bridge_connected_signal else (0.78 if near_merged_signal else 0.88))
@@ -2620,12 +3045,21 @@ def _classify_detected_cell(
         and largest_axis_ratio <= 1.70
         and edge_filled_signal
     )
-    if not conductor_residue_signal and (edge_size_clip_signal or edge_filled_clip_signal):
+    if edge_size_clip_signal or edge_filled_clip_signal:
         edge_loss = max(0.0, 1.0 - smallest_axis_ratio)
         area_loss = max(0.0, 0.74 - float(area_ratio))
         score = max(score, min(0.94, 0.72 + 0.18 * edge_loss + 0.10 * area_loss))
         reasons.append("edge_clipped_cell")
         reasons = [reason for reason in reasons if reason != "broken_geometry"]
+    score, reasons = _apply_confidence_geometry_boost(
+        candidate,
+        score,
+        reasons,
+        median_width=median_width,
+        median_height=median_height,
+        median_area=median_area,
+        confidence_map=confidence_map,
+    )
     if not reasons:
         return 0.0, ()
     return float(max(0.0, min(1.0, score))), tuple(dict.fromkeys(reasons))
@@ -2980,8 +3414,6 @@ def _defect_feature_cluster_label(summary_mean: np.ndarray, reason_counts: dict[
     values = np.asarray(summary_mean, dtype=np.float32).reshape(-1)
     if values.size < 12:
         return "mixed_defect"
-    if int(reason_counts.get("conductor_residue", 0)) > 0:
-        return "conductor_residue"
     width_ratio = float(values[0])
     height_ratio = float(values[1])
     area_ratio = float(values[2])
@@ -3339,10 +3771,18 @@ __all__ = [
     "analyze_grid_frame_path",
     "analyze_grid_frame_single_source_path",
     "analyze_grid_frame_sources_chunk",
+    "analyze_class_conflict_chunk",
+    "analyze_class_conflict_frame_paths",
+    "analyze_class_conflict_masks",
+    "analyze_xor_residual_chunk",
+    "analyze_xor_residual_frame_paths",
+    "analyze_xor_residual_masks",
     "build_grid_cell_reference_profile",
     "build_grid_cell_reference_profile_path",
     "compare_grid_cell_analyses",
     "configure_grid_worker_process",
     "detect_grid_cell_anomalies",
     "load_cached_grid_frame_result",
+    "GRID_DERIVED_LAYER_KEYS",
+    "GRID_XOR_RESIDUAL_MIN_AREA",
 ]

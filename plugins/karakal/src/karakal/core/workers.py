@@ -13,9 +13,11 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 from .domain import BuildOptions, BuildResult, FolderSpec, FrameRecord, ModelSpec
 from .grid_anomaly import (
+    GRID_CLASS_CONFLICT_MIN_AREA,
     GridDamageAnalysisConfig,
     GridCellReferenceProfile,
     GridFrameAnalysisResult,
+    analyze_class_conflict_chunk,
     analyze_grid_frame_chunk,
     analyze_grid_frame_single_source_path,
     analyze_grid_frame_sources_chunk,
@@ -833,7 +835,249 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                 future.cancel()
             executor.shutdown(wait=False, cancel_futures=True)
             self._profiler.set_counter("worker.queue.depth", 0)
-            self._profiler.set_counter("worker.queue.depth", 0)
+
+
+class DerivedConflictGridInspectionWorker(GridInspectionWorker):
+    """Review filtered ones∩zeros class conflicts between two model binary layers."""
+
+    def __init__(
+        self,
+        records: tuple[FrameRecord, ...] | list[FrameRecord],
+        *,
+        model_a_id: str,
+        model_b_id: str,
+        primary_model_id: str | None = None,
+        threshold: float = 0.5,
+        min_area: int = GRID_CLASS_CONFLICT_MIN_AREA,
+        use_cache: bool = True,
+        performance_config: PerformanceConfig | None = None,
+        reference_profile: GridCellReferenceProfile | None = None,
+        requested_layers: tuple[str, ...] | None = None,
+        config: GridDamageAnalysisConfig | None = None,
+    ) -> None:
+        super().__init__(
+            records,
+            config or GridDamageAnalysisConfig(cell_representation="binary"),
+            model_id=primary_model_id or model_a_id,
+            reference_profile=reference_profile,
+            use_cache=use_cache,
+            performance_config=performance_config,
+        )
+        self._model_a_id = str(model_a_id)
+        self._model_b_id = str(model_b_id)
+        self._threshold = float(threshold)
+        self._min_area = max(1, int(min_area))
+        layers = tuple(
+            str(layer)
+            for layer in (requested_layers or ("derived_conflict",))
+            if str(layer) in {"confidence", "binary", "comparison", "derived_conflict"}
+        )
+        self._requested_layers = layers or ("derived_conflict",)
+        self._base_layers = tuple(layer for layer in self._requested_layers if layer != "derived_conflict")
+        self._want_conflict = "derived_conflict" in self._requested_layers
+
+    def _conflict_records(self) -> list[tuple[str, str, str]]:
+        entries: list[tuple[str, str, str]] = []
+        for record in self._records:
+            key = str(getattr(record, "key", "") or "")
+            paths = getattr(record, "model_mask_paths", {}) or {}
+            path_a = str(paths.get(self._model_a_id) or "")
+            path_b = str(paths.get(self._model_b_id) or "")
+            if key and path_a and path_b:
+                entries.append((key, path_a, path_b))
+        return entries
+
+    def _paired_records_for_primary(self) -> list[tuple[str, str, str]]:
+        model_id = str(self._model_id or self._model_a_id)
+        records: list[tuple[str, str, str]] = []
+        for record in self._records:
+            key = str(getattr(record, "key", "") or "")
+            binary_path = str((getattr(record, "model_mask_paths", {}) or {}).get(model_id) or "")
+            confidence_path = str((getattr(record, "model_prob_paths", {}) or {}).get(model_id) or "")
+            if key and (binary_path or confidence_path):
+                records.append((key, confidence_path, binary_path))
+        return records
+
+    def run(self) -> None:
+        with activate_profiler(self._profiler):
+            try:
+                self._partial_result_buffer.clear()
+                self._analysis_errors.clear()
+                self._emit_progress(0, 0, "", force=True)
+                payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
+                config = replace(self._config, include_debug_payload=False, debug=False)
+                if self._base_layers:
+                    paired = self._paired_records_for_primary()
+                    base_result, base_errors = analyze_grid_frame_sources_chunk(
+                        tuple(paired),
+                        config,
+                        self._use_cache,
+                        reference_profile=self._reference_profile,
+                        requested_layers=self._base_layers,
+                    )
+                    if base_errors:
+                        self._analysis_errors.update(base_errors)
+                        self.analysisErrors.emit(dict(base_errors))
+                    for key, layers in base_result.items():
+                        payloads[str(key)] = dict(layers)
+                    if payloads:
+                        self._queue_partial_results(dict(payloads), force=True)
+                records = self._conflict_records() if self._want_conflict else []
+                total = max(1, len(records) if self._want_conflict else len(payloads) or len(self._records))
+                completed = 0
+                if self._want_conflict:
+                    mode, max_workers, chunk_size, opencv_threads = _grid_inspection_execution_settings(
+                        self._performance_config
+                    )
+                    chunks = tuple(
+                        tuple(records[offset : offset + chunk_size]) for offset in range(0, len(records), chunk_size)
+                    )
+                    with self._profiler.stage(
+                        "validation.grid.conflict_worker_pool", frame_count=len(records), batch_count=len(chunks)
+                    ):
+                        if mode == "sequential" or len(records) <= chunk_size:
+                            for chunk in chunks:
+                                if self._is_cancelled():
+                                    break
+                                chunk_payloads, errors = analyze_class_conflict_chunk(
+                                    chunk,
+                                    model_a_id=self._model_a_id,
+                                    model_b_id=self._model_b_id,
+                                    threshold=self._threshold,
+                                    min_area=self._min_area,
+                                    use_cache=self._use_cache,
+                                )
+                                completed = self._merge_conflict_chunk(
+                                    chunk, chunk_payloads, errors, payloads, completed=completed, total=total
+                                )
+                        else:
+                            completed = self._run_conflict_process(
+                                chunks,
+                                payloads,
+                                total,
+                                max_workers,
+                                opencv_threads,
+                                completed=completed,
+                            )
+                else:
+                    self._emit_progress(total, total, "", force=True)
+                self._flush_partial_results()
+                if self._is_cancelled():
+                    self._profiler.increment("runs.cancelled")
+                    self.cancelled.emit()
+                    return
+            except Exception as error:
+                _LOGGER.exception("Derived class-conflict grid inspection failed")
+                self.failed.emit(str(error))
+                return
+            finally:
+                self._finish_profiling()
+        self.finished.emit(payloads)
+
+    def _merge_conflict_chunk(
+        self,
+        chunk: tuple[tuple[str, str, str], ...],
+        chunk_payloads: dict[str, dict[str, GridFrameAnalysisResult]],
+        errors: dict[str, str],
+        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
+        *,
+        completed: int,
+        total: int,
+    ) -> int:
+        if errors:
+            self._analysis_errors.update(errors)
+            self._profiler.increment("frames.errors", len(errors))
+            self.analysisErrors.emit(dict(errors))
+        merged_partial: dict[str, dict[str, GridFrameAnalysisResult]] = {}
+        for key, layer_payload in chunk_payloads.items():
+            combined = dict(payloads.get(str(key), {}))
+            combined.update(layer_payload)
+            payloads[str(key)] = combined
+            merged_partial[str(key)] = combined
+        if merged_partial:
+            self._queue_partial_results(merged_partial)
+        next_completed = min(total, completed + len(chunk))
+        last_key = chunk[-1][0] if chunk else ""
+        self._emit_progress(next_completed, total, last_key, force=next_completed >= total)
+        return next_completed
+
+    def _run_conflict_process(
+        self,
+        chunks: tuple[tuple[tuple[str, str, str], ...], ...],
+        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
+        total: int,
+        max_workers: int,
+        opencv_threads: int,
+        *,
+        completed: int,
+    ) -> int:
+        executor = ProcessPoolExecutor(
+            max_workers=max_workers,
+            initializer=configure_grid_worker_process,
+            initargs=(opencv_threads,),
+        )
+        pending: dict[object, tuple[tuple[str, str, str], ...]] = {}
+        submitted = 0
+        fallback: list[tuple[tuple[str, str, str], ...]] = []
+        try:
+            while not self._is_cancelled() and (submitted < len(chunks) or pending):
+                while submitted < len(chunks) and len(pending) < max_workers * 2:
+                    chunk = chunks[submitted]
+                    submitted += 1
+                    try:
+                        future = executor.submit(
+                            analyze_class_conflict_chunk,
+                            chunk,
+                            model_a_id=self._model_a_id,
+                            model_b_id=self._model_b_id,
+                            threshold=self._threshold,
+                            min_area=self._min_area,
+                            use_cache=self._use_cache,
+                        )
+                    except (OSError, RuntimeError) as error:
+                        _LOGGER.warning("Could not submit conflict batch; sequential fallback: %s", error)
+                        fallback.append(chunk)
+                        fallback.extend(chunks[submitted:])
+                        submitted = len(chunks)
+                        break
+                    pending[future] = chunk
+                if not pending:
+                    break
+                done, _not_done = wait(tuple(pending), timeout=0.05, return_when=FIRST_COMPLETED)
+                for future in done:
+                    chunk = pending.pop(future, ())
+                    try:
+                        chunk_payloads, errors = future.result()
+                    except Exception as error:
+                        _LOGGER.warning("Conflict worker batch failed; sequential fallback: %s", error)
+                        fallback.append(chunk)
+                        continue
+                    completed = self._merge_conflict_chunk(
+                        chunk, chunk_payloads, errors, payloads, completed=completed, total=total
+                    )
+            for chunk in fallback:
+                if self._is_cancelled():
+                    break
+                chunk_payloads, errors = analyze_class_conflict_chunk(
+                    chunk,
+                    model_a_id=self._model_a_id,
+                    model_b_id=self._model_b_id,
+                    threshold=self._threshold,
+                    min_area=self._min_area,
+                    use_cache=self._use_cache,
+                )
+                completed = self._merge_conflict_chunk(
+                    chunk, chunk_payloads, errors, payloads, completed=completed, total=total
+                )
+        finally:
+            for future in pending:
+                future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+        return completed
+
+
+# Back-compat alias.
+DerivedXorGridInspectionWorker = DerivedConflictGridInspectionWorker
 
 
 class DetailPayloadWorker(WorkerBase):

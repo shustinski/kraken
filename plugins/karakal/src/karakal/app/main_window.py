@@ -27,7 +27,6 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
-    QSlider,
     QSpinBox,
     QStyle,
     QTabWidget,
@@ -89,8 +88,6 @@ from ..ui.ui_constants import (
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
     GRID_INSPECTION_DAMAGE_METRIC_KEY,
     GRID_INSPECTION_ERROR_TYPE_OPTIONS,
-    GRID_INSPECTION_PRESET_VALUES,
-    GRID_INSPECTION_TUNING_KEYS,
     grid_inspection_error_type_icon,
     DEFAULT_TOTAL_FRAMES,
     DEFAULT_WINDOW_HEIGHT,
@@ -598,17 +595,6 @@ class KarakalWidget(QWidget):
         for preset_key in ("soft", "balanced", "strict", "custom"):
             self.grid_tuning_preset_combo.addItem(self._t(f"grid_tuning.preset.{preset_key}"), preset_key)
         self.grid_tuning_preset_combo.setCurrentIndex(self.grid_tuning_preset_combo.findData("balanced"))
-        self.grid_tuning_sliders: dict[str, QSlider] = {}
-        self.grid_tuning_value_labels: dict[str, QLabel] = {}
-        self.grid_tuning_slider_rows: dict[str, QWidget] = {}
-        for tuning_key in GRID_INSPECTION_TUNING_KEYS:
-            slider = QSlider(Qt.Orientation.Horizontal, self)
-            slider.setRange(0, 100)
-            slider.setValue(int(GRID_INSPECTION_PRESET_VALUES["balanced"][tuning_key]))
-            value_label = QLabel(str(slider.value()), self)
-            value_label.setMinimumWidth(28)
-            self.grid_tuning_sliders[tuning_key] = slider
-            self.grid_tuning_value_labels[tuning_key] = value_label
         self.metric_group_combo = _NoWheelComboBox(self)
         for label, key in MATRIX_METRIC_GROUP_OPTIONS:
             self.metric_group_combo.addItem(self._t(label), key)
@@ -1660,24 +1646,6 @@ class KarakalWidget(QWidget):
             self.grid_tuning_preset_combo,
         )
         grid_tuning_layout.addWidget(self._grid_tuning_preset_row)
-        self.grid_tuning_open_button = QPushButton(self._t("grid_tuning.open"), self._grid_inspection_tuning_group)
-        grid_tuning_layout.addWidget(self.grid_tuning_open_button)
-        for tuning_key in GRID_INSPECTION_TUNING_KEYS:
-            slider = self.grid_tuning_sliders[tuning_key]
-            value_label = self.grid_tuning_value_labels[tuning_key]
-            slider.setParent(self._grid_inspection_tuning_group)
-            value_label.setParent(self._grid_inspection_tuning_group)
-            row = QWidget(self._grid_inspection_tuning_group)
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.addWidget(slider, stretch=1)
-            row_layout.addWidget(value_label)
-            setting_row = self._build_setting_row(self._t(f"grid_tuning.{tuning_key}"), row)
-            self.grid_tuning_slider_rows[tuning_key] = setting_row
-            grid_tuning_layout.addWidget(setting_row)
-        self._grid_tuning_preview_hint = QLabel(self._t("grid_tuning.preview_hint"), self._grid_inspection_tuning_group)
-        self._grid_tuning_preview_hint.setWordWrap(True)
-        grid_tuning_layout.addWidget(self._grid_tuning_preview_hint)
         self._grid_layer_compute_title = QLabel(self._t("grid_tuning.compute_layers"), self._grid_inspection_tuning_group)
         self._grid_layer_compute_title.setWordWrap(True)
         grid_tuning_layout.addWidget(self._grid_layer_compute_title)
@@ -1781,13 +1749,8 @@ class KarakalWidget(QWidget):
                 "_grid_layer_display_row": "grid_tuning.display_layer",
                 "_grid_tuning_preset_row": "grid_tuning.preset",
             }
-            for tuning_key in GRID_INSPECTION_TUNING_KEYS:
-                grid_tuning_labels[f"grid_tuning_slider_rows.{tuning_key}"] = f"grid_tuning.{tuning_key}"
             for row_name, label_key in grid_tuning_labels.items():
-                if row_name.startswith("grid_tuning_slider_rows."):
-                    row = self.grid_tuning_slider_rows.get(row_name.split(".", 1)[1])
-                else:
-                    row = getattr(self, row_name, None)
+                row = getattr(self, row_name, None)
                 label = getattr(row, "_title_label", None)
                 if label is not None:
                     label.setText(self._t(label_key))
@@ -1801,10 +1764,6 @@ class KarakalWidget(QWidget):
                     restored = self.grid_tuning_preset_combo.findData(current_preset)
                     if restored >= 0:
                         self.grid_tuning_preset_combo.setCurrentIndex(restored)
-            if hasattr(self, "grid_tuning_open_button"):
-                self.grid_tuning_open_button.setText(self._t("grid_tuning.open"))
-            if hasattr(self, "_grid_tuning_preview_hint"):
-                self._grid_tuning_preview_hint.setText(self._t("grid_tuning.preview_hint"))
             if hasattr(self, "grid_reference_frame_select_button"):
                 self.grid_reference_frame_select_button.setText(self._t("grid_reference.select_current"))
             if hasattr(self, "grid_reference_frame_clear_button"):
@@ -2180,9 +2139,6 @@ class KarakalWidget(QWidget):
             checkbox.toggled.connect(self._presenter._on_grid_layer_compute_selection_changed)
         self.grid_layer_display_combo.currentIndexChanged.connect(self._presenter._on_grid_layer_display_selection_changed)
         self.grid_tuning_preset_combo.currentIndexChanged.connect(self._presenter._on_grid_tuning_preset_changed)
-        self.grid_tuning_open_button.clicked.connect(lambda: self._presenter._open_grid_tuning_dialog())
-        for slider in self.grid_tuning_sliders.values():
-            slider.valueChanged.connect(self._presenter._on_grid_sidebar_slider_changed)
         for _metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "binClicked"):
                 card.binClicked.connect(

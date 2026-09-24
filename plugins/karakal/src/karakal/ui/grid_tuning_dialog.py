@@ -10,6 +10,7 @@ from .ui_constants import GRID_INSPECTION_PRESET_VALUES, GRID_INSPECTION_TUNING_
 
 class GridTuningDialog(QDialog):
     tuningChanged = pyqtSignal(dict)
+    tuningConfirmed = pyqtSignal(dict)
 
     def __init__(self, translator, values: dict[str, int], parent=None) -> None:
         super().__init__(parent)
@@ -43,6 +44,9 @@ class GridTuningDialog(QDialog):
         note = QLabel(translator("grid_tuning.preview_hint"), self)
         note.setWordWrap(True)
         root.addWidget(note)
+        confirm_button = QPushButton(translator("grid_tuning.confirm"), self)
+        confirm_button.clicked.connect(self._confirm)
+        root.addWidget(confirm_button)
         close_button = QPushButton(translator("grid_tuning.close"), self)
         close_button.clicked.connect(self.close)
         root.addWidget(close_button)
@@ -67,3 +71,6 @@ class GridTuningDialog(QDialog):
 
     def _emit_values(self) -> None:
         self.tuningChanged.emit(self.values())
+
+    def _confirm(self) -> None:
+        self.tuningConfirmed.emit(self.values())

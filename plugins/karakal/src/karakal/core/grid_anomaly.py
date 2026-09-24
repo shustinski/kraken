@@ -2556,6 +2556,28 @@ def _classify_binary_cell(
     # Allow slightly undersized / elongated slot occupants so wrong geometry is
     # still scored when the same-frame seed is built without a reference frame.
     slot_sized = 0.28 <= smallest_axis and largest_axis <= 1.85 and 0.12 <= area_ratio <= 2.40
+    interior = float(candidate.interior_fill_ratio)
+    center = float(candidate.center_fill_ratio)
+    fill_delta = float(config.filled_ratio_delta)
+    fill_absolute = float(config.filled_ratio_absolute)
+    normal_interior = max(0.0, float(median_interior_fill))
+    # A cell is filled only when its interior is clearly denser than the
+    # normal cells on this same mask. Similar neighbors stay unmarked.
+    fill_gap = max(0.14, fill_delta)
+    filled_floor = max(fill_absolute, normal_interior + fill_gap, 0.62)
+    partial_floor = max(0.48, normal_interior + max(0.18, fill_delta), fill_absolute * 0.9)
+    if slot_sized and interior >= filled_floor and center >= filled_floor - 0.08 and interior >= normal_interior + fill_gap:
+        reasons.append("filled_cell")
+        score = max(score, min(1.0, 0.80 + (interior - filled_floor)))
+    elif (
+        slot_sized
+        and "merged_contour" not in reasons
+        and interior >= partial_floor
+        and center >= partial_floor - 0.10
+        and interior >= normal_interior + max(0.16, fill_delta)
+    ):
+        reasons.append("partial_filled_cell")
+        score = max(score, min(0.90, 0.70 + (interior - partial_floor)))
     fill_loss = max(
         0.0,
         max(0.34, float(median_fill) * 0.64) - float(candidate.fill_ratio),
@@ -2572,22 +2594,19 @@ def _classify_binary_cell(
         and max(width_ratio, height_ratio) >= 0.48
     )
     extent_delta = abs(float(candidate.extent) - 0.74)
-    irregular_mid_geometry = (
-        0.22 <= smallest_axis
-        and largest_axis <= 1.70
-        and 0.12 <= area_ratio <= 1.90
-        and (
-            float(candidate.solidity) < 0.78
-            or int(candidate.approx_vertices) >= 10
-            or (float(candidate.solidity) < 0.88 and extent_delta >= 0.18 and int(candidate.approx_vertices) >= 6)
-        )
+    solidity_limit = float(config.geometry_solidity_limit)
+    # Higher slider raises the limit and admits milder shape faults. A plain
+    # outline with a few extra corners is not broken geometry.
+    shape_broken = float(candidate.solidity) < solidity_limit and (
+        extent_delta >= max(0.08, 0.34 - 0.28 * min(1.0, max(0.0, (solidity_limit - 0.50) / 0.40)))
+        or int(candidate.approx_vertices) >= (8 if solidity_limit >= 0.82 else 12)
+        or fill_loss > (0.10 if solidity_limit >= 0.82 else 0.22)
     )
-    broken = (slot_sized or aspect_slot_damage or irregular_mid_geometry) and (
-        float(candidate.solidity) < float(config.geometry_solidity_limit) + 0.10
-        or int(candidate.approx_vertices) >= 10
-        or fill_loss > 0.08
-        or aspect_mismatch
-        or (extent_delta >= 0.20 and float(candidate.solidity) < 0.90 and int(candidate.approx_vertices) >= 6)
+    severely_bitten = float(candidate.solidity) <= min(0.62, solidity_limit - 0.04) and extent_delta >= 0.16
+    broken = slot_sized and (shape_broken or severely_bitten) and not (
+        float(candidate.solidity) >= max(0.84, solidity_limit)
+        and extent_delta < 0.12
+        and int(candidate.approx_vertices) <= 10
     )
     if broken:
         reasons.append("broken_geometry")

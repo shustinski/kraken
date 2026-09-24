@@ -196,7 +196,9 @@ class KarakalPresenter(QObject):
         self._details_dialogs: list[ExtendFrameDetailsDialog] = []
         self._grid_tuning_preset = "balanced"
         self._grid_custom_tuning = None
+        self._grid_preview_tuning = None
         self._grid_tuning_dialog = None
+        self._grid_frame_examples: dict[str, list[dict[str, object]]] = {}
         self._details_view_payload: dict[str, object] = self._settings_service.load_details_view_payload() or {}
         self._request_generation = 0
         self._active_request_generation: int | None = None
@@ -4711,46 +4713,43 @@ class KarakalPresenter(QObject):
             self._grid_tuning_dialog = None
 
     def _open_grid_tuning_dialog(self, details_dialog=None) -> None:
+        if details_dialog is None:
+            return
         existing = getattr(self, "_grid_tuning_dialog", None)
         if existing is not None:
             existing.close()
-        parent = details_dialog if details_dialog is not None else self._view
-        dialog = GridTuningDialog(self._t, self._grid_tuning_values(), parent=parent)
+        dialog = GridTuningDialog(self._t, self._grid_tuning_values(), parent=details_dialog)
         dialog.tuningChanged.connect(lambda values, details=details_dialog: self._on_grid_tuning_sliders_changed(values, details))
-        dialog.finished.connect(lambda *_args, dialog=dialog: self._clear_grid_tuning_dialog(dialog))
+        dialog.tuningConfirmed.connect(lambda values, details=details_dialog: self._on_grid_tuning_confirmed(values, details))
+        dialog.finished.connect(lambda *_args, dialog=dialog, details=details_dialog: self._on_grid_tuning_dialog_closed(dialog, details))
         self._grid_tuning_dialog = dialog
         dialog.show()
         dialog.raise_()
+
+    def _on_grid_tuning_dialog_closed(self, dialog, details_dialog=None) -> None:
+        self._clear_grid_tuning_dialog(dialog)
+        if self._grid_preview_tuning is None:
+            return
+        self._grid_preview_tuning = None
+        self._refresh_grid_details_preview(details_dialog, self._grid_tuning_values())
 
     def _on_grid_tuning_preset_changed(self, *_args) -> None:
         preset = str(self.grid_tuning_preset_combo.currentData() or "balanced")
         if preset == "custom":
             return
-        values = GRID_INSPECTION_PRESET_VALUES.get(preset) or GRID_INSPECTION_PRESET_VALUES["balanced"]
         self._grid_tuning_preset = preset
         self._grid_custom_tuning = None
-        sliders = getattr(self, "grid_tuning_sliders", {}) or {}
-        for key, slider in sliders.items():
-            blocker = QSignalBlocker(slider)
-            slider.setValue(int(values.get(key, slider.value())))
-            del blocker
-        self._sync_grid_tuning_slider_labels()
+        self._grid_preview_tuning = None
+        values = self._grid_tuning_values()
         dialog = getattr(self, "_grid_tuning_dialog", None)
         if dialog is not None and hasattr(dialog, "set_values"):
             dialog.set_values(values)
+        for details in list(self._details_dialogs):
+            self._refresh_grid_details_preview(details, values)
 
-    def _on_grid_sidebar_slider_changed(self, *_args) -> None:
-        sliders = getattr(self, "grid_tuning_sliders", {}) or {}
-        values = {key: int(slider.value()) for key, slider in sliders.items()}
-        self._sync_grid_tuning_slider_labels()
-        dialog = getattr(self, "_grid_tuning_dialog", None)
-        if dialog is not None and hasattr(dialog, "set_values"):
-            dialog.set_values(values)
-        details = next((item for item in reversed(self._details_dialogs) if item is not None), None)
-        self._on_grid_tuning_sliders_changed(values, details)
-
-    def _on_grid_tuning_sliders_changed(self, values: dict, details_dialog=None) -> None:
+    def _on_grid_tuning_confirmed(self, values: dict, details_dialog=None) -> None:
         self._grid_custom_tuning = {key: int(values.get(key, 0)) for key in GRID_INSPECTION_TUNING_KEYS}
+        self._grid_preview_tuning = None
         self._grid_tuning_preset = "custom"
         combo = getattr(self, "grid_tuning_preset_combo", None)
         if combo is not None and str(combo.currentData() or "") != "custom":
@@ -4759,36 +4758,107 @@ class KarakalPresenter(QObject):
                 blocker = QSignalBlocker(combo)
                 combo.setCurrentIndex(index)
                 del blocker
-        sliders = getattr(self, "grid_tuning_sliders", {}) or {}
-        for key, slider in sliders.items():
-            if key not in values:
-                continue
-            if int(slider.value()) == int(values[key]):
-                continue
-            blocker = QSignalBlocker(slider)
-            slider.setValue(int(values[key]))
-            del blocker
-        self._sync_grid_tuning_slider_labels()
-        if details_dialog is None:
-            details_dialog = next((item for item in reversed(self._details_dialogs) if item is not None), None)
+        self._refresh_grid_details_preview(details_dialog, self._grid_tuning_values())
+
+    def _on_grid_tuning_sliders_changed(self, values: dict, details_dialog=None) -> None:
+        self._grid_preview_tuning = {key: int(values.get(key, 0)) for key in GRID_INSPECTION_TUNING_KEYS}
+        self._refresh_grid_details_preview(details_dialog, self._grid_preview_tuning)
+
+    def _refresh_grid_details_preview(self, details_dialog, tuning_values: dict[str, int]) -> None:
         if details_dialog is None or not hasattr(details_dialog, "apply_grid_inspection_preview"):
             return
         state = self._current_tab_state()
         record = getattr(details_dialog, "_record", None)
         if state is None or record is None:
             return
+        try:
+            result, cells = self._analyze_grid_record_for_details(record, state, tuning_values)
+        except Exception as error:
+            if hasattr(details_dialog, "show_grid_preview_message"):
+                details_dialog.show_grid_preview_message(self._t("grid_tuning.preview_failed", message=error))
+            return
+        if result is None:
+            if hasattr(details_dialog, "show_grid_preview_message"):
+                details_dialog.show_grid_preview_message(self._t("grid_tuning.preview_no_source"))
+            return
+        details_dialog.apply_grid_inspection_preview(result, cells)
+
+    def _analyze_grid_record_for_details(self, record, state, tuning_values: dict[str, int]):
         from ..core.grid_anomaly import analyze_grid_frame_path
 
-        model_id = self._grid_inspection_model_id_for_state(state)
-        config = self._selected_grid_damage_config()
-        path = str((getattr(record, "model_prob_paths", {}) or {}).get(str(model_id or "")) or "") or str(
-            (getattr(record, "model_mask_paths", {}) or {}).get(str(model_id or "")) or ""
+        model_id = str(self._grid_inspection_model_id_for_state(state) or "")
+        prob_paths = getattr(record, "model_prob_paths", {}) or {}
+        mask_paths = getattr(record, "model_mask_paths", {}) or {}
+        confidence_path = str(prob_paths.get(model_id) or "")
+        binary_path = str(mask_paths.get(model_id) or "")
+        if not confidence_path and prob_paths:
+            confidence_path = str(next(iter(prob_paths.values())) or "")
+        if not binary_path and mask_paths:
+            binary_path = str(next(iter(mask_paths.values())) or "")
+        payload = dict(self._grid_inspection_config_payload())
+        payload.update({key: int(tuning_values.get(key, payload.get(key, 0))) for key in GRID_INSPECTION_TUNING_KEYS})
+        config = self._grid_damage_config_from_payload(payload)
+        layers: dict[str, object] = {}
+        frame_id = str(getattr(record, "key", "") or "")
+        binary_result = None
+        confidence_result = None
+        binary_error: Exception | None = None
+        if binary_path:
+            try:
+                binary_result = analyze_grid_frame_path(
+                    binary_path,
+                    frame_id=frame_id,
+                    config=replace(config, cell_representation="binary"),
+                    use_cache=False,
+                )
+            except Exception as error:
+                binary_error = error
+                binary_result = None
+        if confidence_path:
+            try:
+                confidence_result = analyze_grid_frame_path(
+                    confidence_path,
+                    frame_id=frame_id,
+                    config=replace(config, cell_representation="confidence"),
+                    use_cache=False,
+                )
+            except Exception:
+                confidence_result = None
+        same_shape = (
+            binary_result is not None
+            and confidence_result is not None
+            and int(getattr(binary_result, "image_width", 0) or 0) == int(getattr(confidence_result, "image_width", 0) or 0)
+            and int(getattr(binary_result, "image_height", 0) or 0) == int(getattr(confidence_result, "image_height", 0) or 0)
         )
-        if not path:
-            return
-        result = analyze_grid_frame_path(path, frame_id=str(record.key), config=config, use_cache=False)
-        if result is not None:
-            details_dialog.apply_grid_inspection_preview(result)
+        if binary_result is not None:
+            layers["binary"] = binary_result
+        if same_shape and confidence_result is not None and binary_result is not None:
+            from ..core.grid_anomaly import compare_grid_cell_analyses
+
+            try:
+                comparison = compare_grid_cell_analyses(
+                    confidence_result,
+                    binary_result,
+                    geometry_iou_threshold=float(config.geometry_iou_threshold),
+                    centroid_mismatch_ratio=float(config.centroid_mismatch_ratio),
+                )
+            except Exception:
+                comparison = None
+            if comparison is not None:
+                kept_reasons = {"geometry_mismatch", "defect_disagreement", "confidence_only_cell", "binary_only_cell"}
+                kept_cells = tuple(
+                    cell
+                    for cell in (getattr(comparison, "per_cell_results", ()) or ())
+                    if kept_reasons.intersection(getattr(cell, "reasons", ()) or ())
+                )
+                layers["comparison"] = replace(comparison, per_cell_results=kept_cells, broken_cells=len(kept_cells), detected_cells=len(kept_cells))
+        elif binary_result is None and confidence_result is not None:
+            layers["confidence"] = confidence_result
+        if not layers and binary_error is not None:
+            raise binary_error
+        candidate = binary_result if binary_result is not None else confidence_result
+        cells = tuple(getattr(candidate, "per_cell_results", ()) or ())
+        return self._merge_grid_layer_results(*layers.values()), cells
 
     def _apply_grid_inspection_worker_payloads(
         self,
@@ -5359,12 +5429,13 @@ class KarakalPresenter(QObject):
                 getattr(state, "grid_inspection_config_payload", {}) or self._grid_inspection_config_payload()
             )
         grid_inspection_result = None
+        grid_example_cells = ()
         grid_inspection_source_path = None
-        if is_grid_inspection_details and bool(getattr(state, "grid_inspection_results_ready", False)):
-            grid_inspection_result = (getattr(state, "grid_inspection_payload_by_key", {}) or {}).get(
-                str(getattr(record, "key", "") or "")
-            )
+        if is_grid_inspection_details:
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
+            grid_inspection_result, grid_example_cells = self._analyze_grid_record_for_details(
+                record, state, self._grid_tuning_values()
+            )
         allowed_result_kinds = None
         if is_grid_inspection_details:
             allowed_result_kinds = ("grid_cell_defects",)
@@ -5396,6 +5467,10 @@ class KarakalPresenter(QObject):
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog._on_grid_tuning_requested = lambda details=dialog: self._open_grid_tuning_dialog(details)
+        record_key = str(getattr(record, "key", "") or "")
+        dialog.set_grid_examples(list(self._grid_frame_examples.get(record_key, [])))
+        dialog.set_grid_example_candidates(grid_example_cells)
+        dialog._on_grid_examples_changed = lambda examples, key=record_key: self._grid_frame_examples.__setitem__(key, list(examples))
         dialog.destroyed.connect(lambda *_args, dialog=dialog: self._forget_details_dialog(dialog))
         self._details_dialogs.append(dialog)
         dialog.show()

@@ -117,15 +117,8 @@ def test_grid_analysis_tuning_sliders_start_at_balanced_preset(tmp_path, qtbot) 
     widget = KarakalWidget(settings=settings)
     qtbot.addWidget(widget)
 
-    assert widget._grid_inspection_tuning_group.findChildren(QSlider)
-    assert set(widget.grid_tuning_sliders) == {
-        "fill_sensitivity",
-        "debris_sensitivity",
-        "geometry_sensitivity",
-        "merge_sensitivity",
-        "mismatch_sensitivity",
-        "disagreement_sensitivity",
-    }
+    assert not widget._grid_inspection_tuning_group.findChildren(QSlider)
+    assert not hasattr(widget, "grid_tuning_sliders")
     assert widget.grid_tuning_preset_combo.currentData() == "balanced"
     assert "unified" in widget.grid_inspection_matrix_views
 

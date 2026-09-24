@@ -112,36 +112,34 @@ def test_gradient_selection_updates_matrix_views(tmp_path, qtbot) -> None:
     )
 
 
-def test_grid_analysis_tuning_is_fixed_and_not_exposed_to_operator(tmp_path, qtbot) -> None:
+def test_grid_analysis_tuning_sliders_start_at_balanced_preset(tmp_path, qtbot) -> None:
     settings = QSettings(str(tmp_path / "karakal.ini"), QSettings.Format.IniFormat)
     widget = KarakalWidget(settings=settings)
     qtbot.addWidget(widget)
 
-    assert not widget._grid_inspection_tuning_group.findChildren(QSlider)
-    assert not hasattr(widget, "grid_strictness_slider")
+    assert widget._grid_inspection_tuning_group.findChildren(QSlider)
+    assert set(widget.grid_tuning_sliders) == {
+        "fill_sensitivity",
+        "debris_sensitivity",
+        "geometry_sensitivity",
+        "merge_sensitivity",
+        "mismatch_sensitivity",
+        "disagreement_sensitivity",
+    }
+    assert widget.grid_tuning_preset_combo.currentData() == "balanced"
+    assert "unified" in widget.grid_inspection_matrix_views
 
     payload = widget._presenter._grid_inspection_config_payload()
     assert {key: payload[key] for key, _value in GRID_INSPECTION_FIXED_TUNING} == dict(
         GRID_INSPECTION_FIXED_TUNING
     )
     assert payload["requested_layers"] == ["confidence", "binary", "comparison"]
-    assert payload["display_layer"] == "confidence"
-    assert set(widget.grid_layer_compute_checks) == {"confidence", "binary", "comparison"}
-    assert all(checkbox.isChecked() for checkbox in widget.grid_layer_compute_checks.values())
-    assert widget.grid_layer_display_combo.currentData() == "confidence"
+    assert payload["display_layer"] == "unified"
 
-    widget.grid_layer_compute_checks["comparison"].setChecked(False)
-    widget.grid_layer_compute_checks["binary"].setChecked(False)
-    widget.grid_layer_display_combo.setCurrentIndex(widget.grid_layer_display_combo.findData("binary"))
-    narrowed = widget._presenter._grid_inspection_config_payload()
-    assert narrowed["requested_layers"] == ["confidence", "binary"]
-    assert narrowed["display_layer"] == "binary"
-
-    legacy_payload = {key: 0 for key, _value in GRID_INSPECTION_FIXED_TUNING}
-    fixed_payload = dict(GRID_INSPECTION_FIXED_TUNING)
-    assert KarakalPresenter._grid_damage_config_from_payload(
-        legacy_payload
-    ) == KarakalPresenter._grid_damage_config_from_payload(fixed_payload)
+    soft = KarakalPresenter._grid_damage_config_from_payload({"fill_sensitivity": 0, "merge_sensitivity": 0})
+    strict = KarakalPresenter._grid_damage_config_from_payload({"fill_sensitivity": 100, "merge_sensitivity": 100})
+    assert soft.filled_ratio_delta > strict.filled_ratio_delta
+    assert soft.merged_size_ratio > strict.merged_size_ratio
 
 
 def test_matrix_legend_exposes_distribution_and_raw_range(qtbot) -> None:

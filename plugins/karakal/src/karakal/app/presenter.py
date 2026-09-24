@@ -83,6 +83,7 @@ from ..core.domain import (
 from ..core.grid_anomaly import (
     GridCellReferenceProfile,
     GridDamageAnalysisConfig,
+    GridFrameAnalysisResult,
     build_grid_cell_reference_profile_path,
 )
 from ..core.image_formats import SUPPORTED_IMAGE_EXTENSION_SET
@@ -118,6 +119,7 @@ from ..core.workers import (
 )
 from ..infra.services import KarakalSettingsService
 from ..ui.details_dialog import ExtendFrameDetailsDialog
+from ..ui.grid_tuning_dialog import GridTuningDialog
 from ..ui.matrix_view import MatrixLayoutConfig, build_matrix_layout
 from ..ui.ui_components import FolderRowWidget
 from ..ui.ui_constants import (
@@ -139,7 +141,8 @@ from ..ui.ui_constants import (
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
     GRID_INSPECTION_DAMAGE_METRIC_KEY,
     GRID_INSPECTION_ERROR_TYPE_OPTIONS,
-    GRID_INSPECTION_FIXED_TUNING,
+    GRID_INSPECTION_PRESET_VALUES,
+    GRID_INSPECTION_TUNING_KEYS,
     grid_inspection_error_type_icon,
     DEFAULT_POINT_CONFIDENCE_RADIUS,
     DEFAULT_POINT_EXTRACTION_MODE,
@@ -191,6 +194,9 @@ class KarakalPresenter(QObject):
         self._tab_states: dict[object, ExtendMatrixTabState] = {}
         self._pending_build_snapshot: dict[str, object] | None = None
         self._details_dialogs: list[ExtendFrameDetailsDialog] = []
+        self._grid_tuning_preset = "balanced"
+        self._grid_custom_tuning = None
+        self._grid_tuning_dialog = None
         self._details_view_payload: dict[str, object] = self._settings_service.load_details_view_payload() or {}
         self._request_generation = 0
         self._active_request_generation: int | None = None
@@ -331,12 +337,32 @@ class KarakalPresenter(QObject):
             if error_type in {str(item) for item in raw_values} and error_type in allowed_set
         )
 
+    def _grid_tuning_values(self) -> dict[str, int]:
+        custom = getattr(self, "_grid_custom_tuning", None)
+        if isinstance(custom, dict) and custom:
+            return {
+                key: int(custom.get(key, GRID_INSPECTION_PRESET_VALUES["balanced"][key]))
+                for key in GRID_INSPECTION_TUNING_KEYS
+            }
+        preset = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
+        values = GRID_INSPECTION_PRESET_VALUES.get(preset) or GRID_INSPECTION_PRESET_VALUES["balanced"]
+        return {key: int(values[key]) for key in GRID_INSPECTION_TUNING_KEYS}
+
     def _grid_inspection_config_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = dict(GRID_INSPECTION_FIXED_TUNING)
+        payload: dict[str, object] = dict(self._grid_tuning_values())
         payload["enabled_error_types"] = list(self._selected_grid_error_types())
         payload["requested_layers"] = list(self._selected_grid_compute_layers())
-        payload["display_layer"] = self._selected_grid_display_layer()
+        payload["display_layer"] = "unified"
+        payload["tuning_preset"] = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
         return payload
+
+    def _sync_grid_tuning_slider_labels(self) -> None:
+        labels = getattr(self, "grid_tuning_value_labels", {}) or {}
+        sliders = getattr(self, "grid_tuning_sliders", {}) or {}
+        for key, slider in sliders.items():
+            label = labels.get(key)
+            if label is not None:
+                label.setText(str(int(slider.value())))
 
     def _set_grid_inspection_config_controls(self, payload: dict[str, object] | None) -> None:
         values = dict(payload or {})
@@ -388,29 +414,38 @@ class KarakalPresenter(QObject):
         return selected or ("confidence",)
 
     @staticmethod
+    def _slider_unit(payload: dict[str, object], key: str, default: int) -> float:
+        try:
+            return max(0.0, min(1.0, float(payload.get(key, default)) / 100.0))
+        except (TypeError, ValueError):
+            return max(0.0, min(1.0, float(default) / 100.0))
+
+    @staticmethod
     def _grid_damage_config_from_payload(payload: dict[str, object] | None) -> GridDamageAnalysisConfig:
-        fixed_tuning = dict(GRID_INSPECTION_FIXED_TUNING)
-        strictness = fixed_tuning["strictness"] / 100.0
-        fill = fixed_tuning["fill_sensitivity"] / 100.0
-        merge = fixed_tuning["merge_sensitivity"] / 100.0
-        noise = fixed_tuning["noise_filter"] / 100.0
-        threshold = fixed_tuning["defect_threshold"] / 100.0
-        enabled_error_types = KarakalPresenter._normalize_grid_error_types(
-            (payload or {}).get("enabled_error_types")
-        )
-        strict_boost = strictness - 0.5
+        values = dict(payload or {})
+        if not any(key in values for key in GRID_INSPECTION_TUNING_KEYS):
+            values.update(GRID_INSPECTION_PRESET_VALUES["balanced"])
+        fill = KarakalPresenter._slider_unit(values, "fill_sensitivity", 60)
+        debris = KarakalPresenter._slider_unit(values, "debris_sensitivity", 75)
+        merge = KarakalPresenter._slider_unit(values, "merge_sensitivity", 35)
+        geometry = KarakalPresenter._slider_unit(values, "geometry_sensitivity", 40)
+        mismatch = KarakalPresenter._slider_unit(values, "mismatch_sensitivity", 50)
+        disagreement = KarakalPresenter._slider_unit(values, "disagreement_sensitivity", 50)
+        enabled_error_types = KarakalPresenter._normalize_grid_error_types(values.get("enabled_error_types"))
         return GridDamageAnalysisConfig(
             include_debug_payload=False,
             debug=False,
-            # Keep tiny NN debris visible without a reference frame; noise=100 → area=4, size=2.
             blur_radius=1,
-            min_contour_area=3.0 + 1.0 * noise,
+            min_contour_area=max(2.0, 14.0 - 10.0 * debris),
             min_cell_size=2,
-            filled_ratio_delta=max(0.04, 0.35 - 0.26 * fill - 0.08 * strict_boost),
-            bad_score_threshold=max(0.30, min(0.98, threshold - 0.10 * strict_boost)),
-            # Fixed@100 → ~1.40 / 1.37: still strict, but avoids mild oversize → merged FP.
-            merged_size_ratio=max(1.10, 1.87 - 0.40 * merge - 0.14 * strict_boost),
-            merged_area_ratio=max(1.10, 1.86 - 0.42 * merge - 0.14 * strict_boost),
+            filled_ratio_delta=max(0.04, 0.42 - 0.34 * fill),
+            filled_ratio_absolute=max(0.20, 0.72 - 0.30 * fill),
+            bad_score_threshold=max(0.25, 0.92 - 0.50 * disagreement),
+            merged_size_ratio=max(1.10, 1.95 - 0.75 * merge),
+            merged_area_ratio=max(1.10, 1.95 - 0.78 * merge),
+            geometry_solidity_limit=max(0.40, min(0.95, 0.50 + 0.40 * geometry)),
+            geometry_iou_threshold=max(0.20, min(0.90, 0.32 + 0.46 * mismatch)),
+            centroid_mismatch_ratio=max(0.15, min(0.90, 0.80 - 0.50 * mismatch)),
             enabled_reason_types=enabled_error_types,
         ).normalized()
 
@@ -4644,6 +4679,117 @@ class KarakalPresenter(QObject):
         if auto_compute_state is not None and auto_compute_state.widget in self._tab_states:
             QTimer.singleShot(0, self._on_compute_requested)
 
+    def _merge_grid_layer_results(self, *results: object) -> GridFrameAnalysisResult | None:
+        available = [result for result in results if isinstance(result, GridFrameAnalysisResult)]
+        if not available:
+            return None
+        cells = []
+        seen: set[tuple[int, int, int, int, str]] = set()
+        for result in available:
+            for cell in getattr(result, "per_cell_results", ()) or ():
+                reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()) if str(reason))
+                if not reasons or str(getattr(cell, "status", "")) == "normal":
+                    continue
+                bbox = tuple(int(value) for value in getattr(cell, "bbox", (0, 0, 0, 0))[:4])
+                key = (*bbox, reasons[0])
+                if key in seen:
+                    continue
+                seen.add(key)
+                cells.append(cell)
+        base = available[0]
+        damage_score = max(float(getattr(result, "damage_score", 0.0) or 0.0) for result in available)
+        return replace(
+            base,
+            per_cell_results=tuple(cells),
+            damage_score=damage_score,
+            broken_cells=len(cells),
+            detected_cells=len(cells),
+        )
+
+    def _clear_grid_tuning_dialog(self, dialog) -> None:
+        if getattr(self, "_grid_tuning_dialog", None) is dialog:
+            self._grid_tuning_dialog = None
+
+    def _open_grid_tuning_dialog(self, details_dialog=None) -> None:
+        existing = getattr(self, "_grid_tuning_dialog", None)
+        if existing is not None:
+            existing.close()
+        parent = details_dialog if details_dialog is not None else self._view
+        dialog = GridTuningDialog(self._t, self._grid_tuning_values(), parent=parent)
+        dialog.tuningChanged.connect(lambda values, details=details_dialog: self._on_grid_tuning_sliders_changed(values, details))
+        dialog.finished.connect(lambda *_args, dialog=dialog: self._clear_grid_tuning_dialog(dialog))
+        self._grid_tuning_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+
+    def _on_grid_tuning_preset_changed(self, *_args) -> None:
+        preset = str(self.grid_tuning_preset_combo.currentData() or "balanced")
+        if preset == "custom":
+            return
+        values = GRID_INSPECTION_PRESET_VALUES.get(preset) or GRID_INSPECTION_PRESET_VALUES["balanced"]
+        self._grid_tuning_preset = preset
+        self._grid_custom_tuning = None
+        sliders = getattr(self, "grid_tuning_sliders", {}) or {}
+        for key, slider in sliders.items():
+            blocker = QSignalBlocker(slider)
+            slider.setValue(int(values.get(key, slider.value())))
+            del blocker
+        self._sync_grid_tuning_slider_labels()
+        dialog = getattr(self, "_grid_tuning_dialog", None)
+        if dialog is not None and hasattr(dialog, "set_values"):
+            dialog.set_values(values)
+
+    def _on_grid_sidebar_slider_changed(self, *_args) -> None:
+        sliders = getattr(self, "grid_tuning_sliders", {}) or {}
+        values = {key: int(slider.value()) for key, slider in sliders.items()}
+        self._sync_grid_tuning_slider_labels()
+        dialog = getattr(self, "_grid_tuning_dialog", None)
+        if dialog is not None and hasattr(dialog, "set_values"):
+            dialog.set_values(values)
+        details = next((item for item in reversed(self._details_dialogs) if item is not None), None)
+        self._on_grid_tuning_sliders_changed(values, details)
+
+    def _on_grid_tuning_sliders_changed(self, values: dict, details_dialog=None) -> None:
+        self._grid_custom_tuning = {key: int(values.get(key, 0)) for key in GRID_INSPECTION_TUNING_KEYS}
+        self._grid_tuning_preset = "custom"
+        combo = getattr(self, "grid_tuning_preset_combo", None)
+        if combo is not None and str(combo.currentData() or "") != "custom":
+            index = combo.findData("custom")
+            if index >= 0:
+                blocker = QSignalBlocker(combo)
+                combo.setCurrentIndex(index)
+                del blocker
+        sliders = getattr(self, "grid_tuning_sliders", {}) or {}
+        for key, slider in sliders.items():
+            if key not in values:
+                continue
+            if int(slider.value()) == int(values[key]):
+                continue
+            blocker = QSignalBlocker(slider)
+            slider.setValue(int(values[key]))
+            del blocker
+        self._sync_grid_tuning_slider_labels()
+        if details_dialog is None:
+            details_dialog = next((item for item in reversed(self._details_dialogs) if item is not None), None)
+        if details_dialog is None or not hasattr(details_dialog, "apply_grid_inspection_preview"):
+            return
+        state = self._current_tab_state()
+        record = getattr(details_dialog, "_record", None)
+        if state is None or record is None:
+            return
+        from ..core.grid_anomaly import analyze_grid_frame_path
+
+        model_id = self._grid_inspection_model_id_for_state(state)
+        config = self._selected_grid_damage_config()
+        path = str((getattr(record, "model_prob_paths", {}) or {}).get(str(model_id or "")) or "") or str(
+            (getattr(record, "model_mask_paths", {}) or {}).get(str(model_id or "")) or ""
+        )
+        if not path:
+            return
+        result = analyze_grid_frame_path(path, frame_id=str(record.key), config=config, use_cache=False)
+        if result is not None:
+            details_dialog.apply_grid_inspection_preview(result)
+
     def _apply_grid_inspection_worker_payloads(
         self,
         state: ExtendMatrixTabState,
@@ -4674,11 +4820,28 @@ class KarakalPresenter(QObject):
                 layers["binary"][str(record_key)] = payload
                 changed["binary"][str(record_key)] = payload
         state.grid_inspection_payloads_by_layer = layers
-        active_layer = str(getattr(state, "grid_inspection_layer", "confidence") or "confidence")
-        state.grid_inspection_payload_by_key = dict(layers.get(active_layer, {}) or {})
-        state.grid_inspection_results_ready = any(bool(value) for value in layers.values())
+        unified_payloads = {
+            str(record_key): merged
+            for record_key in {key for layer in layers.values() for key in layer}
+            if (merged := self._merge_grid_layer_results(*(layers[layer_key].get(record_key) for layer_key in layers)))
+            is not None
+        }
+        state.grid_inspection_layer = "unified"
+        state.grid_inspection_payload_by_key = unified_payloads
+        state.grid_inspection_results_ready = bool(unified_payloads) or any(bool(value) for value in layers.values())
         self._sync_grid_inspection_layer_tabs(state)
-        for layer_key, view in self._grid_inspection_views().items():
+        views = self._grid_inspection_views()
+        unified_view = views.get("unified")
+        if unified_view is not None:
+            if replace_all:
+                unified_view.set_grid_inspection_payloads(unified_payloads, enabled=True)
+            else:
+                changed_unified = {key: unified_payloads[key] for key in payloads if key in unified_payloads}
+                if changed_unified:
+                    unified_view.update_grid_inspection_payloads(changed_unified)
+        for layer_key, view in views.items():
+            if layer_key == "unified":
+                continue
             if replace_all:
                 view.set_grid_inspection_payloads(layers.get(layer_key, {}), enabled=True)
             elif changed.get(layer_key):
@@ -5232,6 +5395,7 @@ class KarakalPresenter(QObject):
         dialog.setModal(False)
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog._on_grid_tuning_requested = lambda details=dialog: self._open_grid_tuning_dialog(details)
         dialog.destroyed.connect(lambda *_args, dialog=dialog: self._forget_details_dialog(dialog))
         self._details_dialogs.append(dialog)
         dialog.show()

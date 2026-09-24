@@ -94,6 +94,9 @@ class GridDamageAnalysisConfig:
     bad_score_threshold: float = 0.72
     merged_size_ratio: float = 1.58
     merged_area_ratio: float = 1.55
+    geometry_solidity_limit: float = 0.70
+    geometry_iou_threshold: float = 0.58
+    centroid_mismatch_ratio: float = 0.48
     min_grid_candidate_cells: int = 6
     expected_rows: int | None = None
     expected_cols: int | None = None
@@ -131,6 +134,9 @@ class GridDamageAnalysisConfig:
             bad_score_threshold=max(0.05, min(1.0, float(self.bad_score_threshold))),
             merged_size_ratio=max(1.05, float(self.merged_size_ratio)),
             merged_area_ratio=max(1.05, float(self.merged_area_ratio)),
+            geometry_solidity_limit=max(0.20, min(0.98, float(self.geometry_solidity_limit))),
+            geometry_iou_threshold=max(0.05, min(0.98, float(self.geometry_iou_threshold))),
+            centroid_mismatch_ratio=max(0.05, min(0.98, float(self.centroid_mismatch_ratio))),
             min_grid_candidate_cells=max(1, int(self.min_grid_candidate_cells)),
             expected_rows=None if self.expected_rows is None else max(1, int(self.expected_rows)),
             expected_cols=None if self.expected_cols is None else max(1, int(self.expected_cols)),
@@ -520,6 +526,7 @@ def compare_grid_cell_analyses(
     *,
     centroid_tolerance_ratio: float = 0.72,
     geometry_iou_threshold: float = 0.58,
+    centroid_mismatch_ratio: float = 0.48,
 ) -> GridFrameAnalysisResult:
     """Compare semantic cell geometry after each representation was analyzed independently."""
 
@@ -578,7 +585,7 @@ def compare_grid_cell_analyses(
         )
         iou = _bbox_iou(confidence_cell.bbox, binary_cell.bbox)
         reasons: list[str] = []
-        if iou < float(geometry_iou_threshold) or distance_ratio > 0.48:
+        if iou < float(geometry_iou_threshold) or distance_ratio > float(centroid_mismatch_ratio):
             reasons.append("geometry_mismatch")
         confidence_bad = str(confidence_cell.status) != "normal"
         binary_bad = str(binary_cell.status) != "normal"
@@ -1178,7 +1185,12 @@ def analyze_grid_frame_pair_chunk(
             and isinstance(confidence_result, GridFrameAnalysisResult)
             and isinstance(binary_result, GridFrameAnalysisResult)
         ):
-            frame_payload["comparison"] = compare_grid_cell_analyses(confidence_result, binary_result)
+            frame_payload["comparison"] = compare_grid_cell_analyses(
+                confidence_result,
+                binary_result,
+                geometry_iou_threshold=float(config.geometry_iou_threshold),
+                centroid_mismatch_ratio=float(config.centroid_mismatch_ratio),
+            )
         if frame_payload:
             payloads[str(key)] = frame_payload
     return payloads, errors
@@ -2571,7 +2583,7 @@ def _classify_binary_cell(
         )
     )
     broken = (slot_sized or aspect_slot_damage or irregular_mid_geometry) and (
-        float(candidate.solidity) < 0.80
+        float(candidate.solidity) < float(config.geometry_solidity_limit) + 0.10
         or int(candidate.approx_vertices) >= 10
         or fill_loss > 0.08
         or aspect_mismatch
@@ -2837,7 +2849,11 @@ def _classify_detected_cell(
     broken_geometry_signal = (
         slot_sized_geometry
         and (
-            (candidate.child_count == 0 and candidate.solidity <= 0.70 and candidate.approx_vertices >= 8)
+            (
+                candidate.child_count == 0
+                and candidate.solidity <= float(config.geometry_solidity_limit)
+                and candidate.approx_vertices >= 8
+            )
             or (candidate.solidity <= 0.66 and abs(float(candidate.extent) - 0.74) >= 0.22)
             or (
                 candidate.approx_vertices >= 16

@@ -150,6 +150,8 @@ class ServerConfig:
     blob_gateway_tls_key_file: Path | None = None
     blob_ticket_lifetime_seconds: int = 900
     log_level: str = "none"
+    db_pool_size: int = 10
+    db_max_overflow: int = 10
 
     @classmethod
     def load(cls, path: Path | str) -> ServerConfig:
@@ -195,6 +197,10 @@ class ServerConfig:
         ticket_lifetime = int(gateway.get("ticket_lifetime_seconds", 900))
         if not 30 <= ticket_lifetime <= 86_400:
             raise ValueError("blob_gateway.ticket_lifetime_seconds must be between 30 and 86400")
+        pool_size = int(database.get("pool_size", 10))
+        max_overflow = int(database.get("max_overflow", 10))
+        if pool_size < 1 or max_overflow < 0:
+            raise ValueError("database.pool_size must be at least 1 and max_overflow must not be negative")
         source_root = resolve(storage.get("source_root"))
         derived_root = resolve(storage.get("derived_root"))
         return cls(
@@ -218,6 +224,8 @@ class ServerConfig:
             blob_gateway_tls_key_file=gateway_tls_key,
             blob_ticket_lifetime_seconds=ticket_lifetime,
             log_level=log_level,
+            db_pool_size=pool_size,
+            db_max_overflow=max_overflow,
         )
 
     @property
@@ -231,6 +239,8 @@ class ServerConfig:
     def apply_to_environment(self) -> None:
         os.environ["KRAKEN_SERVER_COMPOSITION"] = "kraken_server.composition:postgresql_composition"
         os.environ["KRAKEN_DATABASE_URL"] = self.database_url
+        os.environ["KRAKEN_DB_POOL_SIZE"] = str(self.db_pool_size)
+        os.environ["KRAKEN_DB_MAX_OVERFLOW"] = str(self.db_max_overflow)
         os.environ["KRAKEN_BLOB_ROOT"] = str(self.blob_root)
         os.environ["KRAKEN_SOURCE_ROOT"] = str(self.source_root)
         os.environ["KRAKEN_DERIVED_ROOT"] = str(self.derived_root)
@@ -353,6 +363,9 @@ def write_config(
             "[database]",
             "# Относительный путь к защищённому DPAPI-секрету подключения PostgreSQL.",
             f"url_secret = {json.dumps(secret_path.name)}",
+            "# Размер пула соединений приложения. Вместе с max_overflow это потолок одновременных запросов.",
+            "pool_size = 10",
+            "max_overflow = 10",
             "",
             "[storage]",
             "# Неизменяемые файлы сервера. Рабочие станции не открывают этот каталог напрямую.",

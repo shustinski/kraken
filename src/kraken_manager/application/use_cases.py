@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
+from typing import Any
 
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import (
@@ -57,6 +58,15 @@ def _layer_stream(layer_id: str) -> str:
 
 def _series_stream(series_id: str) -> str:
     return f"artifact-series:{series_id}"
+
+
+def _blob_store(factory: UnitOfWorkFactory) -> Any:
+    """Content store shared by units of work, without opening a database transaction."""
+    shared = getattr(factory, "blobs", None)
+    if shared is not None:
+        return shared
+    with factory() as uow:
+        return uow.blobs
 
 
 def _prior_entity_id(
@@ -398,14 +408,20 @@ class AddArtifactVersionHandler(_ProjectHandler):
     ) -> ArtifactVersion:
         if (chunks is None) == (stored is None):
             raise ValueError("Exactly one of chunks or stored content is required")
+        if stored is None:
+            assert chunks is not None
+            with self._uow_factory() as uow:
+                existing, *_ignored = self._prepare(uow, command)
+                if existing is not None:
+                    return existing
+            stored = _blob_store(self._uow_factory).put(
+                chunks, expected_sha256=command.expected_sha256
+            )
         with self._uow_factory() as uow:
             existing, project, series, active, parent_id, stream_id, actual_revision = self._prepare(uow, command)
             if existing is not None:
                 return existing
-            if stored is None:
-                assert chunks is not None
-                stored = uow.blobs.put(chunks, expected_sha256=command.expected_sha256)
-            elif command.expected_sha256 is not None and stored.blob.sha256 != command.expected_sha256:
+            if command.expected_sha256 is not None and stored.blob.sha256 != command.expected_sha256:
                 raise ConflictError("Stored blob digest does not match the artifact command")
             now = self._clock.now()
             version = ArtifactVersion.managed(

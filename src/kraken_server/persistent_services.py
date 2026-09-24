@@ -433,6 +433,23 @@ class PostgresServerServices:
             )
         ]
 
+    def project_ids_for_principal(self, principal_id: str) -> tuple[str, ...]:
+        try:
+            identifier = PrincipalId(validate_uuid(principal_id, field="principal_id"))
+        except (TypeError, ValueError):
+            return ()
+        return tuple(sorted(self.identities.project_ids_for(identifier)))
+
+    def principal_system_roles(self, principal_id: str) -> tuple[str, ...]:
+        try:
+            identifier = PrincipalId(validate_uuid(principal_id, field="principal_id"))
+        except (TypeError, ValueError):
+            return ()
+        principal = self.identities.get(identifier)
+        if principal is None:
+            return ()
+        return tuple(sorted(role.value for role in principal.system_roles))
+
     def list_principals(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
         return [
             {
@@ -511,19 +528,25 @@ class PostgresServerServices:
             raise ValidationError(
                 "В server.toml не заданы storage.source_root и storage.derived_root"
             )
-        if files.registry.get_project(str(project.id)) is not None:
-            return
-        from kraken_manager.workspace import WorkspaceValidationError
+        if files.registry.get_project(str(project.id)) is None:
+            from kraken_manager.workspace import WorkspaceValidationError
 
-        try:
-            files.create_server_project(
-                project_id=str(project.id),
-                project_name=project.name,
-                source_root=self.source_root,
-                derived_root=self.derived_root,
+            try:
+                files.create_server_project(
+                    project_id=str(project.id),
+                    project_name=project.name,
+                    source_root=self.source_root,
+                    derived_root=self.derived_root,
+                )
+            except (WorkspaceValidationError, FileExistsError, OSError) as exc:
+                raise ValidationError(str(exc)) from exc
+        binding = files.registry.get_project(str(project.id))
+        if binding is not None:
+            self.projections.record_project_directories(
+                str(project.id),
+                source_directory=binding.source_project_dir,
+                derived_directory=binding.derived_project_dir,
             )
-        except (WorkspaceValidationError, FileExistsError, OSError) as exc:
-            raise ValidationError(str(exc)) from exc
 
     def project_workspace(self, project_id: str) -> dict[str, Any] | None:
         files = self.workspace_files
@@ -1091,6 +1114,19 @@ class PostgresServerServices:
             self._translate_lifecycle_error(exc)
             raise AssertionError("unreachable")
 
+    def _active_artifact_versions(self, series: Iterable[Any]) -> dict[str, Any]:
+        rows = tuple(series)
+        if not rows:
+            return {}
+        batch = getattr(self.projections, "list_active_artifact_versions", None)
+        if batch is None:
+            loaded = {
+                str(item.id): self.projections.get_active_artifact_version(item.id)
+                for item in rows
+            }
+            return {key: value for key, value in loaded.items() if value is not None}
+        return {str(key): value for key, value in batch(item.id for item in rows).items()}
+
     def matrix_viewport(
         self,
         project_id: str,
@@ -1112,6 +1148,9 @@ class PostgresServerServices:
         project_model = self.projections.get_project(_project_id(project_id))
         assert project_model is not None
         layer_identifier = _layer_id(layer_id)
+        layer = self.projections.get_layer(layer_identifier)
+        if layer is None or str(layer.project_id) != project_id:
+            raise NotFoundError(layer_id)
         identifiers = tuple(
             RepresentationId(validate_uuid(str(value), field="representation_id"))
             for value in representation_ids
@@ -1119,9 +1158,7 @@ class PostgresServerServices:
         if not identifiers:
             identifiers = tuple(
                 representation.id
-                for representation in self.projections.list_representations(
-                    project_model.id, layer_identifier
-                )
+                for representation in self.projections.list_representations(layer.id)
             )
         representations = {
             representation.id: representation
@@ -1142,14 +1179,25 @@ class PostgresServerServices:
         merged: dict[tuple[int, int], dict[str, Any]] = {}
         coverage: dict[str, set[tuple[int, int]]] = {}
         newest = ""
+        series_groups: list[tuple[Any, tuple[Any, ...]]] = []
+        viewport_series: list[Any] = []
         for representation in representations.values():
+            rows = tuple(
+                series
+                for series in self.projections.list_artifact_series(
+                    project_model.id,
+                    layer_id=layer_identifier,
+                    representation_id=representation.id,
+                )
+                if str(series.project_id) == project_id
+            )
+            series_groups.append((representation, rows))
+            viewport_series.extend(rows)
+        active_versions = self._active_artifact_versions(viewport_series)
+        for representation, series_rows in series_groups:
             current_coverage = coverage.setdefault(str(representation.id), set())
-            for series in self.projections.list_artifact_series(
-                project_model.id,
-                layer_id=layer_identifier,
-                representation_id=representation.id,
-            ):
-                version = self.projections.get_active_artifact_version(series.id)
+            for series in series_rows:
+                version = active_versions.get(str(series.id))
                 cursor = version
                 coordinate: tuple[int, int] | None = None
                 visited: set[str] = set()
@@ -2173,7 +2221,7 @@ class PostgresServerServices:
         after = 0
         while True:
             page = self.events.list_project_events(
-                project.id, after_position=after, limit=500
+                project.id, after_position=after, limit=500, start=start, end=end
             )
             if not page:
                 break

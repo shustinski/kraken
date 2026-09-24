@@ -551,6 +551,7 @@ class SQLiteProjectionStore:
         *,
         layer_id: Any | None = None,
         representation_id: Any | None = None,
+        frame_id: Any | None = None,
         include_archived: bool = False,
         as_of: datetime | None = None,
     ) -> tuple[Any, ...]:
@@ -564,7 +565,8 @@ class SQLiteProjectionStore:
         return tuple(
             item
             for item in values
-            if representation_id is None or item.representation_id == representation_id
+            if (representation_id is None or item.representation_id == representation_id)
+            and (frame_id is None or item.frame_id == frame_id)
         )
 
     def save_artifact_series(self, series: Any) -> None:
@@ -589,6 +591,26 @@ class SQLiteProjectionStore:
         if row is None:
             return None
         return decode_model(self._model_class("artifact_version"), json.loads(row["value_json"]))
+
+    def list_active_artifact_versions(self, series_ids: Any) -> dict[str, Any]:
+        identifiers = [str(series_id) for series_id in series_ids]
+        if not identifiers:
+            return {}
+        placeholders = ",".join("?" for _ in identifiers)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT parent_id, value_json FROM typed_current_models
+                WHERE model_type = 'artifact_version' AND active = 1
+                  AND parent_id IN ({placeholders})
+                """,
+                identifiers,
+            ).fetchall()
+        versions: dict[str, Any] = {}
+        model = self._model_class("artifact_version")
+        for row in rows:
+            versions[str(row["parent_id"])] = decode_model(model, json.loads(row["value_json"]))
+        return versions
 
     def list_artifact_versions(
         self, series_id: Any, *, as_of: datetime | None = None

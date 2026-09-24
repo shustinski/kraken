@@ -12,6 +12,7 @@ from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, Blo
 from kraken_manager.domain.common import (
     ArtifactSeriesId,
     ArtifactVersionId,
+    FrameId,
     LayerId,
     PerformerId,
     PluginJobId,
@@ -161,6 +162,7 @@ class ProjectionStore(Protocol):
         *,
         layer_id: LayerId | None = None,
         representation_id: RepresentationId | None = None,
+        frame_id: FrameId | None = None,
         include_archived: bool = False,
         as_of: datetime | None = None,
     ) -> tuple[ArtifactSeries, ...]: ...

@@ -148,17 +148,7 @@ class BlobGatewayManager:
             return
         if not self.executable.is_file():
             raise RuntimeError(f"Kraken Blob Gateway executable was not found: {self.executable}")
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "KRAKEN_BLOB_ROOT": str(self.blob_root),
-                "KRAKEN_BLOB_GATEWAY_BIND": self.bind,
-                "KRAKEN_BLOB_GATEWAY_SECRET": self._secret,
-            }
-        )
-        if self.tls_cert_file is not None and self.tls_key_file is not None:
-            environment["KRAKEN_BLOB_GATEWAY_TLS_CERT"] = str(self.tls_cert_file)
-            environment["KRAKEN_BLOB_GATEWAY_TLS_KEY"] = str(self.tls_key_file)
+        environment = self._child_environment()
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self._process = subprocess.Popen(  # noqa: S603 - executable is administrator-owned configuration
             [str(self.executable)],
@@ -177,6 +167,35 @@ class BlobGatewayManager:
             time.sleep(0.1)
         self.stop()
         raise RuntimeError(f"Kraken Blob Gateway did not become ready at {self.public_url}")
+
+    def _child_environment(self) -> dict[str, str]:
+        """Pass only the process paths and blob settings. The database URL stays in the server."""
+        environment: dict[str, str] = {}
+        for name in (
+            "PATH",
+            "PATHEXT",
+            "SYSTEMROOT",
+            "SYSTEMDRIVE",
+            "WINDIR",
+            "TMP",
+            "TEMP",
+            "HOME",
+            "USERPROFILE",
+        ):
+            value = os.environ.get(name)
+            if value:
+                environment[name] = value
+        environment.update(
+            {
+                "KRAKEN_BLOB_ROOT": str(self.blob_root),
+                "KRAKEN_BLOB_GATEWAY_BIND": self.bind,
+                "KRAKEN_BLOB_GATEWAY_SECRET": self._secret,
+            }
+        )
+        if self.tls_cert_file is not None and self.tls_key_file is not None:
+            environment["KRAKEN_BLOB_GATEWAY_TLS_CERT"] = str(self.tls_cert_file)
+            environment["KRAKEN_BLOB_GATEWAY_TLS_KEY"] = str(self.tls_key_file)
+        return environment
 
     def _ready(self) -> bool:
         try:

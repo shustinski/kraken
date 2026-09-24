@@ -298,6 +298,8 @@ class PostgresEventStore:
         after_position: int = 0,
         limit: int = 100,
         as_of: datetime | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> tuple[tuple[int, EventEnvelope], ...]:
         """Cursor-friendly history across every stream of one project."""
         if after_position < 0:
@@ -311,6 +313,10 @@ class PostgresEventStore:
         )
         if as_of is not None:
             statement = statement.where(self.events.c.recorded_at <= as_of)
+        if start is not None:
+            statement = statement.where(self.events.c.recorded_at >= start)
+        if end is not None:
+            statement = statement.where(self.events.c.recorded_at <= end)
         statement = statement.order_by(self.events.c.position).limit(limit)
         with self._scope() as connection:
             rows = connection.execute(statement).mappings().all()

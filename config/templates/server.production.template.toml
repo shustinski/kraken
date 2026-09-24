@@ -20,6 +20,8 @@ log_level = "low"
 
 [database]
 url_secret = "database-url.secret"
+pool_size = 10
+max_overflow = 10
 
 [storage]
 # Резервируйте каталог вместе с PostgreSQL и конфигурацией сервера.

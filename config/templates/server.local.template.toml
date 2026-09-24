@@ -31,6 +31,9 @@ log_level = "low"
 [database]
 # Относительный путь разбирается от каталога этого файла.
 url_secret = "database-url.secret"
+# pool_size + max_overflow — сколько соединений приложение держит из max_connections.
+pool_size = 10
+max_overflow = 10
 
 [storage]
 # Неизменяемые файлы сервера. Desktop не открывает этот каталог напрямую.

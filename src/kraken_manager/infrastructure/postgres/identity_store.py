@@ -143,6 +143,19 @@ class PostgresIdentityAclStore:
             ).scalars().all()
         return frozenset(parse_project_role(role) for role in roles)
 
+    def project_ids_for(self, principal_id: PrincipalId) -> frozenset[str]:
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            project_ids = connection.execute(
+                sa.select(self.acl.c.project_id)
+                .where(
+                    self.acl.c.principal_id == str(principal_id),
+                    self.acl.c.revoked_at.is_(None),
+                )
+                .distinct()
+            ).scalars().all()
+        return frozenset(str(project_id) for project_id in project_ids)
+
     def assignments_for(self, project_id: ProjectId) -> tuple[ProjectRoleAssignment, ...]:
         sa, _ = _sqlalchemy()
         with self._scope() as connection:

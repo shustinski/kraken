@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -19,6 +19,7 @@ class ConnectionHub:
 
     _project_subs: dict[Any, set[str]] = field(default_factory=dict)
     _catalog_subs: set[Any] = field(default_factory=set)
+    _catalog_access: dict[Any, Callable[[str], bool]] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
     _loop: asyncio.AbstractEventLoop | None = None
 
@@ -33,14 +34,24 @@ class ConnectionHub:
         with self._lock:
             self._project_subs.pop(websocket, None)
             self._catalog_subs.discard(websocket)
+            self._catalog_access.pop(websocket, None)
 
-    def subscribe(self, websocket: Any, *, project_id: str | None = None, catalog: bool = False) -> None:
+    def subscribe(
+        self,
+        websocket: Any,
+        *,
+        project_id: str | None = None,
+        catalog: bool = False,
+        catalog_visible: Callable[[str], bool] | None = None,
+    ) -> None:
         with self._lock:
             self._project_subs.setdefault(websocket, set())
             if project_id:
                 self._project_subs[websocket].add(str(project_id))
             if catalog:
                 self._catalog_subs.add(websocket)
+                if catalog_visible is not None:
+                    self._catalog_access[websocket] = catalog_visible
 
     def unsubscribe(self, websocket: Any, *, project_id: str | None = None, catalog: bool = False) -> None:
         with self._lock:
@@ -48,14 +59,17 @@ class ConnectionHub:
                 self._project_subs[websocket].discard(str(project_id))
             if catalog:
                 self._catalog_subs.discard(websocket)
+                self._catalog_access.pop(websocket, None)
 
     def publish(self, envelope: Mapping[str, object]) -> None:
         loop = self._loop
         if loop is None or not loop.is_running():
             return
-        asyncio.run_coroutine_threadsafe(self._fanout(dict(envelope)), loop)
+        payload = dict(envelope)
+        targets = self._targets(payload)
+        asyncio.run_coroutine_threadsafe(self._send(targets, payload), loop)
 
-    async def _fanout(self, envelope: dict[str, object]) -> None:
+    def _targets(self, envelope: Mapping[str, object]) -> list[Any]:
         project_id = str(envelope.get("project_id", ""))
         with self._lock:
             targets = [
@@ -63,9 +77,12 @@ class ConnectionHub:
                 for websocket, projects in self._project_subs.items()
                 if project_id and project_id in projects
             ]
-            if envelope.get("type") in {"project_event", "catalog_changed"}:
-                targets.extend(list(self._catalog_subs))
-            # Deduplicate while preserving order.
+            if envelope.get("type") == "catalog_changed":
+                for websocket in self._catalog_subs:
+                    visible = self._catalog_access.get(websocket)
+                    if visible is not None and not visible(project_id):
+                        continue
+                    targets.append(websocket)
             seen: set[int] = set()
             unique = []
             for websocket in targets:
@@ -74,11 +91,17 @@ class ConnectionHub:
                     continue
                 seen.add(key)
                 unique.append(websocket)
-        for websocket in unique:
+            return unique
+
+    async def _send(self, targets: list[Any], envelope: dict[str, object]) -> None:
+        for websocket in targets:
             try:
                 await websocket.send_json(envelope)
             except Exception:  # noqa: BLE001 - transports expose backend-specific disconnect errors
                 self.unregister(websocket)
+
+    async def _fanout(self, envelope: dict[str, object]) -> None:
+        await self._send(self._targets(envelope), envelope)
 
 
 class OutboxPublisher:

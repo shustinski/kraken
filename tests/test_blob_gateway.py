@@ -180,6 +180,26 @@ def test_configuration_requires_tls_files_for_https_gateway(tmp_path: Path) -> N
         )
 
 
+def test_blob_gateway_child_environment_omits_database_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from kraken_server.blob_gateway import BlobGatewayManager
+
+    monkeypatch.setenv("KRAKEN_DATABASE_URL", "postgresql+psycopg://kraken:secret@localhost/kraken")
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+    manager = BlobGatewayManager(
+        public_url="http://127.0.0.1:9",
+        bind="127.0.0.1:9",
+        blob_root=tmp_path,
+        executable=tmp_path / "kraken-blob-gateway.exe",
+        secret="integration-secret-which-is-at-least-thirty-two-bytes",
+    )
+
+    environment = manager._child_environment()
+
+    assert "KRAKEN_DATABASE_URL" not in environment
+    assert environment["KRAKEN_BLOB_GATEWAY_BIND"] == "127.0.0.1:9"
+    assert environment["KRAKEN_BLOB_ROOT"] == str(tmp_path.resolve())
+
+
 def test_rust_gateway_streams_python_signed_upload_and_range_download(tmp_path: Path) -> None:
     executable = Path(__file__).parents[1] / "blob_gateway" / "target" / "debug" / "kraken-blob-gateway.exe"
     if not executable.is_file():

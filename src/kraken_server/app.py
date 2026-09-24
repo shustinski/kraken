@@ -11,12 +11,15 @@ import stat
 import tempfile
 import zipfile
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import anyio
 
 from .services import (
     CommandContext,
@@ -54,6 +57,7 @@ def create_app(
 ) -> Any:
     try:
         from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+        from fastapi.concurrency import run_in_threadpool
         from fastapi.exceptions import RequestValidationError
         from fastapi.responses import JSONResponse, StreamingResponse
     except ImportError as exc:  # pragma: no cover - optional dependency
@@ -70,7 +74,35 @@ def create_app(
     from .outbox import ConnectionHub
 
     hub = connection_hub or ConnectionHub()
-    app = FastAPI(title="Kraken Server", version="1.0.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    heavy_operations = anyio.CapacityLimiter(2)
+
+    @asynccontextmanager
+    async def _lifespan(_app: Any):  # type: ignore[no-untyped-def]
+        hub.set_loop(asyncio.get_running_loop())
+        from anyio.to_thread import current_default_thread_limiter
+
+        pool_size = int(os.environ.get("KRAKEN_DB_POOL_SIZE", "10"))
+        max_overflow = int(os.environ.get("KRAKEN_DB_MAX_OVERFLOW", "10"))
+        current_default_thread_limiter().total_tokens = max(pool_size + max_overflow, 1)
+        if outbox_publisher is not None:
+            outbox_publisher.start()
+        if blob_gateway is not None:
+            await run_in_threadpool(blob_gateway.start)
+        try:
+            yield
+        finally:
+            if outbox_publisher is not None:
+                outbox_publisher.stop()
+            if blob_gateway is not None:
+                blob_gateway.stop()
+
+    app = FastAPI(
+        title="Kraken Server",
+        version="1.0.0",
+        docs_url="/api/docs",
+        openapi_url="/api/openapi.json",
+        lifespan=_lifespan,
+    )
     from kraken_manager.domain.roles import reset_acting_role, set_acting_role
 
     @app.middleware("http")
@@ -93,21 +125,6 @@ def create_app(
 
     app.state.connection_hub = hub
     app.state.outbox_publisher = outbox_publisher
-
-    @app.on_event("startup")
-    async def _startup() -> None:
-        hub.set_loop(asyncio.get_running_loop())
-        if outbox_publisher is not None:
-            outbox_publisher.start()
-        if blob_gateway is not None:
-            blob_gateway.start()
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
-        if outbox_publisher is not None:
-            outbox_publisher.stop()
-        if blob_gateway is not None:
-            blob_gateway.stop()
 
     def problem(
         status: int,
@@ -253,6 +270,9 @@ def create_app(
     def system_roles(subject: SessionPrincipal) -> frozenset[str]:
         if subject.provider == "local" and account_store is not None and hasattr(account_store, "global_roles_for"):
             return frozenset(account_store.global_roles_for(subject.principal_id))
+        lookup = getattr(backend, "principal_system_roles", None)
+        if lookup is not None:
+            return frozenset(lookup(subject.principal_id))
         actor = next(
             (
                 item
@@ -277,18 +297,11 @@ def create_app(
             return True
         if access_mode == "trusted_network" or "server_admin" in system_roles(subject):
             return True
+        lookup = getattr(backend, "project_ids_for_principal", None)
+        if lookup is not None:
+            return project_id in set(lookup(subject.principal_id))
         roles = backend.project_roles(project_id, subject.principal_id).get("roles", ())
-        if roles:
-            return True
-        actor = next(
-            (
-                item
-                for item in backend.list_principals(include_inactive=False)
-                if str(item.get("principal_id")) == subject.principal_id
-            ),
-            None,
-        )
-        return actor is not None and "server_admin" in actor.get("system_roles", ())
+        return bool(roles)
 
     def acl_mutation_actor(
         request: Request,
@@ -316,7 +329,7 @@ def create_app(
         return identity
 
     @app.get(f"{API_PREFIX}/session")
-    async def current_session(subject: SessionPrincipal = Depends(principal)) -> dict[str, Any]:
+    def current_session(subject: SessionPrincipal = Depends(principal)) -> dict[str, Any]:
         actor = next(
             (
                 item
@@ -440,7 +453,7 @@ def create_app(
                     raise ValidationError(f"Review archive member size differs: {entry.filename}")
 
     @app.get(f"{API_PREFIX}/health")
-    async def health() -> Any:
+    def health() -> Any:
         status = backend.health()
         if status.get("status") != "ok":
             return problem(503, "service.degraded", "Service degraded", str(status.get("detail", "")))
@@ -448,7 +461,7 @@ def create_app(
         return status
 
     @app.post(f"{API_PREFIX}/auth/sessions")
-    async def create_session(payload: dict[str, Any]) -> dict[str, Any]:
+    def create_session(payload: dict[str, Any]) -> dict[str, Any]:
         if account_store is None:
             return {"provider": "development", "access_token": str(payload.get("username", "developer"))}
         try:
@@ -472,7 +485,7 @@ def create_app(
         }
 
     @app.post(f"{API_PREFIX}/auth/accounts", status_code=201)
-    async def register_local_account(payload: dict[str, Any]) -> dict[str, Any]:
+    def register_local_account(payload: dict[str, Any]) -> dict[str, Any]:
         """Create an ordinary account, or sign in when the same password is already registered.
 
         The account receives no server administrator role. It may create its own
@@ -516,7 +529,7 @@ def create_app(
         return account_store
 
     @app.get(f"{API_PREFIX}/admin/accounts")
-    async def list_server_accounts(
+    def list_server_accounts(
         include_disabled: bool = True,
         _: SessionPrincipal = Depends(server_administrator),
     ) -> dict[str, Any]:
@@ -526,7 +539,7 @@ def create_app(
         }
 
     @app.post(f"{API_PREFIX}/admin/accounts", status_code=201)
-    async def create_server_account(
+    def create_server_account(
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(server_administrator),
     ) -> dict[str, Any]:
@@ -550,7 +563,7 @@ def create_app(
         return account_payload(account)
 
     @app.put(f"{API_PREFIX}/admin/accounts/{{account_id}}/roles/server_admin")
-    async def grant_server_administrator(
+    def grant_server_administrator(
         account_id: str,
         actor: SessionPrincipal = Depends(server_administrator),
     ) -> dict[str, Any]:
@@ -565,7 +578,7 @@ def create_app(
         return account_payload(account)
 
     @app.delete(f"{API_PREFIX}/admin/accounts/{{account_id}}/roles/server_admin")
-    async def revoke_server_administrator(
+    def revoke_server_administrator(
         account_id: str,
         actor: SessionPrincipal = Depends(server_administrator),
     ) -> dict[str, Any]:
@@ -589,7 +602,7 @@ def create_app(
         return account_payload(account)
 
     @app.post(f"{API_PREFIX}/admin/accounts/{{account_id}}/{{operation}}")
-    async def mutate_server_account(
+    def mutate_server_account(
         account_id: str,
         operation: str,
         actor: SessionPrincipal = Depends(server_administrator),
@@ -621,7 +634,7 @@ def create_app(
         return account_payload(account)
 
     @app.put(f"{API_PREFIX}/admin/accounts/{{account_id}}/password")
-    async def reset_server_account_password(
+    def reset_server_account_password(
         account_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(server_administrator),
@@ -637,22 +650,30 @@ def create_app(
         return {"status": "password_reset"}
 
     @app.get(f"{API_PREFIX}/admin/audit")
-    async def administration_audit(
+    def administration_audit(
         limit: int = Query(default=500, ge=1, le=2000),
         _: SessionPrincipal = Depends(server_administrator),
     ) -> dict[str, Any]:
         return {"items": list(require_account_store().administration_audit(limit=limit))}
 
     @app.get(f"{API_PREFIX}/projects")
-    async def list_projects(
+    def list_projects(
         include_archived: bool = False,
         subject: SessionPrincipal = Depends(principal),
     ) -> dict[str, Any]:
         items = backend.list_projects(include_archived=include_archived)
-        return {"items": [item for item in items if has_project_access(str(item["project_id"]), subject)]}
+        if (development and subject.provider == "development") or access_mode == "trusted_network":
+            return {"items": items}
+        if "server_admin" in system_roles(subject):
+            return {"items": items}
+        lookup = getattr(backend, "project_ids_for_principal", None)
+        if lookup is None:
+            return {"items": [item for item in items if has_project_access(str(item["project_id"]), subject)]}
+        visible = set(lookup(subject.principal_id))
+        return {"items": [item for item in items if str(item["project_id"]) in visible]}
 
     @app.get(f"{API_PREFIX}/principals")
-    async def list_principals(
+    def list_principals(
         include_inactive: bool = False,
         _: SessionPrincipal = Depends(principal),
     ) -> dict[str, Any]:
@@ -663,14 +684,14 @@ def create_app(
         }
 
     @app.get(f"{API_PREFIX}/performers")
-    async def list_performers(
+    def list_performers(
         include_archived: bool = False,
         _: SessionPrincipal = Depends(principal),
     ) -> dict[str, Any]:
         return {"items": backend.list_performers(include_archived=include_archived)}
 
     @app.post(f"{API_PREFIX}/projects", status_code=201)
-    async def create_project(
+    def create_project(
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -682,11 +703,11 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}")
-    async def get_project(project_id: str, _: SessionPrincipal = Depends(project_reader)) -> dict[str, Any]:
+    def get_project(project_id: str, _: SessionPrincipal = Depends(project_reader)) -> dict[str, Any]:
         return backend.get_project(project_id)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/workspace")
-    async def get_project_workspace(
+    def get_project_workspace(
         project_id: str, _: SessionPrincipal = Depends(project_reader)
     ) -> dict[str, Any]:
         workspace = getattr(backend, "project_workspace", lambda _project_id: None)(project_id)
@@ -695,7 +716,7 @@ def create_app(
         return workspace
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}")
-    async def rename_project(
+    def rename_project(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -709,7 +730,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/archive")
-    async def archive_project(
+    def archive_project(
         project_id: str,
         actor: SessionPrincipal = Depends(shared_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -720,7 +741,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/restore")
-    async def restore_project(
+    def restore_project(
         project_id: str,
         actor: SessionPrincipal = Depends(shared_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -731,7 +752,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/layers")
-    async def list_layers(
+    def list_layers(
         project_id: str,
         include_archived: bool = False,
         _: SessionPrincipal = Depends(project_reader),
@@ -739,7 +760,7 @@ def create_app(
         return {"items": backend.list_layers(project_id, include_archived=include_archived)}
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/acl/{{principal_id}}")
-    async def project_roles(
+    def project_roles(
         project_id: str,
         principal_id: str,
         _: SessionPrincipal = Depends(project_reader),
@@ -747,7 +768,7 @@ def create_app(
         return backend.project_roles(project_id, principal_id)
 
     @app.put(f"{API_PREFIX}/projects/{{project_id}}/acl/{{principal_id}}/{{role}}")
-    async def assign_project_role(
+    def assign_project_role(
         project_id: str,
         principal_id: str,
         role: str,
@@ -763,7 +784,7 @@ def create_app(
         )
 
     @app.delete(f"{API_PREFIX}/projects/{{project_id}}/acl/{{principal_id}}/{{role}}")
-    async def revoke_project_role(
+    def revoke_project_role(
         project_id: str,
         principal_id: str,
         role: str,
@@ -779,7 +800,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers", status_code=201)
-    async def create_layer(
+    def create_layer(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -793,7 +814,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/files")
-    async def get_layer_files(
+    def get_layer_files(
         project_id: str,
         layer_id: str,
         _: SessionPrincipal = Depends(project_reader),
@@ -804,7 +825,7 @@ def create_app(
         return binding
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/external", status_code=201)
-    async def create_external_layer(
+    def create_external_layer(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -829,14 +850,16 @@ def create_app(
         operation = getattr(backend, "import_workspace_layer", None)
         if operation is None:
             raise HTTPException(status_code=503, detail="Сервер не принимает импорт слоя")
-        return operation(
-            project_id,
-            payload,
-            command_context(actor, idempotency_key, None, revision_required=False),
-        )
+        async with heavy_operations:
+            return await run_in_threadpool(
+                operation,
+                project_id,
+                payload,
+                command_context(actor, idempotency_key, None, revision_required=False),
+            )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/rename")
-    async def rename_layer(
+    def rename_layer(
         project_id: str,
         layer_id: str,
         payload: dict[str, Any],
@@ -852,7 +875,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/reorder")
-    async def reorder_layer(
+    def reorder_layer(
         project_id: str,
         layer_id: str,
         payload: dict[str, Any],
@@ -868,7 +891,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/reorder")
-    async def reorder_layers(
+    def reorder_layers(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -883,7 +906,7 @@ def create_app(
         }
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/archive")
-    async def archive_layer(
+    def archive_layer(
         project_id: str,
         layer_id: str,
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -897,7 +920,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations")
-    async def list_representations(
+    def list_representations(
         project_id: str,
         layer_id: str,
         include_archived: bool = False,
@@ -909,7 +932,7 @@ def create_app(
         f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations",
         status_code=201,
     )
-    async def create_representation(
+    def create_representation(
         project_id: str,
         layer_id: str,
         payload: dict[str, Any],
@@ -925,7 +948,7 @@ def create_app(
         )
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations/{{representation_id}}")
-    async def update_representation(
+    def update_representation(
         project_id: str,
         layer_id: str,
         representation_id: str,
@@ -943,7 +966,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/viewport")
-    async def viewport(
+    def viewport(
         project_id: str,
         layer_id: str,
         x1: int,
@@ -968,7 +991,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/frames")
-    async def frame_states(
+    def frame_states(
         project_id: str,
         layer_id: str,
         representation_id: str,
@@ -989,7 +1012,7 @@ def create_app(
         return {"items": viewport["cells"], "revision": viewport["revision"]}
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/history")
-    async def history(
+    def history(
         project_id: str,
         cursor: str | None = None,
         limit: int = Query(default=100, ge=1, le=500),
@@ -998,7 +1021,7 @@ def create_app(
         return backend.history(project_id, cursor=cursor, limit=limit)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/statistics")
-    async def statistics(
+    def statistics(
         project_id: str,
         start: datetime,
         end: datetime,
@@ -1023,7 +1046,8 @@ def create_app(
     ) -> dict[str, Any]:
         payload = dict(await request.json())
         payload.setdefault("run_id", str(uuid4()))
-        return backend.publish_karakal_analysis(
+        return await run_in_threadpool(
+            backend.publish_karakal_analysis,
             project_id,
             payload,
             command_context(actor, idempotency_key, if_match, revision_required=True),
@@ -1037,14 +1061,16 @@ def create_app(
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:
-        return backend.append_pipeline_event(
+        payload = dict(await request.json())
+        return await run_in_threadpool(
+            backend.append_pipeline_event,
             project_id,
-            dict(await request.json()),
+            payload,
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts")
-    async def list_artifacts(
+    def list_artifacts(
         project_id: str,
         layer_id: str | None = None,
         representation_id: str | None = None,
@@ -1063,7 +1089,7 @@ def create_app(
         }
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/artifacts", status_code=201)
-    async def create_artifact_series(
+    def create_artifact_series(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -1076,7 +1102,7 @@ def create_app(
         )
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}")
-    async def mutate_artifact_series(
+    def mutate_artifact_series(
         project_id: str,
         series_id: str,
         payload: dict[str, Any],
@@ -1092,7 +1118,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/versions")
-    async def list_artifact_versions(
+    def list_artifact_versions(
         project_id: str,
         series_id: str,
         _: SessionPrincipal = Depends(project_reader),
@@ -1100,7 +1126,7 @@ def create_app(
         return {"items": backend.list_artifact_versions(project_id, series_id)}
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/revision")
-    async def artifact_stream_revision(
+    def artifact_stream_revision(
         project_id: str,
         series_id: str,
         _: SessionPrincipal = Depends(project_reader),
@@ -1108,7 +1134,7 @@ def create_app(
         return {"revision": backend.artifact_stream_revision(project_id, series_id)}
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/active")
-    async def active_artifact_version(
+    def active_artifact_version(
         project_id: str,
         series_id: str,
         _: SessionPrincipal = Depends(project_reader),
@@ -1152,7 +1178,8 @@ def create_app(
                         return
                     yield chunk
 
-            return backend.add_managed_artifact_version(
+            return await run_in_threadpool(
+                backend.add_managed_artifact_version,
                 project_id,
                 series_id,
                 {
@@ -1166,7 +1193,7 @@ def create_app(
             )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/uploads")
-    async def initiate_artifact_upload(
+    def initiate_artifact_upload(
         project_id: str,
         series_id: str,
         payload: dict[str, Any],
@@ -1193,7 +1220,7 @@ def create_app(
         f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/uploads/complete",
         status_code=201,
     )
-    async def complete_artifact_upload(
+    def complete_artifact_upload(
         project_id: str,
         series_id: str,
         payload: dict[str, Any],
@@ -1221,7 +1248,7 @@ def create_app(
         f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/external",
         status_code=201,
     )
-    async def add_external_artifact_version(
+    def add_external_artifact_version(
         project_id: str,
         series_id: str,
         payload: dict[str, Any],
@@ -1237,7 +1264,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts/versions/{{version_id}}/metadata")
-    async def artifact_version_metadata(
+    def artifact_version_metadata(
         project_id: str,
         version_id: str,
         _: SessionPrincipal = Depends(project_reader),
@@ -1245,7 +1272,7 @@ def create_app(
         return backend.get_artifact_version(project_id, version_id)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts/versions/{{version_id}}")
-    async def download_artifact_version(
+    def download_artifact_version(
         project_id: str,
         version_id: str,
         _: SessionPrincipal = Depends(project_reader),
@@ -1258,7 +1285,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/artifacts/versions/{{version_id}}/download-ticket")
-    async def artifact_download_ticket(
+    def artifact_download_ticket(
         project_id: str,
         version_id: str,
         actor: SessionPrincipal = Depends(project_reader),
@@ -1279,7 +1306,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/notes")
-    async def list_notes(
+    def list_notes(
         project_id: str,
         layer_id: str | None = None,
         frame_id: str | None = None,
@@ -1288,7 +1315,7 @@ def create_app(
         return {"items": backend.list_notes(project_id, layer_id=layer_id, frame_id=frame_id)}
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/notes", status_code=201)
-    async def create_note(
+    def create_note(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -1301,7 +1328,7 @@ def create_app(
         )
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}/notes/{{note_id}}")
-    async def revise_note(
+    def revise_note(
         project_id: str,
         note_id: str,
         payload: dict[str, Any],
@@ -1317,7 +1344,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/reviews")
-    async def list_reviews(
+    def list_reviews(
         project_id: str,
         active_only: bool = False,
         _: SessionPrincipal = Depends(project_reader),
@@ -1325,7 +1352,7 @@ def create_app(
         return {"items": backend.list_review_batches(project_id, active_only=active_only)}
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/reviews", status_code=201)
-    async def create_review(
+    def create_review(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -1339,7 +1366,7 @@ def create_app(
         )
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}/reviews/{{batch_id}}")
-    async def mutate_review(
+    def mutate_review(
         project_id: str,
         batch_id: str,
         payload: dict[str, Any],
@@ -1362,23 +1389,28 @@ def create_app(
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
         if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> Any:
-        staging = Path(tempfile.mkdtemp(prefix="kraken-review-export-"))
-        package_dir = staging / "package"
-        archive = staging / "review.zip"
-        try:
-            issued = backend.export_review_package(
-                project_id,
-                batch_id,
-                str(package_dir),
-                command_context(actor, idempotency_key, if_match, revision_required=True),
-            )
-            with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as output:
-                for source in sorted(package_dir.rglob("*")):
-                    if source.is_file():
-                        output.write(source, source.relative_to(package_dir).as_posix())
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
+        def build_archive() -> tuple[Path, Path, dict[str, Any]]:
+            staging = Path(tempfile.mkdtemp(prefix="kraken-review-export-"))
+            package_dir = staging / "package"
+            archive = staging / "review.zip"
+            try:
+                issued = backend.export_review_package(
+                    project_id,
+                    batch_id,
+                    str(package_dir),
+                    command_context(actor, idempotency_key, if_match, revision_required=True),
+                )
+                with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as output:
+                    for source in sorted(package_dir.rglob("*")):
+                        if source.is_file():
+                            output.write(source, source.relative_to(package_dir).as_posix())
+            except Exception:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
+            return staging, archive, issued
+
+        async with heavy_operations:
+            staging, archive, issued = await run_in_threadpool(build_archive)
 
         def chunks() -> Any:
             try:
@@ -1418,12 +1450,17 @@ def create_app(
                     if size > 16 * 1024**3:
                         raise ValidationError("Review return archive is too large")
                     output.write(chunk)
-            source.mkdir()
-            extract_review_archive(archive, source)
             context = command_context(actor, idempotency_key, if_match, revision_required=True)
-            if commit:
-                return backend.commit_review_return(project_id, batch_id, str(source), context)
-            return backend.inspect_review_return(project_id, batch_id, str(source), context)
+
+            def apply_return() -> dict[str, Any]:
+                source.mkdir()
+                extract_review_archive(archive, source)
+                if commit:
+                    return backend.commit_review_return(project_id, batch_id, str(source), context)
+                return backend.inspect_review_return(project_id, batch_id, str(source), context)
+
+            async with heavy_operations:
+                return await run_in_threadpool(apply_return)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
@@ -1466,7 +1503,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/agent/lease")
-    async def lease_agent_job(
+    def lease_agent_job(
         payload: dict[str, Any],
         agent: Any = Depends(agent_identity),
     ) -> dict[str, Any]:
@@ -1480,14 +1517,14 @@ def create_app(
         return {"job": lease}
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/jobs")
-    async def list_project_jobs(
+    def list_project_jobs(
         project_id: str,
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
         return {"items": backend.list_plugin_jobs(project_id)}
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/jobs", status_code=202)
-    async def submit_project_job(
+    def submit_project_job(
         project_id: str,
         payload: dict[str, Any],
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -1500,7 +1537,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/jobs/{{job_id}}/cancel")
-    async def cancel_project_job(
+    def cancel_project_job(
         project_id: str,
         job_id: str,
         actor: SessionPrincipal = Depends(shared_mutation_actor),
@@ -1514,7 +1551,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/heartbeat")
-    async def heartbeat_agent_job(
+    def heartbeat_agent_job(
         job_id: str,
         payload: dict[str, Any],
         agent: Any = Depends(agent_identity),
@@ -1524,7 +1561,7 @@ def create_app(
         return {"lease_until": agent_gateway.heartbeat(job_id, agent, seconds=int(payload.get("lease_seconds", 60)))}
 
     @app.get(f"{API_PREFIX}/agent/jobs/{{job_id}}/inputs/{{version_id}}")
-    async def agent_job_input(
+    def agent_job_input(
         job_id: str,
         version_id: str,
         agent: Any = Depends(agent_identity),
@@ -1542,7 +1579,7 @@ def create_app(
         )
 
     @app.get(f"{API_PREFIX}/agent/jobs/{{job_id}}/inputs/{{version_id}}/download-ticket")
-    async def agent_job_input_ticket(
+    def agent_job_input_ticket(
         job_id: str,
         version_id: str,
         agent: Any = Depends(agent_identity),
@@ -1566,7 +1603,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/publications")
-    async def publish_agent_result(
+    def publish_agent_result(
         job_id: str,
         payload: dict[str, Any],
         agent: Any = Depends(agent_identity),
@@ -1605,7 +1642,8 @@ def create_app(
                         return
                     yield chunk
 
-            return agent_gateway.upload_output(
+            return await run_in_threadpool(
+                agent_gateway.upload_output,
                 job_id,
                 output_id,
                 agent,
@@ -1614,7 +1652,7 @@ def create_app(
             )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/outputs/{{output_id}}/upload-ticket")
-    async def agent_output_upload_ticket(
+    def agent_output_upload_ticket(
         job_id: str,
         output_id: str,
         payload: dict[str, Any],
@@ -1634,7 +1672,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/outputs/{{output_id}}/upload-complete")
-    async def complete_agent_output_upload(
+    def complete_agent_output_upload(
         job_id: str,
         output_id: str,
         payload: dict[str, Any],
@@ -1659,7 +1697,7 @@ def create_app(
         )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/complete")
-    async def complete_agent_job(
+    def complete_agent_job(
         job_id: str,
         agent: Any = Depends(agent_identity),
     ) -> dict[str, Any]:
@@ -1670,7 +1708,7 @@ def create_app(
         return {"state": "completed", "imported": imported}
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/fail")
-    async def fail_agent_job(
+    def fail_agent_job(
         job_id: str,
         payload: dict[str, Any],
         agent: Any = Depends(agent_identity),
@@ -1686,16 +1724,20 @@ def create_app(
     async def websocket(websocket: WebSocket) -> None:
         authorization = websocket.headers.get("authorization", "")
         token = authorization.removeprefix("Bearer ").strip() if authorization.startswith("Bearer ") else ""
-        session: SessionPrincipal | None = None
-        if session_resolver is not None:
-            session = session_resolver(token)
-        elif account_store is not None:
-            account = account_store.resolve_session(token)
-            if account is not None:
-                session = SessionPrincipal(str(account.account_id), "local", token)
-        else:
+
+        def resolve_session() -> SessionPrincipal | None:
+            if session_resolver is not None:
+                return session_resolver(token)
+            if account_store is not None:
+                account = account_store.resolve_session(token)
+                if account is None:
+                    return None
+                return SessionPrincipal(str(account.account_id), "local", token)
             if development and token:
-                session = SessionPrincipal(token, "development", token)
+                return SessionPrincipal(token, "development", token)
+            return None
+
+        session = await run_in_threadpool(resolve_session)
         if session is None:
             await websocket.close(code=4401)
             return
@@ -1707,12 +1749,7 @@ def create_app(
                 try:
                     message = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
                 except TimeoutError:
-                    if session_resolver is not None:
-                        still_valid = session_resolver(token) is not None
-                    elif account_store is not None:
-                        still_valid = account_store.resolve_session(token) is not None
-                    else:
-                        still_valid = development and bool(token)
+                    still_valid = await run_in_threadpool(resolve_session) is not None
                     if not still_valid:
                         await websocket.close(code=4401)
                         return
@@ -1722,7 +1759,10 @@ def create_app(
                     await websocket.send_json({"type": "pong"})
                 elif kind == "subscribe":
                     project_id = message.get("project_id")
-                    if project_id is not None and not has_project_access(str(project_id), session):
+                    catalog = bool(message.get("catalog"))
+                    if project_id is not None and not await run_in_threadpool(
+                        has_project_access, str(project_id), session
+                    ):
                         await websocket.send_json(
                             {
                                 "type": "error",
@@ -1734,7 +1774,10 @@ def create_app(
                     hub.subscribe(
                         websocket,
                         project_id=None if project_id is None else str(project_id),
-                        catalog=bool(message.get("catalog")),
+                        catalog=catalog,
+                        catalog_visible=(lambda project_id, subject=session: has_project_access(project_id, subject))
+                        if catalog
+                        else None,
                     )
                     await websocket.send_json(
                         {

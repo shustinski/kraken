@@ -8,6 +8,7 @@ from typing import Any, Iterator
 
 from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model
 
+from .catalog import CatalogProjection
 from .event_store import _sqlalchemy
 
 
@@ -55,8 +56,11 @@ class PostgresProjectionStore:
         self.engine = engine
         self.connection = connection
         self.metadata, self.current, self.temporal = _projection_tables()
+        self.catalog = CatalogProjection()
         if create_schema_for_tests:
             self.metadata.create_all(engine)
+            for table in self.catalog.tables.values():
+                table.create(engine, checkfirst=True)
 
     @contextmanager
     def _scope(self, *, write: bool = False) -> Iterator[Any]:
@@ -172,6 +176,7 @@ class PostgresProjectionStore:
                     where=self.current.c.revision <= values["revision"],
                 )
             )
+            self.catalog.sync(connection, kind, model, values)
 
     def _get(self, kind: str, entity_id: Any, *, as_of: datetime | None = None) -> Any | None:
         sa, _ = _sqlalchemy()
@@ -243,6 +248,17 @@ class PostgresProjectionStore:
     def save_project(self, project: Any) -> None:
         self._save("project", project)
 
+    def record_project_directories(
+        self, project_id: str, *, source_directory: str, derived_directory: str
+    ) -> None:
+        with self._scope(write=True) as connection:
+            self.catalog.record_directories(
+                connection,
+                project_id,
+                source_directory=source_directory,
+                derived_directory=derived_directory,
+            )
+
     def get_layer(self, layer_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get("layer", layer_id, as_of=as_of)
 
@@ -278,6 +294,7 @@ class PostgresProjectionStore:
         *,
         layer_id: Any | None = None,
         representation_id: Any | None = None,
+        frame_id: Any | None = None,
         include_archived: bool = False,
         as_of: datetime | None = None,
     ) -> tuple[Any, ...]:
@@ -291,7 +308,8 @@ class PostgresProjectionStore:
         return tuple(
             item
             for item in values
-            if representation_id is None or item.representation_id == representation_id
+            if (representation_id is None or item.representation_id == representation_id)
+            and (frame_id is None or item.frame_id == frame_id)
         )
 
     def save_artifact_series(self, series: Any) -> None:
@@ -320,6 +338,24 @@ class PostgresProjectionStore:
         with self._scope() as connection:
             payload = connection.execute(statement).scalar_one_or_none()
         return None if payload is None else decode_model(self._class("artifact_version"), payload)
+
+    def list_active_artifact_versions(self, series_ids: Any) -> dict[str, Any]:
+        identifiers = [str(series_id) for series_id in series_ids]
+        if not identifiers:
+            return {}
+        sa, _ = _sqlalchemy()
+        statement = sa.select(self.current.c.parent_id, self.current.c.payload).where(
+            self.current.c.kind == "artifact_version",
+            self.current.c.parent_id.in_(identifiers),
+            self.current.c.active.is_(True),
+        )
+        with self._scope() as connection:
+            rows = connection.execute(statement).all()
+        versions: dict[str, Any] = {}
+        model = self._class("artifact_version")
+        for parent_id, payload in rows:
+            versions[str(parent_id)] = decode_model(model, payload)
+        return versions
 
     def list_artifact_versions(
         self, series_id: Any, *, as_of: datetime | None = None

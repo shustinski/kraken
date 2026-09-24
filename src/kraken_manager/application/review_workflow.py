@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from hashlib import sha256
-import json
+from typing import Any
 
+from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import (
     AcceptReviewCommand,
     CancelReviewBatchCommand,
@@ -20,8 +22,8 @@ from kraken_manager.application.dto import (
     ReviewPackagePlan,
     ReviewReturnCommitResult,
     ReviewReturnPlan,
+    StoredContent,
 )
-from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.errors import ConcurrencyError, ConflictError, NotFoundError
 from kraken_manager.application.ports import (
     Clock,
@@ -34,9 +36,10 @@ from kraken_manager.application.ports import (
 )
 from kraken_manager.application.use_cases import (
     ReviewReturnComparator,
-    _ProjectHandler,
+    _blob_store,
     _layer_stream,
     _prior_entity_id,
+    _ProjectHandler,
     _series_stream,
 )
 from kraken_manager.domain.artifacts import ArtifactVersion
@@ -404,7 +407,7 @@ class _ReviewPackagePlanner(_ReviewHandler):
                         role=role,
                     )
                 )
-                readers[relative_path] = lambda blob=version.blob: uow.blobs.iter_bytes(blob)
+                readers[relative_path] = lambda blob=version.blob, store=uow.blobs: store.iter_bytes(blob)
                 total_size += version.size_bytes
         if not package_files:
             raise ConflictError("Review package has no exportable files")
@@ -461,43 +464,15 @@ class ExportReviewPackageHandler(_ReviewPackagePlanner):
 
     def __call__(self, command: ExportReviewPackageCommand) -> ReviewBatch:
         with self._uow_factory() as uow:
-            batch = self._load_batch(
-                uow,
-                project_id=command.project_id,
-                batch_id=command.batch_id,
-                context=command.context,
-                permission=Permission.MANAGE_REVIEW,
-            )
-            prior_events = uow.event_store.find_by_idempotency_key(
-                batch.project_id,
-                command.context.idempotency_key,
-            )
-            if any(
-                event.event_type in {"ReviewBatchIssued", "ReviewBatchReexported"}
-                and str(event.payload.get("review_batch_id")) == str(batch.id)
-                for event in prior_events
-            ):
+            batch, plan, readers = self._load_export(uow, command)
+            if plan is None or readers is None:
                 return batch
-            if prior_events:
-                raise ConflictError("Idempotency key was already used by another command")
-            self._require_revision(uow, batch, command.expected_batch_revision)
-            if batch.state in {ReviewBatchState.COMPLETED, ReviewBatchState.CANCELLED}:
-                raise ConflictError("A closed review batch cannot be exported")
-            now = self._clock.now()
-            plan, readers = self._build_plan(
-                uow,
-                batch,
-                package_id=command.package_id,
-                issued_by=command.context.actor.id,
-                include_images=command.include_images,
-                issued_at=now,
-            )
-            if not plan.can_export:
-                raise ConflictError("Review package preflight failed: " + "; ".join(plan.issues))
-
-            # This side effect deliberately happens before the domain state
-            # changes. A failed/partial writer must never mark frames issued.
-            self._writer.write(command.destination, plan.manifest, readers)
+        self._writer.write(command.destination, plan.manifest, readers)
+        with self._uow_factory() as uow:
+            batch, current, _readers = self._load_export(uow, command)
+            if current is None:
+                return batch
+            now = plan.manifest.issued_at
             first_issue = batch.state in {
                 ReviewBatchState.DRAFT,
                 ReviewBatchState.CHANGES_REQUESTED,
@@ -540,6 +515,43 @@ class ExportReviewPackageHandler(_ReviewPackagePlanner):
             uow.commit()
             return issued
 
+    def _load_export(
+        self, uow: UnitOfWork, command: ExportReviewPackageCommand
+    ) -> tuple[ReviewBatch, ReviewPackagePlan | None, dict[str, Callable[[], Iterator[bytes]]] | None]:
+        batch = self._load_batch(
+            uow,
+            project_id=command.project_id,
+            batch_id=command.batch_id,
+            context=command.context,
+            permission=Permission.MANAGE_REVIEW,
+        )
+        prior_events = uow.event_store.find_by_idempotency_key(
+            batch.project_id,
+            command.context.idempotency_key,
+        )
+        if any(
+            event.event_type in {"ReviewBatchIssued", "ReviewBatchReexported"}
+            and str(event.payload.get("review_batch_id")) == str(batch.id)
+            for event in prior_events
+        ):
+            return batch, None, None
+        if prior_events:
+            raise ConflictError("Idempotency key was already used by another command")
+        self._require_revision(uow, batch, command.expected_batch_revision)
+        if batch.state in {ReviewBatchState.COMPLETED, ReviewBatchState.CANCELLED}:
+            raise ConflictError("A closed review batch cannot be exported")
+        plan, readers = self._build_plan(
+            uow,
+            batch,
+            package_id=command.package_id,
+            issued_by=command.context.actor.id,
+            include_images=command.include_images,
+            issued_at=self._clock.now(),
+        )
+        if not plan.can_export:
+            raise ConflictError("Review package preflight failed: " + "; ".join(plan.issues))
+        return batch, plan, readers
+
 
 class _ReviewReturnInspector(_ReviewHandler):
     def __init__(
@@ -554,19 +566,10 @@ class _ReviewReturnInspector(_ReviewHandler):
         self._reader = reader
         self._comparator = ReviewReturnComparator()
 
-    def _inspect(self, uow: UnitOfWork, batch: ReviewBatch, source: str) -> ReviewReturnPlan:
+    def _scan_return_package(
+        self, source: str
+    ) -> tuple[Any, tuple[ReturnedFileDigest, ...], list[tuple[str, str | None, bool]]]:
         manifest = self._reader.read_manifest(source)
-        manifest_batch_id = manifest.batch_id or manifest.package_id
-        if (
-            manifest_batch_id != batch.id
-            or manifest.project_id != batch.project_id
-            or manifest.layer_id != batch.layer_id
-        ):
-            raise ConflictError("Returned package does not belong to this review batch")
-        vector_files = tuple(item for item in manifest.files if item.role == "vector")
-        if not vector_files:
-            raise ConflictError("Returned package has no vector files")
-        vector_manifest = replace(manifest, files=vector_files)
         ignored_paths = {
             item.relative_path.casefold() for item in manifest.files if item.role == "image"
         }
@@ -590,7 +593,28 @@ class _ReviewReturnInspector(_ReviewHandler):
             fingerprint_rows.append((relative_path.casefold(), value, valid))
             if relative_path.casefold() not in ignored_paths:
                 returned.append(ReturnedFileDigest(relative_path, value, size, valid))
+        return manifest, tuple(returned), fingerprint_rows
 
+    def _inspect(
+        self,
+        uow: UnitOfWork,
+        batch: ReviewBatch,
+        source: str,
+        prepared: tuple[Any, tuple[ReturnedFileDigest, ...], list[tuple[str, str | None, bool]]] | None = None,
+    ) -> ReviewReturnPlan:
+        prepared_scan = self._scan_return_package(source) if prepared is None else prepared
+        manifest, returned, fingerprint_rows = prepared_scan
+        manifest_batch_id = manifest.batch_id or manifest.package_id
+        if (
+            manifest_batch_id != batch.id
+            or manifest.project_id != batch.project_id
+            or manifest.layer_id != batch.layer_id
+        ):
+            raise ConflictError("Returned package does not belong to this review batch")
+        vector_files = tuple(item for item in manifest.files if item.role == "vector")
+        if not vector_files:
+            raise ConflictError("Returned package has no vector files")
+        vector_manifest = replace(manifest, files=vector_files)
         active_versions = {}
         for expected in vector_files:
             version = uow.projections.get_artifact_version(expected.artifact_version_id)
@@ -628,7 +652,9 @@ class DryRunReviewReturnHandler(_ReviewReturnInspector):
             self._require_revision(uow, batch, command.expected_batch_revision)
             if batch.state not in {ReviewBatchState.ISSUED, ReviewBatchState.PARTIALLY_RETURNED}:
                 raise ConflictError("Only an issued review batch can receive returned files")
-            return self._inspect(uow, batch, command.source)
+        prepared = self._scan_return_package(command.source)
+        with self._uow_factory() as uow:
+            return self._inspect(uow, batch, command.source, prepared)
 
 
 class CommitReviewReturnHandler(_ReviewReturnInspector):
@@ -650,8 +676,30 @@ class CommitReviewReturnHandler(_ReviewReturnInspector):
             )
             if committed is not None:
                 return self._result_from_event(uow, batch, committed)
+        prepared = self._scan_return_package(command.source)
+        preview = self._preview_return(command, prepared)
+        if isinstance(preview, ReviewReturnCommitResult):
+            return preview
+        stored_blobs = self._store_return_blobs(command.source, preview)
+        with self._uow_factory() as uow:
+            batch = self._load_batch(
+                uow,
+                project_id=command.project_id,
+                batch_id=command.batch_id,
+                context=command.context,
+                permission=Permission.RETURN_REVIEW,
+            )
+            committed = _prior_command_event(
+                uow,
+                project_id=batch.project_id,
+                idempotency_key=command.context.idempotency_key,
+                event_type="ReviewReturnCommitted",
+                batch_id=batch.id,
+            )
+            if committed is not None:
+                return self._result_from_event(uow, batch, committed)
 
-            plan = self._inspect(uow, batch, command.source)
+            plan = self._inspect(uow, batch, command.source, prepared)
             review_events = uow.event_store.load_stream(_review_stream(batch.id))
             for event in reversed(review_events):
                 if (
@@ -667,7 +715,7 @@ class CommitReviewReturnHandler(_ReviewReturnInspector):
             if not plan.report.can_commit:
                 raise ConflictError("Duplicate or invalid returned files must be resolved before commit")
 
-            manifest = self._reader.read_manifest(command.source)
+            manifest = prepared[0]
             if (
                 manifest.package_id != plan.package_id
                 or (manifest.batch_id or manifest.package_id) != batch.id
@@ -699,9 +747,8 @@ class CommitReviewReturnHandler(_ReviewReturnInspector):
             for comparison in plan.report.items:
                 if comparison.status is not ReviewFileStatus.EXTRA or comparison.returned_sha256 is None:
                     continue
-                quarantined = uow.blobs.put(
-                    self._reader.iter_file(command.source, comparison.relative_path),
-                    expected_sha256=comparison.returned_sha256,
+                quarantined = self._stored_return_blob(
+                    stored_blobs, comparison.relative_path, comparison.returned_sha256
                 )
                 quarantined_extras.append(
                     {
@@ -749,9 +796,8 @@ class CommitReviewReturnHandler(_ReviewReturnInspector):
                 base = uow.projections.get_artifact_version(expected_file.artifact_version_id)
                 if base is None:
                     raise ConflictError("The review base version no longer exists")
-                stored = uow.blobs.put(
-                    self._reader.iter_file(command.source, comparison.relative_path),
-                    expected_sha256=comparison.returned_sha256,
+                stored = self._stored_return_blob(
+                    stored_blobs, comparison.relative_path, comparison.returned_sha256
                 )
                 candidate = ArtifactVersion.managed(
                     series_id=base.series_id,
@@ -838,6 +884,89 @@ class CommitReviewReturnHandler(_ReviewReturnInspector):
             uow.projections.save_review_batch(returned)
             uow.commit()
             return ReviewReturnCommitResult(returned, plan.report, tuple(candidates))
+
+    def _preview_return(
+        self,
+        command: CommitReviewReturnCommand,
+        prepared: tuple[Any, tuple[ReturnedFileDigest, ...], list[tuple[str, str | None, bool]]],
+    ) -> ReviewReturnCommitResult | tuple[tuple[str, str], ...]:
+        with self._uow_factory() as uow:
+            batch = self._load_batch(
+                uow,
+                project_id=command.project_id,
+                batch_id=command.batch_id,
+                context=command.context,
+                permission=Permission.RETURN_REVIEW,
+            )
+            committed = _prior_command_event(
+                uow,
+                project_id=batch.project_id,
+                idempotency_key=command.context.idempotency_key,
+                event_type="ReviewReturnCommitted",
+                batch_id=batch.id,
+            )
+            if committed is not None:
+                return self._result_from_event(uow, batch, committed)
+            plan = self._inspect(uow, batch, command.source, prepared)
+            review_events = uow.event_store.load_stream(_review_stream(batch.id))
+            for event in reversed(review_events):
+                if (
+                    event.event_type == "ReviewReturnCommitted"
+                    and event.payload.get("return_fingerprint") == plan.return_fingerprint
+                    and str(event.payload.get("package_id")) == str(plan.package_id)
+                ):
+                    return self._result_from_event(uow, batch, event)
+            self._require_revision(uow, batch, command.expected_batch_revision)
+            if batch.state not in {ReviewBatchState.ISSUED, ReviewBatchState.PARTIALLY_RETURNED}:
+                raise ConflictError("Only an issued review batch can receive returned files")
+            if not plan.report.can_commit:
+                raise ConflictError("Duplicate or invalid returned files must be resolved before commit")
+            manifest = prepared[0]
+            expected_by_path = {
+                item.relative_path.casefold(): item for item in manifest.files if item.role == "vector"
+            }
+            writes: list[tuple[str, str]] = []
+            for comparison in plan.report.items:
+                if comparison.status is ReviewFileStatus.EXTRA and comparison.returned_sha256 is not None:
+                    writes.append((comparison.relative_path, comparison.returned_sha256))
+            for comparison in plan.report.items:
+                if comparison.status not in {
+                    ReviewFileStatus.CHANGED,
+                    ReviewFileStatus.STALE_BASE_CONFLICT,
+                }:
+                    continue
+                if comparison.returned_sha256 is None:
+                    continue
+                if (
+                    comparison.status is ReviewFileStatus.CHANGED
+                    and comparison.returned_sha256 == comparison.expected_sha256
+                ):
+                    continue
+                if expected_by_path.get(comparison.relative_path.casefold()) is None:
+                    continue
+                writes.append((comparison.relative_path, comparison.returned_sha256))
+            return tuple(writes)
+
+    def _store_return_blobs(
+        self, source: str, writes: tuple[tuple[str, str], ...]
+    ) -> dict[tuple[str, str], StoredContent]:
+        blobs = _blob_store(self._uow_factory)
+        stored: dict[tuple[str, str], StoredContent] = {}
+        for relative_path, digest in writes:
+            stored[(relative_path.casefold(), digest)] = blobs.put(
+                self._reader.iter_file(source, relative_path),
+                expected_sha256=digest,
+            )
+        return stored
+
+    @staticmethod
+    def _stored_return_blob(
+        stored: Mapping[tuple[str, str], StoredContent], relative_path: str, digest: str
+    ) -> StoredContent:
+        found = stored.get((relative_path.casefold(), digest))
+        if found is None:
+            raise ConflictError("Returned file was not stored before the review transaction")
+        return found
 
     @staticmethod
     def _result_from_event(

@@ -158,7 +158,12 @@ def postgresql_composition() -> dict[str, Any]:
     blob_root = Path(_required("KRAKEN_BLOB_ROOT"))
     source_root = _required("KRAKEN_SOURCE_ROOT")
     derived_root = _required("KRAKEN_DERIVED_ROOT")
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = create_engine(
+        database_url,
+        pool_pre_ping=True,
+        pool_size=int(os.environ.get("KRAKEN_DB_POOL_SIZE", "10")),
+        max_overflow=int(os.environ.get("KRAKEN_DB_MAX_OVERFLOW", "10")),
+    )
     blobs = FilesystemBlobStore(blob_root)
     profiles = ServerStorageProfiles(max_frames=None)
     uow_factory = PostgresUnitOfWorkFactory(engine, blobs)

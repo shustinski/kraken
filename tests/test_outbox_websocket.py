@@ -23,30 +23,44 @@ def test_connection_hub_fans_out_to_project_and_catalog_subscribers() -> None:
     project_ws = _FakeWebSocket()
     catalog_ws = _FakeWebSocket()
     other_ws = _FakeWebSocket()
+    hidden_ws = _FakeWebSocket()
     hub.register(project_ws)
     hub.register(catalog_ws)
     hub.register(other_ws)
-    hub.subscribe(project_ws, project_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-    hub.subscribe(catalog_ws, catalog=True)
+    hub.register(hidden_ws)
+    project_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    hub.subscribe(project_ws, project_id=project_id)
+    hub.subscribe(catalog_ws, catalog=True, catalog_visible=lambda candidate: candidate == project_id)
+    hub.subscribe(hidden_ws, catalog=True, catalog_visible=lambda _candidate: False)
 
     async def _run() -> None:
         await hub._fanout(
             {
                 "type": "project_event",
-                "project_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                "event_type": "ProjectCreated",
+                "project_id": project_id,
+                "event_type": "LayerCreated",
                 "event_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 "position": 1,
                 "revision": 0,
+                "stream_id": "layer:cccccccc-cccc-cccc-cccc-cccccccccccc",
+            }
+        )
+        await hub._fanout(
+            {
+                "type": "catalog_changed",
+                "project_id": project_id,
+                "event_type": "ProjectCreated",
+                "event_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
             }
         )
 
     asyncio.run(_run())
 
-    assert project_ws.messages
-    assert catalog_ws.messages
+    assert [message["type"] for message in project_ws.messages] == ["project_event", "catalog_changed"]
+    assert [message["type"] for message in catalog_ws.messages] == ["catalog_changed"]
+    assert "stream_id" not in catalog_ws.messages[0]
     assert not other_ws.messages
-    assert project_ws.messages[0]["event_type"] == "ProjectCreated"
+    assert not hidden_ws.messages
 
 
 def test_websocket_subscribe_protocol_with_fastapi() -> None:

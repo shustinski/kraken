@@ -397,6 +397,10 @@ def _doctor(args: argparse.Namespace) -> int:
         ):
             ready = root.is_dir()
             record(check, ready, str(root) if ready else "каталог не существует")
+        _record_migration_check(record, configuration.database_url)
+        _record_health_check(record, configuration)
+        _record_tls_check(record, configuration)
+        _record_service_check(record)
         if configuration.blob_gateway_public_url is not None:
             gateway_ready = (
                 configuration.blob_gateway_executable is not None
@@ -419,6 +423,108 @@ def _doctor(args: argparse.Namespace) -> int:
             marker = "OK" if item["ok"] else "ERROR"
             print(f"[{marker}] {item['check']}: {item['detail']}")
     return 0 if all(bool(item["ok"]) for item in checks) else 2
+
+
+def _record_migration_check(record, database_url: str) -> None:
+    try:
+        from alembic.config import Config
+        from alembic.runtime.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import create_engine
+
+        from .configuration import migration_root
+
+        configuration = Config()
+        configuration.set_main_option("script_location", str(migration_root()))
+        heads = set(ScriptDirectory.from_config(configuration).get_heads())
+        engine = create_engine(database_url, pool_pre_ping=True)
+        with engine.connect() as connection:
+            current = set(MigrationContext.configure(connection).get_current_heads())
+        record(
+            "migrations",
+            current == heads,
+            "схема на голове миграций" if current == heads else f"текущие {sorted(current)}, голова {sorted(heads)}",
+        )
+    except Exception as exc:  # noqa: BLE001 - doctor reports migration inspection failures
+        record("migrations", False, str(exc))
+
+
+def _record_health_check(record, configuration) -> None:
+    import urllib.error
+    import urllib.request
+
+    scheme = "https" if configuration.tls_cert_file is not None else "http"
+    url = f"{scheme}://{configuration.host}:{configuration.port}/api/v1/health"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            body = response.read(4096).decode("utf-8", errors="replace")
+        record("health", '"status"' in body and "ok" in body, url)
+    except (OSError, urllib.error.URLError) as exc:
+        record("health", False, f"{url}: {exc}")
+
+
+def _record_tls_check(record, configuration) -> None:
+    for name, path in (
+        ("tls_cert", configuration.tls_cert_file),
+        ("tls_key", configuration.tls_key_file),
+    ):
+        if path is None:
+            continue
+        try:
+            if not path.is_file() or path.stat().st_size <= 0:
+                record(name, False, f"{path} не читается")
+                continue
+            path.read_bytes()
+        except OSError as exc:
+            record(name, False, str(exc))
+        else:
+            record(name, True, str(path))
+
+
+def _record_service_check(record) -> None:
+    if os.name != "nt":
+        return
+    result = subprocess.run(
+        ["sc.exe", "query", "KrakenServer"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        record("windows_service", True, "служба не установлена")
+        return
+    state = next((line.strip() for line in output.splitlines() if "STATE" in line), output)
+    record("windows_service", True, state)
+
+
+def _service_status() -> str:
+    if os.name != "nt":
+        raise SystemExit("Windows Service status is available only on Windows")
+    result = subprocess.run(
+        ["sc.exe", "query", "KrakenServer"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        return "KrakenServer is not installed"
+    return output
+
+
+def _uninstall_service() -> None:
+    if os.name != "nt":
+        raise SystemExit("Windows Service removal is available only on Windows")
+    subprocess.run(["sc.exe", "stop", "KrakenServer"], check=False, text=True, capture_output=True)
+    result = subprocess.run(
+        ["sc.exe", "delete", "KrakenServer"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit((result.stdout + result.stderr).strip() or "Не удалось удалить службу KrakenServer")
 
 
 def _api_request(
@@ -816,7 +922,10 @@ def _parser() -> argparse.ArgumentParser:
         "create-agent-token",
         help="Создать отзывной машинный токен Kraken Agent",
         description="Выводит токен один раз; сохраните его в защищённом хранилище.",
-        epilog="Пример:\n  KrakenAdmin create-agent-token --config server.toml --name worker-1 --capability contour.run",
+        epilog=(
+            "Пример:\n  KrakenAdmin create-agent-token --config server.toml --name worker-1 "
+            "--capability frames.vectorize.v1 --capability frames.binary-segment.v2"
+        ),
     )
     create_agent.add_argument("--database-url", help="URL PostgreSQL")
     create_agent.add_argument("--config", type=Path, help="Существующий server.toml")
@@ -831,6 +940,38 @@ def _parser() -> argparse.ArgumentParser:
     revoke_agent.add_argument("--database-url", help="URL PostgreSQL")
     revoke_agent.add_argument("--config", type=Path, help="Существующий server.toml")
     revoke_agent.add_argument("--token-id", required=True, help="Идентификатор токена")
+
+    list_agent = command(
+        "list-agent-tokens",
+        help="Показать машинные токены Kraken Agent и их статус",
+        description="Секреты токенов не печатаются.",
+        epilog="Пример:\n  KrakenAdmin list-agent-tokens --config server.toml",
+    )
+    list_agent.add_argument("--database-url", help="URL PostgreSQL")
+    list_agent.add_argument("--config", type=Path, help="Существующий server.toml")
+    list_agent.add_argument("--json", action="store_true", help="Одна JSON-строка")
+
+    migrate = command(
+        "migrate",
+        help="Применить миграции Alembic до головы",
+        description="Не создаёт базу и не меняет учётные записи.",
+        epilog="Пример:\n  KrakenAdmin migrate --config server.toml",
+    )
+    migrate.add_argument("--database-url", help="URL PostgreSQL")
+    migrate.add_argument("--config", type=Path, help="Существующий server.toml")
+
+    uninstall = command(
+        "uninstall-service",
+        help="Остановить и удалить Windows-службу Kraken Server",
+        description="Служба удаляется из SCM. Конфигурация и база сохраняются.",
+        epilog="Пример:\n  KrakenAdmin uninstall-service",
+    )
+    status = command(
+        "service-status",
+        help="Показать состояние Windows-службы Kraken Server",
+        description="Не меняет службу.",
+        epilog="Пример:\n  KrakenAdmin service-status",
+    )
     return parser
 
 
@@ -903,6 +1044,16 @@ def _execute(args: argparse.Namespace) -> int:
     elif args.command == "install-service":
         _install_service(args.server_executable, args.config, start=not args.no_start)
         print("Kraken Server Windows service is installed")
+    elif args.command == "uninstall-service":
+        _uninstall_service()
+        print("Kraken Server Windows service is removed")
+    elif args.command == "service-status":
+        print(_service_status())
+    elif args.command == "migrate":
+        from .configuration import run_migrations
+
+        run_migrations(_database_url(args))
+        print("Migrations are at head")
     elif args.command == "bootstrap-local":
         password = _password("New local account password: ")
         args.data_dir.mkdir(parents=True, exist_ok=True)
@@ -917,7 +1068,7 @@ def _execute(args: argparse.Namespace) -> int:
             )
         )
         print(f"Created workstation-local account {account.account_id}")
-    elif args.command in {"create-agent-token", "revoke-agent-token"}:
+    elif args.command in {"create-agent-token", "revoke-agent-token", "list-agent-tokens"}:
         from sqlalchemy import create_engine
 
         from .agent_auth import PostgresAgentTokenStore
@@ -928,10 +1079,21 @@ def _execute(args: argparse.Namespace) -> int:
             print(f"Agent token id: {identity.token_id}")
             print("Copy this token now; it cannot be shown again:")
             print(token)
-        elif not store.revoke(args.token_id):
-            raise SystemExit("Agent token was not found or was already revoked")
-        else:
+        elif args.command == "revoke-agent-token":
+            if not store.revoke(args.token_id):
+                raise SystemExit("Agent token was not found or was already revoked")
             print(f"Revoked agent token {args.token_id}")
+        else:
+            tokens = store.list_tokens()
+            if args.json:
+                print(json.dumps({"items": tokens}, ensure_ascii=False, default=str))
+            elif not tokens:
+                print("No agent tokens")
+            else:
+                for item in tokens:
+                    status = "revoked" if item["revoked"] else "active"
+                    capabilities = ", ".join(str(value) for value in item["capabilities"])
+                    print(f"{item['token_id']}\t{status}\t{item['name']}\t{capabilities}")
     return 0
 
 

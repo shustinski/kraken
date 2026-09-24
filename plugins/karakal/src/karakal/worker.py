@@ -104,6 +104,54 @@ def _path_argument(value: str | None, environment_key: str) -> Path:
     return Path(resolved).resolve()
 
 
+def execute_confidence(job_path: Path, result_path: Path, workspace: Path) -> None:
+    """Write the confidence contract without launching the standalone Karakal UI."""
+
+    from kraken_core.plugin_protocol import PluginFrameOutput, PluginResultManifest
+
+    payload = json.loads(job_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Confidence job manifest must be an object")
+    job_id = str(payload.get("job_id") or "").strip()
+    if not job_id:
+        raise ValueError("Confidence job requires job_id")
+    inputs = payload.get("inputs", ())
+    frame_id = ""
+    if isinstance(inputs, list) and inputs and isinstance(inputs[0], dict):
+        frame_id = str(inputs[0].get("frame_id") or "")
+    output_dir = workspace / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report = output_dir / "confidence.json"
+    report.write_text(
+        json.dumps(
+            {
+                "operation": "layer.confidence.analyze.v1",
+                "job_id": job_id,
+                "input_count": len(inputs) if isinstance(inputs, list) else 0,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    result = PluginResultManifest(
+        job_id=job_id,
+        outcome="succeeded",
+        plugin_id="karakal",
+        plugin_version="worker",
+        outputs=(
+            PluginFrameOutput(
+                output_id=f"{job_id}:confidence",
+                frame_id=frame_id or job_id,
+                relative_path=report.relative_to(workspace).as_posix(),
+                sha256=hashlib.sha256(report.read_bytes()).hexdigest(),
+                media_type="application/vnd.kraken.confidence+json",
+                role="confidence",
+            ),
+        ),
+    )
+    _atomic_json(result_path, json.loads(result.to_json()))
+
+
 def main(argv: list[str] | None = None) -> int:
     from kraken_core.process_lifetime import bind_child_process_lifetime
 
@@ -116,6 +164,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cancel")
     args = parser.parse_args(argv)
     try:
+        job_path = _path_argument(args.job, "KRAKEN_JOB_MANIFEST")
+        preview = json.loads(job_path.read_text(encoding="utf-8"))
+        if isinstance(preview, dict) and preview.get("operation") == "layer.confidence.analyze.v1":
+            execute_confidence(
+                job_path,
+                _path_argument(args.result, "KRAKEN_RESULT_MANIFEST"),
+                _path_argument(args.workspace, "KRAKEN_STAGING_ROOT"),
+            )
+            return 0
         result = execute(
             _path_argument(args.job, "KRAKEN_JOB_MANIFEST"),
             _path_argument(args.result, "KRAKEN_RESULT_MANIFEST"),

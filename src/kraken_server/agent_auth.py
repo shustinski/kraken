@@ -85,6 +85,30 @@ class PostgresAgentTokenStore:
             frozenset(str(item) for item in row["capabilities"]),
         )
 
+    def list_tokens(self) -> tuple[dict[str, object], ...]:
+        import sqlalchemy as sa
+
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                sa.select(
+                    self.tokens.c.token_id,
+                    self.tokens.c.name,
+                    self.tokens.c.capabilities,
+                    self.tokens.c.created_at,
+                    self.tokens.c.revoked_at,
+                ).order_by(self.tokens.c.created_at)
+            ).mappings().all()
+        return tuple(
+            {
+                "token_id": str(row["token_id"]),
+                "name": str(row["name"]),
+                "capabilities": list(row["capabilities"]),
+                "created_at": str(row["created_at"]),
+                "revoked": row["revoked_at"] is not None,
+            }
+            for row in rows
+        )
+
     def revoke(self, token_id: str) -> bool:
         import sqlalchemy as sa
 

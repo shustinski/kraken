@@ -34,7 +34,7 @@ class _FakeHttp(RemoteHttpClient):
         self.responses: dict[tuple[str, str], object] = {}
         self.gateway_uploads: list[tuple[str, str, Path]] = []
 
-    def request(self, method, path, *, token, payload=None, headers=None):
+    def request(self, method, path, *, token, payload=None, headers=None, timeout=None):
         self.calls.append((method.upper(), path, None if payload is None else dict(payload), dict(headers or {})))
         key = (method.upper(), path.split("?", 1)[0])
         if key not in self.responses:
@@ -133,6 +133,9 @@ def test_remote_create_and_list_use_idempotency_header(tmp_path: Path) -> None:
     http.responses[("GET", "/api/v1/projects")] = {
         "items": [http.responses[("POST", "/api/v1/projects")]]
     }
+    http.responses[("GET", f"/api/v1/projects/{project_id}/workspace")] = RemoteServerError(
+        "missing", status=404
+    )
     auth = RemoteAuth(
         access_token="token",
         principal=Principal.gitlab(
@@ -364,6 +367,9 @@ def test_remote_structure_routes_do_not_fall_back_to_local_catalog(
     }
     http = _FakeHttp()
     http.responses[("GET", "/api/v1/projects")] = {"items": [project_payload]}
+    http.responses[
+        ("GET", f"/api/v1/projects/{project_id}/acl/{remote_principal.id}")
+    ] = {"roles": ["viewer"], "revision": 0}
     http.responses[("GET", "/api/v1/principals")] = {
         "items": [
             {
@@ -445,3 +451,217 @@ def test_remote_structure_routes_do_not_fall_back_to_local_catalog(
         call for call in http.calls if call[1].endswith(f"/{project_id}/layers") and call[0] == "POST"
     )
     assert layer_call[3] == {"Idempotency-Key": "layer", "If-Match": "0"}
+
+
+def test_remote_external_layer_is_created_on_the_server(tmp_path: Path) -> None:
+    from kraken_hub.composition import EmbeddedProjectService
+
+    local = EmbeddedProjectService(data_dir=tmp_path / "local")
+    account = local.create_initial_account("admin", "Admin", "secret")
+    project_id = "e324a1bb-7448-5021-99d0-31cd25d13dc3"
+    layer_id = "11111111-1111-4111-8111-111111111111"
+    project_payload = {
+        "project_id": project_id,
+        "name": "test_server",
+        "width": 2,
+        "height": 2,
+        "orientation": "y_down",
+        "state": "active",
+        "revision": 1,
+        "storage_profile": "server-postgres",
+        "created_at": "2026-09-23T00:00:00+00:00",
+    }
+    layer_payload = {
+        "layer_id": layer_id,
+        "project_id": project_id,
+        "name": "Metal",
+        "type": "metal",
+        "order": 1,
+        "state": "active",
+        "revision": 0,
+        "created_at": "2026-09-23T00:00:00+00:00",
+    }
+    http = _FakeHttp()
+    http.responses[("GET", "/api/v1/projects")] = {"items": [project_payload]}
+    http.responses[("POST", f"/api/v1/projects/{project_id}/layers/external")] = {
+        "layer": layer_payload,
+        "representation": {
+            "representation_id": "22222222-2222-4222-8222-222222222222",
+            "name": "Исходные изображения",
+            "kind": "image",
+            "purpose": "source",
+            "active": True,
+            "state": "active",
+            "revision": 0,
+            "source": "D:/images",
+        },
+        "binding": {
+            "layer_id": layer_id,
+            "layer_name": "Metal",
+            "mode": "external",
+            "image_directory": "D:/images",
+            "ssc_directory": "",
+            "prv_directory": "",
+            "aux_directory": "",
+            "import_root": "",
+            "conversion": {},
+            "frame_positions": {"0.jpg": 1},
+        },
+    }
+    remote = RemoteServerProjectService(
+        "http://example.test",
+        auth=RemoteAuth(access_token="t", principal=account.principal),
+        data_dir=tmp_path / "remote-cache",
+        http=http,
+    )
+    dual = DualCatalogService(local, remote)
+    project = project_from_server_dict(project_payload)
+
+    layer, binding, _representation = dual.create_external_layer(
+        principal=account.principal,
+        project=project,
+        name="Metal",
+        layer_type=LayerType.METAL,
+        order=1,
+        image_directory="D:/images",
+        ssc_directory=None,
+        prv_directory=None,
+        idempotency_key="external-layer",
+    )
+
+    assert layer.id == layer_id
+    assert binding.image_directory == "D:/images"
+    assert local.list_layers(project.id) == ()
+    posted = next(call for call in http.calls if call[1].endswith("/layers/external"))
+    assert posted[2]["name"] == "Metal"
+    assert posted[2]["type"] == "metal"
+    assert posted[3]["Idempotency-Key"] == "external-layer"
+
+
+def test_server_external_layer_uses_the_server_project(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from kraken_manager.domain.project import Layer, Representation, RepresentationKind, RepresentationPurpose
+    from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
+    from kraken_manager.workspace import ProjectWorkspaceBinding
+    from kraken_server.persistent_services import PostgresServerServices
+    from kraken_server.services import CommandContext
+
+    project_id = "e324a1bb-7448-5021-99d0-31cd25d13dc3"
+    source = tmp_path / "source" / "test_server"
+    derived = tmp_path / "derived" / "test_server"
+    images = tmp_path / "images"
+    source.mkdir(parents=True)
+    derived.mkdir(parents=True)
+    images.mkdir()
+    (images / "0.jpg").write_bytes(b"frame")
+    files = WorkspaceFileService(WorkspaceRegistry(tmp_path / "workspaces"))
+    files.registry.save_project(
+        ProjectWorkspaceBinding(
+            project_id=project_id,
+            project_name="test_server",
+            source_root=str(tmp_path / "source"),
+            derived_root=str(tmp_path / "derived"),
+            source_project_dir=str(source),
+            derived_project_dir=str(derived),
+        )
+    )
+    service = object.__new__(PostgresServerServices)
+    service.workspace_files = files
+    def project_projection(_project_id: object) -> SimpleNamespace:
+        return SimpleNamespace(revision=1, width=2, height=2)
+
+    def actor(_actor_id: object) -> Principal:
+        return Principal.local(subject="actor", display_name="Actor")
+
+    service.projections = SimpleNamespace(get_project=project_projection)
+    service._actor = actor
+    captured: list[object] = []
+
+    def create_layer(command):
+        captured.append(command)
+        return Layer.create(
+            project_id=command.project_id,
+            name=command.name,
+            type=command.type,
+            order=command.order,
+            layer_id=command.layer_id,
+        )
+
+    def create_representation(command):
+        return Representation.create(
+            project_id=command.project_id,
+            layer_id=command.layer_id,
+            name=command.name,
+            kind=command.kind,
+            purpose=command.purpose,
+            source=command.source,
+            active=command.active,
+        )
+
+    service._create_layer = create_layer
+    service._create_representation = create_representation
+
+    result = service.create_external_layer(
+        project_id,
+        {
+            "name": "Metal",
+            "type": "metal",
+            "order": 1,
+            "image_directory": str(images),
+        },
+        CommandContext("actor", "external-layer", None),
+    )
+
+    assert str(captured[0].project_id) == project_id
+    assert result["layer"]["layer_id"] == result["binding"]["layer_id"]
+    assert result["binding"]["image_directory"] == str(images.resolve())
+    assert files.registry.get_layer(project_id, result["layer"]["layer_id"]) is not None
+    assert result["representation"]["kind"] == RepresentationKind.IMAGE.value
+    assert result["representation"]["purpose"] == RepresentationPurpose.SOURCE.value
+
+
+def test_unwired_remote_operation_does_not_touch_the_local_catalog(tmp_path: Path) -> None:
+    from kraken_hub.composition import EmbeddedProjectService
+
+    local = EmbeddedProjectService(data_dir=tmp_path / "local")
+    account = local.create_initial_account("admin", "Admin", "secret")
+    project_id = "e324a1bb-7448-5021-99d0-31cd25d13dc3"
+    project_payload = {
+        "project_id": project_id,
+        "name": "test_server",
+        "width": 2,
+        "height": 2,
+        "orientation": "y_down",
+        "state": "active",
+        "revision": 1,
+        "storage_profile": "server-postgres",
+        "created_at": "2026-09-23T00:00:00+00:00",
+    }
+    http = _FakeHttp()
+    http.responses[("GET", "/api/v1/projects")] = {"items": [project_payload]}
+    remote = RemoteServerProjectService(
+        "http://example.test",
+        auth=RemoteAuth(access_token="t", principal=account.principal),
+        data_dir=tmp_path / "remote-cache",
+        http=http,
+    )
+    dual = DualCatalogService(local, remote)
+    project = project_from_server_dict(project_payload)
+    layer = type("Layer", (), {"id": "layer", "project_id": project_id, "name": "Metal"})()
+
+    try:
+        dual.delete_layer(
+            principal=account.principal,
+            project=project,
+            layer=layer,
+            confirmation_name="Metal",
+            idempotency_key="delete",
+        )
+    except RemoteServerError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("local delete_layer ran for a server project")
+
+    assert "delete_layer" in message
+    assert local.get_project(project_id) is None

@@ -473,7 +473,11 @@ def create_app(
 
     @app.post(f"{API_PREFIX}/auth/accounts", status_code=201)
     async def register_local_account(payload: dict[str, Any]) -> dict[str, Any]:
-        """Create an ordinary account, or sign in when the same password is already registered."""
+        """Create an ordinary account, or sign in when the same password is already registered.
+
+        The account receives no server administrator role. It may create its own
+        projects and sees only projects its Kraken roles allow.
+        """
         store = require_account_store()
         username = str(payload.get("username", "")).strip()
         password = str(payload.get("password", ""))
@@ -786,6 +790,49 @@ def create_app(
             project_id,
             payload,
             command_context(actor, idempotency_key, if_match, revision_required=True),
+        )
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/files")
+    async def get_layer_files(
+        project_id: str,
+        layer_id: str,
+        _: SessionPrincipal = Depends(project_reader),
+    ) -> dict[str, Any]:
+        binding = getattr(backend, "layer_file_binding", lambda *_args: None)(project_id, layer_id)
+        if binding is None:
+            raise NotFoundError(layer_id)
+        return binding
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/external", status_code=201)
+    async def create_external_layer(
+        project_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        operation = getattr(backend, "create_external_layer", None)
+        if operation is None:
+            raise HTTPException(status_code=503, detail="Сервер не принимает файловые слои")
+        return operation(
+            project_id,
+            payload,
+            command_context(actor, idempotency_key, None, revision_required=False),
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/import", status_code=201)
+    async def import_workspace_layer(
+        project_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        operation = getattr(backend, "import_workspace_layer", None)
+        if operation is None:
+            raise HTTPException(status_code=503, detail="Сервер не принимает импорт слоя")
+        return operation(
+            project_id,
+            payload,
+            command_context(actor, idempotency_key, None, revision_required=False),
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/rename")

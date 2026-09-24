@@ -26,6 +26,16 @@ WORKSPACE_PLUGIN_CONTEXT_SCHEMA = "kraken.workspace-plugin-context.v1"
 WORKSPACE_PLUGIN_RESULT_SCHEMA = "kraken.workspace-plugin-result.v1"
 
 
+FRAME_ROLE_SOURCE = "source"
+FRAME_ROLE_MODEL = "model"
+FRAME_ROLE_VECTOR = "vector"
+FRAME_ROLE_BINARY_IMAGE = "binary-image"
+FRAME_ROLE_DATASET = "dataset"
+FRAME_ROLE_CONFIDENCE = "confidence"
+DATASET_MEDIA_TYPE = "application/zip"
+CONFIDENCE_MEDIA_TYPE = "application/vnd.kraken.confidence+json"
+
+
 class PluginOperation(StrEnum):
     VECTORIZE_FRAMES = "frames.vectorize.v1"
     BINARY_SEGMENT_FRAMES = "frames.binary-segment.v1"

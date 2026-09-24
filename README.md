@@ -179,9 +179,11 @@ cache is storage-neutral and supports `sqlite://`, `files://`, and `memory://`
 adapters; see [`docs/frame-matrix.md`](docs/frame-matrix.md).
 
 Shared mutations under `/api/v1` require `Idempotency-Key`, optimistic
-`If-Match`, a GitLab principal and a live GitLab `userinfo` check. Project,
-layer, representation and ACL lifecycle changes all emit versioned audit
-events; local/server accounts remain read-only for shared content.
+`If-Match`, and an authenticated principal whose Kraken project role allows
+the action. Server-local accounts are the primary identity and may change
+shared projects. GitLab is optional: when an issuer is configured, those
+mutations also require a live GitLab `userinfo` check. Project, layer,
+representation and ACL lifecycle changes all emit versioned audit events.
 
 Kraken Hub checks for its own updates at startup when an update manifest is
 configured. Set it in the Hub with **Update source…**, pass

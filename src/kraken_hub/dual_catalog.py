@@ -20,6 +20,26 @@ from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 LOGGER = logging.getLogger(__name__)
 
+# These calls only read values already loaded on the project object or scan a
+# folder the user picked. They do not open the local project database.
+_REMOTE_PROJECT_LOCAL_CALLS = frozenset({"plan_import_directory", "scan_layer_source"})
+
+
+def _project_id_from_call(kwargs: dict[str, Any]) -> str | None:
+    project = kwargs.get("project")
+    project_identifier = getattr(project, "id", None)
+    if project_identifier is not None:
+        return str(project_identifier)
+    project_id = kwargs.get("project_id")
+    if project_id is not None:
+        return str(project_id)
+    for key in ("job", "batch", "layer", "series", "note"):
+        value = kwargs.get(key)
+        identifier = getattr(value, "project_id", None)
+        if identifier is not None:
+            return str(identifier)
+    return None
+
 
 class DualCatalogService:
     """Route catalog/project operations to local or remote backends by ownership."""
@@ -251,7 +271,6 @@ class DualCatalogService:
         base_url: str,
         username: str,
         password: str,
-        register_if_unknown: bool = False,
     ) -> RemoteServerProjectService:
         url = str(base_url).strip().rstrip("/")
         if not url or not username.strip() or not password:
@@ -269,7 +288,7 @@ class DualCatalogService:
                 data_dir=self.local.data_dir,
             )
         except RemoteServerError as exc:
-            if not register_if_unknown or exc.status != 401:
+            if exc.status != 401:
                 raise
             try:
                 candidate = RemoteServerProjectService.register_local(
@@ -337,6 +356,23 @@ class DualCatalogService:
     def create_layer(self, **kwargs):
         project = kwargs.get("project")
         return self._backend(project.id).create_layer(**kwargs)
+
+    def create_external_layer(self, **kwargs):
+        project = kwargs.get("project")
+        if project is not None and self.is_remote_project(project.id) and self.remote is not None:
+            return self.remote.create_external_layer(**kwargs)
+        return self.local.create_external_layer(**kwargs)
+
+    def create_layer_from_disk(self, **kwargs):
+        project = kwargs.get("project")
+        if project is not None and self.is_remote_project(project.id) and self.remote is not None:
+            return self.remote.create_layer_from_disk(**kwargs)
+        return self.local.create_layer_from_disk(**kwargs)
+
+    def layer_file_binding(self, project_id, layer_id):
+        if self.is_remote_project(project_id) and self.remote is not None:
+            return self.remote.layer_file_binding(project_id, layer_id)
+        return self.local.layer_file_binding(project_id, layer_id)
 
     def rename_layer(self, **kwargs):
         project = kwargs.get("project")
@@ -689,7 +725,28 @@ class DualCatalogService:
         return self.local.login(username, password)
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.local, name)
+        local_attr = getattr(self.local, name)
+        if not callable(local_attr):
+            return local_attr
+
+        def route_or_refuse(*args: Any, **kwargs: Any) -> Any:
+            project_id = _project_id_from_call(kwargs)
+            remote_method = getattr(self.remote, name, None) if self.remote is not None else None
+            if (
+                project_id is not None
+                and self.is_remote_project(project_id)
+                and self.remote is not None
+                and name not in _REMOTE_PROJECT_LOCAL_CALLS
+            ):
+                if callable(remote_method):
+                    return remote_method(*args, **kwargs)
+                raise RemoteServerError(
+                    f"Операция «{name}» для проекта на сервере не подключена. "
+                    "Локальный каталог Hub этот проект не содержит."
+                )
+            return local_attr(*args, **kwargs)
+
+        return route_or_refuse
 
 
 def build_workspace_service(

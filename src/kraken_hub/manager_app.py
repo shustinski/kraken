@@ -539,10 +539,12 @@ class RepresentationDialog:
 
 
 def _remember_credentials(username: str, password: str) -> None:
+    import logging
+
     try:
         windows_credentials.save_credentials(username, password)
     except Exception:
-        pass
+        logging.getLogger(__name__).exception("Не удалось сохранить учётные данные входа")
 
 
 def _autofill_credentials(dialog, username, password) -> None:
@@ -882,6 +884,9 @@ class DesktopController:
             )
             for job in jobs:
                 if job.state.value != "importing":
+                    continue
+                remote_project = getattr(self.service, "is_remote_project", lambda _project_id: False)
+                if remote_project(job.project_id):
                     continue
                 publications = gateway.get_publications(job.id)
                 if publications:
@@ -1310,14 +1315,14 @@ class DesktopController:
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         try:
-            self._connect_program_account(register_if_unknown=True)
+            self._connect_program_account()
         except Exception as exc:  # noqa: BLE001 - UI boundary reports connection failures
             QMessageBox.warning(self.shell, "Не удалось подключиться к серверу", str(exc))
             return
         _configure_administration_page(self.shell, self.service, self.session)
         self.refresh_projects()
 
-    def _connect_program_account(self, *, register_if_unknown: bool) -> None:
+    def _connect_program_account(self) -> None:
         from PyQt6.QtCore import QSettings
 
         from kraken_hub.preferences_dialog import default_program_account, program_server_url
@@ -1345,7 +1350,6 @@ class DesktopController:
             url,
             account,
             principal=self.session.principal,
-            register_if_unknown=register_if_unknown,
         )
 
     def create_project(self) -> None:
@@ -1453,7 +1457,7 @@ class DesktopController:
                     source_root, derived_root = roots
                     _update_storage_hint()
                 if profile_id == REMOTE_STORAGE_PROFILE.id:
-                    self._connect_program_account(register_if_unknown=True)
+                    self._connect_program_account()
                     _configure_administration_page(
                         self.shell, self.service, self.session
                     )
@@ -1531,7 +1535,14 @@ class DesktopController:
         )
         try:
             thumbnail_store = ThumbnailStoreFactory().create(store_uri)
-        except Exception:
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning("Кэш миниатюр недоступен (%s): %s", store_uri, exc)
+            self.shell.statusBar().showMessage(
+                "Кэш миниатюр недоступен, используется память процесса",
+                10000,
+            )
             thumbnail_store = ThumbnailStoreFactory().create("memory://")
         data_source = KrakenMatrixDataSource(
             self.service,
@@ -1625,18 +1636,16 @@ class DesktopController:
 
         store = FilesystemAnalysisStore(self.service.catalog_root, str(project_id))
         workspace._analysis_store = store
-        token = os.environ.get("KRAKEN_AGENT_TOKEN", "").strip()
         coordinator = None
-        if token:
+        try:
+            self.agent_runtime.ensure_started()
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.shell.statusBar().showMessage(f"Kraken Agent: {exc}", 10000)
+        else:
             gateway = AgentAnalysisGateway(
-                base_url=os.environ.get("KRAKEN_AGENT_URL", "http://127.0.0.1:8765"),
-                token=token,
-                staging_root=Path(
-                    os.environ.get(
-                        "KRAKEN_AGENT_STAGING_ROOT",
-                        str(Path.home() / ".kraken" / "agent" / "staging"),
-                    )
-                ),
+                base_url=self.agent_runtime.base_url,
+                token=self.agent_runtime.token,
+                staging_root=self.service.data_dir / "agent" / "staging",
             )
             coordinator = AnalysisRunCoordinator(
                 store,
@@ -1654,7 +1663,9 @@ class DesktopController:
         panel.cancelRequested.connect(lambda run_id: self._analysis_action(workspace, "cancel", run_id))
         panel.repeatRequested.connect(lambda run_id: self._analysis_action(workspace, "repeat", run_id))
         panel.exportRequested.connect(lambda run_id: self._export_analysis(workspace, run_id))
-        panel.renderMapRequested.connect(lambda _run_id, _frame_id: self._map_not_configured(workspace))
+        panel.renderMapRequested.connect(
+            lambda run_id, frame_id: self._show_discrepancy_map(workspace, run_id, frame_id)
+        )
         timer = QTimer(workspace)
         timer.setInterval(750)
         timer.timeout.connect(lambda: self._poll_analysis(workspace))
@@ -1874,13 +1885,29 @@ class DesktopController:
             QMessageBox.warning(workspace, "Не удалось экспортировать анализ", str(exc))
 
     @staticmethod
-    def _map_not_configured(workspace) -> None:
+    def _show_discrepancy_map(workspace, run_id: str, frame_id: str) -> None:
         from PyQt6.QtWidgets import QMessageBox
 
+        store = getattr(workspace, "_analysis_store", None)
+        if store is None or not run_id or not frame_id:
+            QMessageBox.information(workspace, "Карта расхождений", "Выберите прогон и кадр анализа.")
+            return
+        rows = store.metrics_for_frame(run_id, frame_id)
+        if not rows:
+            QMessageBox.information(
+                workspace,
+                "Карта расхождений",
+                "Для выбранного кадра ещё нет сохранённых метрик анализа.",
+            )
+            return
+        lines = [
+            f"{row['metric_key']}: goodness={row['goodness']}, raw={row['raw_value']}, percentile={row['percentile']}"
+            for row in rows
+        ]
         QMessageBox.information(
             workspace,
             "Карта расхождений",
-            "Ленивый рендеринг карты доступен через Karakal Engine; запуск из Agent будет добавлен отдельной операцией.",
+            f"Кадр {frame_id}\n" + "\n".join(lines),
         )
 
     def send_selection_for_review(self) -> None:
@@ -4401,12 +4428,6 @@ class DesktopController:
                     if not linked_now and stored_size > 0 and len(stored_hash) == 64
                     else ExternalModelLink.observe(model_path)
                 )
-                stage_root = (
-                    self.service.data_dir
-                    / "agent-staging"
-                    / f"{self._project_id}-{uuid4()}"
-                )
-                staged = link.stage(stage_root)
             except (OSError, ValueError) as exc:
                 self._error(f"Не удалось подготовить внешнюю модель: {exc}")
                 return
@@ -4415,12 +4436,10 @@ class DesktopController:
                 settings.setValue(f"{key_root}/size", link.size)
                 settings.setValue(f"{key_root}/sha256", link.observed_sha256)
             parameters = {
-                "external_model_path": link.path,
+                "model_source_path": link.path,
+                "model_sha256": link.observed_sha256,
                 "observed_size": link.size,
-                "observed_sha256": link.observed_sha256,
-                "staged_relative_path": staged.relative_path,
-                "used_sha256": staged.used_sha256,
-                "changed_since_observation": staged.changed_since_observation,
+                "changed_since_observation": False,
             }
         try:
             job = self._submit_agent_action(
@@ -7289,12 +7308,12 @@ def _server_project_hint(settings) -> str:
             f"Сервер: {url}\n"
             f"Учётная запись по умолчанию: {account.display_name} ({kind}).\n"
             "Если такой записи ещё нет на сервере, она будет создана. "
-            "Без назначения ролей администратором видны только свои проекты."
+            "Новая запись не является администратором: без назначенных ролей видны только свои проекты."
         )
     return "Адрес сервера и учётная запись задаются в меню Вид → Настройки."
 
 
-def _sign_in_program_account(service, url: str, account, *, principal, register_if_unknown: bool):
+def _sign_in_program_account(service, url: str, account, *, principal):
     if account.provider == "local":
         configure_local = getattr(service, "configure_remote_local", None)
         if not callable(configure_local):
@@ -7303,7 +7322,6 @@ def _sign_in_program_account(service, url: str, account, *, principal, register_
             base_url=url,
             username=account.username,
             password=account.secret,
-            register_if_unknown=register_if_unknown,
         )
         return
     configure = getattr(service, "configure_remote", None)
@@ -7313,8 +7331,8 @@ def _sign_in_program_account(service, url: str, account, *, principal, register_
 
 
 def _connect_saved_server(parent, service, principal) -> None:
-    del parent
     from PyQt6.QtCore import QSettings
+    from PyQt6.QtWidgets import QMessageBox
 
     from kraken_hub.preferences_dialog import default_program_account, program_server_url
     from kraken_hub.remote_client import RemoteServerError
@@ -7332,10 +7350,13 @@ def _connect_saved_server(parent, service, principal) -> None:
             url,
             account,
             principal=principal,
-            register_if_unknown=True,
         )
-    except (OSError, RemoteServerError, ValueError):
-        return
+    except (OSError, RemoteServerError, ValueError) as exc:
+        QMessageBox.warning(
+            parent,
+            "Не удалось подключиться к серверу",
+            f"Сохранённое подключение к {url} не восстановлено.\n{exc}",
+        )
 
 
 def _administration_panel(
@@ -7536,8 +7557,12 @@ def run_manager_gui(
     update_url: str = "",
     thumbnail_store_uri: str = "",
 ) -> int:
-    del update_url  # Update wiring remains available in the legacy feature flag.
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QSettings, QTimer
+    from PyQt6.QtWidgets import QApplication, QInputDialog
+
+    from kraken_core.update_ui import QtUpdateController
+    from kraken_core.updater import UpdateService
+    from kraken_hub.app import application_version
 
     app = QApplication.instance() or QApplication([])
     configure_application_identity(app, app_id="Kraken.ProjectManager", icon_name="kraken")
@@ -7549,7 +7574,7 @@ def run_manager_gui(
         return 1
     _connect_saved_server(None, service, session.principal)
     if isinstance(service, DualCatalogService) and service.remote is not None:
-        # Shared mutations use the GitLab principal carried by the remote client.
+        # Shared mutations use the server principal carried by the remote client.
         session_summary = (
             f"{session.principal.display_name}\n"
             f"Локальная сессия + сервер {service.remote.base_url}"
@@ -7571,14 +7596,53 @@ def run_manager_gui(
         plugins_page.set_content(_plugin_panel(items))
     performers_page = shell.page("performers")
     if performers_page is not None:
-        performers_page.set_content(_performer_panel(local))
+        performers_page.set_content(_performer_panel(service))
     my_work_page = shell.page("my_work")
     if my_work_page is not None:
-        my_work_page.set_content(_my_work_panel(local, session, controller))
+        my_work_page.set_content(_my_work_panel(service, session, controller))
     statistics_page = shell.page("statistics")
     if statistics_page is not None:
         statistics_page.set_content(_statistics_panel(service))
     _configure_administration_page(shell, service, session)
+    settings = QSettings("Kraken", "KrakenHub")
+    configured_update_url = (
+        update_url or os.getenv("KRAKEN_UPDATE_URL", "") or str(settings.value("updates/url", ""))
+    )
+    update_service = UpdateService(
+        configured_update_url,
+        current_version=application_version(),
+        app_id="kraken-hub",
+    )
+    update_controller = QtUpdateController(shell, update_service, application_name="Kraken Hub")
+    shell._update_controller = update_controller
+
+    def configure_update_source() -> None:
+        value, accepted = QInputDialog.getText(
+            shell,
+            "Источник обновлений",
+            "URL или локальный путь манифеста:",
+            text=update_service.manifest_url,
+        )
+        if not accepted:
+            return
+        update_service.manifest_url = value.strip()
+        settings.setValue("updates/url", update_service.manifest_url)
+        shell.statusBar().showMessage(
+            "Источник обновлений сохранён" if update_service.manifest_url else "Источник обновлений не задан",
+            8000,
+        )
+
+    from PyQt6.QtGui import QAction
+
+    source_action = QAction("Источник обновлений…", shell)
+    source_action.triggered.connect(configure_update_source)
+    check_action = QAction("Проверить обновления", shell)
+    check_action.triggered.connect(lambda: update_controller.check(include_dismissed=True))
+    shell.view_menu.addSeparator()
+    shell.view_menu.addAction(source_action)
+    shell.view_menu.addAction(check_action)
+    if configured_update_url:
+        QTimer.singleShot(0, lambda: update_controller.check(quiet=True))
     shell.show()
     return app.exec()
 

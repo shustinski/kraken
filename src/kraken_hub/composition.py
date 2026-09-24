@@ -388,8 +388,12 @@ class EmbeddedProjectService:
         *,
         include_inactive: bool = False,
     ) -> tuple[Principal, ...]:
-        del project_id
-        return self.list_principals(include_inactive=include_inactive)
+        project = ProjectId(str(project_id))
+        return tuple(
+            principal
+            for principal in self.list_principals(include_inactive=include_inactive)
+            if self.identities.roles_for(project, principal.id)
+        )
 
     def project_role_revision(
         self,

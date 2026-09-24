@@ -110,8 +110,13 @@ class PostgresAgentGateway:
             rows = connection.execute(
                 sa.select(self.jobs)
                 .where(
-                    self.jobs.c.state == "queued",
-                    sa.or_(self.jobs.c.lease_until.is_(None), self.jobs.c.lease_until < now),
+                    sa.or_(
+                        sa.and_(
+                            self.jobs.c.state == "queued",
+                            sa.or_(self.jobs.c.lease_until.is_(None), self.jobs.c.lease_until < now),
+                        ),
+                        sa.and_(self.jobs.c.state == "leased", self.jobs.c.lease_until < now),
+                    ),
                 )
                 .order_by(self.jobs.c.created_at)
                 .with_for_update(skip_locked=True)
@@ -131,6 +136,7 @@ class PostgresAgentGateway:
                 sa.update(self.jobs)
                 .where(self.jobs.c.job_id == row["job_id"])
                 .values(
+                    state="leased",
                     lease_owner=agent.token_id,
                     lease_until=lease_until,
                     lease_attempts=self.jobs.c.lease_attempts + 1,
@@ -154,7 +160,8 @@ class PostgresAgentGateway:
                 .where(
                     self.jobs.c.job_id == job_id,
                     self.jobs.c.lease_owner == agent.token_id,
-                    self.jobs.c.state == "queued",
+                    self.jobs.c.state == "leased",
+                    self.jobs.c.lease_until > now,
                 )
                 .values(lease_until=lease_until, updated_at=now)
             )

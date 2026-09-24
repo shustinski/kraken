@@ -16,6 +16,47 @@ from urllib.request import Request, urlopen
 from kraken_core.plugins import PluginInventoryItem
 
 
+_KARAKAL_WORKER_OPERATIONS = frozenset(
+    {"layer.confidence.analyze.v1", "karakal.analyze.v1"}
+)
+
+
+def _agent_command(plugin_id: str, operation: str, command: list[str]) -> list[str]:
+    if plugin_id == "karakal" and operation in _KARAKAL_WORKER_OPERATIONS:
+        return [sys.executable, "-m", "karakal.worker"]
+    return command
+
+
+def _ensure_analysis_operation(
+    specs: list[dict[str, Any]],
+    capabilities: set[str],
+    protocols: dict[str, str],
+    plugins: tuple[PluginInventoryItem, ...],
+) -> None:
+    if "karakal.analyze.v1" in capabilities:
+        return
+    karakal = next(
+        (
+            item.metadata
+            for item in plugins
+            if item.metadata.id == "karakal" and item.metadata.enabled
+        ),
+        None,
+    )
+    if karakal is None:
+        return
+    capabilities.add("karakal.analyze.v1")
+    protocols["karakal.analyze.v1"] = karakal.protocol_version
+    specs.append(
+        {
+            "operation": "karakal.analyze.v1",
+            "command": [sys.executable, "-m", "karakal.worker"],
+            "working_directory": karakal.source_dir or None,
+            "interactive": False,
+        }
+    )
+
+
 def _atomic_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -46,6 +87,7 @@ class LocalAgentRuntime:
         self.base_url = ""
         self.token = ""
         self.protocol_by_capability: dict[str, str] = {}
+        self._log_handle = None
 
     def _discard_process(self) -> None:
         process = self.process
@@ -59,6 +101,10 @@ class LocalAgentRuntime:
         self.process = None
         self.base_url = ""
         self.token = ""
+        log_handle = self._log_handle
+        self._log_handle = None
+        if log_handle is not None:
+            log_handle.close()
 
     def _registry(self) -> tuple[Path, frozenset[str]]:
         from .app import build_launch_command
@@ -88,7 +134,7 @@ class LocalAgentRuntime:
                 specs.append(
                     {
                         "operation": capability.operation,
-                        "command": command,
+                        "command": _agent_command(plugin.id, capability.operation, command),
                         "working_directory": (
                             str(Path(executable_path).expanduser().resolve(strict=False).parent)
                             if executable_path
@@ -100,6 +146,7 @@ class LocalAgentRuntime:
                         ),
                     }
                 )
+        _ensure_analysis_operation(specs, capabilities, protocols, self.plugins)
         target = self.data_dir / "plugin-registry.json"
         _atomic_json(target, {"plugins": specs})
         self.protocol_by_capability = protocols
@@ -171,11 +218,14 @@ class LocalAgentRuntime:
             if os.name == "nt"
             else 0
         )
+        log_path = self.data_dir / "agent.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._log_handle = log_path.open("ab")
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self._log_handle,
+            stderr=subprocess.STDOUT,
             creationflags=creation_flags,
             env=environment,
         )

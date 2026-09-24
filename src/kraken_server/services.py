@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import base64
 import json
+import tempfile
 import threading
+from pathlib import Path
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -257,6 +259,7 @@ class InMemoryServerServices:
         self._acl_revisions: dict[tuple[str, str], int] = {}
         self._granted_by: dict[tuple[str, str, str], str] = {}
         self._plugin_jobs: dict[str, dict[str, Any]] = {}
+        self._workspaces: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
     def health(self) -> dict[str, Any]:
@@ -345,6 +348,30 @@ class InMemoryServerServices:
             self._acl_revisions[(project_id, context.actor_id)] = 0
             self._idempotency[key] = project
             return dict(project)
+
+    def project_workspace(self, project_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            project = self._projects.get(project_id)
+            if project is None:
+                return None
+            binding = self._workspaces.get(project_id)
+            if binding is None:
+                root = Path(tempfile.mkdtemp(prefix=f"kraken-dev-{project_id}-"))
+                source = root / "source"
+                derived = root / "derived"
+                source.mkdir()
+                derived.mkdir()
+                binding = {
+                    "project_id": project_id,
+                    "project_name": str(project.get("name", "")),
+                    "source_root": str(root),
+                    "derived_root": str(root),
+                    "source_project_dir": str(source),
+                    "derived_project_dir": str(derived),
+                    "schema_version": 1,
+                }
+                self._workspaces[project_id] = binding
+            return dict(binding)
 
     def get_project(self, project_id: str) -> dict[str, Any]:
         with self._lock:

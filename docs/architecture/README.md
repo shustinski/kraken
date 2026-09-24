@@ -46,15 +46,20 @@ only artifacts, work state and other facts about a frame are projected.
 
 ## Security boundary
 
-Every read requires a session. Shared mutations require all of:
+Every read requires a session. Shared mutations require an authenticated
+principal and a Kraken project role granting the requested permission.
 
-1. a GitLab OIDC principal identified by `issuer + sub`;
-2. a successful live `userinfo` request immediately before mutation/commit;
-3. a Kraken project role granting the requested permission.
+Server-local accounts are the primary identity. A person may register an
+ordinary account and then create projects. That account is not a Server
+Administrator: without assigned project roles it sees only its own projects.
+A Server Administrator can still create accounts and grant roles. A local
+principal may change a shared project when its Kraken role allows the action.
 
-Local principals are hard-denied for shared mutation even if an invalid ACL row
-exists. Plugins receive copied input files and safe relative names in a staging
-workspace, never project paths, database credentials or blob-store handles.
+GitLab is an optional identity provider. When `KRAKEN_GITLAB_ISSUER` is set,
+a GitLab principal additionally needs a successful live `userinfo` check
+immediately before mutation. Plugins receive copied input files and safe
+relative names in a staging workspace, never project paths, database
+credentials or blob-store handles.
 
 ## Versioning
 

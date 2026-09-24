@@ -632,6 +632,107 @@ class NeuralImageWorkspaceSession:
         setattr(window, "_kraken_return_action", action)
 
 
+class NeuralImageTrainSession:
+    """Interactive training job. The model is returned from the job workspace."""
+
+    def __init__(
+        self,
+        manifest: PluginJobManifest | PluginJobManifestV2,
+        staging_root: Path,
+        result_manifest_path: Path,
+    ) -> None:
+        self.manifest = manifest
+        self.staging_root = staging_root
+        self.result_manifest_path = result_manifest_path
+        self.output_directory = staging_root / "outputs"
+
+    @classmethod
+    def load(
+        cls,
+        *,
+        job_manifest: str | os.PathLike[str],
+        result_manifest: str | os.PathLike[str],
+        staging_root: str | os.PathLike[str],
+    ) -> "NeuralImageTrainSession":
+        root = _root(staging_root)
+        job_path = _direct_child(root, job_manifest, exists=True)
+        result_path = _direct_child(root, result_manifest, exists=False)
+        if result_path.exists() or result_path.is_symlink():
+            raise KrakenBridgeError("Kraken result manifest already exists")
+        try:
+            manifest = parse_plugin_job_json(job_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise KrakenBridgeError(f"Invalid Kraken job manifest: {exc}") from exc
+        if manifest.operation != PluginOperation.TRAIN_MODEL.value:
+            raise KrakenBridgeError(f"NeuralImage training does not support {manifest.operation!r}")
+        output_directory = root / "outputs"
+        output_directory.mkdir(exist_ok=True)
+        return cls(manifest, root, result_path)
+
+    def publish_model(self) -> PluginResultManifest:
+        models = tuple(
+            path
+            for path in self.output_directory.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and path.suffix.casefold() in {".onnx", ".pt", ".pth", ".h5", ".keras"}
+        )
+        if not models:
+            raise KrakenBridgeError("В папке результата нет модели")
+        frame_id = ""
+        inputs = getattr(self.manifest, "inputs", ())
+        if inputs:
+            frame_id = str(getattr(inputs[0], "frame_id", "") or "")
+        outputs = tuple(
+            PluginFrameOutput(
+                output_id=f"{self.manifest.job_id}:model:{index}",
+                frame_id=frame_id or self.manifest.job_id,
+                relative_path=path.resolve(strict=True).relative_to(self.staging_root).as_posix(),
+                sha256=_sha256(path),
+                media_type="application/octet-stream",
+                role="model",
+            )
+            for index, path in enumerate(models, start=1)
+        )
+        result = PluginResultManifest(
+            job_id=self.manifest.job_id,
+            outcome=PluginJobOutcome.SUCCEEDED.value,
+            plugin_id="neuralimage",
+            plugin_version=APP_VERSION,
+            outputs=outputs,
+        )
+        _atomic_text(self.result_manifest_path, result.to_json())
+        return result
+
+    def run_interactive(self) -> None:
+        from neuralimage.controller import AppController
+        from PyQt6.QtGui import QAction, QKeySequence
+        from PyQt6.QtWidgets import QMainWindow, QMessageBox
+
+        controller = AppController(ui_only=False)
+        presenter = getattr(controller, "main_window_presenter", None)
+        window = getattr(presenter, "view", None)
+        if not isinstance(window, QMainWindow):
+            raise KrakenBridgeError("NeuralImage training requires the desktop window")
+        window.set_result_path(str(self.output_directory))
+        menu = window.menuBar().addMenu("Kraken")
+        action = QAction("Вернуть модель в Kraken", window)
+        action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
+
+        def return_model() -> None:
+            try:
+                self.publish_model()
+            except Exception as exc:
+                QMessageBox.critical(window, "Kraken", f"Не удалось вернуть модель:\n{exc}")
+                return
+            QMessageBox.information(window, "Kraken", "Модель передана Kraken. NeuralImage можно закрыть.")
+            window.close()
+
+        action.triggered.connect(return_model)
+        menu.addAction(action)
+        controller.exec()
+
+
 def load_session_from_values(
     *,
     job_manifest: str | None,
@@ -650,6 +751,16 @@ def load_session_from_values(
     missing = [name for name, value in values.items() if not value]
     if missing:
         raise KrakenBridgeError("Incomplete Kraken bridge configuration: " + ", ".join(missing))
+    try:
+        preview = parse_plugin_job_json(Path(str(values["job_manifest"])).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise KrakenBridgeError(f"Invalid Kraken job manifest: {exc}") from exc
+    if preview.operation == PluginOperation.TRAIN_MODEL.value:
+        return NeuralImageTrainSession.load(
+            job_manifest=str(values["job_manifest"]),
+            result_manifest=str(values["result_manifest"]),
+            staging_root=str(values["staging_root"]),
+        )
     return NeuralImageKrakenSession.load(
         job_manifest=str(values["job_manifest"]),
         result_manifest=str(values["result_manifest"]),

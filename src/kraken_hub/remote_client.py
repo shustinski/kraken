@@ -73,6 +73,44 @@ from .workspace_service import (
 LOGGER = logging.getLogger(__name__)
 
 
+def _layer_file_binding(payload: Mapping[str, object]):
+    from kraken_manager.workspace import ImageConversionSettings, LayerFileBinding
+
+    conversion = payload.get("conversion") or {}
+    positions = payload.get("frame_positions") or {}
+    return LayerFileBinding(
+        layer_id=str(payload["layer_id"]),
+        layer_name=str(payload["layer_name"]),
+        mode=str(payload["mode"]),
+        image_directory=str(payload.get("image_directory") or ""),
+        ssc_directory=str(payload.get("ssc_directory") or ""),
+        prv_directory=str(payload.get("prv_directory") or ""),
+        aux_directory=str(payload.get("aux_directory") or ""),
+        import_root=str(payload.get("import_root") or ""),
+        conversion=ImageConversionSettings(
+            **(dict(conversion) if isinstance(conversion, Mapping) else {})
+        ),
+        frame_positions=dict(positions) if isinstance(positions, Mapping) else {},
+    )
+
+
+def _workspace_layer_result(service: RemoteServerProjectService, project_id: object, payload: object):
+    if not isinstance(payload, Mapping):
+        raise TypeError("Server returned an invalid layer")
+    layer_payload = payload.get("layer")
+    representation_payload = payload.get("representation")
+    binding_payload = payload.get("binding")
+    if not isinstance(layer_payload, Mapping) or not isinstance(binding_payload, Mapping):
+        raise TypeError("Server returned an invalid layer")
+    layer = service._layer(project_id, layer_payload)
+    representation = (
+        service._representation(project_id, layer.id, representation_payload)
+        if isinstance(representation_payload, Mapping)
+        else None
+    )
+    return layer, _layer_file_binding(binding_payload), representation
+
+
 def _review_archive(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(
         destination, "x", compression=zipfile.ZIP_DEFLATED, allowZip64=True
@@ -175,6 +213,7 @@ class RemoteHttpClient:
         token: str,
         payload: Mapping[str, object] | None = None,
         headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         body = (
@@ -194,7 +233,9 @@ class RemoteHttpClient:
             url, data=body, headers=request_headers, method=method.upper()
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout if timeout is None else timeout
+            ) as response:
                 raw = response.read()
                 if not raw:
                     return None
@@ -722,8 +763,17 @@ class RemoteServerProjectService:
         *,
         include_inactive: bool = False,
     ) -> tuple[Principal, ...]:
-        del project_id
-        return self.list_principals(include_inactive=include_inactive)
+        selected: list[Principal] = []
+        for principal in self.list_principals(include_inactive=include_inactive):
+            try:
+                roles = self.project_roles(project_id, principal.id)
+            except RemoteServerError as exc:
+                if exc.status == 404:
+                    continue
+                raise
+            if roles:
+                selected.append(principal)
+        return tuple(selected)
 
     def list_performers(
         self, *, include_archived: bool = False
@@ -794,6 +844,7 @@ class RemoteServerProjectService:
         payload: Mapping[str, object] | None = None,
         idempotency_key: str | None = None,
         if_match: int | None = None,
+        timeout: float | None = None,
     ) -> Any:
         headers: dict[str, str] = {}
         if idempotency_key:
@@ -804,13 +855,14 @@ class RemoteServerProjectService:
         if acting_role:
             headers["X-Kraken-Role"] = str(acting_role)
         try:
-            return self._http.request(
-                method,
-                path,
-                token=self.auth.access_token,
-                payload=payload,
-                headers=headers,
-            )
+            request_arguments: dict[str, Any] = {
+                "token": self.auth.access_token,
+                "payload": payload,
+                "headers": headers,
+            }
+            if timeout is not None:
+                request_arguments["timeout"] = timeout
+            return self._http.request(method, path, **request_arguments)
         except RemoteServerError as exc:
             if exc.status == 409 and exc.code == "revision.conflict":
                 project_id = ""
@@ -1079,6 +1131,88 @@ class RemoteServerProjectService:
         if not isinstance(payload, Mapping):
             raise TypeError("Server returned an invalid layer")
         return self._layer(project.id, payload)
+
+    def layer_file_binding(self, project_id: object, layer_id: object):
+        try:
+            payload = self._call(
+                "GET",
+                f"/api/v1/projects/{project_id}/layers/{layer_id}/files",
+            )
+        except RemoteServerError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(payload, Mapping):
+            return None
+        return _layer_file_binding(payload)
+
+    def create_external_layer(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        name: str,
+        layer_type: LayerType,
+        order: int,
+        image_directory: Path | str,
+        ssc_directory: Path | str | None,
+        prv_directory: Path | str | None,
+        idempotency_key: str,
+    ):
+        del principal
+        payload = self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers/external",
+            payload={
+                "name": name,
+                "type": layer_type.value,
+                "order": order,
+                "image_directory": str(image_directory),
+                "ssc_directory": None if not ssc_directory else str(ssc_directory),
+                "prv_directory": None if not prv_directory else str(prv_directory),
+            },
+            idempotency_key=idempotency_key,
+        )
+        return _workspace_layer_result(self, project.id, payload)
+
+    def create_layer_from_disk(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        name: str,
+        layer_type: LayerType,
+        order: int,
+        scan: object,
+        conversion: object,
+        idempotency_key: str,
+        progress=None,
+        cancelled=None,
+    ):
+        del principal
+        if cancelled is not None and cancelled.is_set():
+            raise RemoteServerError("Импорт слоя отменён")
+        from dataclasses import asdict
+
+        total = int(getattr(scan, "total_files", 0) or 0)
+        if progress is not None:
+            progress(0, max(1, total), "Копирование на сервере…")
+        payload = self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers/import",
+            payload={
+                "name": name,
+                "type": layer_type.value,
+                "order": order,
+                "scan": asdict(scan),  # type: ignore[arg-type]
+                "conversion": asdict(conversion),  # type: ignore[arg-type]
+            },
+            idempotency_key=idempotency_key,
+            timeout=600,
+        )
+        if progress is not None:
+            progress(max(1, total), max(1, total), "Готово")
+        return _workspace_layer_result(self, project.id, payload)
 
     def rename_layer(
         self,
@@ -1474,6 +1608,7 @@ class RemoteServerProjectService:
         layer_id: object | None = None,
         representation_id: object | None = None,
         frame_id: object | None = None,
+        series_id: object | None = None,
         idempotency_key: str,
     ) -> ArtifactSeries:
         del principal
@@ -1488,6 +1623,7 @@ class RemoteServerProjectService:
                 if representation_id is None
                 else str(representation_id),
                 "frame_id": None if frame_id is None else str(frame_id),
+                "series_id": None if series_id is None else str(series_id),
             },
             idempotency_key=idempotency_key,
         )
@@ -2284,7 +2420,7 @@ class RemoteServerProjectService:
         return "Сервер PostgreSQL"
 
     def is_remote_project(self, project_id: object) -> bool:
-        return str(project_id) in self._remote_ids or True
+        return str(project_id) in self._remote_ids
 
     def history(
         self, project_id: object, *, as_of: datetime | None = None

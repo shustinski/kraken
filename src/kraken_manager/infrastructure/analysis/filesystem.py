@@ -532,6 +532,20 @@ class FilesystemAnalysisStore:
             ids = [str(row[0]) for row in connection.execute("SELECT run_id FROM analysis_runs ORDER BY created_at DESC")]
         return tuple(run for run_id in ids if (run := self.get_run(run_id)) is not None)
 
+    def metrics_for_frame(self, run_id: str, frame_id: str) -> tuple[sqlite3.Row, ...]:
+        with self._connect() as connection:
+            return tuple(
+                connection.execute(
+                    """
+                    SELECT m.metric_key, m.raw_value, m.goodness, m.percentile
+                    FROM analysis_metric_values AS m
+                    WHERE m.run_id=? AND m.frame_id=?
+                    ORDER BY m.metric_key
+                    """,
+                    (run_id, frame_id),
+                ).fetchall()
+            )
+
     def frame_results(self, run_id: str, metric_key: str) -> tuple[sqlite3.Row, ...]:
         with self._connect() as connection:
             return tuple(

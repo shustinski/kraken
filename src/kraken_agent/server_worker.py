@@ -16,7 +16,13 @@ from urllib.parse import unquote, urlparse
 from pathlib import Path
 from typing import Any
 
-from kraken_core.plugin_protocol import PluginFrameInput, PluginJobManifest
+from kraken_core.analysis_run_protocol import ANALYSIS_PARTITION_JOB_SCHEMA
+from kraken_core.plugin_protocol import (
+    PLUGIN_JOB_SCHEMA,
+    PLUGIN_JOB_SCHEMA_V2,
+    PluginFrameInput,
+    PluginJobManifest,
+)
 from kraken_manager.domain.project import FrameCoordinate
 from kraken_manager.domain.workflows import PluginJobManifestV1
 from kraken_manager.infrastructure.filesystem._codec import decode_model
@@ -246,12 +252,23 @@ class ServerAgentWorker:
         done = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(job_id, done), daemon=True)
         try:
-            manifest = decode_model(PluginJobManifestV1, lease["manifest"])
-            workspace = StagingWorkspace(self.data_dir / "staging", job_id)
-            workspace.create()
-            transport = self._transport_manifest(manifest, workspace)
-            workspace.write_manifest(transport)
-            self.store.enqueue(transport)
+            raw_manifest = lease["manifest"]
+            schema = str(raw_manifest.get("schema", "")) if isinstance(raw_manifest, dict) else ""
+            if schema in {ANALYSIS_PARTITION_JOB_SCHEMA, PLUGIN_JOB_SCHEMA_V2, PLUGIN_JOB_SCHEMA}:
+                from kraken_agent.protocols import parse_manifest_payload
+
+                transport = parse_manifest_payload(raw_manifest)
+                workspace = StagingWorkspace(self.data_dir / "staging", job_id)
+                workspace.create()
+                workspace.write_manifest(transport)
+                self.store.enqueue(transport)
+            else:
+                manifest = decode_model(PluginJobManifestV1, raw_manifest)
+                workspace = StagingWorkspace(self.data_dir / "staging", job_id)
+                workspace.create()
+                transport = self._transport_manifest(manifest, workspace)
+                workspace.write_manifest(transport)
+                self.store.enqueue(transport)
             heartbeat.start()
             self.runner.run_once()
             job = self.store.get(job_id)

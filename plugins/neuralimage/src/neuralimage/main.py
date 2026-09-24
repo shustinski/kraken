@@ -130,6 +130,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     if kraken_session is not None:
         if args.kraken_workspace_context:
             parser.error('Agent and direct workspace modes cannot be combined.')
+        operation = getattr(getattr(kraken_session, "manifest", None), "operation", "")
+        if operation == "dataset.model.train.v1":
+            kraken_session.run_interactive()
+            return
         if args.ui_only:
             parser.error('Kraken Agent mode is headless and cannot be combined with --ui-only.')
         kraken_session.run_headless()

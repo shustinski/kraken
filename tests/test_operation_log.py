@@ -38,8 +38,8 @@ def _captured(level: str):
 
 def test_ranks_follow_the_requested_events() -> None:
     assert request_rank("POST", "/api/v1/projects") == 1
-    assert request_rank("POST", "/api/v1/auth/accounts") == 1
     assert request_rank("POST", "/api/v1/admin/accounts") == 1
+    assert request_rank("POST", "/api/v1/auth/accounts") == 1
     assert request_rank("POST", "/api/v1/projects/abc/layers") == 2
     assert request_rank("POST", "/api/v1/projects/abc/artifacts/s/uploads") == 2
     assert request_rank("POST", "/api/v1/projects/abc/artifacts/s/versions") == 2
@@ -61,7 +61,7 @@ def test_low_records_successful_project_and_account_creation_only() -> None:
     handler = _captured("low")
     try:
         record_http_request("POST", "/api/v1/projects", 201)
-        record_http_request("POST", "/api/v1/auth/accounts", 201)
+        record_http_request("POST", "/api/v1/admin/accounts", 201)
         record_http_request("POST", "/api/v1/projects", 422)
         record_http_request("POST", "/api/v1/projects/abc/layers", 201)
         record_http_request("GET", "/api/v1/projects", 200)
@@ -69,7 +69,7 @@ def test_low_records_successful_project_and_account_creation_only() -> None:
         LOGGER.removeHandler(handler)
     assert handler.messages == [
         "создание проекта POST /api/v1/projects 201",
-        "создание учётной записи POST /api/v1/auth/accounts 201",
+        "создание учётной записи POST /api/v1/admin/accounts 201",
     ]
 
 

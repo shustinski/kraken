@@ -269,6 +269,7 @@ class SubmitPluginJobHandler:
             required_kind = {
                 "frames.vectorize.v1": RepresentationKind.VECTOR,
                 "frames.binary-segment.v1": RepresentationKind.IMAGE,
+                "frames.binary-segment.v2": RepresentationKind.IMAGE,
             }.get(command.capability)
             if required_kind is not None and target.kind is not required_kind:
                 raise ConflictError(f"Plugin capability requires a {required_kind.value} target representation")
@@ -511,11 +512,21 @@ class ImportPluginResultHandler:
                 required_output = {
                     "frames.vectorize.v1": ("application/x-cif", "vector"),
                     "frames.binary-segment.v1": ("image/png", "binary-image"),
+                    "frames.binary-segment.v2": ("image/png", "binary-image"),
+                    "frames.dataset.prepare.v1": ("application/zip", "dataset"),
+                    "layer.confidence.analyze.v1": (
+                        "application/vnd.kraken.confidence+json",
+                        "confidence",
+                    ),
                 }.get(original.capability)
+                accepted = required_output is not None and (result.media_type, result.role) == required_output
+                if original.capability == "dataset.model.train.v1" and result.role == "model":
+                    accepted = True
                 if (
                     result.outcome is PluginFrameOutcome.SUCCEEDED
                     and required_output is not None
-                    and (result.media_type, result.role) != required_output
+                    and not accepted
+                    and original.capability != "dataset.model.train.v1"
                 ):
                     raise ConflictError("Plugin output format/role does not match the requested capability")
             result_frames = {item.frame_id for item in manifest.results}

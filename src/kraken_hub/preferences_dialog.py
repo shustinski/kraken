@@ -27,10 +27,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from kraken_hub.secret_store import KeyringSecretStore
+
 SETTINGS_ORGANIZATION = "Kraken"
 SETTINGS_APPLICATION = "KrakenHub"
 SERVER_URL_KEY = "server/url"
 ACCOUNTS_KEY = "accounts/catalog"
+_SECRET_SERVICE = "Kraken.Hub.ProgramAccounts"
 
 ACCOUNT_PROVIDERS = (
     ("local", "Учётная запись Kraken"),
@@ -59,6 +62,10 @@ def program_settings() -> QSettings:
     return QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
 
 
+def program_secret_store() -> KeyringSecretStore:
+    return KeyringSecretStore(_SECRET_SERVICE)
+
+
 def program_server_url(settings: QSettings | None = None) -> str:
     source = settings or program_settings()
     return str(source.value(SERVER_URL_KEY, "") or "").strip().rstrip("/")
@@ -69,9 +76,81 @@ def save_program_server_url(url: str, settings: QSettings | None = None) -> None
     source.setValue(SERVER_URL_KEY, url.strip().rstrip("/"))
 
 
-def load_program_accounts(settings: QSettings | None = None) -> list[ProgramAccount]:
+def load_program_accounts(
+    settings: QSettings | None = None,
+    secrets: KeyringSecretStore | None = None,
+) -> list[ProgramAccount]:
     source = settings or program_settings()
-    raw = source.value(ACCOUNTS_KEY, "")
+    store = secrets or program_secret_store()
+    payload = _read_account_catalog(source)
+    accounts: list[ProgramAccount] = []
+    migrated = False
+    for item in payload:
+        provider = str(item.get("provider", ""))
+        username = str(item.get("username", "")).strip()
+        account_id = str(item.get("account_id") or "")
+        if provider not in PROVIDER_LABELS or not username or not account_id:
+            continue
+        legacy_secret = str(item.get("secret") or "")
+        stored = _read_secret(store, account_id)
+        if legacy_secret:
+            if legacy_secret != stored:
+                store.set(account_id, legacy_secret.encode("utf-8"))
+            stored = legacy_secret
+            migrated = True
+        if not stored:
+            continue
+        accounts.append(
+            ProgramAccount(
+                account_id=account_id,
+                provider=provider,
+                username=username,
+                display_name=str(item.get("display_name") or username).strip(),
+                secret=stored,
+                is_default=bool(item.get("is_default")),
+            )
+        )
+    accounts = _single_default(accounts)
+    if migrated:
+        save_program_accounts(accounts, source, store)
+    return accounts
+
+
+def save_program_accounts(
+    accounts: list[ProgramAccount],
+    settings: QSettings | None = None,
+    secrets: KeyringSecretStore | None = None,
+) -> None:
+    source = settings or program_settings()
+    store = secrets or program_secret_store()
+    previous_ids = {
+        str(item.get("account_id") or "")
+        for item in _read_account_catalog(source)
+        if str(item.get("account_id") or "")
+    }
+    normalized = _single_default(accounts)
+    for account in normalized:
+        if not account.secret:
+            raise ValueError("У учётной записи нет пароля или токена")
+        store.set(account.account_id, account.secret.encode("utf-8"))
+    kept = {account.account_id for account in normalized}
+    for account_id in previous_ids - kept:
+        store.delete(account_id)
+    payload = [
+        {
+            "account_id": account.account_id,
+            "provider": account.provider,
+            "username": account.username,
+            "display_name": account.display_name,
+            "is_default": account.is_default,
+        }
+        for account in normalized
+    ]
+    source.setValue(ACCOUNTS_KEY, json.dumps(payload, ensure_ascii=False))
+
+
+def _read_account_catalog(settings: QSettings) -> list[dict]:
+    raw = settings.value(ACCOUNTS_KEY, "")
     text = raw if isinstance(raw, str) else ""
     if not text:
         return []
@@ -81,45 +160,14 @@ def load_program_accounts(settings: QSettings | None = None) -> list[ProgramAcco
         return []
     if not isinstance(payload, list):
         return []
-    accounts: list[ProgramAccount] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        provider = str(item.get("provider", ""))
-        username = str(item.get("username", "")).strip()
-        secret = str(item.get("secret", ""))
-        if provider not in PROVIDER_LABELS or not username or not secret:
-            continue
-        accounts.append(
-            ProgramAccount(
-                account_id=str(item.get("account_id") or uuid4()),
-                provider=provider,
-                username=username,
-                display_name=str(item.get("display_name") or username).strip(),
-                secret=secret,
-                is_default=bool(item.get("is_default")),
-            )
-        )
-    return _single_default(accounts)
+    return [item for item in payload if isinstance(item, dict)]
 
 
-def save_program_accounts(
-    accounts: list[ProgramAccount], settings: QSettings | None = None
-) -> None:
-    source = settings or program_settings()
-    normalized = _single_default(accounts)
-    payload = [
-        {
-            "account_id": account.account_id,
-            "provider": account.provider,
-            "username": account.username,
-            "display_name": account.display_name,
-            "secret": account.secret,
-            "is_default": account.is_default,
-        }
-        for account in normalized
-    ]
-    source.setValue(ACCOUNTS_KEY, json.dumps(payload, ensure_ascii=False))
+def _read_secret(store: KeyringSecretStore, account_id: str) -> str:
+    raw = store.get(account_id)
+    if raw is None:
+        return ""
+    return raw.decode("utf-8")
 
 
 def default_program_account(settings: QSettings | None = None) -> ProgramAccount | None:

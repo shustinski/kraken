@@ -11,6 +11,8 @@ from urllib.request import Request, urlopen
 
 from kraken_agent.jobs import StagingWorkspace
 from kraken_core.plugin_protocol import (
+    FRAME_ROLE_MODEL,
+    FRAME_ROLE_SOURCE,
     PLUGIN_PROTOCOL_VERSION,
     PluginFrameInput,
     PluginAsset,
@@ -23,6 +25,23 @@ from kraken_manager.domain.workflows import PluginJobManifestV1
 
 class AgentUnavailable(RuntimeError):
     pass
+
+
+def _stage_model(workspace: StagingWorkspace, parameters: dict[str, object]) -> dict[str, object]:
+    """Copy a caller-selected model into the job workspace and pin its relative path."""
+
+    source = str(parameters.get("model_source_path") or "").strip()
+    digest = str(parameters.get("model_sha256") or parameters.get("used_sha256") or "").strip().lower()
+    if not source:
+        return parameters
+    if len(digest) != 64:
+        raise ValueError("model_sha256 is required when a model file is staged")
+    relative = f"inputs/model/{Path(source).name}"
+    workspace.stage_file(source, relative, expected_sha256=digest)
+    staged = dict(parameters)
+    staged["model_relative_path"] = relative
+    staged["model_sha256"] = digest
+    return staged
 
 
 class AgentPluginGateway:
@@ -95,9 +114,9 @@ class AgentPluginGateway:
                 PluginAsset(
                     asset_id=str(item.artifact_version_id),
                     role=(
-                        "image"
+                        FRAME_ROLE_SOURCE
                         if media_type.startswith("image/")
-                        else "model"
+                        else FRAME_ROLE_MODEL
                         if media_type in {"application/x-pytorch", "application/onnx"}
                         else "input"
                     ),
@@ -116,6 +135,7 @@ class AgentPluginGateway:
                 item.relative_path,
                 expected_sha256=item.sha256,
             )
+        parameters = _stage_model(workspace, dict(manifest.parameters))
         transport = (
             PluginJobManifestV2(
                 job_id=str(manifest.job_id),
@@ -124,7 +144,7 @@ class AgentPluginGateway:
                 layer_id=str(manifest.layer_id),
                 actor_id=str(manifest.actor_principal_id),
                 inputs=tuple(v2_inputs),
-                parameters=dict(manifest.parameters),
+                parameters=parameters,
                 target_representation_ids=(str(manifest.target_representation_id),),
             )
             if manifest.capability in self.v2_capabilities
@@ -136,7 +156,7 @@ class AgentPluginGateway:
                 actor_id=str(manifest.actor_principal_id),
                 target_representation_id=str(manifest.target_representation_id),
                 inputs=tuple(inputs),
-                parameters=dict(manifest.parameters),
+                parameters=parameters,
                 protocol_version=manifest.protocol_version,
             )
         )

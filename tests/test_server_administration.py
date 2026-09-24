@@ -167,7 +167,7 @@ def test_server_data_roots_may_be_the_same_directory(tmp_path: Path) -> None:
     assert loaded.source_root == loaded.derived_root == shared.resolve()
 
 
-def test_unknown_account_registers_and_sees_only_its_projects(tmp_path: Path) -> None:
+def test_self_registered_account_is_ordinary_and_sees_only_its_projects(tmp_path: Path) -> None:
     store = LocalAccountStore(tmp_path / "accounts.sqlite3", ScryptPasswordHasher())
     app = create_app(
         services=InMemoryServerServices(),
@@ -218,7 +218,8 @@ def test_unknown_account_registers_and_sees_only_its_projects(tmp_path: Path) ->
         "/api/v1/auth/accounts",
         json={"username": "alice", "password": "wrong", "display_name": "Alice"},
     ).status_code == 401
-    assert register("alice", "secret")["principal"]["id"] == alice["principal"]["id"]
+    again = register("alice", "secret")
+    assert again["principal"]["id"] == alice["principal"]["id"]
 
 
 def test_initial_setup_accepts_a_new_config_path(monkeypatch, tmp_path: Path) -> None:

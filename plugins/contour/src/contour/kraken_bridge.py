@@ -182,6 +182,8 @@ class ContourKrakenSession:
         )
 
     def build_result(self) -> PluginResultManifest:
+        if self.manifest.operation == "frames.dataset.prepare.v1":
+            return self._dataset_result()
         outputs: list[PluginFrameOutput] = []
         missing: list[str] = []
         for index, (frame, source_path) in enumerate(zip(self.manifest.inputs, self.input_paths, strict=True), start=1):
@@ -216,6 +218,39 @@ class ContourKrakenSession:
             outputs=tuple(outputs),
             applied_parameters=dict(self.manifest.parameters),
             errors=errors,
+        )
+
+    def _dataset_result(self) -> PluginResultManifest:
+        archives = sorted(
+            path
+            for path in self.output_directory.rglob("*")
+            if path.is_file() and not path.is_symlink() and path.suffix.casefold() == ".zip"
+        )
+        if not archives:
+            raise KrakenBridgeError("Dataset preparation did not publish a zip archive")
+        outputs: list[PluginFrameOutput] = []
+        for index, archive in enumerate(archives, start=1):
+            resolved = archive.resolve(strict=True)
+            if self.output_directory not in resolved.parents and resolved.parent != self.output_directory:
+                raise KrakenBridgeError(f"Dataset archive escapes staging: {archive.name}")
+            frame = self.manifest.inputs[0]
+            outputs.append(
+                PluginFrameOutput(
+                    output_id=f"{self.manifest.job_id}:dataset:{index}",
+                    frame_id=frame.frame_id,
+                    relative_path=resolved.relative_to(self.staging_root).as_posix(),
+                    sha256=_sha256(resolved),
+                    media_type="application/zip",
+                    role="dataset",
+                )
+            )
+        return PluginResultManifest(
+            job_id=self.manifest.job_id,
+            outcome=PluginJobOutcome.SUCCEEDED.value,
+            plugin_id="contour",
+            plugin_version=__version__,
+            outputs=tuple(outputs),
+            applied_parameters=dict(self.manifest.parameters),
         )
 
     def write_result(self, result: PluginResultManifest | None = None) -> PluginResultManifest:

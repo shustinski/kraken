@@ -10,7 +10,7 @@ import json
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
 from kraken_manager.application.authorization import AuthorizationPolicy
@@ -263,6 +263,36 @@ def _representation_dict(representation: Representation) -> dict[str, Any]:
 
 def _project_id(value: str) -> ProjectId:
     return ProjectId(validate_uuid(value, field="project_id"))
+
+
+def _layer_source_scan(payload: Mapping[str, Any]) -> Any:
+    from kraken_manager.workspace import LayerSourceScan
+
+    fingerprints_raw = payload.get("file_fingerprints") or {}
+    fingerprints: dict[str, tuple[int, int]] = {}
+    if isinstance(fingerprints_raw, Mapping):
+        for key, value in fingerprints_raw.items():
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                fingerprints[str(key)] = (int(value[0]), int(value[1]))
+    positions_raw = payload.get("frame_positions") or {}
+    positions = (
+        {str(key): int(value) for key, value in positions_raw.items()}
+        if isinstance(positions_raw, Mapping)
+        else {}
+    )
+    return LayerSourceScan(
+        selected_root=str(payload.get("selected_root", "")),
+        working_directory=str(payload.get("working_directory", "")),
+        jpg_files=tuple(str(item) for item in payload.get("jpg_files") or ()),
+        bmp_files=tuple(str(item) for item in payload.get("bmp_files") or ()),
+        ssc_files=tuple(str(item) for item in payload.get("ssc_files") or ()),
+        prv_files=tuple(str(item) for item in payload.get("prv_files") or ()),
+        frame_positions=positions,
+        total_files=int(payload.get("total_files") or 0),
+        total_bytes=int(payload.get("total_bytes") or 0),
+        issues=tuple(str(item) for item in payload.get("issues") or ()),
+        file_fingerprints=fingerprints,
+    )
 
 
 def _layer_id(value: str) -> LayerId:
@@ -623,6 +653,182 @@ class PostgresServerServices:
             raise ForbiddenError(str(exc)) from exc
         except (StorageCapabilityError, ValueError, TypeError) as exc:
             raise ValidationError(str(exc)) from exc
+
+    def layer_file_binding(self, project_id: str, layer_id: str) -> dict[str, Any] | None:
+        files = self.workspace_files
+        if files is None:
+            return None
+        from kraken_manager.workspace import layer_binding_to_dict
+
+        binding = files.registry.get_layer(project_id, layer_id)
+        return None if binding is None else layer_binding_to_dict(binding)
+
+    def create_external_layer(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]:
+        def bind(files: Any, layer_id: str, name: str) -> Any:
+            return files.bind_external_layer(
+                project_id=project_id,
+                layer_id=layer_id,
+                layer_name=name,
+                image_directory=str(payload.get("image_directory", "")),
+                ssc_directory=payload.get("ssc_directory") or None,
+                prv_directory=payload.get("prv_directory") or None,
+                maximum_frames=self._project_frame_count(project_id),
+            )
+
+        return self._attach_workspace_layer(project_id, payload, context, bind=bind, managed=False)
+
+    def import_workspace_layer(
+        self, project_id: str, payload: Mapping[str, Any], context: CommandContext
+    ) -> dict[str, Any]:
+        from kraken_manager.workspace import ImageConversionSettings
+
+        def bind(files: Any, layer_id: str, name: str) -> Any:
+            workspace = files.registry.get_project(project_id)
+            if workspace is None:
+                raise ValidationError("У проекта нет двухдискового хранилища")
+            scan_payload = payload.get("scan")
+            if not isinstance(scan_payload, Mapping):
+                raise ValidationError("Результат сканирования слоя не передан")
+            conversion_payload = payload.get("conversion")
+            conversion = ImageConversionSettings(
+                **(dict(conversion_payload) if isinstance(conversion_payload, Mapping) else {})
+            )
+            return files.import_layer(
+                project=workspace,
+                layer_id=layer_id,
+                layer_name=name,
+                scan=_layer_source_scan(scan_payload),
+                conversion=conversion,
+            )
+
+        return self._attach_workspace_layer(project_id, payload, context, bind=bind, managed=True)
+
+    def _project_frame_count(self, project_id: str) -> int:
+        project = self.projections.get_project(_project_id(project_id))
+        if project is None:
+            raise NotFoundError(f"Project {project_id} was not found")
+        return int(project.width) * int(project.height)
+
+    def _attach_workspace_layer(
+        self,
+        project_id: str,
+        payload: Mapping[str, Any],
+        context: CommandContext,
+        *,
+        bind: Any,
+        managed: bool,
+    ) -> dict[str, Any]:
+        from kraken_manager.workspace import WorkspaceValidationError, layer_binding_to_dict
+
+        project = self.projections.get_project(_project_id(project_id))
+        if project is None:
+            raise NotFoundError(f"Project {project_id} was not found")
+        files = self.workspace_files
+        if files is None:
+            raise ValidationError("На сервере не настроено файловое хранилище")
+        workspace = files.registry.get_project(project_id)
+        if workspace is None:
+            raise ValidationError("У проекта нет двухдискового хранилища")
+        layer_id = str(uuid4())
+        name = str(payload.get("name", ""))
+        try:
+            binding = bind(files, layer_id, name)
+        except (WorkspaceValidationError, FileExistsError, OSError, ValueError) as exc:
+            raise ValidationError(str(exc)) from exc
+        actor = self._actor(context.actor_id)
+        layer = None
+        try:
+            layer = self._create_layer(
+                CreateLayerCommand(
+                    context=ApplicationCommandContext(
+                        actor=actor,
+                        idempotency_key=context.idempotency_key,
+                        gitlab_identity_verified=True,
+                    ),
+                    project_id=_project_id(project_id),
+                    name=name,
+                    type=LayerType(str(payload.get("type", ""))),
+                    order=int(payload.get("order", 0)),
+                    expected_project_revision=project.revision,
+                    layer_id=_layer_id(layer_id),
+                )
+            )
+            representation = self._create_representation(
+                CreateRepresentationCommand(
+                    context=ApplicationCommandContext(
+                        actor=actor,
+                        idempotency_key=f"{context.idempotency_key}:representation",
+                        gitlab_identity_verified=True,
+                    ),
+                    project_id=_project_id(project_id),
+                    layer_id=_layer_id(str(layer.id)),
+                    name="Исходные изображения",
+                    kind=RepresentationKind.IMAGE,
+                    purpose=RepresentationPurpose.SOURCE,
+                    expected_layer_revision=layer.revision,
+                    source=binding.image_directory,
+                    active=True,
+                )
+            )
+        except Exception as exc:
+            self._discard_workspace_layer(
+                files,
+                workspace,
+                binding,
+                project_id,
+                layer_id,
+                context,
+                layer,
+                managed=managed,
+            )
+            if isinstance(exc, ApplicationNotFoundError):
+                raise NotFoundError(str(exc)) from exc
+            if isinstance(exc, (ApplicationConcurrencyError, ApplicationConflictError)):
+                raise ConflictError(str(exc)) from exc
+            if isinstance(exc, ApplicationAuthorizationError):
+                raise ForbiddenError(str(exc)) from exc
+            if isinstance(exc, (StorageCapabilityError, ValueError, TypeError)):
+                raise ValidationError(str(exc)) from exc
+            raise
+        return {
+            "layer": _layer_dict(layer),
+            "representation": _representation_dict(representation),
+            "binding": layer_binding_to_dict(binding),
+        }
+
+    def _discard_workspace_layer(
+        self,
+        files: Any,
+        workspace: Any,
+        binding: Any,
+        project_id: str,
+        layer_id: str,
+        context: CommandContext,
+        layer: Any,
+        *,
+        managed: bool,
+    ) -> None:
+        if layer is not None:
+            try:
+                self.archive_layer(
+                    project_id,
+                    str(layer.id),
+                    CommandContext(
+                        context.actor_id,
+                        f"{context.idempotency_key}:compensate",
+                        layer.revision,
+                    ),
+                )
+            except Exception:
+                pass
+        try:
+            if managed:
+                files.remove_managed_layer_layout(binding, workspace)
+            files.registry.remove_layer(project_id, layer_id)
+        except Exception:
+            pass
 
     def rename_layer(
         self, project_id: str, layer_id: str, name: str, context: CommandContext
@@ -1199,6 +1405,11 @@ class PostgresServerServices:
                         None
                         if payload.get("frame_id") is None
                         else FrameId(validate_uuid(str(payload["frame_id"]), field="frame_id"))
+                    ),
+                    series_id=ArtifactSeriesId(
+                        validate_uuid(str(payload["series_id"]), field="series_id")
+                        if payload.get("series_id") is not None
+                        else str(uuid4())
                     ),
                 )
             )
@@ -1873,7 +2084,7 @@ class PostgresServerServices:
                 plugin_version="1",
                 results=(),
                 parameters_applied={"error": error},
-                protocol_version=job.protocol_version,
+                protocol_version="1.0",
                 outcome=PluginResultOutcome.FAILED,
             )
             imported = ImportPluginResultHandler(

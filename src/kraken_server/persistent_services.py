@@ -303,6 +303,30 @@ def _layer_id(value: str) -> LayerId:
 class PostgresServerServices:
     """Thin transport facade; mutations execute application command handlers."""
 
+    def request_project_deletion(self, project_id: str, actor_id: str) -> dict[str, Any]:
+        from kraken_manager.domain.identity import Permission
+        from .project_deletion import DeletionRequests
+
+        try:
+            project = self.projections.get_project(_project_id(project_id))
+            if project is None:
+                raise NotFoundError(project_id)
+            actor = self._actor(actor_id)
+            AuthorizationPolicy().require(
+                principal=actor, storage=self.profiles.get(project.storage_profile),
+                permission=Permission.ARCHIVE_PROJECT,
+                roles=self.identities.roles_for(project.id, actor.id), gitlab_identity_verified=True,
+            )
+            return DeletionRequests(self.engine).request(project_id, project.name, actor_id)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
+    def project_deletion_requests(self, project_id: str) -> list[dict[str, Any]]:
+        from .project_deletion import DeletionRequests
+
+        return DeletionRequests(self.engine).list(project_id)
+
     def __init__(
         self,
         engine: Any,

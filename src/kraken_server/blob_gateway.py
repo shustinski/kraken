@@ -140,6 +140,7 @@ class BlobGatewayManager:
             raise ValueError("Blob Gateway public URL scheme must match its TLS certificate configuration")
         self._secret = secret
         self._process: subprocess.Popen[bytes] | None = None
+        self.record_transfer = None
 
     def start(self) -> None:
         if self._process is not None:
@@ -162,7 +163,12 @@ class BlobGatewayManager:
                 code = self._process.returncode
                 self._process = None
                 raise RuntimeError(f"Kraken Blob Gateway exited during startup with code {code}")
-            if self._ready():
+            try:
+                ready = self._ready()
+            except Exception:
+                self.stop()
+                raise
+            if ready:
                 return
             time.sleep(0.1)
         self.stop()
@@ -203,6 +209,8 @@ class BlobGatewayManager:
                 health = json.loads(response.read())
             if health.get("service") != "kraken-blob-gateway":
                 return False
+            if health.get("project_deletion_barrier") != 1:
+                raise RuntimeError("Обновите Kraken Blob Gateway: требуется поддержка удаления проектов")
             probe = self.signer.issue("download", "0" * 64, 0)
             request = urllib.request.Request(
                 f"{self.public_url}/v1/blobs/{'0' * 64}",
@@ -236,6 +244,8 @@ class BlobGatewayManager:
         *,
         context: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        if self.record_transfer is not None:
+            self.record_transfer(digest, context)
         issued = self.signer.issue(operation, digest, size_bytes, context=context)
         return {
             "mode": "gateway",

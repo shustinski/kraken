@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import AssignProjectRoleCommand, RevokeProjectRoleCommand
 from kraken_manager.application.errors import AuthorizationError, ConcurrencyError, ConflictError, NotFoundError
@@ -25,24 +27,30 @@ class _AclHandler:
         storage_profiles: StorageProfileCatalog,
         clock: Clock,
         authorization: AuthorizationPolicy | None = None,
+        *,
+        allow_inactive: bool = False,
     ) -> None:
         self._uow_factory = uow_factory
         self._profiles = storage_profiles
         self._clock = clock
         self._authorization = authorization or AuthorizationPolicy()
+        self._allow_inactive = allow_inactive
 
     def _apply(self, uow: object, command: object, now: object) -> None:
         raise NotImplementedError
 
     def __call__(
-        self, command: AssignProjectRoleCommand | RevokeProjectRoleCommand
+        self, command: AssignProjectRoleCommand | RevokeProjectRoleCommand, *, transaction=None
     ) -> frozenset[ProjectRole]:
-        with self._uow_factory() as uow:
+        with (self._uow_factory() if transaction is None else nullcontext(transaction)) as uow:
+            lock = getattr(uow, "lock_project_acl", None)
+            if lock is not None:
+                lock(command.project_id)
             project = uow.projections.get_project(command.project_id)
             if project is None:
                 raise NotFoundError(f"Project {command.project_id} was not found")
             target = uow.identities.get(command.principal_id)
-            if target is None or not target.active:
+            if target is None or (not target.active and not self._allow_inactive):
                 raise NotFoundError(f"Principal {command.principal_id} was not found or is inactive")
             if any(
                 event.event_type == self.event_type
@@ -110,7 +118,8 @@ class _AclHandler:
             )
             uow.event_store.append(stream_id, expected_revision=revision, events=(event,))
             self._apply(uow, command, now)
-            uow.commit()
+            if transaction is None:
+                uow.commit()
             return uow.acl.roles_for(project.id, command.principal_id)
 
 

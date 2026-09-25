@@ -19,6 +19,15 @@ from .projection_store import PostgresProjectionStore
 
 
 class PostgresUnitOfWork:
+    def lock_project_acl(self, project_id: object) -> None:
+        import sqlalchemy as sa
+
+        if self._connection is not None and self.engine.dialect.name == "postgresql":
+            self._connection.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": f"acl:{project_id}"},
+            )
+
     def __init__(self, engine: Any, blobs: Any) -> None:
         self.engine = engine
         self.blobs = blobs

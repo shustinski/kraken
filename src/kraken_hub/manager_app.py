@@ -844,6 +844,12 @@ class DesktopController:
             )
         )
         self.catalog_page.set_project_permissions(permissions)
+        remote = item is not None and getattr(self.service, "is_remote_project", lambda _: False)(item.project_id)
+        self.catalog_page.delete_button.setText("Запросить удаление" if remote else "Удалить")
+        self.catalog_page.delete_button.setToolTip(
+            "Полное удаление после подтверждения в Kraken Admin" if remote
+            else "Удалить из Kraken, сохранив папки исходных и производных данных"
+        )
 
     def _has_permission(self, permission: Permission) -> bool:
         if self._project_id is None:
@@ -1239,6 +1245,23 @@ class DesktopController:
         if project is None:
             self._error("Проект больше не доступен")
             self.refresh_projects()
+            return
+        if getattr(self.service, "is_remote_project", lambda _identifier: False)(project.id):
+            answer = QMessageBox.question(
+                self.shell, "Запросить удаление",
+                f"Отправить заявку на полное удаление проекта «{project.name}»?\n"
+                "После подтверждения в Kraken Admin будут удалены исходные изображения и результаты.\n"
+                "До подтверждения проект останется доступен.",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                request = self.service.request_project_deletion(project=project)
+            except Exception as exc:
+                self._error(str(exc))
+                return
+            QMessageBox.information(self.shell, "Заявка на удаление",
+                                    f"Заявка ожидает решения в Kraken Admin.\n{request['request_id']}")
             return
         binding = self.service.project_workspace(project.id)
         preserved_paths = (

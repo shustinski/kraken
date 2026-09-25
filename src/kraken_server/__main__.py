@@ -17,6 +17,7 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--reload", action="store_true")
+    parser.add_argument("--admin-control", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, help="Path to packaged server.toml")
     parser.add_argument("--service", action="store_true", help="Run under Windows Service Control Manager")
     parser.add_argument(
@@ -46,7 +47,16 @@ def main() -> int:
         raise SystemExit(
             "Production composition is not configured. Set KRAKEN_SERVER_COMPOSITION or use --development explicitly."
         )
-    uvicorn.run(
+    run = uvicorn.run
+    if args.admin_control:
+        if args.reload:
+            raise SystemExit("Admin-controlled server does not support reload")
+        from .admin_control import run_controlled
+
+        def run(*values, **options):
+            run_controlled(uvicorn.Config(*values, **options))
+
+    run(
         "kraken_server.runtime:create_app_from_environment",
         host=configuration.host if configuration is not None else args.host,
         port=configuration.port if configuration is not None else args.port,

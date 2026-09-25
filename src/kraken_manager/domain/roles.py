@@ -241,6 +241,7 @@ def action_for_request(method: str, path: str) -> str:
     if method.upper() == "POST" and path.rstrip("/").endswith("/projects"):
         return ""
     rules = (
+        ("/deletion-requests", "archive_project"),
         ("/acl/", "manage_acl"),
         ("/layers", "manage_structure"),
         ("/representations", "manage_structure"),

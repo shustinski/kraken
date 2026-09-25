@@ -84,7 +84,10 @@ def run_blob_benchmark(config_path: Path, *, clients: int, size_mib: int) -> Blo
         manager.start()
 
         def upload(index: int) -> None:
-            ticket = manager.signer.issue("upload", digest, size, context={"benchmark": index})
+            from uuid import uuid4
+
+            ticket = manager.signer.issue("upload", digest, size,
+                                          context={"benchmark": index, "project": str(uuid4())})
             connection_type = (
                 http.client.HTTPSConnection if parsed_url.scheme == "https" else http.client.HTTPConnection
             )

@@ -218,6 +218,9 @@ def postgresql_composition() -> dict[str, Any]:
             tls_cert_file=(Path(value) if (value := os.environ.get("KRAKEN_BLOB_GATEWAY_TLS_CERT")) else None),
             tls_key_file=(Path(value) if (value := os.environ.get("KRAKEN_BLOB_GATEWAY_TLS_KEY")) else None),
         )
+        from .project_deletion import DeletionRequests
+
+        blob_gateway.record_transfer = DeletionRequests(engine).record_transfer
     return {
         "services": services,
         "account_store": accounts,

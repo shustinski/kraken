@@ -125,6 +125,10 @@ def create_app(
 
     app.state.connection_hub = hub
     app.state.outbox_publisher = outbox_publisher
+    if hasattr(backend, "engine"):
+        from .project_deletion import ProjectOperationMiddleware
+
+        app.add_middleware(ProjectOperationMiddleware, engine=backend.engine)
 
     def problem(
         status: int,
@@ -581,6 +585,19 @@ def create_app(
         return backend.archive_project(
             project_id, command_context(actor, idempotency_key, if_match, revision_required=True)
         )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/deletion-requests", status_code=202)
+    def request_project_deletion(
+        project_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+    ) -> dict[str, Any]:
+        return backend.request_project_deletion(project_id, actor.principal_id)
+
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/deletion-requests")
+    def project_deletion_requests(
+        project_id: str, _: SessionPrincipal = Depends(project_reader),
+    ) -> dict[str, Any]:
+        return {"items": backend.project_deletion_requests(project_id)}
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/restore")
     def restore_project(
@@ -1441,7 +1458,8 @@ def create_app(
             "download",
             str(stored_blob.get("sha256", "")),
             int(stored_blob.get("size_bytes", -1)),
-            context={"agent": agent.token_id, "job": job_id, "version": version_id},
+            context={"agent": agent.token_id, "job": job_id, "version": version_id,
+                     "project": str(manifest.project_id)},
         )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/publications")
@@ -1504,13 +1522,14 @@ def create_app(
             raise HTTPException(status_code=503, detail="Server agent queue is not configured")
         if blob_gateway is None:
             return {"mode": "proxy"}
-        agent_gateway.manifest(job_id, agent)
+        manifest = agent_gateway.manifest(job_id, agent)
         digest, size_bytes = transfer_identity(payload)
         return blob_gateway.ticket(
             "upload",
             digest,
             size_bytes,
-            context={"agent": agent.token_id, "job": job_id, "output": output_id},
+            context={"agent": agent.token_id, "job": job_id, "output": output_id,
+                     "project": str(manifest.project_id)},
         )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/outputs/{{output_id}}/upload-complete")
@@ -1527,7 +1546,9 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         digest, size_bytes = transfer_identity(payload)
-        expected_context = {"agent": agent.token_id, "job": job_id, "output": output_id}
+        manifest = agent_gateway.manifest(job_id, agent)
+        expected_context = {"agent": agent.token_id, "job": job_id, "output": output_id,
+                            "project": str(manifest.project_id)}
         if claims.get("digest") != digest or claims.get("size") != size_bytes or claims.get("ctx") != expected_context:
             raise HTTPException(status_code=401, detail="Blob Gateway ticket does not match Agent output")
         return agent_gateway.register_output(

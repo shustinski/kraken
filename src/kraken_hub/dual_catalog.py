@@ -42,6 +42,16 @@ def _project_id_from_call(kwargs: dict[str, Any]) -> str | None:
 
 
 class DualCatalogService:
+    def request_project_deletion(self, *, project):
+        if self.remote is None or not self.is_remote_project(project.id):
+            raise ValueError("Заявка доступна только для серверного проекта")
+        return self.remote.request_project_deletion(project=project)
+
+    def project_deletion_requests(self, project_id):
+        if self.remote is None or not self.is_remote_project(project_id):
+            return []
+        return self.remote.project_deletion_requests(project_id)
+
     """Route catalog/project operations to local or remote backends by ownership."""
 
     def __init__(

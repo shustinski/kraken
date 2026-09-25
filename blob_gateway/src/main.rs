@@ -71,6 +71,45 @@ struct TicketClaims {
     digest: String,
     size: u64,
     exp: u64,
+    #[serde(default)]
+    ctx: std::collections::HashMap<String, String>,
+}
+
+struct TransferLease(PathBuf);
+
+impl Drop for TransferLease {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.0) {
+            eprintln!("cannot release transfer lease {}: {error}", self.0.display());
+        }
+    }
+}
+
+fn transfer_lease(state: &AppState, claims: &TicketClaims) -> Result<Option<TransferLease>, ApiError> {
+    let Some(project) = claims.ctx.get("project") else {
+        // Only readiness probes have no project context.
+        if claims.digest == "0".repeat(64) && claims.op == "download" {
+            return Ok(None);
+        }
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "project context required; renew ticket"));
+    };
+    let project = Uuid::parse_str(project)
+        .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "invalid project context"))?
+        .to_string();
+    let marker = state.object_root.join(".deleting").join(&project);
+    if marker.exists() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "project is being deleted"));
+    }
+    let directory = state.object_root.join(".transfers").join(project);
+    std::fs::create_dir_all(&directory).map_err(ApiError::io)?;
+    let path = directory.join(Uuid::new_v4().to_string());
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(ApiError::io)?;
+    let lease = TransferLease(path);
+    // Close the race with Admin marking deletion before it checks active leases.
+    if marker.exists() {
+        return Err(ApiError::new(StatusCode::CONFLICT, "project is being deleted"));
+    }
+    Ok(Some(lease))
 }
 
 #[derive(Debug, Serialize)]
@@ -241,7 +280,8 @@ async fn cleanup_staging(staging_root: &FsPath) -> io::Result<()> {
 }
 
 async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({"status": "ok", "service": "kraken-blob-gateway", "version": 1}))
+    Json(serde_json::json!({"status": "ok", "service": "kraken-blob-gateway", "version": 1,
+                          "project_deletion_barrier": 1}))
 }
 
 async fn put_blob(
@@ -252,6 +292,7 @@ async fn put_blob(
 ) -> Result<impl IntoResponse, ApiError> {
     validate_digest(&digest)?;
     let claims = authorize(&state, &headers, "upload", &digest)?;
+    let _lease = transfer_lease(&state, &claims)?;
     let declared = content_length(&headers)?;
     if declared != claims.size {
         return Err(ApiError::new(
@@ -342,6 +383,7 @@ async fn serve_blob(
 ) -> Result<Response<Body>, ApiError> {
     validate_digest(digest)?;
     let claims = authorize(state, headers, "download", digest)?;
+    let lease = transfer_lease(state, &claims)?;
     let path = blob_path(state, digest);
     let mut file = tokio::fs::File::open(&path).await.map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
@@ -380,7 +422,10 @@ async fn serve_blob(
         Body::from_stream(ReaderStream::with_capacity(
             file.take(response_length),
             1024 * 1024,
-        ))
+        ).map(move |chunk| {
+            let _keep_alive = &lease;
+            chunk
+        }))
     };
     let mut response = Response::builder()
         .status(status)
@@ -574,6 +619,23 @@ fn parse_range(value: &str, size: u64) -> Result<(u64, u64), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_lease_blocks_deleted_project_and_releases_on_drop() {
+        let root = std::env::temp_dir().join(format!("kraken-lease-test-{}", Uuid::new_v4()));
+        let project = Uuid::new_v4().to_string();
+        let state = AppState { object_root: root.clone(), staging_root: root.join("staging"), secret: Arc::new(vec![]) };
+        let claims = TicketClaims { v: 1, op: "upload".into(), digest: "a".repeat(64), size: 1, exp: 0,
+            ctx: std::collections::HashMap::from([("project".into(), project.clone())]) };
+        let lease = transfer_lease(&state, &claims).unwrap();
+        assert_eq!(std::fs::read_dir(root.join(".transfers").join(&project)).unwrap().count(), 1);
+        drop(lease);
+        assert_eq!(std::fs::read_dir(root.join(".transfers").join(&project)).unwrap().count(), 0);
+        std::fs::create_dir_all(root.join(".deleting")).unwrap();
+        std::fs::write(root.join(".deleting").join(&project), b"").unwrap();
+        assert!(transfer_lease(&state, &claims).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_normal_open_and_suffix_ranges() {

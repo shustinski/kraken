@@ -1446,6 +1446,12 @@ class RemoteServerProjectService:
         )
         return int(payload.get("revision", 0)) if isinstance(payload, Mapping) else 0
 
+    def request_project_deletion(self, *, project: Project, **_kwargs):
+        return self._call("POST", f"/api/v1/projects/{project.id}/deletion-requests", payload={})
+
+    def project_deletion_requests(self, project_id: object):
+        return self._call("GET", f"/api/v1/projects/{project_id}/deletion-requests").get("items", [])
+
     def _change_project_role(
         self,
         *,

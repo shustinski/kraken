@@ -238,7 +238,8 @@ def test_rust_gateway_streams_python_signed_upload_and_range_download(tmp_path: 
         content = (b"Kraken direct data plane\n" * 1024) + b"end"
         digest = hashlib.sha256(content).hexdigest()
         signer = BlobTicketSigner(secret)
-        upload = signer.issue("upload", digest, len(content)).token
+        context = {"project": "11111111-1111-1111-1111-111111111111"}
+        upload = signer.issue("upload", digest, len(content), context=context).token
         request = urllib.request.Request(
             f"{base_url}/v1/blobs/{digest}",
             data=content,
@@ -250,7 +251,7 @@ def test_rust_gateway_streams_python_signed_upload_and_range_download(tmp_path: 
         assert result == {"sha256": digest, "size_bytes": len(content), "already_existed": False}
         assert (tmp_path / "blobs" / digest[:2] / digest[2:4] / digest).read_bytes() == content
 
-        download = signer.issue("download", digest, len(content)).token
+        download = signer.issue("download", digest, len(content), context=context).token
         request = urllib.request.Request(
             f"{base_url}/v1/blobs/{digest}",
             headers={"Authorization": f"Bearer {download}", "Range": "bytes=7-19"},

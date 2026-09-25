@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
-from uuid import uuid4
-
-from kraken_manager.application.acl import RevokeProjectRoleHandler
-from kraken_manager.application.dto import CommandContext, RevokeProjectRoleCommand
-from kraken_manager.application.errors import AuthorizationError, ConflictError, NotFoundError
-from kraken_manager.domain.common import PrincipalId, ProjectId, validate_uuid
-from kraken_manager.domain.identity import Principal, ProjectRole, SystemRole
+from kraken_manager.domain.common import ProjectId, validate_uuid
+from kraken_manager.domain.identity import ProjectRole
 
 
 def account_by_username(store: object, username: str) -> object:
@@ -84,38 +78,16 @@ def revoke_maintainer(
 ) -> None:
     """Remove maintainer from any holder, including the last one in the project."""
 
-    administrator = _local_administrator(accounts)
+    from .project_roles import all_principals, set_roles, snapshot
+
     target = account_by_username(accounts, username)
     project_id = _project_identifier(services, project)
-    identity = services.identities.get(PrincipalId(target.account_id))  # type: ignore[attr-defined]
-    if identity is None or not identity.active:
-        raise ValueError(f"Участник «{username}» не найден в каталоге проектов")
+    identity = next(item for item in all_principals(services, accounts) if str(item.id) == str(target.account_id))
     current = services.project_roles(project_id, str(target.account_id))  # type: ignore[attr-defined]
-    actor = replace(
-        Principal.local(
-            subject=administrator.username,
-            display_name=administrator.display_name,
-            principal_id=administrator.account_id,
-        ),
-        system_roles=frozenset({SystemRole.SERVER_ADMIN}),
-    )
-    handler = RevokeProjectRoleHandler(services.uow_factory, services.profiles, services.clock)  # type: ignore[attr-defined]
-    try:
-        handler(
-            RevokeProjectRoleCommand(
-                context=CommandContext(actor=actor, idempotency_key=str(uuid4())),
-                project_id=ProjectId(project_id),
-                principal_id=PrincipalId(str(target.account_id)),
-                role=ProjectRole.MAINTAINER,
-                expected_revision=int(current["revision"]),
-            )
-        )
-    except NotFoundError as exc:
-        raise ValueError(str(exc)) from exc
-    except ConflictError as exc:
-        raise ValueError(str(exc)) from exc
-    except AuthorizationError as exc:
-        raise ValueError(str(exc)) from exc
+    desired = frozenset(ProjectRole(role) for role in current["roles"]) - {ProjectRole.MAINTAINER}
+    set_roles(services, accounts, project_id=project_id, principal=identity, desired=desired,
+              expected_revision=int(current["revision"]),
+              expected_snapshot=snapshot(services.identities.assignments_for(ProjectId(project_id))))
 
 
 def account_rows(store: object) -> list[dict[str, object]]:
@@ -150,7 +122,7 @@ def project_rows(services: object) -> list[dict[str, object]]:
 def maintainer_rows(services: object, project_id: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for assignment in services.identities.assignments_for(ProjectId(project_id)):  # type: ignore[attr-defined]
-        if assignment.role is not ProjectRole.MAINTAINER or not assignment.active:
+        if not assignment.active:
             continue
         principal = services.identities.get(assignment.principal_id)  # type: ignore[attr-defined]
         rows.append(
@@ -158,6 +130,7 @@ def maintainer_rows(services: object, project_id: str) -> list[dict[str, str]]:
                 "principal_id": str(assignment.principal_id),
                 "username": principal.subject if principal is not None else str(assignment.principal_id),
                 "display_name": principal.display_name if principal is not None else "",
+                "role": assignment.role.value,
             }
         )
     return rows
@@ -173,7 +146,13 @@ def connect_local_admin(config_path: Path) -> tuple[object, object]:
     config = ServerConfig.load(config_path)
     engine = create_engine(config.database_url, pool_pre_ping=True)
     accounts = PostgresAccountStore(engine, Argon2PasswordHasher())
-    return accounts, open_project_services(config.database_url, config.blob_root, engine=engine)
+    services = open_project_services(config.database_url, config.blob_root, engine=engine)
+    from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
+
+    services.workspace_files = WorkspaceFileService(WorkspaceRegistry(config.blob_root / "workspaces"))
+    services.source_root = str(config.source_root)
+    services.derived_root = str(config.derived_root)
+    return accounts, services
 
 
 def open_project_services(database_url: str, blob_root: Path, *, engine: object | None = None) -> object:

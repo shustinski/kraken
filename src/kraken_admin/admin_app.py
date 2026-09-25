@@ -28,6 +28,10 @@ _AUDIT_LABELS = {
     "sessions.revoked": "Завершены сеансы",
     "global_role.granted": "Назначен администратор",
     "global_role.revoked": "Снят администратор",
+    "project.roles_changed": "Изменены проектные роли",
+    "project.deletion_started": "Подтверждено удаление проекта",
+    "project.deletion_rejected": "Заявка на удаление отклонена",
+    "project.deleted": "Проект полностью удалён",
 }
 
 
@@ -58,11 +62,8 @@ class AdminWindow:
         from PyQt6.QtWidgets import (
             QHBoxLayout,
             QLabel,
-            QListWidget,
             QPushButton,
-            QSplitter,
             QTabWidget,
-            QTableWidget,
             QVBoxLayout,
             QWidget,
         )
@@ -71,6 +72,7 @@ class AdminWindow:
         self._services = None
         self._config_path: Path | None = None
         self._filling = False
+        self._deletion_busy = False
 
         self.window = QWidget()
         self.window.setObjectName("krakenAdminWindow")
@@ -91,8 +93,18 @@ class AdminWindow:
         layout.addLayout(header)
 
         tabs = QTabWidget(self.window)
+        from .server_panel import ServerPanel
+        from .roles_panel import RolesPanel
+        from .deletion_panel import DeletionPanel
+
+        self.server_panel = ServerPanel(self)
+        self.roles_panel = RolesPanel(self)
+        self.deletion_panel = DeletionPanel(self)
+        tabs.addTab(self.server_panel, "Сервер")
         tabs.addTab(self._build_accounts_tab(), "Учётные записи")
         tabs.addTab(self._build_projects_tab(), "Проекты")
+        tabs.addTab(self.roles_panel, "Матрица ролей")
+        tabs.addTab(self.deletion_panel, "Заявки на удаление")
         tabs.addTab(self._build_audit_tab(), "Журнал")
         layout.addWidget(tabs, 1)
 
@@ -100,24 +112,44 @@ class AdminWindow:
         self.window.show()
 
     def open_config(self, path: Path) -> None:
+        if self.server_panel.runtime.running or self._deletion_busy:
+            self._report("Конфигурация используется", "Остановите сервер и дождитесь завершения удаления.")
+            return
         if not path.is_file():
             self.status.setText(f"Нет файла {path}")
             return
         try:
+            from kraken_server.configuration import ServerConfig
+
+            ServerConfig.load(path)
+            self._config_path = path.resolve()
+            self.status.setText(str(self._config_path))
+            if self._services is not None and hasattr(self._services, "engine"):
+                self._services.engine.dispose()
+            self._accounts = None
+            self._services = None
             accounts, services = connect_local_admin(path)
         except Exception as exc:  # noqa: BLE001 - UI reports the connection failure
             self._report("Не удалось подключиться к базе", exc)
             return
         self._accounts = accounts
+        previous = self._services
         self._services = services
+        if previous is not None and hasattr(previous, "engine"):
+            previous.engine.dispose()
         self._config_path = path
         self.status.setText(str(path))
         self.reload()
 
     def reload(self) -> None:
-        self._fill_accounts()
-        self._fill_projects()
-        self._fill_audit()
+        try:
+            self._fill_accounts()
+            self._fill_projects()
+            self._fill_audit()
+            self.roles_panel.reload()
+            self.deletion_panel.reload()
+        except Exception as exc:  # noqa: BLE001 - UI boundary
+            self._report("Не удалось обновить данные", exc)
 
     def _build_accounts_tab(self):
         from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QTableWidget, QVBoxLayout, QWidget
@@ -158,9 +190,10 @@ class AdminWindow:
         outer.addWidget(splitter, 1)
         self.projects = QListWidget()
         self.projects.setObjectName("adminProjectsList")
-        self.maintainers = QTableWidget(0, 2)
+        self.maintainers = QTableWidget(0, 3)
         self.maintainers.setObjectName("adminMaintainersTable")
-        self.maintainers.setHorizontalHeaderLabels(("Логин", "Пользователь"))
+        self.maintainers.setHorizontalHeaderLabels(("Логин", "Пользователь", "Роль"))
+        self.maintainers.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.maintainers.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.maintainers.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.maintainers.horizontalHeader().setStretchLastSection(True)
@@ -169,8 +202,8 @@ class AdminWindow:
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.addWidget(self.maintainers, 1)
-        revoke = QPushButton("Снять maintainer")
-        revoke.clicked.connect(self._revoke_maintainer)
+        revoke = QPushButton("Изменить роли…")
+        revoke.clicked.connect(self._edit_project_roles)
         side_layout.addWidget(revoke)
         splitter.addWidget(self.projects)
         splitter.addWidget(side)
@@ -257,6 +290,15 @@ class AdminWindow:
             login.setData(Qt.ItemDataRole.UserRole, value["username"])
             self.maintainers.setItem(row, 0, login)
             self.maintainers.setItem(row, 1, QTableWidgetItem(value["display_name"]))
+            self.maintainers.setItem(row, 2, QTableWidgetItem(value.get("role", "maintainer")))
+
+    def _edit_project_roles(self) -> None:
+        project_id = self._selected_project_id()
+        for column, project in enumerate(self.roles_panel.projects, 1):
+            if str(project["project_id"]) == project_id:
+                self.roles_panel.table.setCurrentCell(0, column)
+                self.roles_panel.graph()
+                return
 
     def _fill_audit(self) -> None:
         from PyQt6.QtWidgets import QTableWidgetItem
@@ -266,6 +308,9 @@ class AdminWindow:
         for row, event in enumerate(rows):
             action = str(event.get("action", ""))
             target = str(event.get("target_account_id") or "")
+            if not target:
+                details = event.get("details", {})
+                target = str(details.get("project_id", details.get("request_id", "")))
             if self._accounts is not None and target:
                 account = self._accounts.get_account(target)
                 if account is not None:

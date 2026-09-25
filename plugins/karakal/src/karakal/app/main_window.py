@@ -1,6 +1,9 @@
 """Main window for the extended validation gradient widget."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
@@ -1242,6 +1245,12 @@ class KarakalWidget(QWidget):
         )
         profiling_action.triggered.connect(self._show_profiling_dialog)
         diagnostics_menu.addAction(profiling_action)
+        save_diag_action = QAction(
+            "Save diagnostics…" if self._i18n.language == "en" else "Сохранить диагностику…",
+            diagnostics_menu,
+        )
+        save_diag_action.triggered.connect(self._save_diagnostics_bundle)
+        diagnostics_menu.addAction(save_diag_action)
         help_menu = self._menu_bar.addMenu("Help" if self._i18n.language == "en" else "Справка")
         self._update_controller = QtUpdateController(
             self,
@@ -1276,6 +1285,30 @@ class KarakalWidget(QWidget):
         self.profiling_dialog.show()
         self.profiling_dialog.raise_()
         self.profiling_dialog.activateWindow()
+
+    def _save_diagnostics_bundle(self) -> None:
+        from PyQt6.QtWidgets import QFileDialog
+
+        from ..core.diagnostics import pack_diagnostics_zip
+
+        try:
+            default_name = f"karakal_diagnostics_{__version__}.zip"
+            target, _filter = QFileDialog.getSaveFileName(
+                self,
+                "Save diagnostics" if self._i18n.language == "en" else "Сохранить диагностику",
+                default_name,
+                "ZIP (*.zip)",
+            )
+            if not target:
+                return
+            packed = pack_diagnostics_zip(Path(target), version=str(__version__), launch_args=list(sys.argv))
+            QMessageBox.information(
+                self,
+                self._t("dialog.info_title") if hasattr(self, "_t") else "Info",
+                str(packed),
+            )
+        except Exception as error:
+            QMessageBox.critical(self, self._t("dialog.warning_title"), str(error))
 
     def _on_performance_config_changed(self, config: object) -> None:
         if not isinstance(config, PerformanceConfig):

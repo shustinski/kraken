@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from .analysis_cache import (
+    begin_analysis_cache_run,
+    end_analysis_cache_run,
     _load_cached_record_payload,
     _record_payload_cache_key,
     _store_cached_record_payload,
@@ -25,7 +27,6 @@ from .attention_issues import (
 
 from .image_io import (
     _FolderPathLookup,
-    _build_folder_path_lookup,
     _clear_runtime_image_caches,
     _load_optional_gray,
     _resolve_aux_path_from_lookup,
@@ -33,6 +34,7 @@ from .image_io import (
     build_folder_index,
     build_frame_identity,
     build_prediction_view_from_gray,
+    ensure_folder_path_lookup,
     load_grayscale_image,
     natural_sort_key,
     resize_grayscale_image,
@@ -1309,43 +1311,86 @@ def _collect_frame_records_modern(
     if not model_specs:
         raise ValueError("At least one model folder must be selected.")
 
+    from .diagnostics import log_event, stage_enter, stage_exit
+
     extensions = tuple(str(ext).lower() for ext in options.file_extensions)
     base_spec = model_specs[0]
+    progress_interval = max(1, int(options.progress_update_interval))
     if cancel_check is not None and cancel_check():
         raise BuildCancelledError("Build cancelled")
+
+    stage_enter("index.prepare", models=len(model_specs), pid=os.getpid())
+    folder_jobs: list[tuple[str, Path, dict[str, _FolderPathLookup]]] = []
+    fallback_model_indexes: dict[str, _FolderPathLookup] = {}
+    fallback_prob_indexes: dict[str, _FolderPathLookup] = {}
+
+    def _index_progress(label: str):
+        def _callback(current: int, total: int, key: str) -> None:
+            if progress_callback is None:
+                return
+            # Prefer a determinate bar: during folder walk total is unknown, so use current as both.
+            shown_total = total if total > 0 else max(current, 1)
+            progress_callback(current, shown_total, f"{label}:{key}")
+
+        return _callback
+
     if progress_callback is not None:
-        progress_callback(0, 0, "Indexing base folder")
+        progress_callback(0, 1, "index:base")
     base_index = build_folder_index(
         base_spec.mask_folder,
         recursive=options.recursive,
         extensions=extensions,
         cancel_check=cancel_check,
-        progress_callback=progress_callback,
-        progress_interval=max(1, int(options.progress_update_interval)),
+        progress_callback=_index_progress("index:base"),
+        progress_interval=progress_interval,
     )
     if not base_index:
         raise ValueError("Selected model folders do not contain matching image frames.")
+    log_event("index.base_ready", frames=len(base_index), folder=str(base_spec.mask_folder))
 
-    if progress_callback is not None:
-        progress_callback(0, len(base_index), "Indexing auxiliary folders")
-    original_index = (
-        build_folder_index(
-            original_folder.path,
+    # Warm every auxiliary folder once up-front. Per-key Path.resolve()/is_file probes
+    # previously dominated prepare time at 20k frames (Win32 getfinalpathname).
+    for spec in model_specs:
+        if spec is not base_spec:
+            folder_jobs.append(("mask", Path(spec.mask_folder), fallback_model_indexes))
+        if spec.prob_folder is not None:
+            folder_jobs.append(("prob", Path(spec.prob_folder), fallback_prob_indexes))
+    if original_folder is not None:
+        folder_jobs.append(("original", Path(original_folder.path), fallback_model_indexes))
+
+    for job_index, (kind, folder, cache) in enumerate(folder_jobs, start=1):
+        if cancel_check is not None and cancel_check():
+            raise BuildCancelledError("Build cancelled")
+        label = f"index:{kind}:{folder.name}"
+        if progress_callback is not None:
+            progress_callback(job_index - 1, max(1, len(folder_jobs)), label)
+        ensure_folder_path_lookup(
+            folder,
+            extensions,
+            cache,
             recursive=options.recursive,
-            extensions=extensions,
             cancel_check=cancel_check,
-            progress_callback=progress_callback,
-            progress_interval=max(1, int(options.progress_update_interval)),
+            progress_callback=_index_progress(label),
+            progress_interval=progress_interval,
+        )
+        log_event("index.folder_ready", kind=kind, folder=str(folder), job=job_index, jobs=len(folder_jobs))
+
+    original_lookup: _FolderPathLookup = (
+        ensure_folder_path_lookup(
+            Path(original_folder.path),
+            extensions,
+            fallback_model_indexes,
+            recursive=options.recursive,
+            cancel_check=cancel_check,
         )
         if original_folder is not None
-        else {}
+        else ({}, {}, {})
     )
-    original_lookup = _build_folder_path_lookup(original_index)
-    fallback_model_indexes: dict[str, _FolderPathLookup] = {}
-    fallback_prob_indexes: dict[str, _FolderPathLookup] = {}
 
     records: list[FrameRecord] = []
     sorted_keys = sorted(base_index.keys(), key=natural_sort_key)
+    match_total = len(sorted_keys)
+    stage_enter("index.match", frames=match_total)
     for index, key in enumerate(sorted_keys):
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
@@ -1359,7 +1404,6 @@ def _collect_frame_records_modern(
                 fallback_prob_indexes,
                 recursive=options.recursive,
                 cancel_check=cancel_check,
-                progress_callback=progress_callback,
             )
             model_prob_paths[base_spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
         else:
@@ -1373,7 +1417,6 @@ def _collect_frame_records_modern(
                 fallback_model_indexes,
                 recursive=options.recursive,
                 cancel_check=cancel_check,
-                progress_callback=progress_callback,
             )
             if resolved is None:
                 missing_required_model = True
@@ -1387,7 +1430,6 @@ def _collect_frame_records_modern(
                     fallback_prob_indexes,
                     recursive=options.recursive,
                     cancel_check=cancel_check,
-                    progress_callback=progress_callback,
                 )
                 model_prob_paths[spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
             else:
@@ -1412,10 +1454,15 @@ def _collect_frame_records_modern(
         )
         if progress_callback is not None and (
             index == 0
-            or (index + 1) % max(1, int(options.progress_update_interval)) == 0
-            or index + 1 == len(sorted_keys)
+            or (index + 1) % max(1, progress_interval) == 0
+            or index + 1 == match_total
+            or (index + 1) % 1000 == 0
         ):
-            progress_callback(index + 1, len(sorted_keys), key)
+            progress_callback(index + 1, match_total, f"match:{key}")
+            if (index + 1) % 1000 == 0:
+                log_event("index.match_progress", done=index + 1, total=match_total, pid=os.getpid())
+    stage_exit("index.match", records=len(records), scanned=match_total)
+    stage_exit("index.prepare", records=len(records))
     return BuildResult(
         records=tuple(records),
         model_specs=model_specs,
@@ -1602,7 +1649,11 @@ def compute_build_result_analytics(
             score_ready=False,
             summary=None,
         )
+    payloads_received = 0
+    payloads_null = 0
+    payloads_unmatched = 0
     try:
+        begin_analysis_cache_run()
         payload_iter = _iter_record_payloads(
             records_to_analyze,
             build_result.model_specs,
@@ -1634,10 +1685,13 @@ def compute_build_result_analytics(
             cancel_check=cancel_check,
         )
         for record_key, payload in payload_iter:
+            payloads_received += 1
             if payload is None:
+                payloads_null += 1
                 continue
             record = records_by_key.get(str(record_key))
             if record is None:
+                payloads_unmatched += 1
                 continue
             disagreement = float(payload.get("disagreement", 0.0))
             model_model_score = float(payload.get("model_model_score", 0.0))
@@ -1716,7 +1770,22 @@ def compute_build_result_analytics(
             )
             updated_records_by_key[str(record.key)] = replace(record, summary=summary)
     finally:
+        end_analysis_cache_run(force_trim=True)
         _clear_runtime_image_caches()
+
+    for record in records:
+        record_key = str(record.key)
+        if record_key in updated_records_by_key or record_key in excluded_keys:
+            continue
+        updated_records_by_key[record_key] = replace(
+            record,
+            score=0.0,
+            absolute_score=None,
+            relative_score=None,
+            score_percentile=None,
+            score_ready=False,
+            summary=None,
+        )
 
     updated_records = [
         updated_records_by_key[str(record.key)] for record in records if str(record.key) in updated_records_by_key
@@ -1725,9 +1794,13 @@ def compute_build_result_analytics(
         active_metric
     )
     metric_values_by_key: dict[str, float] = {}
+    nan_count = 0
     for record in updated_records:
         value = _record_metric_value(record.summary, active_metric)
         if value is None and metric_is_required:
+            continue
+        if value is not None and not np.isfinite(float(value)):
+            nan_count += 1
             continue
         metric_values_by_key[str(record.key)] = float(value or 0.0)
     absolute_scores = list(metric_values_by_key.values())
@@ -1771,6 +1844,43 @@ def compute_build_result_analytics(
     scored_records = [
         replace(record, score_percentile=float(percentile_map.get(record.key, 0.0))) for record in scored_records
     ]
+    layer_match_counts: dict[str, int] = {}
+    for record in scored_records:
+        summary = record.summary
+        if summary is None:
+            continue
+        for metric_name, raw_value in getattr(summary, "metric_values", {}).items():
+            if raw_value is None:
+                continue
+            layer_match_counts[str(metric_name)] = int(layer_match_counts.get(str(metric_name), 0)) + 1
+    ready_count = sum(1 for record in scored_records if bool(getattr(record, "score_ready", False)))
+    try:
+        from .diagnostics import log_event
+
+        log_event(
+            "analytics.aggregate",
+            received=int(payloads_received),
+            null_payloads=int(payloads_null),
+            unmatched_keys=int(payloads_unmatched),
+            indexed=len(records),
+            aggregated=len(updated_records),
+            active_metric=str(active_metric),
+            matched_active=len(metric_values_by_key),
+            score_ready=int(ready_count),
+            nan=int(nan_count),
+            percentiles=len(percentile_map),
+            layers=dict(sorted(layer_match_counts.items())[:32]),
+        )
+        if ready_count <= 0:
+            log_event(
+                "analytics.aggregate.empty",
+                active_metric=str(active_metric),
+                reason="no_finite_metric_values",
+                received=int(payloads_received),
+                matched_active=0,
+            )
+    except Exception:
+        pass
     available_metric_keys: list[str] = []
     seen_metric_keys: set[str] = set()
     for metric_key_candidate in _available_metric_keys_for_models(build_result.model_specs, scored_records):

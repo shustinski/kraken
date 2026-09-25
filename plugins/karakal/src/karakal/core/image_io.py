@@ -204,6 +204,10 @@ def build_folder_index(
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
         index[image_path.relative_to(folder).as_posix()] = image_path
+        try:
+            register_path_signature(image_path)
+        except OSError:
+            pass
     if progress_callback is not None:
         progress_callback(len(index), len(index), Path(folder).name)
     return index
@@ -240,7 +244,17 @@ def _rgb_array_to_qimage(array: np.ndarray) -> QImage:
 
 
 def _load_grayscale_image_raw(path: Path) -> np.ndarray:
-    image = QImage(str(path))
+    source_path = Path(path)
+    if cv2 is not None:
+        try:
+            encoded = np.fromfile(str(source_path), dtype=np.uint8)
+            if encoded.size > 0:
+                decoded = cv2.imdecode(encoded, cv2.IMREAD_GRAYSCALE)
+                if decoded is not None:
+                    return np.asarray(decoded, dtype=np.uint8)
+        except (OSError, ValueError, cv2.error) as error:
+            _LOGGER.debug("OpenCV could not decode %s; using Qt fallback: %s", source_path, error)
+    image = QImage(str(source_path))
     if image.isNull():
         raise ValueError(f"Unable to decode image: {path}")
     return _qimage_to_grayscale_array(image)
@@ -483,6 +497,43 @@ def _resolve_model_path_from_known_key(folder: Path, key: str, extensions: tuple
     return None
 
 
+def _folder_cache_key(folder: Path) -> str:
+    """Stable cache key without per-call ``Path.resolve()`` (avoids Win32 getfinalpathname)."""
+
+    return os.path.normcase(os.path.abspath(str(folder)))
+
+
+def ensure_folder_path_lookup(
+    folder: Path,
+    extensions: tuple[str, ...],
+    fallback_index_cache: dict[str, _FolderPathLookup],
+    *,
+    recursive: bool,
+    cancel_check=None,
+    progress_callback=None,
+    progress_interval: int = 2048,
+) -> _FolderPathLookup:
+    """Index a folder once and reuse the name/stem lookup for all frame keys."""
+
+    cache_key = _folder_cache_key(folder)
+    cached = fallback_index_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    if cancel_check is not None and cancel_check():
+        raise BuildCancelledError("Build cancelled")
+    index = build_folder_index(
+        folder,
+        recursive=recursive,
+        extensions=extensions,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+        progress_interval=progress_interval,
+    )
+    lookup = _build_folder_path_lookup(index)
+    fallback_index_cache[cache_key] = lookup
+    return lookup
+
+
 def _resolve_model_path_for_key(
     folder: Path,
     key: str,
@@ -493,24 +544,14 @@ def _resolve_model_path_for_key(
     cancel_check=None,
     progress_callback=None,
 ) -> Path | None:
-    cache_key = str(folder.resolve())
-    lookup = fallback_index_cache.get(cache_key)
-    if lookup is not None:
-        return _resolve_aux_path_from_lookup(key, lookup)
-    resolved = _resolve_model_path_from_known_key(folder, key, extensions)
-    if resolved is not None:
-        return resolved
-    if cancel_check is not None and cancel_check():
-        raise BuildCancelledError("Build cancelled")
-    index = build_folder_index(
+    lookup = ensure_folder_path_lookup(
         folder,
+        extensions,
+        fallback_index_cache,
         recursive=recursive,
-        extensions=extensions,
         cancel_check=cancel_check,
         progress_callback=progress_callback,
     )
-    lookup = _build_folder_path_lookup(index)
-    fallback_index_cache[cache_key] = lookup
     return _resolve_aux_path_from_lookup(key, lookup)
 
 
@@ -521,12 +562,6 @@ def _fit_shape_to_max_side(shape: tuple[int, int], max_side: int | None) -> tupl
         return height, width
     scale = float(limit) / float(max(height, width))
     return max(1, int(round(height * scale))), max(1, int(round(width * scale)))
-
-
-def _image_signature(path: Path) -> tuple[str, int, int]:
-    resolved = Path(path).resolve()
-    stat = resolved.stat()
-    return str(resolved), int(stat.st_mtime_ns), int(stat.st_size)
 
 
 _DEFAULT_IMAGE_CACHE_BYTES = int(PerformanceConfig().ram_cache_limit_mb) * 1024 * 1024 // 2
@@ -540,6 +575,41 @@ _RESIZED_IMAGE_CACHE: ByteLruCache[tuple[str, int, int, tuple[int, int]], np.nda
     _DEFAULT_IMAGE_CACHE_BYTES,
     max_items=IMAGE_CACHE_SIZE,
 )
+
+# Path text -> (normalized_path, mtime_ns, size). Filled during folder indexing.
+_PATH_SIGNATURE_CACHE: dict[str, tuple[str, int, int]] = {}
+
+
+def register_path_signature(path: Path | str, *, signature: tuple[str, int, int] | None = None) -> tuple[str, int, int]:
+    """Record a path signature once (indexing) so analytics avoids resolve/stat per frame."""
+
+    path_obj = Path(path)
+    key = str(path_obj)
+    if signature is not None:
+        resolved = (str(signature[0]), int(signature[1]), int(signature[2]))
+        _PATH_SIGNATURE_CACHE[key] = resolved
+        return resolved
+    cached = _PATH_SIGNATURE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    target = path_obj if path_obj.is_absolute() else path_obj.resolve()
+    stat = target.stat()
+    resolved = (str(target), int(stat.st_mtime_ns), int(stat.st_size))
+    _PATH_SIGNATURE_CACHE[key] = resolved
+    _PATH_SIGNATURE_CACHE[str(target)] = resolved
+    return resolved
+
+
+def clear_path_signature_cache() -> None:
+    _PATH_SIGNATURE_CACHE.clear()
+
+
+def _image_signature(path: Path) -> tuple[str, int, int]:
+    key = str(path)
+    cached = _PATH_SIGNATURE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    return register_path_signature(path)
 
 
 def _load_grayscale_image_cached(path_text: str, _mtime_ns: int, _size: int) -> np.ndarray:

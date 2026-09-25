@@ -6,6 +6,7 @@ from time import perf_counter
 
 import cv2
 import numpy as np
+import pytest
 
 from karakal.core.grid_anomaly import (
     GridCellAnalysisResult,
@@ -58,7 +59,7 @@ def _frame_from_cells(cells: list[GridCellAnalysisResult]) -> GridFrameAnalysisR
     )
 
 
-def test_calibrated_1500_cells_stays_within_budget() -> None:
+def _calibrated_1500_elapsed_ms() -> tuple[float, int]:
     image = _dense_outline(1500)
     config = GridDamageAnalysisConfig(
         cell_representation="binary",
@@ -72,8 +73,24 @@ def test_calibrated_1500_cells_stays_within_budget() -> None:
     started = perf_counter()
     result = detect_grid_cell_anomalies(image, config=config)
     elapsed_ms = (perf_counter() - started) * 1000.0
-    assert len(result.cells) >= 1400
-    assert elapsed_ms <= 800.0  # 150 ms target on a worker; local Windows contour path needs headroom
+    return elapsed_ms, len(result.cells)
+
+
+def test_calibrated_1500_cells_stays_within_degradation_budget() -> None:
+    """Regression guard: calibrated path must not regress past 800 ms on this host."""
+    elapsed_ms, cell_count = _calibrated_1500_elapsed_ms()
+    assert cell_count >= 1400
+    assert elapsed_ms <= 800.0
+
+
+@pytest.mark.xfail(
+    strict=False,
+    reason="P4 target is 150 ms per 1500-cell frame; current Windows contour path still exceeds it",
+)
+def test_calibrated_1500_cells_meets_150ms_target() -> None:
+    elapsed_ms, cell_count = _calibrated_1500_elapsed_ms()
+    assert cell_count >= 1400
+    assert elapsed_ms <= 150.0
 
 
 def test_decision_recompute_stays_within_budget() -> None:

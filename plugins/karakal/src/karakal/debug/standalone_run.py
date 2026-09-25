@@ -107,7 +107,13 @@ def main() -> int:
     from PyQt6.QtWidgets import QApplication
 
     mp.freeze_support()
-    _install_crash_logging()
+    try:
+        from karakal.core.diagnostics import install_diagnostics
+
+        install_diagnostics(hang_interval_seconds=30.0)
+    except Exception as error:
+        _LOGGER.warning("Could not install Karakal diagnostics: %s", error)
+        _install_crash_logging()
     _set_windows_app_user_model_id()
     app = QApplication(sys.argv)
     app.setApplicationName("Karakal")

@@ -14,7 +14,7 @@ from math import isfinite
 from pathlib import Path
 from time import perf_counter
 
-from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt
+from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
     QApplication,
@@ -163,6 +163,23 @@ from ..ui.ui_constants import (
 from .state import ExtendMatrixTabState
 
 _PRESENTER_ORPHAN_THREADS: set[tuple[QThread, object]] = set()
+
+
+class _GridDetailsAnalyzeWorker(QObject):
+    """Run analyze_grid_frame_path off the UI thread when opening details."""
+
+    finished = pyqtSignal(object, object, object)
+
+    def __init__(self, analyze_callable) -> None:
+        super().__init__()
+        self._analyze_callable = analyze_callable
+
+    def run(self) -> None:
+        try:
+            result, cells = self._analyze_callable()
+            self.finished.emit(result, cells, None)
+        except Exception as error:  # noqa: BLE001 - surfaced to UI
+            self.finished.emit(None, (), error)
 
 
 def _release_presenter_orphan(worker: object, thread: QThread) -> None:
@@ -2252,15 +2269,32 @@ class KarakalPresenter(QObject):
 
     def _progress_format_text(self, current: int, total: int, key: str) -> str:
         frame_label = Path(key).name if key else ""
+        stage_label = ""
+        if key and ":" in str(key) and not Path(key).suffix:
+            stage_label = str(key).split(":", 1)[0]
+        elif key and str(key).startswith(("index:", "match:", "analytics:", "Waiting")):
+            stage_label = str(key).split(":", 1)[0] if ":" in str(key) else str(key)
         running_count = len(self._active_processing_keys)
         parts: list[str] = []
+        if stage_label:
+            parts.append(stage_label)
         if total > 0:
             parts.append(f"{current}/{total}")
+            started = float(getattr(self, "_active_progress_started_at", 0.0) or 0.0)
+            if started > 0 and current > 0:
+                from time import monotonic
+
+                elapsed = max(0.001, monotonic() - started)
+                rate = current / elapsed
+                remaining = max(0, total - current)
+                eta_s = int(remaining / rate) if rate > 0 else 0
+                if eta_s > 0:
+                    parts.append(f"ETA {eta_s // 60:d}:{eta_s % 60:02d}")
         else:
             parts.append("Working...")
         if running_count > 0:
-            parts.append(f"active {running_count}")
-        if frame_label:
+            parts.append(f"workers {running_count}")
+        if frame_label and frame_label != stage_label:
             parts.append(frame_label)
         return " | ".join(parts)
 
@@ -3770,18 +3804,28 @@ class KarakalPresenter(QObject):
     def _show_progress_bar(
         self, *, visible: bool, current: int = 0, total: int = 0, key: str = "", format_text: str | None = None
     ) -> None:
+        from time import monotonic
+
         if not visible:
             self.build_progress.hide()
             self.build_progress.setRange(0, 1)
             self.build_progress.setValue(0)
+            self._active_progress_started_at = 0.0
             return
+        if not getattr(self, "_active_progress_started_at", 0.0):
+            self._active_progress_started_at = monotonic()
+        self._active_progress_current = int(current)
+        self._active_progress_total = int(total)
+        self._active_progress_key = str(key or "")
         if total > 0:
             self.build_progress.setRange(0, total)
             self.build_progress.setValue(min(current, total))
-            self.build_progress.setFormat(format_text or f"{current}/{total}")
+            self.build_progress.setFormat(
+                format_text or self._progress_format_text(current, total, key)
+            )
         else:
             self.build_progress.setRange(0, 0)
-            self.build_progress.setFormat(format_text or "Working...")
+            self.build_progress.setFormat(format_text or self._progress_format_text(current, total, key) or "Working...")
         self.build_progress.setToolTip(key)
         self.build_progress.show()
 
@@ -4469,6 +4513,9 @@ class KarakalPresenter(QObject):
         )
         self._worker.finished.connect(lambda result, g=generation: self._on_build_finished(result, generation=g))
         self._worker.failed.connect(lambda message, g=generation: self._on_worker_failed(message, generation=g))
+        if hasattr(self._worker, "cancelled"):
+            self._worker.cancelled.connect(lambda g=generation: self._on_worker_failed("cancelled", generation=g))
+            self._worker.cancelled.connect(self._worker_thread.quit)
         self._worker.finished.connect(self._worker_thread.quit)
         self._worker.failed.connect(self._worker_thread.quit)
         self._worker_thread.finished.connect(self._cleanup_worker)
@@ -4519,7 +4566,10 @@ class KarakalPresenter(QObject):
             )
         )
         self._worker.failed.connect(lambda message, g=generation: self._on_worker_failed(message, generation=g))
-        self._worker.finished.connect(self._worker_thread.quit)
+        if hasattr(self._worker, "cancelled"):
+            self._worker.cancelled.connect(lambda g=generation: self._on_worker_failed("cancelled", generation=g))
+            self._worker.cancelled.connect(self._worker_thread.quit)
+        # Quit only after the finished slot returns so apply cannot race cleanup.
         self._worker.failed.connect(self._worker_thread.quit)
         self._worker_thread.finished.connect(self._cleanup_worker)
         self._worker_thread.start()
@@ -4736,7 +4786,10 @@ class KarakalPresenter(QObject):
         auto_compute_state = self._auto_compute_state_after_cleanup
         self._auto_compute_state_after_cleanup = None
         if auto_compute_state is not None and auto_compute_state.widget in self._tab_states:
-            QTimer.singleShot(0, self._on_compute_requested)
+            # Scenario A: start metrics after the index worker is fully cleaned up.
+            QTimer.singleShot(0, lambda s=auto_compute_state: self._start_compute_analytics(state=s, sync_context=True))
+            return
+        self._sync_action_buttons()
 
     def _merge_grid_layer_results(self, layers: dict[str, object]) -> GridFrameAnalysisResult | None:
         """Unified matrix uses the mask layer. Confidence verdicts stay out of the defect score."""
@@ -5397,6 +5450,8 @@ class KarakalPresenter(QObject):
         if not self._is_active_request_generation(generation):
             return
         snapshot = self._pending_build_snapshot or self._capture_view_snapshot()
+        # Drop the busy bar before heavy UI materialization so prepare no longer looks hung.
+        self._show_progress_bar(visible=False)
         snapshot["confidence_model_id"] = (
             snapshot.get("confidence_model_id") or snapshot.get("metric_scope") or default_confidence_model_id(result)
         )
@@ -5414,7 +5469,6 @@ class KarakalPresenter(QObject):
         self._last_active_tab_state = state
         self._connect_histogram_cards(state)
         ok = self._apply_tab_visual_settings(state, reset_view=True, update_histograms=False)
-        self._show_progress_bar(visible=False)
         if not ok:
             self._auto_compute_after_build = False
             self._auto_compute_state_after_cleanup = None
@@ -5447,42 +5501,109 @@ class KarakalPresenter(QObject):
     def _on_analytics_finished(
         self, result: BuildResult, *, generation: int | None = None, request_signature: tuple[object, ...] | None = None
     ) -> None:
-        if not self._is_active_request_generation(generation):
-            return
-        state = self._active_compute_state or self._current_tab_state()
-        self._show_progress_bar(visible=False)
-        if state is None:
-            return
-        if request_signature is not None and request_signature != self._analytics_request_signature(state):
-            self._deferred_analytics_restart = (state, False)
-            return
-        state.matrix_view.set_processing_keys(set())
-        state.processing_state_by_key.clear()
-        state.build_result = result
-        state.last_analytics_request_signature = request_signature or self._analytics_request_signature(
-            state, state.metric_key
-        )
-        state.grid_inspection_results_ready = False
-        state.grid_inspection_payload_by_key = {}
-        state.grid_inspection_payloads_by_layer = {}
-        self._invalidate_state_runtime_caches(state, clear_metric_results=True)
-        self._sync_metric_controls(
-            result,
-            preferred_metric_key=result.selected_metric_key,
-            preferred_scope_key=state.confidence_model_id or state.metric_scope,
-            context_state=state,
-        )
-        state.confidence_model_id = self._selected_confidence_model_id(result)
-        state.metric_scope = str(state.confidence_model_id or "")
-        state.metric_key = str(
-            self.metric_combo.currentData()
-            or result.selected_metric_key
-            or self._default_metric_key_for_state(state, result)
-        )
-        self._apply_metric_to_state(state, state.metric_key)
-        if self._current_app_mode() == "grid_inspection":
-            self._refresh_grid_inspection_mode_view()
-        self._sync_action_buttons()
+        from ..core.diagnostics import log_event
+
+        thread = self._worker_thread
+        try:
+            if not self._is_active_request_generation(generation):
+                log_event(
+                    "analytics.apply.dropped",
+                    reason="stale_generation",
+                    generation=generation,
+                    active=self._active_request_generation,
+                    records=len(getattr(result, "records", ()) or ()),
+                )
+                return
+            state = self._active_compute_state or self._current_tab_state()
+            self._show_progress_bar(visible=False)
+            if state is None:
+                log_event("analytics.apply.dropped", reason="no_state")
+                return
+            current_signature = self._analytics_request_signature(state)
+            signature_mismatch = (
+                request_signature is not None and request_signature != current_signature
+            )
+            if signature_mismatch:
+                # Still apply the completed result — discarding a long run leaves a gray matrix.
+                log_event(
+                    "analytics.apply.signature_mismatch",
+                    apply_anyway=True,
+                    records=len(getattr(result, "records", ()) or ()),
+                )
+                self._deferred_analytics_restart = None
+            state.matrix_view.set_processing_keys(set())
+            state.processing_state_by_key.clear()
+            state.build_result = result
+            state.last_analytics_request_signature = request_signature or current_signature
+            state.grid_inspection_results_ready = False
+            state.grid_inspection_payload_by_key = {}
+            state.grid_inspection_payloads_by_layer = {}
+            self._invalidate_state_runtime_caches(state, clear_metric_results=True)
+            self._sync_metric_controls(
+                result,
+                preferred_metric_key=result.selected_metric_key,
+                preferred_scope_key=state.confidence_model_id or state.metric_scope,
+                context_state=state,
+            )
+            state.confidence_model_id = self._selected_confidence_model_id(result)
+            state.metric_scope = str(state.confidence_model_id or "")
+            state.metric_key = str(
+                self.metric_combo.currentData()
+                or result.selected_metric_key
+                or self._default_metric_key_for_state(state, result)
+            )
+            ready_before = sum(
+                1 for record in getattr(result, "records", ()) or () if bool(getattr(record, "score_ready", False))
+            )
+            log_event(
+                "analytics.apply.received",
+                records=len(getattr(result, "records", ()) or ()),
+                score_ready=int(ready_before),
+                metric=str(state.metric_key),
+                selected_metric=str(getattr(result, "selected_metric_key", "") or ""),
+            )
+            self._apply_metric_to_state(state, state.metric_key, allow_recompute=False)
+            ready_after = sum(
+                1
+                for record in getattr(state.build_result, "records", ()) or ()
+                if bool(getattr(record, "score_ready", False))
+            )
+            percentile_ready = sum(
+                1
+                for record in getattr(state.build_result, "records", ()) or ()
+                if getattr(record, "score_percentile", None) is not None
+            )
+            log_event(
+                "analytics.apply.done",
+                metric=str(state.metric_key),
+                score_ready=int(ready_after),
+                percentiles=int(percentile_ready),
+            )
+            if ready_after <= 0:
+                log_event(
+                    "analytics.apply.empty",
+                    metric=str(state.metric_key),
+                    reason="no_score_ready_after_apply",
+                )
+                QMessageBox.information(
+                    self._view,
+                    self._t("dialog.info_title"),
+                    self._t(
+                        "matrix.info.analytics_empty",
+                        metric=str(state.metric_key or result.selected_metric_key or ""),
+                    ),
+                )
+            if self._current_app_mode() == "grid_inspection":
+                self._refresh_grid_inspection_mode_view()
+            self._sync_action_buttons()
+        except Exception as error:
+            log_event("analytics.apply.failed", error=str(error))
+            from ..core.diagnostics import log_exception
+
+            log_exception("presenter._on_analytics_finished", error)
+        finally:
+            if thread is not None:
+                thread.quit()
 
     def _on_worker_failed(self, message: str, *, generation: int | None = None) -> None:
         if not self._is_active_request_generation(generation):
@@ -5500,7 +5621,9 @@ class KarakalPresenter(QObject):
             self._view, self._t("dialog.warning_title"), message or self._t("errors.background_failed")
         )
 
-    def _apply_metric_to_state(self, state: ExtendMatrixTabState, metric_key: str) -> None:
+    def _apply_metric_to_state(
+        self, state: ExtendMatrixTabState, metric_key: str, *, allow_recompute: bool = True
+    ) -> None:
         available = set(state.build_result.available_metric_keys or ())
         can_request_dynamic_metric = self._is_dynamic_pair_metric_key(metric_key) and bool(
             getattr(state.build_result, "scores_computed", False)
@@ -5516,10 +5639,15 @@ class KarakalPresenter(QObject):
             self._apply_tab_visual_settings(state, reset_view=False)
             return
         if self._metric_value_missing_for_build_result(state.build_result, metric_key):
-            if self._worker is None and bool(getattr(state.build_result, "scores_computed", False)):
+            if (
+                allow_recompute
+                and self._worker is None
+                and bool(getattr(state.build_result, "scores_computed", False))
+            ):
                 self._start_compute_analytics(state=state, sync_context=False)
-            else:
-                self._apply_tab_visual_settings(state, reset_view=False)
+                return
+            # Keep worker-computed score_ready flags (do not block on live worker).
+            self._apply_tab_visual_settings(state, reset_view=False)
             return
         updated_records: list[FrameRecord] = []
         absolute_scores: list[float] = []
@@ -5836,19 +5964,11 @@ class KarakalPresenter(QObject):
         grid_example_cells = ()
         grid_inspection_source_path = None
         grid_detail_message = None
+        pending_grid_analyze = False
         if is_grid_inspection_details:
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
-            try:
-                grid_inspection_result, grid_example_cells = self._analyze_grid_record_for_details(
-                    record, state, self._grid_tuning_values()
-                )
-            except Exception as error:
-                grid_inspection_result = None
-                grid_example_cells = ()
-                grid_detail_message = self._t("grid_tuning.preview_failed", message=error)
-            else:
-                if grid_inspection_result is None:
-                    grid_detail_message = self._t("grid_tuning.preview_no_mask")
+            pending_grid_analyze = True
+            grid_detail_message = self._t("grid_tuning.preview_loading")
         allowed_result_kinds = None
         if is_grid_inspection_details:
             allowed_result_kinds = ("grid_cell_defects",)
@@ -5895,12 +6015,73 @@ class KarakalPresenter(QObject):
         dialog.destroyed.connect(lambda *_args, dialog=dialog: self._forget_details_dialog(dialog))
         self._details_dialogs.append(dialog)
         dialog.show()
-        if grid_focus:
+        if pending_grid_analyze:
+            self._start_grid_details_analyze(dialog, record, state, grid_focus=grid_focus)
+        elif grid_focus:
             focus = getattr(dialog, "focus_grid_cell_defect", None)
             if callable(focus):
                 focus(grid_focus)
         dialog.raise_()
         dialog.activateWindow()
+
+    def _start_grid_details_analyze(
+        self,
+        dialog,
+        record: FrameRecord,
+        state: ExtendMatrixTabState,
+        *,
+        grid_focus: dict[str, object] | None = None,
+    ) -> None:
+        tuning_values = self._grid_tuning_values()
+        worker = _GridDetailsAnalyzeWorker(
+            lambda: self._analyze_grid_record_for_details(record, state, tuning_values)
+        )
+        thread = QThread()
+        worker.moveToThread(thread)
+        holders = getattr(self, "_grid_details_threads", None)
+        if holders is None:
+            holders = []
+            self._grid_details_threads = holders
+        holders.append((thread, worker))
+
+        def _on_done(result, cells, error, details=dialog, focus=grid_focus) -> None:
+            if details not in self._details_dialogs:
+                thread.quit()
+                return
+            if error is not None:
+                details.show_grid_preview_message(
+                    self._t("grid_tuning.preview_failed", message=error)
+                )
+            elif result is None:
+                details.show_grid_preview_message(self._t("grid_tuning.preview_no_mask"))
+            else:
+                apply_preview = getattr(details, "apply_grid_inspection_preview", None)
+                if callable(apply_preview):
+                    apply_preview(result, cells or ())
+                else:
+                    details.set_grid_example_candidates(cells or ())
+                if focus:
+                    focus_fn = getattr(details, "focus_grid_cell_defect", None)
+                    if callable(focus_fn):
+                        focus_fn(focus)
+            thread.quit()
+
+        def _cleanup(*_args) -> None:
+            try:
+                holders.remove((thread, worker))
+            except ValueError:
+                pass
+            worker.deleteLater()
+            thread.deleteLater()
+            if not holders and self._worker_thread is None:
+                self._show_progress_bar(visible=False)
+
+        worker.finished.connect(_on_done)
+        thread.started.connect(worker.run)
+        thread.finished.connect(_cleanup)
+        if self._worker_thread is None:
+            self._show_progress_bar(visible=True, format_text="Loading frame details...")
+        thread.start()
 
     def _on_matrix_context_menu(
         self, state: ExtendMatrixTabState, record: FrameRecord | None, global_pos, matrix_view=None

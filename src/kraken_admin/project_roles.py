@@ -13,12 +13,19 @@ from kraken_manager.domain.identity import Principal, ProjectRole, SystemRole
 from kraken_manager.domain.roles import CATALOG, cascade_lost_assignments
 
 
-def administrator(accounts) -> Principal:
-    from .local_admin import _local_administrator
+CONSOLE_ACTOR_ID = "6f0e2c2a-6a1e-5b1a-9c1a-6d6e6e6e0001"
 
-    account = _local_administrator(accounts)
+
+def administrator(accounts=None) -> Principal:
+    """Actor for Kraken Admin. The console is authorized without a user role."""
+
+    del accounts
     return replace(
-        Principal.local(subject=account.username, display_name=account.display_name, principal_id=account.account_id),
+        Principal.local(
+            subject="kraken-admin",
+            display_name="Kraken Admin",
+            principal_id=CONSOLE_ACTOR_ID,
+        ),
         system_roles=frozenset({SystemRole.SERVER_ADMIN}),
     )
 

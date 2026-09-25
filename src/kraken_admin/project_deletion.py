@@ -63,6 +63,175 @@ def project_predicate(table, project_id: str, *, other: bool = False, visited=fr
     return sa.or_(*conditions) if conditions else None
 
 
+def directories_outside_project(workspace: dict, owned_roots: list[Path]) -> list[str]:
+    """Layer folders that are not inside this project's server trees.
+
+    Deletion leaves them on disk. They must not block removal of the project.
+    """
+
+    roots = [path.resolve() for path in owned_roots]
+    outside: list[str] = []
+    layers = workspace.get("layers", {})
+    if not isinstance(layers, dict):
+        return outside
+    for layer in layers.values():
+        if not isinstance(layer, dict):
+            continue
+        for key in ("image_directory", "ssc_directory", "prv_directory", "aux_directory", "import_root"):
+            raw = layer.get(key)
+            if not raw:
+                continue
+            try:
+                directory = Path(str(raw)).resolve()
+            except OSError:
+                outside.append(str(raw))
+                continue
+            if any(directory == root or directory.is_relative_to(root) for root in roots):
+                continue
+            text = str(directory)
+            if text not in outside:
+                outside.append(text)
+    return outside
+
+
+def _contained(path: Path, root: Path) -> bool:
+    try:
+        candidate = path.resolve()
+        base = root.resolve()
+    except OSError:
+        return False
+    return candidate != base and candidate.is_relative_to(base)
+
+
+def _overlaps(left: Path, right: Path) -> bool:
+    try:
+        first, second = left.resolve(), right.resolve()
+    except OSError:
+        return False
+    return first == second or first.is_relative_to(second) or second.is_relative_to(first)
+
+
+def project_storage_paths(
+    *,
+    project_name: str,
+    source_root: Path,
+    derived_root: Path,
+    binding,
+    recorded_source: str | None,
+    recorded_derived: str | None,
+    claimed_directories: list[str],
+) -> tuple[list[tuple[Path, Path]], list[str]]:
+    """Folders this project may delete when the workspace registry is missing.
+
+    A registry binding is authoritative. Without it, recorded catalog directories
+    inside the configured roots are used, then the conventional ``<root>/<name>``
+    layout when that folder is not claimed by another project. Directories that
+    cannot be owned are left on disk and do not block deletion of the project.
+    """
+
+    if binding is not None:
+        return [
+            (Path(binding.source_project_dir), source_root),
+            (Path(binding.derived_project_dir), derived_root),
+        ], []
+
+    owned: list[tuple[Path, Path]] = []
+    untouched: list[str] = []
+    claimed = [Path(item) for item in claimed_directories if item]
+
+    def add(path: Path, root: Path) -> None:
+        if any(_overlaps(path, existing) for existing, _root in owned):
+            return
+        owned.append((path, root))
+
+    for raw, root in ((recorded_source, source_root), (recorded_derived, derived_root)):
+        if not raw:
+            continue
+        path = Path(str(raw))
+        if not _contained(path, root):
+            text = str(path)
+            if text not in untouched:
+                untouched.append(text)
+            continue
+        if any(_overlaps(path, other) for other in claimed):
+            raise ValueError(f"Папка используется другим проектом: {path}")
+        add(path, root)
+
+    for path, root in (
+        (source_root / project_name, source_root),
+        (derived_root / project_name, derived_root),
+    ):
+        if not path.is_dir() or not _contained(path, root):
+            continue
+        if any(_overlaps(path, other) for other in claimed):
+            text = str(path.resolve())
+            if text not in untouched:
+                untouched.append(text)
+            continue
+        add(path, root)
+    return owned, untouched
+
+
+def _storage_records(engine, project_id: str) -> tuple[str | None, str | None, list[str], list[str]]:
+    """Catalog directories for this project, other projects, and its layers."""
+
+    source = derived = None
+    claimed: list[str] = []
+    layers: list[str] = []
+    with engine.connect() as connection:
+        inspector = sa.inspect(connection)
+        tables = set(inspector.get_table_names())
+        if "projects" in tables:
+            columns = {column["name"] for column in inspector.get_columns("projects")}
+            if {"project_id", "source_directory", "derived_directory"} <= columns:
+                rows = connection.execute(sa.text(
+                    "SELECT project_id, source_directory, derived_directory FROM projects"
+                )).mappings()
+                for row in rows:
+                    directories = (row["source_directory"], row["derived_directory"])
+                    if str(row["project_id"]) == project_id:
+                        source, derived = directories
+                    else:
+                        claimed.extend(str(item) for item in directories if item)
+        if "layers" in tables and "image_directory" in {
+            column["name"] for column in inspector.get_columns("layers")
+        }:
+            rows = connection.execute(sa.text(
+                "SELECT project_id, image_directory FROM layers"
+            )).mappings()
+            layers = [
+                str(row["image_directory"])
+                for row in rows
+                if str(row["project_id"]) == project_id and row["image_directory"]
+            ]
+    return source, derived, claimed, layers
+
+
+def _workspace_manifest(registry, project_id: str, layer_directories: list[str]) -> dict:
+    path = registry._path(project_id)
+    payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"layers": {}}
+    if not isinstance(payload, dict):
+        payload = {"layers": {}}
+    layers = payload.get("layers")
+    if not isinstance(layers, dict):
+        layers = {}
+    else:
+        layers = dict(layers)
+    known = {
+        str(layer.get(key))
+        for layer in layers.values()
+        if isinstance(layer, dict)
+        for key in ("image_directory", "ssc_directory", "prv_directory", "aux_directory", "import_root")
+        if layer.get(key)
+    }
+    for directory in layer_directories:
+        if directory in known:
+            continue
+        layers[f"catalog-{len(layers)}"] = {"image_directory": directory}
+    payload["layers"] = layers
+    return payload
+
+
 def assert_unshared(registry, project_id: str, paths: list[Path]) -> None:
     for manifest in (registry.catalog_root / "projects").glob("*/workspace.json"):
         other = json.loads(manifest.read_text(encoding="utf-8"))
@@ -99,7 +268,7 @@ class ProjectDeletion:
         return metadata
 
     def preview(self, request_id: str) -> dict:
-        rows = [row for row in self.requests.list() if row["request_id"] == request_id]
+        rows = [row for row in self.requests.list() if str(row["request_id"]) == str(request_id)]
         if not rows:
             raise ValueError("Заявка не найдена")
         row = rows[0]
@@ -111,26 +280,36 @@ class ProjectDeletion:
         project = self.services.get_project(project_id)
         registry = self.services.workspace_files.registry
         binding = registry.get_project(project_id)
-        if binding is None:
-            raise ValueError("Нет реестра папок проекта; принадлежность файлов нельзя проверить")
+        recorded_source, recorded_derived, claimed, layer_directories = _storage_records(
+            self.services.engine, project_id,
+        )
+        owned, outside = project_storage_paths(
+            project_name=str(project["name"]),
+            source_root=Path(self.config.source_root),
+            derived_root=Path(self.config.derived_root),
+            binding=binding,
+            recorded_source=recorded_source,
+            recorded_derived=recorded_derived,
+            claimed_directories=claimed,
+        )
         paths = [
-            (Path(binding.source_project_dir), self.config.source_root),
-            (Path(binding.derived_project_dir), self.config.derived_root),
+            *owned,
             (registry.catalog_root / "projects" / project_id, registry.catalog_root / "projects"),
         ]
         for candidate, root in paths:
             safe_path(candidate, root)
         assert_unshared(registry, project_id, [path for path, _ in paths])
-        # External layer directories must also be owned by this project's two trees.
-        own = json.loads(registry._path(project_id).read_text(encoding="utf-8"))
-        for layer in own.get("layers", {}).values():
-            for key in ("image_directory", "ssc_directory", "prv_directory", "aux_directory", "import_root"):
-                if layer.get(key):
-                    directory = Path(layer[key]).resolve()
-                    if not any(directory.is_relative_to(path.resolve()) for path, _ in paths[:2]):
-                        raise ValueError(f"Внешняя папка не принадлежит проекту: {directory}")
-        return {"project_id": project_id, "name": project["name"],
-                "paths": [{"path": str(path), "root": str(root)} for path, root in paths]}
+        own = _workspace_manifest(registry, project_id, layer_directories)
+        untouched = directories_outside_project(own, [path for path, _root in owned])
+        for item in outside:
+            if item not in untouched:
+                untouched.append(item)
+        return {
+            "project_id": project_id,
+            "name": project["name"],
+            "paths": [{"path": str(path), "root": str(root)} for path, root in paths],
+            "untouched": untouched,
+        }
 
     def reject(self, request_id: str) -> None:
         self.requests.reject(request_id)
@@ -147,9 +326,6 @@ class ProjectDeletion:
         auto_confirm: bool = False,
         reason: str | None = None,
     ) -> None:
-        from .project_roles import administrator
-
-        administrator(self.accounts)
         if reason is not None:
             self.requests.update_reason(request_id, reason)
         engine = self.services.engine
@@ -164,7 +340,7 @@ class ProjectDeletion:
             try:
                 self._execute(request_id, confirmation_name, expected_plan, auto_confirm=auto_confirm)
             except Exception:
-                rows = [row for row in self.requests.list() if row["request_id"] == request_id]
+                rows = [row for row in self.requests.list() if str(row["request_id"]) == str(request_id)]
                 if rows and rows[0]["state"] == "pending":
                     (self.config.blob_root / ".deleting" / str(rows[0]["project_id"])).unlink(missing_ok=True)
                 raise

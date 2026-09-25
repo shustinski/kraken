@@ -1,6 +1,6 @@
 """Confirmation required before any stored file is removed.
 
-File removal is allowed only after the administrator types the project name,
+File removal is allowed only after the administrator confirms the deletion,
 or when that administrator has explicitly enabled auto-confirmation.
 """
 

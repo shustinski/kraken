@@ -3,12 +3,8 @@
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -21,6 +17,7 @@ from kraken_server.configuration import ServerConfig
 from kraken_server.project_deletion import DeletionRequests
 
 from .deletion_confirmation import DeletionPolicy, ensure_deletion_schema, short_database_error
+from .local_admin import display_name_for
 from .project_deletion import ProjectDeletion
 
 
@@ -51,35 +48,37 @@ class _DeletionWorker(QThread):
             self.result.emit("")
 
 
-class _DeletionConfirmationDialog(QDialog):
-    def __init__(self, parent, *, project_name: str, paths: list[str], reason: str) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Полное удаление проекта")
-        layout = QVBoxLayout(self)
-        summary = QLabel(
-            "Будут удалены метаданные, история, задания, кэш и принадлежащие проекту файлы:\n"
-            + "\n".join(paths)
-            + f"\n\nДля подтверждения введите имя проекта: {project_name}"
-        )
-        summary.setWordWrap(True)
-        layout.addWidget(summary)
-        form = QFormLayout()
-        self.reason = QLineEdit(reason)
-        self.reason.setObjectName("adminDeletionReason")
-        self.reason.setPlaceholderText("Необязательно")
-        self.name = QLineEdit()
-        self.name.setObjectName("adminDeletionProjectName")
-        form.addRow("Причина удаления", self.reason)
-        form.addRow("Имя проекта", self.name)
-        layout.addLayout(form)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Удалить")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+def _confirm_project_batch(parent, names: list[str]) -> bool:
+    answer = QMessageBox.question(
+        parent,
+        "Полное удаление проектов",
+        f"Удалить проекты ({len(names)})?\n\n"
+        + "\n".join(names)
+        + "\n\nБудут удалены метаданные, история, задания, кэш и принадлежащие проектам файлы.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes
 
-    def values(self) -> tuple[str, str]:
-        return self.name.text(), self.reason.text()
+
+def _confirm_project_deletion(parent, *, project_name: str, paths: list[str], untouched: list[str]) -> bool:
+    kept = ""
+    if untouched:
+        kept = (
+            "\n\nЭти папки лежат вне хранилища проекта и не будут удалены:\n"
+            + "\n".join(untouched)
+        )
+    answer = QMessageBox.question(
+        parent,
+        "Полное удаление проекта",
+        f"Удалить проект «{project_name}»?\n\n"
+        "Будут удалены метаданные, история, задания, кэш и принадлежащие проекту файлы:\n"
+        + "\n".join(paths)
+        + kept,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes
 
 
 class DeletionPanel(QWidget):
@@ -90,6 +89,7 @@ class DeletionPanel(QWidget):
         self.worker = None
         self._auto_failed: set[str] = set()
         self._auto_request_id = ""
+        self._queued_projects: list[tuple[str, str]] = []
         layout = QVBoxLayout(self)
         self.table = QTableWidget(0, 6)
         self.table.setObjectName("adminDeletionRequests")
@@ -102,7 +102,7 @@ class DeletionPanel(QWidget):
         layout.addWidget(self.table)
         self.warning = QLabel(
             "Небезопасно: автоподтверждение выполняет любую заявку, которая удаляет файлы, "
-            "без ввода имени проекта. Новые заявки запускаются при открытии и обновлении списка."
+            "без вопроса. Новые заявки запускаются при открытии и обновлении списка."
         )
         self.warning.setObjectName("adminDeletionAutoConfirmWarning")
         self.warning.setWordWrap(True)
@@ -141,11 +141,17 @@ class DeletionPanel(QWidget):
 
     def _show_rows(self) -> None:
         labels = {"pending": "Ожидает подтверждения", "deleting": "Удаляется", "failed": "Ошибка — можно продолжить",
-                  "rejected": "Отклонена", "deleted": "Удалён"}
+                  "rejected": "Отклонена"}
+        self.rows = [row for row in self.rows if str(row.get("state")) != "deleted"]
         self.table.setRowCount(len(self.rows))
         for index, row in enumerate(self.rows):
+            initiator = display_name_for(
+                row["requested_by"],
+                accounts=self.admin._accounts,
+                services=self.admin._services,
+            ) or "Kraken Admin"
             for column, value in enumerate((
-                row["project_name"], row["requested_by"], row.get("reason", ""), row["requested_at"],
+                row["project_name"], initiator, row.get("reason", ""), row["requested_at"],
                 labels.get(row["state"], row["state"]), row["error"],
             )):
                 self.table.setItem(index, column, QTableWidgetItem(str(value)))
@@ -154,7 +160,25 @@ class DeletionPanel(QWidget):
         return ProjectDeletion(self.admin._services, self.admin._accounts,
                                ServerConfig.load(self.admin._config_path))
 
-    def delete_project(self, project_id: str, project_name: str) -> None:
+    def delete_projects(self, projects: list[tuple[str, str]]) -> None:
+        if not projects or self.admin._accounts is None or self.admin._services is None or self.admin._deletion_busy:
+            return
+        if len(projects) == 1:
+            self.delete_project(*projects[0])
+            return
+        if not _confirm_project_batch(self.admin.window, [name for _project_id, name in projects]):
+            return
+        self._queued_projects = list(projects)
+        self._continue_queued()
+
+    def _continue_queued(self) -> None:
+        if not self._queued_projects:
+            self.admin.reload()
+            return
+        project_id, project_name = self._queued_projects.pop(0)
+        self.delete_project(project_id, project_name, confirmed=True)
+
+    def delete_project(self, project_id: str, project_name: str, *, confirmed: bool = False) -> None:
         if self.admin._accounts is None or self.admin._services is None or self.admin._deletion_busy:
             return
         try:
@@ -167,16 +191,11 @@ class DeletionPanel(QWidget):
             )
             self.rows = DeletionRequests(self.admin._services.engine).list()
             self._show_rows()
-            index = next(
-                (position for position, row in enumerate(self.rows) if row["request_id"] == created["request_id"]),
-                -1,
-            )
-            if index < 0:
-                raise ValueError("Заявка на удаление не создана")
-            self.table.selectRow(index)
-            self.execute()
+            self.execute(confirmed=confirmed, request_id=str(created["request_id"]))
         except Exception as exc:  # noqa: BLE001 - UI boundary
             self.admin._report("Не удалось начать удаление проекта", exc)
+            if self._queued_projects:
+                self._continue_queued()
 
     def decline(self) -> None:
         index = self.table.currentRow()
@@ -188,35 +207,45 @@ class DeletionPanel(QWidget):
         except Exception as exc:  # noqa: BLE001 - UI boundary
             self.admin._report("Не удалось отклонить заявку", exc)
 
-    def execute(self, *, auto: bool = False) -> None:
-        index = self.table.currentRow()
-        if index < 0 or self.admin._deletion_busy:
+    def _select_request(self, request_id: str) -> int:
+        identifier = str(request_id)
+        index = next(
+            (position for position, row in enumerate(self.rows) if str(row["request_id"]) == identifier),
+            -1,
+        )
+        if index < 0:
+            raise ValueError("Заявка на удаление не создана")
+        self.table.setCurrentCell(index, 0)
+        return index
+
+    def execute(self, *, auto: bool = False, confirmed: bool = False, request_id: str | None = None) -> None:
+        if self.admin._deletion_busy:
             return
+        if request_id is None:
+            index = self.table.currentRow()
+            if index < 0:
+                return
+            request_id = self.rows[index]["request_id"]
+        else:
+            index = self._select_request(request_id)
         auto = auto or self.auto_confirm.isChecked()
         try:
             operation = self.operation()
-            request_id = self.rows[index]["request_id"]
+            request_id = str(request_id)
             plan = operation.preview(request_id)
-            reason = None
-            if auto:
-                name = plan["name"]
-            else:
-                dialog = _DeletionConfirmationDialog(
-                    self.admin.window,
-                    project_name=plan["name"],
-                    paths=[entry["path"] for entry in plan["paths"]],
-                    reason=str(self.rows[index].get("reason") or ""),
-                )
-                if dialog.exec() != QDialog.DialogCode.Accepted:
-                    return
-                name, reason = dialog.values()
-                if name != plan["name"]:
-                    raise ValueError("Имя проекта не совпадает")
+            if not auto and not confirmed and not _confirm_project_deletion(
+                self.admin.window,
+                project_name=plan["name"],
+                paths=[entry["path"] for entry in plan["paths"]],
+                untouched=list(plan.get("untouched") or []),
+            ):
+                return
+            name = plan["name"]
             self.admin._deletion_busy = True
             self.approve.setEnabled(False)
             self.reject.setEnabled(False)
             self._auto_request_id = request_id if auto else ""
-            self.worker = _DeletionWorker(operation, request_id, name, plan, auto, reason, self)
+            self.worker = _DeletionWorker(operation, request_id, name, plan, auto, None, self)
             self.worker.result.connect(self._result)
             self.worker.finished.connect(self._finished)
             self.worker.start()
@@ -228,6 +257,8 @@ class DeletionPanel(QWidget):
             self.reject.setEnabled(True)
             self._auto_request_id = ""
             self.admin._report("Не удалось начать удаление", exc)
+            if self._queued_projects:
+                self._continue_queued()
 
     def _result(self, error: str) -> None:
         if error:
@@ -242,6 +273,9 @@ class DeletionPanel(QWidget):
         self._auto_request_id = ""
         self.worker.deleteLater()
         self.worker = None
+        if self._queued_projects:
+            self._continue_queued()
+            return
         self.admin.reload()
 
     def _set_checked(self, enabled: bool) -> None:
@@ -259,7 +293,7 @@ class DeletionPanel(QWidget):
                 self.admin.window,
                 "Небезопасное автоподтверждение",
                 "Все операции, которые удаляют файлы, будут подтверждаться автоматически, "
-                "без ввода имени проекта.\n\n"
+                "без вопроса.\n\n"
                 "Это небезопасно: ошибочная заявка удалит данные сразу.\n\n"
                 "Включить автоподтверждение?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,

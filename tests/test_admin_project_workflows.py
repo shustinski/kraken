@@ -9,7 +9,12 @@ import pytest
 import sqlalchemy as sa
 
 from kraken_admin.local_admin import open_project_services
-from kraken_admin.project_deletion import ProjectDeletion, safe_path
+from kraken_admin.project_deletion import (
+    ProjectDeletion,
+    directories_outside_project,
+    project_storage_paths,
+    safe_path,
+)
 from kraken_admin.project_roles import all_principals, set_roles, snapshot
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import Principal, ProjectRole
@@ -81,6 +86,37 @@ def test_full_deletion_retains_audit_and_other_project(database):
     assert any(row["action"] == "project.deleted" for row in accounts.administration_audit())
 
 
+def test_deletion_without_workspace_registry_removes_project_folders(database):
+    services, accounts, person, config = database
+    target = project(services, person, "Legacy")
+    binding = services.workspace_files.registry.get_project(target["project_id"])
+    image = Path(binding.source_project_dir) / "image.jpg"
+    image.write_bytes(b"image")
+    services.workspace_files.registry.remove_project(target["project_id"])
+    request = services.request_project_deletion(target["project_id"], str(person.id))
+    cleaner = ProjectDeletion(services, accounts, config)
+    plan = cleaner.preview(request["request_id"])
+    assert str(image.parent) in [entry["path"] for entry in plan["paths"]]
+    cleaner.execute(request["request_id"], target["name"], plan)
+    assert not image.exists()
+    assert target["project_id"] not in [row["project_id"] for row in services.list_projects()]
+
+
+def test_deletion_without_folders_or_registry_removes_database_project(database):
+    import shutil
+
+    services, accounts, person, config = database
+    target = project(services, person, "Empty")
+    binding = services.workspace_files.registry.get_project(target["project_id"])
+    shutil.rmtree(binding.source_project_dir)
+    shutil.rmtree(binding.derived_project_dir)
+    services.workspace_files.registry.remove_project(target["project_id"])
+    request = services.request_project_deletion(target["project_id"], str(person.id))
+    cleaner = ProjectDeletion(services, accounts, config)
+    cleaner.execute(request["request_id"], target["name"], cleaner.preview(request["request_id"]))
+    assert target["project_id"] not in [row["project_id"] for row in services.list_projects()]
+
+
 def test_request_permissions_rejection_and_live_operation(database):
     services, accounts, person, config = database
     target = project(services, person)
@@ -138,6 +174,133 @@ def test_atomic_roles_include_disabled_users_and_detect_conflicts(database):
     with pytest.raises(ConcurrencyError):
         set_roles(services, accounts, project_id=str(identifier), principal=user, desired=frozenset(),
                   expected_revision=0, expected_snapshot=before)
+
+
+def test_external_layer_outside_the_project_is_left_in_place(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "Chip"
+    derived = tmp_path / "derived" / "Chip"
+    external = tmp_path / "Temp" / "kraken-e2e-hub" / "images"
+    inside = source / "img" / "Metal"
+    workspace = {
+        "layers": {
+            "layer-1": {
+                "image_directory": str(external),
+                "ssc_directory": "",
+                "import_root": str(inside),
+            }
+        }
+    }
+
+    untouched = directories_outside_project(workspace, [source, derived])
+
+    assert untouched == [str(external.resolve())]
+
+
+def test_missing_registry_uses_conventional_project_folders(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    derived = tmp_path / "derived"
+    (source / "Chip").mkdir(parents=True)
+    (derived / "Chip").mkdir(parents=True)
+
+    owned, untouched = project_storage_paths(
+        project_name="Chip",
+        source_root=source,
+        derived_root=derived,
+        binding=None,
+        recorded_source=None,
+        recorded_derived=None,
+        claimed_directories=[],
+    )
+
+    assert owned == [(source / "Chip", source), (derived / "Chip", derived)]
+    assert untouched == []
+
+
+def test_missing_registry_without_folders_owns_nothing(tmp_path: Path) -> None:
+    owned, untouched = project_storage_paths(
+        project_name="Chip",
+        source_root=tmp_path / "source",
+        derived_root=tmp_path / "derived",
+        binding=None,
+        recorded_source=None,
+        recorded_derived=None,
+        claimed_directories=[],
+    )
+
+    assert owned == []
+    assert untouched == []
+
+
+def test_recorded_directory_outside_roots_is_left_in_place(tmp_path: Path) -> None:
+    external = tmp_path / "external" / "Chip"
+
+    owned, untouched = project_storage_paths(
+        project_name="Chip",
+        source_root=tmp_path / "source",
+        derived_root=tmp_path / "derived",
+        binding=None,
+        recorded_source=str(external),
+        recorded_derived=None,
+        claimed_directories=[],
+    )
+
+    assert owned == []
+    assert untouched == [str(external)]
+
+
+def test_recorded_directory_inside_root_is_owned_after_rename(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    folder = source / "old-name"
+    folder.mkdir(parents=True)
+
+    owned, untouched = project_storage_paths(
+        project_name="Renamed",
+        source_root=source,
+        derived_root=tmp_path / "derived",
+        binding=None,
+        recorded_source=str(folder),
+        recorded_derived=None,
+        claimed_directories=[],
+    )
+
+    assert owned == [(folder, source)]
+    assert untouched == []
+
+
+def test_conventional_folder_claimed_by_another_project_is_left_in_place(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    folder = source / "Chip"
+    folder.mkdir(parents=True)
+
+    owned, untouched = project_storage_paths(
+        project_name="Chip",
+        source_root=source,
+        derived_root=tmp_path / "derived",
+        binding=None,
+        recorded_source=None,
+        recorded_derived=None,
+        claimed_directories=[str(folder)],
+    )
+
+    assert owned == []
+    assert untouched == [str(folder.resolve())]
+
+
+def test_recorded_directory_claimed_by_another_project_is_refused(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    folder = source / "Chip"
+    folder.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="другим проектом"):
+        project_storage_paths(
+            project_name="Chip",
+            source_root=source,
+            derived_root=tmp_path / "derived",
+            binding=None,
+            recorded_source=str(folder),
+            recorded_derived=None,
+            claimed_directories=[str(folder)],
+        )
 
 
 def test_safe_path_rejects_root_and_outside(tmp_path):

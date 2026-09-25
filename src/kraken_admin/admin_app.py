@@ -9,6 +9,7 @@ from kraken_server.configuration import default_local_config_path
 from kraken_admin.local_admin import (
     account_rows,
     audit_rows,
+    display_name_for,
     connect_local_admin,
     create_account,
     maintainer_rows,
@@ -164,7 +165,7 @@ class AdminWindow:
         self.accounts.setObjectName("adminAccountsTable")
         self.accounts.setHorizontalHeaderLabels(("Пользователь", "Логин", "Состояние", "Создан"))
         self.accounts.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.accounts.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.accounts.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.accounts.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.accounts, 1)
         actions = QHBoxLayout()
@@ -193,6 +194,7 @@ class AdminWindow:
         outer.addWidget(splitter, 1)
         self.projects = QListWidget()
         self.projects.setObjectName("adminProjectsList")
+        self.projects.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.maintainers = QTableWidget(0, 3)
         self.maintainers.setObjectName("adminMaintainersTable")
         self.maintainers.setHorizontalHeaderLabels(("Логин", "Пользователь", "Роль"))
@@ -325,16 +327,22 @@ class AdminWindow:
         self.audit.setRowCount(len(rows))
         for row, event in enumerate(rows):
             action = str(event.get("action", ""))
-            target = str(event.get("target_account_id") or "")
             details = event.get("details", {})
             if not isinstance(details, dict):
                 details = {}
+            target = display_name_for(
+                event.get("target_account_id"),
+                accounts=self._accounts,
+                services=self._services,
+            )
             if not target:
-                target = str(details.get("project_id", details.get("request_id", "")))
-            if self._accounts is not None and target:
-                account = self._accounts.get_account(target)
-                if account is not None:
-                    target = account.username
+                target = display_name_for(
+                    event.get("actor_id"),
+                    accounts=self._accounts,
+                    services=self._services,
+                )
+            if not target:
+                target = "Kraken Admin"
             label = _AUDIT_LABELS.get(action, action)
             if details.get("auto_confirmed"):
                 label = f"{label} (автоподтверждение)"
@@ -349,20 +357,38 @@ class AdminWindow:
             for column, value in enumerate(values):
                 self.audit.setItem(row, column, QTableWidgetItem(value))
 
-    def _selected_username(self) -> str:
+    def _selected_usernames(self) -> list[str]:
         from PyQt6.QtCore import Qt
 
-        row = self.accounts.currentRow()
-        if row < 0:
-            return ""
-        item = self.accounts.item(row, 0)
-        return "" if item is None else str(item.data(Qt.ItemDataRole.UserRole) or "")
+        rows = sorted({index.row() for index in self.accounts.selectionModel().selectedRows()})
+        usernames = []
+        for row in rows:
+            item = self.accounts.item(row, 0)
+            username = "" if item is None else str(item.data(Qt.ItemDataRole.UserRole) or "")
+            if username:
+                usernames.append(username)
+        return usernames
 
     def _selected_project_id(self) -> str:
         from PyQt6.QtCore import Qt
 
         item = self.projects.currentItem()
         return "" if item is None else str(item.data(Qt.ItemDataRole.UserRole) or "")
+
+    def _selected_projects(self) -> list[tuple[str, str]]:
+        from PyQt6.QtCore import Qt
+
+        if self._services is None:
+            return []
+        known = {item["project_id"]: str(item["name"]) for item in project_rows(self._services)}
+        chosen = []
+        for row in sorted(self.projects.row(item) for item in self.projects.selectedItems()):
+            item = self.projects.item(row)
+            project_id = "" if item is None else str(item.data(Qt.ItemDataRole.UserRole) or "")
+            name = known.get(project_id, "")
+            if project_id and name:
+                chosen.append((project_id, name))
+        return chosen
 
     def _selected_maintainer(self) -> str:
         from PyQt6.QtCore import Qt
@@ -374,10 +400,11 @@ class AdminWindow:
         return "" if item is None else str(item.data(Qt.ItemDataRole.UserRole) or "")
 
     def _require_account(self) -> str:
-        username = self._selected_username()
-        if not username:
-            self._report("Kraken Admin", "Выберите учётную запись.")
-        return username
+        usernames = self._selected_usernames()
+        if len(usernames) != 1:
+            self._report("Kraken Admin", "Выберите одну учётную запись.")
+            return ""
+        return usernames[0]
 
     def _create_account(self) -> None:
         if self._accounts is None:
@@ -406,39 +433,54 @@ class AdminWindow:
         self.reload()
 
     def _delete_account(self) -> None:
-        username = self._require_account()
-        if not username or self._accounts is None:
+        if self._accounts is None:
+            self._report("Kraken Admin", "Сначала откройте server.toml.")
             return
-        if not _confirm_by_typing(
+        usernames = self._selected_usernames()
+        if not usernames:
+            self._report("Kraken Admin", "Выберите учётную запись.")
+            return
+        from PyQt6.QtWidgets import QMessageBox
+
+        if len(usernames) == 1:
+            prompt = (
+                f"Удалить учётную запись {usernames[0]}?\n\n"
+                "Будут удалены логин, сеансы и проектные роли."
+            )
+        else:
+            prompt = (
+                f"Удалить учётные записи ({len(usernames)})?\n\n"
+                + "\n".join(usernames)
+                + "\n\nБудут удалены логины, сеансы и проектные роли."
+            )
+        answer = QMessageBox.question(
             self.window,
             "Удалить учётную запись",
-            f"Будут удалены логин, сеансы и проектные роли.\n\nДля подтверждения введите: {username}",
-            username,
-        ):
+            prompt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
             return
-        try:
-            delete_account(self._accounts, username, services=self._services)
-        except Exception as exc:  # noqa: BLE001 - UI boundary
-            self._report("Не удалось удалить учётную запись", exc)
-            return
+        failed: list[str] = []
+        for username in usernames:
+            try:
+                delete_account(self._accounts, username, services=self._services)
+            except Exception as exc:  # noqa: BLE001 - UI boundary
+                failed.append(f"{username}: {exc}")
         self.reload()
+        if failed:
+            self._report("Не удалось удалить учётные записи", "\n".join(failed))
 
     def _delete_project(self) -> None:
-        project_id = self._selected_project_id()
         if self._services is None or self._accounts is None:
             self._report("Kraken Admin", "Сначала откройте server.toml.")
             return
-        if not project_id:
+        projects = self._selected_projects()
+        if not projects:
             self._report("Kraken Admin", "Выберите проект.")
             return
-        name = next(
-            (str(item["name"]) for item in project_rows(self._services) if item["project_id"] == project_id),
-            "",
-        )
-        if not name:
-            self._report("Kraken Admin", "Проект больше не доступен.")
-            return
-        self.deletion_panel.delete_project(project_id, name)
+        self.deletion_panel.delete_projects(projects)
 
     def _reset_password(self) -> None:
         username = self._require_account()
@@ -485,18 +527,6 @@ class AdminWindow:
         from PyQt6.QtWidgets import QMessageBox
 
         QMessageBox.warning(self.window, title, str(exc))
-
-
-def _confirm_by_typing(parent, title: str, prompt: str, expected: str) -> bool:
-    from PyQt6.QtWidgets import QInputDialog, QMessageBox
-
-    value, accepted = QInputDialog.getText(parent, title, prompt)
-    if not accepted:
-        return False
-    if value != expected:
-        QMessageBox.warning(parent, title, "Введённое значение не совпадает.")
-        return False
-    return True
 
 
 def _config_settings():

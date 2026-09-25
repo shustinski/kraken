@@ -77,7 +77,13 @@ def test_admin_window_lists_accounts_projects_and_revokes_maintainer(qapp, tmp_p
     assert store.get_account(operator.account_id).enabled is False
     assert window.accounts.item(1, 2).text() == "отключена"
 
-    monkeypatch.setattr("kraken_admin.admin_app._confirm_by_typing", lambda *_args: True)
+    from PyQt6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
     window._delete_account()
     assert store.get_by_username("operator") is None
     assert any(row["action"] == "account.deleted" for row in store.administration_audit())
@@ -93,6 +99,159 @@ def test_admin_window_lists_accounts_projects_and_revokes_maintainer(qapp, tmp_p
     window.maintainers.selectRow(0)
     window._revoke_maintainer()
     assert revoked == {"project": PROJECT_ID, "username": "owner"}
+
+
+def test_shift_and_ctrl_selection_deletes_every_chosen_account(qapp, tmp_path: Path, monkeypatch) -> None:
+    del qapp
+    from PyQt6.QtWidgets import QAbstractItemView, QMessageBox, QTableWidgetSelectionRange
+
+    store = LocalAccountStore(tmp_path / "accounts.sqlite3", ScryptPasswordHasher())
+    store.create_account("admin", "Administrator", "secret")
+    store.create_account("operator", "Operator", "secret")
+    store.create_account("guest", "Guest", "secret")
+    window = AdminWindow()
+    window._accounts = store
+    window._services = _Services()
+    window.reload()
+
+    assert window.accounts.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
+    assert window.projects.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
+    window.accounts.clearSelection()
+    window.accounts.setRangeSelected(QTableWidgetSelectionRange(1, 0, 2, 3), True)
+    assert window._selected_usernames() == ["guest", "operator"]
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
+
+    window._delete_account()
+
+    assert store.get_by_username("admin") is not None
+    assert store.get_by_username("operator") is None
+    assert store.get_by_username("guest") is None
+
+
+def test_selected_project_rows_are_deleted_together(qapp, tmp_path: Path, monkeypatch) -> None:
+    del qapp, monkeypatch
+    from PyQt6.QtCore import QItemSelection, QItemSelectionModel
+
+    other = "22222222-2222-2222-2222-222222222222"
+
+    class _Projects(_Services):
+        def list_projects(self, *, include_archived: bool = False):
+            del include_archived
+            return [
+                {"project_id": PROJECT_ID, "name": "Demo", "state": "active"},
+                {"project_id": other, "name": "Other", "state": "active"},
+            ]
+
+    store = LocalAccountStore(tmp_path / "accounts.sqlite3", ScryptPasswordHasher())
+    store.create_account("admin", "Administrator", "secret")
+    window = AdminWindow()
+    window._accounts = store
+    window._services = _Projects()
+    window.reload()
+    window.projects.clearSelection()
+    model = window.projects.model()
+    window.projects.selectionModel().select(
+        QItemSelection(model.index(0, 0), model.index(1, 0)),
+        QItemSelectionModel.SelectionFlag.ClearAndSelect,
+    )
+    assert [name for _project_id, name in window._selected_projects()] == ["Demo", "Other"]
+    captured: list[list[tuple[str, str]]] = []
+    window.deletion_panel.delete_projects = captured.append
+
+    window._delete_project()
+
+    assert captured == [[(PROJECT_ID, "Demo"), (other, "Other")]]
+
+
+def test_new_project_deletion_ignores_the_previously_selected_request(qapp) -> None:
+    del qapp
+    window = AdminWindow()
+    panel = window.deletion_panel
+    panel.rows = [
+        {
+            "request_id": "old",
+            "state": "rejected",
+            "project_name": "Old",
+            "requested_by": "x",
+            "reason": "",
+            "requested_at": "",
+            "error": "",
+        },
+        {
+            "request_id": "new",
+            "state": "pending",
+            "project_name": "New",
+            "requested_by": "x",
+            "reason": "",
+            "requested_at": "",
+            "error": "",
+        },
+    ]
+    panel._show_rows()
+    panel.table.setCurrentCell(0, 0)
+    seen: list[str] = []
+
+    def preview(request_id: str) -> dict:
+        seen.append(str(request_id))
+        raise RuntimeError("stop")
+
+    panel.operation = lambda: type("Operation", (), {"preview": staticmethod(preview)})()
+    window._report = lambda *_args: None
+
+    panel.execute(confirmed=True, request_id="new")
+
+    assert seen == ["new"]
+    assert panel.table.currentRow() == 1
+
+
+def test_deleted_requests_are_hidden_and_people_are_shown_by_name(qapp, tmp_path: Path) -> None:
+    del qapp
+    store = LocalAccountStore(tmp_path / "accounts.sqlite3", ScryptPasswordHasher())
+    operator = store.create_account("operator", "Оператор смены", "secret")
+    window = AdminWindow()
+    window._accounts = store
+    window._services = _Services()
+    panel = window.deletion_panel
+    panel.rows = [
+        {
+            "request_id": "gone",
+            "state": "deleted",
+            "project_name": "Gone",
+            "requested_by": operator.account_id,
+            "reason": "",
+            "requested_at": "",
+            "error": "",
+        },
+        {
+            "request_id": "open",
+            "state": "pending",
+            "project_name": "Open",
+            "requested_by": operator.account_id,
+            "reason": "",
+            "requested_at": "",
+            "error": "",
+        },
+    ]
+    panel._show_rows()
+
+    assert panel.table.rowCount() == 1
+    assert panel.table.item(0, 0).text() == "Open"
+    assert panel.table.item(0, 1).text() == "Оператор смены"
+
+    store.set_enabled(operator.account_id, False)
+    window._fill_audit()
+    assert window.audit.item(0, 2).text() == "Оператор смены"
+
+
+def test_admin_console_does_not_require_an_administrator_account() -> None:
+    from kraken_manager.domain.identity import SystemRole
+    from kraken_admin.project_roles import administrator
+
+    actor = administrator(None)
+
+    assert actor.display_name == "Kraken Admin"
+    assert SystemRole.SERVER_ADMIN in actor.system_roles
 
 
 def test_deletion_reload_explains_a_missing_schema(qapp, monkeypatch) -> None:

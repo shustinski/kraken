@@ -142,6 +142,38 @@ def audit_rows(store: object, *, limit: int = 500) -> list[dict[str, object]]:
     return [dict(item) for item in store.administration_audit(limit=limit)]  # type: ignore[attr-defined]
 
 
+def display_name_for(
+    identifier: object,
+    *,
+    accounts: object | None = None,
+    services: object | None = None,
+) -> str:
+    """Return a person's display name. Raw account ids and hashes stay hidden."""
+
+    text = str(identifier or "").strip()
+    if not text:
+        return ""
+    from .project_roles import CONSOLE_ACTOR_ID
+
+    if text == CONSOLE_ACTOR_ID:
+        return "Kraken Admin"
+    if accounts is not None:
+        account = accounts.get_account(text) if hasattr(accounts, "get_account") else None  # type: ignore[attr-defined]
+        if account is None and hasattr(accounts, "get_by_username"):
+            account = accounts.get_by_username(text)  # type: ignore[attr-defined]
+        if account is not None:
+            return str(account.display_name or account.username)
+    identities = getattr(services, "identities", None)
+    if identities is not None and hasattr(identities, "get"):
+        principal = identities.get(text)
+        if principal is not None:
+            return str(getattr(principal, "display_name", "") or getattr(principal, "subject", ""))
+    compact = text.replace("-", "")
+    if len(compact) >= 32 and all(character in "0123456789abcdefABCDEF" for character in compact):
+        return ""
+    return text
+
+
 def project_rows(services: object) -> list[dict[str, object]]:
     return [
         {
@@ -206,14 +238,6 @@ def open_project_services(database_url: str, blob_root: Path, *, engine: object 
     )
     services.clock = _Clock()
     return services
-
-
-def _local_administrator(accounts: object) -> object:
-    for account_id in accounts.accounts_with_global_role("server_admin"):  # type: ignore[attr-defined]
-        account = accounts.get_account(account_id)  # type: ignore[attr-defined]
-        if account is not None and account.enabled:
-            return account
-    raise ValueError("Нет включённого локального администратора")
 
 
 def _project_identifier(services: object, project: str) -> str:

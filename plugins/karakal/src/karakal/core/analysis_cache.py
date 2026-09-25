@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from .image_io import (
     _path_signature,
 )
@@ -39,6 +41,15 @@ from .repository_shared import (
     pickle,
     trim_directory_by_bytes,
 )
+
+# Trim at most every N writes (or when byte accounting says we are over limit).
+_CACHE_TRIM_EVERY_N_WRITES = 256
+_PICKLE_CACHE_LOCK = threading.RLock()
+_PICKLE_CACHE_BYTES: dict[str, int] = {}
+_PICKLE_CACHE_FILES: dict[str, int] = {}
+_PICKLE_CACHE_WRITES_SINCE_TRIM: dict[str, int] = {}
+_PICKLE_CACHE_PROTECTED_KEYS: set[str] = set()
+_PICKLE_CACHE_RUN_DEPTH = 0
 
 
 def _record_payload_cache_key(
@@ -102,17 +113,111 @@ def _record_payload_cache_path(cache_key: str) -> Path:
     return ANALYSIS_CACHE_DIR / f"{cache_key}.pickle"
 
 
-def _trim_pickle_cache_dir(cache_dir: Path, *, max_files: int, max_bytes: int | None = None) -> None:
-    directory_key = str(Path(cache_dir))
-    now = perf_counter()
-    last_trim = _CACHE_TRIM_LAST_BY_DIR.get(directory_key, 0.0)
-    if now - last_trim < CACHE_TRIM_INTERVAL_SECONDS:
+def begin_analysis_cache_run(*, protected_keys: set[str] | None = None) -> None:
+    """Pin cache keys for the active analytics run so trim cannot evict them mid-run."""
+
+    global _PICKLE_CACHE_RUN_DEPTH
+    with _PICKLE_CACHE_LOCK:
+        _PICKLE_CACHE_RUN_DEPTH += 1
+        if protected_keys:
+            _PICKLE_CACHE_PROTECTED_KEYS.update(str(key) for key in protected_keys if str(key))
+
+
+def protect_analysis_cache_key(cache_key: str) -> None:
+    key = str(cache_key or "")
+    if not key:
         return
-    _CACHE_TRIM_LAST_BY_DIR[directory_key] = now
-    limit = max_bytes
-    if limit is None:
-        limit = int(_active_performance_config().disk_cache_limit_mb) * 1024 * 1024
-    trim_directory_by_bytes(Path(cache_dir), max_bytes=limit, max_files=max_files)
+    with _PICKLE_CACHE_LOCK:
+        if _PICKLE_CACHE_RUN_DEPTH > 0:
+            _PICKLE_CACHE_PROTECTED_KEYS.add(key)
+
+
+def end_analysis_cache_run(*, force_trim: bool = True) -> None:
+    """Release run pin and optionally trim once at the end of the analytics pass."""
+
+    global _PICKLE_CACHE_RUN_DEPTH
+    with _PICKLE_CACHE_LOCK:
+        _PICKLE_CACHE_RUN_DEPTH = max(0, _PICKLE_CACHE_RUN_DEPTH - 1)
+        if _PICKLE_CACHE_RUN_DEPTH == 0:
+            _PICKLE_CACHE_PROTECTED_KEYS.clear()
+        should_trim = bool(force_trim) and _PICKLE_CACHE_RUN_DEPTH == 0
+    if should_trim:
+        _trim_pickle_cache_dir(
+            ANALYSIS_CACHE_DIR,
+            max_files=ANALYSIS_CACHE_MAX_FILES,
+            force=True,
+        )
+
+
+def _pickle_cache_limits(*, max_files: int, max_bytes: int | None) -> tuple[int, int]:
+    limit_bytes = max_bytes
+    if limit_bytes is None:
+        limit_bytes = int(_active_performance_config().disk_cache_limit_mb) * 1024 * 1024
+    return max(0, int(limit_bytes)), max(0, int(max_files))
+
+
+def _ensure_pickle_cache_accounting(cache_dir: Path, directory_key: str) -> None:
+    if directory_key in _PICKLE_CACHE_BYTES and directory_key in _PICKLE_CACHE_FILES:
+        return
+    try:
+        entries = [path for path in cache_dir.glob("*.pickle") if path.is_file()]
+    except OSError:
+        _PICKLE_CACHE_BYTES[directory_key] = 0
+        _PICKLE_CACHE_FILES[directory_key] = 0
+        return
+    total_bytes = 0
+    for path in entries:
+        try:
+            total_bytes += int(path.stat().st_size)
+        except OSError:
+            continue
+    _PICKLE_CACHE_BYTES[directory_key] = int(total_bytes)
+    _PICKLE_CACHE_FILES[directory_key] = len(entries)
+
+
+def _trim_pickle_cache_dir(
+    cache_dir: Path,
+    *,
+    max_files: int,
+    max_bytes: int | None = None,
+    force: bool = False,
+) -> None:
+    directory_key = str(Path(cache_dir))
+    limit_bytes, file_limit = _pickle_cache_limits(max_files=max_files, max_bytes=max_bytes)
+    with _PICKLE_CACHE_LOCK:
+        _ensure_pickle_cache_accounting(Path(cache_dir), directory_key)
+        tracked_bytes = int(_PICKLE_CACHE_BYTES.get(directory_key, 0))
+        tracked_files = int(_PICKLE_CACHE_FILES.get(directory_key, 0))
+        writes = int(_PICKLE_CACHE_WRITES_SINCE_TRIM.get(directory_key, 0))
+        over_budget = tracked_bytes > limit_bytes or tracked_files > file_limit
+        now = perf_counter()
+        last_trim = _CACHE_TRIM_LAST_BY_DIR.get(directory_key, 0.0)
+        interval_ok = force or (now - last_trim) >= CACHE_TRIM_INTERVAL_SECONDS
+        every_n_ok = force or writes >= _CACHE_TRIM_EVERY_N_WRITES
+        if not over_budget and not (interval_ok and every_n_ok and writes > 0) and not force:
+            return
+        if _PICKLE_CACHE_RUN_DEPTH > 0 and not force:
+            # During an active run only trim when clearly over budget; never touch protected keys.
+            if not over_budget:
+                return
+        protected = set(_PICKLE_CACHE_PROTECTED_KEYS)
+        _CACHE_TRIM_LAST_BY_DIR[directory_key] = now
+        _PICKLE_CACHE_WRITES_SINCE_TRIM[directory_key] = 0
+
+    removed_files, removed_bytes = trim_directory_by_bytes(
+        Path(cache_dir),
+        max_bytes=limit_bytes,
+        max_files=file_limit,
+        protected_names={f"{key}.pickle" for key in protected} if protected else None,
+    )
+    if removed_files or removed_bytes:
+        with _PICKLE_CACHE_LOCK:
+            _PICKLE_CACHE_BYTES[directory_key] = max(
+                0, int(_PICKLE_CACHE_BYTES.get(directory_key, 0)) - int(removed_bytes)
+            )
+            _PICKLE_CACHE_FILES[directory_key] = max(
+                0, int(_PICKLE_CACHE_FILES.get(directory_key, 0)) - int(removed_files)
+            )
 
 
 def _load_cached_record_payload(cache_key: str) -> dict[str, object] | None:
@@ -130,9 +235,42 @@ def _load_cached_record_payload(cache_key: str) -> dict[str, object] | None:
 
 def _store_cached_record_payload(cache_key: str, payload: dict[str, object]) -> None:
     cache_path = _record_payload_cache_path(cache_key)
+    directory_key = str(ANALYSIS_CACHE_DIR)
     try:
+        previous_size = 0
+        existed = cache_path.is_file()
+        if existed:
+            try:
+                previous_size = int(cache_path.stat().st_size)
+            except OSError:
+                previous_size = 0
         atomic_pickle_dump(cache_path, payload)
-        _trim_pickle_cache_dir(ANALYSIS_CACHE_DIR, max_files=ANALYSIS_CACHE_MAX_FILES)
+        try:
+            new_size = int(cache_path.stat().st_size)
+        except OSError:
+            new_size = previous_size
+        protect_analysis_cache_key(cache_key)
+        with _PICKLE_CACHE_LOCK:
+            _ensure_pickle_cache_accounting(ANALYSIS_CACHE_DIR, directory_key)
+            delta = int(new_size) - int(previous_size)
+            if existed:
+                _PICKLE_CACHE_BYTES[directory_key] = max(
+                    0, int(_PICKLE_CACHE_BYTES.get(directory_key, 0)) + delta
+                )
+            else:
+                _PICKLE_CACHE_BYTES[directory_key] = int(_PICKLE_CACHE_BYTES.get(directory_key, 0)) + int(new_size)
+                _PICKLE_CACHE_FILES[directory_key] = int(_PICKLE_CACHE_FILES.get(directory_key, 0)) + 1
+            _PICKLE_CACHE_WRITES_SINCE_TRIM[directory_key] = (
+                int(_PICKLE_CACHE_WRITES_SINCE_TRIM.get(directory_key, 0)) + 1
+            )
+            writes = int(_PICKLE_CACHE_WRITES_SINCE_TRIM[directory_key])
+            tracked_bytes = int(_PICKLE_CACHE_BYTES.get(directory_key, 0))
+            limit_bytes, _file_limit = _pickle_cache_limits(
+                max_files=ANALYSIS_CACHE_MAX_FILES, max_bytes=None
+            )
+            should_trim = writes >= _CACHE_TRIM_EVERY_N_WRITES or tracked_bytes > limit_bytes
+        if should_trim:
+            _trim_pickle_cache_dir(ANALYSIS_CACHE_DIR, max_files=ANALYSIS_CACHE_MAX_FILES)
     except (OSError, pickle.PickleError, TypeError, ValueError) as error:
         _LOGGER.warning("Could not store analysis cache entry %s: %s", cache_path, error)
 

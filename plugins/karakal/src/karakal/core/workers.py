@@ -12,6 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from .domain import BuildOptions, BuildResult, FolderSpec, FrameRecord, ModelSpec
+from .repository_shared import BuildCancelledError
 from .grid_anomaly import (
     GRID_CLASS_CONFLICT_MIN_AREA,
     GridDamageAnalysisConfig,
@@ -228,9 +229,12 @@ class FrameIndexWorker(WorkerBase):
         self._original_folder = original_folder
 
     def run(self) -> None:
+        from .diagnostics import log_event, log_exception, stage_enter, stage_exit
+
         with activate_profiler(self._profiler):
             try:
-                self._emit_progress(0, 0, "", force=True)
+                self._emit_progress(0, 1, "index:start", force=True)
+                stage_enter("validation.prepare.index", models=len(self._model_specs), pid=os.getpid())
                 with self._profiler.stage("validation.prepare.index", frame_count=len(self._model_specs)):
                     result = collect_frame_records(
                         self._model_specs,
@@ -239,12 +243,21 @@ class FrameIndexWorker(WorkerBase):
                         cancel_check=self._is_cancelled,
                         progress_callback=self._emit_progress,
                     )
+            except BuildCancelledError as error:
+                stage_exit("validation.prepare.index", status="cancelled")
+                log_event("index.cancelled", error=str(error))
+                self.cancelled.emit()
+                return
             except Exception as error:
+                stage_exit("validation.prepare.index", status="failed")
+                log_exception("FrameIndexWorker.run", error)
                 _LOGGER.exception("Frame indexing failed")
                 self.failed.emit(str(error))
                 return
             finally:
                 self._finish_profiling()
+        stage_exit("validation.prepare.index", status="ok", records=len(result.records))
+        log_event("index.finished", records=len(result.records))
         self.finished.emit(result)
 
 
@@ -267,9 +280,17 @@ class AnalyticsWorker(WorkerBase):
         self._include_attention_issues = bool(include_attention_issues)
 
     def run(self) -> None:
+        from .diagnostics import log_event, log_exception, stage_enter, stage_exit
+
         with activate_profiler(self._profiler):
             try:
-                self._emit_progress(0, 0, "", force=True)
+                self._emit_progress(0, max(1, len(self._build_result.records)), "analytics:start", force=True)
+                stage_enter(
+                    "analytics.run",
+                    frames=len(self._build_result.records),
+                    pid=os.getpid(),
+                    metric=str(self._metric_key),
+                )
                 with self._profiler.stage("validation.metrics", frame_count=len(self._build_result.records)):
                     result = compute_build_result_analytics(
                         self._build_result,
@@ -280,12 +301,24 @@ class AnalyticsWorker(WorkerBase):
                         cancel_check=self._is_cancelled,
                         include_attention_issues=self._include_attention_issues,
                     )
+            except BuildCancelledError as error:
+                stage_exit("analytics.run", status="cancelled")
+                log_event("analytics.cancelled", error=str(error))
+                self.cancelled.emit()
+                return
             except Exception as error:
+                stage_exit("analytics.run", status="failed")
+                log_exception("AnalyticsWorker.run", error)
                 _LOGGER.exception("Validation analytics failed")
                 self.failed.emit(str(error))
                 return
             finally:
                 self._finish_profiling()
+        from .analytics import last_analytics_worker_plan
+
+        plan = last_analytics_worker_plan()
+        stage_exit("analytics.run", status="ok", workers=plan.get("selected"))
+        log_event("analytics.finished", workers=plan.get("selected"), thread_pool=plan.get("use_thread_pool"))
         self.finished.emit(result)
 
 

@@ -131,22 +131,28 @@ def trim_directory_by_bytes(
     max_bytes: int,
     pattern: str = "*.pickle",
     max_files: int | None = None,
+    protected_names: set[str] | None = None,
 ) -> tuple[int, int]:
     """Delete oldest cache entries until both byte and optional count limits hold."""
 
+    protected = {str(name) for name in (protected_names or set()) if str(name)}
     try:
         entries = [(path, path.stat()) for path in directory.glob(pattern) if path.is_file()]
     except OSError as error:
         _LOGGER.warning("Could not inspect cache directory %s: %s", directory, error)
         return 0, 0
     entries.sort(key=lambda item: item[1].st_mtime_ns)
+    victims = [(path, stat) for path, stat in entries if path.name not in protected]
+    protected_entries = [(path, stat) for path, stat in entries if path.name in protected]
     total_bytes = sum(int(stat.st_size) for _path, stat in entries)
     removed_files = 0
     removed_bytes = 0
     file_limit = len(entries) if max_files is None else max(0, int(max_files))
     byte_limit = max(0, int(max_bytes))
-    while entries and (total_bytes > byte_limit or len(entries) > file_limit):
-        path, stat = entries.pop(0)
+    while victims and (
+        total_bytes > byte_limit or (len(victims) + len(protected_entries)) > file_limit
+    ):
+        path, stat = victims.pop(0)
         try:
             path.unlink()
         except OSError as error:

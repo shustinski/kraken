@@ -254,6 +254,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "app_mode.validation": "Validation",
         "validation.matrix.title": "Validation",
         "matrix.info.base_only_metrics_disabled": "Base-only matrix mode: model comparison and risk metrics are disabled.",
+        "matrix.info.analytics_empty": "Analytics finished but no scores were available for metric '{metric}'. The matrix stays unscored.",
     },
     "ru": {
         "window.title": "Karakal",
@@ -438,6 +439,7 @@ _TRANSLATIONS: dict[str, dict[str, str]] = {
         "app_mode.validation": "Валидация",
         "validation.matrix.title": "Валидация",
         "matrix.info.base_only_metrics_disabled": "Режим матрицы по base-кадрам: метрики сравнения моделей и risk-score отключены.",
+        "matrix.info.analytics_empty": "Аналитика завершилась, но для метрики '{metric}' нет оценок. Матрица осталась без окраски.",
     },
 }
 
@@ -862,6 +864,7 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'grid_tuning.comparison_needs_confidence': 'Mismatch sliders need a confidence map of the selected model. Mask defects do not use it.',
         'matrix.model_uncertainty': 'Model uncertainty: {mean:.2f}, uncertain cells {ratio:.0%}',
         'grid_tuning.preview_count': 'Defects on this frame: {count}',
+        'grid_tuning.preview_loading': 'Analyzing frame in background…',
         'grid_tuning.preview_failed': 'This frame was not analyzed: {message}',
         'grid_tuning.preview_no_source': 'No model result file for this frame.',
         'grid_tuning.preview_no_mask': 'The selected model has no black-and-white mask for this frame.',
@@ -1419,6 +1422,7 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'grid_tuning.comparison_needs_confidence': 'Ползунки несовпадения нужны только при карте уверенности выбранной модели. На дефекты маски она не влияет.',
         'matrix.model_uncertainty': 'Неуверенность модели: {mean:.2f}, неуверенных ячеек {ratio:.0%}',
         'grid_tuning.preview_count': 'Ошибок на этом кадре: {count}',
+        'grid_tuning.preview_loading': 'Разбор кадра в фоне…',
         'grid_tuning.preview_failed': 'Кадр не разобран: {message}',
         'grid_tuning.preview_no_source': 'Для этого кадра нет файла результата модели.',
         'grid_tuning.preview_no_mask': 'У выбранной модели нет чёрно-белой маски для этого кадра.',

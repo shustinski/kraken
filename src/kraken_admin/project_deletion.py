@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +11,13 @@ import sqlalchemy as sa
 
 from kraken_server.project_deletion import DeletionRequests, lock
 from kraken_server.services import ConflictError
+
+from .deletion_confirmation import (
+    DeletionAuthorization,
+    DeletionPolicy,
+    remove_stored_path,
+    stage_stored_path,
+)
 
 
 def safe_path(path: Path, root: Path) -> Path:
@@ -132,10 +138,20 @@ class ProjectDeletion:
             self.accounts._record_audit(connection, None, "project.deletion_rejected", None,
                                         {"request_id": request_id})
 
-    def execute(self, request_id: str, confirmation_name: str, expected_plan: dict) -> None:
+    def execute(
+        self,
+        request_id: str,
+        confirmation_name: str,
+        expected_plan: dict,
+        *,
+        auto_confirm: bool = False,
+        reason: str | None = None,
+    ) -> None:
         from .project_roles import administrator
 
         administrator(self.accounts)
+        if reason is not None:
+            self.requests.update_reason(request_id, reason)
         engine = self.services.engine
         # A session lock serializes two Admin windows across all cleanup steps.
         with engine.connect() as owner:
@@ -146,7 +162,7 @@ class ProjectDeletion:
                 if not acquired:
                     raise ConflictError("Удаление уже выполняется в другом окне")
             try:
-                self._execute(request_id, confirmation_name, expected_plan)
+                self._execute(request_id, confirmation_name, expected_plan, auto_confirm=auto_confirm)
             except Exception:
                 rows = [row for row in self.requests.list() if row["request_id"] == request_id]
                 if rows and rows[0]["state"] == "pending":
@@ -158,7 +174,14 @@ class ProjectDeletion:
                                   {"key": f"delete:{request_id}"})
                     owner.commit()
 
-    def _execute(self, request_id: str, confirmation_name: str, expected_plan: dict) -> None:
+    def _execute(
+        self,
+        request_id: str,
+        confirmation_name: str,
+        expected_plan: dict,
+        *,
+        auto_confirm: bool,
+    ) -> None:
         engine = self.services.engine
         with engine.begin() as connection:
             row = connection.execute(sa.select(self.table).where(
@@ -177,8 +200,16 @@ class ProjectDeletion:
                 )).first():
                     raise ConflictError("В проекте есть незавершённые задания. Завершите или отмените их.")
             plan = self.preview(request_id)
-            if plan != expected_plan or confirmation_name != plan["name"]:
+            if plan != expected_plan:
                 raise ConflictError("Проект изменился. Повторно просмотрите и подтвердите удаление.")
+            policy_enabled = DeletionPolicy(engine).enabled(connection)
+            authorization = DeletionAuthorization.grant(
+                name_matches=confirmation_name == plan["name"],
+                auto_confirm=auto_confirm,
+                policy_enabled=policy_enabled,
+            )
+            confirmed_automatically = bool(auto_confirm and policy_enabled)
+            deletion_reason = str(row["reason"] or "")
             marker = self.config.blob_root / ".deleting" / project_id
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()
@@ -199,8 +230,10 @@ class ProjectDeletion:
             connection.execute(self.table.update().where(self.table.c.request_id == request_id).values(
                 state="deleting", plan=plan, error="", updated_at=datetime.now(UTC),
             ))
-            self.accounts._record_audit(connection, None, "project.deletion_started", None,
-                                        {"request_id": request_id, "project_id": project_id})
+            self.accounts._record_audit(connection, None, "project.deletion_started", None, {
+                "request_id": request_id, "project_id": project_id, "reason": deletion_reason,
+                "auto_confirmed": confirmed_automatically,
+            })
             completed = list(row["completed"])
         try:
             for index, entry in enumerate(plan["paths"]):
@@ -217,13 +250,11 @@ class ProjectDeletion:
                             if not trash.exists():
                                 assert_unshared(self.services.workspace_files.registry, project_id, [path])
                                 if path.exists():
-                                    trash.parent.mkdir(parents=True, exist_ok=True)
-                                    path.rename(trash)
+                                    stage_stored_path(path, trash, authorization)
                             completed.append(staged)
                             connection.execute(self.table.update().where(self.table.c.request_id == request_id)
                                                .values(completed=completed, updated_at=datetime.now(UTC)))
-                    if trash.exists():
-                        shutil.rmtree(trash) if trash.is_dir() else trash.unlink()
+                    remove_stored_path(trash, authorization)
                     completed.append(step)
                     self._progress(request_id, completed)
             with engine.begin() as connection:
@@ -241,7 +272,7 @@ class ProjectDeletion:
                             shared.update(_digests(dict(record)))
                 for digest in set(plan.get("digests", ())) - shared:
                     path = safe_path(self.services.uow_factory.blobs._path(digest), self.config.blob_root)
-                    path.unlink(missing_ok=True)
+                    remove_stored_path(path, authorization)
                 for table in reversed(schema.sorted_tables):
                     predicate = project_predicate(table, project_id)
                     if predicate is not None and table.name != self.table.name:
@@ -249,8 +280,10 @@ class ProjectDeletion:
                 connection.execute(self.table.update().where(self.table.c.request_id == request_id).values(
                     state="deleted", error="", completed=[*completed, "database"], updated_at=datetime.now(UTC),
                 ))
-                self.accounts._record_audit(connection, None, "project.deleted", None,
-                                            {"request_id": request_id, "project_id": project_id})
+                self.accounts._record_audit(connection, None, "project.deleted", None, {
+                    "request_id": request_id, "project_id": project_id, "reason": deletion_reason,
+                    "auto_confirmed": confirmed_automatically,
+                })
         except Exception as exc:
             with engine.begin() as connection:
                 connection.execute(self.table.update().where(self.table.c.request_id == request_id).values(

@@ -81,8 +81,9 @@ class _RoleNode(QGraphicsRectItem):
 
 class RoleGraphView(QGraphicsView):
     def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self.graph_scene = QGraphicsScene(self)
-        super().__init__(self.graph_scene, parent)
+        self.setScene(self.graph_scene)
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)

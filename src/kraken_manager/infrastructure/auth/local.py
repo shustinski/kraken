@@ -304,6 +304,19 @@ class LocalAccountStore:
                 connection.rollback()
                 raise
 
+    def delete_account(self, account_id: str, *, actor_id: str | None = None) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if connection.execute("SELECT 1 FROM accounts WHERE account_id=?", (account_id,)).fetchone() is None:
+                    raise KeyError(account_id)
+                self._audit(connection, actor_id, "account.deleted", account_id)
+                connection.execute("DELETE FROM accounts WHERE account_id=?", (account_id,))
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+
     def grant_global_role(self, account_id: str, role: str, *, actor_id: str | None = None) -> None:
         value = role.strip()
         if value not in {"server_admin"}:

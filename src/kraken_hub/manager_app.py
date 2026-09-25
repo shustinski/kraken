@@ -700,6 +700,35 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
     return None
 
 
+def _deletion_reason_dialog(parent, project_name: str) -> str | None:
+    from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QVBoxLayout
+
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Запросить удаление")
+    layout = QVBoxLayout(dialog)
+    summary = QLabel(
+        f"Отправить заявку на полное удаление проекта «{project_name}»?\n"
+        "После подтверждения в Kraken Admin будут удалены исходные изображения и результаты.\n"
+        "До подтверждения проект останется доступен."
+    )
+    summary.setWordWrap(True)
+    layout.addWidget(summary)
+    reason = QLineEdit(dialog)
+    reason.setObjectName("deletionRequestReason")
+    reason.setPlaceholderText("Необязательно")
+    form = QFormLayout()
+    form.addRow("Причина удаления", reason)
+    layout.addLayout(form)
+    buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+    buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Отправить заявку")
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+        return None
+    return reason.text()
+
+
 class DesktopController:
     def __init__(
         self,
@@ -1247,16 +1276,11 @@ class DesktopController:
             self.refresh_projects()
             return
         if getattr(self.service, "is_remote_project", lambda _identifier: False)(project.id):
-            answer = QMessageBox.question(
-                self.shell, "Запросить удаление",
-                f"Отправить заявку на полное удаление проекта «{project.name}»?\n"
-                "После подтверждения в Kraken Admin будут удалены исходные изображения и результаты.\n"
-                "До подтверждения проект останется доступен.",
-            )
-            if answer != QMessageBox.StandardButton.Yes:
+            reason = _deletion_reason_dialog(self.shell, project.name)
+            if reason is None:
                 return
             try:
-                request = self.service.request_project_deletion(project=project)
+                request = self.service.request_project_deletion(project=project, reason=reason)
             except Exception as exc:
                 self._error(str(exc))
                 return
@@ -6225,10 +6249,16 @@ class DesktopController:
                 QMessageBox.warning(dialog, "Не удалось добавить слой", str(exc))
                 return
             self._show_created_layer(workspace, project.id, layer)
+            remote = bool(
+                getattr(self.service, "is_remote_project", lambda _id: False)(project.id)
+            )
             QMessageBox.information(
                 self.shell,
                 "Слой создан",
-                "Внешние каталоги проверены и привязаны. Файлы не копировались.",
+                "Файлы размещены в хранилище сервера. Папка, которая уже лежала "
+                "внутри этого проекта, оставлена на месте."
+                if remote
+                else "Внешние каталоги проверены и привязаны. Файлы не копировались.",
             )
             return
 

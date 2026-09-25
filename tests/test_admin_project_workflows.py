@@ -104,7 +104,7 @@ def test_failed_cleanup_blocks_writes_and_can_resume(database, monkeypatch):
     target = project(services, person)
     request = services.request_project_deletion(target["project_id"], str(person.id))
     cleaner = ProjectDeletion(services, accounts, config)
-    import kraken_admin.project_deletion as module
+    import kraken_admin.deletion_confirmation as module
     remove = module.shutil.rmtree
     monkeypatch.setattr(module.shutil, "rmtree", lambda *_: (_ for _ in ()).throw(OSError("disk failure")))
     with pytest.raises(OSError, match="disk failure"):
@@ -206,7 +206,14 @@ def test_http_request_and_no_remote_approval(database):
         headers = {"Authorization": "Bearer admin"}
         response = client.post(url + "/deletion-requests", headers=headers)
         assert response.status_code == 202, response.text
+        assert response.json()["reason"] == ""
+        with_reason = client.post(url + "/deletion-requests", headers=headers, json={"reason": "  duplicate scan  "})
+        assert with_reason.status_code == 202, with_reason.text
+        assert with_reason.json()["request_id"] == response.json()["request_id"]
+        assert with_reason.json()["reason"] == "duplicate scan"
         assert client.get(url + "/deletion-requests", headers=headers).json()["items"][0]["state"] == "pending"
+        too_long = client.post(url + "/deletion-requests", headers=headers, json={"reason": "x" * 501})
+        assert too_long.status_code == 422
         assert client.delete(url, headers=headers).status_code == 405
         assert client.post(url + "/deletion-requests/approve", headers=headers).status_code == 404
 
@@ -254,6 +261,32 @@ def test_cascade_preview_matches_applied_revocations(database):
     set_roles(services, accounts, project_id=str(identifier), principal=maintainer, desired=frozenset(),
               expected_revision=1, expected_snapshot=assignments)
     assert not services.identities.roles_for(identifier, viewer.id)
+
+
+def test_file_deletion_requires_confirmation_or_enabled_auto_confirm(database):
+    from kraken_admin.deletion_confirmation import DeletionPolicy
+
+    services, accounts, person, config = database
+    target = project(services, person)
+    image = Path(services.workspace_files.registry.get_project(target["project_id"]).source_project_dir) / "image.jpg"
+    image.write_bytes(b"image")
+    request = services.request_project_deletion(target["project_id"], str(person.id), "  old scan  ")
+    assert request["reason"] == "old scan"
+    cleaner = ProjectDeletion(services, accounts, config)
+    plan = cleaner.preview(request["request_id"])
+    with pytest.raises(ConflictError, match="подтверждения"):
+        cleaner.execute(request["request_id"], "wrong", plan)
+    with pytest.raises(ConflictError, match="выключено"):
+        cleaner.execute(request["request_id"], "", plan, auto_confirm=True)
+    assert image.exists()
+    DeletionPolicy(services.engine).set_enabled(True, accounts)
+    cleaner.execute(request["request_id"], "", plan, auto_confirm=True)
+    assert not image.exists()
+    audit = accounts.administration_audit()
+    assert any(row["action"] == "deletion.auto_confirm_enabled" for row in audit)
+    deleted = next(row for row in audit if row["action"] == "project.deleted")
+    assert deleted["details"]["reason"] == "old scan"
+    assert deleted["details"]["auto_confirmed"] is True
 
 
 def test_admin_matrix_lists_all_users_and_projects(database, qtbot, tmp_path):

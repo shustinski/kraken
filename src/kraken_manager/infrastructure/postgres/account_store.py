@@ -262,6 +262,14 @@ class PostgresAccountStore:
                 self._record_audit(connection, actor_id, "account.password_reset", account_id)
             self._record_audit(connection, actor_id, "sessions.revoked", account_id)
 
+    def delete_account(self, account_id: str, *, actor_id: str | None = None) -> None:
+        sa, _ = _sqlalchemy()
+        with self.engine.begin() as connection:
+            self._record_audit(connection, actor_id, "account.deleted", account_id)
+            result = connection.execute(sa.delete(self.accounts).where(self.accounts.c.account_id == account_id))
+            if result.rowcount != 1:
+                raise KeyError(account_id)
+
     def grant_global_role(self, account_id: str, role: str, *, actor_id: str | None = None) -> None:
         if role != "server_admin":
             raise ValueError("Unsupported global role")

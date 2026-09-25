@@ -303,8 +303,9 @@ def _layer_id(value: str) -> LayerId:
 class PostgresServerServices:
     """Thin transport facade; mutations execute application command handlers."""
 
-    def request_project_deletion(self, project_id: str, actor_id: str) -> dict[str, Any]:
+    def request_project_deletion(self, project_id: str, actor_id: str, reason: str = "") -> dict[str, Any]:
         from kraken_manager.domain.identity import Permission
+
         from .project_deletion import DeletionRequests
 
         try:
@@ -317,7 +318,7 @@ class PostgresServerServices:
                 permission=Permission.ARCHIVE_PROJECT,
                 roles=self.identities.roles_for(project.id, actor.id), gitlab_identity_verified=True,
             )
-            return DeletionRequests(self.engine).request(project_id, project.name, actor_id)
+            return DeletionRequests(self.engine).request(project_id, project.name, actor_id, reason)
         except Exception as exc:
             self._translate_lifecycle_error(exc)
             raise AssertionError("unreachable")
@@ -721,9 +722,14 @@ class PostgresServerServices:
     def create_external_layer(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext
     ) -> dict[str, Any]:
+        copied: list[Any] = []
+
         def bind(files: Any, layer_id: str, name: str) -> Any:
-            return files.bind_external_layer(
-                project_id=project_id,
+            workspace = files.registry.get_project(project_id)
+            if workspace is None:
+                raise ValidationError("У проекта нет двухдискового хранилища")
+            binding, created = files.place_server_layer(
+                project=workspace,
                 layer_id=layer_id,
                 layer_name=name,
                 image_directory=str(payload.get("image_directory", "")),
@@ -731,8 +737,17 @@ class PostgresServerServices:
                 prv_directory=payload.get("prv_directory") or None,
                 maximum_frames=self._project_frame_count(project_id),
             )
+            copied.extend(created)
+            return binding
 
-        return self._attach_workspace_layer(project_id, payload, context, bind=bind, managed=False)
+        return self._attach_workspace_layer(
+            project_id,
+            payload,
+            context,
+            bind=bind,
+            managed=False,
+            copied_directories=copied,
+        )
 
     def import_workspace_layer(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext
@@ -774,6 +789,7 @@ class PostgresServerServices:
         *,
         bind: Any,
         managed: bool,
+        copied_directories: list[Any] | None = None,
     ) -> dict[str, Any]:
         from kraken_manager.workspace import WorkspaceValidationError, layer_binding_to_dict
 
@@ -837,6 +853,7 @@ class PostgresServerServices:
                 context,
                 layer,
                 managed=managed,
+                copied_directories=copied_directories or [],
             )
             if isinstance(exc, ApplicationNotFoundError):
                 raise NotFoundError(str(exc)) from exc
@@ -864,6 +881,7 @@ class PostgresServerServices:
         layer: Any,
         *,
         managed: bool,
+        copied_directories: list[Any] | None = None,
     ) -> None:
         if layer is not None:
             try:
@@ -881,6 +899,8 @@ class PostgresServerServices:
         try:
             if managed:
                 files.remove_managed_layer_layout(binding, workspace)
+            if copied_directories:
+                files.remove_placed_directories(workspace, copied_directories)
             files.registry.remove_layer(project_id, layer_id)
         except Exception:
             pass

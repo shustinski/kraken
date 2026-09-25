@@ -13,15 +13,16 @@ from kraken_admin.local_admin import (
     create_account,
     maintainer_rows,
     project_rows,
+    delete_account,
     reset_password,
     revoke_maintainer,
     revoke_sessions,
     set_account_enabled,
-    set_server_admin,
 )
 
 _AUDIT_LABELS = {
     "account.created": "Создан пользователь",
+    "account.deleted": "Учётная запись удалена",
     "account.enabled": "Пользователь включён",
     "account.disabled": "Пользователь отключён",
     "account.password_reset": "Сброшен пароль",
@@ -32,6 +33,8 @@ _AUDIT_LABELS = {
     "project.deletion_started": "Подтверждено удаление проекта",
     "project.deletion_rejected": "Заявка на удаление отклонена",
     "project.deleted": "Проект полностью удалён",
+    "deletion.auto_confirm_enabled": "Включено автоподтверждение удалений",
+    "deletion.auto_confirm_disabled": "Выключено автоподтверждение удалений",
 }
 
 
@@ -50,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_application_identity(application, app_id="kraken-admin")
     application.setStyleSheet(load_shared_stylesheet())
     window = AdminWindow()
-    window.open_config(default_local_config_path())
+    window.open_config(window.remembered_config_path())
     window.show()
     return int(application.exec())
 
@@ -123,6 +126,7 @@ class AdminWindow:
 
             ServerConfig.load(path)
             self._config_path = path.resolve()
+            self._remember_config(self._config_path)
             self.status.setText(str(self._config_path))
             if self._services is not None and hasattr(self._services, "engine"):
                 self._services.engine.dispose()
@@ -156,9 +160,9 @@ class AdminWindow:
 
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.accounts = QTableWidget(0, 5, page)
+        self.accounts = QTableWidget(0, 4, page)
         self.accounts.setObjectName("adminAccountsTable")
-        self.accounts.setHorizontalHeaderLabels(("Пользователь", "Логин", "Состояние", "Администратор", "Создан"))
+        self.accounts.setHorizontalHeaderLabels(("Пользователь", "Логин", "Состояние", "Создан"))
         self.accounts.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.accounts.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.accounts.horizontalHeader().setStretchLastSection(True)
@@ -168,8 +172,7 @@ class AdminWindow:
             ("Создать…", self._create_account),
             ("Включить", lambda: self._set_enabled(True)),
             ("Отключить", lambda: self._set_enabled(False)),
-            ("Назначить администратора", lambda: self._set_admin(True)),
-            ("Снять администратора", lambda: self._set_admin(False)),
+            ("Удалить…", self._delete_account),
             ("Новый пароль…", self._reset_password),
             ("Завершить сеансы", self._revoke_sessions),
         )
@@ -204,7 +207,11 @@ class AdminWindow:
         side_layout.addWidget(self.maintainers, 1)
         revoke = QPushButton("Изменить роли…")
         revoke.clicked.connect(self._edit_project_roles)
+        remove_project = QPushButton("Удалить проект…")
+        remove_project.setObjectName("adminDeleteProject")
+        remove_project.clicked.connect(self._delete_project)
         side_layout.addWidget(revoke)
+        side_layout.addWidget(remove_project)
         splitter.addWidget(self.projects)
         splitter.addWidget(side)
         splitter.setStretchFactor(1, 1)
@@ -225,14 +232,27 @@ class AdminWindow:
     def _choose_config(self) -> None:
         from PyQt6.QtWidgets import QFileDialog
 
+        start = self._config_path or self.remembered_config_path()
         selected, _filter = QFileDialog.getOpenFileName(
             self.window,
             "server.toml",
-            str(self._config_path or default_local_config_path().parent),
+            str(start if start.is_file() else start.parent),
             "TOML (*.toml)",
         )
         if selected:
             self.open_config(Path(selected))
+
+    def remembered_config_path(self) -> Path:
+        stored = str(_config_settings().value("config/last-path", "") or "")
+        candidate = Path(stored) if stored else default_local_config_path()
+        if candidate.is_file():
+            return candidate
+        return default_local_config_path()
+
+    def _remember_config(self, path: Path) -> None:
+        settings = _config_settings()
+        settings.setValue("config/last-path", str(path))
+        settings.sync()
 
     def _fill_accounts(self) -> None:
         from PyQt6.QtCore import Qt
@@ -248,9 +268,7 @@ class AdminWindow:
                 self.accounts.setItem(row, 0, name)
                 self.accounts.setItem(row, 1, QTableWidgetItem(str(value["username"])))
                 self.accounts.setItem(row, 2, QTableWidgetItem("активна" if value["enabled"] else "отключена"))
-                admin = "да" if "server_admin" in value["system_roles"] else ""
-                self.accounts.setItem(row, 3, QTableWidgetItem(admin))
-                self.accounts.setItem(row, 4, QTableWidgetItem(str(value["created_at"])))
+                self.accounts.setItem(row, 3, QTableWidgetItem(str(value["created_at"])))
         finally:
             self._filling = False
 
@@ -308,16 +326,24 @@ class AdminWindow:
         for row, event in enumerate(rows):
             action = str(event.get("action", ""))
             target = str(event.get("target_account_id") or "")
+            details = event.get("details", {})
+            if not isinstance(details, dict):
+                details = {}
             if not target:
-                details = event.get("details", {})
                 target = str(details.get("project_id", details.get("request_id", "")))
             if self._accounts is not None and target:
                 account = self._accounts.get_account(target)
                 if account is not None:
                     target = account.username
+            label = _AUDIT_LABELS.get(action, action)
+            if details.get("auto_confirmed"):
+                label = f"{label} (автоподтверждение)"
+            reason = str(details.get("reason") or "")
+            if reason:
+                label = f"{label} — {reason}"
             values = (
                 str(event.get("recorded_at", "")),
-                _AUDIT_LABELS.get(action, action),
+                label,
                 target,
             )
             for column, value in enumerate(values):
@@ -379,16 +405,40 @@ class AdminWindow:
             return
         self.reload()
 
-    def _set_admin(self, grant: bool) -> None:
+    def _delete_account(self) -> None:
         username = self._require_account()
         if not username or self._accounts is None:
             return
+        if not _confirm_by_typing(
+            self.window,
+            "Удалить учётную запись",
+            f"Будут удалены логин, сеансы и проектные роли.\n\nДля подтверждения введите: {username}",
+            username,
+        ):
+            return
         try:
-            set_server_admin(self._accounts, username, grant=grant)
+            delete_account(self._accounts, username, services=self._services)
         except Exception as exc:  # noqa: BLE001 - UI boundary
-            self._report("Не удалось изменить роль администратора", exc)
+            self._report("Не удалось удалить учётную запись", exc)
             return
         self.reload()
+
+    def _delete_project(self) -> None:
+        project_id = self._selected_project_id()
+        if self._services is None or self._accounts is None:
+            self._report("Kraken Admin", "Сначала откройте server.toml.")
+            return
+        if not project_id:
+            self._report("Kraken Admin", "Выберите проект.")
+            return
+        name = next(
+            (str(item["name"]) for item in project_rows(self._services) if item["project_id"] == project_id),
+            "",
+        )
+        if not name:
+            self._report("Kraken Admin", "Проект больше не доступен.")
+            return
+        self.deletion_panel.delete_project(project_id, name)
 
     def _reset_password(self) -> None:
         username = self._require_account()
@@ -435,6 +485,24 @@ class AdminWindow:
         from PyQt6.QtWidgets import QMessageBox
 
         QMessageBox.warning(self.window, title, str(exc))
+
+
+def _confirm_by_typing(parent, title: str, prompt: str, expected: str) -> bool:
+    from PyQt6.QtWidgets import QInputDialog, QMessageBox
+
+    value, accepted = QInputDialog.getText(parent, title, prompt)
+    if not accepted:
+        return False
+    if value != expected:
+        QMessageBox.warning(parent, title, "Введённое значение не совпадает.")
+        return False
+    return True
+
+
+def _config_settings():
+    from PyQt6.QtCore import QSettings
+
+    return QSettings("Kraken", "KrakenAdmin")
 
 
 def _account_dialog(parent):

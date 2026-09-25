@@ -8,7 +8,20 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 
-from .services import ConflictError
+from .services import ConflictError, ValidationError
+
+REASON_LIMIT = 500
+
+
+def normalize_deletion_reason(value: object) -> str:
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise ValidationError("Причина удаления должна быть текстом")
+    reason = " ".join(value.split())
+    if len(reason) > REASON_LIMIT:
+        raise ValidationError(f"Причина удаления длиннее {REASON_LIMIT} символов")
+    return reason
 
 
 def request_table(metadata: sa.MetaData | None = None) -> sa.Table:
@@ -24,6 +37,7 @@ def request_table(metadata: sa.MetaData | None = None) -> sa.Table:
         sa.Column("plan", sa.JSON, nullable=False),
         sa.Column("completed", sa.JSON, nullable=False),
         sa.Column("error", sa.Text, nullable=False),
+        sa.Column("reason", sa.Text, nullable=False, server_default=""),
     )
 
 
@@ -77,7 +91,8 @@ class DeletionRequests:
         with self.engine.connect() as connection:
             return [dict(row) for row in connection.execute(query).mappings()]
 
-    def request(self, project_id: str, project_name: str, actor_id: str) -> dict:
+    def request(self, project_id: str, project_name: str, actor_id: str, reason: object = "") -> dict:
+        normalized = normalize_deletion_reason(reason)
         with self.engine.begin() as connection:
             lock(connection, f"deletion-request:{project_id}")
             ensure_available(connection, project_id)
@@ -85,13 +100,42 @@ class DeletionRequests:
                 self.table.c.project_id == project_id, self.table.c.state == "pending",
             )).mappings().first()
             if existing:
-                return dict(existing)
+                current = dict(existing)
+                if normalized and normalized != str(current.get("reason") or ""):
+                    now = datetime.now(UTC)
+                    connection.execute(self.table.update().where(
+                        self.table.c.request_id == current["request_id"],
+                    ).values(reason=normalized, updated_at=now))
+                    current["reason"] = normalized
+                    current["updated_at"] = now
+                return current
             now = datetime.now(UTC)
-            row = dict(request_id=str(uuid4()), project_id=project_id, project_name=project_name,
-                       requested_by=actor_id, requested_at=now, updated_at=now, state="pending",
-                       plan={}, completed=[], error="")
+            row = {
+                "request_id": str(uuid4()),
+                "project_id": project_id,
+                "project_name": project_name,
+                "requested_by": actor_id,
+                "requested_at": now,
+                "updated_at": now,
+                "state": "pending",
+                "plan": {},
+                "completed": [],
+                "error": "",
+                "reason": normalized,
+            }
             connection.execute(self.table.insert().values(**row))
             return row
+
+    def update_reason(self, request_id: str, reason: object) -> str:
+        normalized = normalize_deletion_reason(reason)
+        with self.engine.begin() as connection:
+            result = connection.execute(self.table.update().where(
+                self.table.c.request_id == request_id,
+                self.table.c.state.in_(("pending", "deleting", "failed")),
+            ).values(reason=normalized, updated_at=datetime.now(UTC)))
+            if result.rowcount != 1:
+                raise ConflictError("Заявка уже обработана")
+        return normalized
 
     def reject(self, request_id: str) -> None:
         with self.engine.begin() as connection:

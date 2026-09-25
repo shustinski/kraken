@@ -615,7 +615,11 @@ def test_server_external_layer_uses_the_server_project(tmp_path: Path) -> None:
 
     assert str(captured[0].project_id) == project_id
     assert result["layer"]["layer_id"] == result["binding"]["layer_id"]
-    assert result["binding"]["image_directory"] == str(images.resolve())
+    stored = source / "img" / "Metal"
+    assert result["binding"]["mode"] == "managed_copy"
+    assert result["binding"]["image_directory"] == str(stored.resolve())
+    assert (stored / "0.jpg").read_bytes() == b"frame"
+    assert (images / "0.jpg").is_file()
     assert files.registry.get_layer(project_id, result["layer"]["layer_id"]) is not None
     assert result["representation"]["kind"] == RepresentationKind.IMAGE.value
     assert result["representation"]["purpose"] == RepresentationPurpose.SOURCE.value

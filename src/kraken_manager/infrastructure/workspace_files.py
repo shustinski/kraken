@@ -65,6 +65,84 @@ def _same_or_nested(first: Path, second: Path) -> bool:
     return first == second or first in second.parents or second in first.parents
 
 
+def _project_tree_root(project: ProjectWorkspaceBinding, candidate: Path) -> Path:
+    resolved = candidate.resolve(strict=False)
+    for root_text in (project.source_project_dir, project.derived_project_dir):
+        root = Path(root_text).resolve()
+        if resolved == root or root in resolved.parents:
+            return root
+    raise WorkspaceValidationError(f"Путь выходит за пределы папки проекта: {candidate}")
+
+
+def _strictly_inside_project(project: ProjectWorkspaceBinding, candidate: Path) -> bool:
+    resolved = candidate.resolve(strict=False)
+    for root_text in (project.source_project_dir, project.derived_project_dir):
+        root = Path(root_text).resolve()
+        if root in resolved.parents:
+            return True
+    return False
+
+
+def _reject_project_ancestor(project: ProjectWorkspaceBinding, candidate: Path) -> None:
+    resolved = candidate.resolve(strict=False)
+    for root_text in (project.source_project_dir, project.derived_project_dir):
+        root = Path(root_text).resolve()
+        if resolved == root or resolved in root.parents:
+            raise WorkspaceValidationError(
+                "Источник и папка проекта не могут содержать друг друга."
+            )
+
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".bmp", ".png"}
+
+
+def _directory(value: Path | str, message: str) -> Path:
+    raw = Path(value).expanduser()
+    if raw.is_symlink():
+        raise WorkspaceValidationError(f"Символические ссылки недопустимы: {raw}")
+    resolved = raw.resolve(strict=True)
+    if not resolved.is_dir():
+        raise WorkspaceValidationError(message)
+    return resolved
+
+
+def _optional_directory(value: Path | str | None) -> Path | None:
+    if value is None or not str(value).strip():
+        return None
+    return _directory(value, f"Необязательный путь не является папкой: {value}")
+
+
+def _image_files(directory: Path) -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path in directory.iterdir()
+        if path.is_file() and not path.is_symlink() and path.suffix.casefold() in _IMAGE_SUFFIXES
+    )
+
+
+def _copy_directory(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    stage = destination.parent / f".intake-{uuid4().hex}"
+    try:
+        _copy_children(source, stage)
+        os.replace(stage, destination)
+    except Exception:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+
+
+def _copy_children(source: Path, destination: Path) -> None:
+    destination.mkdir()
+    for child in source.iterdir():
+        if child.is_symlink():
+            raise WorkspaceValidationError(f"Символические ссылки недопустимы: {child}")
+        target = destination / child.name
+        if child.is_dir():
+            _copy_children(child, target)
+        elif child.is_file():
+            shutil.copy2(child, target)
+
+
 def validate_workspace_roots(source_root: Path | str, derived_root: Path | str) -> tuple[Path, Path]:
     source = Path(source_root).expanduser().resolve(strict=True)
     derived = Path(derived_root).expanduser().resolve(strict=True)
@@ -326,12 +404,12 @@ class WorkspaceFileService:
                 binding.prv_directory,
                 binding.aux_directory,
             ):
-                if value:
-                    source = _contained(source_root, Path(value))
-                    relative = source.relative_to(source_root)
-                    candidates.append(
-                        (source, source_root / "_trash" / delete_id / relative)
-                    )
+                if not value:
+                    continue
+                owned_root = _project_tree_root(project, Path(value))
+                source = _contained(owned_root, Path(value))
+                relative = source.relative_to(owned_root)
+                candidates.append((source, owned_root / "_trash" / delete_id / relative))
         for kind in DerivedRunKind:
             source = _contained(
                 derived_root,
@@ -435,6 +513,86 @@ class WorkspaceFileService:
         )
         self.registry.save_layer(project_id, binding)
         return binding
+
+    def place_server_layer(
+        self,
+        *,
+        project: ProjectWorkspaceBinding,
+        layer_id: str,
+        layer_name: str,
+        image_directory: Path | str,
+        ssc_directory: Path | str | None,
+        prv_directory: Path | str | None,
+        maximum_frames: int,
+    ) -> tuple[LayerFileBinding, tuple[Path, ...]]:
+        """Store a server layer inside the project trees.
+
+        A directory that is already inside this project's source or derived tree
+        stays where it is. Every other directory is copied into the matching
+        source category. Server layers are never recorded as external paths.
+        """
+
+        name = validate_workspace_name(layer_name, field_name="Название слоя")
+        images = _directory(image_directory, "Обязательно укажите папку изображений.")
+        optional = {
+            "ssc": _optional_directory(ssc_directory),
+            "prv": _optional_directory(prv_directory),
+        }
+        placements: dict[str, Path] = {"img": images}
+        for category, directory in optional.items():
+            if directory is not None:
+                placements[category] = directory
+        for directory in placements.values():
+            _reject_project_ancestor(project, directory)
+        if not _image_files(images):
+            raise WorkspaceValidationError(
+                "В папке нет поддерживаемых изображений JPG, PNG или BMP."
+            )
+        source_project = Path(project.source_project_dir).resolve(strict=True)
+
+        created: list[Path] = []
+        stored: dict[str, Path] = {}
+        try:
+            for category, directory in placements.items():
+                if _strictly_inside_project(project, directory):
+                    stored[category] = directory
+                    continue
+                destination = _contained(source_project, source_project / category / name)
+                if destination.exists():
+                    raise FileExistsError(f"Папка слоя «{name}» уже существует: {destination}")
+                _copy_directory(directory, destination)
+                created.append(destination)
+                stored[category] = destination
+            final_images = stored["img"]
+            positions = map_frame_positions(_image_files(final_images), maximum=maximum_frames)
+            binding = LayerFileBinding(
+                layer_id=str(layer_id),
+                layer_name=name,
+                mode=LayerSourceMode.MANAGED_COPY,
+                image_directory=str(final_images),
+                ssc_directory=str(stored.get("ssc", "")),
+                prv_directory=str(stored.get("prv", "")),
+                frame_positions=positions,
+            )
+            self.registry.save_layer(project.project_id, binding)
+        except Exception:
+            for directory in reversed(created):
+                shutil.rmtree(directory, ignore_errors=True)
+            raise
+        return binding, tuple(created)
+
+    def remove_placed_directories(
+        self,
+        project: ProjectWorkspaceBinding,
+        directories: tuple[Path, ...] | list[Path],
+    ) -> None:
+        source_project = Path(project.source_project_dir).resolve()
+        for directory in directories:
+            if not directory:
+                continue
+            candidate = _contained(source_project, Path(directory))
+            if candidate.is_dir() and not candidate.is_symlink():
+                shutil.rmtree(candidate)
 
     def import_layer(
         self,

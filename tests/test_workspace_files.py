@@ -226,6 +226,100 @@ def test_external_layer_binding_keeps_absolute_paths_without_copying(tmp_path: P
     assert (images / "frame_0.png").is_file()
 
 
+def test_server_layer_copies_an_outside_folder_into_the_project(tmp_path: Path) -> None:
+    shared = tmp_path / "data"
+    shared.mkdir()
+    service = _service(tmp_path)
+    project = service.create_server_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=shared,
+        derived_root=shared,
+    )
+    images = tmp_path / "microscope"
+    images.mkdir()
+    (images / "frame_0.png").write_bytes(b"frame")
+    notes = images / "capture"
+    notes.mkdir()
+    (notes / "lens.txt").write_text("keep", encoding="utf-8")
+
+    binding, created = service.place_server_layer(
+        project=project,
+        layer_id="layer-1",
+        layer_name="Metal",
+        image_directory=images,
+        ssc_directory=None,
+        prv_directory=None,
+        maximum_frames=1,
+    )
+
+    stored = Path(project.source_project_dir) / "img" / "Metal"
+    assert binding.mode is LayerSourceMode.MANAGED_COPY
+    assert Path(binding.image_directory) == stored.resolve()
+    assert (stored / "frame_0.png").read_bytes() == b"frame"
+    assert (stored / "capture" / "lens.txt").read_text(encoding="utf-8") == "keep"
+    assert (images / "frame_0.png").is_file()
+    assert created == (stored.resolve(),)
+
+
+def test_server_layer_keeps_a_folder_already_inside_the_project(tmp_path: Path) -> None:
+    shared = tmp_path / "data"
+    shared.mkdir()
+    service = _service(tmp_path)
+    project = service.create_server_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=shared,
+        derived_root=shared,
+    )
+    images = Path(project.source_project_dir) / "img" / "Metal"
+    images.mkdir()
+    (images / "frame_0.png").write_bytes(b"frame")
+    outside = tmp_path / "ssc"
+    outside.mkdir()
+    (outside / "layout.ssc").write_text("ssc", encoding="utf-8")
+
+    binding, created = service.place_server_layer(
+        project=project,
+        layer_id="layer-1",
+        layer_name="Metal",
+        image_directory=images,
+        ssc_directory=outside,
+        prv_directory=None,
+        maximum_frames=1,
+    )
+
+    assert Path(binding.image_directory) == images.resolve()
+    assert list(images.iterdir()) == [images / "frame_0.png"]
+    stored_ssc = Path(project.source_project_dir) / "ssc" / "Metal"
+    assert Path(binding.ssc_directory) == stored_ssc.resolve()
+    assert (stored_ssc / "layout.ssc").is_file()
+    assert (outside / "layout.ssc").is_file()
+    assert created == (stored_ssc.resolve(),)
+
+
+def test_server_layer_refuses_the_project_root_as_a_source(tmp_path: Path) -> None:
+    shared = tmp_path / "data"
+    shared.mkdir()
+    service = _service(tmp_path)
+    project = service.create_server_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=shared,
+        derived_root=shared,
+    )
+    with pytest.raises(WorkspaceValidationError, match="не могут содержать друг друга"):
+        service.place_server_layer(
+            project=project,
+            layer_id="layer-1",
+            layer_name="Metal",
+            image_directory=project.source_project_dir,
+            ssc_directory=None,
+            prv_directory=None,
+            maximum_frames=1,
+        )
+
+
 def test_external_plugin_output_is_copied_into_reserved_run(tmp_path: Path) -> None:
     source, derived = _roots(tmp_path)
     service = _service(tmp_path)

@@ -56,7 +56,7 @@ def create_app(
     blob_gateway: Any | None = None,
 ) -> Any:
     try:
-        from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+        from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
         from fastapi.concurrency import run_in_threadpool
         from fastapi.exceptions import RequestValidationError
         from fastapi.responses import JSONResponse, StreamingResponse
@@ -590,8 +590,10 @@ def create_app(
     def request_project_deletion(
         project_id: str,
         actor: SessionPrincipal = Depends(shared_mutation_actor),
+        payload: dict[str, Any] | None = Body(default=None),
     ) -> dict[str, Any]:
-        return backend.request_project_deletion(project_id, actor.principal_id)
+        reason = "" if not payload else payload.get("reason", "")
+        return backend.request_project_deletion(project_id, actor.principal_id, reason)
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/deletion-requests")
     def project_deletion_requests(

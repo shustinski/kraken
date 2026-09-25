@@ -48,7 +48,7 @@ class CommandContext:
 
 
 class ServerServices(Protocol):
-    def request_project_deletion(self, project_id: str, actor_id: str) -> dict[str, Any]: ...
+    def request_project_deletion(self, project_id: str, actor_id: str, reason: str = "") -> dict[str, Any]: ...
 
     def project_deletion_requests(self, project_id: str) -> list[dict[str, Any]]: ...
 
@@ -251,7 +251,8 @@ class ServerServices(Protocol):
 
 
 class InMemoryServerServices:
-    def request_project_deletion(self, project_id: str, actor_id: str) -> dict[str, Any]:
+    def request_project_deletion(self, project_id: str, actor_id: str, reason: str = "") -> dict[str, Any]:
+        del reason
         raise ConflictError("Deletion requests require a persistent PostgreSQL server")
 
     def project_deletion_requests(self, project_id: str) -> list[dict[str, Any]]:

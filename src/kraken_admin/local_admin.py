@@ -40,6 +40,40 @@ def set_account_enabled(store: object, username: str, *, enabled: bool) -> str:
     return str(updated.account_id)
 
 
+def delete_account(store: object, username: str, *, services: object | None = None) -> str:
+    account = account_by_username(store, username)
+    account_id = str(account.account_id)
+    if services is not None:
+        _remove_principal(services, account_id)
+    store.delete_account(account_id)  # type: ignore[attr-defined]
+    return account_id
+
+
+def _remove_principal(services: object, principal_id: str) -> None:
+    engine = getattr(services, "engine", None)
+    identities = getattr(services, "identities", None)
+    if engine is None or identities is None or not hasattr(identities, "acl"):
+        return
+    import sqlalchemy as sa
+
+    with engine.begin() as connection:
+        connection.execute(sa.delete(identities.acl).where(sa.or_(
+            identities.acl.c.principal_id == principal_id,
+            identities.acl.c.granted_by == principal_id,
+        )))
+        connection.execute(
+            sa.text("UPDATE performers SET principal_id = NULL WHERE principal_id = :id"),
+            {"id": principal_id},
+        )
+        connection.execute(
+            sa.text("DELETE FROM federated_sessions WHERE principal_id = :id"),
+            {"id": principal_id},
+        )
+        connection.execute(sa.delete(identities.principals).where(
+            identities.principals.c.principal_id == principal_id,
+        ))
+
+
 def set_server_admin(store: object, username: str, *, grant: bool) -> str:
     account = account_by_username(store, username)
     try:

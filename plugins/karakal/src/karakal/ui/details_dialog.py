@@ -502,21 +502,52 @@ class ExtendFrameDetailsDialog(QDialog):
         self.grid_network_visible = QCheckBox(layers_group)
         self.grid_network_visible.setChecked(True)
         self.grid_network_opacity = self._opacity_slider(50)
+        self.grid_network_mode = self._layer_mode_combo(("original", "binary"))
+        self.grid_network_threshold = self._threshold_slider()
+        self.grid_network_color_button = self._color_button()
         self.grid_confidence_visible = QCheckBox(layers_group)
         self.grid_confidence_visible.setChecked(True)
         self.grid_confidence_opacity = self._opacity_slider(60)
+        self.grid_confidence_mode = self._layer_mode_combo(("heatmap", "binary", "original"))
+        self.grid_confidence_threshold = self._threshold_slider()
+        self.grid_confidence_invert = QCheckBox(self._t("details.layer_invert"), layers_group)
+        self.grid_confidence_invert.setToolTip(self._t("details.layer_invert_hint"))
+        self.grid_confidence_color_button = self._color_button()
+        self.grid_confidence_legend = QLabel("", layers_group)
+        self.grid_confidence_legend.setWordWrap(True)
         self.grid_source_visible = QCheckBox(layers_group)
         self.grid_source_visible.setChecked(True)
         self.grid_source_opacity = self._opacity_slider(100)
+        self.grid_source_mode = self._layer_mode_combo(("original",))
         self.grid_network_layer_title = QLabel(self._t("details.grid_network_layer"), layers_group)
         self.grid_confidence_layer_title = QLabel(self._t("details.grid_confidence_layer"), layers_group)
         self.grid_source_layer_title = QLabel(self._t("details.grid_source_layer"), layers_group)
         self.grid_marks_title = QLabel(self._t("details.grid_marks"), layers_group)
-        self.grid_network_layer_row = self._layer_row(self.grid_network_visible, self.grid_network_opacity)
-        self.grid_confidence_layer_row = self._layer_row(self.grid_confidence_visible, self.grid_confidence_opacity)
-        self.grid_source_layer_row = self._layer_row(self.grid_source_visible, self.grid_source_opacity)
+        self.grid_network_layer_row = self._layer_row(
+            self.grid_network_visible,
+            self.grid_network_opacity,
+            self.grid_network_color_button,
+            extras=(self.grid_network_mode, self.grid_network_threshold),
+        )
+        self.grid_confidence_layer_row = self._layer_row(
+            self.grid_confidence_visible,
+            self.grid_confidence_opacity,
+            self.grid_confidence_color_button,
+            extras=(
+                self.grid_confidence_mode,
+                self.grid_confidence_threshold,
+                self.grid_confidence_invert,
+            ),
+        )
+        self.grid_source_layer_row = self._layer_row(
+            self.grid_source_visible,
+            self.grid_source_opacity,
+            extras=(self.grid_source_mode,),
+        )
+        self._grid_confidence_scale = None
         layers_form.addRow(self.grid_network_layer_title, self.grid_network_layer_row)
         layers_form.addRow(self.grid_confidence_layer_title, self.grid_confidence_layer_row)
+        layers_form.addRow("", self.grid_confidence_legend)
         layers_form.addRow(self.grid_source_layer_title, self.grid_source_layer_row)
         layers_form.addRow(self.grid_marks_title)
         for grid_layer_widget in (
@@ -524,6 +555,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self.grid_network_layer_row,
             self.grid_confidence_layer_title,
             self.grid_confidence_layer_row,
+            self.grid_confidence_legend,
             self.grid_source_layer_title,
             self.grid_source_layer_row,
             self.grid_marks_title,
@@ -815,16 +847,39 @@ class ExtendFrameDetailsDialog(QDialog):
             callback(self)
         return True
 
-    def _layer_row(self, checkbox: QCheckBox, slider: QSlider, color_button: QPushButton | None = None) -> QWidget:
+    def _layer_row(
+        self,
+        checkbox: QCheckBox,
+        slider: QSlider,
+        color_button: QPushButton | None = None,
+        extras: tuple[QWidget, ...] = (),
+    ) -> QWidget:
         row = QWidget(self)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         layout.addWidget(checkbox)
+        for widget in extras:
+            layout.addWidget(widget)
         layout.addWidget(slider, stretch=1)
         if color_button is not None:
             layout.addWidget(color_button)
         return row
+
+    def _layer_mode_combo(self, modes: tuple[str, ...]) -> QComboBox:
+        combo = QComboBox(self)
+        for mode in modes:
+            combo.addItem(self._t(f"details.layer_mode.{mode}"), mode)
+        combo.setMinimumWidth(128)
+        return combo
+
+    def _threshold_slider(self) -> QSlider:
+        slider = QSlider(Qt.Orientation.Horizontal, self)
+        slider.setRange(0, 100)
+        slider.setValue(50)
+        slider.setFixedWidth(72)
+        slider.setToolTip(self._t("details.layer_threshold"))
+        return slider
 
     def _opacity_slider(self, value: int) -> QSlider:
         slider = QSlider(Qt.Orientation.Horizontal, self)
@@ -906,6 +961,20 @@ class ExtendFrameDetailsDialog(QDialog):
             self.grid_source_opacity,
         ):
             widget.valueChanged.connect(self._store_view_settings)
+        for widget in (
+            self.grid_network_mode,
+            self.grid_confidence_mode,
+            self.grid_source_mode,
+        ):
+            widget.currentIndexChanged.connect(self._on_grid_layer_display_changed)
+        for widget in (
+            self.grid_network_threshold,
+            self.grid_confidence_threshold,
+        ):
+            widget.valueChanged.connect(self._on_grid_layer_display_changed)
+        self.grid_confidence_invert.toggled.connect(self._on_grid_layer_display_changed)
+        self.grid_network_color_button.clicked.connect(lambda: self._choose_grid_layer_color("grid_network"))
+        self.grid_confidence_color_button.clicked.connect(lambda: self._choose_grid_layer_color("grid_confidence"))
         self.result_kind_combo.currentIndexChanged.connect(self._store_view_settings)
         self.layer_view_combo.currentIndexChanged.connect(self._store_view_settings)
         self.grayscale_diff_checkbox.toggled.connect(self._store_view_settings)
@@ -2367,13 +2436,95 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _apply_grid_layer_availability(self) -> None:
         missing = self._t("details.layer_missing")
-        for checkbox, available in (
-            (self.grid_network_visible, self._grid_network_available()),
-            (self.grid_confidence_visible, self._grid_confidence_available()),
-            (self.grid_source_visible, self._grid_source_available()),
-        ):
-            checkbox.setEnabled(bool(available))
-            checkbox.setToolTip("" if available else missing)
+        groups = (
+            (
+                self._grid_network_available(),
+                (
+                    self.grid_network_visible,
+                    self.grid_network_mode,
+                    self.grid_network_threshold,
+                    self.grid_network_opacity,
+                    self.grid_network_color_button,
+                ),
+            ),
+            (
+                self._grid_confidence_available(),
+                (
+                    self.grid_confidence_visible,
+                    self.grid_confidence_mode,
+                    self.grid_confidence_threshold,
+                    self.grid_confidence_invert,
+                    self.grid_confidence_opacity,
+                    self.grid_confidence_color_button,
+                ),
+            ),
+            (
+                self._grid_source_available(),
+                (
+                    self.grid_source_visible,
+                    self.grid_source_mode,
+                    self.grid_source_opacity,
+                ),
+            ),
+        )
+        for available, widgets in groups:
+            for widget in widgets:
+                widget.setEnabled(bool(available))
+                widget.setToolTip("" if available else missing)
+        self._sync_grid_layer_mode_controls()
+
+    def _combo_data(self, combo: QComboBox) -> str:
+        return str(combo.currentData() or "")
+
+    def _select_combo_data(self, combo: QComboBox, value: object) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    def _sync_grid_layer_mode_controls(self) -> None:
+        """Threshold, invert, and color belong to binary mode. Heatmap keeps the legend."""
+
+        network_on = self.grid_network_visible.isEnabled()
+        network_binary = network_on and self._combo_data(self.grid_network_mode) == "binary"
+        self.grid_network_threshold.setEnabled(network_binary)
+        self.grid_network_color_button.setEnabled(network_binary)
+        if network_on:
+            self.grid_network_threshold.setToolTip(self._t("details.layer_threshold"))
+        confidence_on = self.grid_confidence_visible.isEnabled()
+        confidence_binary = confidence_on and self._combo_data(self.grid_confidence_mode) == "binary"
+        self.grid_confidence_threshold.setEnabled(confidence_binary)
+        self.grid_confidence_invert.setEnabled(confidence_binary)
+        self.grid_confidence_color_button.setEnabled(confidence_binary)
+        if confidence_on:
+            self.grid_confidence_threshold.setToolTip(self._t("details.layer_threshold"))
+            self.grid_confidence_invert.setToolTip(self._t("details.layer_invert_hint"))
+        show_legend = (
+            confidence_on
+            and self._combo_data(self.grid_confidence_mode) == "heatmap"
+            and self._selected_result_kind() == "grid_cell_defects"
+        )
+        self.grid_confidence_legend.setVisible(show_legend)
+        legend_layout = self.grid_confidence_legend.parentWidget().layout()
+        if isinstance(legend_layout, QFormLayout):
+            legend_label = legend_layout.labelForField(self.grid_confidence_legend)
+            if legend_label is not None:
+                legend_label.setVisible(show_legend)
+
+    def _on_grid_layer_display_changed(self, *_args) -> None:
+        self._sync_grid_layer_mode_controls()
+        if self._selected_result_kind() == "grid_cell_defects":
+            self._refresh_grid_layer_pixmaps()
+        self._store_view_settings()
+
+    def _choose_grid_layer_color(self, key: str) -> None:
+        color = QColorDialog.getColor(self._named_color(key), self, self._t("details.color_dialog_title"))
+        if not color.isValid():
+            return
+        colors = dict(self._session_view_state.get("colors") or {})
+        colors[key] = color.name(QColor.NameFormat.HexRgb)
+        self._session_view_state["colors"] = colors
+        self._update_color_button_styles()
+        self._on_grid_layer_display_changed()
 
     def _apply_grid_image_stack(self) -> None:
         """Source under confidence under the network mask. Marks stay above all three."""
@@ -2872,6 +3023,10 @@ class ExtendFrameDetailsDialog(QDialog):
         path_text = str(getattr(self._record, "original_path", "") or getattr(self._record, "base_path", "") or "")
         if not path_text:
             return None
+        cache_key = ("grid_reference_photo", path_text, tuple(shape))
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
         try:
             values = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
         except (OSError, TypeError, ValueError, RuntimeError):
@@ -2880,6 +3035,7 @@ class ExtendFrameDetailsDialog(QDialog):
             return None
         if tuple(values.shape) != tuple(shape):
             values = np.asarray(resize_grayscale_image(values, shape), dtype=np.uint8)
+        self._derived_cache[cache_key] = values
         return values
 
     def _grid_model_output_native_array(self) -> np.ndarray | None:
@@ -2978,43 +3134,136 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
-    def _grid_network_mask_pixmap(self) -> QPixmap:
-        """Network mask with a transparent background so lower layers stay visible."""
+    def _refresh_grid_layer_pixmaps(self) -> None:
+        """Rebuild layer pixmaps from cached arrays. Opacity stays on the graphics items."""
 
-        model_id = str(self._selected_model_for_current_comparison() or "")
-        path_text = self._grid_model_output_path()
-        result = self._grid_cell_analysis_result()
-        width = max(1, int(getattr(result, "image_width", 0) or 1))
-        height = max(1, int(getattr(result, "image_height", 0) or 1))
-        cache_key = ("grid_network_mask_rgba", model_id, path_text, width, height)
+        shape = tuple(self._grid_scene_base_array().shape)
+        reference = self._grid_reference_photo_array(shape)
+        self.original_item.setPixmap(
+            self._grid_gray_layer_pixmap("source", reference, identity=str(self._record.original_path or ""))
+        )
+        self.original_item.setTransform(QTransform())
+        if self._grid_confidence_available():
+            self.second_source_item.setPixmap(self._grid_confidence_layer_pixmap())
+            self._scale_pixmap_item_to_scene(self.second_source_item)
+        else:
+            self.second_source_item.setPixmap(QPixmap())
+            self.second_source_item.setTransform(QTransform())
+        if self._grid_network_available():
+            self.first_source_item.setPixmap(self._grid_network_layer_pixmap())
+            self._scale_pixmap_item_to_scene(self.first_source_item)
+        else:
+            self.first_source_item.setPixmap(QPixmap())
+            self.first_source_item.setTransform(QTransform())
+        self._apply_grid_image_stack()
+
+    def _grid_gray_layer_pixmap(self, layer: str, gray: np.ndarray | None, *, identity: str) -> QPixmap:
+        if gray is None or np.asarray(gray).size == 0:
+            return QPixmap()
+        values = np.asarray(gray, dtype=np.uint8)
+        cache_key = ("grid_layer_gray", layer, "original", identity, tuple(values.shape))
         cached = self._overlay_cache.get(cache_key)
         if isinstance(cached, QPixmap) and not cached.isNull():
             return cached
-        values = np.asarray(self._grid_model_output_array(), dtype=np.uint8)
-        if values.ndim != 2 or values.size == 0:
-            return QPixmap()
-        color = QColor(80, 210, 255)
-        rgba = np.zeros((*values.shape, 4), dtype=np.uint8)
-        rgba[..., 0] = color.red()
-        rgba[..., 1] = color.green()
-        rgba[..., 2] = color.blue()
-        rgba[..., 3] = values
-        image = QImage(rgba.data, values.shape[1], values.shape[0], int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
-        pixmap = QPixmap.fromImage(image)
+        pixmap = self._grayscale_to_pixmap(values)
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
+    def _grid_binary_pixmap(
+        self,
+        layer: str,
+        gray: np.ndarray,
+        *,
+        color: QColor,
+        threshold: int,
+        invert: bool,
+        identity: str,
+    ) -> QPixmap:
+        values = np.asarray(gray, dtype=np.uint8)
+        level = int(round(float(threshold) / 100.0 * 255.0))
+        cache_key = (
+            "grid_layer_binary",
+            layer,
+            identity,
+            tuple(values.shape),
+            int(threshold),
+            bool(invert),
+            color.name(QColor.NameFormat.HexRgb),
+        )
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap) and not cached.isNull():
+            return cached
+        mask = values < level if invert else values >= level
+        pixmap = self._mask_to_pixmap(mask, color)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _grid_network_layer_pixmap(self) -> QPixmap:
+        gray = self._grid_model_output_array()
+        identity = self._grid_model_output_path()
+        if self._combo_data(self.grid_network_mode) == "binary":
+            return self._grid_binary_pixmap(
+                "network",
+                gray,
+                color=self._named_color("grid_network"),
+                threshold=int(self.grid_network_threshold.value()),
+                invert=False,
+                identity=identity,
+            )
+        return self._grid_gray_layer_pixmap("network", gray, identity=identity)
+
+    def _grid_network_mask_pixmap(self) -> QPixmap:
+        """Binary network mask: pixels at or above the layer threshold keep the layer color."""
+
+        return self._grid_binary_pixmap(
+            "network",
+            self._grid_model_output_array(),
+            color=self._named_color("grid_network"),
+            threshold=int(self.grid_network_threshold.value()),
+            invert=False,
+            identity=self._grid_model_output_path(),
+        )
+
+    def _grid_confidence_layer_pixmap(self) -> QPixmap:
+        mode = self._combo_data(self.grid_confidence_mode)
+        if mode == "heatmap":
+            return self._grid_confidence_uncertainty_pixmap()
+        probability = self._grid_confidence_probability_map()
+        if probability is None:
+            return QPixmap()
+        gray = np.clip(np.rint(np.clip(probability, 0.0, 1.0) * 255.0), 0, 255).astype(np.uint8)
+        identity = self._grid_confidence_path()
+        if mode == "binary":
+            return self._grid_binary_pixmap(
+                "confidence",
+                gray,
+                color=self._named_color("grid_confidence"),
+                threshold=int(self.grid_confidence_threshold.value()),
+                invert=bool(self.grid_confidence_invert.isChecked()),
+                identity=identity,
+            )
+        return self._grid_gray_layer_pixmap("confidence", gray, identity=identity)
+
+    def _set_confidence_legend(self, low: float, high: float) -> None:
+        self._grid_confidence_scale = (float(low), float(high))
+        text = self._t("details.confidence_scale", low=f"{low:.3f}", high=f"{high:.3f}")
+        self.grid_confidence_legend.setText(text)
+        self.grid_confidence_legend.setToolTip(text)
+
     def _grid_confidence_uncertainty_pixmap(self) -> QPixmap:
-        """Uncertainty heatmap: confident pixels stay clear, low confidence gets denser."""
+        """Heatmap of uncertainty: confident pixels clear, the frame minimum opaque red."""
 
         model_id = str(self._selected_model_for_current_comparison() or "")
         path_text = self._grid_confidence_path()
         result = self._grid_cell_analysis_result()
         width = max(1, int(getattr(result, "image_width", 0) or 1))
         height = max(1, int(getattr(result, "image_height", 0) or 1))
-        cache_key = ("grid_confidence_uncertainty", model_id, path_text, width, height)
+        cache_key = ("grid_confidence_heatmap", model_id, path_text, width, height)
+        scale_key = ("grid_confidence_scale", model_id, path_text, width, height)
         cached = self._overlay_cache.get(cache_key)
-        if isinstance(cached, QPixmap) and not cached.isNull():
+        scale = self._derived_cache.get(scale_key)
+        if isinstance(cached, QPixmap) and not cached.isNull() and isinstance(scale, tuple) and len(scale) == 2:
+            self._set_confidence_legend(float(scale[0]), float(scale[1]))
             return cached
         probability = self._grid_confidence_probability_map()
         if probability is None:
@@ -3024,20 +3273,26 @@ class ExtendFrameDetailsDialog(QDialog):
             return QPixmap()
         low = float(np.percentile(finite, 5))
         high = float(np.percentile(finite, 95))
+        if high - low < 1e-4:
+            low = float(np.min(finite))
+            high = float(np.max(finite))
         span = high - low
         if span < 1e-4:
-            span = 1e-4
-        uncertainty = np.clip((high - probability) / span, 0.0, 1.0).astype(np.float32)
+            uncertainty = np.zeros(probability.shape, dtype=np.float32)
+        else:
+            uncertainty = np.clip((high - probability) / span, 0.0, 1.0).astype(np.float32)
         rgba = np.zeros((*uncertainty.shape, 4), dtype=np.uint8)
         rgba[..., 0] = 255
-        rgba[..., 1] = np.clip((1.0 - uncertainty) * 180.0, 0.0, 255.0).astype(np.uint8)
-        rgba[..., 2] = 32
-        rgba[..., 3] = np.clip(uncertainty * 220.0, 0.0, 255.0).astype(np.uint8)
+        rgba[..., 1] = np.clip((1.0 - uncertainty) * 210.0, 0.0, 255.0).astype(np.uint8)
+        rgba[..., 2] = np.clip((1.0 - uncertainty) * 32.0, 0.0, 255.0).astype(np.uint8)
+        rgba[..., 3] = np.clip(uncertainty * 255.0, 0.0, 255.0).astype(np.uint8)
         image = QImage(
             rgba.data, uncertainty.shape[1], uncertainty.shape[0], int(rgba.strides[0]), QImage.Format.Format_RGBA8888
         ).copy()
         pixmap = QPixmap.fromImage(image)
         self._overlay_cache[cache_key] = pixmap
+        self._derived_cache[scale_key] = (low, high)
+        self._set_confidence_legend(low, high)
         return pixmap
 
     def _grid_cell_defects_pixmap(self, model_id: str | None) -> QPixmap:
@@ -3577,6 +3832,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self.grid_network_layer_row,
             self.grid_confidence_layer_title,
             self.grid_confidence_layer_row,
+            self.grid_confidence_legend,
             self.grid_source_layer_title,
             self.grid_source_layer_row,
             self.grid_marks_title,
@@ -4347,23 +4603,7 @@ class ExtendFrameDetailsDialog(QDialog):
         mode = self._current_operation_mode()
         prefer_grayscale = self._selected_result_kind() == "diff" and mode == ComparisonMode.GRAYSCALE_DIFF
         if grid_details:
-            reference = self._grid_reference_photo_array(base_array.shape)
-            self.original_item.setPixmap(
-                self._grayscale_to_pixmap(reference) if reference is not None else QPixmap()
-            )
-            self.original_item.setTransform(QTransform())
-            if self._grid_confidence_available():
-                self.second_source_item.setPixmap(self._grid_confidence_uncertainty_pixmap())
-                self._scale_pixmap_item_to_scene(self.second_source_item)
-            else:
-                self.second_source_item.setPixmap(QPixmap())
-                self.second_source_item.setTransform(QTransform())
-            if self._grid_network_available():
-                self.first_source_item.setPixmap(self._grid_network_mask_pixmap())
-                self._scale_pixmap_item_to_scene(self.first_source_item)
-            else:
-                self.first_source_item.setPixmap(QPixmap())
-                self.first_source_item.setTransform(QTransform())
+            self._refresh_grid_layer_pixmaps()
         else:
             self.first_source_item.setPixmap(
                 self._source_pixmap(first_key, self._named_color("first_mask"), prefer_grayscale=prefer_grayscale)
@@ -5117,6 +5357,8 @@ class ExtendFrameDetailsDialog(QDialog):
             "difference_mask": QColor(255, 196, 0, 255),
             "boundary_mask": QColor(255, 210, 0, 235),
             "input_output_mask": QColor(255, 88, 40, 255),
+            "grid_network": QColor(80, 210, 255, 255),
+            "grid_confidence": QColor(239, 68, 68, 255),
         }
         value = (self._session_view_state.get("colors") or {}).get(key)
         if isinstance(value, str):
@@ -5205,6 +5447,8 @@ class ExtendFrameDetailsDialog(QDialog):
             self.first_mask_color_button: "first_mask",
             self.second_mask_color_button: "second_mask",
             self.result_mask_color_button: self._active_result_color_key() or "difference_mask",
+            self.grid_network_color_button: "grid_network",
+            self.grid_confidence_color_button: "grid_confidence",
         }
         for button, key in mapping.items():
             color = self._named_color(key)
@@ -5234,6 +5478,12 @@ class ExtendFrameDetailsDialog(QDialog):
             "grid_network_opacity": int(self.grid_network_opacity.value()),
             "grid_confidence_opacity": int(self.grid_confidence_opacity.value()),
             "grid_source_opacity": int(self.grid_source_opacity.value()),
+            "grid_network_mode": self._combo_data(self.grid_network_mode),
+            "grid_network_threshold": int(self.grid_network_threshold.value()),
+            "grid_confidence_mode": self._combo_data(self.grid_confidence_mode),
+            "grid_confidence_threshold": int(self.grid_confidence_threshold.value()),
+            "grid_confidence_invert": bool(self.grid_confidence_invert.isChecked()),
+            "grid_source_mode": self._combo_data(self.grid_source_mode),
             "colors": dict(self._session_view_state.get("colors") or {}),
         }
         return payload
@@ -5259,6 +5509,12 @@ class ExtendFrameDetailsDialog(QDialog):
             QSignalBlocker(self.grid_network_opacity),
             QSignalBlocker(self.grid_confidence_opacity),
             QSignalBlocker(self.grid_source_opacity),
+            QSignalBlocker(self.grid_network_mode),
+            QSignalBlocker(self.grid_confidence_mode),
+            QSignalBlocker(self.grid_source_mode),
+            QSignalBlocker(self.grid_network_threshold),
+            QSignalBlocker(self.grid_confidence_threshold),
+            QSignalBlocker(self.grid_confidence_invert),
         ]
         _ = blockers
         preferred_model_id = payload.get("preferred_model_id")
@@ -5316,6 +5572,21 @@ class ExtendFrameDetailsDialog(QDialog):
             int(payload.get("grid_confidence_opacity", self.grid_confidence_opacity.value()))
         )
         self.grid_source_opacity.setValue(int(payload.get("grid_source_opacity", self.grid_source_opacity.value())))
+        if "grid_network_mode" in payload:
+            self._select_combo_data(self.grid_network_mode, payload.get("grid_network_mode"))
+        if "grid_confidence_mode" in payload:
+            self._select_combo_data(self.grid_confidence_mode, payload.get("grid_confidence_mode"))
+        if "grid_source_mode" in payload:
+            self._select_combo_data(self.grid_source_mode, payload.get("grid_source_mode"))
+        self.grid_network_threshold.setValue(int(payload.get("grid_network_threshold", self.grid_network_threshold.value())))
+        self.grid_confidence_threshold.setValue(
+            int(payload.get("grid_confidence_threshold", self.grid_confidence_threshold.value()))
+        )
+        self.grid_confidence_invert.setChecked(
+            bool(payload.get("grid_confidence_invert", self.grid_confidence_invert.isChecked()))
+        )
+        self._sync_grid_layer_mode_controls()
+        self._update_color_button_styles()
 
     def set_preferred_model_id(self, model_id: str | None) -> None:
         normalized = str(model_id or "") or None

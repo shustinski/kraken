@@ -7,6 +7,7 @@ import logging
 import os
 import pickle
 import time
+import warnings
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
@@ -2565,35 +2566,59 @@ def _retarget_local_medians(
         return local_medians, []
     area_lo = 0.55 * max(1.0, float(modal_area))
     area_hi = 1.85 * max(1.0, float(modal_area))
+    count = len(candidates)
+    width_values = np.asarray([float(item.bbox[2]) for item in candidates], dtype=np.float64)
+    height_values = np.asarray([float(item.bbox[3]) for item in candidates], dtype=np.float64)
+    area_values = np.asarray([float(item.area) for item in candidates], dtype=np.float64)
+    interior_values = np.asarray([float(item.interior_fill_ratio) for item in candidates], dtype=np.float64)
+    solidity_values = np.asarray([float(item.solidity) for item in candidates], dtype=np.float64)
+    extent_values = np.asarray([float(item.extent) for item in candidates], dtype=np.float64)
+    max_neighbors = max((len(ids) for ids in neighbor_ids), default=0)
+    if max_neighbors == 0:
+        band_counts = [0] * count
+    else:
+        neighbor_index = np.full((count, max_neighbors), -1, dtype=np.int32)
+        for index, ids in enumerate(neighbor_ids):
+            if ids:
+                neighbor_index[index, : len(ids)] = ids
+        valid = neighbor_index >= 0
+        safe_index = np.clip(neighbor_index, 0, max(0, count - 1))
+        in_band = valid & (area_values[safe_index] >= area_lo) & (area_values[safe_index] <= area_hi)
+        band_counts = [int(value) for value in np.count_nonzero(in_band, axis=1)]
+
+        def _band_median(values: np.ndarray) -> np.ndarray:
+            masked = np.where(in_band, values[safe_index], np.nan)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                return np.nanmedian(masked, axis=1)
+
+        width_median = _band_median(width_values)
+        height_median = _band_median(height_values)
+        area_median = _band_median(area_values)
+        interior_median = _band_median(interior_values)
+        solidity_median = _band_median(solidity_values)
+        extent_median = _band_median(extent_values)
+    fallback = {
+        "width": max(1.0, float(modal_width)),
+        "height": max(1.0, float(modal_height)),
+        "area": max(1.0, float(modal_area)),
+        "interior_fill": float(modal_interior),
+        "solidity": float(modal_solidity),
+        "extent": float(modal_extent),
+    }
     retargeted: list[dict[str, float]] = []
-    band_counts: list[int] = []
-    for index, _local in enumerate(local_medians):
-        band = [
-            candidates[neighbor]
-            for neighbor in neighbor_ids[index]
-            if area_lo <= float(candidates[neighbor].area) <= area_hi
-        ]
-        band_counts.append(len(band))
-        if len(band) >= 3:
-            retargeted.append(
-                {
-                    "width": max(1.0, float(np.median([item.bbox[2] for item in band]))),
-                    "height": max(1.0, float(np.median([item.bbox[3] for item in band]))),
-                    "area": max(1.0, float(np.median([item.area for item in band]))),
-                    "interior_fill": float(np.median([item.interior_fill_ratio for item in band])),
-                    "solidity": float(np.median([item.solidity for item in band])),
-                    "extent": float(np.median([item.extent for item in band])),
-                }
-            )
+    for index, band_count in enumerate(band_counts):
+        if max_neighbors == 0 or int(band_count) < 3 or not np.isfinite(width_median[index]):
+            retargeted.append(dict(fallback))
             continue
         retargeted.append(
             {
-                "width": max(1.0, float(modal_width)),
-                "height": max(1.0, float(modal_height)),
-                "area": max(1.0, float(modal_area)),
-                "interior_fill": float(modal_interior),
-                "solidity": float(modal_solidity),
-                "extent": float(modal_extent),
+                "width": max(1.0, float(width_median[index])),
+                "height": max(1.0, float(height_median[index])),
+                "area": max(1.0, float(area_median[index])),
+                "interior_fill": float(interior_median[index]),
+                "solidity": float(solidity_median[index]),
+                "extent": float(extent_median[index]),
             }
         )
     return retargeted, band_counts

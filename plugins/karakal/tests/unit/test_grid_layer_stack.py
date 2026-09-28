@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import QGraphicsPixmapItem
 
 from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
 from karakal.core.grid_anomaly import GridCellAnalysisResult, GridFrameAnalysisResult
-from karakal.core.image_io import _grayscale_array_to_qimage
+from karakal.core.image_io import _grayscale_array_to_qimage, load_grayscale_image
 from karakal.ui.details_dialog import ExtendFrameDetailsDialog
 
 
@@ -125,6 +127,7 @@ def test_zero_mask_pixel_leaves_the_lower_layer_color(tmp_path, qtbot) -> None:
     mask = np.zeros((32, 32), dtype=np.uint8)
     mask[0:8, 0:8] = 255
     dialog = _dialog(tmp_path, qtbot, source=True, confidence=False, mask=mask)
+    dialog.grid_network_mode.setCurrentIndex(dialog.grid_network_mode.findData("binary"))
     source = dialog.original_item.pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
     network = dialog.first_source_item.pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
     assert network.pixelColor(20, 20).alpha() == 0
@@ -163,3 +166,105 @@ def test_layer_choices_survive_a_scene_refresh(tmp_path, qtbot) -> None:
     assert dialog.grid_network_opacity.value() == 25
     assert not dialog.original_item.isVisible()
     assert dialog.first_source_item.opacity() == 0.25
+
+
+def _drop_layer_caches(dialog) -> None:
+    dialog._derived_cache.clear()
+    dialog._overlay_cache.clear()
+
+
+def test_original_pixmap_matches_the_gray_file(tmp_path, qtbot) -> None:
+    dialog = _dialog(tmp_path, qtbot, source=True, confidence=True)
+    assert dialog.grid_source_mode.currentData() == "original"
+    assert dialog.grid_network_mode.currentData() == "original"
+    loaded = load_grayscale_image(Path(dialog._record.original_path))
+    image = dialog.original_item.pixmap().toImage()
+    for y, x in ((0, 0), (4, 9), (31, 31)):
+        color = image.pixelColor(x, y)
+        value = int(loaded[y, x])
+        assert (color.red(), color.green(), color.blue(), color.alpha()) == (value, value, value, 255)
+    network = dialog.first_source_item.pixmap().toImage()
+    assert network.pixelColor(20, 20).alpha() == 255
+    assert network.pixelColor(20, 20).red() == network.pixelColor(20, 20).green() == network.pixelColor(20, 20).blue()
+
+
+def test_layer_modes_are_independent_and_survive_a_frame_change(tmp_path, qtbot) -> None:
+    dialog = _dialog(tmp_path, qtbot, source=True, confidence=True)
+    dialog.grid_network_threshold.setValue(70)
+    dialog.grid_confidence_threshold.setValue(40)
+    dialog.grid_confidence_invert.setChecked(True)
+    dialog.grid_network_mode.setCurrentIndex(dialog.grid_network_mode.findData("original"))
+    dialog.grid_confidence_mode.setCurrentIndex(dialog.grid_confidence_mode.findData("heatmap"))
+    network = dialog.first_source_item.pixmap().toImage().pixelColor(2, 2)
+    confidence = dialog.second_source_item.pixmap().toImage().pixelColor(0, 0)
+    assert network.red() == network.green() == network.blue()
+    assert confidence.alpha() == 0 or confidence.red() != confidence.green()
+    stored = dialog._build_view_settings_payload()
+    (tmp_path / "next").mkdir()
+    other = _dialog(tmp_path / "next", qtbot, source=True, confidence=True)
+    other._session_view_state.clear()
+    other._session_view_state.update(stored)
+    other._restore_view_settings()
+    assert other.grid_network_mode.currentData() == "original"
+    assert other.grid_confidence_mode.currentData() == "heatmap"
+    assert other.grid_network_threshold.value() == 70
+    assert other.grid_confidence_threshold.value() == 40
+    assert other.grid_confidence_invert.isChecked()
+    assert other.grid_source_mode.currentData() == "original"
+
+
+def test_binary_threshold_and_invert(tmp_path, qtbot) -> None:
+    dialog = _dialog(tmp_path, qtbot, source=True, confidence=True)
+    confidence = np.full((32, 32), 20, dtype=np.uint8)
+    confidence[0, 0] = 255
+    assert _grayscale_array_to_qimage(confidence).save(str(tmp_path / "confidence.png"))
+    _drop_layer_caches(dialog)
+    dialog.grid_confidence_mode.setCurrentIndex(dialog.grid_confidence_mode.findData("binary"))
+    dialog.grid_confidence_threshold.setValue(50)
+    dialog.grid_confidence_invert.setChecked(False)
+    image = dialog.second_source_item.pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    assert image.pixelColor(4, 4).alpha() == 0
+    assert image.pixelColor(0, 0).alpha() == 255
+    assert image.pixelColor(0, 0).red() == 239
+    dialog.grid_confidence_invert.setChecked(True)
+    inverted = dialog.second_source_item.pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    assert inverted.pixelColor(4, 4).alpha() == 255
+    assert inverted.pixelColor(0, 0).alpha() == 0
+    network = dialog.first_source_item.pixmap().toImage().pixelColor(6, 6)
+    assert network.red() == network.green() == network.blue()
+
+
+def test_heatmap_hides_confident_pixels_and_shows_the_frame_minimum(tmp_path, qtbot) -> None:
+    dialog = _dialog(tmp_path, qtbot, source=True, confidence=True)
+    confidence = np.full((32, 32), 247, dtype=np.uint8)
+    confidence[0, 0] = 255
+    confidence[31, 31] = 51
+    assert _grayscale_array_to_qimage(confidence).save(str(tmp_path / "confidence.png"))
+    _drop_layer_caches(dialog)
+    dialog.grid_confidence_mode.setCurrentIndex(dialog.grid_confidence_mode.findData("heatmap"))
+    dialog._refresh_scene(reset_view=False)
+    image = dialog.second_source_item.pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+    assert image.pixelColor(0, 0).alpha() == 0
+    assert image.pixelColor(31, 31).alpha() == 255
+    assert "0.200" in dialog.grid_confidence_legend.text()
+    assert "1.000" in dialog.grid_confidence_legend.text()
+    assert dialog.original_item.zValue() < dialog.second_source_item.zValue() < dialog.first_source_item.zValue()
+    assert dialog.first_source_item.zValue() < dialog._grid_mark_items[0].zValue()
+
+
+def test_opacity_does_not_rebuild_pixmap_and_mode_does_not_reread(tmp_path, qtbot, monkeypatch) -> None:
+    dialog = _dialog(tmp_path, qtbot, source=True, confidence=True)
+    gray_key = next(key for key in dialog._overlay_cache if key[0] == "grid_layer_gray" and key[1] == "network")
+    pixmap = dialog._overlay_cache[gray_key]
+    dialog.grid_network_opacity.setValue(10)
+    assert dialog._overlay_cache[gray_key] is pixmap
+    assert dialog.first_source_item.opacity() == 0.1
+
+    def _refuse_read(*_args, **_kwargs):
+        raise AssertionError("mode change re-read the file")
+
+    monkeypatch.setattr("karakal.ui.details_dialog.load_grayscale_image", _refuse_read)
+    dialog.grid_network_mode.setCurrentIndex(dialog.grid_network_mode.findData("binary"))
+    pixel = dialog.first_source_item.pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32).pixelColor(6, 6)
+    assert pixel.alpha() == 255
+    assert (pixel.red(), pixel.green(), pixel.blue()) == (80, 210, 255)

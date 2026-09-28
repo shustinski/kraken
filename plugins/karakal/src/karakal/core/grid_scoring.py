@@ -59,9 +59,15 @@ def score_geometry(solidity: float, extent: float, reference_solidity: float, re
 
 
 def score_merge(largest_axis_ratio: float, area_ratio: float) -> float:
-    """How far the contour extends past a single cell slot."""
+    """How far the contour extends past a single cell slot.
 
-    return _logistic((max(float(largest_axis_ratio) - 1.0, float(area_ratio) - 1.0) - 0.80) / 0.20)
+    A pair or triple of slots scores high. A field-sized mass is not stuck cells.
+    """
+
+    excess = max(float(largest_axis_ratio) - 1.0, float(area_ratio) - 1.0)
+    if excess >= 2.8:
+        return 0.0
+    return _logistic((excess - 0.80) / 0.20)
 
 
 def score_debris(area_ratio: float, largest_axis_ratio: float) -> float:

@@ -5035,6 +5035,17 @@ class KarakalPresenter(QObject):
             examples=tuple(collected[:500]),
             reference=reference,
         )
+        # Matrix analysis reads the confirmed calibration. Keep its examples in step with the marks,
+        # otherwise a later run still uses the pre-mark snapshot.
+        confirmed = getattr(self, "_grid_calibration_confirmed", None)
+        if confirmed is None:
+            self._grid_calibration_confirmed = self._grid_calibration
+        else:
+            self._grid_calibration_confirmed = replace(
+                confirmed,
+                examples=self._grid_calibration.examples,
+                reference=reference,
+            )
         if details_dialog is not None:
             tuning = self._grid_preview_tuning or self._grid_tuning_values()
             self._refresh_grid_details_preview(details_dialog, tuning)

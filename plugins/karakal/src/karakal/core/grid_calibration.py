@@ -121,19 +121,32 @@ def modal_size_cluster(items: Sequence[Any]) -> list[Any]:
             for item in group
             if (value := _feature(item, "interior_fill", "interior_fill_ratio")) is not None
         ]
-        groups.append((float(np.median(interior)) if interior else 1.0, -int(count), group))
+        solidity = [value for item in group if (value := _feature(item, "solidity")) is not None]
+        groups.append(
+            {
+                "interior": float(np.median(interior)) if interior else 1.0,
+                "count": int(count),
+                "solidity": float(np.median(solidity)) if solidity else 0.0,
+                "group": group,
+            }
+        )
     if not groups:
         mode = int(values[int(np.argmax(counts))])
         chosen = [item for item, bin_id in zip(sized, bins) if int(bin_id) == mode]
     else:
-        groups.sort(key=lambda item: (item[0], item[1]))
-        chosen = groups[0][2]
+        # A handful of hollow conductor fragments must not beat the repeated cells.
+        solid = [item for item in groups if item["solidity"] >= 0.75]
+        pool = solid or groups
+        pool.sort(key=lambda item: (-int(item["count"]), float(item["interior"])))
+        chosen = pool[0]["group"]
     hollow = []
     for item in chosen:
         interior = _feature(item, "interior_fill", "interior_fill_ratio")
         if interior is not None and interior < 0.45:
             hollow.append(item)
-    if len(hollow) >= 4 and len(hollow) < len(chosen):
+    # Outline masks keep the hollow part of the size bin as the normal cell.
+    # A handful of holes in an otherwise solid lattice must not replace that lattice.
+    if len(hollow) >= 4 and len(hollow) < len(chosen) and len(hollow) * 4 >= len(chosen):
         return hollow
     return chosen
 

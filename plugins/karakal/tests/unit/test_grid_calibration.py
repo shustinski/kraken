@@ -34,6 +34,35 @@ def _example(label: str, interior: float, *, thumbnail: str = "", created_at: st
     )
 
 
+def test_marking_an_example_updates_the_confirmed_calibration() -> None:
+    from types import SimpleNamespace
+
+    from karakal.app.presenter import KarakalPresenter
+
+    host = SimpleNamespace(
+        _grid_frame_examples={},
+        _grid_calibration=GridCalibration(),
+        _grid_calibration_confirmed=GridCalibration(preset="balanced"),
+        _grid_preview_tuning=None,
+        _grid_tuning_dialog=None,
+    )
+    host._refresh_grid_calibration_summary = lambda dialog=None: None
+    KarakalPresenter._sync_grid_examples(
+        host,
+        "frame",
+        [
+            {
+                "label": "normal",
+                "features": {"interior_fill": 0.2, "solidity": 0.95, "extent": 0.8},
+                "bbox": (1, 2, 10, 12),
+            }
+        ],
+    )
+    confirmed = host._grid_calibration_confirmed
+    assert confirmed.examples[0].label == "normal"
+    assert abs(float(confirmed.reference["solidity"]) - 0.95) < 1e-6
+
+
 def test_calibration_roundtrip_and_bad_payload() -> None:
     original = GridCalibration(
         preset="custom",

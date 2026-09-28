@@ -246,15 +246,17 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
             continue
         for reason in reasons:
             reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        defects.append(
-            {
-                "bbox": [int(value) for value in cell.bbox[:4]],
-                "centroid": [round(float(cell.centroid[0]), 1), round(float(cell.centroid[1]), 1)],
-                "reasons": list(reasons),
-                "score": round(float(cell.score), 4),
-                "status": str(cell.status),
-            }
-        )
+        record = {
+            "bbox": [int(value) for value in cell.bbox[:4]],
+            "centroid": [round(float(cell.centroid[0]), 1), round(float(cell.centroid[1]), 1)],
+            "reasons": list(reasons),
+            "score": round(float(cell.score), 4),
+            "status": str(cell.status),
+        }
+        outline = tuple(getattr(cell, "outline", ()) or ())
+        if outline:
+            record["contour"] = [[int(point[0]), int(point[1])] for point in outline]
+        defects.append(record)
     feature_medians = {
         label: {key: round(float(np.median(values)), 4) for key, values in groups.items()}
         for label, groups in feature_groups.items()
@@ -264,14 +266,28 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
 
     def _inside_zone(item: dict) -> bool:
         cx, cy = item.get("centroid") or (item["bbox"][0] + item["bbox"][2] / 2, item["bbox"][1] + item["bbox"][3] / 2)
-        return any(
-            zone["bbox"][0] <= cx < zone["bbox"][0] + zone["bbox"][2]
-            and zone["bbox"][1] <= cy < zone["bbox"][1] + zone["bbox"][3]
-            for zone in zones
-        )
+        point = (float(cx), float(cy))
+        for zone in zones:
+            contour = zone.get("contour") or []
+            if len(contour) >= 3:
+                polygon = np.asarray(contour, dtype=np.int32).reshape(-1, 1, 2)
+                if cv2.pointPolygonTest(polygon, point, False) >= 0:
+                    return True
+                continue
+            if (
+                zone["bbox"][0] <= cx < zone["bbox"][0] + zone["bbox"][2]
+                and zone["bbox"][1] <= cy < zone["bbox"][1] + zone["bbox"][3]
+            ):
+                return True
+        return False
 
     zone_mask = np.zeros((max(1, int(result.image_height) // 8), max(1, int(result.image_width) // 8)), dtype=np.uint8)
     for zone in zones:
+        contour = zone.get("contour") or []
+        if len(contour) >= 3:
+            polygon = np.asarray([[int(point[0]) // 8, int(point[1]) // 8] for point in contour], dtype=np.int32)
+            cv2.fillPoly(zone_mask, [polygon], 1)
+            continue
         x, y, width, height = (int(value) for value in zone["bbox"][:4])
         zone_mask[y // 8 : (y + height) // 8, x // 8 : (x + width) // 8] = 1
     return {
@@ -288,6 +304,7 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
         "cell_width": int(result.cell_width),
         "cell_height": int(result.cell_height),
         "damage_score": round(float(result.damage_score), 4),
+        "zone_skipped_components": int(getattr(result, "zone_skipped_components", 0)),
         "zone_count": len(zones),
         "zone_area_fraction": round(float(np.count_nonzero(zone_mask)) / float(zone_mask.size), 4),
         "cell_defects_inside_zones": sum(1 for item in cell_defects if _inside_zone(item)),
@@ -438,6 +455,12 @@ def _draw_overlay(source: np.ndarray, defects: list[dict]) -> np.ndarray:
     if zones:
         tint = canvas.copy()
         for zone in zones:
+            contour = zone.get("contour") or []
+            if len(contour) >= 3:
+                polygon = np.asarray(contour, dtype=np.int32).reshape(-1, 1, 2)
+                cv2.fillPoly(tint, [polygon], (160, 160, 160))
+                cv2.polylines(canvas, [polygon], True, (180, 180, 180), 2)
+                continue
             x, y, width, height = (int(value) for value in zone["bbox"][:4])
             cv2.rectangle(tint, (x, y), (x + width, y + height), (160, 160, 160), -1)
             cv2.rectangle(canvas, (x, y), (x + width, y + height), (180, 180, 180), 2)
@@ -686,7 +709,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{row['role']} {row['frame']}: cells={row.get('detected_cells')} "
             f"normal={row.get('normal_cells')} size={row.get('cell_width')}x{row.get('cell_height')} "
-            f"components={row.get('component_count')} {reasons} {row.get('elapsed_ms')}ms"
+            f"components={row.get('component_count')} zone_skipped={row.get('zone_skipped_components', 0)} "
+            f"{reasons} {row.get('elapsed_ms')}ms"
         )
     return 0
 

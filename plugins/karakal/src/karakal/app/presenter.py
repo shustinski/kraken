@@ -387,11 +387,14 @@ class KarakalPresenter(QObject):
                 raw_values = tuple(value)  # type: ignore[arg-type]
             except Exception:
                 return tuple(GRID_INSPECTION_DEFAULT_ERROR_TYPES)
-        return tuple(
+        selected = tuple(
             error_type
             for error_type in allowed
             if error_type in {str(item) for item in raw_values} and error_type in allowed_set
         )
+        if selected and "conductor_zone" not in selected:
+            selected = (*selected, "conductor_zone")
+        return selected
 
     def _grid_tuning_values(self) -> dict[str, int]:
         custom = getattr(self, "_grid_custom_tuning", None)

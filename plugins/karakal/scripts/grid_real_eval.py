@@ -53,6 +53,7 @@ REASON_COLORS_BGR = {
     "merged_contour": (247, 85, 168),
     "edge_clipped_cell": (21, 204, 250),
     "class_conflict": (72, 29, 225),
+    "conductor_zone": (140, 140, 140),
 }
 REASON_PRIORITY = (
     "merged_contour",
@@ -62,6 +63,7 @@ REASON_PRIORITY = (
     "partial_filled_cell",
     "edge_clipped_cell",
     "class_conflict",
+    "conductor_zone",
 )
 ROLE_DIRS = {
     "direct": ("NN_res/cells/Direct_result_test", "NN_res/cells/Direct_Confidence_test"),
@@ -247,6 +249,7 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
         defects.append(
             {
                 "bbox": [int(value) for value in cell.bbox[:4]],
+                "centroid": [round(float(cell.centroid[0]), 1), round(float(cell.centroid[1]), 1)],
                 "reasons": list(reasons),
                 "score": round(float(cell.score), 4),
                 "status": str(cell.status),
@@ -256,6 +259,21 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
         label: {key: round(float(np.median(values)), 4) for key, values in groups.items()}
         for label, groups in feature_groups.items()
     }
+    zones = [item for item in defects if "conductor_zone" in item["reasons"]]
+    cell_defects = [item for item in defects if "conductor_zone" not in item["reasons"]]
+
+    def _inside_zone(item: dict) -> bool:
+        cx, cy = item.get("centroid") or (item["bbox"][0] + item["bbox"][2] / 2, item["bbox"][1] + item["bbox"][3] / 2)
+        return any(
+            zone["bbox"][0] <= cx < zone["bbox"][0] + zone["bbox"][2]
+            and zone["bbox"][1] <= cy < zone["bbox"][1] + zone["bbox"][3]
+            for zone in zones
+        )
+
+    zone_mask = np.zeros((max(1, int(result.image_height) // 8), max(1, int(result.image_width) // 8)), dtype=np.uint8)
+    for zone in zones:
+        x, y, width, height = (int(value) for value in zone["bbox"][:4])
+        zone_mask[y // 8 : (y + height) // 8, x // 8 : (x + width) // 8] = 1
     return {
         "frame": frame_id,
         "role": role,
@@ -270,6 +288,10 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
         "cell_width": int(result.cell_width),
         "cell_height": int(result.cell_height),
         "damage_score": round(float(result.damage_score), 4),
+        "zone_count": len(zones),
+        "zone_area_fraction": round(float(np.count_nonzero(zone_mask)) / float(zone_mask.size), 4),
+        "cell_defects_inside_zones": sum(1 for item in cell_defects if _inside_zone(item)),
+        "cell_defects_outside_zones": sum(1 for item in cell_defects if not _inside_zone(item)),
         "reasons": reason_counts,
         "feature_medians": feature_medians,
         "defects": defects,
@@ -412,7 +434,17 @@ def write_summary(output_dir: Path, rows: list[dict], config: GridDamageAnalysis
 
 def _draw_overlay(source: np.ndarray, defects: list[dict]) -> np.ndarray:
     canvas = cv2.cvtColor(source, cv2.COLOR_GRAY2BGR)
+    zones = [item for item in defects if "conductor_zone" in (item.get("reasons") or ())]
+    if zones:
+        tint = canvas.copy()
+        for zone in zones:
+            x, y, width, height = (int(value) for value in zone["bbox"][:4])
+            cv2.rectangle(tint, (x, y), (x + width, y + height), (160, 160, 160), -1)
+            cv2.rectangle(canvas, (x, y), (x + width, y + height), (180, 180, 180), 2)
+        canvas = cv2.addWeighted(tint, 0.35, canvas, 0.65, 0)
     for defect in defects:
+        if "conductor_zone" in (defect.get("reasons") or ()):
+            continue
         x, y, width, height = (int(value) for value in defect["bbox"][:4])
         reason = _primary_reason(defect.get("reasons") or ())
         color = REASON_COLORS_BGR.get(reason, (180, 180, 180))

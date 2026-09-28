@@ -271,7 +271,10 @@ class ExtendFrameDetailsDialog(QDialog):
             except Exception:
                 return tuple(GRID_INSPECTION_DEFAULT_ERROR_TYPES)
         raw_set = {str(item) for item in raw_values}
-        return tuple(error_type for error_type in allowed if error_type in raw_set)
+        selected = tuple(error_type for error_type in allowed if error_type in raw_set)
+        if selected and "conductor_zone" not in selected:
+            selected = (*selected, "conductor_zone")
+        return selected
 
     def __init__(
         self,
@@ -566,6 +569,8 @@ class ExtendFrameDetailsDialog(QDialog):
             checkbox = QCheckBox(self._t(label_key), layers_group)
             checkbox.setIcon(grid_inspection_error_type_icon(error_type))
             checkbox.setChecked(str(error_type) in self._grid_detail_enabled_error_types)
+            if str(error_type) == "conductor_zone":
+                checkbox.setToolTip(self._t("grid_error.conductor_zone_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
             layers_form.addRow(checkbox)
         for widget in self._grid_layer_controls():
@@ -2898,6 +2903,21 @@ class ExtendFrameDetailsDialog(QDialog):
             w = max(1, int(getattr(cell, "width", 1)))
             h = max(1, int(getattr(cell, "height", 1)))
             color = self._grid_cell_color(cell)
+            reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
+            if "conductor_zone" in reasons:
+                fill = QColor(color)
+                fill.setAlpha(70)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(fill, Qt.BrushStyle.BDiagPattern))
+                painter.drawRect(QRectF(x, y, w, h))
+                contour_color = QColor(color)
+                contour_color.setAlpha(220)
+                pen = QPen(contour_color, 2.0, Qt.PenStyle.DashLine)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
+                continue
             alpha = int(np.clip(round(55.0 + 145.0 * float(getattr(cell, "score", 0.0))), 55.0, 220.0))
             fill = QColor(color)
             fill.setAlpha(alpha)

@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v76_drop_mask_confidence_comparison"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v77_conductor_zones"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -39,6 +39,7 @@ GRID_DAMAGE_REASON_TYPES = (
     "merged_contour",
     "edge_clipped_cell",
     "class_conflict",
+    "conductor_zone",
 )
 _GRID_DAMAGE_REASON_TYPE_SET = set(GRID_DAMAGE_REASON_TYPES)
 GRID_CELL_REPRESENTATION_MODES = ("confidence", "binary")
@@ -1106,6 +1107,22 @@ def detect_grid_cell_anomalies(
                 )
             )
 
+    zone_map = _conductor_zone_map(
+        candidates,
+        width=int(width),
+        height=int(height),
+        columns=edge_columns,
+        rows=edge_rows,
+        pitch_x=edge_pitch_x,
+        pitch_y=edge_pitch_y,
+        modal_area=median_area,
+        modal_width=median_width,
+        modal_height=median_height,
+        confidence=probability,
+        foreground=threshold,
+    )
+    if zone_map.zones:
+        per_cell = [cell for cell in per_cell if not zone_map.contains(cell.centroid[0], cell.centroid[1])]
     if str(cfg.scoring_mode) == "calibrated":
         per_cell = _dedupe_nested_grid_cells(per_cell)
     per_cell = _collapse_conductor_regions(
@@ -1114,10 +1131,30 @@ def detect_grid_cell_anomalies(
         median_height=median_height,
     )
     per_cell = _suppress_overlapping_defect_boxes(per_cell)
+    emit_zones = cfg.enabled_reason_types is None or "conductor_zone" in set(cfg.enabled_reason_types)
+    if emit_zones and zone_map.zones:
+        next_contour_id = max((int(cell.contour_id or 0) for cell in per_cell), default=0) + 1
+        for zone in zone_map.zones:
+            per_cell.append(
+                GridCellAnalysisResult(
+                    row=len(per_cell),
+                    col=0,
+                    bbox=zone.bbox,
+                    centroid=(
+                        float(zone.bbox[0]) + 0.5 * float(zone.bbox[2]),
+                        float(zone.bbox[1]) + 0.5 * float(zone.bbox[3]),
+                    ),
+                    contour_id=next_contour_id,
+                    status="zone",
+                    score=0.0,
+                    reasons=("conductor_zone",),
+                )
+            )
+            next_contour_id += 1
     by_contour = {int(item.contour_id): item for item in candidates}
     defect_entries = []
     for index, cell in enumerate(per_cell):
-        if not cell.reasons:
+        if not cell.reasons or "conductor_zone" in cell.reasons:
             continue
         candidate = by_contour.get(int(cell.contour_id))
         if candidate is None:
@@ -1167,17 +1204,18 @@ def detect_grid_cell_anomalies(
             for index, cell in enumerate(per_cell)
         ]
 
+    cell_rows = [cell for cell in per_cell if "conductor_zone" not in cell.reasons]
     counts = {
-        "normal": sum(1 for cell in per_cell if cell.status == "normal"),
-        "suspicious": sum(1 for cell in per_cell if cell.status == "suspicious"),
-        "broken": sum(1 for cell in per_cell if cell.status == "broken"),
-        "missing": sum(1 for cell in per_cell if cell.status == "missing"),
-        "artifact": sum(1 for cell in per_cell if cell.status == "artifact"),
+        "normal": sum(1 for cell in cell_rows if cell.status == "normal"),
+        "suspicious": sum(1 for cell in cell_rows if cell.status == "suspicious"),
+        "broken": sum(1 for cell in cell_rows if cell.status == "broken"),
+        "missing": sum(1 for cell in cell_rows if cell.status == "missing"),
+        "artifact": sum(1 for cell in cell_rows if cell.status == "artifact"),
     }
-    if len(per_cell) < min_required_cells:
+    if len(cell_rows) < min_required_cells and not zone_map.zones:
         return empty_result
-    total_expected = max(1, len(per_cell))
-    damage_score = _damage_score(per_cell, total_expected)
+    total_expected = max(1, len(cell_rows)) if cell_rows else 0
+    damage_score = _damage_score(cell_rows, max(1, len(cell_rows))) if cell_rows else 0.0
     severity = cfg.severity_thresholds.level_for_score(damage_score)
     debug_payload = None
     if cfg.debug or cfg.include_debug_payload:
@@ -1212,7 +1250,7 @@ def detect_grid_cell_anomalies(
         grid_rows=0,
         grid_cols=0,
         total_expected_cells=int(total_expected),
-        detected_cells=int(len(per_cell)),
+        detected_cells=int(len(cell_rows)),
         normal_cells=int(counts.get("normal", 0)),
         suspicious_cells=int(counts.get("suspicious", 0)),
         broken_cells=int(counts.get("broken", 0)),
@@ -2760,6 +2798,39 @@ def _bbox_gap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> flo
     return float(np.hypot(horizontal, vertical))
 
 
+def _conductor_zone_map(
+    candidates: list[_ContourCandidate],
+    *,
+    width: int,
+    height: int,
+    columns: list[float],
+    rows: list[float],
+    pitch_x: float | None,
+    pitch_y: float | None,
+    modal_area: float,
+    modal_width: float,
+    modal_height: float,
+    confidence: np.ndarray | None,
+    foreground: np.ndarray | None,
+):
+    from .grid_zones import find_conductor_zones
+
+    return find_conductor_zones(
+        width=width,
+        height=height,
+        candidates=candidates,
+        columns=columns,
+        rows=rows,
+        pitch_x=pitch_x,
+        pitch_y=pitch_y,
+        modal_area=modal_area,
+        modal_width=modal_width,
+        modal_height=modal_height,
+        confidence=confidence,
+        foreground=foreground,
+    )
+
+
 def _collapse_conductor_regions(
     per_cell: list[GridCellAnalysisResult],
     *,
@@ -2841,34 +2912,6 @@ def _collapse_conductor_regions(
     ]
 
 
-def _conductor_like_without_grid(
-    candidate: _ContourCandidate,
-    *,
-    frame_width: int,
-    frame_height: int,
-) -> bool:
-    """Heuristic for grainy conductor masses when no cell-like seed exists."""
-
-    width = float(candidate.bbox[2])
-    height = float(candidate.bbox[3])
-    area = float(candidate.area)
-    frame_area = max(1.0, float(frame_width) * float(frame_height))
-    if area < 80.0 and max(width, height) < 28.0:
-        return False
-    if area < max(120.0, frame_area * 0.00035) and max(width, height) < 40.0:
-        return False
-    fill = float(candidate.fill_ratio)
-    irregular = (
-        float(candidate.solidity) <= 0.90
-        or float(candidate.extent) <= 0.72
-        or int(candidate.approx_vertices) >= 8
-        or fill <= 0.70
-        or max(width, height) / max(1.0, min(width, height)) >= 1.65
-    )
-    large_enough = max(width, height) >= 36.0 or area >= 220.0 or bool(candidate.touches_border and area >= 100.0)
-    return bool(irregular and large_enough)
-
-
 def _analyze_conductor_only_frame(
     candidates: list[_ContourCandidate],
     *,
@@ -2879,7 +2922,7 @@ def _analyze_conductor_only_frame(
     config: GridDamageAnalysisConfig,
     started: float,
 ) -> GridFrameAnalysisResult:
-    """Mark large irregular masses as merged contours when no cell-grid seed exists."""
+    """One conductor zone per off-grid mass when the frame has no cell lattice."""
 
     empty = GridFrameAnalysisResult(
         frame_id=str(frame_id or ""),
@@ -2901,40 +2944,36 @@ def _analyze_conductor_only_frame(
         per_cell_results=(),
         component_count=int(len(candidates)),
     )
-    mass_candidates = [
-        item
-        for item in candidates
-        if _conductor_like_without_grid(item, frame_width=width, frame_height=height)
-    ]
-    if not mass_candidates:
+    zone_map = _conductor_zone_map(
+        candidates,
+        width=int(width),
+        height=int(height),
+        columns=[],
+        rows=[],
+        pitch_x=None,
+        pitch_y=None,
+        modal_area=0.0,
+        modal_width=0.0,
+        modal_height=0.0,
+        confidence=None,
+        foreground=None,
+    )
+    enabled = set(config.enabled_reason_types or GRID_DAMAGE_REASON_TYPES)
+    if not zone_map.zones or "conductor_zone" not in enabled:
         return empty
-
-    provisional = [
+    zones = [
         GridCellAnalysisResult(
             row=index,
             col=0,
-            bbox=item.bbox,
-            centroid=item.centroid,
-            contour_id=item.contour_id,
-            status="broken",
-            score=0.90,
-            reasons=("merged_contour",),
+            bbox=zone.bbox,
+            centroid=(float(zone.bbox[0]) + 0.5 * float(zone.bbox[2]), float(zone.bbox[1]) + 0.5 * float(zone.bbox[3])),
+            contour_id=index + 1,
+            status="zone",
+            score=0.0,
+            reasons=("conductor_zone",),
         )
-        for index, item in enumerate(mass_candidates)
+        for index, zone in enumerate(zone_map.zones)
     ]
-    median_width = float(np.median([float(item.bbox[2]) for item in mass_candidates]))
-    median_height = float(np.median([float(item.bbox[3]) for item in mass_candidates]))
-    collapsed = _collapse_conductor_regions(
-        provisional,
-        median_width=max(12.0, median_width),
-        median_height=max(12.0, median_height),
-    )
-    collapsed = _suppress_overlapping_defect_boxes(collapsed)
-    enabled = set(config.enabled_reason_types or GRID_DAMAGE_REASON_TYPES)
-    if "merged_contour" not in enabled:
-        return empty
-    damage_score = _damage_score(collapsed, max(1, len(collapsed)))
-    severity = config.severity_thresholds.level_for_score(damage_score)
     _ = started
     return GridFrameAnalysisResult(
         frame_id=str(frame_id or ""),
@@ -2943,20 +2982,18 @@ def _analyze_conductor_only_frame(
         image_height=int(height),
         grid_rows=0,
         grid_cols=0,
-        total_expected_cells=int(len(collapsed)),
-        detected_cells=int(len(collapsed)),
+        total_expected_cells=0,
+        detected_cells=0,
         normal_cells=0,
         suspicious_cells=0,
-        broken_cells=int(len(collapsed)),
+        broken_cells=0,
         missing_cells=0,
         artifact_cells=0,
-        damage_score=float(damage_score),
-        severity_level=str(severity),
-        grid_detected=True,
-        per_cell_results=tuple(collapsed),
+        damage_score=0.0,
+        severity_level="OK",
+        grid_detected=False,
+        per_cell_results=tuple(zones),
         component_count=int(len(candidates)),
-        cell_width=int(round(median_width)),
-        cell_height=int(round(median_height)),
     )
 
 

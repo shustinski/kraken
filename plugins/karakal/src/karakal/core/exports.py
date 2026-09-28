@@ -654,6 +654,8 @@ def _fast_grid_cell_defect_export_array(
     for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ():
         if str(getattr(cell, "status", "")) == "normal":
             continue
+        if "conductor_zone" in {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}:
+            continue
         x = max(0, min(width - 1, int(getattr(cell, "left", 0))))
         y = max(0, min(height - 1, int(getattr(cell, "top", 0))))
         w = max(1, int(getattr(cell, "width", 1)))

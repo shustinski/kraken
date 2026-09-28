@@ -75,6 +75,7 @@ class ExtendMatrixTabState:
     grid_inspection_layer: str = "confidence"
     grid_inspection_model_id: str | None = None
     grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
+    grid_inspection_algorithm_version: str = ""
     grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)
     grid_inspection_reference_record_key: str | None = None
     excluded_record_keys: set[str] = field(default_factory=set)

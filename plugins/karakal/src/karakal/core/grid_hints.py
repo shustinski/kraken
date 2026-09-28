@@ -7,56 +7,6 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 
-def cell_low_confidence(
-    mean_confidence: float | None,
-    uncertain_pixel_ratio: float | None,
-    *,
-    threshold: float = 0.55,
-) -> bool:
-    if mean_confidence is None:
-        return False
-    uncertain = 0.0 if uncertain_pixel_ratio is None else float(uncertain_pixel_ratio)
-    return float(mean_confidence) < float(threshold) or uncertain >= 0.35
-
-
-def possible_missed_regions(
-    probability: np.ndarray | None,
-    mask: np.ndarray | None,
-    *,
-    high: float = 0.55,
-    mask_threshold: float = 0.5,
-    min_area: int = 16,
-) -> list[tuple[int, int, int, int]]:
-    """Regions where the network is almost sure but the binary mask is empty."""
-
-    if probability is None or mask is None:
-        return []
-    prob = np.asarray(probability, dtype=np.float32)
-    binary = np.asarray(mask)
-    if binary.ndim == 3:
-        binary = binary[:, :, 0]
-    if prob.ndim == 3:
-        prob = prob[:, :, 0]
-    if prob.shape != binary.shape:
-        return []
-    if float(np.nanmax(prob)) > 1.5:
-        prob = prob / 255.0
-    candidate = (prob >= float(high)) & (binary <= float(mask_threshold) * (255.0 if binary.dtype != np.bool_ else 1.0))
-    if not np.any(candidate):
-        return []
-    from cv2 import connectedComponentsWithStats
-
-    count, _labels, stats, _centroids = connectedComponentsWithStats(candidate.astype(np.uint8), connectivity=8)
-    boxes = []
-    for index in range(1, count):
-        area = int(stats[index, 4])
-        if area < int(min_area):
-            continue
-        x, y, width, height = (int(stats[index, axis]) for axis in range(4))
-        boxes.append((x, y, width, height))
-    return boxes
-
-
 def source_cell_rule(source: np.ndarray, truth_mask: np.ndarray) -> dict[str, float]:
     """Brightness/contrast rule from marked cells on the grayscale photo."""
 

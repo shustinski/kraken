@@ -61,12 +61,11 @@ DEFAULT_ERROR_WINDOW = (0.0, 1.0)
 DEFAULT_MATRIX_METRIC_KEY = "overall_frame_score"
 GRID_INSPECTION_DAMAGE_METRIC_KEY = "grid_inspection_damage_score"
 GRID_INSPECTION_TUNING_KEYS = (
+    "disagreement_sensitivity",
     "fill_sensitivity",
     "debris_sensitivity",
     "geometry_sensitivity",
     "merge_sensitivity",
-    "mismatch_sensitivity",
-    "disagreement_sensitivity",
 )
 GRID_INSPECTION_PRESET_VALUES: dict[str, dict[str, int]] = {
     "soft": {
@@ -74,7 +73,6 @@ GRID_INSPECTION_PRESET_VALUES: dict[str, dict[str, int]] = {
         "debris_sensitivity": 40,
         "geometry_sensitivity": 20,
         "merge_sensitivity": 15,
-        "mismatch_sensitivity": 25,
         "disagreement_sensitivity": 25,
     },
     "balanced": {
@@ -82,7 +80,6 @@ GRID_INSPECTION_PRESET_VALUES: dict[str, dict[str, int]] = {
         "debris_sensitivity": 75,
         "geometry_sensitivity": 40,
         "merge_sensitivity": 35,
-        "mismatch_sensitivity": 50,
         "disagreement_sensitivity": 50,
     },
     "strict": {
@@ -90,7 +87,6 @@ GRID_INSPECTION_PRESET_VALUES: dict[str, dict[str, int]] = {
         "debris_sensitivity": 95,
         "geometry_sensitivity": 80,
         "merge_sensitivity": 85,
-        "mismatch_sensitivity": 80,
         "disagreement_sensitivity": 80,
     },
 }
@@ -105,14 +101,7 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
     ("grid_error.broken_geometry", "broken_geometry"),
     ("grid_error.merged_contour", "merged_contour"),
-    ("grid_error.confidence_only_cell", "confidence_only_cell"),
-    ("grid_error.binary_only_cell", "binary_only_cell"),
-    ("grid_error.geometry_mismatch", "geometry_mismatch"),
-    ("grid_error.defect_disagreement", "defect_disagreement"),
     ("grid_error.class_conflict", "class_conflict"),
-    ("grid_error.low_confidence_cell", "low_confidence_cell"),
-    ("grid_error.possible_missed_region", "possible_missed_region"),
-    ("grid_error.source_mask_mismatch", "source_mask_mismatch"),
 )
 GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "filled_cell": "#eb4052",
@@ -121,14 +110,7 @@ GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "broken_geometry": "#38bdf8",
     "merged_contour": "#a855f7",
     "edge_clipped_cell": "#facc15",
-    "confidence_only_cell": "#14b8a6",
-    "binary_only_cell": "#84cc16",
-    "geometry_mismatch": "#6366f1",
-    "defect_disagreement": "#f43f5e",
     "class_conflict": "#e11d48",
-    "low_confidence_cell": "#94a3b8",
-    "possible_missed_region": "#64748b",
-    "source_mask_mismatch": "#78716c",
 }
 
 
@@ -143,15 +125,22 @@ def grid_inspection_error_type_icon(error_type: str, *, size: int = 12) -> QIcon
     return QIcon(pixmap)
 
 
+def apply_class_conflict_checkbox(checkbox, *, available: bool, user_wants: bool, tooltip: str) -> None:
+    """Enable the 1∩0 checkbox only after that operation has a result for this frame."""
+
+    previous = checkbox.blockSignals(True)
+    checkbox.setEnabled(bool(available))
+    checkbox.setChecked(bool(user_wants) if available else False)
+    checkbox.setToolTip("" if available else str(tooltip))
+    checkbox.blockSignals(previous)
+
+
 GRID_INSPECTION_DEFAULT_ERROR_TYPES = tuple(
     reason
     for reason in GRID_DAMAGE_REASON_TYPES
     if reason in {value for _label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
     and reason
     not in {
-        "low_confidence_cell",
-        "possible_missed_region",
-        "source_mask_mismatch",
         # A cell cut by the frame edge is not a defect until the operator turns this layer on.
         "edge_clipped_cell",
     }

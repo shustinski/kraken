@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v75_edge_slot_clip"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v76_drop_mask_confidence_comparison"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -38,10 +38,6 @@ GRID_DAMAGE_REASON_TYPES = (
     "broken_geometry",
     "merged_contour",
     "edge_clipped_cell",
-    "confidence_only_cell",
-    "binary_only_cell",
-    "geometry_mismatch",
-    "defect_disagreement",
     "class_conflict",
 )
 _GRID_DAMAGE_REASON_TYPE_SET = set(GRID_DAMAGE_REASON_TYPES)
@@ -1407,13 +1403,13 @@ def analyze_grid_frame_pair_chunk(
     errors: dict[str, str] = {}
     wanted = {
         str(layer)
-        for layer in (requested_layers or ("confidence", "binary", "comparison"))
-        if str(layer) in {"confidence", "binary", "comparison"}
+        for layer in (requested_layers or ("confidence", "binary"))
+        if str(layer) in {"confidence", "binary"}
     }
     if not wanted:
-        wanted = {"confidence", "binary", "comparison"}
-    need_confidence = "confidence" in wanted or "comparison" in wanted
-    need_binary = "binary" in wanted or "comparison" in wanted
+        wanted = {"confidence", "binary"}
+    need_confidence = "confidence" in wanted
+    need_binary = "binary" in wanted
     confidence_config = replace(config, cell_representation="confidence").normalized()
     binary_config = replace(config, cell_representation="binary").normalized()
     for key, confidence_path, binary_path in entries:
@@ -1455,17 +1451,6 @@ def analyze_grid_frame_pair_chunk(
             frame_payload["confidence"] = confidence_result
         if "binary" in wanted and isinstance(binary_result, GridFrameAnalysisResult):
             frame_payload["binary"] = binary_result
-        if (
-            "comparison" in wanted
-            and isinstance(confidence_result, GridFrameAnalysisResult)
-            and isinstance(binary_result, GridFrameAnalysisResult)
-        ):
-            frame_payload["comparison"] = compare_grid_cell_analyses(
-                confidence_result,
-                binary_result,
-                geometry_iou_threshold=float(config.geometry_iou_threshold),
-                centroid_mismatch_ratio=float(config.centroid_mismatch_ratio),
-            )
         if frame_payload:
             payloads[str(key)] = frame_payload
     return payloads, errors
@@ -1533,11 +1518,11 @@ def analyze_grid_frame_sources_chunk(
     confidence_config = replace(config, cell_representation="confidence").normalized()
     wanted = {
         str(layer)
-        for layer in (requested_layers or ("confidence", "binary", "comparison"))
-        if str(layer) in {"confidence", "binary", "comparison"}
+        for layer in (requested_layers or ("confidence", "binary"))
+        if str(layer) in {"confidence", "binary"}
     }
     if not wanted:
-        wanted = {"confidence", "binary", "comparison"}
+        wanted = {"confidence", "binary"}
     for key, confidence_path, binary_path in entries:
         if confidence_path and binary_path:
             pair_payloads, pair_errors = analyze_grid_frame_pair_chunk(
@@ -1552,7 +1537,7 @@ def analyze_grid_frame_sources_chunk(
             continue
         try:
             if confidence_path:
-                if "confidence" not in wanted and "comparison" not in wanted:
+                if "confidence" not in wanted:
                     continue
                 result = analyze_grid_frame_path(
                     confidence_path,

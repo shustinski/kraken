@@ -636,10 +636,10 @@ class PairedGridInspectionWorker(GridInspectionWorker):
         self._model_id = str(model_id)
         layers = tuple(
             str(layer)
-            for layer in (requested_layers or ("confidence", "binary", "comparison"))
-            if str(layer) in {"confidence", "binary", "comparison"}
+            for layer in (requested_layers or ("confidence", "binary"))
+            if str(layer) in {"confidence", "binary"}
         )
-        self._requested_layers = layers or ("confidence", "binary", "comparison")
+        self._requested_layers = layers or ("confidence", "binary")
 
     def _paired_records(self) -> list[tuple[str, str, str]]:
         records: list[tuple[str, str, str]] = []
@@ -881,7 +881,7 @@ class DerivedConflictGridInspectionWorker(GridInspectionWorker):
         layers = tuple(
             str(layer)
             for layer in (requested_layers or ("derived_conflict",))
-            if str(layer) in {"confidence", "binary", "comparison", "derived_conflict"}
+            if str(layer) in {"confidence", "binary", "derived_conflict"}
         )
         self._requested_layers = layers or ("derived_conflict",)
         self._base_layers = tuple(layer for layer in self._requested_layers if layer != "derived_conflict")

@@ -10,7 +10,7 @@ from PyQt6.QtCore import QSettings
 from karakal.app.main_window import KarakalMainWindow, QtUpdateController
 from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
 from karakal.core.grid_anomaly import GridDamageAnalysisConfig, detect_grid_cell_anomalies
-from karakal.core.grid_hints import cell_low_confidence, possible_missed_regions, source_cell_rule, source_mask_mismatches
+from karakal.core.grid_hints import source_cell_rule, source_mask_mismatches
 from karakal.core.image_io import _grayscale_array_to_qimage
 from karakal.ui.details_dialog import ExtendFrameDetailsDialog
 from karakal.ui.grid_tuning_dialog import GridTuningDialog
@@ -135,12 +135,6 @@ def test_mixed_confidence_matrix_payload_is_safe() -> None:
 
 
 def test_optional_hints_stay_off_the_mask_layer() -> None:
-    assert cell_low_confidence(0.2, 0.5) is True
-    assert cell_low_confidence(0.9, 0.0) is False
-    probability = np.zeros((40, 40), dtype=np.float32)
-    probability[10:20, 10:20] = 0.8
-    mask = np.zeros((40, 40), dtype=np.uint8)
-    assert possible_missed_regions(probability, mask)
     source = np.full((40, 40), 40, dtype=np.uint8)
     source[5:15, 5:15] = 200
     truth = np.zeros((40, 40), dtype=np.uint8)

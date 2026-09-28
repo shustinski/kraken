@@ -143,6 +143,7 @@ from ..ui.ui_constants import (
     GRID_INSPECTION_ERROR_TYPE_OPTIONS,
     GRID_INSPECTION_PRESET_VALUES,
     GRID_INSPECTION_TUNING_KEYS,
+    apply_class_conflict_checkbox,
     grid_inspection_error_type_icon,
     DEFAULT_POINT_CONFIDENCE_RADIUS,
     DEFAULT_POINT_EXTRACTION_MODE,
@@ -243,7 +244,7 @@ class KarakalPresenter(QObject):
             stored = GridCalibration()
         self._grid_calibration_confirmed = stored
         self._grid_calibration = stored
-        self._grid_mismatch_enabled = False
+        self._class_conflict_user_wants = True
         self._grid_custom_tuning = None
         self._grid_preview_tuning = None
         self._grid_tuning_dialog = None
@@ -299,6 +300,10 @@ class KarakalPresenter(QObject):
         selected: list[str] = []
         for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             checkbox = checks.get(str(error_type)) if isinstance(checks, dict) else None
+            if str(error_type) == "class_conflict" and checkbox is not None and not checkbox.isEnabled():
+                if getattr(self, "_class_conflict_user_wants", True):
+                    selected.append(str(error_type))
+                continue
             if checkbox is None:
                 selected.append(str(error_type))
                 continue
@@ -443,6 +448,14 @@ class KarakalPresenter(QObject):
                 blocker = QSignalBlocker(checkbox)
                 checkbox.setChecked(str(error_type) in enabled_error_types)
                 del blocker
+        raw_types = values.get("enabled_error_types")
+        if raw_types is not None:
+            try:
+                names = {str(item) for item in raw_types}
+            except TypeError:
+                names = {str(raw_types)}
+            self._class_conflict_user_wants = "class_conflict" in names
+        self._sync_class_conflict_controls(self._current_tab_state() if hasattr(self, "matrix_tabs") else None)
         requested_layers = self._normalize_grid_layers(values.get("requested_layers"))
         layer_checks = getattr(self, "grid_layer_compute_checks", {}) or {}
         if isinstance(layer_checks, dict) and layer_checks:
@@ -466,17 +479,17 @@ class KarakalPresenter(QObject):
 
     @staticmethod
     def _normalize_grid_layers(value: object) -> tuple[str, ...]:
-        allowed = ("confidence", "binary", "comparison", "derived_conflict")
+        allowed = ("confidence", "binary", "derived_conflict")
         allowed_set = set(allowed)
         if value is None:
-            return ("confidence", "binary", "comparison")
+            return ("confidence", "binary")
         if isinstance(value, str):
             raw_values = (value,)
         else:
             try:
                 raw_values = tuple(value)  # type: ignore[arg-type]
             except Exception:
-                return ("confidence", "binary", "comparison")
+                return ("confidence", "binary")
         selected = tuple(layer for layer in allowed if layer in {str(item) for item in raw_values} and layer in allowed_set)
         return selected or ("confidence",)
 
@@ -496,7 +509,6 @@ class KarakalPresenter(QObject):
         debris = KarakalPresenter._slider_unit(values, "debris_sensitivity", 75)
         merge = KarakalPresenter._slider_unit(values, "merge_sensitivity", 35)
         geometry = KarakalPresenter._slider_unit(values, "geometry_sensitivity", 40)
-        mismatch = KarakalPresenter._slider_unit(values, "mismatch_sensitivity", 50)
         disagreement = KarakalPresenter._slider_unit(values, "disagreement_sensitivity", 50)
         enabled_error_types = KarakalPresenter._normalize_grid_error_types(values.get("enabled_error_types"))
         return GridDamageAnalysisConfig(
@@ -511,8 +523,8 @@ class KarakalPresenter(QObject):
             merged_size_ratio=max(1.10, 1.95 - 0.75 * merge),
             merged_area_ratio=max(1.10, 1.95 - 0.78 * merge),
             geometry_solidity_limit=max(0.40, min(0.95, 0.50 + 0.40 * geometry)),
-            geometry_iou_threshold=max(0.20, min(0.90, 0.32 + 0.46 * mismatch)),
-            centroid_mismatch_ratio=max(0.15, min(0.90, 0.80 - 0.50 * mismatch)),
+            geometry_iou_threshold=0.55,
+            centroid_mismatch_ratio=0.55,
             enabled_reason_types=enabled_error_types,
             scoring_mode="calibrated",
             fill_sensitivity=int(values.get("fill_sensitivity", 60)),
@@ -530,7 +542,7 @@ class KarakalPresenter(QObject):
 
     @staticmethod
     def _grid_inspection_layer_keys() -> tuple[str, ...]:
-        return ("confidence", "binary", "comparison", "derived_conflict")
+        return ("confidence", "binary", "derived_conflict")
 
     def _grid_inspection_views(self) -> dict[str, object]:
         views = getattr(self, "grid_inspection_matrix_views", None)
@@ -618,7 +630,6 @@ class KarakalPresenter(QObject):
             )
             available["confidence"] = ("confidence" in requested) and (has_confidence or has_binary)
             available["binary"] = ("binary" in requested) and has_binary
-            available["comparison"] = ("comparison" in requested) and has_binary and has_confidence
             model_count = len(tuple(state.build_result.model_specs or ()))
             available["derived_conflict"] = ("derived_conflict" in requested) and model_count >= 2
         if not any(available.values()):
@@ -4711,7 +4722,7 @@ class KarakalPresenter(QObject):
                 grid_config,
                 reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
-                requested_layers=base_layers or ("confidence", "binary", "comparison"),
+                requested_layers=base_layers or ("confidence", "binary"),
             )
         else:
             self._worker = GridInspectionWorker(
@@ -4791,6 +4802,148 @@ class KarakalPresenter(QObject):
             return
         self._sync_action_buttons()
 
+    def _class_conflict_selected(self) -> bool:
+        selector = getattr(self, "_selected_grid_error_types", None)
+        if not callable(selector):
+            return True
+        try:
+            return "class_conflict" in selector()
+        except Exception:
+            return True
+
+    def _class_conflict_tooltip(self) -> str:
+        return self._t("grid_error.class_conflict_unavailable")
+
+    def _class_conflict_ready(self, state, frame_key: str) -> bool:
+        if state is None or not frame_key:
+            return False
+        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
+        conflict = layers.get("derived_conflict") or {}
+        return str(frame_key) in conflict
+
+    def _sync_class_conflict_checkbox(self, checkbox, *, available: bool) -> None:
+        if checkbox is None:
+            return
+        apply_class_conflict_checkbox(
+            checkbox,
+            available=available,
+            user_wants=bool(getattr(self, "_class_conflict_user_wants", True)),
+            tooltip=self._class_conflict_tooltip(),
+        )
+
+    def _sync_class_conflict_for_dialog(self, dialog, state) -> None:
+        setter = getattr(dialog, "set_class_conflict_available", None)
+        if not callable(setter):
+            return
+        record = getattr(dialog, "_record", None)
+        frame_key = str(getattr(record, "key", "") or "")
+        setter(
+            self._class_conflict_ready(state, frame_key),
+            user_wants=bool(getattr(self, "_class_conflict_user_wants", True)),
+            tooltip=self._class_conflict_tooltip(),
+        )
+
+    def _sync_class_conflict_controls(self, state) -> None:
+        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
+        run_ready = bool(layers.get("derived_conflict"))
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
+        self._sync_class_conflict_checkbox(checkbox, available=run_ready)
+        for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
+            self._sync_class_conflict_for_dialog(dialog, state)
+
+    def _on_class_conflict_checkbox_toggled(self, checked: bool) -> None:
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
+        if checkbox is None or not checkbox.isEnabled():
+            return
+        self._class_conflict_user_wants = bool(checked)
+        state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        self._rebuild_unified_grid_view(state)
+        for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
+            self._sync_class_conflict_for_dialog(dialog, state)
+            refresh = getattr(dialog, "_refresh_grid_cell_defects_layer", None)
+            if callable(refresh):
+                refresh()
+
+    def _set_class_conflict_user_wants(self, wants: bool) -> None:
+        self._class_conflict_user_wants = bool(wants)
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
+        if checkbox is None or not checkbox.isEnabled():
+            return
+        self._sync_class_conflict_checkbox(checkbox, available=True)
+
+    def _on_details_grid_frame_changed(self, dialog) -> None:
+        state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        self._sync_class_conflict_for_dialog(dialog, state)
+        record = getattr(dialog, "_record", None)
+        if state is None or record is None:
+            return
+        self._start_grid_details_analyze(dialog, record, state)
+
+    def _with_stored_class_conflict(self, result, state, frame_key: str):
+        if result is None:
+            return None
+        kept = tuple(
+            cell
+            for cell in (getattr(result, "per_cell_results", ()) or ())
+            if "class_conflict" not in tuple(getattr(cell, "reasons", ()) or ())
+        )
+        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
+        conflict = (layers.get("derived_conflict") or {}).get(str(frame_key))
+        extra = []
+        if isinstance(conflict, GridFrameAnalysisResult):
+            seen: set[tuple[int, int, int, int]] = set()
+            for cell in getattr(conflict, "per_cell_results", ()) or ():
+                if "class_conflict" not in tuple(getattr(cell, "reasons", ()) or ()):
+                    continue
+                bbox = tuple(int(value) for value in getattr(cell, "bbox", (0, 0, 0, 0))[:4])
+                if bbox in seen:
+                    continue
+                seen.add(bbox)
+                extra.append(cell)
+        cells = kept + tuple(extra)
+        if cells == tuple(getattr(result, "per_cell_results", ()) or ()):
+            return result
+        broken = sum(1 for cell in cells if str(getattr(cell, "status", "")) != "normal")
+        return replace(result, per_cell_results=cells, detected_cells=len(cells), broken_cells=broken)
+
+    def _rebuild_unified_grid_view(self, state) -> None:
+        if state is None:
+            return
+        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
+        if not layers:
+            return
+        unified = {
+            str(record_key): merged
+            for record_key in {key for layer in layers.values() if isinstance(layer, dict) for key in layer}
+            if (
+                merged := self._merge_grid_layer_results(
+                    {layer_key: layers[layer_key].get(record_key) for layer_key in layers if isinstance(layers.get(layer_key), dict)}
+                )
+            )
+            is not None
+        }
+        state.grid_inspection_payload_by_key = unified
+        view = self._grid_inspection_views().get("unified")
+        if view is not None and hasattr(view, "set_grid_inspection_payloads"):
+            view.set_grid_inspection_payloads(unified, enabled=True)
+
+    def _refresh_open_details_class_conflict(self, state) -> None:
+        self._sync_class_conflict_controls(state)
+        for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
+            record = getattr(dialog, "_record", None)
+            result = getattr(dialog, "_grid_inspection_result", None)
+            if record is None or result is None:
+                continue
+            updated = self._with_stored_class_conflict(result, state, str(getattr(record, "key", "") or ""))
+            if updated is result:
+                continue
+            apply = getattr(dialog, "apply_grid_inspection_preview", None)
+            if callable(apply):
+                apply(updated, getattr(updated, "per_cell_results", ()))
+
     def _merge_grid_layer_results(self, layers: dict[str, object]) -> GridFrameAnalysisResult | None:
         """Unified matrix uses the mask layer. Confidence verdicts stay out of the defect score."""
 
@@ -4801,12 +4954,6 @@ class KarakalPresenter(QObject):
             "broken_geometry",
             "merged_contour",
             "edge_clipped_cell",
-        }
-        mismatch_reasons = {
-            "geometry_mismatch",
-            "defect_disagreement",
-            "confidence_only_cell",
-            "binary_only_cell",
         }
         binary = layers.get("binary")
         base = binary if isinstance(binary, GridFrameAnalysisResult) else None
@@ -4834,10 +4981,10 @@ class KarakalPresenter(QObject):
 
         if isinstance(binary, GridFrameAnalysisResult):
             _take(binary, mask_reasons)
-        if getattr(self, "_grid_mismatch_enabled", False):
-            comparison = layers.get("comparison")
-            if isinstance(comparison, GridFrameAnalysisResult):
-                _take(comparison, mismatch_reasons)
+        conflict = layers.get("derived_conflict")
+        include_conflict = not hasattr(self, "_class_conflict_user_wants") or self._class_conflict_selected()
+        if isinstance(conflict, GridFrameAnalysisResult) and include_conflict:
+            _take(conflict, {"class_conflict"})
         damage_score = float(getattr(binary if isinstance(binary, GridFrameAnalysisResult) else base, "damage_score", 0.0) or 0.0)
         return replace(
             base,
@@ -5298,7 +5445,9 @@ class KarakalPresenter(QObject):
         cache_token = (frame_id, binary_path, confidence_path, reference_key)
         prepared = getattr(self, "_grid_prepared_frames", {}).get(cache_token)
         if prepared is not None:
-            return self._redecide_prepared_frame(prepared, tuning_values, payload)
+            decided, cells = self._redecide_prepared_frame(prepared, tuning_values, payload)
+            shown = KarakalPresenter._with_stored_class_conflict(self, decided, state, frame_id)
+            return shown, tuple(getattr(shown, "per_cell_results", ()) or ()) if shown is not None else cells
         binary_result = None
         binary_error: Exception | None = None
         if binary_path:
@@ -5322,7 +5471,8 @@ class KarakalPresenter(QObject):
             self._grid_prepared_frames = cache
         cache[cache_token] = binary_result
         self._refresh_grid_calibration_summary()
-        return binary_result, cells
+        shown = KarakalPresenter._with_stored_class_conflict(self, binary_result, state, frame_id)
+        return shown, tuple(getattr(shown, "per_cell_results", ()) or ())
 
     def _apply_grid_inspection_worker_payloads(
         self,
@@ -5380,6 +5530,7 @@ class KarakalPresenter(QObject):
                 view.set_grid_inspection_payloads(layers.get(layer_key, {}), enabled=True)
             elif changed.get(layer_key):
                 view.update_grid_inspection_payloads(changed[layer_key])
+        self._refresh_open_details_class_conflict(state)
 
     def _on_grid_inspection_finished(self, payloads: object, *, generation: int | None = None) -> None:
         if not self._is_active_request_generation(generation):
@@ -6011,6 +6162,9 @@ class KarakalPresenter(QObject):
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog._on_grid_tuning_requested = lambda details=dialog: self._open_grid_tuning_dialog(details)
+        dialog._on_class_conflict_user_wants_changed = self._set_class_conflict_user_wants
+        dialog._on_grid_frame_changed = lambda details=dialog: self._on_details_grid_frame_changed(details)
+        self._sync_class_conflict_for_dialog(dialog, state)
         if grid_detail_message:
             dialog.show_grid_preview_message(grid_detail_message)
         record_key = str(getattr(record, "key", "") or "")

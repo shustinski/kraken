@@ -89,12 +89,8 @@ class GridTuningDialog(QDialog):
         self._markup_note.setVisible(not available)
 
     def set_comparison_available(self, available: bool, note: str = "") -> None:
-        for key in ("mismatch_sensitivity", "disagreement_sensitivity"):
-            slider = self._sliders.get(key)
-            if slider is not None:
-                slider.setEnabled(available)
         self._comparison_note.setText(note)
-        self._comparison_note.setVisible(not available and bool(note))
+        self._comparison_note.setVisible(False)
 
     def set_values(self, values: dict[str, int]) -> None:
         for key, slider in self._sliders.items():

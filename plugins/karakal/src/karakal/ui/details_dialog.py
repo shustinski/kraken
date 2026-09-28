@@ -761,6 +761,9 @@ class ExtendFrameDetailsDialog(QDialog):
             self.setWindowTitle(self._t("details.window_title", name=self._record.display_name))
         self._legacy_update_frame_id_value()
         self._load_current_payload(reset_view=False, preserve_selection=True)
+        callback = getattr(self, "_on_grid_frame_changed", None)
+        if callable(callback):
+            callback(self)
         return True
 
     def _layer_row(self, checkbox: QCheckBox, slider: QSlider, color_button: QPushButton | None = None) -> QWidget:
@@ -818,6 +821,9 @@ class ExtendFrameDetailsDialog(QDialog):
             widget.toggled.connect(self._refresh_grid_cell_defects_layer)
         for widget in getattr(self, "grid_error_type_checks", {}).values():
             widget.toggled.connect(self._refresh_grid_cell_defects_layer)
+        conflict = getattr(self, "grid_error_type_checks", {}).get("class_conflict")
+        if conflict is not None:
+            conflict.toggled.connect(self._on_class_conflict_toggled)
         for widget in (
             self.original_opacity,
             self.first_source_opacity,
@@ -3403,6 +3409,27 @@ class ExtendFrameDetailsDialog(QDialog):
     def show_grid_preview_message(self, message: str) -> None:
         if hasattr(self, "grid_preview_status"):
             self.grid_preview_status.setText(str(message))
+
+    def set_class_conflict_available(self, available: bool, *, user_wants: bool, tooltip: str) -> None:
+        checkbox = getattr(self, "grid_error_type_checks", {}).get("class_conflict")
+        if checkbox is None:
+            return
+        from .ui_constants import apply_class_conflict_checkbox
+
+        apply_class_conflict_checkbox(
+            checkbox,
+            available=bool(available),
+            user_wants=bool(user_wants),
+            tooltip=str(tooltip),
+        )
+
+    def _on_class_conflict_toggled(self, checked: bool) -> None:
+        checkbox = getattr(self, "grid_error_type_checks", {}).get("class_conflict")
+        if checkbox is None or not checkbox.isEnabled():
+            return
+        callback = getattr(self, "_on_class_conflict_user_wants_changed", None)
+        if callable(callback):
+            callback(bool(checked))
 
     def apply_grid_inspection_preview(self, result, cells=None) -> None:
         self._grid_inspection_result = result

@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v74_cell_band_reference"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v75_edge_slot_clip"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -889,6 +889,12 @@ def detect_grid_cell_anomalies(
                 modal_interior=median_interior_fill,
             )
         edge_enabled = cfg.enabled_reason_types is None or "edge_clipped_cell" in set(cfg.enabled_reason_types or ())
+        edge_columns, edge_rows, edge_pitch_x, edge_pitch_y = _lattice_grid_axes(
+            ordered_candidates,
+            modal_width=median_width,
+            modal_height=median_height,
+            modal_area=median_area,
+        )
         if calibrated:
             prepared_scores: list[CalibratedScores] = []
             prepared_features: list[dict[str, float]] = []
@@ -995,6 +1001,18 @@ def detect_grid_cell_anomalies(
                     area=float(candidate.area),
                     in_lattice=len(lattice_neighbor_counts) > candidate_index
                     and lattice_neighbor_counts[candidate_index] >= 3,
+                )
+                reasons = _prefer_edge_slot_over_debris(
+                    reasons,
+                    candidate,
+                    frame_width=int(width),
+                    frame_height=int(height),
+                    modal_width=median_width,
+                    modal_height=median_height,
+                    column_centers=edge_columns,
+                    row_centers=edge_rows,
+                    pitch_x=edge_pitch_x,
+                    pitch_y=edge_pitch_y,
                 )
                 score = max(scores.fill, scores.geometry, scores.merge, scores.debris) if reasons else 0.0
             else:
@@ -2359,6 +2377,185 @@ def _gate_calibrated_reasons(
     # JPEG crumbs are a few pixels. Real debris in the tests is a small painted block.
     if "small_artifact" in found and float(area) < 24.0:
         found = [reason for reason in found if reason != "small_artifact"]
+    return tuple(dict.fromkeys(found))
+
+
+def _cluster_centers(coords: list[float], gap: float) -> list[float]:
+    if not coords:
+        return []
+    ordered = sorted(float(value) for value in coords)
+    groups: list[list[float]] = [[ordered[0]]]
+    for value in ordered[1:]:
+        if value - groups[-1][-1] <= gap:
+            groups[-1].append(value)
+        else:
+            groups.append([value])
+    return [float(np.median(group)) for group in groups]
+
+
+def _axis_pitch(centers: list[float]) -> float | None:
+    """Typical one-cell step. Gaps between separate arrays are wider and are ignored."""
+
+    if len(centers) < 2:
+        return None
+    gaps = np.diff(np.asarray(sorted(centers), dtype=np.float64))
+    positive = gaps[gaps > 1.0]
+    if positive.size == 0:
+        return None
+    cutoff = float(np.percentile(positive, 40))
+    tight = positive[positive <= max(cutoff * 1.35, cutoff + 1.0)]
+    if tight.size == 0:
+        tight = positive
+    return float(np.median(tight))
+
+
+def _lattice_grid_axes(
+    candidates: list[_ContourCandidate],
+    *,
+    modal_width: float,
+    modal_height: float,
+    modal_area: float,
+) -> tuple[list[float], list[float], float | None, float | None]:
+    """Column and row centers of the repeated cell, used to continue the lattice to the frame edge."""
+
+    area_lo = 0.55 * max(1.0, float(modal_area))
+    area_hi = 1.85 * max(1.0, float(modal_area))
+    xs: list[float] = []
+    ys: list[float] = []
+    for item in candidates:
+        if area_lo <= float(item.area) <= area_hi:
+            xs.append(float(item.centroid[0]))
+            ys.append(float(item.centroid[1]))
+    columns = _cluster_centers(xs, max(4.0, 0.45 * float(modal_width)))
+    rows = _cluster_centers(ys, max(4.0, 0.45 * float(modal_height)))
+    return columns, rows, _axis_pitch(columns), _axis_pitch(rows)
+
+
+def _on_grid_axis(value: float, centers: list[float], pitch: float | None, tolerance: float) -> bool:
+    if not centers:
+        return False
+    nearest = min(centers, key=lambda center: abs(center - value))
+    delta = abs(float(value) - float(nearest))
+    if delta <= tolerance:
+        return True
+    if pitch is None or pitch <= 1.0:
+        return False
+    return abs(delta - float(pitch)) <= tolerance
+
+
+def _prefer_edge_slot_over_debris(
+    reasons: tuple[str, ...],
+    candidate: _ContourCandidate,
+    *,
+    frame_width: int,
+    frame_height: int,
+    modal_width: float,
+    modal_height: float,
+    column_centers: list[float],
+    row_centers: list[float],
+    pitch_x: float | None,
+    pitch_y: float | None,
+) -> tuple[str, ...]:
+    """A lattice slot cut by the frame is an edge clip, not debris.
+
+    The visible piece is compared with the slot it continues. Geometry is left
+    alone only when at least 60% of the slot is still in frame.
+    """
+
+    if not candidate.touches_border or len(column_centers) < 2 or len(row_centers) < 2:
+        return reasons
+    x, y, width, height = (int(value) for value in candidate.bbox)
+    margin = 2
+    sides: set[str] = set()
+    if x <= margin:
+        sides.add("left")
+    if y <= margin:
+        sides.add("top")
+    if x + width >= int(frame_width) - margin:
+        sides.add("right")
+    if y + height >= int(frame_height) - margin:
+        sides.add("bottom")
+    if not sides:
+        return reasons
+    modal_w = max(1.0, float(modal_width))
+    modal_h = max(1.0, float(modal_height))
+    width_fraction = float(width) / modal_w
+    height_fraction = float(height) / modal_h
+    if max(width_fraction, height_fraction) > 1.70:
+        return reasons
+    visible_x = float(x) + float(width) / 2.0
+    visible_y = float(y) + float(height) / 2.0
+    center_x = visible_x
+    center_y = visible_y
+    if "left" in sides and "right" not in sides:
+        center_x -= (modal_w - float(width)) / 2.0
+    elif "right" in sides and "left" not in sides:
+        center_x += (modal_w - float(width)) / 2.0
+    if "top" in sides and "bottom" not in sides:
+        center_y -= (modal_h - float(height)) / 2.0
+    elif "bottom" in sides and "top" not in sides:
+        center_y += (modal_h - float(height)) / 2.0
+    tolerance_x = max(4.0, 0.40 * modal_w)
+    tolerance_y = max(4.0, 0.40 * modal_h)
+    horizontal = "left" in sides or "right" in sides
+    vertical = "top" in sides or "bottom" in sides
+
+    def _on_slot(point_x: float, point_y: float) -> bool:
+        return _on_grid_axis(point_x, column_centers, pitch_x, tolerance_x) and _on_grid_axis(
+            point_y, row_centers, pitch_y, tolerance_y
+        )
+
+    on_slot = _on_slot(center_x, center_y) or _on_slot(visible_x, visible_y)
+    # A one-edge sliver as tall or as wide as a cell continues the border line
+    # even when that whole row is missing from the full-cell cluster.
+    if (
+        horizontal
+        and not vertical
+        and width_fraction <= 0.40
+        and 0.75 <= height_fraction <= 1.25
+        and (
+            _on_grid_axis(visible_x, column_centers, pitch_x, tolerance_x)
+            or _on_grid_axis(center_x, column_centers, pitch_x, tolerance_x)
+            or _on_grid_axis(visible_y, row_centers, pitch_y, tolerance_y)
+        )
+    ):
+        on_slot = True
+    if (
+        vertical
+        and not horizontal
+        and height_fraction <= 0.40
+        and 0.75 <= width_fraction <= 1.25
+        and (
+            _on_grid_axis(visible_y, row_centers, pitch_y, tolerance_y)
+            or _on_grid_axis(center_y, row_centers, pitch_y, tolerance_y)
+            or _on_grid_axis(visible_x, column_centers, pitch_x, tolerance_x)
+        )
+    ):
+        on_slot = True
+    if not on_slot:
+        return reasons
+    cropped = (horizontal and width_fraction <= 0.95) or (vertical and height_fraction <= 0.95)
+    if not cropped:
+        return reasons
+    if horizontal and not vertical and not 0.75 <= height_fraction <= 1.25:
+        return reasons
+    if vertical and not horizontal and not 0.75 <= width_fraction <= 1.25:
+        return reasons
+    if horizontal and vertical:
+        visible = width_fraction * height_fraction
+    elif horizontal:
+        visible = width_fraction
+    else:
+        visible = height_fraction
+    found = [reason for reason in reasons if reason != "small_artifact"]
+    if visible < 0.60:
+        found = [
+            reason
+            for reason in found
+            if reason not in {"broken_geometry", "filled_cell", "partial_filled_cell"}
+        ]
+    if "edge_clipped_cell" not in found:
+        found.append("edge_clipped_cell")
     return tuple(dict.fromkeys(found))
 
 

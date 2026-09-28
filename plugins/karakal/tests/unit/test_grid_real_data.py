@@ -77,6 +77,36 @@ def test_labeled_normal_lattice_cells_are_not_geometry_or_merge_defects() -> Non
     assert not misses, misses[:8]
 
 
+def _touches_frame(bbox: tuple[int, ...], width: int, height: int, margin: int = 3) -> bool:
+    x, y, box_w, box_h = (int(value) for value in bbox[:4])
+    return x <= margin or y <= margin or x + box_w >= width - margin or y + box_h >= height - margin
+
+
+def test_edge_grid_slots_on_frames_39_and_82_are_not_small_artifact() -> None:
+    """A frame-edge sliver the size of a cell along the border is a clip, not debris."""
+
+    misses = []
+    for frame, role in ((39, "inv"), (39, "direct"), (82, "inv"), (82, "direct")):
+        result = _analyze(frame, role)
+        cell_w = max(1.0, float(result.cell_width or 1))
+        cell_h = max(1.0, float(result.cell_height or 1))
+        for cell in result.per_cell_results:
+            if "small_artifact" not in cell.reasons:
+                continue
+            if not _touches_frame(cell.bbox, result.image_width, result.image_height):
+                continue
+            x, y, box_w, box_h = (int(value) for value in cell.bbox)
+            touch_x = x <= 3 or x + box_w >= result.image_width - 3
+            touch_y = y <= 3 or y + box_h >= result.image_height - 3
+            if touch_x and touch_y:
+                continue
+            if touch_x and box_w / cell_w <= 0.40 and 0.75 <= box_h / cell_h <= 1.25:
+                misses.append((role, frame, cell.bbox))
+            if touch_y and box_h / cell_h <= 0.40 and 0.75 <= box_w / cell_w <= 1.25:
+                misses.append((role, frame, cell.bbox))
+    assert not misses, misses[:8]
+
+
 def test_clean_inverse_frame_has_no_false_geometry_or_merge() -> None:
     result = _analyze(90, "inv")
     reasons = {reason for cell in result.per_cell_results for reason in cell.reasons}

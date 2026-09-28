@@ -453,3 +453,46 @@ def test_fill_is_found_in_small_and_large_cells() -> None:
     assert len(marked) >= 2
     xs = sorted(cell.centroid[0] for cell in marked)
     assert xs[-1] - xs[0] > 200
+
+
+def _lattice_with_visible_border(visible: int) -> np.ndarray:
+    """Filled lattice whose outer cells keep only ``visible`` pixels inside the frame."""
+
+    cell_w, cell_h = 22, 32
+    pitch_x, pitch_y = 36, 48
+    cols, rows = 8, 6
+    full_w = (cols - 1) * pitch_x + cell_w
+    full_h = (rows - 1) * pitch_y + cell_h
+    image = np.zeros((full_h, full_w), dtype=np.uint8)
+    for row in range(rows):
+        for col in range(cols):
+            x = col * pitch_x
+            y = row * pitch_y
+            cv2.rectangle(image, (x, y), (x + cell_w - 1, y + cell_h - 1), 255, -1)
+    crop_x = cell_w - int(visible)
+    crop_y = cell_h - int(visible)
+    return image[crop_y : full_h - crop_y, crop_x : full_w - crop_x].copy()
+
+
+def test_frame_edge_slot_clips_are_not_small_artifact() -> None:
+    for visible in (2, 5, 10, 15):
+        image = _lattice_with_visible_border(visible)
+        # Off-grid crumb on the top edge, in the gap between columns.
+        speck_x = 74 + visible
+        cv2.rectangle(image, (speck_x, 0), (speck_x + 8, 10), 255, -1)
+        result = detect_grid_cell_anomalies(image, config=_calibrated())
+        border = [
+            cell
+            for cell in result.cells
+            if cell.bbox[0] <= 2
+            or cell.bbox[1] <= 2
+            or cell.bbox[0] + cell.bbox[2] >= image.shape[1] - 2
+            or cell.bbox[1] + cell.bbox[3] >= image.shape[0] - 2
+        ]
+        clipped = [cell for cell in border if not (speck_x - 2 <= cell.bbox[0] <= speck_x + 2 and cell.bbox[1] <= 2)]
+        assert clipped, visible
+        assert not any("small_artifact" in cell.reasons for cell in clipped), (visible, [cell.bbox for cell in clipped if "small_artifact" in cell.reasons])
+        assert any("edge_clipped_cell" in cell.reasons for cell in clipped), visible
+        debris = [cell for cell in result.cells if "small_artifact" in cell.reasons]
+        assert debris, visible
+        assert all(speck_x - 2 <= cell.bbox[0] <= speck_x + 12 for cell in debris), (visible, [cell.bbox for cell in debris])

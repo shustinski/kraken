@@ -152,6 +152,8 @@ GRID_INSPECTION_DEFAULT_ERROR_TYPES = tuple(
         "low_confidence_cell",
         "possible_missed_region",
         "source_mask_mismatch",
+        # A cell cut by the frame edge is not a defect until the operator turns this layer on.
+        "edge_clipped_cell",
     }
 )
 DEFAULT_ANALYSIS_MODE = INTER_MODEL_ANALYSIS_MODE

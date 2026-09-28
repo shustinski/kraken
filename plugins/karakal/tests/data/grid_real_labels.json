@@ -1,0 +1,357 @@
+{
+  "description": "Lattice cells on real SEM masks. expected=normal means the detector must not call the cell broken_geometry, merged_contour, filled_cell, or geometry_mismatch.",
+  "items": [
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        688,
+        1169,
+        23,
+        38
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        1588,
+        1148,
+        19,
+        34
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        1626,
+        1212,
+        20,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        1664,
+        1275,
+        20,
+        31
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        1738,
+        1150,
+        21,
+        31
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        1777,
+        1402,
+        19,
+        30
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        1851,
+        1212,
+        20,
+        34
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 1,
+      "role": "inv",
+      "bbox": [
+        1890,
+        1463,
+        20,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        10,
+        1509,
+        20,
+        33
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        238,
+        1824,
+        19,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        502,
+        1823,
+        21,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        729,
+        1887,
+        20,
+        31
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        956,
+        1383,
+        20,
+        30
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        1183,
+        1571,
+        20,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        1410,
+        1130,
+        20,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 90,
+      "role": "inv",
+      "bbox": [
+        1674,
+        1570,
+        20,
+        31
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        27,
+        1553,
+        21,
+        34
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        295,
+        420,
+        20,
+        33
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        523,
+        44,
+        20,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        824,
+        861,
+        20,
+        33
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        1126,
+        1615,
+        20,
+        34
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        1315,
+        1176,
+        21,
+        31
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        1427,
+        1931,
+        22,
+        32
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 120,
+      "role": "inv",
+      "bbox": [
+        1692,
+        1175,
+        21,
+        31
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        0,
+        99,
+        19,
+        25
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        260,
+        475,
+        24,
+        26
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        488,
+        601,
+        23,
+        25
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        790,
+        1670,
+        23,
+        26
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        1017,
+        1608,
+        22,
+        25
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        1244,
+        1481,
+        23,
+        27
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        1508,
+        1104,
+        23,
+        25
+      ],
+      "expected": "normal"
+    },
+    {
+      "frame": 150,
+      "role": "direct",
+      "bbox": [
+        1735,
+        536,
+        24,
+        26
+      ],
+      "expected": "normal"
+    }
+  ]
+}

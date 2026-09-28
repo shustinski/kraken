@@ -95,6 +95,68 @@ def _reasons(image: np.ndarray, **sliders: int) -> set[str]:
     return {reason for cell in result.cells for reason in cell.reasons}
 
 
+def test_modal_cluster_prefers_repeated_solid_cells_over_a_few_hollow_blobs() -> None:
+    from karakal.core.grid_calibration import modal_size_cluster
+
+    cells = [
+        SimpleNamespace(area=520.0, interior_fill_ratio=1.0, solidity=0.97)
+        for _ in range(40)
+    ]
+    blobs = [
+        SimpleNamespace(area=3200.0, interior_fill_ratio=0.40, solidity=0.52)
+        for _ in range(6)
+    ]
+    chosen = modal_size_cluster([*blobs, *cells])
+    assert len(chosen) == 40
+    assert float(np.median([item.area for item in chosen])) == 520.0
+
+
+def test_filled_lattice_is_not_broken_and_a_pair_is_merged() -> None:
+    image = np.zeros((420, 520), dtype=np.uint8)
+    for row in range(6):
+        for col in range(8):
+            x, y = 16 + col * 36, 16 + row * 48
+            cv2.rectangle(image, (x, y), (x + 22, y + 32), 255, -1)
+    # Two horizontal neighbors joined into one contour.
+    cv2.rectangle(image, (16, 16), (16 + 36 + 22, 48), 255, -1)
+    # Conductor mass and JPEG-sized crumbs away from the lattice.
+    cv2.rectangle(image, (40, 340), (280, 400), 255, -1)
+    for index in range(12):
+        cv2.rectangle(image, (320 + index * 8, 360), (324 + index * 8, 364), 255, -1)
+    result = detect_grid_cell_anomalies(image, config=_calibrated())
+    assert result.cell_width < 40
+    assert result.cell_height < 50
+    reasons = {reason for cell in result.cells for reason in cell.reasons}
+    assert "merged_contour" in reasons
+    assert "broken_geometry" not in reasons
+    merged = [cell for cell in result.cells if "merged_contour" in cell.reasons]
+    assert len(merged) == 1
+    assert merged[0].bbox[2] > 50
+
+
+def test_normal_example_reference_clears_similar_filled_cells() -> None:
+    image = np.zeros((280, 360), dtype=np.uint8)
+    for row in range(4):
+        for col in range(5):
+            x, y = 16 + col * 68, 16 + row * 64
+            cv2.rectangle(image, (x + 4, y + 4), (x + 28, y + 40), 255, -1)
+            cv2.rectangle(image, (x + 10, y + 14), (x + 22, y + 28), 0, -1)
+    bare = detect_grid_cell_anomalies(image, config=_calibrated(geometry=80))
+    marked = [cell for cell in bare.cells if cell.reasons]
+    if not marked:
+        return
+    example = marked[0].feature_snapshot
+    corrected = detect_grid_cell_anomalies(
+        image,
+        config=replace(
+            _calibrated(geometry=80),
+            calibration_examples=(("normal", example),),
+            example_influence=0.5,
+        ),
+    )
+    assert not any("broken_geometry" in cell.reasons for cell in corrected.cells)
+
+
 def test_balanced_preset_finds_each_defect_and_leaves_normal_cells() -> None:
     normal = _outline_grid()
     assert _reasons(normal) == set()

@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v73_neighbor_geometry"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v74_cell_band_reference"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -826,7 +826,12 @@ def detect_grid_cell_anomalies(
         candidates, key=lambda item: (float(item.centroid[1]), float(item.centroid[0]), int(item.contour_id))
     )
     with profile_stage("validation.grid.cells.classify", frame_id=frame_id):
-        from .grid_calibration import apply_example_correction, example_distance_matrix, local_neighbor_medians
+        from .grid_calibration import (
+            apply_example_correction,
+            example_distance_matrix,
+            local_neighbor_medians,
+            reference_from_normal_examples,
+        )
         from .grid_scoring import (
             NORMAL_SCORE_CEILING,
             CalibratedScores,
@@ -852,8 +857,37 @@ def detect_grid_cell_anomalies(
             median_aspect = float(shared_reference.get("aspect", median_aspect))
             reference_solidity = float(shared_reference.get("solidity", reference_solidity))
             reference_extent = float(shared_reference.get("extent", reference_extent))
+        example_reference = reference_from_normal_examples(
+            [{"label": label, "features": dict(features)} for label, features in cfg.calibration_examples if features]
+        )
+        if example_reference:
+            # Operator "normal" marks move the shape reference, not only nearby hits.
+            median_interior_fill = float(example_reference.get("interior_fill", median_interior_fill))
+            median_fill = float(example_reference.get("fill", median_fill))
+            median_center_fill = float(example_reference.get("center_fill", median_center_fill))
+            reference_solidity = float(example_reference.get("solidity", reference_solidity))
+            reference_extent = float(example_reference.get("extent", reference_extent))
+            if "width" in example_reference:
+                median_width = float(example_reference["width"])
+            if "height" in example_reference:
+                median_height = float(example_reference["height"])
+            if "area" in example_reference:
+                median_area = float(example_reference["area"])
         calibrated = str(cfg.scoring_mode) == "calibrated"
         local_medians, neighbor_ids = local_neighbor_medians(ordered_candidates) if calibrated else ([], [])
+        lattice_neighbor_counts: list[int] = []
+        if calibrated:
+            local_medians, lattice_neighbor_counts = _retarget_local_medians(
+                ordered_candidates,
+                local_medians,
+                neighbor_ids,
+                modal_width=median_width,
+                modal_height=median_height,
+                modal_area=median_area,
+                modal_solidity=reference_solidity,
+                modal_extent=reference_extent,
+                modal_interior=median_interior_fill,
+            )
         edge_enabled = cfg.enabled_reason_types is None or "edge_clipped_cell" in set(cfg.enabled_reason_types or ())
         if calibrated:
             prepared_scores: list[CalibratedScores] = []
@@ -952,6 +986,15 @@ def detect_grid_cell_anomalies(
                     frame_examples,
                     example_influence=float(cfg.example_influence),
                     distance_row=None if example_distances is None else example_distances[candidate_index],
+                )
+                reasons = _gate_calibrated_reasons(
+                    reasons,
+                    width_ratio=width_ratio,
+                    height_ratio=height_ratio,
+                    area_ratio=area_ratio,
+                    area=float(candidate.area),
+                    in_lattice=len(lattice_neighbor_counts) > candidate_index
+                    and lattice_neighbor_counts[candidate_index] >= 3,
                 )
                 score = max(scores.fill, scores.geometry, scores.merge, scores.debris) if reasons else 0.0
             else:
@@ -2222,6 +2265,101 @@ def _normal_seed_candidates(
         and float(item.area) >= 24.0
         and min(int(item.bbox[2]), int(item.bbox[3])) >= 6
     ]
+
+
+def _retarget_local_medians(
+    candidates: list[_ContourCandidate],
+    local_medians: list[dict[str, float]],
+    neighbor_ids: list[tuple[int, ...]],
+    *,
+    modal_width: float,
+    modal_height: float,
+    modal_area: float,
+    modal_solidity: float,
+    modal_extent: float,
+    modal_interior: float,
+) -> tuple[list[dict[str, float]], list[int]]:
+    """Size each cell against the lattice, not against nearby crumbs or conductor fragments."""
+
+    if not local_medians:
+        return local_medians, []
+    area_lo = 0.55 * max(1.0, float(modal_area))
+    area_hi = 1.85 * max(1.0, float(modal_area))
+    retargeted: list[dict[str, float]] = []
+    band_counts: list[int] = []
+    for index, _local in enumerate(local_medians):
+        band = [
+            candidates[neighbor]
+            for neighbor in neighbor_ids[index]
+            if area_lo <= float(candidates[neighbor].area) <= area_hi
+        ]
+        band_counts.append(len(band))
+        if len(band) >= 3:
+            retargeted.append(
+                {
+                    "width": max(1.0, float(np.median([item.bbox[2] for item in band]))),
+                    "height": max(1.0, float(np.median([item.bbox[3] for item in band]))),
+                    "area": max(1.0, float(np.median([item.area for item in band]))),
+                    "interior_fill": float(np.median([item.interior_fill_ratio for item in band])),
+                    "solidity": float(np.median([item.solidity for item in band])),
+                    "extent": float(np.median([item.extent for item in band])),
+                }
+            )
+            continue
+        retargeted.append(
+            {
+                "width": max(1.0, float(modal_width)),
+                "height": max(1.0, float(modal_height)),
+                "area": max(1.0, float(modal_area)),
+                "interior_fill": float(modal_interior),
+                "solidity": float(modal_solidity),
+                "extent": float(modal_extent),
+            }
+        )
+    return retargeted, band_counts
+
+
+def _gate_calibrated_reasons(
+    reasons: tuple[str, ...],
+    *,
+    width_ratio: float,
+    height_ratio: float,
+    area_ratio: float,
+    area: float,
+    in_lattice: bool,
+) -> tuple[str, ...]:
+    """Keep merge/geometry on slot-sized lattice cells. Specks and conductor fields are not those defects."""
+
+    largest = max(float(width_ratio), float(height_ratio))
+    smallest = min(float(width_ratio), float(height_ratio))
+    found = list(reasons)
+    if not in_lattice:
+        # Noise and conductor masses have no cell-sized neighbors. They are not slot defects.
+        found = [
+            reason
+            for reason in found
+            if reason
+            not in {
+                "merged_contour",
+                "broken_geometry",
+                "small_artifact",
+                "edge_clipped_cell",
+                "filled_cell",
+                "partial_filled_cell",
+            }
+        ]
+    pair_like = 1.45 <= largest <= 3.60 and smallest <= 1.75 and float(area_ratio) <= 3.80
+    if "merged_contour" in found and not pair_like:
+        found = [reason for reason in found if reason != "merged_contour"]
+    slot_like = 0.55 <= float(area_ratio) <= 1.90 and smallest >= 0.50 and largest <= 1.85
+    if "broken_geometry" in found and not slot_like:
+        found = [reason for reason in found if reason != "broken_geometry"]
+    if "edge_clipped_cell" in found and (smallest < 0.35 or float(area) < 24.0):
+        found = [reason for reason in found if reason != "edge_clipped_cell"]
+    # JPEG crumbs are a few pixels. Real debris in the tests is a small painted block.
+    if "small_artifact" in found and float(area) < 24.0:
+        found = [reason for reason in found if reason != "small_artifact"]
+    return tuple(dict.fromkeys(found))
 
 
 def _calibrated_size_profile(

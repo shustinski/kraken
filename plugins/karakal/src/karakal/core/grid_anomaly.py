@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v78_zone_mask_first"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v79_small_artifact_broken"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -2941,13 +2941,13 @@ def _is_cell_like_candidate(
     )
 
 
-def _status_for_reasons(reasons: tuple[str, ...]) -> str:
-    reason_set = {str(reason) for reason in reasons}
-    if reason_set == {"small_artifact"}:
-        # Mid-size standalone dirt / inaccurate cell: possible inaccuracy, not hard debris.
-        return "suspicious"
-    if "small_artifact" in reason_set:
-        return "artifact"
+def _status_for_reasons(_reasons: tuple[str, ...]) -> str:
+    """Every detected error is a broken cell, including debris on its own.
+
+    Older results may still carry status ``suspicious`` or ``artifact``. Those
+    values stay readable; new analysis does not emit them for debris.
+    """
+
     return "broken"
 
 

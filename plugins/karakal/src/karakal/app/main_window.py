@@ -41,7 +41,7 @@ from PyQt6.QtWidgets import (
 )
 from kraken_core.analysis_protocol import AnalysisProfileKind
 
-from ..infra.services import KarakalSettingsService
+from ..infra.services import KarakalSettingsService, default_settings
 from ..updater import (
     QtUpdateController,
     create_karakal_update_controller,
@@ -54,6 +54,17 @@ from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_P
 from ..core.domain import BuildResult
 from ..core.performance import PerformanceConfig
 from ..ui.app_icon import apply_karakal_icon
+from ..core.features import (
+    display_version,
+    show_app_mode_switch,
+    show_class_conflict,
+    show_conductor_zone,
+    show_other_analysis_profiles,
+    show_other_mode_export,
+    show_pair_matrices,
+    show_reference_frame,
+    tester_build,
+)
 from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
@@ -116,9 +127,7 @@ from ..ui.ui_constants import (
     POINT_MATCH_RADIUS_RANGE,
     POLYGON_CONFIDENCE_SUMMARY_OPTIONS,
     POLYGON_COMPARE_PROFILE_OPTIONS,
-    SETTINGS_APP,
     SETTINGS_LABEL_MIN_WIDTH,
-    SETTINGS_ORG,
     SINGLE_RESULT_SENSITIVITY_OPTIONS,
     TOTAL_FRAMES_RANGE,
 )
@@ -470,9 +479,11 @@ class KarakalWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(EXTEND_WIDGET_STYLESHEET)
         apply_karakal_icon(self)
-        self._settings_service = KarakalSettingsService(settings or QSettings(SETTINGS_ORG, SETTINGS_APP))
+        self._settings_service = KarakalSettingsService(settings or default_settings())
         self._performance_config = self._settings_service.load_performance_config()
         language = self._settings_service.load_language()
+        if tester_build() and not language:
+            language = "ru"
         set_current_language(language)
         self._i18n = Translator(language)
         self._t = self._i18n.tr
@@ -486,6 +497,7 @@ class KarakalWidget(QWidget):
         self._presenter = KarakalPresenter(self, self._settings_service)
         self._connect_signals()
         self._presenter._restore_persisted_state()
+        self._apply_build_profile()
         self._presenter._refresh_folder_rows()
         self._presenter._sync_action_buttons()
         if self._update_controller is not None:
@@ -598,6 +610,8 @@ class KarakalWidget(QWidget):
                 checkbox.setToolTip(self._t("grid_error.class_conflict_unavailable"))
             if str(error_type) == "conductor_zone":
                 checkbox.setToolTip(self._t("grid_error.conductor_zone_hint"))
+            if str(error_type) == "small_artifact":
+                checkbox.setToolTip(self._t("grid_error.small_artifact_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
         self.grid_layer_compute_checks: dict[str, QCheckBox] = {}
         for layer_key, label_key in (
@@ -1260,7 +1274,7 @@ class KarakalWidget(QWidget):
             self,
             app_id="karakal",
             app_name="Karakal",
-            current_version=__version__,
+            current_version=display_version(),
         )
         self._update_controller.add_menu_action(
             help_menu,
@@ -1987,9 +2001,54 @@ class KarakalWidget(QWidget):
             self.grid_inspection_repeated_bad_column.header_button.setText(self._t("correlation.bad"))
         if hasattr(self, "grid_inspection_repeated_good_column"):
             self.grid_inspection_repeated_good_column.header_button.setText(self._t("correlation.good"))
+        self._apply_build_profile()
         window = self.window()
         if isinstance(window, QMainWindow):
-            window.setWindowTitle(self._t("window.title"))
+            title = self._t("window.title")
+            if tester_build():
+                title = f"{title} {display_version()}"
+            window.setWindowTitle(title)
+
+    def _apply_build_profile(self) -> None:
+        if show_other_analysis_profiles():
+            return
+        from kraken_core.analysis_protocol import AnalysisProfileKind
+
+        panel = self.analysis_setup_panel
+        for key, button in panel._profile_buttons.items():
+            button.setVisible(key == AnalysisProfileKind.GRID_DEFECTS)
+        host = next(iter(panel._profile_buttons.values())).parentWidget()
+        if host is not None:
+            host.hide()
+        panel.setTitle(self._t("profile.grid_defects.title"))
+        if not show_app_mode_switch() and hasattr(self, "mode_toggle_button"):
+            self.mode_toggle_button.hide()
+        self.mode_group.hide()
+        if not show_pair_matrices():
+            self.pair_matrix_group.hide()
+        if not show_reference_frame():
+            self._grid_reference_frame_row.hide()
+        if not show_class_conflict():
+            conflict = self.grid_layer_compute_checks.get("derived_conflict")
+            if conflict is not None:
+                conflict.hide()
+                conflict.setChecked(False)
+            index = self.grid_layer_display_combo.findData("derived_conflict")
+            if index >= 0:
+                self.grid_layer_display_combo.removeItem(index)
+            if hasattr(self, "grid_inspection_layer_tabs") and self.grid_inspection_layer_tabs.count() > 2:
+                self.grid_inspection_layer_tabs.setTabVisible(2, False)
+        if not show_class_conflict():
+            box = self.grid_error_type_checks.get("class_conflict")
+            if box is not None:
+                box.hide()
+                box.setChecked(False)
+        if not show_conductor_zone():
+            box = self.grid_error_type_checks.get("conductor_zone")
+            if box is not None:
+                box.hide()
+        if not show_other_mode_export() and hasattr(self, "btn_export_layer"):
+            self.btn_export_layer.hide()
 
     def _toggle_language(self) -> None:
         current_language = str(self._i18n.language or "en").lower()
@@ -2413,7 +2472,10 @@ class KarakalMainWindow(QMainWindow):
         super().__init__()
         apply_karakal_icon(self)
         self._widget = KarakalWidget(self, settings=settings)
-        self.setWindowTitle(self._widget._t("window.title"))
+        title = self._widget._t("window.title")
+        if tester_build():
+            title = f"{title} {display_version()}"
+        self.setWindowTitle(title)
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         self.setCentralWidget(self._widget)
 

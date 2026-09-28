@@ -67,6 +67,19 @@ from ..core.analysis_profiles import (
     analysis_profile_definition,
     build_standalone_preflight,
 )
+from ..core.features import (
+    show_class_conflict,
+    show_grid_examples,
+    show_other_mode_export,
+    show_reference_frame,
+    tester_build,
+)
+from ..core.grid_anomaly import GRID_DAMAGE_ALGORITHM_VERSION
+from ..core.grid_error_export import (
+    GridErrorExportFrame,
+    export_grid_cell_defect_frames,
+    export_type_slug,
+)
 from ..core.backend_constants import (
     BCE_SCORE_CAP,
 )
@@ -241,6 +254,8 @@ class KarakalPresenter(QObject):
             stored = GridCalibration.from_payload(self._settings_service.load_grid_calibration_payload())
         except Exception:
             _LOGGER.warning("Ignoring unreadable grid calibration", exc_info=True)
+            stored = GridCalibration()
+        if tester_build():
             stored = GridCalibration()
         self._grid_calibration_confirmed = stored
         self._grid_calibration = stored
@@ -427,6 +442,16 @@ class KarakalPresenter(QObject):
         payload["requested_layers"] = list(self._selected_grid_compute_layers())
         payload["display_layer"] = "unified"
         payload["tuning_preset"] = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
+        if tester_build():
+            payload["enabled_error_types"] = [
+                item
+                for item in payload["enabled_error_types"]
+                if str(item) not in {"class_conflict", "conductor_zone"}
+            ]
+            payload["requested_layers"] = [
+                item for item in payload["requested_layers"] if str(item) != "derived_conflict"
+            ] or ["confidence", "binary"]
+            return payload
         calibration = getattr(self, "_grid_calibration_confirmed", None)
         self._put_calibration_in_payload(payload, calibration)
         return payload
@@ -641,6 +666,8 @@ class KarakalPresenter(QObject):
             if index >= tabs.count():
                 break
             tabs.setTabEnabled(index, bool(available.get(key, False)))
+            if not show_class_conflict() and key == "derived_conflict":
+                tabs.setTabVisible(index, False)
         current_key = (
             str(getattr(state, "grid_inspection_layer", "confidence") or "confidence")
             if state is not None
@@ -4048,8 +4075,8 @@ class KarakalPresenter(QObject):
         labels.update(
             {
                 "broken": self._t("grid_status.broken"),
-                "suspicious": self._t("grid_status.suspicious"),
-                "artifact": self._t("grid_status.artifact"),
+                "suspicious": self._t("grid_status.broken"),
+                "artifact": self._t("grid_status.broken"),
             }
         )
         return labels.get(str(error_type), str(error_type or self._t("grid_error.defect")))
@@ -4310,6 +4337,8 @@ class KarakalPresenter(QObject):
         state: ExtendMatrixTabState,
         config: GridDamageAnalysisConfig,
     ) -> GridCellReferenceProfile | None:
+        if not show_reference_frame():
+            return None
         record = self._grid_inspection_reference_record(state)
         if record is None:
             stale_key = str(getattr(state, "grid_inspection_reference_record_key", "") or "")
@@ -4620,13 +4649,135 @@ class KarakalPresenter(QObject):
         state = self._current_tab_state()
         if state is None or self._current_app_mode() != "grid_inspection":
             return
+        self._export_grid_error_frames(state)
+
+    def _export_grid_error_frames(self, state: ExtendMatrixTabState) -> None:
+        from ..ui.grid_export_dialog import GridErrorExportDialog
+        from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS
+
+        export_folder = self._export_folder or Path.cwd()
         selected_records = self._grid_inspection_export_selected_records(state)
-        records_with_results = self._grid_inspection_records_with_results(state)
-        self._export_grid_inspection_bmps(
-            state,
-            records_with_results,
-            render_records=selected_records if selected_records else None,
+        layer_payloads = dict(getattr(state, "grid_inspection_payloads_by_layer", {}) or {})
+        available_layers = tuple(
+            layer for layer in ("confidence", "binary") if dict(layer_payloads.get(layer) or {})
+        ) or ("confidence", "binary")
+        specs = tuple(getattr(getattr(state, "build_result", None), "model_specs", ()) or ())
+        masks = tuple((str(spec.model_id), str(spec.display_name or spec.model_id)) for spec in specs if str(spec.model_id))
+        dialog = GridErrorExportDialog(
+            self._t,
+            enabled_types=self._selected_grid_error_types(),
+            layers=available_layers,
+            masks=masks,
+            has_selection=bool(selected_records),
+            output_dir=export_folder,
+            parent=self._view,
         )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        choices = dialog.choices()
+        if choices is None:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("export_errors.types"))
+            return
+        self._export_folder = Path(choices.output_dir)
+        records = selected_records if choices.frame_scope == "selected" and selected_records else tuple(
+            self._grid_inspection_records_with_results(state)
+        )
+        if not records:
+            records = tuple(getattr(getattr(state, "build_result", None), "records", ()) or ())
+        active_model = str(getattr(state, "grid_inspection_model_id", "") or "")
+        mask_names = choices.masks or ((active_model or "mask"),)
+        frames: list[GridErrorExportFrame] = []
+        for record in records:
+            file_name = Path(str(getattr(record, "display_name", "") or getattr(record, "key", "") or "frame")).name
+            if Path(file_name).suffix.lower() not in {".jpg", ".jpeg"}:
+                file_name = f"{Path(file_name).stem}.jpg"
+            for mask_name in mask_names:
+                if active_model and mask_name != active_model and len(mask_names) > 1:
+                    result_for_mask = None
+                else:
+                    result_for_mask = "use-layer"
+                for layer in choices.layers:
+                    result = None
+                    if result_for_mask == "use-layer":
+                        result = dict(layer_payloads.get(layer) or {}).get(str(getattr(record, "key", "") or ""))
+                    frames.append(
+                        GridErrorExportFrame(
+                            file_name=file_name,
+                            mask_name=str(mask_name or "mask"),
+                            layer_name=str(layer),
+                            result=result,
+                        )
+                    )
+        slug = export_type_slug(choices.selected_types, all_types=choices.all_types)
+        mode = "bw" if choices.color_mode == "bw" else "color"
+        destination = Path(choices.output_dir) / f"grid_errors_{slug}_{mode}"
+        colors = {
+            item: GRID_INSPECTION_ERROR_TYPE_COLORS.get(item, "")
+            for item in choices.selected_types
+        }
+        config_payload = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
+        progress = QProgressDialog(self._t("export_errors.title"), self._t("common.cancel"), 0, max(1, len(frames)), self._view)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        thread = QThread(self._view)
+        holder: dict[str, object] = {}
+
+        class _Runner(QObject):
+            progressed = pyqtSignal(int, int, str)
+            finished_report = pyqtSignal(object)
+
+            def __init__(self) -> None:
+                super().__init__()
+                self._cancel = False
+
+            def cancel(self) -> None:
+                self._cancel = True
+
+            def run(self) -> None:
+                report = export_grid_cell_defect_frames(
+                    frames,
+                    destination,
+                    choices.selected_types,
+                    color_mode=choices.color_mode,
+                    skip_empty=choices.skip_empty,
+                    all_types=choices.all_types,
+                    algorithm_version=str(getattr(state, "grid_inspection_algorithm_version", "") or GRID_DAMAGE_ALGORITHM_VERSION),
+                    calibration_fingerprint=str(config_payload.get("calibration_fingerprint") or ""),
+                    type_colors=colors,
+                    progress=lambda current, total, name: self.progressed.emit(int(current), int(total), str(name)),
+                    cancelled=lambda: self._cancel,
+                )
+                self.finished_report.emit(report)
+
+        runner = _Runner()
+        runner.moveToThread(thread)
+        thread.started.connect(runner.run)
+        runner.progressed.connect(
+            lambda current, total, name: (
+                progress.setMaximum(max(1, total)),
+                progress.setValue(min(current, max(1, total))),
+                progress.setLabelText(name or self._t("export_errors.title")),
+            )
+        )
+        progress.canceled.connect(runner.cancel)
+
+        def _finish(report) -> None:
+            progress.setValue(progress.maximum())
+            thread.quit()
+            missing = len(getattr(report, "missing_results", ()) or ())
+            written = len(getattr(report, "written", ()) or ())
+            QMessageBox.information(
+                self._view,
+                self._t("dialog.info_title"),
+                f"{written}\n{destination}" + (f"\nmissing: {missing}" if missing else ""),
+            )
+
+        runner.finished_report.connect(_finish)
+        holder["thread"] = thread
+        holder["runner"] = runner
+        self._grid_error_export_job = holder
+        thread.start()
 
     def _request_cancel_build(self) -> None:
         if self._worker is None:
@@ -4696,7 +4847,7 @@ class KarakalPresenter(QObject):
         for view in self._grid_inspection_views().values():
             view.set_processing_keys(set())
         self._worker_thread = QThread()
-        want_derived_conflict = "derived_conflict" in requested_layers
+        want_derived_conflict = show_class_conflict() and "derived_conflict" in requested_layers
         conflict_pairs = self._selected_grid_conflict_pairs() if want_derived_conflict else ()
         if want_derived_conflict and not conflict_pairs and len(self._checked_model_specs()) >= 2:
             # Ensure a default AND pair so conflict review can run.
@@ -6313,17 +6464,20 @@ class KarakalPresenter(QObject):
             self._t("context.export_selected_frame_assets", count=len(selected_records))
         )
         export_selected_action.setEnabled(bool(selected_records))
-        export_layer_action = export_menu.addAction(self._t("context.export_result_layer_jpgs"))
-        export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
+        export_layer_action = None
+        if show_other_mode_export():
+            export_layer_action = export_menu.addAction(self._t("context.export_result_layer_jpgs"))
+            export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
         export_grid_bmp_selected_action = None
         export_grid_bmp_all_action = None
         calibrate_action = None
         diverse_action = None
         if is_grid_inspection_context:
-            calibrate_action = menu.addAction(self._t("context.calibrate_selected", count=len(selected_records)))
-            calibrate_action.setEnabled(1 <= len(selected_records) <= 20)
-            diverse_action = menu.addAction(self._t("context.calibrate_diverse"))
-            diverse_action.setEnabled(bool(getattr(getattr(state, "build_result", None), "records", ())))
+            if show_grid_examples():
+                calibrate_action = menu.addAction(self._t("context.calibrate_selected", count=len(selected_records)))
+                calibrate_action.setEnabled(1 <= len(selected_records) <= 20)
+                diverse_action = menu.addAction(self._t("context.calibrate_diverse"))
+                diverse_action.setEnabled(bool(getattr(getattr(state, "build_result", None), "records", ())))
             export_menu.addSeparator()
             payload_keys = {str(key) for key in (getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys()}
             selected_result_keys = {str(getattr(item, "key", "") or "") for item in exclude_source if item is not None}
@@ -7600,15 +7754,24 @@ class KarakalPresenter(QObject):
         gradient_name = str(payload.get("gradient_name") or DEFAULT_GRADIENT_NAME)
         gradient_index = self.matrix_gradient_combo.findData(gradient_name)
         self.matrix_gradient_combo.setCurrentIndex(gradient_index if gradient_index >= 0 else 0)
-        self._analysis_profile = analysis_profile_definition(
-            str(payload.get("analysis_profile") or DEFAULT_ANALYSIS_PROFILE)
-        ).key
+        saved_profile = str(payload.get("analysis_profile") or DEFAULT_ANALYSIS_PROFILE)
+        if tester_build():
+            saved_profile = AnalysisProfileKind.GRID_DEFECTS.value
+        self._analysis_profile = analysis_profile_definition(saved_profile).key
         if hasattr(self._view, "set_analysis_profile"):
             self._view.set_analysis_profile(self._analysis_profile)
+        if tester_build():
+            grid_mode_index = self.app_mode_combo.findData("grid_inspection")
+            if grid_mode_index >= 0:
+                self.app_mode_combo.setCurrentIndex(grid_mode_index)
         analysis_mode = str(payload.get("analysis_mode") or self._selected_analysis_mode())
+        comparison_target = str(payload.get("comparison_target") or DEFAULT_COMPARISON_TARGET)
+        if tester_build():
+            grid_profile = analysis_profile_definition(AnalysisProfileKind.GRID_DEFECTS.value)
+            analysis_mode = str(grid_profile.analysis_mode)
+            comparison_target = str(grid_profile.comparison_target)
         analysis_index = self.analysis_mode_combo.findData(analysis_mode)
         self.analysis_mode_combo.setCurrentIndex(analysis_index if analysis_index >= 0 else 0)
-        comparison_target = str(payload.get("comparison_target") or DEFAULT_COMPARISON_TARGET)
         comparison_target_index = self.comparison_target_combo.findData(comparison_target)
         self.comparison_target_combo.setCurrentIndex(comparison_target_index if comparison_target_index >= 0 else 0)
         geometry_mode = str(

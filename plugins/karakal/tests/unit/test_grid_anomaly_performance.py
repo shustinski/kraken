@@ -315,7 +315,7 @@ def test_binary_standalone_flags_mid_dirt_as_suspicious_without_reference() -> N
     assert result.grid_detected
     dirt = [cell for cell in result.cells if "small_artifact" in cell.reasons]
     assert dirt
-    assert all(cell.status == "suspicious" for cell in dirt)
+    assert all(cell.status == "broken" for cell in dirt)
     assert result.detected_cells >= 12 * 16
 
 
@@ -346,7 +346,7 @@ def test_confidence_standalone_flags_mid_debris_as_suspicious() -> None:
     assert result.grid_detected
     dirt = [cell for cell in result.cells if "small_artifact" in cell.reasons]
     assert dirt
-    assert any(cell.status == "suspicious" for cell in dirt)
+    assert any(cell.status == "broken" for cell in dirt)
     assert any(cell.status == "normal" for cell in result.cells)
 
 
@@ -528,7 +528,7 @@ def test_binary_small_but_significant_dirt_is_flagged() -> None:
     )
     dirt_cells = [cell for cell in result.cells if "small_artifact" in cell.reasons]
     assert dirt_cells
-    assert all(cell.status == "suspicious" for cell in dirt_cells)
+    assert all(cell.status == "broken" for cell in dirt_cells)
 
 
 def test_binary_grainy_corner_dirt_is_flagged_despite_otsu_split() -> None:

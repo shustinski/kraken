@@ -327,10 +327,11 @@ def test_grid_details_exposes_confidence_layer_when_uploaded(tmp_path, qtbot) ->
     dialog._update_result_controls()
 
     assert dialog._grid_confidence_available()
-    assert not dialog.second_source_layer_row.isHidden()
-    assert dialog.second_source_layer_title.text() == dialog._t("details.grid_confidence_layer")
-    assert dialog.result_layer_title.text() == dialog._t("details.grid_cell_defects")
-    # Without an original photo the base already shows the model mask — no duplicate layer.
+    assert not dialog.grid_confidence_layer_row.isHidden()
+    assert dialog.grid_confidence_layer_title.text() == dialog._t("details.grid_confidence_layer")
+    assert dialog.grid_network_layer_title.text() == dialog._t("details.grid_network_layer")
+    assert not dialog.grid_source_visible.isEnabled()
+    assert dialog.grid_source_visible.toolTip() == dialog._t("details.layer_missing")
     assert dialog.first_source_layer_row.isHidden()
 
 
@@ -365,15 +366,19 @@ def test_grid_details_exposes_model_output_layer_with_original(tmp_path, qtbot) 
     dialog._refresh_scene(reset_view=False)
 
     assert dialog._grid_has_original()
-    assert dialog._grid_model_output_layer_available()
-    assert dialog.original_layer_title.text() == dialog._t("details.grid_reference_layer")
-    assert not dialog.original_visible.isChecked()
+    assert dialog._grid_network_available()
+    assert dialog.grid_source_layer_title.text() == dialog._t("details.grid_source_layer")
+    assert dialog.grid_network_visible.isChecked()
+    assert dialog.grid_source_visible.isChecked()
     assert dialog.first_source_layer_row.isHidden()
-    assert not dialog.first_source_item.isVisible()
+    assert dialog.first_source_item.isVisible()
     assert not dialog.original_item.pixmap().isNull()
-    base_pixel = dialog.original_item.pixmap().toImage().pixelColor(16, 16)
-    assert base_pixel.red() > 200
-    assert not dialog.second_source_layer_row.isHidden()
+    source_pixel = dialog.original_item.pixmap().toImage().pixelColor(16, 16)
+    assert source_pixel.red() < 80
+    mask_pixel = dialog.first_source_item.pixmap().toImage().pixelColor(16, 16)
+    assert mask_pixel.alpha() > 200
+    assert dialog.original_item.zValue() < dialog.second_source_item.zValue() < dialog.first_source_item.zValue()
+    assert not dialog.grid_confidence_layer_row.isHidden()
 
 
 def test_confidence_overlay_prefers_uploaded_jpeg_grayscale(tmp_path, qtbot) -> None:

@@ -489,6 +489,36 @@ class ExtendFrameDetailsDialog(QDialog):
         layers_group = QGroupBox(self._t("details.layers"), controls_host)
         layers_form = QFormLayout(layers_group)
         layers_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        self.grid_network_visible = QCheckBox(layers_group)
+        self.grid_network_visible.setChecked(True)
+        self.grid_network_opacity = self._opacity_slider(50)
+        self.grid_confidence_visible = QCheckBox(layers_group)
+        self.grid_confidence_visible.setChecked(True)
+        self.grid_confidence_opacity = self._opacity_slider(60)
+        self.grid_source_visible = QCheckBox(layers_group)
+        self.grid_source_visible.setChecked(True)
+        self.grid_source_opacity = self._opacity_slider(100)
+        self.grid_network_layer_title = QLabel(self._t("details.grid_network_layer"), layers_group)
+        self.grid_confidence_layer_title = QLabel(self._t("details.grid_confidence_layer"), layers_group)
+        self.grid_source_layer_title = QLabel(self._t("details.grid_source_layer"), layers_group)
+        self.grid_marks_title = QLabel(self._t("details.grid_marks"), layers_group)
+        self.grid_network_layer_row = self._layer_row(self.grid_network_visible, self.grid_network_opacity)
+        self.grid_confidence_layer_row = self._layer_row(self.grid_confidence_visible, self.grid_confidence_opacity)
+        self.grid_source_layer_row = self._layer_row(self.grid_source_visible, self.grid_source_opacity)
+        layers_form.addRow(self.grid_network_layer_title, self.grid_network_layer_row)
+        layers_form.addRow(self.grid_confidence_layer_title, self.grid_confidence_layer_row)
+        layers_form.addRow(self.grid_source_layer_title, self.grid_source_layer_row)
+        layers_form.addRow(self.grid_marks_title)
+        for grid_layer_widget in (
+            self.grid_network_layer_title,
+            self.grid_network_layer_row,
+            self.grid_confidence_layer_title,
+            self.grid_confidence_layer_row,
+            self.grid_source_layer_title,
+            self.grid_source_layer_row,
+            self.grid_marks_title,
+        ):
+            grid_layer_widget.hide()
         self.original_visible = QCheckBox(layers_group)
         self.original_visible.setChecked(True)
         self.original_opacity = self._opacity_slider(100)
@@ -673,6 +703,13 @@ class ExtendFrameDetailsDialog(QDialog):
             if self._legacy_step_record(-1):
                 event.accept()
                 return
+        if self._selected_result_kind() == "grid_cell_defects" and Qt.Key.Key_1 <= event.key() <= Qt.Key.Key_9:
+            index = int(event.key()) - int(Qt.Key.Key_1)
+            layers = self._grid_hotkey_layers()
+            if index < len(layers) and layers[index].isEnabled():
+                layers[index].toggle()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     # Legacy lite methods retained for compatibility with older detail-dialog flows.
@@ -691,10 +728,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.hold_preview_item.setPixmap(QPixmap())
         self._hold_preview_pixmap = QPixmap()
         if was_grid_model_hold:
-            if self._grid_model_output_layer_available():
-                self.first_source_item.setPixmap(self._grid_model_output_pixmap())
-            else:
-                self.first_source_item.setPixmap(QPixmap())
+            self.hold_preview_item.setPixmap(QPixmap())
         self._update_layer_states()
 
     def _legacy_update_frame_id_value(self) -> None:
@@ -818,6 +852,9 @@ class ExtendFrameDetailsDialog(QDialog):
             self.first_source_visible,
             self.second_source_visible,
             self.result_visible,
+            self.grid_network_visible,
+            self.grid_confidence_visible,
+            self.grid_source_visible,
             self.grid_normal_visible,
             self.grid_suspicious_visible,
             self.grid_broken_visible,
@@ -834,6 +871,9 @@ class ExtendFrameDetailsDialog(QDialog):
             self.first_source_opacity,
             self.second_source_opacity,
             self.result_opacity,
+            self.grid_network_opacity,
+            self.grid_confidence_opacity,
+            self.grid_source_opacity,
         ):
             widget.valueChanged.connect(self._update_layer_states)
         for widget in (
@@ -841,6 +881,9 @@ class ExtendFrameDetailsDialog(QDialog):
             self.first_source_visible,
             self.second_source_visible,
             self.result_visible,
+            self.grid_network_visible,
+            self.grid_confidence_visible,
+            self.grid_source_visible,
         ):
             widget.toggled.connect(self._store_view_settings)
         for widget in (
@@ -848,6 +891,9 @@ class ExtendFrameDetailsDialog(QDialog):
             self.first_source_opacity,
             self.second_source_opacity,
             self.result_opacity,
+            self.grid_network_opacity,
+            self.grid_confidence_opacity,
+            self.grid_source_opacity,
         ):
             widget.valueChanged.connect(self._store_view_settings)
         self.result_kind_combo.currentIndexChanged.connect(self._store_view_settings)
@@ -2283,21 +2329,75 @@ class ExtendFrameDetailsDialog(QDialog):
         self._hold_preview_mode = "base"
         self._activate_base_hold()
 
+    def _grid_hotkey_layers(self) -> list[QCheckBox]:
+        error_types = [
+            self.grid_error_type_checks[str(error_type)]
+            for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS
+            if str(error_type) in self.grid_error_type_checks
+        ]
+        return [
+            self.grid_network_visible,
+            self.grid_confidence_visible,
+            self.grid_source_visible,
+            self.grid_normal_visible,
+            self.grid_suspicious_visible,
+            self.grid_broken_visible,
+            *error_types,
+        ]
+
+    def _grid_network_available(self) -> bool:
+        if self._grid_model_output_path():
+            return True
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        source_grays = self._payload.get("model_source_grays") or {}
+        return bool(model_id and isinstance(source_grays, dict) and model_id in source_grays)
+
+    def _grid_source_available(self) -> bool:
+        return self._grid_has_original()
+
+    def _apply_grid_layer_availability(self) -> None:
+        missing = self._t("details.layer_missing")
+        for checkbox, available in (
+            (self.grid_network_visible, self._grid_network_available()),
+            (self.grid_confidence_visible, self._grid_confidence_available()),
+            (self.grid_source_visible, self._grid_source_available()),
+        ):
+            checkbox.setEnabled(bool(available))
+            checkbox.setToolTip("" if available else missing)
+
+    def _apply_grid_image_stack(self) -> None:
+        """Source under confidence under the network mask. Marks stay above all three."""
+
+        self.original_item.setZValue(0.0)
+        self.second_source_item.setZValue(1.0)
+        self.first_source_item.setZValue(2.0)
+        self.result_item.setZValue(3.0)
+        self.hold_preview_item.setZValue(4.0)
+        self._apply_grid_layer_availability()
+        show_source = self.grid_source_visible.isEnabled() and self.grid_source_visible.isChecked()
+        show_confidence = self.grid_confidence_visible.isEnabled() and self.grid_confidence_visible.isChecked()
+        show_network = self.grid_network_visible.isEnabled() and self.grid_network_visible.isChecked()
+        self.original_item.setVisible(show_source)
+        self.original_item.setOpacity(self.grid_source_opacity.value() / 100.0)
+        self.second_source_item.setVisible(show_confidence)
+        self.second_source_item.setOpacity(self.grid_confidence_opacity.value() / 100.0)
+        self.first_source_item.setVisible(show_network)
+        self.first_source_item.setOpacity(self.grid_network_opacity.value() / 100.0)
+
     def _update_layer_states(self) -> None:
         grid_details = self._selected_result_kind() == "grid_cell_defects"
         if self._legacy_base_hold_active and self._hold_preview_mode == "grid_model_output":
-            # Hold: show model output under defect overlays (defects stay visible).
+            # Hold shows the network mask under the marks, without changing the checkboxes.
             self.original_item.setVisible(False)
             self.second_source_item.setVisible(False)
-            self.hold_preview_item.setVisible(False)
+            self.first_source_item.setVisible(False)
+            self.result_item.setVisible(False)
             if not self._hold_preview_pixmap.isNull():
-                self.first_source_item.setPixmap(self._hold_preview_pixmap)
-                self.first_source_item.setVisible(True)
-                self.first_source_item.setOpacity(1.0)
+                self.hold_preview_item.setPixmap(self._hold_preview_pixmap)
+                self.hold_preview_item.setVisible(True)
+                self.hold_preview_item.setOpacity(1.0)
             else:
-                self.first_source_item.setVisible(False)
-            self.result_item.setVisible(self.result_visible.isChecked())
-            self.result_item.setOpacity(self.result_opacity.value() / 100.0)
+                self.hold_preview_item.setVisible(False)
             return
         if self._legacy_base_hold_active:
             show_base = self._hold_preview_mode != "confidence_source"
@@ -2315,23 +2415,25 @@ class ExtendFrameDetailsDialog(QDialog):
                 return
         self.hold_preview_item.setVisible(False)
         if grid_details:
-            self.original_item.setVisible(True)
-            self.original_item.setOpacity(1.0)
-            show_reference = self.original_visible.isChecked() and self._grid_has_original()
-            self.first_source_item.setVisible(show_reference)
-            if show_reference:
-                self.first_source_item.setOpacity(self.original_opacity.value() / 100.0)
-            show_confidence = self._grid_confidence_available() and self.second_source_visible.isChecked()
-            self.second_source_item.setVisible(show_confidence)
-            if show_confidence:
-                self.second_source_item.setOpacity(self.second_source_opacity.value() / 100.0)
+            self._apply_grid_image_stack()
         else:
+            self.original_item.setVisible(self.original_visible.isChecked())
+            self.original_item.setOpacity(self.original_opacity.value() / 100.0)
             self.first_source_item.setVisible(self.first_source_visible.isChecked())
             self.first_source_item.setOpacity(self.first_source_opacity.value() / 100.0)
             self.second_source_item.setVisible(self.second_source_visible.isChecked())
             self.second_source_item.setOpacity(self.second_source_opacity.value() / 100.0)
-        self.result_item.setVisible(self.result_visible.isChecked())
-        self.result_item.setOpacity(self.result_opacity.value() / 100.0)
+            self.original_item.setZValue(0.0)
+            self.first_source_item.setZValue(1.0)
+            self.second_source_item.setZValue(2.0)
+            self.result_item.setZValue(3.0)
+            self.hold_preview_item.setZValue(4.0)
+        if grid_details:
+            # Cell boxes are the scene marks. The result pixmap repeats them.
+            self.result_item.setVisible(False)
+        else:
+            self.result_item.setVisible(self.result_visible.isChecked())
+            self.result_item.setOpacity(self.result_opacity.value() / 100.0)
 
     def _source_mask(self, source_key: str | None) -> np.ndarray | None:
         cache_key = ("source_mask", source_key, bool(self._is_point_geometry()))
@@ -2866,6 +2968,68 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
+    def _grid_network_mask_pixmap(self) -> QPixmap:
+        """Network mask with a transparent background so lower layers stay visible."""
+
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        path_text = self._grid_model_output_path()
+        result = self._grid_cell_analysis_result()
+        width = max(1, int(getattr(result, "image_width", 0) or 1))
+        height = max(1, int(getattr(result, "image_height", 0) or 1))
+        cache_key = ("grid_network_mask_rgba", model_id, path_text, width, height)
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap) and not cached.isNull():
+            return cached
+        values = np.asarray(self._grid_model_output_array(), dtype=np.uint8)
+        if values.ndim != 2 or values.size == 0:
+            return QPixmap()
+        color = QColor(80, 210, 255)
+        rgba = np.zeros((*values.shape, 4), dtype=np.uint8)
+        rgba[..., 0] = color.red()
+        rgba[..., 1] = color.green()
+        rgba[..., 2] = color.blue()
+        rgba[..., 3] = values
+        image = QImage(rgba.data, values.shape[1], values.shape[0], int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
+        pixmap = QPixmap.fromImage(image)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _grid_confidence_uncertainty_pixmap(self) -> QPixmap:
+        """Uncertainty heatmap: confident pixels stay clear, low confidence gets denser."""
+
+        model_id = str(self._selected_model_for_current_comparison() or "")
+        path_text = self._grid_confidence_path()
+        result = self._grid_cell_analysis_result()
+        width = max(1, int(getattr(result, "image_width", 0) or 1))
+        height = max(1, int(getattr(result, "image_height", 0) or 1))
+        cache_key = ("grid_confidence_uncertainty", model_id, path_text, width, height)
+        cached = self._overlay_cache.get(cache_key)
+        if isinstance(cached, QPixmap) and not cached.isNull():
+            return cached
+        probability = self._grid_confidence_probability_map()
+        if probability is None:
+            return QPixmap()
+        finite = probability[np.isfinite(probability)]
+        if finite.size == 0:
+            return QPixmap()
+        low = float(np.percentile(finite, 5))
+        high = float(np.percentile(finite, 95))
+        span = high - low
+        if span < 1e-4:
+            span = 1e-4
+        uncertainty = np.clip((high - probability) / span, 0.0, 1.0).astype(np.float32)
+        rgba = np.zeros((*uncertainty.shape, 4), dtype=np.uint8)
+        rgba[..., 0] = 255
+        rgba[..., 1] = np.clip((1.0 - uncertainty) * 180.0, 0.0, 255.0).astype(np.uint8)
+        rgba[..., 2] = 32
+        rgba[..., 3] = np.clip(uncertainty * 220.0, 0.0, 255.0).astype(np.uint8)
+        image = QImage(
+            rgba.data, uncertainty.shape[1], uncertainty.shape[0], int(rgba.strides[0]), QImage.Format.Format_RGBA8888
+        ).copy()
+        pixmap = QPixmap.fromImage(image)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
     def _grid_cell_defects_pixmap(self, model_id: str | None) -> QPixmap:
         selected_model = self._selected_model_for_current_comparison() if model_id is None else model_id
         cache_key = (
@@ -3345,6 +3509,11 @@ class ExtendFrameDetailsDialog(QDialog):
         self.result_mask_color_button.setVisible(show_result_color)
         self.result_mask_color_button.setEnabled(show_result_color)
         grid_details = self._selected_result_kind() == "grid_cell_defects"
+        layer_form = self.layer_view_combo.parentWidget().layout() if self.layer_view_combo.parentWidget() else None
+        layer_label = layer_form.labelForField(self.layer_view_combo) if isinstance(layer_form, QFormLayout) else None
+        self.layer_view_combo.setVisible(not grid_details)
+        if layer_label is not None:
+            layer_label.setVisible(not grid_details)
         self._set_grid_detail_layer_rows(grid_details)
         self._set_grid_layer_controls_visible(grid_details)
         self._update_color_button_styles()
@@ -3386,25 +3555,26 @@ class ExtendFrameDetailsDialog(QDialog):
                     label.setVisible(bool(visible))
 
     def _set_grid_detail_layer_rows(self, grid_details: bool) -> None:
-        self.original_layer_title.setVisible(True)
-        self.original_layer_row.setVisible(True)
-        show_grid_model = False if grid_details else self._grid_model_output_layer_available()
-        self.first_source_layer_title.setVisible(show_grid_model or not bool(grid_details))
-        self.first_source_layer_row.setVisible(show_grid_model or not bool(grid_details))
-        self.result_layer_title.setVisible(True)
-        self.result_layer_row.setVisible(True)
-        show_grid_confidence = bool(grid_details) and self._grid_confidence_available()
-        self.second_source_layer_title.setVisible(show_grid_confidence or not bool(grid_details))
-        self.second_source_layer_row.setVisible(show_grid_confidence or not bool(grid_details))
+        for widget in (
+            self.grid_network_layer_title,
+            self.grid_network_layer_row,
+            self.grid_confidence_layer_title,
+            self.grid_confidence_layer_row,
+            self.grid_source_layer_title,
+            self.grid_source_layer_row,
+            self.grid_marks_title,
+        ):
+            widget.setVisible(bool(grid_details))
+        self.original_layer_title.setVisible(not grid_details)
+        self.original_layer_row.setVisible(not grid_details)
+        self.first_source_layer_title.setVisible(not grid_details)
+        self.first_source_layer_row.setVisible(not grid_details)
+        self.second_source_layer_title.setVisible(not grid_details)
+        self.second_source_layer_row.setVisible(not grid_details)
+        self.result_layer_title.setVisible(not grid_details)
+        self.result_layer_row.setVisible(not grid_details)
         if grid_details:
-            self.original_layer_title.setText(self._t("details.grid_reference_layer"))
-            self.first_source_layer_title.setText(self._t("details.model_output_layer"))
-            if not getattr(self, "_grid_reference_layer_initialized", False):
-                self._grid_reference_layer_initialized = True
-                self.original_visible.setChecked(False)
-                self.original_opacity.setValue(40)
-            self.second_source_layer_title.setText(self._t("details.grid_confidence_layer"))
-            self.result_layer_title.setText(self._t("details.grid_cell_defects"))
+            self._apply_grid_layer_availability()
             self.first_mask_color_button.setVisible(False)
             self.second_mask_color_button.setVisible(False)
         else:
@@ -3656,23 +3826,36 @@ class ExtendFrameDetailsDialog(QDialog):
         result = self._grid_cell_analysis_result()
         items = []
         for cell in getattr(result, "per_cell_results", ()) or ():
-            if str(getattr(cell, "status", "")) == "normal":
+            status = str(getattr(cell, "status", "") or "")
+            if status == "normal" and not self.grid_normal_visible.isChecked():
                 continue
-            if self._grid_good_example_hides_cell(cell):
+            if status == "suspicious" and not self.grid_suspicious_visible.isChecked():
                 continue
-            if not self._grid_cell_error_type_visible(cell):
+            if status == "broken" and not self.grid_broken_visible.isChecked():
                 continue
+            if status != "normal" and self._grid_good_example_hides_cell(cell):
+                continue
+            if status != "normal" and not self._grid_cell_error_type_visible(cell):
+                continue
+            reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
             color = self._grid_cell_color(cell)
             color.setAlpha(230)
-            pen = QPen(color, 3.0)
-            pen.setCosmetic(True)
             rect = QRectF(
                 float(getattr(cell, "left", 0)) * scale_x,
                 float(getattr(cell, "top", 0)) * scale_y,
                 max(2.0, float(getattr(cell, "width", 1)) * scale_x),
                 max(2.0, float(getattr(cell, "height", 1)) * scale_y),
             )
-            item = scene.addRect(rect, pen, QBrush(QColor(color.red(), color.green(), color.blue(), 70)))
+            if "conductor_zone" in reasons:
+                fill = QColor(color)
+                fill.setAlpha(70)
+                pen = QPen(color, 2.0, Qt.PenStyle.DashLine)
+                pen.setCosmetic(True)
+                item = scene.addRect(rect, pen, QBrush(fill, Qt.BrushStyle.BDiagPattern))
+            else:
+                pen = QPen(color, 3.0)
+                pen.setCosmetic(True)
+                item = scene.addRect(rect, pen, QBrush(QColor(color.red(), color.green(), color.blue(), 70)))
             item.setZValue(30.0)
             items.append(item)
         for example in self._grid_examples:
@@ -4137,22 +4320,29 @@ class ExtendFrameDetailsDialog(QDialog):
         if base_pixmap is None:
             base_pixmap = self._grayscale_to_pixmap(base_array)
             self._overlay_cache[base_pixmap_key] = base_pixmap
-        self.original_item.setPixmap(base_pixmap)
+        if not grid_details:
+            self.original_item.setPixmap(base_pixmap)
         _preset_key, first_key, second_key = self._current_comparison_tuple()
         mode = self._current_operation_mode()
         prefer_grayscale = self._selected_result_kind() == "diff" and mode == ComparisonMode.GRAYSCALE_DIFF
         if grid_details:
             reference = self._grid_reference_photo_array(base_array.shape)
-            if reference is not None:
-                self.first_source_item.setPixmap(self._grayscale_to_pixmap(reference))
-            else:
-                self.first_source_item.setPixmap(QPixmap())
+            self.original_item.setPixmap(
+                self._grayscale_to_pixmap(reference) if reference is not None else QPixmap()
+            )
+            self.original_item.setTransform(QTransform())
             if self._grid_confidence_available():
-                self.second_source_item.setPixmap(self._grid_confidence_overlay_pixmap())
+                self.second_source_item.setPixmap(self._grid_confidence_uncertainty_pixmap())
                 self._scale_pixmap_item_to_scene(self.second_source_item)
             else:
                 self.second_source_item.setPixmap(QPixmap())
                 self.second_source_item.setTransform(QTransform())
+            if self._grid_network_available():
+                self.first_source_item.setPixmap(self._grid_network_mask_pixmap())
+                self._scale_pixmap_item_to_scene(self.first_source_item)
+            else:
+                self.first_source_item.setPixmap(QPixmap())
+                self.first_source_item.setTransform(QTransform())
         else:
             self.first_source_item.setPixmap(
                 self._source_pixmap(first_key, self._named_color("first_mask"), prefer_grayscale=prefer_grayscale)
@@ -5017,6 +5207,12 @@ class ExtendFrameDetailsDialog(QDialog):
             "first_opacity": int(self.first_source_opacity.value()),
             "second_opacity": int(self.second_source_opacity.value()),
             "result_opacity": int(self.result_opacity.value()),
+            "grid_network_visible": bool(self.grid_network_visible.isChecked()),
+            "grid_confidence_visible": bool(self.grid_confidence_visible.isChecked()),
+            "grid_source_visible": bool(self.grid_source_visible.isChecked()),
+            "grid_network_opacity": int(self.grid_network_opacity.value()),
+            "grid_confidence_opacity": int(self.grid_confidence_opacity.value()),
+            "grid_source_opacity": int(self.grid_source_opacity.value()),
             "colors": dict(self._session_view_state.get("colors") or {}),
         }
         return payload
@@ -5036,6 +5232,12 @@ class ExtendFrameDetailsDialog(QDialog):
             QSignalBlocker(self.first_source_opacity),
             QSignalBlocker(self.second_source_opacity),
             QSignalBlocker(self.result_opacity),
+            QSignalBlocker(self.grid_network_visible),
+            QSignalBlocker(self.grid_confidence_visible),
+            QSignalBlocker(self.grid_source_visible),
+            QSignalBlocker(self.grid_network_opacity),
+            QSignalBlocker(self.grid_confidence_opacity),
+            QSignalBlocker(self.grid_source_opacity),
         ]
         _ = blockers
         preferred_model_id = payload.get("preferred_model_id")
@@ -5083,6 +5285,16 @@ class ExtendFrameDetailsDialog(QDialog):
         self.first_source_opacity.setValue(int(payload.get("first_opacity", self.first_source_opacity.value())))
         self.second_source_opacity.setValue(int(payload.get("second_opacity", self.second_source_opacity.value())))
         self.result_opacity.setValue(int(payload.get("result_opacity", self.result_opacity.value())))
+        self.grid_network_visible.setChecked(bool(payload.get("grid_network_visible", self.grid_network_visible.isChecked())))
+        self.grid_confidence_visible.setChecked(
+            bool(payload.get("grid_confidence_visible", self.grid_confidence_visible.isChecked()))
+        )
+        self.grid_source_visible.setChecked(bool(payload.get("grid_source_visible", self.grid_source_visible.isChecked())))
+        self.grid_network_opacity.setValue(int(payload.get("grid_network_opacity", self.grid_network_opacity.value())))
+        self.grid_confidence_opacity.setValue(
+            int(payload.get("grid_confidence_opacity", self.grid_confidence_opacity.value()))
+        )
+        self.grid_source_opacity.setValue(int(payload.get("grid_source_opacity", self.grid_source_opacity.value())))
 
     def set_preferred_model_id(self, model_id: str | None) -> None:
         normalized = str(model_id or "") or None

@@ -292,18 +292,18 @@ def _frame(reasons: tuple[str, ...], score: float) -> GridFrameAnalysisResult:
 
 
 def test_unified_layer_ignores_confidence_verdicts() -> None:
-    host = SimpleNamespace(_grid_mismatch_enabled=False)
     merged = KarakalPresenter._merge_grid_layer_results(
-        host,
+        SimpleNamespace(),
         {
             "binary": _frame(("filled_cell",), 0.4),
             "confidence": _frame(("broken_geometry",), 0.9),
             "comparison": _frame(("geometry_mismatch",), 0.8),
+            "derived_conflict": _frame(("class_conflict",), 0.7),
         },
     )
     assert merged is not None
     assert merged.damage_score == 0.4
-    assert {reason for cell in merged.cells for reason in cell.reasons} == {"filled_cell"}
+    assert {reason for cell in merged.cells for reason in cell.reasons} == {"filled_cell", "class_conflict"}
 
 
 def _growing_grid(factor: float, filled: tuple[tuple[int, int], ...] = ()) -> np.ndarray:

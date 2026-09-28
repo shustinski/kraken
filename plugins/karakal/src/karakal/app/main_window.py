@@ -592,12 +592,15 @@ class KarakalWidget(QWidget):
             checkbox = QCheckBox(self._t(label_key), self)
             checkbox.setIcon(grid_inspection_error_type_icon(error_type))
             checkbox.setChecked(str(error_type) in GRID_INSPECTION_DEFAULT_ERROR_TYPES)
+            if str(error_type) == "class_conflict":
+                checkbox.setEnabled(False)
+                checkbox.setChecked(False)
+                checkbox.setToolTip(self._t("grid_error.class_conflict_unavailable"))
             self.grid_error_type_checks[str(error_type)] = checkbox
         self.grid_layer_compute_checks: dict[str, QCheckBox] = {}
         for layer_key, label_key in (
             ("confidence", "grid_layer.confidence"),
             ("binary", "grid_layer.binary"),
-            ("comparison", "grid_layer.comparison"),
             ("derived_conflict", "grid_layer.derived_conflict"),
         ):
             checkbox = QCheckBox(self._t(label_key), self)
@@ -607,7 +610,6 @@ class KarakalWidget(QWidget):
         for layer_key, label_key in (
             ("confidence", "grid_layer.confidence"),
             ("binary", "grid_layer.binary"),
-            ("comparison", "grid_layer.comparison"),
             ("derived_conflict", "grid_layer.derived_conflict"),
         ):
             self.grid_layer_display_combo.addItem(self._t(label_key), layer_key)
@@ -1178,7 +1180,7 @@ class KarakalWidget(QWidget):
         return host
 
     def _activate_grid_inspection_layer_tab(self, index: int) -> None:
-        keys = ("confidence", "binary", "comparison")
+        keys = ("confidence", "binary")
         layer_key = keys[max(0, min(int(index), len(keys) - 1))]
         self.grid_inspection_matrix_view = self.grid_inspection_matrix_views[layer_key]
         self.grid_inspection_legend.set_scale_info(self.grid_inspection_matrix_view.color_scale_info())
@@ -1703,7 +1705,7 @@ class KarakalWidget(QWidget):
         self._grid_layer_compute_title = QLabel(self._t("grid_tuning.compute_layers"), self._grid_inspection_tuning_group)
         self._grid_layer_compute_title.setWordWrap(True)
         grid_tuning_layout.addWidget(self._grid_layer_compute_title)
-        for layer_key in ("confidence", "binary", "comparison", "derived_conflict"):
+        for layer_key in ("confidence", "binary", "derived_conflict"):
             checkbox = self.grid_layer_compute_checks.get(str(layer_key))
             if checkbox is not None:
                 checkbox.setParent(self._grid_inspection_tuning_group)
@@ -1784,7 +1786,6 @@ class KarakalWidget(QWidget):
             for layer_key, label_key in (
                 ("confidence", "grid_layer.confidence"),
                 ("binary", "grid_layer.binary"),
-                ("comparison", "grid_layer.comparison"),
                 ("derived_conflict", "grid_layer.derived_conflict"),
             ):
                 checkbox = getattr(self, "grid_layer_compute_checks", {}).get(str(layer_key))
@@ -1965,9 +1966,8 @@ class KarakalWidget(QWidget):
         if hasattr(self, "grid_inspection_layer_tabs"):
             self.grid_inspection_layer_tabs.setTabText(0, self._t("grid_layer.confidence"))
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))
-            self.grid_inspection_layer_tabs.setTabText(2, self._t("grid_layer.comparison"))
-            if self.grid_inspection_layer_tabs.count() > 3:
-                self.grid_inspection_layer_tabs.setTabText(3, self._t("grid_layer.derived_conflict"))
+            if self.grid_inspection_layer_tabs.count() > 2:
+                self.grid_inspection_layer_tabs.setTabText(2, self._t("grid_layer.derived_conflict"))
         for metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "title_label"):
                 card.title_label.setText(self._metric_text_for_key(metric_key, None))
@@ -2191,6 +2191,9 @@ class KarakalWidget(QWidget):
         self.grid_reference_frame_clear_button.clicked.connect(self._presenter._on_grid_reference_clear_requested)
         for checkbox in self.grid_layer_compute_checks.values():
             checkbox.toggled.connect(self._presenter._on_grid_layer_compute_selection_changed)
+        conflict = self.grid_error_type_checks.get("class_conflict")
+        if conflict is not None:
+            conflict.toggled.connect(self._presenter._on_class_conflict_checkbox_toggled)
         self.grid_layer_display_combo.currentIndexChanged.connect(self._presenter._on_grid_layer_display_selection_changed)
         self.grid_tuning_preset_combo.currentIndexChanged.connect(self._presenter._on_grid_tuning_preset_changed)
         for _metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():

@@ -41,9 +41,8 @@ BALANCED_SLIDERS = {
     "fill_sensitivity": 60,
     "debris_sensitivity": 75,
     "geometry_sensitivity": 40,
-    "merge_sensitivity": 35,
-    "mismatch_sensitivity": 50,
     "disagreement_sensitivity": 50,
+    "merge_sensitivity": 35,
 }
 SLIDER_KEYS = tuple(BALANCED_SLIDERS)
 REASON_COLORS_BGR = {
@@ -53,24 +52,16 @@ REASON_COLORS_BGR = {
     "broken_geometry": (248, 189, 56),
     "merged_contour": (247, 85, 168),
     "edge_clipped_cell": (21, 204, 250),
-    "confidence_only_cell": (166, 184, 20),
-    "binary_only_cell": (22, 204, 132),
-    "geometry_mismatch": (241, 102, 99),
-    "defect_disagreement": (94, 63, 244),
     "class_conflict": (72, 29, 225),
 }
 REASON_PRIORITY = (
     "merged_contour",
     "broken_geometry",
-    "geometry_mismatch",
     "small_artifact",
     "filled_cell",
     "partial_filled_cell",
     "edge_clipped_cell",
     "class_conflict",
-    "defect_disagreement",
-    "confidence_only_cell",
-    "binary_only_cell",
 )
 ROLE_DIRS = {
     "direct": ("NN_res/cells/Direct_result_test", "NN_res/cells/Direct_Confidence_test"),
@@ -114,7 +105,6 @@ def app_config_from_payload(payload: dict | None) -> GridDamageAnalysisConfig:
     debris = _slider_unit(values, "debris_sensitivity", 75)
     merge = _slider_unit(values, "merge_sensitivity", 35)
     geometry = _slider_unit(values, "geometry_sensitivity", 40)
-    mismatch = _slider_unit(values, "mismatch_sensitivity", 50)
     disagreement = _slider_unit(values, "disagreement_sensitivity", 50)
     enabled = incoming.get("enabled_reason_types") or incoming.get("enabled_error_types")
     if enabled is None:
@@ -134,8 +124,8 @@ def app_config_from_payload(payload: dict | None) -> GridDamageAnalysisConfig:
         merged_size_ratio=max(1.10, 1.95 - 0.75 * merge),
         merged_area_ratio=max(1.10, 1.95 - 0.78 * merge),
         geometry_solidity_limit=max(0.40, min(0.95, 0.50 + 0.40 * geometry)),
-        geometry_iou_threshold=max(0.20, min(0.90, 0.32 + 0.46 * mismatch)),
-        centroid_mismatch_ratio=max(0.15, min(0.90, 0.80 - 0.50 * mismatch)),
+        geometry_iou_threshold=0.55,
+        centroid_mismatch_ratio=0.55,
         enabled_reason_types=enabled_reason_types,
         scoring_mode="calibrated",
         fill_sensitivity=int(values["fill_sensitivity"]),

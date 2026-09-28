@@ -128,7 +128,7 @@ def test_grid_analysis_tuning_sliders_start_at_balanced_preset(tmp_path, qtbot) 
     assert {key: payload[key] for key, _value in GRID_INSPECTION_FIXED_TUNING} == dict(
         GRID_INSPECTION_FIXED_TUNING
     )
-    assert payload["requested_layers"] == ["confidence", "binary", "comparison"]
+    assert payload["requested_layers"] == ["confidence", "binary"]
     assert payload["display_layer"] == "unified"
 
     soft = KarakalPresenter._grid_damage_config_from_payload({"fill_sensitivity": 0, "merge_sensitivity": 0})

@@ -721,11 +721,9 @@ def test_paired_grid_worker_returns_three_linked_matrices(tmp_path, monkeypatch)
 
     assert failed == []
     assert len(finished) == 1
-    assert set(finished[0]["frame"]) == {"confidence", "binary", "comparison"}
-    assert any(
-        "confidence_only_cell" in cell.reasons
-        for cell in finished[0]["frame"]["comparison"].cells
-    )
+    assert set(finished[0]["frame"]) == {"confidence", "binary"}
+    assert finished[0]["frame"]["binary"].cells
+    assert finished[0]["frame"]["confidence"].cells
 
 
 @pytest.mark.parametrize(

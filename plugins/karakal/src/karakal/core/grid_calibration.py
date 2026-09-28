@@ -277,7 +277,6 @@ SLIDER_KEYS = (
     "debris_sensitivity",
     "geometry_sensitivity",
     "merge_sensitivity",
-    "mismatch_sensitivity",
     "disagreement_sensitivity",
 )
 _DEFECT_LABELS = ("filled_cell", "partial_filled_cell", "broken_geometry", "merged_contour", "small_artifact")

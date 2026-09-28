@@ -21,6 +21,7 @@ class ConductorZone:
     bbox: tuple[int, int, int, int]
     area_px: int
     fill: float = 1.0
+    contour: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,18 +38,8 @@ class ConductorZoneMap:
         row = int(float(y) // tile)
         col = int(float(x) // tile)
         if row < 0 or col < 0 or row >= occupied.shape[0] or col >= occupied.shape[1]:
-            in_tile = False
-        else:
-            in_tile = bool(occupied[row, col])
-        if in_tile:
-            return True
-        for zone in self.zones:
-            if zone.fill < 0.62:
-                continue
-            left, top, box_w, box_h = zone.bbox
-            if left <= float(x) < left + box_w and top <= float(y) < top + box_h:
-                return True
-        return False
+            return False
+        return bool(occupied[row, col])
 
 
 def _empty_map() -> ConductorZoneMap:
@@ -156,6 +147,19 @@ def find_conductor_zones(
         if tile_area < min_area:
             continue
         component = labels == index
+        # The visible zone is the component's span with the cell lattice punched out.
+        # A rectangular span that only overlaps the corner array becomes the L, and
+        # lattice cells stay searchable. Membership is this mask, never the raw rectangle.
+        ys, xs = np.nonzero(component)
+        if ys.size == 0:
+            continue
+        span = np.zeros_like(component)
+        span[int(ys.min()) : int(ys.max()) + 1, int(xs.min()) : int(xs.max()) + 1] = True
+        # Enclosed conductor gaps join the zone. A lattice block that stays open
+        # to the border, such as the crystal corner, remains a bite in the L.
+        component = _fill_holes(span & ~array)
+        if not np.any(component):
+            continue
         occupied |= component
         left, top, box_w, box_h = _component_bbox(component, tile=tile, width=width, height=height)
         if box_w < tile or box_h < tile:
@@ -167,6 +171,7 @@ def find_conductor_zones(
                 bbox=(left, top, box_w, box_h),
                 area_px=int(np.count_nonzero(component) * tile * tile),
                 fill=fill,
+                contour=_zone_contour(component, tile=tile, width=width, height=height),
             )
         )
     if not zones:
@@ -297,6 +302,29 @@ def _array_mask(lattice_counts: np.ndarray, grain: np.ndarray) -> np.ndarray:
     closed = closed & ~pure_grain
     filled = _fill_holes(closed)
     return filled & ~pure_grain
+
+
+def _zone_contour(component: np.ndarray, *, tile: int, width: int, height: int) -> tuple[tuple[int, int], ...]:
+    """Image-space outline of one zone. The shape follows the mask, not its bounding box."""
+
+    if cv2 is None or component.size == 0 or not np.any(component):
+        return ()
+    padded = np.zeros((component.shape[0] + 2, component.shape[1] + 2), dtype=np.uint8)
+    padded[1:-1, 1:-1] = component.astype(np.uint8)
+    found, _hierarchy = cv2.findContours(padded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not found:
+        return ()
+    contour = max(found, key=cv2.contourArea)
+    points: list[tuple[int, int]] = []
+    for point in contour.reshape(-1, 2):
+        x = int(np.clip((int(point[0]) - 1) * tile, 0, max(0, width - 1)))
+        y = int(np.clip((int(point[1]) - 1) * tile, 0, max(0, height - 1)))
+        if points and points[-1] == (x, y):
+            continue
+        points.append((x, y))
+    if len(points) >= 2 and points[0] == points[-1]:
+        points.pop()
+    return tuple(points)
 
 
 def _component_bbox(component: np.ndarray, *, tile: int, width: int, height: int) -> tuple[int, int, int, int]:

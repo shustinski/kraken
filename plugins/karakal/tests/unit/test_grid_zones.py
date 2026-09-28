@@ -49,6 +49,15 @@ def _cell_defects(result):
     ]
 
 
+def _centroid_in_zone(cell, zone) -> bool:
+    outline = tuple(getattr(zone, "outline", ()) or ())
+    if len(outline) >= 3:
+        contour = np.asarray(outline, dtype=np.int32).reshape(-1, 1, 2)
+        return cv2.pointPolygonTest(contour, (float(cell.centroid[0]), float(cell.centroid[1])), False) >= 0
+    x, y, width, height = zone.bbox
+    return x <= cell.centroid[0] < x + width and y <= cell.centroid[1] < y + height
+
+
 def test_grain_beside_a_lattice_is_one_conductor_zone() -> None:
     image = np.zeros((520, 420), dtype=np.uint8)
     _lattice(image, origin=(24, 180))
@@ -67,10 +76,12 @@ def test_grain_beside_a_lattice_is_one_conductor_zone() -> None:
     inside = [
         cell
         for cell in _cell_defects(result)
-        if cell.centroid[1] < zones[0].bbox[1] + zones[0].bbox[3] and cell.centroid[1] < 170
+        if cell.centroid[1] < 170 and any(_centroid_in_zone(cell, zone) for zone in zones)
     ]
     assert inside == []
-    assert result.damage_score < 0.05
+    assert result.zone_skipped_components > 0
+    lattice_defects = [cell for cell in _cell_defects(result) if cell.centroid[1] >= 170]
+    assert lattice_defects == []
 
 
 def test_a_broken_block_inside_the_lattice_stays_cell_defects() -> None:
@@ -102,6 +113,36 @@ def test_frame_without_a_lattice_is_a_conductor_zone() -> None:
     assert _zones(result)
     assert not any("merged_contour" in cell.reasons for cell in result.cells)
     assert result.damage_score == 0.0
+
+
+def test_l_shaped_zone_does_not_cover_the_corner_array() -> None:
+    image = np.zeros((480, 480), dtype=np.uint8)
+    _lattice(image, rows=4, cols=4, origin=(280, 280))
+    rng = np.random.default_rng(4)
+    for _ in range(140):
+        if rng.random() < 0.55:
+            x = int(rng.integers(8, 450))
+            y = int(rng.integers(8, 180))
+        else:
+            x = int(rng.integers(8, 180))
+            y = int(rng.integers(8, 450))
+        cv2.rectangle(image, (x, y), (x + int(rng.integers(2, 7)), y + int(rng.integers(2, 6))), 255, -1)
+
+    result = detect_grid_cell_anomalies(image, config=_config())
+    zones = _zones(result)
+    assert zones
+    assert result.zone_skipped_components > 0
+    array_cells = [
+        cell
+        for cell in result.cells
+        if cell.centroid[0] > 270 and cell.centroid[1] > 270 and "conductor_zone" not in cell.reasons
+    ]
+    assert len(array_cells) >= 8
+    assert not any(_centroid_in_zone(cell, zone) for cell in array_cells for zone in zones)
+    largest = max(zones, key=lambda zone: zone.bbox[2] * zone.bbox[3])
+    assert len(largest.outline) >= 6
+    contour = np.asarray(largest.outline, dtype=np.int32).reshape(-1, 1, 2)
+    assert abs(cv2.contourArea(contour)) < 0.92 * float(largest.bbox[2] * largest.bbox[3])
 
 
 def test_conductor_zone_does_not_raise_damage_score() -> None:

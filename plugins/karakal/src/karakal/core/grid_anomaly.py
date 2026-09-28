@@ -25,7 +25,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v77_conductor_zones"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v78_zone_mask_first"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -220,6 +220,7 @@ class GridCellAnalysisResult:
     uncertain_pixel_ratio: float | None = None
     border_uncertainty: float | None = None
     feature_snapshot: tuple[tuple[str, float], ...] = ()
+    outline: tuple[tuple[int, int], ...] = ()
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
         return (
@@ -241,6 +242,7 @@ class GridCellAnalysisResult:
                 self.uncertain_pixel_ratio,
                 self.border_uncertainty,
                 self.feature_snapshot,
+                self.outline,
             ),
         )
 
@@ -341,6 +343,7 @@ class GridFrameAnalysisResult:
     cell_height: int = 0
     feature_clusters: tuple[GridCellFeatureCluster, ...] = ()
     debug: GridDebugPayload | None = None
+    zone_skipped_components: int = 0
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
         return (
@@ -370,6 +373,7 @@ class GridFrameAnalysisResult:
                 self.cell_height,
                 self.feature_clusters,
                 self.debug,
+                self.zone_skipped_components,
             ),
         )
 
@@ -772,14 +776,67 @@ def detect_grid_cell_anomalies(
         contours_result = cv2.findContours(threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         contours = contours_result[0] if len(contours_result) == 2 else contours_result[1]
         hierarchy = contours_result[1] if len(contours_result) == 2 else contours_result[2]
+    zone_skipped = 0
+    zone_map = _empty_conductor_zone_map()
     with profile_stage("validation.grid.contours.features", frame_id=frame_id):
-        candidates = _extract_candidates(contours, hierarchy, threshold, gray.shape, cfg)
-    if not candidates:
+        probes = _zone_probe_candidates(contours, hierarchy, gray.shape, cfg)
+        hint_area, hint_width, hint_height = _zone_size_hint(probes, contours, threshold)
+        if hint_area > 0.0:
+            pitch_columns, pitch_rows, pitch_x, pitch_y = _lattice_grid_axes(
+                probes,
+                modal_width=hint_width,
+                modal_height=hint_height,
+                modal_area=hint_area,
+            )
+            zone_map = _conductor_zone_map(
+                probes,
+                width=int(width),
+                height=int(height),
+                columns=pitch_columns,
+                rows=pitch_rows,
+                pitch_x=pitch_x,
+                pitch_y=pitch_y,
+                modal_area=hint_area,
+                modal_width=hint_width,
+                modal_height=hint_height,
+                confidence=probability,
+                foreground=threshold,
+            )
+        skipped_box = [0]
+        candidates = _extract_candidates(
+            contours,
+            hierarchy,
+            threshold,
+            gray.shape,
+            cfg,
+            zone_map=zone_map if zone_map.zones else None,
+            zone_skip_count=skipped_box,
+        )
+        zone_skipped = int(skipped_box[0])
+    if zone_skipped:
+        _LOGGER.info(
+            "conductor zone skipped %d components frame=%s",
+            zone_skipped,
+            frame_id or frame_path or "<array>",
+        )
+    if not candidates and not zone_map.zones:
         return empty_result
 
     min_required_cells = int(cfg.min_grid_candidate_cells)
     if len(candidates) < min_required_cells:
-        return empty_result
+        if not zone_map.zones:
+            return empty_result
+        return _analyze_conductor_only_frame(
+            candidates,
+            frame_id=frame_id,
+            frame_path=frame_path,
+            width=width,
+            height=height,
+            config=cfg,
+            started=started,
+            zone_map=zone_map,
+            zone_skipped=zone_skipped,
+        )
 
     with profile_stage("validation.grid.reference_profile", frame_id=frame_id):
         if str(cfg.scoring_mode) == "calibrated" and not cfg.calibration_reference:
@@ -807,6 +864,8 @@ def detect_grid_cell_anomalies(
             height=height,
             config=cfg,
             started=started,
+            zone_map=zone_map,
+            zone_skipped=zone_skipped,
         )
     median_width = float(profile.median_width)
     median_height = float(profile.median_height)
@@ -1107,20 +1166,21 @@ def detect_grid_cell_anomalies(
                 )
             )
 
-    zone_map = _conductor_zone_map(
-        candidates,
-        width=int(width),
-        height=int(height),
-        columns=edge_columns,
-        rows=edge_rows,
-        pitch_x=edge_pitch_x,
-        pitch_y=edge_pitch_y,
-        modal_area=median_area,
-        modal_width=median_width,
-        modal_height=median_height,
-        confidence=probability,
-        foreground=threshold,
-    )
+    if not zone_map.zones:
+        zone_map = _conductor_zone_map(
+            candidates,
+            width=int(width),
+            height=int(height),
+            columns=edge_columns,
+            rows=edge_rows,
+            pitch_x=edge_pitch_x,
+            pitch_y=edge_pitch_y,
+            modal_area=median_area,
+            modal_width=median_width,
+            modal_height=median_height,
+            confidence=probability,
+            foreground=threshold,
+        )
     if zone_map.zones:
         per_cell = [cell for cell in per_cell if not zone_map.contains(cell.centroid[0], cell.centroid[1])]
     if str(cfg.scoring_mode) == "calibrated":
@@ -1136,19 +1196,7 @@ def detect_grid_cell_anomalies(
         next_contour_id = max((int(cell.contour_id or 0) for cell in per_cell), default=0) + 1
         for zone in zone_map.zones:
             per_cell.append(
-                GridCellAnalysisResult(
-                    row=len(per_cell),
-                    col=0,
-                    bbox=zone.bbox,
-                    centroid=(
-                        float(zone.bbox[0]) + 0.5 * float(zone.bbox[2]),
-                        float(zone.bbox[1]) + 0.5 * float(zone.bbox[3]),
-                    ),
-                    contour_id=next_contour_id,
-                    status="zone",
-                    score=0.0,
-                    reasons=("conductor_zone",),
-                )
+                _zone_cell_record(zone, row=len(per_cell), contour_id=next_contour_id)
             )
             next_contour_id += 1
     by_contour = {int(item.contour_id): item for item in candidates}
@@ -1228,10 +1276,11 @@ def detect_grid_cell_anomalies(
     elapsed_ms = (perf_counter() - started) * 1000.0
     if cfg.debug:
         _LOGGER.info(
-            "cell damage frame=%s contours=%d candidates=%d cells=%d normal=%d suspicious=%d broken=%d missing=%d artifact=%d score=%.4f time_ms=%.1f",
+            "cell damage frame=%s contours=%d candidates=%d zone_skipped=%d cells=%d normal=%d suspicious=%d broken=%d missing=%d artifact=%d score=%.4f time_ms=%.1f",
             frame_id or frame_path or "<array>",
             len(contours),
             len(candidates),
+            zone_skipped,
             total_expected,
             counts.get("normal", 0),
             counts.get("suspicious", 0),
@@ -1267,6 +1316,7 @@ def detect_grid_cell_anomalies(
         cell_height=int(round(median_height)),
         feature_clusters=tuple(feature_clusters),
         debug=debug_payload,
+        zone_skipped_components=int(zone_skipped),
     )
 
 
@@ -2092,8 +2142,193 @@ def _outline_side_coverages_from_tables(
     return (top, bottom, left, right)
 
 
+@dataclass(frozen=True, slots=True)
+class _ZoneProbe:
+    """Area and centroid only. Enough to place the conductor mask before the expensive features."""
+
+    contour_id: int
+    bbox: tuple[int, int, int, int]
+    centroid: tuple[float, float]
+    area: float
+
+
+def _empty_conductor_zone_map():
+    from .grid_zones import _empty_map
+
+    return _empty_map()
+
+
+def _zone_probe_candidates(contours, hierarchy, shape: tuple[int, int], config: GridDamageAnalysisConfig) -> list[_ZoneProbe]:
+    """Same admission rules as candidate extraction, without hull, perimeter, or fill features."""
+
+    if hierarchy is None:
+        hierarchy_array = np.zeros((0, 4), dtype=np.int32)
+    else:
+        hierarchy_array = np.asarray(hierarchy).reshape(-1, 4)
+    height, width = shape
+    calibrated = str(getattr(config, "scoring_mode", "legacy") or "legacy") == "calibrated"
+    min_side = 2 if calibrated else int(config.min_cell_size)
+    min_area = 2.0 if calibrated else float(config.min_contour_area)
+    probes: list[_ZoneProbe] = []
+    areas: dict[int, float] = {}
+    rects: dict[int, tuple[int, int, int, int]] = {}
+
+    def contour_area(contour_index: int) -> float:
+        cached = areas.get(contour_index)
+        if cached is None:
+            cached = float(abs(cv2.contourArea(contours[contour_index])))
+            areas[contour_index] = cached
+        return cached
+
+    def contour_rect(contour_index: int) -> tuple[int, int, int, int]:
+        cached = rects.get(contour_index)
+        if cached is None:
+            x_value, y_value, width_value, height_value = cv2.boundingRect(contours[contour_index])
+            cached = (int(x_value), int(y_value), int(width_value), int(height_value))
+            rects[contour_index] = cached
+        return cached
+
+    for index, contour in enumerate(contours):
+        parent_idx = int(hierarchy_array[index][3]) if index < len(hierarchy_array) else -1
+        x, y, w, h = contour_rect(index)
+        if w < min_side or h < min_side:
+            continue
+        if w >= max(1, width - 1) and h >= max(1, height - 1):
+            continue
+        area = contour_area(index)
+        if area < min_area:
+            continue
+        if parent_idx >= 0:
+            if parent_idx >= len(contours):
+                continue
+            _px, _py, parent_w, parent_h = contour_rect(parent_idx)
+            parent_area = max(1.0, contour_area(parent_idx))
+            axis_ratio = max(float(w) / max(1.0, float(parent_w)), float(h) / max(1.0, float(parent_h)))
+            if area >= 0.40 * parent_area or axis_ratio >= 0.70:
+                continue
+            if max(w, h) > 64 and area > max(120.0, 0.18 * parent_area):
+                continue
+        moments = cv2.moments(contour)
+        if abs(float(moments.get("m00", 0.0))) > 1e-6:
+            cx = float(moments["m10"] / moments["m00"])
+            cy = float(moments["m01"] / moments["m00"])
+        else:
+            cx = float(x + w / 2.0)
+            cy = float(y + h / 2.0)
+        probes.append(
+            _ZoneProbe(
+                contour_id=int(index),
+                bbox=(int(x), int(y), int(w), int(h)),
+                centroid=(cx, cy),
+                area=float(area),
+            )
+        )
+    return probes
+
+
+@dataclass(frozen=True, slots=True)
+class _ZoneSizeSample:
+    area: float
+    bbox: tuple[int, int, int, int]
+    solidity: float
+    extent: float
+    fill_ratio: float
+    interior_fill_ratio: float
+    center_fill_ratio: float
+    aspect_ratio: float
+
+
+def _zone_size_hint(
+    probes: list[_ZoneProbe], contours, threshold: np.ndarray
+) -> tuple[float, float, float]:
+    """Same size cluster the calibrated profile uses, without feature extraction on speckles."""
+
+    from .grid_calibration import robust_frame_reference
+
+    sized = [item for item in probes if float(item.area) >= 40.0]
+    if len(sized) < 8 or cv2 is None:
+        return 0.0, 0.0, 0.0
+    integral, _column_prefix, _row_prefix = _foreground_count_tables(threshold)
+    samples: list[_ZoneSizeSample] = []
+    for item in sized:
+        x, y, width, height = item.bbox
+        hull_area = max(1.0, float(abs(cv2.contourArea(cv2.convexHull(contours[item.contour_id])))))
+        bbox_area = float(max(1, width * height))
+        fill_ratio = float(_rect_nonzero_count(integral, x, y, width, height)) / bbox_area
+        border = max(2, int(round(min(width, height) * 0.22)))
+        if width > border * 2 + 1 and height > border * 2 + 1:
+            inner_width = width - 2 * border
+            inner_height = height - 2 * border
+            interior = float(
+                _rect_nonzero_count(integral, x + border, y + border, inner_width, inner_height)
+            ) / max(1.0, float(inner_width * inner_height))
+        else:
+            interior = fill_ratio
+        center_border = max(border + 1, int(round(min(width, height) * 0.36)))
+        if width > center_border * 2 + 1 and height > center_border * 2 + 1:
+            center_width = width - 2 * center_border
+            center_height = height - 2 * center_border
+            center = float(
+                _rect_nonzero_count(integral, x + center_border, y + center_border, center_width, center_height)
+            ) / max(1.0, float(center_width * center_height))
+        else:
+            center = interior
+        samples.append(
+            _ZoneSizeSample(
+                area=float(item.area),
+                bbox=item.bbox,
+                solidity=float(item.area) / hull_area,
+                extent=float(item.area) / bbox_area,
+                fill_ratio=fill_ratio,
+                interior_fill_ratio=interior,
+                center_fill_ratio=center,
+                aspect_ratio=float(width) / max(1.0, float(height)),
+            )
+        )
+    reference = robust_frame_reference(samples)
+    if not reference or float(reference.get("area", 0.0)) < 36.0:
+        return 0.0, 0.0, 0.0
+    return float(reference["area"]), float(reference["width"]), float(reference["height"])
+
+
+def _zone_cell_record(zone, *, row: int, contour_id: int) -> GridCellAnalysisResult:
+    outline = tuple((int(point[0]), int(point[1])) for point in getattr(zone, "contour", ()) or ())
+    centroid = _outline_centroid(outline, zone.bbox)
+    return GridCellAnalysisResult(
+        row=int(row),
+        col=0,
+        bbox=tuple(int(value) for value in zone.bbox[:4]),
+        centroid=centroid,
+        contour_id=int(contour_id),
+        status="zone",
+        score=0.0,
+        reasons=("conductor_zone",),
+        outline=outline,
+    )
+
+
+def _outline_centroid(
+    outline: tuple[tuple[int, int], ...], bbox: tuple[int, int, int, int]
+) -> tuple[float, float]:
+    if cv2 is not None and len(outline) >= 3:
+        array = np.asarray(outline, dtype=np.int32).reshape(-1, 1, 2)
+        moments = cv2.moments(array)
+        if abs(float(moments.get("m00", 0.0))) > 1e-6:
+            return (float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"]))
+    return (
+        float(bbox[0]) + 0.5 * float(bbox[2]),
+        float(bbox[1]) + 0.5 * float(bbox[3]),
+    )
+
+
 def _extract_candidates(
-    contours, hierarchy, threshold: np.ndarray, shape: tuple[int, int], config: GridDamageAnalysisConfig
+    contours,
+    hierarchy,
+    threshold: np.ndarray,
+    shape: tuple[int, int],
+    config: GridDamageAnalysisConfig,
+    zone_map=None,
+    zone_skip_count: list[int] | None = None,
 ) -> list[_ContourCandidate]:
     if hierarchy is None:
         hierarchy_array = np.zeros((0, 4), dtype=np.int32)
@@ -2152,6 +2387,10 @@ def _extract_candidates(
         else:
             cx = float(x + w / 2.0)
             cy = float(y + h / 2.0)
+        if zone_map is not None and zone_map.contains(cx, cy):
+            if zone_skip_count is not None:
+                zone_skip_count[0] += 1
+            continue
         hull = cv2.convexHull(contour)
         hull_area = max(1.0, float(abs(cv2.contourArea(hull))))
         perimeter = float(cv2.arcLength(contour, True))
@@ -2921,6 +3160,8 @@ def _analyze_conductor_only_frame(
     height: int,
     config: GridDamageAnalysisConfig,
     started: float,
+    zone_map=None,
+    zone_skipped: int = 0,
 ) -> GridFrameAnalysisResult:
     """One conductor zone per off-grid mass when the frame has no cell lattice."""
 
@@ -2943,37 +3184,27 @@ def _analyze_conductor_only_frame(
         grid_detected=False,
         per_cell_results=(),
         component_count=int(len(candidates)),
+        zone_skipped_components=int(zone_skipped),
     )
-    zone_map = _conductor_zone_map(
-        candidates,
-        width=int(width),
-        height=int(height),
-        columns=[],
-        rows=[],
-        pitch_x=None,
-        pitch_y=None,
-        modal_area=0.0,
-        modal_width=0.0,
-        modal_height=0.0,
-        confidence=None,
-        foreground=None,
-    )
+    if zone_map is None or not getattr(zone_map, "zones", ()):
+        zone_map = _conductor_zone_map(
+            candidates,
+            width=int(width),
+            height=int(height),
+            columns=[],
+            rows=[],
+            pitch_x=None,
+            pitch_y=None,
+            modal_area=0.0,
+            modal_width=0.0,
+            modal_height=0.0,
+            confidence=None,
+            foreground=None,
+        )
     enabled = set(config.enabled_reason_types or GRID_DAMAGE_REASON_TYPES)
     if not zone_map.zones or "conductor_zone" not in enabled:
         return empty
-    zones = [
-        GridCellAnalysisResult(
-            row=index,
-            col=0,
-            bbox=zone.bbox,
-            centroid=(float(zone.bbox[0]) + 0.5 * float(zone.bbox[2]), float(zone.bbox[1]) + 0.5 * float(zone.bbox[3])),
-            contour_id=index + 1,
-            status="zone",
-            score=0.0,
-            reasons=("conductor_zone",),
-        )
-        for index, zone in enumerate(zone_map.zones)
-    ]
+    zones = [_zone_cell_record(zone, row=index, contour_id=index + 1) for index, zone in enumerate(zone_map.zones)]
     _ = started
     return GridFrameAnalysisResult(
         frame_id=str(frame_id or ""),
@@ -2994,6 +3225,7 @@ def _analyze_conductor_only_frame(
         grid_detected=False,
         per_cell_results=tuple(zones),
         component_count=int(len(candidates)),
+        zone_skipped_components=int(zone_skipped),
     )
 
 

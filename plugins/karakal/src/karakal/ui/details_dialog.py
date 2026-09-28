@@ -6,7 +6,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from PyQt6.QtCore import QPointF, QRectF, QSettings, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform
+from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QTransform
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -83,6 +83,16 @@ from ..ui.ui_constants import (
 
 DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
 _LOGGER = logging.getLogger(__name__)
+
+
+def _cell_outline_polygon(cell, scale_x: float = 1.0, scale_y: float = 1.0) -> QPolygonF | None:
+    outline = tuple(getattr(cell, "outline", ()) or ())
+    if len(outline) < 3:
+        return None
+    polygon = QPolygonF()
+    for point in outline:
+        polygon.append(QPointF(float(point[0]) * scale_x, float(point[1]) * scale_y))
+    return polygon
 
 
 class _OverlayGraphicsView(QGraphicsView):
@@ -3073,14 +3083,21 @@ class ExtendFrameDetailsDialog(QDialog):
                 fill.setAlpha(70)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QBrush(fill, Qt.BrushStyle.BDiagPattern))
-                painter.drawRect(QRectF(x, y, w, h))
                 contour_color = QColor(color)
                 contour_color.setAlpha(220)
                 pen = QPen(contour_color, 2.0, Qt.PenStyle.DashLine)
                 pen.setCosmetic(True)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
+                polygon = _cell_outline_polygon(cell)
+                if polygon is None:
+                    painter.drawRect(QRectF(x, y, w, h))
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
+                else:
+                    painter.drawPolygon(polygon)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawPolygon(polygon)
                 continue
             alpha = int(np.clip(round(55.0 + 145.0 * float(getattr(cell, "score", 0.0))), 55.0, 220.0))
             fill = QColor(color)
@@ -3851,7 +3868,11 @@ class ExtendFrameDetailsDialog(QDialog):
                 fill.setAlpha(70)
                 pen = QPen(color, 2.0, Qt.PenStyle.DashLine)
                 pen.setCosmetic(True)
-                item = scene.addRect(rect, pen, QBrush(fill, Qt.BrushStyle.BDiagPattern))
+                polygon = _cell_outline_polygon(cell, scale_x, scale_y)
+                if polygon is None:
+                    item = scene.addRect(rect, pen, QBrush(fill, Qt.BrushStyle.BDiagPattern))
+                else:
+                    item = scene.addPolygon(polygon, pen, QBrush(fill, Qt.BrushStyle.BDiagPattern))
             else:
                 pen = QPen(color, 3.0)
                 pen.setCosmetic(True)

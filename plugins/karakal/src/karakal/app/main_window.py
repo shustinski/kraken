@@ -596,6 +596,8 @@ class KarakalWidget(QWidget):
                 checkbox.setEnabled(False)
                 checkbox.setChecked(False)
                 checkbox.setToolTip(self._t("grid_error.class_conflict_unavailable"))
+            if str(error_type) == "conductor_zone":
+                checkbox.setToolTip(self._t("grid_error.conductor_zone_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
         self.grid_layer_compute_checks: dict[str, QCheckBox] = {}
         for layer_key, label_key in (

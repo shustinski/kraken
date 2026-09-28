@@ -24,6 +24,7 @@ EXPECTED_ERROR_TYPES = (
     "broken_geometry",
     "merged_contour",
     "class_conflict",
+    "conductor_zone",
 )
 
 
@@ -141,7 +142,7 @@ def test_old_settings_drop_removed_reasons_and_comparison_layer() -> None:
     types = KarakalPresenter._normalize_grid_error_types(
         ["filled_cell", "geometry_mismatch", "low_confidence_cell", "class_conflict"]
     )
-    assert types == ("filled_cell", "class_conflict")
+    assert types == ("filled_cell", "class_conflict", "conductor_zone")
     assert KarakalPresenter._normalize_grid_layers(["confidence", "comparison", "binary"]) == ("confidence", "binary")
     softer = KarakalPresenter._grid_damage_config_from_payload({"disagreement_sensitivity": 0})
     stricter = KarakalPresenter._grid_damage_config_from_payload({"disagreement_sensitivity": 100})

@@ -102,6 +102,7 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.broken_geometry", "broken_geometry"),
     ("grid_error.merged_contour", "merged_contour"),
     ("grid_error.class_conflict", "class_conflict"),
+    ("grid_error.conductor_zone", "conductor_zone"),
 )
 GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "filled_cell": "#eb4052",
@@ -111,6 +112,7 @@ GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "merged_contour": "#a855f7",
     "edge_clipped_cell": "#facc15",
     "class_conflict": "#e11d48",
+    "conductor_zone": "#64748b",
 }
 
 

@@ -4883,6 +4883,12 @@ class KarakalPresenter(QObject):
         record = getattr(dialog, "_record", None)
         if state is None or record is None:
             return
+        stored = self._reusable_grid_matrix_result(state, record)
+        if stored is not None:
+            apply = getattr(dialog, "apply_grid_inspection_preview", None)
+            if callable(apply):
+                apply(stored, tuple(getattr(stored, "per_cell_results", ()) or ()))
+                return
         self._start_grid_details_analyze(dialog, record, state)
 
     def _with_stored_class_conflict(self, result, state, frame_key: str):
@@ -5547,6 +5553,9 @@ class KarakalPresenter(QObject):
         confirmed = getattr(self, "_grid_calibration_confirmed", None)
         if confirmed is not None and hasattr(confirmed, "fingerprint"):
             self._grid_analyzed_fingerprint = confirmed.fingerprint()
+        from ..core.grid_anomaly import GRID_DAMAGE_ALGORITHM_VERSION
+
+        state.grid_inspection_algorithm_version = GRID_DAMAGE_ALGORITHM_VERSION
         self._update_grid_calibration_status()
         state.percentile_cache.clear()
         state.repeated_percentile_cache.clear()
@@ -6102,6 +6111,32 @@ class KarakalPresenter(QObject):
             return source_path
         return KarakalPresenter._grid_inspection_source_path_for_record(record)
 
+    def _reusable_grid_matrix_result(self, state, record):
+        """Return the matrix result when config, calibration, and algorithm version still match."""
+
+        from ..core.grid_anomaly import GRID_DAMAGE_ALGORITHM_VERSION
+
+        if state is None or record is None:
+            return None
+        if str(getattr(state, "grid_inspection_algorithm_version", "") or "") != GRID_DAMAGE_ALGORITHM_VERSION:
+            return None
+        stored_config = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
+        live = self._grid_inspection_config_payload()
+        for key in (*GRID_INSPECTION_TUNING_KEYS, "calibration_fingerprint"):
+            if stored_config.get(key) != live.get(key):
+                return None
+        stored_types = tuple(str(item) for item in (stored_config.get("enabled_error_types") or ()))
+        live_types = tuple(str(item) for item in (live.get("enabled_error_types") or ()))
+        if stored_types != live_types:
+            return None
+        frame_key = str(getattr(record, "key", "") or "")
+        unified = (getattr(state, "grid_inspection_payload_by_key", {}) or {}).get(frame_key)
+        binary = ((getattr(state, "grid_inspection_payloads_by_layer", {}) or {}).get("binary") or {}).get(frame_key)
+        result = unified if isinstance(unified, GridFrameAnalysisResult) else binary
+        if not isinstance(result, GridFrameAnalysisResult):
+            return None
+        return self._with_stored_class_conflict(result, state, frame_key)
+
     def _open_record_details(
         self, record: FrameRecord, state: ExtendMatrixTabState, grid_focus: dict[str, object] | None = None
     ) -> None:
@@ -6132,8 +6167,10 @@ class KarakalPresenter(QObject):
         pending_grid_analyze = False
         if is_grid_inspection_details:
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
-            pending_grid_analyze = True
-            grid_detail_message = self._t("grid_tuning.preview_loading")
+            grid_inspection_result = self._reusable_grid_matrix_result(state, record)
+            if grid_inspection_result is None:
+                pending_grid_analyze = True
+                grid_detail_message = self._t("grid_tuning.preview_loading")
         allowed_result_kinds = None
         if is_grid_inspection_details:
             allowed_result_kinds = ("grid_cell_defects",)

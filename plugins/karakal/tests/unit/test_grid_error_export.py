@@ -123,3 +123,72 @@ def test_bw_export_matches_the_error_mask_and_skips_zones(tmp_path: Path) -> Non
     )
     assert skipped.written == ()
     assert not (cyrillic / "grid_errors_all_bw_skip" / "1" / "binary" / "TEST_DIRECT_0014.jpg").exists()
+
+
+def _export_frames(count: int) -> list[GridErrorExportFrame]:
+    result = _frame((_cell(("broken_geometry",), (2, 2, 4, 4)),))
+    return [
+        GridErrorExportFrame(file_name=f"frame_{index:04d}.png", mask_name="model", layer_name="binary", result=result)
+        for index in range(count)
+    ]
+
+
+def test_export_writes_while_drawing_and_keeps_few_images_alive(tmp_path, monkeypatch) -> None:
+    # Drawing every frame first and writing at the end held one full image per frame.
+    import threading
+    import time
+
+    from karakal.core import exports, grid_error_export
+
+    monkeypatch.setenv(exports.EXPORT_WORKER_ENV, "2")
+    lock = threading.Lock()
+    state = {"alive": 0, "peak": 0, "written": 0}
+    real_render = grid_error_export.render_grid_error_image
+    real_write = grid_error_export._write_image
+
+    def render(*args, **kwargs):
+        with lock:
+            state["alive"] += 1
+            state["peak"] = max(state["peak"], state["alive"])
+        return real_render(*args, **kwargs)
+
+    def write(path, image, image_format):
+        time.sleep(0.01)
+        real_write(path, image, image_format)
+        with lock:
+            state["alive"] -= 1
+            state["written"] += 1
+
+    monkeypatch.setattr(grid_error_export, "render_grid_error_image", render)
+    monkeypatch.setattr(grid_error_export, "_write_image", write)
+    report = export_grid_cell_defect_frames(_export_frames(40), tmp_path, ("broken_geometry",), image_format="png")
+
+    assert state["written"] == 40 and len(report.written) == 40
+    assert all(path.is_file() for path in report.written)
+    # At most two queued images per writer plus the one being drawn.
+    assert state["peak"] <= 2 * 2 + 2
+
+
+def test_export_cancel_stops_writing_and_reports_only_written_files(tmp_path, monkeypatch) -> None:
+    from karakal.core import exports
+
+    monkeypatch.setenv(exports.EXPORT_WORKER_ENV, "2")
+    seen: list[int] = []
+
+    def progress(current, _total, _label) -> None:
+        seen.append(current)
+
+    report = export_grid_cell_defect_frames(
+        _export_frames(30),
+        tmp_path,
+        ("broken_geometry",),
+        image_format="png",
+        progress=progress,
+        cancelled=lambda: len(seen) >= 10,
+    )
+
+    assert report.cancelled
+    assert 0 < len(report.written) < 30
+    assert all(path.is_file() for path in report.written)
+    on_disk = sorted(tmp_path.rglob("*.png"))
+    assert len(on_disk) == len(report.written)

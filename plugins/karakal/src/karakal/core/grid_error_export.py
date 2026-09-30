@@ -4,7 +4,8 @@ from __future__ import annotations
 import csv
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -234,74 +235,84 @@ def export_grid_cell_defect_frames(
     skipped_empty: list[str] = []
     missing: list[str] = []
     summary_rows: list[dict[str, object]] = []
-    pending_writes: list[tuple[Path, np.ndarray]] = []
     total = max(1, len(frames))
-    for index, frame in enumerate(frames, start=1):
-        if cancelled is not None and cancelled():
-            return GridErrorExportReport(
-                output_dir=output_dir,
-                written=tuple(written),
-                skipped_empty=tuple(skipped_empty),
-                missing_results=tuple(missing),
-                cancelled=True,
+    # Each frame is written right after it is drawn. Holding every drawn frame
+    # until the end cost a full-size image per frame (tens of GB on big runs).
+    worker_count = _export_worker_count(None, len(frames))
+    in_flight: deque[Future] = deque()
+    pool = ThreadPoolExecutor(max_workers=worker_count)
+    try:
+        for index, frame in enumerate(frames, start=1):
+            if cancelled is not None and cancelled():
+                while in_flight:
+                    in_flight.popleft().result()
+                return GridErrorExportReport(
+                    output_dir=output_dir,
+                    written=tuple(written),
+                    skipped_empty=tuple(skipped_empty),
+                    missing_results=tuple(missing),
+                    cancelled=True,
+                )
+            label = f"{frame.mask_name}/{frame.layer_name}/{frame.file_name}"
+            if progress is not None:
+                progress(index - 1, total, label)
+            if frame.result is None:
+                missing.append(label)
+                summary_rows.append(
+                    {
+                        "frame": frame.file_name,
+                        "mask": frame.mask_name,
+                        "layer": frame.layer_name,
+                        "status": "no_result",
+                        **{item: 0 for item in selected},
+                    }
+                )
+                continue
+            counts = reason_counts(frame.result, selected)
+            has_errors = any(counts.values())
+            if skip_empty and not has_errors:
+                skipped_empty.append(label)
+                summary_rows.append(
+                    {
+                        "frame": frame.file_name,
+                        "mask": frame.mask_name,
+                        "layer": frame.layer_name,
+                        "status": "skipped_empty",
+                        **counts,
+                    }
+                )
+                continue
+            image = render_grid_error_image(
+                frame.result,
+                selected,
+                color_mode=render_mode,
+                single_color=paint_color,
             )
-        label = f"{frame.mask_name}/{frame.layer_name}/{frame.file_name}"
-        if progress is not None:
-            progress(index - 1, total, label)
-        if frame.result is None:
-            missing.append(label)
+            fmt = str(image_format or "jpg").strip().lower().lstrip(".")
+            if fmt == "jpeg":
+                fmt = "jpg"
+            if fmt not in {"jpg", "png", "bmp", "tif", "tiff"}:
+                fmt = "jpg"
+            extension = ".tiff" if fmt in {"tif", "tiff"} else f".{fmt}"
+            destination = (output_dir / frame.mask_name / frame.layer_name / frame.file_name).with_suffix(extension)
+            in_flight.append(pool.submit(_write_image, destination, image, image_format))
+            written.append(destination)
+            del image
+            while len(in_flight) > 2 * worker_count:
+                in_flight.popleft().result()
             summary_rows.append(
                 {
                     "frame": frame.file_name,
                     "mask": frame.mask_name,
                     "layer": frame.layer_name,
-                    "status": "no_result",
-                    **{item: 0 for item in selected},
-                }
-            )
-            continue
-        counts = reason_counts(frame.result, selected)
-        has_errors = any(counts.values())
-        if skip_empty and not has_errors:
-            skipped_empty.append(label)
-            summary_rows.append(
-                {
-                    "frame": frame.file_name,
-                    "mask": frame.mask_name,
-                    "layer": frame.layer_name,
-                    "status": "skipped_empty",
+                    "status": "written",
                     **counts,
                 }
             )
-            continue
-        image = render_grid_error_image(
-            frame.result,
-            selected,
-            color_mode=render_mode,
-            single_color=paint_color,
-        )
-        fmt = str(image_format or "jpg").strip().lower().lstrip(".")
-        if fmt == "jpeg":
-            fmt = "jpg"
-        if fmt not in {"jpg", "png", "bmp", "tif", "tiff"}:
-            fmt = "jpg"
-        extension = ".tiff" if fmt in {"tif", "tiff"} else f".{fmt}"
-        destination = (output_dir / frame.mask_name / frame.layer_name / frame.file_name).with_suffix(extension)
-        pending_writes.append((destination, image))
-        written.append(destination)
-        summary_rows.append(
-            {
-                "frame": frame.file_name,
-                "mask": frame.mask_name,
-                "layer": frame.layer_name,
-                "status": "written",
-                **counts,
-            }
-        )
-    worker_count = _export_worker_count(None, len(pending_writes))
-    if pending_writes:
-        with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            list(pool.map(lambda item: _write_image(item[0], item[1], image_format), pending_writes))
+        while in_flight:
+            in_flight.popleft().result()
+    finally:
+        pool.shutdown(wait=True)
     if progress is not None:
         progress(total, total, "")
     colors = dict(type_colors or {})

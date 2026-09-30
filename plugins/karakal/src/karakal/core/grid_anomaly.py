@@ -26,11 +26,17 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v87_confidence_fill_on_binary"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v88_leftover_debris"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
 _grid_damage_cache_last_trim = 0.0
+# JPEG crumbs are a few pixels; real debris is a painted piece at least this large.
+DEBRIS_MIN_AREA_PX = 24.0
+# Score of a piece that is debris only because no other filter claimed it.
+LEFTOVER_DEBRIS_SCORE = 0.75
+# feature_snapshot flag on such pieces: they are not cells and skip confidence fill.
+LEFTOVER_DEBRIS_FEATURE = "leftover_debris"
 _LOGGER = logging.getLogger(__name__)
 GRID_DAMAGE_REASON_TYPES = (
     "filled_cell",
@@ -1154,6 +1160,8 @@ def detect_grid_cell_anomalies(
                     confidence_map=probability,
                 )
             score, reasons = _filter_disabled_grid_reasons(score, reasons, cfg)
+            detached_edge = False
+            leftover_debris = False
             if reasons and set(reasons) <= {"small_artifact", "broken_geometry", "edge_clipped_cell"} and _is_detached_confidence_cell_edge(
                 candidate,
                 candidates,
@@ -1163,6 +1171,7 @@ def detect_grid_cell_anomalies(
                 config=cfg,
             ):
                 score, reasons = 0.0, ()
+                detached_edge = True
             is_bad = _is_bad_grid_cell(score, reasons, cfg)
             if calibrated:
                 is_cell_like = bool(
@@ -1179,6 +1188,34 @@ def detect_grid_cell_anomalies(
                     median_area=median_area,
                     config=cfg,
                 )
+            if (
+                calibrated
+                and not is_bad
+                and not is_cell_like
+                and not detached_edge
+                and float(candidate.area) >= DEBRIS_MIN_AREA_PX
+                # A frame-cut piece on a grid row/column is a clipped cell, not debris.
+                and not (candidate.touches_border and (on_column or on_row))
+            ):
+                # No filter claimed a piece that is not a cell: scratches, blobs larger
+                # than merged cells, pieces off the lattice. They are debris, not skipped,
+                # unless an operator "normal" example sits closer than a debris one.
+                leftover = apply_example_correction(
+                    ("small_artifact",),
+                    {"debris": float(scores.debris)},
+                    {"debris": slider_threshold(cfg.debris_sensitivity)},
+                    prepared_features[candidate_index],
+                    frame_examples,
+                    example_influence=float(cfg.example_influence),
+                    distance_row=None if example_distances is None else example_distances[candidate_index],
+                )
+                score, reasons = _filter_disabled_grid_reasons(
+                    max(LEFTOVER_DEBRIS_SCORE, float(scores.debris)),
+                    tuple(reason for reason in leftover if reason == "small_artifact"),
+                    cfg,
+                )
+                is_bad = bool(reasons)
+                leftover_debris = is_bad
             if not is_bad and not is_cell_like:
                 continue
             if not calibrated and not is_bad and _is_ignored_fragment(
@@ -1225,6 +1262,7 @@ def detect_grid_cell_anomalies(
                             ("debris_score", float(scores.debris)),
                             ("edge_score", float(scores.edge)),
                         )
+                        + ((LEFTOVER_DEBRIS_FEATURE, 1.0),) * int(leftover_debris)
                         if calibrated
                         else (
                             ("width", float(candidate.bbox[2])),
@@ -1760,7 +1798,13 @@ def score_confidence_fill_on_binary_result(
     min_drop_levels = 5.0
     mad_k = 3.0
 
-    cells = list(binary_result.per_cell_results or ())
+    # Pieces marked debris only because no filter claimed them are not cells: a dark
+    # blob must not read as a filled cell or move the interior norm. The binary layer keeps them.
+    cells = [
+        cell
+        for cell in (binary_result.per_cell_results or ())
+        if LEFTOVER_DEBRIS_FEATURE not in dict(cell.feature_snapshot or ())
+    ]
     frame_w = int(binary_result.image_width)
     frame_h = int(binary_result.image_height)
     interior_means: list[float] = []
@@ -3167,7 +3211,7 @@ def _gate_calibrated_reasons(
     if "edge_clipped_cell" in found and (smallest < 0.35 or float(area) < 24.0):
         found = [reason for reason in found if reason != "edge_clipped_cell"]
     # JPEG crumbs are a few pixels. Real debris in the tests is a small painted block.
-    if "small_artifact" in found and float(area) < 24.0:
+    if "small_artifact" in found and float(area) < DEBRIS_MIN_AREA_PX:
         found = [reason for reason in found if reason != "small_artifact"]
     return tuple(dict.fromkeys(found))
 

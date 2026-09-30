@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 import shutil
 from bisect import bisect_right
@@ -67,6 +69,21 @@ from ..core.analysis_profiles import (
     analysis_profile_definition,
     build_standalone_preflight,
 )
+from ..core.features import (
+    show_class_conflict,
+    show_confidence_defects,
+    show_grid_examples,
+    show_other_mode_export,
+    show_pair_matrices,
+    show_reference_frame,
+    tester_build,
+)
+from ..core.grid_anomaly import GRID_DAMAGE_ALGORITHM_VERSION
+from ..core.grid_error_export import (
+    GridErrorExportFrame,
+    export_grid_cell_defect_frames,
+    export_type_slug,
+)
 from ..core.backend_constants import (
     BCE_SCORE_CAP,
 )
@@ -86,6 +103,7 @@ from ..core.grid_anomaly import (
     GridDamageAnalysisConfig,
     GridFrameAnalysisResult,
     build_grid_cell_reference_profile_path,
+    estimate_run_cell_reference_profile,
 )
 from ..core.image_formats import SUPPORTED_IMAGE_EXTENSION_SET
 from ..core.project_profile import AnalysisSourceBinding, KarakalAnalysisProfileV1, SourceBindingKind
@@ -114,6 +132,7 @@ from ..core.workers import (
     DerivedConflictGridInspectionWorker,
     FrameIndexWorker,
     GridInspectionWorker,
+    MultiModelGridInspectionWorker,
     PairedGridInspectionWorker,
     WorkerBase,
 )
@@ -242,6 +261,8 @@ class KarakalPresenter(QObject):
         except Exception:
             _LOGGER.warning("Ignoring unreadable grid calibration", exc_info=True)
             stored = GridCalibration()
+        if tester_build():
+            stored = GridCalibration()
         self._grid_calibration_confirmed = stored
         self._grid_calibration = stored
         self._class_conflict_user_wants = True
@@ -319,6 +340,10 @@ class KarakalPresenter(QObject):
         checks = getattr(self, "grid_layer_compute_checks", {}) or {}
         selected: list[str] = []
         for layer_key in keys:
+            if layer_key == "confidence" and not show_confidence_defects():
+                continue
+            if layer_key == "derived_conflict" and not show_class_conflict():
+                continue
             checkbox = checks.get(str(layer_key)) if isinstance(checks, dict) else None
             if checkbox is None:
                 selected.append(str(layer_key))
@@ -347,7 +372,8 @@ class KarakalPresenter(QObject):
         checks = getattr(self, "grid_layer_compute_checks", {}) or {}
         selected = self._selected_grid_compute_layers()
         if not selected and isinstance(checks, dict):
-            fallback = checks.get("confidence") or next(iter(checks.values()), None)
+            fallback = checks.get("binary") if not show_confidence_defects() else None
+            fallback = fallback or checks.get("confidence") or next(iter(checks.values()), None)
             if fallback is not None:
                 blocker = QSignalBlocker(fallback)
                 fallback.setChecked(True)
@@ -427,6 +453,16 @@ class KarakalPresenter(QObject):
         payload["requested_layers"] = list(self._selected_grid_compute_layers())
         payload["display_layer"] = "unified"
         payload["tuning_preset"] = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
+        if tester_build():
+            payload["enabled_error_types"] = [
+                item
+                for item in payload["enabled_error_types"]
+                if str(item) not in {"class_conflict", "conductor_zone"}
+            ]
+            payload["requested_layers"] = [
+                item for item in payload["requested_layers"] if str(item) != "derived_conflict"
+            ] or ["binary", "confidence"]
+            return payload
         calibration = getattr(self, "_grid_calibration_confirmed", None)
         self._put_calibration_in_payload(payload, calibration)
         return payload
@@ -575,6 +611,182 @@ class KarakalPresenter(QObject):
         specs = tuple(state.build_result.model_specs or ())
         return str(specs[0].model_id) if specs else None
 
+    # --- Matrix layer selector (per-model / all-layers) ---------------------
+
+    def _grid_inspection_matrix_selection(self, state: ExtendMatrixTabState | None = None) -> str:
+        """Return the active matrix layer selection (model id or '__all__')."""
+
+        state = state or self._current_tab_state()
+        if state is None:
+            return ""
+        return str(getattr(state, "grid_inspection_matrix_selection", "") or "")
+
+    def _sync_grid_inspection_matrix_selector(self, state: ExtendMatrixTabState | None = None) -> None:
+        combo = getattr(self._view, "grid_matrix_layer_combo", None)
+        row = getattr(self._view, "_grid_matrix_layer_row", None)
+        if combo is None:
+            return
+        state = state or self._current_tab_state()
+        specs = tuple(self._checked_model_specs())
+        model_count = len(specs)
+        current_selection = self._grid_inspection_matrix_selection(state) if state is not None else ""
+        blocker = QSignalBlocker(combo)
+        combo.clear()
+        if model_count == 0 and state is not None:
+            # Fall back to build_result model specs when the folder list is not populated (tests).
+            for spec in getattr(state.build_result, "model_specs", ()) or ():
+                display = str(getattr(spec, "display_name", "") or "")
+                model_id = str(getattr(spec, "model_id", "") or "")
+                if not model_id:
+                    continue
+                combo.addItem(display or model_id, model_id)
+                model_count = combo.count()
+        else:
+            for spec in specs:
+                display = str(getattr(spec, "display_name", "") or "")
+                model_id = str(getattr(spec, "model_id", "") or "")
+                if not model_id:
+                    continue
+                folder_leaf = ""
+                try:
+                    if spec.mask_folder is not None:
+                        folder_leaf = Path(spec.mask_folder).name
+                except Exception:
+                    folder_leaf = ""
+                same_display = sum(
+                    1
+                    for other in specs
+                    if str(getattr(other, "display_name", "") or "") == display
+                )
+                label = display or model_id
+                if folder_leaf and same_display >= 2:
+                    # Disambiguate identical display names by folder leaf.
+                    label = f"{label} ({folder_leaf})"
+                combo.addItem(label, model_id)
+        if combo.count() >= 2 or model_count >= 2:
+            combo.addItem(self._t("grid_matrix_layer.all_layers"), self.ALL_LAYERS_SELECTION_KEY)
+        target_selection = current_selection
+        if target_selection:
+            index = combo.findData(target_selection)
+            if index < 0:
+                target_selection = ""
+        if not target_selection:
+            if combo.count() > 1:
+                # Default to «Все слои» when there is more than one model checked.
+                index = combo.findData(self.ALL_LAYERS_SELECTION_KEY)
+                target_selection = self.ALL_LAYERS_SELECTION_KEY if index >= 0 else str(combo.itemData(0) or "")
+            elif combo.count() == 1:
+                target_selection = str(combo.itemData(0) or "")
+        if target_selection:
+            index = combo.findData(target_selection)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        del blocker
+        if row is not None:
+            row.setVisible(combo.count() >= 2)
+        if state is not None and target_selection:
+            state.grid_inspection_matrix_selection = target_selection
+
+    def _retranslate_grid_matrix_layer_combo(self) -> None:
+        combo = getattr(self._view, "grid_matrix_layer_combo", None)
+        if combo is None:
+            return
+        for index in range(combo.count()):
+            if str(combo.itemData(index) or "") == self.ALL_LAYERS_SELECTION_KEY:
+                blocker = QSignalBlocker(combo)
+                combo.setItemText(index, self._t("grid_matrix_layer.all_layers"))
+                del blocker
+                break
+
+    def _on_grid_matrix_layer_selection_changed(self, *_args) -> None:
+        combo = getattr(self._view, "grid_matrix_layer_combo", None)
+        if combo is None:
+            return
+        state = self._current_tab_state()
+        if state is None:
+            return
+        selection = str(combo.currentData() or "")
+        if not selection or selection == getattr(state, "grid_inspection_matrix_selection", ""):
+            return
+        state.grid_inspection_matrix_selection = selection
+        if selection != self.ALL_LAYERS_SELECTION_KEY:
+            state.grid_inspection_model_id = selection
+            self._set_details_preferred_model_id(selection)
+        else:
+            self._set_details_preferred_model_id(state.grid_inspection_model_id)
+        # Layer switch must be instant: no worker, just re-project stored payloads.
+        self._apply_grid_inspection_active_layer_view(state, streaming=False)
+
+    def _apply_grid_inspection_active_layer_view(
+        self,
+        state: ExtendMatrixTabState,
+        *,
+        streaming: bool,
+    ) -> None:
+        """Re-project stored per-model payloads onto ``grid_inspection_payloads_by_layer``.
+
+        This never triggers a worker.
+        """
+
+        selection = self._grid_inspection_matrix_selection(state)
+        if not selection:
+            # Legacy single-model path: nothing to project.
+            return
+        by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
+        layers: dict[str, dict[str, object]] = {key: {} for key in self._grid_inspection_layer_keys()}
+        if selection == self.ALL_LAYERS_SELECTION_KEY:
+            merged_confidence = self._build_all_layers_payloads(state, layer="confidence")
+            merged_binary = self._build_all_layers_payloads(state, layer="binary")
+            if merged_confidence:
+                layers["confidence"] = dict(merged_confidence)
+            if merged_binary:
+                layers["binary"] = dict(merged_binary)
+            elif merged_confidence:
+                # Some models only produced confidence: fall back so heat map still lights.
+                layers["binary"] = dict(merged_confidence)
+        else:
+            stored = by_model.get(selection) or {}
+            for layer_key in self._grid_inspection_layer_keys():
+                payload = stored.get(layer_key)
+                if payload:
+                    layers[layer_key] = dict(payload)
+        state.grid_inspection_payloads_by_layer = layers
+        active_layer = str(getattr(state, "grid_inspection_layer", "") or "")
+        available_layers = [key for key in self._grid_inspection_layer_keys() if layers.get(key)]
+        if not available_layers:
+            available_layers = ["binary"]
+        if active_layer not in available_layers:
+            active_layer = available_layers[0]
+        state.grid_inspection_layer = active_layer
+        state.grid_inspection_payload_by_key = dict(layers.get(active_layer, {}) or {})
+        state.grid_inspection_results_ready = any(bool(value) for value in layers.values())
+        self._sync_grid_inspection_layer_tabs(state)
+        views = self._grid_inspection_views()
+        unified_view = views.get("unified")
+        unified_payloads = {
+            str(record_key): merged
+            for record_key in {key for layer in layers.values() for key in layer}
+            if (
+                merged := self._merge_grid_layer_results(
+                    {layer_key: layers[layer_key].get(record_key) for layer_key in layers}
+                )
+            )
+            is not None
+        }
+        if unified_view is not None:
+            unified_view.set_grid_inspection_payloads(unified_payloads, enabled=True)
+        for layer_key, view in views.items():
+            if layer_key == "unified":
+                continue
+            view.set_grid_inspection_payloads(layers.get(layer_key, {}), enabled=True)
+        if not streaming:
+            for view in views.values():
+                view.finalize_grid_inspection_payloads()
+        if self._current_app_mode() == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
+            self.grid_inspection_matrix_view.viewport().update()
+        self._refresh_grid_inspection_errors_panel(state)
+        self._refresh_open_details_class_conflict(state)
+
     def _on_grid_inspection_layer_changed(self, layer_key: str) -> None:
         state = self._current_tab_state()
         if state is None:
@@ -635,12 +847,16 @@ class KarakalPresenter(QObject):
             available["binary"] = ("binary" in requested) and has_binary
             model_count = len(tuple(state.build_result.model_specs or ()))
             available["derived_conflict"] = ("derived_conflict" in requested) and model_count >= 2
+        if not show_class_conflict():
+            available["derived_conflict"] = False
         if not any(available.values()):
             available["confidence"] = True
         for index, key in enumerate(keys):
             if index >= tabs.count():
                 break
             tabs.setTabEnabled(index, bool(available.get(key, False)))
+            if not show_class_conflict() and key == "derived_conflict":
+                tabs.setTabVisible(index, False)
         current_key = (
             str(getattr(state, "grid_inspection_layer", "confidence") or "confidence")
             if state is not None
@@ -1044,15 +1260,19 @@ class KarakalPresenter(QObject):
             self._grid_inspection_tuning_group.setVisible(self._current_app_mode() == "grid_inspection")
         self._sync_grid_reference_controls(state if is_grid_inspection_mode else None)
         if hasattr(self, "pair_matrix_group"):
-            show_pairs = (
-                context.analysis_mode == INTER_MODEL_ANALYSIS_MODE
-                and self._analysis_profile == AnalysisProfileKind.MODEL_COMPARISON
-            ) or (
-                self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS
-                and len(self._checked_model_specs()) >= 2
+            show_pairs = show_pair_matrices() and (
+                (
+                    context.analysis_mode == INTER_MODEL_ANALYSIS_MODE
+                    and self._analysis_profile == AnalysisProfileKind.MODEL_COMPARISON
+                )
+                or (
+                    self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS
+                    and len(self._checked_model_specs()) >= 2
+                )
             )
             self.pair_matrix_group.setVisible(show_pairs)
-            self._refresh_pair_matrix()
+            if show_pairs:
+                self._refresh_pair_matrix()
 
     def _checked_model_specs(self) -> tuple[ModelSpec, ...]:
         specs: list[ModelSpec] = []
@@ -1065,7 +1285,7 @@ class KarakalPresenter(QObject):
             label = str(item.data(FOLDER_LABEL_ROLE) or folder_path.name)
             confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip()
             confidence_folder = Path(confidence_path_text) if confidence_path_text else None
-            model_id = re.sub(r"[^a-zA-Z0-9_]+", "_", label.strip().lower()).strip("_") or f"model_{row + 1}"
+            model_id = self._stable_model_id_for_folders(folder_path, confidence_folder) or f"model_{row + 1}"
             specs.append(
                 ModelSpec(
                     model_id=model_id,
@@ -1076,6 +1296,22 @@ class KarakalPresenter(QObject):
                 )
             )
         return tuple(specs)
+
+    def _stable_model_id_for_folders(self, mask_folder: Path | None, confidence_folder: Path | None = None) -> str:
+        """Stable id from absolute folder paths (not from editable labels)."""
+
+        seed = ""
+        if mask_folder is not None:
+            seed = str(Path(mask_folder).resolve())
+        elif confidence_folder is not None:
+            seed = str(Path(confidence_folder).resolve())
+        seed = seed.strip().lower().replace("\\", "/")
+        if not seed:
+            return ""
+        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+        leaf = Path(seed).name
+        leaf = re.sub(r"[^a-zA-Z0-9_]+", "_", leaf).strip("_") or "model"
+        return f"{leaf}_{digest}"
 
     def _analysis_preflight_signature_value(self) -> tuple[object, ...]:
         specs = self._checked_model_specs()
@@ -1526,6 +1762,13 @@ class KarakalPresenter(QObject):
         if spec is not None:
             return str(spec.model_id)
         path_text = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
+        confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip()
+        model_id = self._stable_model_id_for_folders(
+            Path(path_text) if path_text else None,
+            Path(confidence_path_text) if confidence_path_text else None,
+        )
+        if model_id:
+            return model_id
         label_value = item.data(FOLDER_LABEL_ROLE)
         label_text = str(label_value or (Path(path_text).name if path_text else "")).strip()
         if not label_text and path_text:
@@ -1624,7 +1867,17 @@ class KarakalPresenter(QObject):
         if self._current_app_mode() == "grid_inspection":
             state.grid_inspection_model_id = str(model_id)
             self._set_details_preferred_model_id(str(model_id))
-            self._start_compute_grid_inspection(state)
+            # Match the folder click to the matrix switcher when the model is known;
+            # never recompute on a folder click in this mode.
+            combo = getattr(self._view, "grid_matrix_layer_combo", None)
+            if combo is not None:
+                index = combo.findData(str(model_id))
+                if index >= 0 and combo.currentIndex() != index:
+                    combo.setCurrentIndex(index)
+                elif index >= 0:
+                    # currentIndex unchanged; still make sure the stored selection matches.
+                    state.grid_inspection_matrix_selection = str(model_id)
+                    self._apply_grid_inspection_active_layer_view(state, streaming=False)
             return
         self._apply_global_analysis_context_to_state(state)
         preferred_metric_key = self._preferred_metric_key_for_folder_item_in_current_mode(state, item, model_id)
@@ -1861,6 +2114,7 @@ class KarakalPresenter(QObject):
         self._folder_check_guard = False
         self._refresh_folder_rows()
         self._refresh_pair_matrix()
+        self._sync_grid_inspection_matrix_selector(self._current_tab_state())
         self._sync_action_buttons()
 
     def _set_folder_item_label(self, item: QListWidgetItem, text: str) -> None:
@@ -3947,7 +4201,14 @@ class KarakalPresenter(QObject):
         self._sync_action_buttons()
 
     def _current_app_mode(self) -> str:
-        return str(self.app_mode_combo.currentData() or "validation")
+        combo = getattr(self, "app_mode_combo", None)
+        if combo is None:
+            return "validation"
+        try:
+            return str(combo.currentData() or "validation")
+        except RuntimeError:
+            # Widget already deleted (tests closing the window while a QTimer is pending).
+            return "validation"
 
     def _on_build_requested(self) -> None:
         state = self._current_tab_state()
@@ -3975,12 +4236,20 @@ class KarakalPresenter(QObject):
         self._sync_action_buttons()
 
     def _refresh_grid_inspection_mode_view_deferred(self, generation: int) -> None:
-        if generation != self._app_mode_refresh_generation or self._current_app_mode() != "grid_inspection":
+        if generation != self._app_mode_refresh_generation:
             return
         try:
+            if self._current_app_mode() != "grid_inspection":
+                return
             self._refresh_grid_inspection_mode_view()
+        except RuntimeError:
+            # Parent window torn down before the deferred refresh runs.
+            return
         except Exception as error:
-            QMessageBox.critical(self._view, self._t("dialog.warning_title"), str(error))
+            try:
+                QMessageBox.critical(self._view, self._t("dialog.warning_title"), str(error))
+            except RuntimeError:
+                return
 
     def _refresh_grid_inspection_mode_view(self) -> None:
         if not hasattr(self, "grid_inspection_matrix_view"):
@@ -3994,8 +4263,13 @@ class KarakalPresenter(QObject):
                 view.set_records([], sort_mode="name", reset_view=True)
             self._sync_grid_reference_controls(None)
             self._refresh_grid_inspection_errors_panel(None)
+            self._sync_grid_inspection_matrix_selector(None)
             return
         views = self._grid_inspection_views()
+        self._sync_grid_inspection_matrix_selector(state)
+        # When we already have multi-model payloads stored, re-project them for the active selection.
+        if getattr(state, "grid_inspection_payloads_by_model", None):
+            self._apply_grid_inspection_active_layer_view(state, streaming=False)
         self._sync_grid_inspection_layer_tabs(state)
         for view in views.values():
             view.set_layout_config(state.layout_config)
@@ -4048,8 +4322,8 @@ class KarakalPresenter(QObject):
         labels.update(
             {
                 "broken": self._t("grid_status.broken"),
-                "suspicious": self._t("grid_status.suspicious"),
-                "artifact": self._t("grid_status.artifact"),
+                "suspicious": self._t("grid_status.broken"),
+                "artifact": self._t("grid_status.broken"),
             }
         )
         return labels.get(str(error_type), str(error_type or self._t("grid_error.defect")))
@@ -4310,6 +4584,8 @@ class KarakalPresenter(QObject):
         state: ExtendMatrixTabState,
         config: GridDamageAnalysisConfig,
     ) -> GridCellReferenceProfile | None:
+        if not show_reference_frame():
+            return None
         record = self._grid_inspection_reference_record(state)
         if record is None:
             stale_key = str(getattr(state, "grid_inspection_reference_record_key", "") or "")
@@ -4338,6 +4614,30 @@ class KarakalPresenter(QObject):
             )
             return None
         return profile
+
+    def _estimate_run_cell_reference_profile_for_state(
+        self,
+        state: ExtendMatrixTabState,
+        config: GridDamageAnalysisConfig,
+        *,
+        model_id: str,
+        records: tuple[FrameRecord, ...],
+    ) -> GridCellReferenceProfile | None:
+        """Modal cell size across the run for one model (merge cores need a stable norm)."""
+
+        paths: list[str] = []
+        for record in records:
+            path_text = self._grid_inspection_layer_source_path_for_record(record, model_id, "binary")
+            if path_text and Path(path_text).is_file():
+                paths.append(path_text)
+        if len(paths) < 2:
+            return None
+        return estimate_run_cell_reference_profile(
+            paths,
+            config=config,
+            sample_limit=32,
+            frame_id=f"run:{model_id}",
+        )
 
     def _current_matrix_selected_records(self) -> tuple[FrameRecord, ...]:
         if self._current_app_mode() == "grid_inspection":
@@ -4620,12 +4920,303 @@ class KarakalPresenter(QObject):
         state = self._current_tab_state()
         if state is None or self._current_app_mode() != "grid_inspection":
             return
+        self._export_grid_error_frames(state)
+
+    def _export_grid_error_frames(self, state: ExtendMatrixTabState) -> None:
+        from ..core.grid_error_export import (
+            GridErrorExportFrame,
+            GridExportLayerSpec,
+            color_mode_folder_name,
+            export_grid_error_wizard_run,
+            safe_export_folder_name,
+        )
+        from ..ui.grid_export_wizard import ExportLayerOffer, GridErrorExportWizard
+        from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS, SETTINGS_GRID_EXPORT_WIZARD_KEY
+
+        selected_types = self._selected_grid_error_types()
+        if not selected_types:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("export_wizard.types_empty"))
+            return
+        export_folder = self._export_folder or Path.cwd()
         selected_records = self._grid_inspection_export_selected_records(state)
-        records_with_results = self._grid_inspection_records_with_results(state)
-        self._export_grid_inspection_bmps(
-            state,
-            records_with_results,
-            render_records=selected_records if selected_records else None,
+        offers = self._grid_export_layer_offers(state, selected_types)
+        if not offers:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("message.no_grid_check_results"))
+            return
+
+        def preview(wizard: GridErrorExportWizard) -> str:
+            choices = wizard.choices()
+            if choices is None:
+                return self._t("export_wizard.preview_empty")
+            mode_folder = color_mode_folder_name(
+                choices.image_format,
+                choices.color_mode,
+                single_color=choices.single_color,
+            )
+            lines = [f"Karakal_export_YYYY-MM-DD_HHMM\\", f"  {mode_folder}\\"]
+            offer_by_key = {offer.key: offer for offer in offers}
+            for key in choices.layer_keys:
+                offer = offer_by_key.get(key)
+                if offer is None:
+                    continue
+                folder = safe_export_folder_name(offer.title, fallback=key)
+                count = int(offer.frame_count)
+                if choices.skip_empty:
+                    count = self._grid_export_nonempty_frame_count(
+                        state,
+                        key,
+                        selected_types,
+                        selected_only=choices.frame_scope == "selected",
+                        selected_records=selected_records,
+                    )
+                lines.append(f"    {folder}\\  ({count} {self._t('export_wizard.files')})")
+            return "\n".join(lines)
+
+        wizard = GridErrorExportWizard(
+            self._t,
+            layers=offers,
+            selected_types=selected_types,
+            has_selection=bool(selected_records),
+            output_dir=export_folder,
+            preview_builder=preview,
+            parent=self._view,
+        )
+        saved = {}
+        try:
+            raw = self._settings_service._settings.value(SETTINGS_GRID_EXPORT_WIZARD_KEY, "", str)
+            if raw:
+                saved = json.loads(raw)
+        except (TypeError, ValueError):
+            saved = {}
+        if isinstance(saved, dict):
+            wizard.apply_saved_choices(saved)
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            return
+        choices = wizard.choices()
+        if choices is None:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("export_wizard.types_empty"))
+            return
+        try:
+            self._settings_service._settings.setValue(
+                SETTINGS_GRID_EXPORT_WIZARD_KEY,
+                json.dumps(wizard.persistable_choices(), ensure_ascii=False),
+            )
+            self._settings_service.sync()
+        except Exception:
+            pass
+        self._export_folder = Path(choices.output_dir)
+        analysis_layer = self._grid_export_analysis_layer(state)
+        layer_specs = []
+        frames: list[GridErrorExportFrame] = []
+        offer_by_key = {offer.key: offer for offer in offers}
+        records = (
+            selected_records
+            if choices.frame_scope == "selected" and selected_records
+            else tuple(getattr(getattr(state, "build_result", None), "records", ()) or ())
+        )
+        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
+        for key in choices.layer_keys:
+            offer = offer_by_key.get(key)
+            if offer is None:
+                continue
+            model_layers = dict(by_model.get(key) or {})
+            payloads = dict(model_layers.get(analysis_layer) or {})
+            if not payloads and analysis_layer != "binary":
+                payloads = dict(model_layers.get("binary") or {})
+            if not payloads and key == str(getattr(state, "grid_inspection_model_id", "") or ""):
+                payloads = dict((getattr(state, "grid_inspection_payloads_by_layer", {}) or {}).get(analysis_layer) or {})
+            layer_specs.append(
+                GridExportLayerSpec(
+                    key=key,
+                    title=offer.title,
+                    folder_name=offer.title,
+                    source_path=self._grid_export_model_source_path(state, key),
+                    analysis_layer=analysis_layer,
+                )
+            )
+            for record in records:
+                frame_key = str(getattr(record, "key", "") or "")
+                file_name = Path(str(getattr(record, "display_name", "") or frame_key or "frame")).name
+                if Path(file_name).suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}:
+                    file_name = f"{Path(file_name).stem}.{choices.image_format}"
+                result = payloads.get(frame_key)
+                frames.append(
+                    GridErrorExportFrame(
+                        file_name=file_name,
+                        mask_name=key,
+                        layer_name=analysis_layer,
+                        result=result,
+                    )
+                )
+        colors = {item: GRID_INSPECTION_ERROR_TYPE_COLORS.get(item, "") for item in choices.selected_types}
+        config_payload = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
+        progress = QProgressDialog(
+            self._t("export_wizard.title"),
+            self._t("common.cancel"),
+            0,
+            max(1, len(frames)),
+            self._view,
+        )
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        thread = QThread(self._view)
+        holder: dict[str, object] = {}
+
+        class _Runner(QObject):
+            progressed = pyqtSignal(int, int, str)
+            finished_report = pyqtSignal(object)
+
+            def __init__(self) -> None:
+                super().__init__()
+                self._cancel = False
+
+            def cancel(self) -> None:
+                self._cancel = True
+
+            def run(self) -> None:
+                report = export_grid_error_wizard_run(
+                    frames,
+                    Path(choices.output_dir),
+                    choices.selected_types,
+                    tuple(layer_specs),
+                    image_format=choices.image_format,
+                    color_mode=choices.color_mode,
+                    single_color=choices.single_color,
+                    skip_empty=choices.skip_empty,
+                    algorithm_version=str(
+                        getattr(state, "grid_inspection_algorithm_version", "") or GRID_DAMAGE_ALGORITHM_VERSION
+                    ),
+                    calibration_fingerprint=str(config_payload.get("calibration_fingerprint") or ""),
+                    type_colors=colors,
+                    progress=lambda current, total, name: self.progressed.emit(int(current), int(total), str(name)),
+                    cancelled=lambda: self._cancel,
+                )
+                self.finished_report.emit(report)
+
+        runner = _Runner()
+        runner.moveToThread(thread)
+        thread.started.connect(runner.run)
+        runner.progressed.connect(
+            lambda current, total, name: (
+                progress.setMaximum(max(1, total)),
+                progress.setValue(min(current, max(1, total))),
+                progress.setLabelText(name or self._t("export_wizard.title")),
+            )
+        )
+        progress.canceled.connect(runner.cancel)
+
+        def _finish(report) -> None:
+            progress.setValue(progress.maximum())
+            thread.quit()
+            run_dir = getattr(report, "run_dir", None) or getattr(report, "output_dir", choices.output_dir)
+            written = len(getattr(report, "written", ()) or ())
+            missing = len(getattr(report, "missing_results", ()) or ())
+            box = QMessageBox(self._view)
+            box.setWindowTitle(self._t("dialog.info_title"))
+            box.setText(
+                self._t(
+                    "export_wizard.done",
+                    count=written,
+                    folder=str(run_dir),
+                    missing=missing,
+                )
+            )
+            open_button = box.addButton(self._t("export_wizard.open_folder"), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(self._t("common.close") if hasattr(self, "_t") else "OK", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_button:
+                try:
+                    os.startfile(str(run_dir))  # type: ignore[attr-defined]
+                except OSError:
+                    pass
+
+        runner.finished_report.connect(_finish)
+        holder["thread"] = thread
+        holder["runner"] = runner
+        self._grid_error_export_job = holder
+        thread.start()
+
+    def _grid_export_analysis_layer(self, state: ExtendMatrixTabState) -> str:
+        from ..core.features import show_confidence_defects
+
+        layer = str(getattr(state, "grid_inspection_layer", "") or "")
+        if layer in {"binary", "confidence"}:
+            return layer if (layer != "confidence" or show_confidence_defects()) else "binary"
+        payloads = dict(getattr(state, "grid_inspection_payloads_by_layer", {}) or {})
+        if payloads.get("binary"):
+            return "binary"
+        if show_confidence_defects() and payloads.get("confidence"):
+            return "confidence"
+        return "binary"
+
+    def _grid_export_model_source_path(self, state: ExtendMatrixTabState, model_id: str) -> str:
+        for spec in getattr(getattr(state, "build_result", None), "model_specs", ()) or ():
+            if str(getattr(spec, "model_id", "") or "") == str(model_id):
+                folder = getattr(spec, "mask_folder", None)
+                return str(folder) if folder is not None else ""
+        return ""
+
+    def _grid_export_layer_offers(self, state: ExtendMatrixTabState, selected_types: tuple[str, ...]):
+        from ..core.grid_error_export import reason_counts
+        from ..ui.grid_export_wizard import ExportLayerOffer
+
+        analysis_layer = self._grid_export_analysis_layer(state)
+        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
+        active_model = str(getattr(state, "grid_inspection_model_id", "") or "")
+        if active_model and active_model not in by_model:
+            by_model[active_model] = dict(getattr(state, "grid_inspection_payloads_by_layer", {}) or {})
+        specs = {
+            str(spec.model_id): str(spec.display_name or spec.model_id)
+            for spec in (getattr(getattr(state, "build_result", None), "model_specs", ()) or ())
+            if str(getattr(spec, "model_id", "") or "")
+        }
+        offers = []
+        for model_id, title in specs.items():
+            model_layers = dict(by_model.get(model_id) or {})
+            payloads = dict(model_layers.get(analysis_layer) or model_layers.get("binary") or {})
+            if not payloads:
+                continue
+            error_count = 0
+            frame_count = 0
+            for result in payloads.values():
+                if result is None:
+                    continue
+                frame_count += 1
+                counts = reason_counts(result, selected_types)
+                error_count += int(sum(counts.values()))
+            offers.append(
+                ExportLayerOffer(
+                    key=model_id,
+                    title=title,
+                    error_count=error_count,
+                    frame_count=frame_count,
+                )
+            )
+        return offers
+
+    def _grid_export_nonempty_frame_count(
+        self,
+        state: ExtendMatrixTabState,
+        model_id: str,
+        selected_types: tuple[str, ...],
+        *,
+        selected_only: bool,
+        selected_records,
+    ) -> int:
+        from ..core.grid_error_export import frame_has_selected_errors
+
+        analysis_layer = self._grid_export_analysis_layer(state)
+        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
+        model_layers = dict(by_model.get(model_id) or {})
+        payloads = dict(model_layers.get(analysis_layer) or model_layers.get("binary") or {})
+        if selected_only and selected_records:
+            keys = {str(getattr(record, "key", "") or "") for record in selected_records}
+            payloads = {key: value for key, value in payloads.items() if key in keys}
+        return sum(
+            1
+            for result in payloads.values()
+            if result is not None and frame_has_selected_errors(result, selected_types)
         )
 
     def _request_cancel_build(self) -> None:
@@ -4635,6 +5226,151 @@ class KarakalPresenter(QObject):
         if callable(request_cancel):
             request_cancel()
         self._show_progress_bar(visible=True, format_text="Cancelling...")
+
+    # --- All-layers merge ---------------------------------------------------
+
+    ALL_LAYERS_SELECTION_KEY = "__all__"
+    GRID_ERRORS_STREAM_REFRESH_MS = 1500
+
+    @staticmethod
+    def _model_display_name_map(state: ExtendMatrixTabState) -> dict[str, str]:
+        return {
+            str(spec.model_id): str(spec.display_name or spec.model_id)
+            for spec in (getattr(getattr(state, "build_result", None), "model_specs", ()) or ())
+            if str(getattr(spec, "model_id", "") or "")
+        }
+
+    def _merge_all_layers_frame_result(
+        self,
+        state: ExtendMatrixTabState,
+        frame_key: str,
+        layer: str = "binary",
+    ) -> GridFrameAnalysisResult | None:
+        """Combine per-model results for one frame into a single view."""
+
+        by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
+        if not by_model:
+            return None
+        display_names = self._model_display_name_map(state)
+        combined_cells: list = []
+        total_expected = 0
+        total_detected = 0
+        total_normal = 0
+        total_suspicious = 0
+        total_broken = 0
+        total_missing = 0
+        total_artifact = 0
+        frame_id = ""
+        frame_path = ""
+        image_width = 0
+        image_height = 0
+        grid_detected = False
+        seen_bboxes: set[tuple[int, int, int, int, str]] = set()
+        for model_id, model_layers in by_model.items():
+            payloads = (model_layers or {}).get(layer)
+            if not payloads:
+                # Fall back to a binary payload for that model when the requested layer is absent.
+                payloads = (model_layers or {}).get("binary") or {}
+            result = payloads.get(str(frame_key)) if payloads else None
+            if not isinstance(result, GridFrameAnalysisResult):
+                continue
+            if not frame_id:
+                frame_id = str(result.frame_id or "")
+                frame_path = str(result.frame_path or "")
+                image_width = int(result.image_width or 0)
+                image_height = int(result.image_height or 0)
+                grid_detected = bool(result.grid_detected)
+            total_expected += int(getattr(result, "total_expected_cells", 0) or 0)
+            total_detected += int(getattr(result, "detected_cells", 0) or 0)
+            total_normal += int(getattr(result, "normal_cells", 0) or 0)
+            total_suspicious += int(getattr(result, "suspicious_cells", 0) or 0)
+            total_broken += int(getattr(result, "broken_cells", 0) or 0)
+            total_missing += int(getattr(result, "missing_cells", 0) or 0)
+            total_artifact += int(getattr(result, "artifact_cells", 0) or 0)
+            display_name = display_names.get(str(model_id), str(model_id))
+            for cell in getattr(result, "per_cell_results", ()) or ():
+                bbox = tuple(int(v) for v in (getattr(cell, "bbox", (0, 0, 0, 0)) or (0, 0, 0, 0))[:4])
+                key_tuple = (str(model_id), *bbox)
+                short_key = (*bbox, str(model_id))
+                if short_key in seen_bboxes:
+                    continue
+                seen_bboxes.add(short_key)
+                existing_label = str(getattr(cell, "feature_cluster_label", "") or "")
+                # Tag with model attribution — details tooltip already shows this field.
+                if existing_label:
+                    label = f"{display_name} · {existing_label}"
+                else:
+                    label = str(display_name)
+                combined_cells.append(replace(cell, feature_cluster_label=label))
+        if not frame_id and not combined_cells:
+            return None
+        total_bad = total_suspicious + total_broken + total_missing + total_artifact
+        # Normalize by total cell count across models — a frame in N models should not "redden" N×.
+        damage_score = 0.0
+        if total_expected > 0:
+            damage_score = min(1.0, float(total_bad) / float(total_expected))
+        elif combined_cells:
+            damage_score = min(
+                1.0,
+                sum(1 for cell in combined_cells if str(getattr(cell, "status", "")) != "normal")
+                / float(len(combined_cells)),
+            )
+        return GridFrameAnalysisResult(
+            frame_id=frame_id or str(frame_key),
+            frame_path=frame_path,
+            image_width=image_width,
+            image_height=image_height,
+            grid_rows=0,
+            grid_cols=0,
+            total_expected_cells=total_expected,
+            detected_cells=total_detected,
+            normal_cells=total_normal,
+            suspicious_cells=total_suspicious,
+            broken_cells=total_broken,
+            missing_cells=total_missing,
+            artifact_cells=total_artifact,
+            damage_score=float(damage_score),
+            severity_level="",
+            grid_detected=grid_detected,
+            per_cell_results=tuple(combined_cells),
+        )
+
+    def _build_all_layers_payloads(
+        self,
+        state: ExtendMatrixTabState,
+        layer: str = "binary",
+    ) -> dict[str, GridFrameAnalysisResult]:
+        by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
+        frame_keys: set[str] = set()
+        for model_layers in by_model.values():
+            layer_map = (model_layers or {}).get(layer) or (model_layers or {}).get("binary") or {}
+            for key in layer_map:
+                frame_keys.add(str(key))
+        merged: dict[str, GridFrameAnalysisResult] = {}
+        for key in frame_keys:
+            result = self._merge_all_layers_frame_result(state, key, layer=layer)
+            if result is not None:
+                merged[key] = result
+        return merged
+
+    # --- Multi-model gathering ---------------------------------------------
+
+    def _grid_inspection_multi_model_ids(
+        self, state: ExtendMatrixTabState, records: tuple[FrameRecord, ...]
+    ) -> tuple[str, ...]:
+        """Model ids whose current sources are reachable from at least one record."""
+
+        checked_ids = tuple(str(spec.model_id) for spec in self._checked_model_specs() if str(spec.model_id))
+        available: list[str] = []
+        for model_id in checked_ids:
+            has_source = any(
+                bool((record.model_mask_paths or {}).get(model_id))
+                or bool((record.model_prob_paths or {}).get(model_id))
+                for record in records
+            )
+            if has_source:
+                available.append(model_id)
+        return tuple(available)
 
     def _start_compute_grid_inspection(
         self,
@@ -4661,6 +5397,7 @@ class KarakalPresenter(QObject):
         grid_config = self._grid_damage_config_from_payload(next_config)
         model_id = self._grid_inspection_model_id_for_state(state)
         state.grid_inspection_model_id = model_id
+        multi_model_ids = self._grid_inspection_multi_model_ids(state, records)
         has_selected_sources = bool(
             model_id
             and any(
@@ -4674,10 +5411,21 @@ class KarakalPresenter(QObject):
         if reference_selected and reference_profile is None:
             self._sync_action_buttons()
             return
+        if reference_profile is None and model_id:
+            reference_profile = self._estimate_run_cell_reference_profile_for_state(
+                state,
+                grid_config,
+                model_id=model_id,
+                records=records,
+            )
         state.grid_inspection_config_payload = next_config
         state.grid_inspection_results_ready = False
         state.grid_inspection_payload_by_key = {}
         state.grid_inspection_payloads_by_layer = {key: {} for key in self._grid_inspection_layer_keys()}
+        # Reset stored per-model results so a fresh run does not display stale layers.
+        state.grid_inspection_payloads_by_model = {}
+        self._grid_streaming_unified = None
+        self._grid_errors_refresh_pending = False
         requested_layers = self._normalize_grid_layers(next_config.get("requested_layers"))
         display_layer = str(next_config.get("display_layer") or "")
         if display_layer not in requested_layers:
@@ -4696,13 +5444,20 @@ class KarakalPresenter(QObject):
         for view in self._grid_inspection_views().values():
             view.set_processing_keys(set())
         self._worker_thread = QThread()
-        want_derived_conflict = "derived_conflict" in requested_layers
+        want_derived_conflict = show_class_conflict() and "derived_conflict" in requested_layers
         conflict_pairs = self._selected_grid_conflict_pairs() if want_derived_conflict else ()
         if want_derived_conflict and not conflict_pairs and len(self._checked_model_specs()) >= 2:
             # Ensure a default AND pair so conflict review can run.
             self._pair_defaults_initialized = False
             self._ensure_default_pair_selection(self._active_pair_model_specs())
             conflict_pairs = self._selected_grid_conflict_pairs()
+        use_multi_model = (
+            not want_derived_conflict
+            and len(multi_model_ids) >= 2
+        )
+        self._active_multi_model_run_ids: tuple[str, ...] = (
+            multi_model_ids if use_multi_model else ()
+        )
         if want_derived_conflict and conflict_pairs:
             pair = conflict_pairs[0]
             threshold, _boundary = self._selected_polygon_compare_values()
@@ -4716,6 +5471,29 @@ class KarakalPresenter(QObject):
                 reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
                 requested_layers=requested_layers,
+            )
+        elif use_multi_model:
+            base_layers = tuple(layer for layer in requested_layers if layer != "derived_conflict")
+            reference_profiles = {}
+            for extra_model_id in multi_model_ids:
+                if extra_model_id == model_id and reference_profile is not None:
+                    reference_profiles[extra_model_id] = reference_profile
+                else:
+                    reference_profiles[extra_model_id] = (
+                        self._estimate_run_cell_reference_profile_for_state(
+                            state,
+                            grid_config,
+                            model_id=extra_model_id,
+                            records=records,
+                        )
+                    )
+            self._worker = MultiModelGridInspectionWorker(
+                records,
+                multi_model_ids,
+                grid_config,
+                reference_profiles=reference_profiles,
+                performance_config=self._view.performance_config,
+                requested_layers=base_layers or ("confidence", "binary"),
             )
         elif has_selected_sources and model_id:
             base_layers = tuple(layer for layer in requested_layers if layer != "derived_conflict")
@@ -4732,7 +5510,7 @@ class KarakalPresenter(QObject):
                 records,
                 replace(grid_config, cell_representation="binary"),
                 model_id=model_id,
-                reference_profile=None,
+                reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
             )
         self._connect_worker_profiling(self._worker)
@@ -4753,6 +5531,10 @@ class KarakalPresenter(QObject):
         if hasattr(self._worker, "partialResultsReady"):
             self._worker.partialResultsReady.connect(
                 lambda payloads, g=generation: self._on_grid_inspection_batch(payloads, generation=g)
+            )
+        if hasattr(self._worker, "multiModelResultsReady"):
+            self._worker.multiModelResultsReady.connect(
+                lambda payloads, g=generation: self._on_grid_inspection_multi_model_batch(payloads, generation=g)
             )
         self._worker.finished.connect(
             lambda payloads, g=generation: self._on_grid_inspection_finished(payloads, generation=g)
@@ -5483,6 +6265,38 @@ class KarakalPresenter(QObject):
         shown = KarakalPresenter._with_stored_class_conflict(self, binary_result, state, frame_id)
         return shown, tuple(getattr(shown, "per_cell_results", ()) or ())
 
+    def _unified_grid_payloads_for_keys(
+        self,
+        layers: dict[str, dict[str, object]],
+        keys,
+    ) -> dict[str, GridFrameAnalysisResult]:
+        unified: dict[str, GridFrameAnalysisResult] = {}
+        for record_key in keys:
+            merged = self._merge_grid_layer_results({layer_key: layers[layer_key].get(record_key) for layer_key in layers})
+            if merged is not None:
+                unified[str(record_key)] = merged
+        return unified
+
+    def _streaming_unified_grid_payloads(
+        self,
+        layers: dict[str, dict[str, object]],
+        changed_keys: set[str],
+    ) -> dict[str, GridFrameAnalysisResult]:
+        """Keep the unified map of the running job current by merging only changed frames."""
+
+        cache = getattr(self, "_grid_streaming_unified", None)
+        if cache is None:
+            cache = self._unified_grid_payloads_for_keys(layers, {key for layer in layers.values() for key in layer})
+            self._grid_streaming_unified = cache
+            return cache
+        merged = self._unified_grid_payloads_for_keys(layers, changed_keys)
+        for key in changed_keys:
+            if key in merged:
+                cache[key] = merged[key]
+            else:
+                cache.pop(key, None)
+        return cache
+
     def _apply_grid_inspection_worker_payloads(
         self,
         state: ExtendMatrixTabState,
@@ -5513,14 +6327,25 @@ class KarakalPresenter(QObject):
                 layers["binary"][str(record_key)] = payload
                 changed["binary"][str(record_key)] = payload
         state.grid_inspection_payloads_by_layer = layers
-        unified_payloads = {
-            str(record_key): merged
-            for record_key in {key for layer in layers.values() for key in layer}
-            if (merged := self._merge_grid_layer_results({layer_key: layers[layer_key].get(record_key) for layer_key in layers}))
-            is not None
-        }
+        model_id = str(getattr(state, "grid_inspection_model_id", "") or "")
+        if model_id:
+            by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
+            stored = dict(by_model.get(model_id) or {})
+            for layer_key, payload_map in layers.items():
+                stored[layer_key] = dict(payload_map)
+            by_model[model_id] = stored
+            state.grid_inspection_payloads_by_model = by_model
+        if replace_all:
+            self._grid_streaming_unified = None
+            unified_payloads = self._unified_grid_payloads_for_keys(
+                layers, {key for layer in layers.values() for key in layer}
+            )
+        else:
+            # Streaming batches merge only their own frames; re-merging every
+            # finished frame per batch made long runs quadratic.
+            unified_payloads = self._streaming_unified_grid_payloads(layers, {str(key) for key in payloads})
         state.grid_inspection_layer = "unified"
-        state.grid_inspection_payload_by_key = unified_payloads
+        state.grid_inspection_payload_by_key = dict(unified_payloads)
         state.grid_inspection_results_ready = bool(unified_payloads) or any(bool(value) for value in layers.values())
         self._sync_grid_inspection_layer_tabs(state)
         views = self._grid_inspection_views()
@@ -5548,8 +6373,13 @@ class KarakalPresenter(QObject):
         state = self._active_compute_state or self._current_tab_state()
         if state is None or not hasattr(self, "grid_inspection_matrix_view"):
             return
-        payload_map = {str(key): value for key, value in payloads.items()} if isinstance(payloads, dict) else {}
-        self._apply_grid_inspection_worker_payloads(state, payload_map, replace_all=True)
+        multi_model_run = bool(getattr(self, "_active_multi_model_run_ids", ()) or ())
+        if multi_model_run and isinstance(payloads, dict):
+            self._apply_multi_model_finished_payloads(state, payloads)
+        else:
+            payload_map = {str(key): value for key, value in payloads.items()} if isinstance(payloads, dict) else {}
+            self._apply_grid_inspection_worker_payloads(state, payload_map, replace_all=True)
+        self._active_multi_model_run_ids = ()
         confirmed = getattr(self, "_grid_calibration_confirmed", None)
         if confirmed is not None and hasattr(confirmed, "fingerprint"):
             self._grid_analyzed_fingerprint = confirmed.fingerprint()
@@ -5591,10 +6421,141 @@ class KarakalPresenter(QObject):
             return
         self._apply_grid_inspection_worker_payloads(state, batch, replace_all=False)
 
+    def _on_grid_inspection_multi_model_batch(
+        self, payloads: object, *, generation: int | None = None
+    ) -> None:
+        if not self._is_active_request_generation(generation) or not isinstance(payloads, dict):
+            return
+        state = self._active_compute_state
+        if state is None or not hasattr(self, "grid_inspection_matrix_view"):
+            return
+        # payloads shape: {model_id: {frame_key: {layer_key: GridFrameAnalysisResult}}}
+        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
+        changed_keys: set[str] = set()
+        for model_id, frame_map in payloads.items():
+            if not isinstance(frame_map, dict):
+                continue
+            stored = dict(by_model.get(str(model_id)) or {})
+            for layer_key in self._grid_inspection_layer_keys():
+                stored.setdefault(layer_key, {})
+            for frame_key, layer_payload in frame_map.items():
+                if not isinstance(layer_payload, dict):
+                    continue
+                for layer_key, result in layer_payload.items():
+                    if result is None:
+                        continue
+                    stored.setdefault(str(layer_key), {})[str(frame_key)] = result
+                    changed_keys.add(str(frame_key))
+            by_model[str(model_id)] = stored
+        state.grid_inspection_payloads_by_model = by_model
+        if not changed_keys:
+            return
+        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
+        if not any(layers.get(key) for key in self._grid_inspection_layer_keys()):
+            # First batch of the run sets up layers, tabs and views once.
+            self._apply_grid_inspection_active_layer_view(state, streaming=True)
+            return
+        self._stream_grid_inspection_active_layer_keys(state, changed_keys)
+
+    def _stream_grid_inspection_active_layer_keys(self, state: ExtendMatrixTabState, changed_keys: set[str]) -> None:
+        """Project only the frames of one streamed batch onto the displayed layers.
+
+        Re-projecting every finished frame per batch rebuilt the whole scene
+        thousands of times on big runs. The finished handler still does one full pass.
+        """
+
+        selection = self._grid_inspection_matrix_selection(state)
+        if not selection:
+            return
+        by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
+        layer_keys = self._grid_inspection_layer_keys()
+        layers = {key: dict((state.grid_inspection_payloads_by_layer or {}).get(key) or {}) for key in layer_keys}
+        changed: dict[str, dict[str, object]] = {key: {} for key in layer_keys}
+        for frame_key in changed_keys:
+            if selection == self.ALL_LAYERS_SELECTION_KEY:
+                merged_confidence = self._merge_all_layers_frame_result(state, frame_key, layer="confidence")
+                merged_binary = self._merge_all_layers_frame_result(state, frame_key, layer="binary")
+                values = {
+                    "confidence": merged_confidence,
+                    # Same fallback as the full pass: confidence-only models still light the heat map.
+                    "binary": merged_binary if merged_binary is not None else merged_confidence,
+                }
+            else:
+                stored = by_model.get(selection) or {}
+                values = {key: (stored.get(key) or {}).get(frame_key) for key in layer_keys}
+            for layer_key, value in values.items():
+                if value is None:
+                    continue
+                layers[layer_key][frame_key] = value
+                changed[layer_key][frame_key] = value
+        state.grid_inspection_payloads_by_layer = layers
+        active_layer = str(getattr(state, "grid_inspection_layer", "") or "")
+        if active_layer in changed and changed[active_layer]:
+            state.grid_inspection_payload_by_key = dict(layers.get(active_layer, {}) or {})
+        state.grid_inspection_results_ready = True
+        views = self._grid_inspection_views()
+        unified_view = views.get("unified")
+        if unified_view is not None:
+            unified_changed = self._unified_grid_payloads_for_keys(layers, changed_keys)
+            if unified_changed:
+                unified_view.update_grid_inspection_payloads(unified_changed)
+        for layer_key, view in views.items():
+            if layer_key != "unified" and changed.get(layer_key):
+                view.update_grid_inspection_payloads(changed[layer_key])
+        if self._current_app_mode() == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
+            self.grid_inspection_matrix_view.viewport().update()
+        self._schedule_grid_inspection_errors_panel_refresh(state)
+        self._refresh_open_details_class_conflict(state)
+
+    def _schedule_grid_inspection_errors_panel_refresh(self, state: ExtendMatrixTabState) -> None:
+        """Coalesce error-list rebuilds while results stream in; each rebuild walks every frame."""
+
+        if getattr(self, "_grid_errors_refresh_pending", False):
+            return
+        self._grid_errors_refresh_pending = True
+
+        def _refresh(s=state) -> None:
+            self._grid_errors_refresh_pending = False
+            if s.widget in self._tab_states:
+                self._refresh_grid_inspection_errors_panel(s)
+
+        QTimer.singleShot(self.GRID_ERRORS_STREAM_REFRESH_MS, _refresh)
+
+    def _apply_multi_model_finished_payloads(
+        self,
+        state: ExtendMatrixTabState,
+        payloads: dict[object, object],
+    ) -> None:
+        """Store finished multi-model results and refresh the active view."""
+
+        by_model: dict[str, dict[str, dict[str, object]]] = {}
+        for model_id, frame_map in payloads.items():
+            if not isinstance(frame_map, dict):
+                continue
+            layers: dict[str, dict[str, object]] = {key: {} for key in self._grid_inspection_layer_keys()}
+            for frame_key, layer_payload in frame_map.items():
+                if not isinstance(layer_payload, dict):
+                    continue
+                for layer_key, result in layer_payload.items():
+                    if result is None:
+                        continue
+                    layers.setdefault(str(layer_key), {})[str(frame_key)] = result
+            by_model[str(model_id)] = layers
+        state.grid_inspection_payloads_by_model = by_model
+        state.grid_inspection_results_ready = any(
+            bool(layers.get(layer_key))
+            for layers in by_model.values()
+            for layer_key in layers
+        )
+        # Refresh the selector so the model entries reflect the completed run.
+        self._sync_grid_inspection_matrix_selector(state)
+        self._apply_grid_inspection_active_layer_view(state, streaming=False)
+
     def _on_grid_inspection_cancelled(self, *, generation: int | None = None) -> None:
         if not self._is_active_request_generation(generation):
             return
         self._show_progress_bar(visible=False)
+        self._grid_streaming_unified = None
         state = self._active_compute_state
         if state is not None:
             state.grid_inspection_results_ready = bool(state.grid_inspection_payload_by_key)
@@ -6102,7 +7063,7 @@ class KarakalPresenter(QObject):
             path_text = str((getattr(record, "model_mask_paths", {}) or {}).get(model_key) or "")
             if path_text:
                 return path_text
-        return KarakalPresenter._grid_inspection_source_path_for_record(record)
+        return ""
 
     @staticmethod
     def _grid_inspection_display_source_path_for_record(record: FrameRecord) -> str:
@@ -6202,7 +7163,8 @@ class KarakalPresenter(QObject):
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog._on_grid_tuning_requested = lambda details=dialog: self._open_grid_tuning_dialog(details)
-        dialog._on_class_conflict_user_wants_changed = self._set_class_conflict_user_wants
+        # Details filter stays local. Main-window filter is the only export source.
+        dialog._on_class_conflict_user_wants_changed = None
         dialog._on_grid_frame_changed = lambda details=dialog: self._on_details_grid_frame_changed(details)
         self._sync_class_conflict_for_dialog(dialog, state)
         if grid_detail_message:
@@ -6313,17 +7275,20 @@ class KarakalPresenter(QObject):
             self._t("context.export_selected_frame_assets", count=len(selected_records))
         )
         export_selected_action.setEnabled(bool(selected_records))
-        export_layer_action = export_menu.addAction(self._t("context.export_result_layer_jpgs"))
-        export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
+        export_layer_action = None
+        if show_other_mode_export():
+            export_layer_action = export_menu.addAction(self._t("context.export_result_layer_jpgs"))
+            export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
         export_grid_bmp_selected_action = None
         export_grid_bmp_all_action = None
         calibrate_action = None
         diverse_action = None
         if is_grid_inspection_context:
-            calibrate_action = menu.addAction(self._t("context.calibrate_selected", count=len(selected_records)))
-            calibrate_action.setEnabled(1 <= len(selected_records) <= 20)
-            diverse_action = menu.addAction(self._t("context.calibrate_diverse"))
-            diverse_action.setEnabled(bool(getattr(getattr(state, "build_result", None), "records", ())))
+            if show_grid_examples():
+                calibrate_action = menu.addAction(self._t("context.calibrate_selected", count=len(selected_records)))
+                calibrate_action.setEnabled(1 <= len(selected_records) <= 20)
+                diverse_action = menu.addAction(self._t("context.calibrate_diverse"))
+                diverse_action.setEnabled(bool(getattr(getattr(state, "build_result", None), "records", ())))
             export_menu.addSeparator()
             payload_keys = {str(key) for key in (getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys()}
             selected_result_keys = {str(getattr(item, "key", "") or "") for item in exclude_source if item is not None}
@@ -7600,15 +8565,24 @@ class KarakalPresenter(QObject):
         gradient_name = str(payload.get("gradient_name") or DEFAULT_GRADIENT_NAME)
         gradient_index = self.matrix_gradient_combo.findData(gradient_name)
         self.matrix_gradient_combo.setCurrentIndex(gradient_index if gradient_index >= 0 else 0)
-        self._analysis_profile = analysis_profile_definition(
-            str(payload.get("analysis_profile") or DEFAULT_ANALYSIS_PROFILE)
-        ).key
+        saved_profile = str(payload.get("analysis_profile") or DEFAULT_ANALYSIS_PROFILE)
+        if tester_build():
+            saved_profile = AnalysisProfileKind.GRID_DEFECTS.value
+        self._analysis_profile = analysis_profile_definition(saved_profile).key
         if hasattr(self._view, "set_analysis_profile"):
             self._view.set_analysis_profile(self._analysis_profile)
+        if tester_build():
+            grid_mode_index = self.app_mode_combo.findData("grid_inspection")
+            if grid_mode_index >= 0:
+                self.app_mode_combo.setCurrentIndex(grid_mode_index)
         analysis_mode = str(payload.get("analysis_mode") or self._selected_analysis_mode())
+        comparison_target = str(payload.get("comparison_target") or DEFAULT_COMPARISON_TARGET)
+        if tester_build():
+            grid_profile = analysis_profile_definition(AnalysisProfileKind.GRID_DEFECTS.value)
+            analysis_mode = str(grid_profile.analysis_mode)
+            comparison_target = str(grid_profile.comparison_target)
         analysis_index = self.analysis_mode_combo.findData(analysis_mode)
         self.analysis_mode_combo.setCurrentIndex(analysis_index if analysis_index >= 0 else 0)
-        comparison_target = str(payload.get("comparison_target") or DEFAULT_COMPARISON_TARGET)
         comparison_target_index = self.comparison_target_combo.findData(comparison_target)
         self.comparison_target_combo.setCurrentIndex(comparison_target_index if comparison_target_index >= 0 else 0)
         geometry_mode = str(

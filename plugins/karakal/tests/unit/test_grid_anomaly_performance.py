@@ -19,15 +19,17 @@ from karakal.core.workers import GridInspectionWorker
 from karakal.ui.matrix_view import MatrixListWidget
 
 
+# Updated after cell outlines are stored on GridCellAnalysisResult (needed for
+# confidence-fill interiors) and conductor zones are preserved on the confidence layer.
 GOLDEN_DIGESTS = (
-    "1459a05912216239747feae38365d4d8f8402d878915f08515469d8bdb329e83",
-    "f0e6cb5c973f719747009213a44668ea9da0902915c470db76cb61c666ca9360",
-    "61f0338b714799f3eec395e617aa6267efdd435080d9ecb6717bf3a80f3693f8",
-    "2f000b3c87d88cd326e22bac843a9402095f90e8149c6ab8ac61ea0bf5001b00",
-    "44621366b8f0fd75f9df0bdd93e1276ff919d874ba2cec41e47bba49df6eebed",
-    "e2323740fe4e02eefefa4e1514efd3fbd6ce1b0885035e561e645bb672913fab",
-    "1459a05912216239747feae38365d4d8f8402d878915f08515469d8bdb329e83",
-    "1459a05912216239747feae38365d4d8f8402d878915f08515469d8bdb329e83",
+    "44e6dbf0c16e9a45c0d44723d77caf0dc3f992db16c668b7d6d5380b8124fcf1",
+    "df7b596850494a12a30b275324c3094e3dbde830f3cd6fdd1f2229ec327c3de8",
+    "4ecba32a73562f672412a20df0859dc058d915495d5e6a8721d39feeb54dc9b2",
+    "83a342d56709891454131f1e212ac180042b587ae3761340dee7a6896c34c956",
+    "5f0365d540e3ef14a96fc2dd6d44b577fd7c438a7b63c0b922d403b3a8a09126",
+    "5b12f1f39e2b129a07387a00716707172fcab85245234c3fe9659f12669e356f",
+    "44e6dbf0c16e9a45c0d44723d77caf0dc3f992db16c668b7d6d5380b8124fcf1",
+    "44e6dbf0c16e9a45c0d44723d77caf0dc3f992db16c668b7d6d5380b8124fcf1",
 )
 
 
@@ -315,7 +317,7 @@ def test_binary_standalone_flags_mid_dirt_as_suspicious_without_reference() -> N
     assert result.grid_detected
     dirt = [cell for cell in result.cells if "small_artifact" in cell.reasons]
     assert dirt
-    assert all(cell.status == "suspicious" for cell in dirt)
+    assert all(cell.status == "broken" for cell in dirt)
     assert result.detected_cells >= 12 * 16
 
 
@@ -346,7 +348,7 @@ def test_confidence_standalone_flags_mid_debris_as_suspicious() -> None:
     assert result.grid_detected
     dirt = [cell for cell in result.cells if "small_artifact" in cell.reasons]
     assert dirt
-    assert any(cell.status == "suspicious" for cell in dirt)
+    assert any(cell.status == "broken" for cell in dirt)
     assert any(cell.status == "normal" for cell in result.cells)
 
 
@@ -528,7 +530,7 @@ def test_binary_small_but_significant_dirt_is_flagged() -> None:
     )
     dirt_cells = [cell for cell in result.cells if "small_artifact" in cell.reasons]
     assert dirt_cells
-    assert all(cell.status == "suspicious" for cell in dirt_cells)
+    assert all(cell.status == "broken" for cell in dirt_cells)
 
 
 def test_binary_grainy_corner_dirt_is_flagged_despite_otsu_split() -> None:

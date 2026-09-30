@@ -11,7 +11,7 @@ import warnings
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v78_zone_mask_first"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v87_confidence_fill_on_binary"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -345,6 +345,7 @@ class GridFrameAnalysisResult:
     feature_clusters: tuple[GridCellFeatureCluster, ...] = ()
     debug: GridDebugPayload | None = None
     zone_skipped_components: int = 0
+    model_file_status: str = ""
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
         return (
@@ -375,6 +376,7 @@ class GridFrameAnalysisResult:
                 self.feature_clusters,
                 self.debug,
                 self.zone_skipped_components,
+                self.model_file_status,
             ),
         )
 
@@ -730,6 +732,7 @@ def detect_grid_cell_anomalies(
     config: GridDamageAnalysisConfig | None = None,
     reference_profile: GridCellReferenceProfile | None = None,
     confidence_map: np.ndarray | None = None,
+    conductor_zones=None,
 ) -> GridFrameAnalysisResult:
     """Analyze one image and return compact grid damage metrics."""
 
@@ -778,31 +781,15 @@ def detect_grid_cell_anomalies(
         contours = contours_result[0] if len(contours_result) == 2 else contours_result[1]
         hierarchy = contours_result[1] if len(contours_result) == 2 else contours_result[2]
     zone_skipped = 0
-    zone_map = _empty_conductor_zone_map()
+    zone_supplied = conductor_zones is not None
     with profile_stage("validation.grid.contours.features", frame_id=frame_id):
-        probes = _zone_probe_candidates(contours, hierarchy, gray.shape, cfg)
-        hint_area, hint_width, hint_height = _zone_size_hint(probes, contours, threshold)
-        if hint_area > 0.0:
-            pitch_columns, pitch_rows, pitch_x, pitch_y = _lattice_grid_axes(
-                probes,
-                modal_width=hint_width,
-                modal_height=hint_height,
-                modal_area=hint_area,
-            )
-            zone_map = _conductor_zone_map(
-                probes,
-                width=int(width),
-                height=int(height),
-                columns=pitch_columns,
-                rows=pitch_rows,
-                pitch_x=pitch_x,
-                pitch_y=pitch_y,
-                modal_area=hint_area,
-                modal_width=hint_width,
-                modal_height=hint_height,
-                confidence=probability,
-                foreground=threshold,
-            )
+        if conductor_zones is not None:
+            zone_map = conductor_zones
+        elif str(cfg.cell_representation) == "confidence":
+            # Rings on a confidence map are cell outlines, not conductor grain.
+            zone_map = _empty_conductor_zone_map()
+        else:
+            zone_map = _binary_conductor_zone_map(gray, threshold, contours, hierarchy, cfg)
         skipped_box = [0]
         candidates = _extract_candidates(
             contours,
@@ -837,6 +824,7 @@ def detect_grid_cell_anomalies(
             started=started,
             zone_map=zone_map,
             zone_skipped=zone_skipped,
+            zone_supplied=zone_supplied,
         )
 
     with profile_stage("validation.grid.reference_profile", frame_id=frame_id):
@@ -856,6 +844,13 @@ def detect_grid_cell_anomalies(
                 frame_id=frame_id,
                 frame_path=frame_path,
             )
+            if profile is None:
+                # Outline drawings fail the filled-cell seed. A repeated size is still a grid.
+                profile, sized = _calibrated_size_profile(
+                    candidates, frame_id=frame_id, frame_path=frame_path
+                )
+                if sized:
+                    normal_seed = sized
     if profile is None:
         return _analyze_conductor_only_frame(
             candidates,
@@ -867,7 +862,43 @@ def detect_grid_cell_anomalies(
             started=started,
             zone_map=zone_map,
             zone_skipped=zone_skipped,
+            zone_supplied=zone_supplied,
         )
+    # Run-wide cell size: skip crumb-only frames (no array). Without a run profile,
+    # keep legacy single-frame behaviour so synthetic unit tests stay valid.
+    if reference_profile is not None:
+        min_matched = max(24, int(cfg.min_grid_candidate_cells) * 3)
+        local_profile, _local_seed = _calibrated_size_profile(
+            candidates, frame_id=frame_id, frame_path=frame_path
+        )
+        # Frame has no array when its *own* size cluster is crumb-scale, even if a few
+        # blobs accidentally match the run-wide cell size (classic frame 184).
+        if not _profile_looks_like_cell_array(local_profile):
+            return _no_cell_array_result(
+                frame_id=frame_id,
+                frame_path=frame_path,
+                width=width,
+                height=height,
+                component_count=len(candidates),
+                zone_map=zone_map,
+                zone_skipped=zone_skipped,
+                cell_width=float(reference_profile.median_width),
+                cell_height=float(reference_profile.median_height),
+                config=cfg,
+            )
+        if not _frame_has_reliable_cell_array(candidates, reference_profile, min_matched=min_matched):
+            return _no_cell_array_result(
+                frame_id=frame_id,
+                frame_path=frame_path,
+                width=width,
+                height=height,
+                component_count=len(candidates),
+                zone_map=zone_map,
+                zone_skipped=zone_skipped,
+                cell_width=float(reference_profile.median_width),
+                cell_height=float(reference_profile.median_height),
+                config=cfg,
+            )
     median_width = float(profile.median_width)
     median_height = float(profile.median_height)
     median_area = float(profile.median_area)
@@ -897,7 +928,6 @@ def detect_grid_cell_anomalies(
             score_edge,
             score_fill,
             score_geometry,
-            score_merge,
             slider_threshold,
         )
 
@@ -977,7 +1007,12 @@ def detect_grid_cell_anomalies(
                     CalibratedScores(
                         fill=score_fill(candidate.interior_fill_ratio, median_interior_fill),
                         geometry=score_geometry(candidate.solidity, candidate.extent, reference_solidity, reference_extent),
-                        merge=score_merge(max(width_ratio, height_ratio), area_ratio),
+                        merge=_score_merge_for_candidate(
+                            candidate,
+                            cell_width=median_width,
+                            cell_height=median_height,
+                            merge_sensitivity=cfg.merge_sensitivity,
+                        ),
                         debris=score_debris(area_ratio, max(width_ratio, height_ratio)),
                         edge=score_edge(bool(candidate.touches_border), min(width_ratio, height_ratio)),
                     )
@@ -1059,6 +1094,37 @@ def detect_grid_cell_anomalies(
                     in_lattice=len(lattice_neighbor_counts) > candidate_index
                     and lattice_neighbor_counts[candidate_index] >= 3,
                 )
+                array_area_ratio = float(candidate.area) / max(1.0, float(median_area))
+                array_width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
+                array_height_ratio = float(candidate.bbox[3]) / max(1.0, float(median_height))
+                on_column = _on_grid_axis(
+                    float(candidate.centroid[0]),
+                    edge_columns,
+                    edge_pitch_x,
+                    max(8.0, 0.55 * float(median_width)),
+                )
+                on_row = _on_grid_axis(
+                    float(candidate.centroid[1]),
+                    edge_rows,
+                    edge_pitch_y,
+                    max(8.0, 0.55 * float(median_height)),
+                )
+                edge_y = float(getattr(zone_map, "boundary_y", -1.0))
+                if edge_y >= 0.0:
+                    near_conductor_edge = edge_y - 4.0 <= float(candidate.centroid[1]) <= edge_y + max(
+                        20.0, 1.2 * float(median_height)
+                    )
+                else:
+                    near_conductor_edge = True
+                before_short = reasons
+                reasons = _promote_short_lattice_cell(
+                    reasons,
+                    on_lattice_node=on_column and on_row and not candidate.touches_border and near_conductor_edge,
+                    area_ratio=array_area_ratio,
+                    width_ratio=array_width_ratio,
+                    height_ratio=array_height_ratio,
+                )
+                forced_geometry = reasons != before_short and "broken_geometry" in reasons
                 reasons = _prefer_edge_slot_over_debris(
                     reasons,
                     candidate,
@@ -1072,6 +1138,8 @@ def detect_grid_cell_anomalies(
                     pitch_y=edge_pitch_y,
                 )
                 score = max(scores.fill, scores.geometry, scores.merge, scores.debris) if reasons else 0.0
+                if forced_geometry and "broken_geometry" in reasons:
+                    score = max(float(score), 0.80)
             else:
                 score, reasons = _classify_detected_cell(
                     candidate,
@@ -1121,6 +1189,12 @@ def detect_grid_cell_anomalies(
             if is_bad:
                 defect_entries.append((index, candidate))
             uncertainty = _cell_model_uncertainty(probability, candidate.bbox) if calibrated else None
+            outline: tuple[tuple[int, int], ...] = ()
+            contour = getattr(candidate, "contour", None)
+            if contour is not None and len(contour) >= 3:
+                points = np.asarray(contour, dtype=np.int32).reshape(-1, 2)
+                step = max(1, int(len(points) // 96))
+                outline = tuple((int(x), int(y)) for x, y in points[::step])
             per_cell.append(
                 GridCellAnalysisResult(
                     row=int(index),
@@ -1164,10 +1238,15 @@ def detect_grid_cell_anomalies(
                             ("extent", float(candidate.extent)),
                         )
                     ),
+                    outline=outline,
                 )
             )
 
-    if not zone_map.zones:
+    if (
+        not zone_map.zones
+        and not zone_supplied
+        and str(cfg.cell_representation) != "confidence"
+    ):
         zone_map = _conductor_zone_map(
             candidates,
             width=int(width),
@@ -1331,6 +1410,8 @@ def analyze_grid_frame_path(
     read_cache: bool | None = None,
     write_cache: bool | None = None,
     confidence_path: Path | str | None = None,
+    conductor_zones=None,
+    zone_cache_token: str = "",
 ) -> GridFrameAnalysisResult | None:
     """Load one image, analyze it, and cache only compact analysis data."""
 
@@ -1344,7 +1425,11 @@ def analyze_grid_frame_path(
     if should_read_cache and can_use_shared_cache:
         with profile_stage("validation.cache.disk.read", frame_id=frame_id):
             cached = _load_cached_grid_result(
-                path_obj, frame_id=frame_id, config=cfg, reference_profile=reference_profile
+                path_obj,
+                frame_id=frame_id,
+                config=cfg,
+                reference_profile=reference_profile,
+                zone_cache_token=zone_cache_token,
             )
         if cached is not None:
             profiler = current_profiler()
@@ -1370,11 +1455,17 @@ def analyze_grid_frame_path(
             config=cfg,
             reference_profile=reference_profile,
             confidence_map=confidence_image,
+            conductor_zones=conductor_zones,
         )
     if should_write_cache and can_use_shared_cache:
         with profile_stage("validation.cache.disk.write", frame_id=frame_id):
             _store_cached_grid_result(
-                path_obj, frame_id=frame_id, config=cfg, reference_profile=reference_profile, result=result
+                path_obj,
+                frame_id=frame_id,
+                config=cfg,
+                reference_profile=reference_profile,
+                result=result,
+                zone_cache_token=zone_cache_token,
             )
     profiler = current_profiler()
     if profiler is not None:
@@ -1418,6 +1509,75 @@ def build_grid_cell_reference_profile_path(
     if image is None:
         return None
     return build_grid_cell_reference_profile(image, frame_id=frame_id, frame_path=str(path_obj), config=config)
+
+
+def estimate_run_cell_reference_profile(
+    mask_paths: Sequence[str | Path],
+    *,
+    config: GridDamageAnalysisConfig | None = None,
+    sample_limit: int = 32,
+    frame_id: str = "run",
+) -> GridCellReferenceProfile | None:
+    """Modal cell size across a run of masks for one model.
+
+    Frames without a real lattice (crumbs only) do not contribute. Callers may
+    later override this with an explicit project cell size when that setting exists.
+    """
+
+    if cv2 is None:
+        return None
+    cfg = (config or GridDamageAnalysisConfig()).normalized()
+    binary_cfg = replace(cfg, cell_representation="binary").normalized()
+    widths: list[float] = []
+    heights: list[float] = []
+    areas: list[float] = []
+    fills: list[float] = []
+    interiors: list[float] = []
+    centers: list[float] = []
+    aspects: list[float] = []
+    seeds = 0
+    paths = [Path(path) for path in mask_paths if str(path)]
+    if sample_limit > 0 and len(paths) > sample_limit:
+        step = max(1, len(paths) // sample_limit)
+        paths = paths[::step][:sample_limit]
+    for path_obj in paths:
+        image = _load_cv2_grayscale_image(path_obj)
+        if image is None:
+            continue
+        gray = _normalize_grayscale(image)
+        threshold = _threshold_grid(gray, binary_cfg)
+        contours_result = cv2.findContours(threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contours_result[0] if len(contours_result) == 2 else contours_result[1]
+        hierarchy = contours_result[1] if len(contours_result) == 2 else contours_result[2]
+        candidates = _extract_candidates(contours, hierarchy, threshold, gray.shape, binary_cfg)
+        profile, cluster = _calibrated_size_profile(candidates, frame_id=str(path_obj.stem), frame_path=str(path_obj))
+        if profile is None or len(cluster) < 8:
+            continue
+        if float(profile.median_area) < 80.0:
+            continue
+        widths.append(float(profile.median_width))
+        heights.append(float(profile.median_height))
+        areas.append(float(profile.median_area))
+        fills.append(float(profile.median_fill))
+        interiors.append(float(profile.median_interior_fill))
+        centers.append(float(profile.median_center_fill))
+        aspects.append(float(profile.median_aspect))
+        seeds += int(profile.seed_count)
+    if len(areas) < 2:
+        return None
+    return GridCellReferenceProfile(
+        median_width=float(np.median(widths)),
+        median_height=float(np.median(heights)),
+        median_area=float(np.median(areas)),
+        median_fill=float(np.median(fills)),
+        median_interior_fill=float(np.median(interiors)),
+        median_center_fill=float(np.median(centers)),
+        median_aspect=float(np.median(aspects)),
+        candidate_count=int(len(areas)),
+        seed_count=int(seeds),
+        frame_id=str(frame_id or "run"),
+        frame_path="",
+    )
 
 
 def load_cached_grid_frame_result(
@@ -1478,6 +1638,272 @@ def analyze_grid_frame_chunk(
     return payloads, errors
 
 
+def classify_confidence_map_kind(image: np.ndarray) -> str:
+    """Classify a grayscale map as class probability (bimodal) or confidence (mostly high)."""
+
+    gray = _normalize_grayscale(image)
+    values = np.asarray(gray, dtype=np.float64).reshape(-1)
+    if values.size == 0:
+        return "confidence"
+    step = max(1, int(values.size // 120_000))
+    sample = values[::step]
+    p10, p50, p90 = (float(v) for v in np.percentile(sample, [10, 50, 90]))
+    low_share = float(np.mean(sample < 40.0))
+    high_share = float(np.mean(sample > 200.0))
+    if low_share >= 0.12 and high_share >= 0.12 and p10 < 50.0 and p90 > 180.0:
+        return "class_probability"
+    if p10 >= 170.0 or (high_share >= 0.70 and p50 >= 220.0):
+        return "confidence"
+    if low_share >= 0.20 and high_share >= 0.20:
+        return "class_probability"
+    return "confidence"
+
+
+def _confidence_needs_binary_message_result(
+    binary_result: GridFrameAnalysisResult | None,
+    *,
+    frame_id: str,
+    frame_path: str,
+) -> GridFrameAnalysisResult:
+    """Empty confidence-layer result explaining that a binary mask is required."""
+
+    width = int(getattr(binary_result, "image_width", 0) or 0) if binary_result is not None else 0
+    height = int(getattr(binary_result, "image_height", 0) or 0) if binary_result is not None else 0
+    return GridFrameAnalysisResult(
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+        image_width=width,
+        image_height=height,
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=0,
+        detected_cells=0,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=0,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.0,
+        severity_level="needs_binary_for_confidence",
+        grid_detected=bool(getattr(binary_result, "grid_detected", False)) if binary_result is not None else False,
+        cell_width=int(getattr(binary_result, "cell_width", 0) or 0) if binary_result is not None else 0,
+        cell_height=int(getattr(binary_result, "cell_height", 0) or 0) if binary_result is not None else 0,
+        model_file_status="needs_binary",
+    )
+
+
+def _cell_interior_mask_from_outline(
+    outline: Sequence[tuple[int, int]] | tuple[tuple[int, int], ...],
+    shape: tuple[int, int],
+    *,
+    erode_px: int = 3,
+) -> tuple[int, int, np.ndarray] | None:
+    """Return ``(x0, y0, mask)`` for the cell interior, cropped to the outline.
+
+    A full-frame mask per cell costs cells x frame pixels of memory and time.
+    The crop keeps a margin wider than the erosion kernel, so the eroded pixels
+    match a full-frame erosion exactly.
+    """
+
+    if cv2 is None or not outline:
+        return None
+    height, width = int(shape[0]), int(shape[1])
+    if height <= 0 or width <= 0:
+        return None
+    points = np.asarray([(int(x), int(y)) for x, y in outline], dtype=np.int32)
+    if points.ndim != 2 or points.shape[0] < 3:
+        return None
+    margin = max(0, int(erode_px)) + 1
+    x0 = max(0, int(points[:, 0].min()) - margin)
+    y0 = max(0, int(points[:, 1].min()) - margin)
+    x1 = min(width, int(points[:, 0].max()) + margin + 1)
+    y1 = min(height, int(points[:, 1].max()) + margin + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    cv2.fillPoly(mask, [(points - (x0, y0)).astype(np.int32).reshape(-1, 1, 2)], 255)
+    if erode_px > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_px * 2 + 1, erode_px * 2 + 1))
+        eroded = cv2.erode(mask, kernel, iterations=1)
+        if int(np.count_nonzero(eroded)) >= 8:
+            mask = eroded
+    return x0, y0, mask
+
+
+def score_confidence_fill_on_binary_result(
+    binary_result: GridFrameAnalysisResult,
+    confidence_image: np.ndarray,
+    config: GridDamageAnalysisConfig | None = None,
+    *,
+    erode_px: int = 3,
+) -> GridFrameAnalysisResult:
+    """Score filled/partial fill using binary cell geometry and confidence interior values."""
+
+    cfg = (config or GridDamageAnalysisConfig()).normalized()
+    conf = _normalize_grayscale(confidence_image)
+    if conf.ndim != 2 or binary_result.image_height <= 0 or binary_result.image_width <= 0:
+        return replace(binary_result, per_cell_results=(), damage_score=0.0, severity_level="OK")
+    if conf.shape[0] != int(binary_result.image_height) or conf.shape[1] != int(binary_result.image_width):
+        if cv2 is not None:
+            conf = cv2.resize(
+                conf,
+                (int(binary_result.image_width), int(binary_result.image_height)),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        else:
+            return replace(binary_result, per_cell_results=(), damage_score=0.0, severity_level="OK")
+
+    # Soft → harder thresholds: fill_sensitivity 0..100 → filled_floor 0.70..0.50, partial 0.20..0.10
+    sens = float(np.clip(float(cfg.fill_sensitivity), 0.0, 100.0)) / 100.0
+    filled_floor = float(0.70 - 0.20 * sens)
+    partial_floor = float(0.20 - 0.10 * sens)
+    min_drop_levels = 5.0
+    mad_k = 3.0
+
+    cells = list(binary_result.per_cell_results or ())
+    frame_w = int(binary_result.image_width)
+    frame_h = int(binary_result.image_height)
+    interior_means: list[float] = []
+    interior_masks: list[tuple[int, int, np.ndarray] | None] = []
+    for cell in cells:
+        x, y, w, h = (int(v) for v in cell.bbox[:4])
+        touches_border = x <= 1 or y <= 1 or (x + w) >= (frame_w - 1) or (y + h) >= (frame_h - 1)
+        if touches_border:
+            interior_masks.append(None)
+            interior_means.append(float("nan"))
+            continue
+        crop = _cell_interior_mask_from_outline(cell.outline, conf.shape, erode_px=erode_px)
+        interior_masks.append(crop)
+        if crop is None or not np.any(crop[2]):
+            interior_means.append(float("nan"))
+            continue
+        mx, my, mask = crop
+        values = conf[my : my + mask.shape[0], mx : mx + mask.shape[1]][mask > 0].astype(np.float64)
+        interior_means.append(float(np.median(values)) if values.size else float("nan"))
+
+    valid_means = [value for value in interior_means if np.isfinite(value)]
+    if len(valid_means) >= 5:
+        norm = float(np.median(valid_means))
+        mad = float(np.median(np.abs(np.asarray(valid_means, dtype=np.float64) - norm)))
+    elif valid_means:
+        norm = float(np.median(valid_means))
+        mad = 0.0
+    else:
+        norm = 253.0
+        mad = 0.0
+    # Floor of 8 gray levels: prompt min is 5, but real maps sit at 250–253 with 1–3 noise.
+    drop = max(8.0, min_drop_levels, mad_k * mad)
+    threshold = float(norm - drop)
+
+    scored: list[GridCellAnalysisResult] = []
+    zone_cells = [
+        cell
+        for cell in cells
+        if "conductor_zone" in set(str(reason) for reason in (cell.reasons or ()))
+    ]
+    analysis_cells = [
+        cell
+        for cell in cells
+        if "conductor_zone" not in set(str(reason) for reason in (cell.reasons or ()))
+    ]
+    # Rebuild masks/means only for non-zone cells (zones were skipped above as touches_border/NaN).
+    analysis_masks = []
+    analysis_means = []
+    for cell, crop, mean_value in zip(cells, interior_masks, interior_means):
+        if "conductor_zone" in set(str(reason) for reason in (cell.reasons or ())):
+            continue
+        analysis_masks.append(crop)
+        analysis_means.append(mean_value)
+        if crop is None or not np.any(crop[2]) or not np.isfinite(mean_value):
+            scored.append(
+                replace(
+                    cell,
+                    status="normal",
+                    score=0.0,
+                    reasons=(),
+                    mean_confidence=None,
+                    uncertain_pixel_ratio=None,
+                )
+            )
+            continue
+        mx, my, mask = crop
+        ys, xs = np.where(mask > 0)
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        local_mask = mask[y0:y1, x0:x1] > 0
+        local_conf = conf[my + y0 : my + y1, mx + x0 : mx + x1]
+        uncertain = local_mask & (local_conf < threshold)
+        interior_count = float(np.count_nonzero(local_mask))
+        uncertain_ratio = float(np.count_nonzero(uncertain)) / max(1.0, interior_count)
+        if cv2 is not None and np.any(uncertain):
+            labels = np.zeros(uncertain.shape, dtype=np.int32)
+            n_labels, labels = cv2.connectedComponents(uncertain.astype(np.uint8), connectivity=8)
+            if n_labels > 1:
+                sizes = np.bincount(labels.reshape(-1))
+                largest = float(np.max(sizes[1:])) if sizes.size > 1 else 0.0
+            else:
+                largest = 0.0
+            blob_fraction = largest / max(1.0, interior_count)
+        else:
+            blob_fraction = 0.0
+        reasons: list[str] = []
+        score = 0.0
+        # Require the cell median itself to sit below the threshold so bright cells with
+        # a few dark edge leftovers after erosion do not fire.
+        median_low = float(mean_value) <= threshold
+        if median_low and uncertain_ratio >= filled_floor:
+            reasons.append("filled_cell")
+            score = min(1.0, 0.78 + 0.35 * (uncertain_ratio - filled_floor))
+        elif median_low and blob_fraction >= partial_floor:
+            reasons.append("partial_filled_cell")
+            score = min(0.92, 0.62 + 0.5 * blob_fraction)
+        elif blob_fraction >= partial_floor and uncertain_ratio >= partial_floor:
+            # Local blotch inside an otherwise bright cell (typical smear column).
+            reasons.append("partial_filled_cell")
+            score = min(0.90, 0.60 + 0.45 * blob_fraction)
+        score, reasons_t = _filter_disabled_grid_reasons(score, tuple(reasons), cfg)
+        is_bad = bool(reasons_t)
+        scored.append(
+            replace(
+                cell,
+                status=_status_for_reasons(reasons_t) if is_bad else "normal",
+                score=float(score) if is_bad else 0.0,
+                reasons=reasons_t if is_bad else (),
+                mean_confidence=float(mean_value) / 255.0,
+                uncertain_pixel_ratio=float(uncertain_ratio),
+                feature_snapshot=(
+                    ("confidence_interior_median", float(mean_value)),
+                    ("confidence_threshold", float(threshold)),
+                    ("uncertain_ratio", float(uncertain_ratio)),
+                    ("uncertain_blob_fraction", float(blob_fraction)),
+                    ("confidence_norm", float(norm)),
+                ),
+            )
+        )
+
+    scored.extend(zone_cells)
+    _ = analysis_cells  # kept for clarity; scoring uses analysis_masks/means above
+    bad = [cell for cell in scored if cell.status != "normal" and "conductor_zone" not in set(cell.reasons or ())]
+    damage = _damage_score([cell for cell in scored if "conductor_zone" not in set(cell.reasons or ())], max(1, len(analysis_cells))) if analysis_cells else 0.0
+    severity = cfg.severity_thresholds.level_for_score(damage)
+    return replace(
+        binary_result,
+        detected_cells=len(analysis_cells),
+        normal_cells=len(analysis_cells) - len(bad),
+        suspicious_cells=sum(1 for cell in bad if cell.status == "suspicious"),
+        broken_cells=sum(1 for cell in bad if cell.status == "broken"),
+        missing_cells=0,
+        artifact_cells=sum(1 for cell in bad if cell.status == "artifact"),
+        damage_score=float(damage),
+        severity_level=str(severity),
+        per_cell_results=tuple(sorted(scored, key=lambda item: (item.row, -item.score))),
+        component_count=int(binary_result.component_count),
+        feature_clusters=(),
+        debug=None,
+        model_file_status="",
+    )
+
+
 def analyze_grid_frame_pair_chunk(
     entries: tuple[tuple[str, str, str], ...],
     config: GridDamageAnalysisConfig,
@@ -1499,33 +1925,63 @@ def analyze_grid_frame_pair_chunk(
         wanted = {"confidence", "binary"}
     need_confidence = "confidence" in wanted
     need_binary = "binary" in wanted
-    confidence_config = replace(config, cell_representation="confidence").normalized()
     binary_config = replace(config, cell_representation="binary").normalized()
     for key, confidence_path, binary_path in entries:
+        binary_obj = Path(binary_path) if binary_path else None
+        if binary_obj is None or not binary_obj.is_file():
+            missing = _missing_model_file_result(str(key), str(binary_path or ""))
+            payloads[str(key)] = {layer: missing for layer in sorted(wanted)}
+            continue
         try:
-            confidence_result = (
-                analyze_grid_frame_path(
-                    confidence_path,
-                    frame_id=key,
-                    config=confidence_config,
-                    reference_profile=reference_profile,
-                    use_cache=use_cache,
-                )
-                if need_confidence
-                else None
+            binary_image = _load_cv2_grayscale_image(binary_obj)
+            if binary_image is None:
+                errors[str(key)] = "binary_decode_error"
+                continue
+            shared_zone = conductor_zone_map_from_mask_image(binary_image, binary_config)
+            zone_token = "|".join(str(part) for part in _grid_cache_identity(binary_obj))
+            confidence_file = Path(confidence_path) if confidence_path else None
+            # Binary geometry is required for confidence fill (cells come from the mask).
+            binary_result = analyze_grid_frame_path(
+                binary_obj,
+                frame_id=key,
+                config=binary_config,
+                reference_profile=reference_profile,
+                use_cache=use_cache,
+                conductor_zones=shared_zone,
+                zone_cache_token=zone_token,
             )
-            binary_result = (
-                analyze_grid_frame_path(
-                    binary_path,
-                    frame_id=key,
-                    config=binary_config,
-                    reference_profile=None,
-                    use_cache=use_cache,
-                    confidence_path=confidence_path or None,
-                )
-                if need_binary
-                else None
-            )
+            confidence_result = None
+            if need_confidence:
+                if confidence_file is None or not confidence_file.is_file():
+                    confidence_result = _missing_model_file_result(str(key), str(confidence_path or ""))
+                elif not isinstance(binary_result, GridFrameAnalysisResult):
+                    confidence_result = _confidence_needs_binary_message_result(
+                        None, frame_id=str(key), frame_path=str(confidence_path or "")
+                    )
+                else:
+                    confidence_image = _load_cv2_grayscale_image(confidence_file)
+                    if confidence_image is None:
+                        errors[str(key)] = "confidence_decode_error"
+                        continue
+                    map_kind = classify_confidence_map_kind(confidence_image)
+                    if map_kind == "class_probability":
+                        # Threshold to a synthetic binary, then score the confidence map on those cells.
+                        binary_from_prob = (confidence_image >= 128).astype(np.uint8) * 255
+                        synthetic = detect_grid_cell_anomalies(
+                            binary_from_prob,
+                            frame_id=key,
+                            frame_path=str(confidence_file),
+                            config=binary_config,
+                            reference_profile=reference_profile,
+                            conductor_zones=shared_zone,
+                        )
+                        confidence_result = score_confidence_fill_on_binary_result(
+                            synthetic, confidence_image, config
+                        )
+                    else:
+                        confidence_result = score_confidence_fill_on_binary_result(
+                            binary_result, confidence_image, config
+                        )
         except Exception as error:
             errors[str(key)] = f"{type(error).__name__}: {error}"
             continue
@@ -1625,6 +2081,16 @@ def analyze_grid_frame_sources_chunk(
             errors.update(pair_errors)
             continue
         try:
+            if confidence_path and not Path(confidence_path).is_file():
+                payloads[str(key)] = {
+                    layer: _missing_model_file_result(str(key), str(confidence_path)) for layer in sorted(wanted)
+                }
+                continue
+            if binary_path and not Path(binary_path).is_file():
+                payloads[str(key)] = {
+                    layer: _missing_model_file_result(str(key), str(binary_path)) for layer in sorted(wanted)
+                }
+                continue
             if confidence_path:
                 if "confidence" not in wanted:
                     continue
@@ -2611,17 +3077,59 @@ def _retarget_local_medians(
         if max_neighbors == 0 or int(band_count) < 3 or not np.isfinite(width_median[index]):
             retargeted.append(dict(fallback))
             continue
-        retargeted.append(
-            {
-                "width": max(1.0, float(width_median[index])),
-                "height": max(1.0, float(height_median[index])),
-                "area": max(1.0, float(area_median[index])),
-                "interior_fill": float(interior_median[index]),
-                "solidity": float(solidity_median[index]),
-                "extent": float(extent_median[index]),
-            }
-        )
+        local = {
+            "width": max(1.0, float(width_median[index])),
+            "height": max(1.0, float(height_median[index])),
+            "area": max(1.0, float(area_median[index])),
+            "interior_fill": float(interior_median[index]),
+            "solidity": float(solidity_median[index]),
+            "extent": float(extent_median[index]),
+        }
+        # A whole damaged row is its own median. Use it only when it still
+        # matches the array. A clump far from the array is scored against the array.
+        if _local_shape_matches_array(local, fallback):
+            retargeted.append(local)
+        else:
+            retargeted.append(dict(fallback))
     return retargeted, band_counts
+
+
+def _local_shape_matches_array(local: dict[str, float], array: dict[str, float]) -> bool:
+    for key in ("width", "height", "area"):
+        modal = float(array[key])
+        value = float(local[key])
+        if modal <= 1.0 or value <= 0.0:
+            continue
+        ratio = value / modal
+        if ratio < 0.75 or ratio > 1.35:
+            return False
+    return True
+
+
+def _score_merge_for_candidate(
+    candidate: _ContourCandidate,
+    *,
+    cell_width: float,
+    cell_height: float,
+    merge_sensitivity: int,
+) -> float:
+    """Core-based merge score. Tiny blobs skip the distance transform."""
+
+    from .grid_merge_cores import score_merge_cores
+
+    cell_area = max(4.0, float(cell_width) * float(cell_height))
+    if float(candidate.area) < 1.4 * cell_area:
+        return 0.0
+    return float(
+        score_merge_cores(
+            candidate.contour,
+            candidate.bbox,
+            area=float(candidate.area),
+            cell_width=float(cell_width),
+            cell_height=float(cell_height),
+            merge_sensitivity=int(merge_sensitivity),
+        )
+    )
 
 
 def _gate_calibrated_reasons(
@@ -2633,19 +3141,19 @@ def _gate_calibrated_reasons(
     area: float,
     in_lattice: bool,
 ) -> tuple[str, ...]:
-    """Keep merge/geometry on slot-sized lattice cells. Specks and conductor fields are not those defects."""
+    """Keep geometry/debris on slot-sized lattice cells. Merge uses cores, not the lattice."""
 
     largest = max(float(width_ratio), float(height_ratio))
     smallest = min(float(width_ratio), float(height_ratio))
     found = list(reasons)
     if not in_lattice:
         # Noise and conductor masses have no cell-sized neighbors. They are not slot defects.
+        # merged_contour is decided by cores inside the blob and is not gated here.
         found = [
             reason
             for reason in found
             if reason
             not in {
-                "merged_contour",
                 "broken_geometry",
                 "small_artifact",
                 "edge_clipped_cell",
@@ -2653,9 +3161,6 @@ def _gate_calibrated_reasons(
                 "partial_filled_cell",
             }
         ]
-    pair_like = 1.45 <= largest <= 3.60 and smallest <= 1.75 and float(area_ratio) <= 3.80
-    if "merged_contour" in found and not pair_like:
-        found = [reason for reason in found if reason != "merged_contour"]
     slot_like = 0.55 <= float(area_ratio) <= 1.90 and smallest >= 0.50 and largest <= 1.85
     if "broken_geometry" in found and not slot_like:
         found = [reason for reason in found if reason != "broken_geometry"]
@@ -2665,6 +3170,39 @@ def _gate_calibrated_reasons(
     if "small_artifact" in found and float(area) < 24.0:
         found = [reason for reason in found if reason != "small_artifact"]
     return tuple(dict.fromkeys(found))
+
+
+def _promote_short_lattice_cell(
+    reasons: tuple[str, ...],
+    *,
+    on_lattice_node: bool,
+    area_ratio: float,
+    width_ratio: float,
+    height_ratio: float,
+) -> tuple[str, ...]:
+    """A short or smeared cell on a lattice node is broken geometry.
+
+    The node is a column and a row of the array, on the conductor edge when
+    that edge exists. A frame-edge clip is not this case. Debris stays off
+    the node, or when the piece is under 0.30 of a cell. A flat double-width
+    piece with a normal area is the squashed cell, not two full cells.
+    """
+
+    if not on_lattice_node:
+        return reasons
+    smallest = min(float(width_ratio), float(height_ratio))
+    short = 0.30 <= float(area_ratio) <= 0.55 and smallest <= 0.80
+    smeared = (
+        float(width_ratio) >= 1.65
+        and float(height_ratio) <= 1.15
+        and 0.70 <= float(area_ratio) <= 1.15
+    )
+    if not short and not smeared:
+        return reasons
+    found = [reason for reason in reasons if reason != "small_artifact"]
+    if "broken_geometry" not in found:
+        found.append("broken_geometry")
+    return tuple(found)
 
 
 def _cluster_centers(coords: list[float], gap: float) -> list[float]:
@@ -2923,7 +3461,7 @@ def _is_cell_like_candidate(
     area_ratio = float(candidate.area) / max(1.0, float(median_area))
     representation = str(getattr(config, "cell_representation", "confidence") or "confidence")
     if representation == "binary":
-        return bool(
+        filled = (
             0.52 <= min(width_ratio, height_ratio)
             and max(width_ratio, height_ratio) <= 1.62
             and 0.34 <= area_ratio <= 2.35
@@ -2931,6 +3469,15 @@ def _is_cell_like_candidate(
             and candidate.interior_fill_ratio >= 0.20
             and candidate.solidity >= 0.58
         )
+        # A mask file can still be an outline drawing. A repeated hollow cell is the grid.
+        outline = (
+            0.52 <= min(width_ratio, height_ratio)
+            and max(width_ratio, height_ratio) <= 1.62
+            and 0.15 <= area_ratio <= 2.35
+            and candidate.child_count > 0
+            and candidate.interior_fill_ratio <= 0.34
+        )
+        return bool(filled or outline)
     return bool(
         0.56 <= min(width_ratio, height_ratio)
         and max(width_ratio, height_ratio) <= 1.55
@@ -2941,13 +3488,13 @@ def _is_cell_like_candidate(
     )
 
 
-def _status_for_reasons(reasons: tuple[str, ...]) -> str:
-    reason_set = {str(reason) for reason in reasons}
-    if reason_set == {"small_artifact"}:
-        # Mid-size standalone dirt / inaccurate cell: possible inaccuracy, not hard debris.
-        return "suspicious"
-    if "small_artifact" in reason_set:
-        return "artifact"
+def _status_for_reasons(_reasons: tuple[str, ...]) -> str:
+    """Every detected error is a broken cell, including debris on its own.
+
+    Older results may still carry status ``suspicious`` or ``artifact``. Those
+    values stay readable; new analysis does not emit them for debris.
+    """
+
     return "broken"
 
 
@@ -3062,6 +3609,177 @@ def _bbox_gap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> flo
     return float(np.hypot(horizontal, vertical))
 
 
+def _binary_conductor_zone_map(gray: np.ndarray, threshold: np.ndarray, contours, hierarchy, cfg: GridDamageAnalysisConfig):
+    """Zone from a binary mask only. Confidence maps must not call this on themselves."""
+
+    probes = _zone_probe_candidates(contours, hierarchy, gray.shape, cfg)
+    hint_area, hint_width, hint_height = _zone_size_hint(probes, contours, threshold)
+    if hint_area <= 0.0:
+        return _empty_conductor_zone_map()
+    pitch_columns, pitch_rows, pitch_x, pitch_y = _lattice_grid_axes(
+        probes,
+        modal_width=hint_width,
+        modal_height=hint_height,
+        modal_area=hint_area,
+    )
+    height, width = gray.shape
+    return _conductor_zone_map(
+        probes,
+        width=int(width),
+        height=int(height),
+        columns=pitch_columns,
+        rows=pitch_rows,
+        pitch_x=pitch_x,
+        pitch_y=pitch_y,
+        modal_area=hint_area,
+        modal_width=hint_width,
+        modal_height=hint_height,
+        confidence=None,
+        foreground=threshold,
+    )
+
+
+def conductor_zone_map_from_mask_image(
+    image: np.ndarray,
+    config: GridDamageAnalysisConfig | None = None,
+):
+    """Build the frame zone from a binary model mask."""
+
+    cfg = replace((config or GridDamageAnalysisConfig()).normalized(), cell_representation="binary")
+    gray = _normalize_grayscale(image)
+    if gray.size <= 1 or cv2 is None:
+        return _empty_conductor_zone_map()
+    threshold = _threshold_grid(gray, cfg)
+    contours_result = cv2.findContours(threshold, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours = contours_result[0] if len(contours_result) == 2 else contours_result[1]
+    hierarchy = contours_result[1] if len(contours_result) == 2 else contours_result[2]
+    return _binary_conductor_zone_map(gray, threshold, contours, hierarchy, cfg)
+
+
+def _missing_model_file_result(frame_id: str, frame_path: str = "") -> GridFrameAnalysisResult:
+    return GridFrameAnalysisResult(
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+        image_width=0,
+        image_height=0,
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=0,
+        detected_cells=0,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=0,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.0,
+        severity_level="missing_model_file",
+        grid_detected=False,
+        model_file_status="missing",
+    )
+
+
+def _count_profile_matched_cells(
+    candidates: Sequence[_ContourCandidate],
+    profile: GridCellReferenceProfile,
+) -> int:
+    """How many contours look like the run/modal cell size (not crumbs)."""
+
+    width = max(1.0, float(profile.median_width))
+    height = max(1.0, float(profile.median_height))
+    area = max(1.0, float(profile.median_area))
+    matched = 0
+    for item in candidates:
+        box_w = float(item.bbox[2])
+        box_h = float(item.bbox[3])
+        if not (0.70 * width <= box_w <= 1.35 * width):
+            continue
+        if not (0.70 * height <= box_h <= 1.35 * height):
+            continue
+        if not (0.55 * area <= float(item.area) <= 1.80 * area):
+            continue
+        if float(item.solidity) < 0.70:
+            continue
+        matched += 1
+    return int(matched)
+
+
+def _profile_looks_like_cell_array(profile: GridCellReferenceProfile | None) -> bool:
+    if profile is None:
+        return False
+    # Real SEM cells are ~20×26 (area≈500). Synthetic/unit lattices may be ~12×12.
+    # Reject only crumb-scale norms (a few pixels).
+    return (
+        float(profile.median_area) >= 80.0
+        and float(profile.median_width) >= 10.0
+        and float(profile.median_height) >= 10.0
+    )
+
+
+def _frame_has_reliable_cell_array(
+    candidates: Sequence[_ContourCandidate],
+    profile: GridCellReferenceProfile | None,
+    *,
+    min_matched: int = 24,
+) -> bool:
+    """Reject crumb-only frames (e.g. no array) that would invent a tiny cell norm."""
+
+    if not _profile_looks_like_cell_array(profile):
+        return False
+    matched = _count_profile_matched_cells(candidates, profile)
+    if matched < max(8, int(min_matched)):
+        return False
+    # No-array frames still throw a few coincidental cell-sized blobs among thousands of crumbs.
+    if len(candidates) >= max(120, 4 * matched) and matched < 80:
+        return False
+    return True
+
+
+def _no_cell_array_result(
+    *,
+    frame_id: str,
+    frame_path: str,
+    width: int,
+    height: int,
+    component_count: int = 0,
+    zone_map=None,
+    zone_skipped: int = 0,
+    cell_width: float = 0.0,
+    cell_height: float = 0.0,
+    config: GridDamageAnalysisConfig | None = None,
+) -> GridFrameAnalysisResult:
+    """Frame without a reliable cell lattice: zero cell defects, optional conductor zones."""
+
+    cfg = (config or GridDamageAnalysisConfig()).normalized()
+    zones: list[GridCellAnalysisResult] = []
+    enabled = set(cfg.enabled_reason_types or GRID_DAMAGE_REASON_TYPES)
+    if zone_map is not None and getattr(zone_map, "zones", ()) and "conductor_zone" in enabled:
+        zones = [_zone_cell_record(zone, row=index, contour_id=index + 1) for index, zone in enumerate(zone_map.zones)]
+    return GridFrameAnalysisResult(
+        frame_id=str(frame_id or ""),
+        frame_path=str(frame_path or ""),
+        image_width=int(width),
+        image_height=int(height),
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=0,
+        detected_cells=0,
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=0,
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.0,
+        severity_level="no_cell_array",
+        grid_detected=False,
+        per_cell_results=tuple(zones),
+        component_count=int(component_count),
+        cell_width=int(round(float(cell_width or 0.0))),
+        cell_height=int(round(float(cell_height or 0.0))),
+        zone_skipped_components=int(zone_skipped),
+        model_file_status="no_cell_array",
+    )
+
+
 def _conductor_zone_map(
     candidates: list[_ContourCandidate],
     *,
@@ -3101,12 +3819,16 @@ def _collapse_conductor_regions(
     median_width: float,
     median_height: float,
 ) -> list[GridCellAnalysisResult]:
-    """Merge adjacent large merged-mass fragments into one rectangle per blob."""
+    """Merge adjacent core-based merged_contour hits into one rectangle per blob.
+
+    Conductor residue keeps its own reason — folding it into merged_contour made
+    false merges on grain / no-array frames.
+    """
 
     conductor_indexes = [
         index
         for index, cell in enumerate(per_cell)
-        if "merged_contour" in tuple(cell.reasons or ()) or "conductor_residue" in tuple(cell.reasons or ())
+        if "merged_contour" in tuple(cell.reasons or ())
     ]
     if len(conductor_indexes) <= 1:
         return per_cell
@@ -3187,6 +3909,7 @@ def _analyze_conductor_only_frame(
     started: float,
     zone_map=None,
     zone_skipped: int = 0,
+    zone_supplied: bool = False,
 ) -> GridFrameAnalysisResult:
     """One conductor zone per off-grid mass when the frame has no cell lattice."""
 
@@ -3211,7 +3934,7 @@ def _analyze_conductor_only_frame(
         component_count=int(len(candidates)),
         zone_skipped_components=int(zone_skipped),
     )
-    if zone_map is None or not getattr(zone_map, "zones", ()):
+    if not zone_supplied and (zone_map is None or not getattr(zone_map, "zones", ())):
         zone_map = _conductor_zone_map(
             candidates,
             width=int(width),
@@ -3385,6 +4108,9 @@ def _apply_confidence_geometry_boost(
     slot_like = 0.22 <= smallest and largest <= 1.85 and 0.10 <= area_ratio <= 2.40
     if not slot_like:
         return score, reasons
+    # The repeated cell is the norm, even when the drawing is an outline.
+    if 0.85 <= width_ratio <= 1.15 and 0.85 <= height_ratio <= 1.15 and 0.75 <= area_ratio <= 1.25:
+        return score, reasons
     irregular = (
         float(candidate.solidity) <= 0.90
         or abs(float(candidate.extent) - 0.74) >= 0.10
@@ -3493,7 +4219,14 @@ def _classify_binary_cell(
         and extent_delta < 0.12
         and int(candidate.approx_vertices) <= 10
     )
-    if broken:
+    flat_slot = (
+        slot_sized
+        and smallest_axis <= 0.55
+        and largest_axis >= 0.75
+        and float(area_ratio) <= 0.70
+        and float(candidate.solidity) >= 0.85
+    )
+    if broken or flat_slot:
         reasons.append("broken_geometry")
         score = max(
             score,
@@ -4608,6 +5341,7 @@ def _grid_damage_cache_key(
     frame_id: str,
     config: GridDamageAnalysisConfig,
     reference_profile: GridCellReferenceProfile | None = None,
+    zone_cache_token: str = "",
 ) -> tuple[Any, ...]:
     return (
         GRID_DAMAGE_ALGORITHM_VERSION,
@@ -4617,6 +5351,7 @@ def _grid_damage_cache_key(
         None if reference_profile is None else reference_profile.cache_payload(),
         bool(getattr(config, "calibration_fingerprint", "")),
         str(getattr(config, "calibration_fingerprint", "") or ""),
+        str(zone_cache_token or ""),
     )
 
 
@@ -4631,9 +5366,16 @@ def _load_cached_grid_result(
     frame_id: str,
     config: GridDamageAnalysisConfig,
     reference_profile: GridCellReferenceProfile | None = None,
+    zone_cache_token: str = "",
 ) -> GridFrameAnalysisResult | None:
     cache_path = _grid_damage_cache_path(
-        _grid_damage_cache_key(path, frame_id=frame_id, config=config, reference_profile=reference_profile)
+        _grid_damage_cache_key(
+            path,
+            frame_id=frame_id,
+            config=config,
+            reference_profile=reference_profile,
+            zone_cache_token=zone_cache_token,
+        )
     )
     if not cache_path.is_file():
         return None
@@ -4655,12 +5397,19 @@ def _store_cached_grid_result(
     config: GridDamageAnalysisConfig,
     reference_profile: GridCellReferenceProfile | None = None,
     result: GridFrameAnalysisResult,
+    zone_cache_token: str = "",
 ) -> None:
     global _grid_damage_cache_last_trim
     try:
         GRID_DAMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_path = _grid_damage_cache_path(
-            _grid_damage_cache_key(path, frame_id=frame_id, config=config, reference_profile=reference_profile)
+            _grid_damage_cache_key(
+                path,
+                frame_id=frame_id,
+                config=config,
+                reference_profile=reference_profile,
+                zone_cache_token=zone_cache_token,
+            )
         )
         atomic_pickle_dump(cache_path, result)
         now = time.monotonic()

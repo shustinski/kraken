@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -12,7 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse as urlparse, request
 
-_VERSION_PART_RE = re.compile(r"\d+")
+_VERSION_CORE_RE = re.compile(r"^(?P<core>\d+(?:\.\d+)*)(?P<suffix>.*)$", re.ASCII)
+_PRERELEASE_TOKEN_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
 _INSTALLER_NAME_RE = re.compile(
     r"^(?P<stem>.+?)-(?P<version>\d+(?:\.\d+)*(?:[-._][A-Za-z0-9]+)*)\.(?:exe|msi|appimage)$",
@@ -22,6 +24,7 @@ _UPDATE_SETTINGS_KEY = "last_notified_version"
 _UPDATE_CHANNEL_SETTINGS_KEY = "selected_channel"
 _UPDATE_CLEANUP_MAX_RETRIES = 300
 _UPDATE_CLEANUP_DELAY_SECONDS = 2
+_INNO_SILENT_ARGS = ("/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,7 @@ class ReleaseInfo:
     notes: str = ""
     channel: str = ""
     platform: str = ""
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,7 @@ class UpdateInfo:
     mandatory: bool = False
     releases: tuple[ReleaseInfo, ...] = ()
     channel: str = "stable"
+    sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -69,17 +74,70 @@ class UpdateClientConfig:
         return ""
 
 
-def parse_version_parts(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in _VERSION_PART_RE.findall(str(version)))
+def _parse_prerelease_tokens(suffix: str) -> tuple[int | str, ...]:
+    cleaned = str(suffix or "").strip().lstrip(".-_")
+    if not cleaned:
+        return ()
+    tokens: list[int | str] = []
+    for raw in re.split(r"[-._]+", cleaned):
+        part = str(raw or "").strip()
+        if not part:
+            continue
+        if part.isdigit():
+            tokens.append(int(part))
+            continue
+        matched = _PRERELEASE_TOKEN_RE.match(part)
+        if matched is not None:
+            tokens.append(matched.group(1).lower())
+            tokens.append(int(matched.group(2)))
+            continue
+        tokens.append(part.lower())
+    return tuple(tokens)
+
+
+def parse_version_parts(version: str) -> tuple:
+    """Return a comparable version key where newer versions compare greater.
+
+    Plain ``X.Y.Z`` releases sort above the same numbers with any prerelease
+    suffix. Prerelease forms ``beta0``, ``beta.0`` and ``beta-0`` are equivalent.
+    """
+
+    text = str(version or "").strip()
+    matched = _VERSION_CORE_RE.match(text)
+    if matched is None:
+        return ((0,), 0, ())
+    core = tuple(int(part) for part in matched.group("core").split("."))
+    prerelease = _parse_prerelease_tokens(matched.group("suffix"))
+    is_release = 0 if prerelease else 1
+    return (core, is_release, prerelease)
 
 
 def compare_versions(left: str, right: str) -> int:
-    left_parts = parse_version_parts(left)
-    right_parts = parse_version_parts(right)
-    max_len = max(len(left_parts), len(right_parts))
-    left_padded = left_parts + (0,) * (max_len - len(left_parts))
-    right_padded = right_parts + (0,) * (max_len - len(right_parts))
-    return (left_padded > right_padded) - (left_padded < right_padded)
+    left_core, left_release, left_pre = parse_version_parts(left)
+    right_core, right_release, right_pre = parse_version_parts(right)
+    max_len = max(len(left_core), len(right_core))
+    left_padded = left_core + (0,) * (max_len - len(left_core))
+    right_padded = right_core + (0,) * (max_len - len(right_core))
+    if left_padded != right_padded:
+        return (left_padded > right_padded) - (left_padded < right_padded)
+    if left_release != right_release:
+        return (left_release > right_release) - (left_release < right_release)
+    return _compare_prerelease_identifiers(left_pre, right_pre)
+
+
+def _compare_prerelease_identifiers(left: tuple[int | str, ...], right: tuple[int | str, ...]) -> int:
+    for left_item, right_item in zip(left, right):
+        if type(left_item) is type(right_item):
+            if left_item != right_item:
+                return (left_item > right_item) - (left_item < right_item)
+            continue
+        # SemVer: numeric identifiers have lower precedence than non-numeric.
+        if isinstance(left_item, int):
+            return -1
+        return 1
+    if len(left) != len(right):
+        return (len(left) > len(right)) - (len(left) < len(right))
+    return 0
 
 
 def is_newer_version(candidate: str, current: str) -> bool:
@@ -151,6 +209,7 @@ def load_update_manifest_url(
     env_prefix: str | None = None,
     settings_org: str | None = None,
     settings_app: str = "Updater",
+    settings_path: str | Path | None = None,
 ) -> str:
     config = load_update_client_config(app_id=app_id, config_path=config_path, env_prefix=env_prefix)
     selected_channel = load_selected_update_channel(
@@ -158,6 +217,7 @@ def load_update_manifest_url(
         available_channels=config.available_channels,
         settings_org=settings_org or app_id,
         settings_app=settings_app,
+        settings_path=settings_path,
     )
     return config.get_manifest_url(channel or selected_channel)
 
@@ -168,6 +228,7 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
         return None
     channel = normalize_update_channel(str(payload.get("channel", "stable")))
     top_level_download_url = str(payload.get("download_url", "")).strip()
+    top_level_sha256 = _normalize_sha256(payload.get("sha256"))
     release_notes = _resolve_release_notes(payload, source=source)
     releases = _parse_release_entries(payload.get("releases"), source=source, default_channel=channel)
     if releases:
@@ -175,10 +236,13 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
         for release in releases:
             download_url = release.download_url
             notes = release.notes
+            sha256 = release.sha256
             if release.version == version and not download_url:
                 download_url = top_level_download_url
             if release.version == version and not notes:
                 notes = release_notes
+            if release.version == version and not sha256:
+                sha256 = top_level_sha256
             normalized_releases.append(
                 ReleaseInfo(
                     version=release.version,
@@ -186,11 +250,20 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
                     notes=notes,
                     channel=release.channel or channel,
                     platform=release.platform,
+                    sha256=sha256,
                 )
             )
         releases = tuple(normalized_releases)
     if not releases:
-        releases = (ReleaseInfo(version=version, download_url=top_level_download_url, notes=release_notes, channel=channel),)
+        releases = (
+            ReleaseInfo(
+                version=version,
+                download_url=top_level_download_url,
+                notes=release_notes,
+                channel=channel,
+                sha256=top_level_sha256,
+            ),
+        )
     return UpdateInfo(
         version=version,
         download_url=top_level_download_url,
@@ -198,6 +271,7 @@ def parse_update_payload(payload: dict[str, Any], *, source: str = "") -> Update
         mandatory=bool(payload.get("mandatory", False)),
         releases=releases,
         channel=channel,
+        sha256=top_level_sha256,
     )
 
 
@@ -264,10 +338,12 @@ def _resolve_filesystem_downloads(update_info: UpdateInfo, directory: Path) -> U
                 notes=release.notes,
                 channel=release.channel,
                 platform=release.platform,
+                sha256=release.sha256,
             )
             for release in update_info.releases
         ),
         channel=update_info.channel,
+        sha256=update_info.sha256,
     )
 
 
@@ -317,12 +393,18 @@ def load_selected_update_channel(
     available_channels: tuple[str, ...] | list[str] | None = None,
     settings_org: str = "Kraken",
     settings_app: str = "Updater",
+    settings_path: str | Path | None = None,
 ) -> str:
     try:
         from PyQt6.QtCore import QSettings
     except ImportError:
         return normalize_update_channel(default_channel)
-    settings = _create_settings(QSettings, settings_org=settings_org, settings_app=settings_app)
+    settings = _create_settings(
+        QSettings,
+        settings_org=settings_org,
+        settings_app=settings_app,
+        settings_path=settings_path,
+    )
     value = settings.value(_UPDATE_CHANNEL_SETTINGS_KEY, default_channel, type=str)
     settings.sync()
     normalized = normalize_update_channel(str(value or default_channel))
@@ -337,7 +419,13 @@ def load_selected_update_channel(
     return normalized
 
 
-def save_selected_update_channel(channel: str, *, settings_org: str = "Kraken", settings_app: str = "Updater") -> None:
+def save_selected_update_channel(
+    channel: str,
+    *,
+    settings_org: str = "Kraken",
+    settings_app: str = "Updater",
+    settings_path: str | Path | None = None,
+) -> None:
     normalized = normalize_update_channel(channel)
     if not normalized:
         return
@@ -345,7 +433,12 @@ def save_selected_update_channel(channel: str, *, settings_org: str = "Kraken", 
         from PyQt6.QtCore import QSettings
     except ImportError:
         return
-    settings = _create_settings(QSettings, settings_org=settings_org, settings_app=settings_app)
+    settings = _create_settings(
+        QSettings,
+        settings_org=settings_org,
+        settings_app=settings_app,
+        settings_path=settings_path,
+    )
     settings.setValue(_UPDATE_CHANNEL_SETTINGS_KEY, normalized)
     settings.sync()
 
@@ -355,12 +448,18 @@ def load_last_notified_version(
     *,
     settings_org: str = "Kraken",
     settings_app: str = "Updater",
+    settings_path: str | Path | None = None,
 ) -> str:
     try:
         from PyQt6.QtCore import QSettings
     except ImportError:
         return ""
-    settings = _create_settings(QSettings, settings_org=settings_org, settings_app=settings_app)
+    settings = _create_settings(
+        QSettings,
+        settings_org=settings_org,
+        settings_app=settings_app,
+        settings_path=settings_path,
+    )
     value = settings.value(_last_notified_key(channel), "", type=str)
     if not str(value or "").strip() and channel:
         value = settings.value(_UPDATE_SETTINGS_KEY, "", type=str)
@@ -374,6 +473,7 @@ def save_last_notified_version(
     *,
     settings_org: str = "Kraken",
     settings_app: str = "Updater",
+    settings_path: str | Path | None = None,
 ) -> None:
     normalized = str(version or "").strip()
     if not normalized:
@@ -382,9 +482,36 @@ def save_last_notified_version(
         from PyQt6.QtCore import QSettings
     except ImportError:
         return
-    settings = _create_settings(QSettings, settings_org=settings_org, settings_app=settings_app)
+    settings = _create_settings(
+        QSettings,
+        settings_org=settings_org,
+        settings_app=settings_app,
+        settings_path=settings_path,
+    )
     settings.setValue(_last_notified_key(channel), normalized)
     settings.sync()
+
+
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_installer_sha256(path: str | Path, expected_sha256: str | None) -> None:
+    expected = _normalize_sha256(expected_sha256)
+    if not expected:
+        return
+    actual = file_sha256(path)
+    if actual != expected:
+        raise ValueError(
+            f"Installer checksum mismatch: expected {expected}, got {actual}."
+        )
 
 
 def download_update_installer(
@@ -404,6 +531,7 @@ def download_update_installer(
             raise FileNotFoundError(f"Installer file not found: {source_path}")
         shutil.copyfile(source_path, target_path)
         _ensure_posix_executable(target_path)
+        verify_installer_sha256(target_path, getattr(release_info, "sha256", ""))
         return target_path
     with request.urlopen(source, timeout=30.0) as response:
         with target_path.open("wb") as file:
@@ -413,6 +541,7 @@ def download_update_installer(
                     break
                 file.write(chunk)
     _ensure_posix_executable(target_path)
+    verify_installer_sha256(target_path, getattr(release_info, "sha256", ""))
     return target_path
 
 
@@ -420,13 +549,13 @@ def get_update_staging_dir(app_id: str = "kraken") -> Path:
     return Path(tempfile.gettempdir()) / f"{_sanitize_filename(app_id)}Updater"
 
 
-def launch_update_installer(installer_path: str | Path) -> None:
+def launch_update_installer(installer_path: str | Path, *, silent: bool = True) -> None:
     installer = Path(installer_path)
     if os.name != "nt":
         _ensure_posix_executable(installer)
         subprocess.Popen([str(installer)], close_fds=True)
         return
-    launcher_path = _write_update_launcher_script()
+    launcher_path = _write_update_launcher_script(silent=silent)
     creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
         getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     )
@@ -472,6 +601,7 @@ def _parse_release_entries(raw_value: Any, *, source: str = "", default_channel:
                 notes=_resolve_release_notes(item, source=source),
                 channel=normalize_update_channel(str(item.get("channel", default_channel))),
                 platform=str(item.get("platform", "") or "").strip().lower(),
+                sha256=_normalize_sha256(item.get("sha256")),
             )
         )
     return tuple(entries)
@@ -571,14 +701,16 @@ def _is_filesystem_source(value: str) -> bool:
     return bool(normalized) and _URL_SCHEME_RE.match(normalized) is None
 
 
-def _write_update_launcher_script() -> Path:
+def _write_update_launcher_script(*, silent: bool = True) -> Path:
     launcher_path = Path(tempfile.gettempdir()) / f"kraken_update_cleanup_{uuid.uuid4().hex}.cmd"
+    installer_args = " ".join(_INNO_SILENT_ARGS) if silent else ""
+    run_line = f'"%~1" {installer_args}'.rstrip()
     launcher_path.write_text(
         "\n".join(
             (
                 "@echo off",
                 "setlocal",
-                '"%~1"',
+                run_line,
                 "set /a RETRIES=0",
                 ":retry_cleanup",
                 'rmdir /s /q "%~2" >nul 2>&1',
@@ -597,13 +729,24 @@ def _write_update_launcher_script() -> Path:
     return launcher_path
 
 
-def _create_settings(qsettings_cls, *, settings_org: str, settings_app: str):
+def _create_settings(qsettings_cls, *, settings_org: str, settings_app: str, settings_path: str | Path | None = None):
+    if settings_path is not None:
+        path = Path(settings_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return qsettings_cls(str(path), qsettings_cls.Format.IniFormat)
     settings_root = str(os.getenv(f"{_normalize_env_prefix(settings_org)}_SETTINGS_DIR", "")).strip()
     if settings_root:
         path = Path(settings_root)
         path.mkdir(parents=True, exist_ok=True)
         return qsettings_cls(str(path / f"{settings_org}_{settings_app}.ini"), qsettings_cls.Format.IniFormat)
     return qsettings_cls(settings_org, settings_app)
+
+
+def _normalize_sha256(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        return ""
+    return text
 
 
 def _resolve_config_path(app_id: str, config_path: str | Path | None) -> Path | None:

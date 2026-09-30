@@ -698,23 +698,43 @@ def grid_cell_defect_check_mask(
     return mask
 
 
-def _grid_defect_reason_rgb(reasons: tuple[str, ...] | list[str], *, status: str = "") -> tuple[int, int, int]:
-    """Map defect reasons to the stable palette used by the UI (color encodes defect type)."""
+def _grid_defect_reason_rgb(
+    reasons: tuple[str, ...] | list[str],
+    *,
+    status: str = "",
+    selected_types: set[str] | None = None,
+) -> tuple[int, int, int]:
+    """Map defect reasons to the stable palette used by the UI (color encodes defect type).
 
+    When ``selected_types`` is set, the color is the highest-priority selected reason.
+    An unselected reason never paints the cell.
+    """
+
+    from .grid_anomaly import _DEFECT_REASON_PRIORITY
     from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS, GRID_INSPECTION_ERROR_TYPE_OPTIONS
 
     reason_set = {str(reason) for reason in reasons if str(reason)}
-    for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
-        if str(error_type) in reason_set:
-            hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get(str(error_type), "#94a3b8")
-            break
+    if selected_types is not None:
+        ranked = sorted(
+            (reason for reason in reason_set if reason in selected_types),
+            key=lambda reason: _DEFECT_REASON_PRIORITY.get(reason, 10),
+            reverse=True,
+        )
+        if not ranked:
+            return (0, 0, 0)
+        hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get(ranked[0], "#94a3b8")
     else:
-        if str(status) == "suspicious":
-            hex_color = "#fbbf24"
-        elif str(status) == "artifact":
-            hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get("small_artifact", "#ec4899")
+        for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
+            if str(error_type) in reason_set:
+                hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get(str(error_type), "#94a3b8")
+                break
         else:
-            hex_color = "#94a3b8"
+            if str(status) == "suspicious":
+                hex_color = "#fbbf24"
+            elif str(status) == "artifact":
+                hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get("small_artifact", "#ec4899")
+            else:
+                hex_color = "#94a3b8"
     value = str(hex_color).lstrip("#")
     if len(value) != 6:
         return (148, 163, 184)
@@ -748,7 +768,11 @@ def grid_cell_defect_color_layer(
         y1 = min(height, y + h)
         if x1 <= x or y1 <= y:
             continue
-        color = _grid_defect_reason_rgb(reasons, status=str(getattr(cell, "status", "") or ""))
+        color = _grid_defect_reason_rgb(
+            reasons,
+            status=str(getattr(cell, "status", "") or ""),
+            selected_types=enabled_set,
+        )
         layer[y:y1, x:x1] = color
     return layer
 

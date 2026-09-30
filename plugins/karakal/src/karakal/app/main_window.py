@@ -41,19 +41,36 @@ from PyQt6.QtWidgets import (
 )
 from kraken_core.analysis_protocol import AnalysisProfileKind
 
-from ..infra.services import KarakalSettingsService
+from ..infra.services import KarakalSettingsService, default_settings
 from ..updater import (
     QtUpdateController,
     create_karakal_update_controller,
+    follow_update_root_moves,
+    load_karakal_last_update_check,
     load_karakal_update_channel,
     load_karakal_update_client_config,
+    load_karakal_update_root,
     save_karakal_update_channel,
+    save_karakal_update_root,
+    validate_karakal_update_root,
 )
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
 from ..core.domain import BuildResult
 from ..core.performance import PerformanceConfig
 from ..ui.app_icon import apply_karakal_icon
+from ..core.features import (
+    display_version,
+    show_app_mode_switch,
+    show_class_conflict,
+    show_confidence_defects,
+    show_conductor_zone,
+    show_other_analysis_profiles,
+    show_other_mode_export,
+    show_pair_matrices,
+    show_reference_frame,
+    tester_build,
+)
 from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
@@ -116,9 +133,7 @@ from ..ui.ui_constants import (
     POINT_MATCH_RADIUS_RANGE,
     POLYGON_CONFIDENCE_SUMMARY_OPTIONS,
     POLYGON_COMPARE_PROFILE_OPTIONS,
-    SETTINGS_APP,
     SETTINGS_LABEL_MIN_WIDTH,
-    SETTINGS_ORG,
     SINGLE_RESULT_SENSITIVITY_OPTIONS,
     TOTAL_FRAMES_RANGE,
 )
@@ -470,9 +485,11 @@ class KarakalWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(EXTEND_WIDGET_STYLESHEET)
         apply_karakal_icon(self)
-        self._settings_service = KarakalSettingsService(settings or QSettings(SETTINGS_ORG, SETTINGS_APP))
+        self._settings_service = KarakalSettingsService(settings or default_settings())
         self._performance_config = self._settings_service.load_performance_config()
         language = self._settings_service.load_language()
+        if tester_build() and not language:
+            language = "ru"
         set_current_language(language)
         self._i18n = Translator(language)
         self._t = self._i18n.tr
@@ -486,6 +503,7 @@ class KarakalWidget(QWidget):
         self._presenter = KarakalPresenter(self, self._settings_service)
         self._connect_signals()
         self._presenter._restore_persisted_state()
+        self._apply_build_profile()
         self._presenter._refresh_folder_rows()
         self._presenter._sync_action_buttons()
         if self._update_controller is not None:
@@ -598,6 +616,8 @@ class KarakalWidget(QWidget):
                 checkbox.setToolTip(self._t("grid_error.class_conflict_unavailable"))
             if str(error_type) == "conductor_zone":
                 checkbox.setToolTip(self._t("grid_error.conductor_zone_hint"))
+            if str(error_type) == "small_artifact":
+                checkbox.setToolTip(self._t("grid_error.small_artifact_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
         self.grid_layer_compute_checks: dict[str, QCheckBox] = {}
         for layer_key, label_key in (
@@ -1085,6 +1105,18 @@ class KarakalWidget(QWidget):
         header_layout.setSpacing(2)
         self.grid_inspection_title = QLabel(self._t("grid_inspection.matrix.title"), header)
         header_layout.addWidget(self.grid_inspection_title)
+        self._grid_matrix_layer_row = QWidget(header)
+        matrix_layer_layout = QHBoxLayout(self._grid_matrix_layer_row)
+        matrix_layer_layout.setContentsMargins(0, 0, 0, 0)
+        matrix_layer_layout.setSpacing(6)
+        self.grid_matrix_layer_label = QLabel(self._t("grid_matrix_layer.label"), self._grid_matrix_layer_row)
+        matrix_layer_layout.addWidget(self.grid_matrix_layer_label)
+        self.grid_matrix_layer_combo = _NoWheelComboBox(self._grid_matrix_layer_row)
+        # Placeholder entry keeps the combo non-empty until the presenter fills it.
+        self.grid_matrix_layer_combo.addItem(self._t("grid_matrix_layer.all_layers"), "__all__")
+        matrix_layer_layout.addWidget(self.grid_matrix_layer_combo, stretch=1)
+        header_layout.addWidget(self._grid_matrix_layer_row)
+        self._grid_matrix_layer_row.setVisible(False)
         self.grid_inspection_legend = MatrixLegendWidget(header)
         header_layout.addWidget(self.grid_inspection_legend)
         root_layout.addWidget(header)
@@ -1256,17 +1288,15 @@ class KarakalWidget(QWidget):
         save_diag_action.triggered.connect(self._save_diagnostics_bundle)
         diagnostics_menu.addAction(save_diag_action)
         help_menu = self._menu_bar.addMenu("Help" if self._i18n.language == "en" else "Справка")
-        self._update_controller = QtUpdateController(
-            self,
-            app_id="karakal",
-            app_name="Karakal",
-            current_version=__version__,
-        )
-        self._update_controller.add_menu_action(
-            help_menu,
-            "Check for updates" if self._i18n.language == "en" else "Проверить обновления",
-            submenu_title="Update" if self._i18n.language == "en" else "Обновление",
-        )
+        self._update_controller = create_karakal_update_controller(self)
+        self._help_update_menu = QMenu(self._t("update.menu"), help_menu)
+        help_menu.addMenu(self._help_update_menu)
+        self._help_check_updates_action = self._help_update_menu.addAction(self._t("update.check"))
+        self._help_check_updates_action.triggered.connect(self._on_manual_update_check)
+        self._help_update_folder_action = self._help_update_menu.addAction(self._t("update.folder"))
+        self._help_update_folder_action.triggered.connect(self._on_choose_update_folder)
+        self._help_update_status_action = self._help_update_menu.addAction(self._update_folder_status_text())
+        self._help_update_status_action.setEnabled(False)
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
         self._setup_update_menu()
 
@@ -1327,29 +1357,84 @@ class KarakalWidget(QWidget):
         config = load_karakal_update_client_config()
         selected_channel = load_karakal_update_channel(config)
         self._update_menu = QMenu(self.update_tool_button)
-        self._update_channel_menu = QMenu("Channel", self._update_menu)
+        self._update_channel_menu = QMenu(self._t("update.channel"), self._update_menu)
         self._update_channel_action_group = QActionGroup(self._update_channel_menu)
         self._update_channel_action_group.setExclusive(True)
         channel_labels = {
-            "stable": "Stable",
-            "beta": "Beta",
+            "stable": self._t("update.channel.stable"),
+            "beta": self._t("update.channel.beta"),
         }
         for channel in config.available_channels:
             normalized_channel = str(channel or "").strip().lower()
-            action = self._update_channel_menu.addAction(
-                channel_labels.get(normalized_channel, normalized_channel or "stable")
-            )
+            label = channel_labels.get(normalized_channel, normalized_channel or "stable")
+            if normalized_channel == "stable":
+                label = f"{label} — {self._t('update.channel.stable_hint')}"
+            action = self._update_channel_menu.addAction(label)
             action.setCheckable(True)
             action.setData(normalized_channel)
             action.setChecked(normalized_channel == selected_channel)
             self._update_channel_action_group.addAction(action)
         self._update_channel_action_group.triggered.connect(self._on_update_channel_triggered)
         self._update_menu.addMenu(self._update_channel_menu)
-        self._check_updates_action = self._update_menu.addAction("Check for updates")
-        self._check_updates_action.triggered.connect(
-            lambda _checked=False: self._update_controller.check_for_updates(manual=True)
-        )
+        self._check_updates_action = self._update_menu.addAction(self._t("update.check"))
+        self._check_updates_action.triggered.connect(self._on_manual_update_check)
+        self._update_folder_action = self._update_menu.addAction(self._t("update.folder"))
+        self._update_folder_action.triggered.connect(self._on_choose_update_folder)
+        self._update_status_action = self._update_menu.addAction(self._update_folder_status_text())
+        self._update_status_action.setEnabled(False)
         self.update_tool_button.setMenu(self._update_menu)
+        self.update_tool_button.setText(self._t("update.button"))
+
+    def _update_folder_status_text(self) -> str:
+        root = load_karakal_update_root()
+        last_check = load_karakal_last_update_check()
+        root_label = root or self._t("update.folder.unset")
+        check_label = last_check or self._t("update.last_check.never")
+        return self._t("update.folder.status", root=root_label, checked=check_label)
+
+    def _refresh_update_folder_status(self) -> None:
+        text = self._update_folder_status_text()
+        for attr in ("_update_status_action", "_help_update_status_action"):
+            action = getattr(self, attr, None)
+            if action is not None:
+                action.setText(text)
+
+    def _on_manual_update_check(self, _checked: bool = False) -> None:
+        if self._update_controller is None:
+            self._update_controller = create_karakal_update_controller(self)
+        if not load_karakal_update_root():
+            if not self._prompt_update_folder():
+                return
+        self._update_controller.check_for_updates(manual=True)
+        self._refresh_update_folder_status()
+
+    def _on_choose_update_folder(self, _checked: bool = False) -> None:
+        self._prompt_update_folder()
+
+    def _prompt_update_folder(self) -> str:
+        from PyQt6.QtWidgets import QFileDialog
+
+        start = load_karakal_update_root() or str(Path.home())
+        selected = QFileDialog.getExistingDirectory(self, self._t("update.folder.dialog"), start)
+        if not selected:
+            return ""
+        ok, message = validate_karakal_update_root(selected)
+        if not ok:
+            QMessageBox.warning(
+                self,
+                self._t("dialog.warning_title"),
+                message or self._t("update.folder.invalid"),
+            )
+            return ""
+        resolved = follow_update_root_moves(selected, channel=load_karakal_update_channel(), persist=True)
+        save_karakal_update_root(resolved or selected)
+        self._refresh_update_folder_status()
+        QMessageBox.information(
+            self,
+            self._t("dialog.info_title"),
+            self._t("update.folder.saved", root=resolved or selected),
+        )
+        return resolved or selected
 
     def _on_update_channel_triggered(self, action) -> None:
         channel = str(action.data() or "").strip().lower()
@@ -1970,6 +2055,10 @@ class KarakalWidget(QWidget):
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))
             if self.grid_inspection_layer_tabs.count() > 2:
                 self.grid_inspection_layer_tabs.setTabText(2, self._t("grid_layer.derived_conflict"))
+        if hasattr(self, "grid_matrix_layer_label"):
+            self.grid_matrix_layer_label.setText(self._t("grid_matrix_layer.label"))
+        if hasattr(self, "grid_matrix_layer_combo"):
+            self._presenter._retranslate_grid_matrix_layer_combo()
         for metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "title_label"):
                 card.title_label.setText(self._metric_text_for_key(metric_key, None))
@@ -1987,9 +2076,68 @@ class KarakalWidget(QWidget):
             self.grid_inspection_repeated_bad_column.header_button.setText(self._t("correlation.bad"))
         if hasattr(self, "grid_inspection_repeated_good_column"):
             self.grid_inspection_repeated_good_column.header_button.setText(self._t("correlation.good"))
+        self._apply_build_profile()
         window = self.window()
         if isinstance(window, QMainWindow):
-            window.setWindowTitle(self._t("window.title"))
+            title = self._t("window.title")
+            if tester_build():
+                title = f"{title} {display_version()}"
+            window.setWindowTitle(title)
+
+    def _apply_build_profile(self) -> None:
+        if show_other_analysis_profiles():
+            return
+        from kraken_core.analysis_protocol import AnalysisProfileKind
+
+        panel = self.analysis_setup_panel
+        for key, button in panel._profile_buttons.items():
+            button.setVisible(key == AnalysisProfileKind.GRID_DEFECTS)
+        host = next(iter(panel._profile_buttons.values())).parentWidget()
+        if host is not None:
+            host.hide()
+        panel.setTitle(self._t("profile.grid_defects.title"))
+        if not show_app_mode_switch() and hasattr(self, "mode_toggle_button"):
+            self.mode_toggle_button.hide()
+        self.mode_group.hide()
+        if not show_pair_matrices():
+            self.pair_matrix_group.hide()
+        if not show_reference_frame():
+            self._grid_reference_frame_row.hide()
+        if not show_confidence_defects():
+            confidence = self.grid_layer_compute_checks.get("confidence")
+            if confidence is not None:
+                confidence.hide()
+                confidence.setChecked(False)
+            index = self.grid_layer_display_combo.findData("confidence")
+            if index >= 0:
+                self.grid_layer_display_combo.removeItem(index)
+            binary_index = self.grid_layer_display_combo.findData("binary")
+            if binary_index >= 0:
+                self.grid_layer_display_combo.setCurrentIndex(binary_index)
+        if not show_class_conflict():
+            conflict = self.grid_layer_compute_checks.get("derived_conflict")
+            if conflict is not None:
+                conflict.hide()
+                conflict.setChecked(False)
+            index = self.grid_layer_display_combo.findData("derived_conflict")
+            if index >= 0:
+                self.grid_layer_display_combo.removeItem(index)
+            tabs = getattr(self, "grid_inspection_layer_tabs", None)
+            if tabs is not None:
+                for index, key in enumerate(self._presenter._grid_inspection_layer_keys()):
+                    if key == "derived_conflict" and index < tabs.count():
+                        tabs.setTabVisible(index, False)
+        if not show_class_conflict():
+            box = self.grid_error_type_checks.get("class_conflict")
+            if box is not None:
+                box.hide()
+                box.setChecked(False)
+        if not show_conductor_zone():
+            box = self.grid_error_type_checks.get("conductor_zone")
+            if box is not None:
+                box.hide()
+        if not show_other_mode_export() and hasattr(self, "btn_export_layer"):
+            self.btn_export_layer.hide()
 
     def _toggle_language(self) -> None:
         current_language = str(self._i18n.language or "en").lower()
@@ -2197,6 +2345,9 @@ class KarakalWidget(QWidget):
         if conflict is not None:
             conflict.toggled.connect(self._presenter._on_class_conflict_checkbox_toggled)
         self.grid_layer_display_combo.currentIndexChanged.connect(self._presenter._on_grid_layer_display_selection_changed)
+        self.grid_matrix_layer_combo.currentIndexChanged.connect(
+            self._presenter._on_grid_matrix_layer_selection_changed
+        )
         self.grid_tuning_preset_combo.currentIndexChanged.connect(self._presenter._on_grid_tuning_preset_changed)
         for _metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "binClicked"):
@@ -2413,7 +2564,10 @@ class KarakalMainWindow(QMainWindow):
         super().__init__()
         apply_karakal_icon(self)
         self._widget = KarakalWidget(self, settings=settings)
-        self.setWindowTitle(self._widget._t("window.title"))
+        title = self._widget._t("window.title")
+        if tester_build():
+            title = f"{title} {display_version()}"
+        self.setWindowTitle(title)
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
         self.setCentralWidget(self._widget)
 

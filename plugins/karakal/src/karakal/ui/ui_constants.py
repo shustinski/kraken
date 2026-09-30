@@ -20,6 +20,7 @@ SETTINGS_VALIDATION_MASK_KEY = "ui/validation_mask"
 SETTINGS_ANALYSIS_PROFILE_KEY = "analysis/profile_v1"
 SETTINGS_ORIGINAL_FOLDER_KEY = "ui/original_folder"
 SETTINGS_ATTENTION_COMPUTE_MODE_KEY = "ui/attention_compute_mode"
+SETTINGS_GRID_EXPORT_WIZARD_KEY = "ui/grid_export_wizard"
 
 ATTENTION_ISSUE_TYPE_OPTIONS = (
     ("attention.issue.break", "break"),

@@ -1413,14 +1413,16 @@ class MatrixLegendWidget(QFrame):
         self.states_label.setText(self._state_text())
 
     def _state_text(self) -> str:
-        return " · ".join(
-            (
-                f"□ {self._i18n.tr('matrix.legend.no_data')}",
-                f"▧ {self._i18n.tr('matrix.legend.excluded')}",
-                f"● {self._i18n.tr('matrix.legend.processing')}",
-                f"▣ {self._i18n.tr('matrix.legend.reference')}",
-            )
-        )
+        from ..core.features import show_reference_frame
+
+        parts = [
+            f"□ {self._i18n.tr('matrix.legend.no_data')}",
+            f"▧ {self._i18n.tr('matrix.legend.excluded')}",
+            f"● {self._i18n.tr('matrix.legend.processing')}",
+        ]
+        if show_reference_frame():
+            parts.append(f"▣ {self._i18n.tr('matrix.legend.reference')}")
+        return " · ".join(parts)
 
 
 class MatrixListWidget(QGraphicsView):

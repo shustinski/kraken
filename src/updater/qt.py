@@ -28,13 +28,20 @@ from .client import (
 class UpdateCheckThread(QtCore.QThread):
     checked = QtCore.pyqtSignal(object)
 
-    def __init__(self, *, manifest_url: str, channel: str) -> None:
+    def __init__(self, *, manifest_url: str, channel: str, timeout_seconds: float = 2.5) -> None:
         super().__init__()
         self._manifest_url = str(manifest_url).strip()
         self._channel = str(channel or "").strip().lower()
+        self._timeout_seconds = float(timeout_seconds)
 
     def run(self) -> None:
-        self.checked.emit(fetch_update_info(self._manifest_url, expected_channel=self._channel))
+        self.checked.emit(
+            fetch_update_info(
+                self._manifest_url,
+                timeout_seconds=self._timeout_seconds,
+                expected_channel=self._channel,
+            )
+        )
 
 
 class UpdateDownloadThread(QtCore.QThread):
@@ -110,7 +117,10 @@ class QtUpdateController(QtCore.QObject):
         env_prefix: str | None = None,
         settings_org: str | None = None,
         settings_app: str = "Updater",
+        settings_path: str | Path | None = None,
         status_callback: Callable[[str], None] | None = None,
+        check_timeout_seconds: float = 2.5,
+        resolve_manifest_url: Callable[[str, bool], str | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._parent = parent
@@ -121,7 +131,10 @@ class QtUpdateController(QtCore.QObject):
         self._env_prefix = env_prefix
         self._settings_org = settings_org or app_id
         self._settings_app = settings_app
+        self._settings_path = settings_path
         self._status_callback = status_callback
+        self._check_timeout_seconds = float(check_timeout_seconds)
+        self._resolve_manifest_url = resolve_manifest_url
         self._check_thread: UpdateCheckThread | None = None
         self._download_thread: UpdateDownloadThread | None = None
 
@@ -156,19 +169,38 @@ class QtUpdateController(QtCore.QObject):
             available_channels=config.available_channels,
             settings_org=self._settings_org,
             settings_app=self._settings_app,
+            settings_path=self._settings_path,
         )
-        manifest_url = config.get_manifest_url(channel)
-        if not manifest_url:
-            if manual:
-                QMessageBox.information(self._parent, self._app_name, "Источник обновлений не настроен.")
-            return
+        if self._resolve_manifest_url is not None:
+            manifest_url = self._resolve_manifest_url(channel, manual)
+            if manifest_url is None:
+                return
+            if not str(manifest_url).strip():
+                if manual:
+                    QMessageBox.information(self._parent, self._app_name, "Источник обновлений не настроен.")
+                return
+        else:
+            manifest_url = config.get_manifest_url(channel)
+            if not manifest_url:
+                if manual:
+                    QMessageBox.information(self._parent, self._app_name, "Источник обновлений не настроен.")
+                return
         if self._check_thread is not None:
             if manual:
                 QMessageBox.information(self._parent, self._app_name, "Проверка обновлений уже выполняется.")
             return
-        save_selected_update_channel(channel, settings_org=self._settings_org, settings_app=self._settings_app)
+        save_selected_update_channel(
+            channel,
+            settings_org=self._settings_org,
+            settings_app=self._settings_app,
+            settings_path=self._settings_path,
+        )
         self._set_status("Запущена проверка обновлений.")
-        self._check_thread = UpdateCheckThread(manifest_url=manifest_url, channel=channel)
+        self._check_thread = UpdateCheckThread(
+            manifest_url=manifest_url,
+            channel=channel,
+            timeout_seconds=self._check_timeout_seconds,
+        )
         self._check_thread.checked.connect(lambda update_info: self._on_check_finished(update_info, manual=manual, channel=channel))
         self._check_thread.finished.connect(self._clear_check_thread)
         self._check_thread.start()
@@ -190,6 +222,7 @@ class QtUpdateController(QtCore.QObject):
             channel,
             settings_org=self._settings_org,
             settings_app=self._settings_app,
+            settings_path=self._settings_path,
         )
         if not should_notify_version(update_info.version, self._current_version, last_notified):
             return
@@ -199,6 +232,7 @@ class QtUpdateController(QtCore.QObject):
             channel,
             settings_org=self._settings_org,
             settings_app=self._settings_app,
+            settings_path=self._settings_path,
         )
 
     def _show_update_notification(self, update_info: UpdateInfo, *, manual: bool, channel: str) -> None:
@@ -293,4 +327,10 @@ class QtUpdateController(QtCore.QObject):
         for release in update_info.releases:
             if release.version == update_info.version:
                 return release
-        return ReleaseInfo(update_info.version, update_info.download_url, update_info.release_notes, update_info.channel)
+        return ReleaseInfo(
+            update_info.version,
+            update_info.download_url,
+            update_info.release_notes,
+            update_info.channel,
+            sha256=update_info.sha256,
+        )

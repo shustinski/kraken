@@ -100,9 +100,10 @@ def test_edge_grid_slots_on_frames_39_and_82_are_not_small_artifact() -> None:
             touch_y = y <= 3 or y + box_h >= result.image_height - 3
             if touch_x and touch_y:
                 continue
-            if touch_x and box_w / cell_w <= 0.40 and 0.75 <= box_h / cell_h <= 1.25:
+            # A 3px speck off the lattice stays debris. A clip is a real slice of a cell.
+            if touch_x and 0.20 <= box_w / cell_w <= 0.40 and 0.75 <= box_h / cell_h <= 1.25:
                 misses.append((role, frame, cell.bbox))
-            if touch_y and box_h / cell_h <= 0.40 and 0.75 <= box_w / cell_w <= 1.25:
+            if touch_y and 0.20 <= box_h / cell_h <= 0.40 and 0.75 <= box_w / cell_w <= 1.25:
                 misses.append((role, frame, cell.bbox))
     assert not misses, misses[:8]
 

@@ -18,7 +18,9 @@ from ..ui.ui_constants import (
     SETTINGS_DETAILS_VIEW_KEY,
     SETTINGS_FOLDERS_KEY,
     SETTINGS_GRID_CALIBRATION_KEY,
+    SETTINGS_APP,
     SETTINGS_LANGUAGE_KEY,
+    SETTINGS_ORG,
     SETTINGS_PERFORMANCE_KEY,
     SETTINGS_VALIDATION_MASK_KEY,
 )
@@ -28,6 +30,22 @@ _LOGGER = logging.getLogger(__name__)
 _LEGACY_MANAGEMENT_SETTINGS_KEY = "ui/management_settings"
 _LEGACY_MANAGER_PREFIXES = ("manager_", "management_", "primary_labeling_", "labeling_priority_")
 _LEGACY_MANAGER_MODES = {"manager", "management", "manager_mode"}
+
+
+def default_settings() -> QSettings:
+    """Frozen builds keep settings.ini beside the executable.
+
+    Channel and update-root preferences share this file. A frozen build must not
+    read the developer registry or cache.
+    """
+
+    import sys
+    from pathlib import Path
+
+    if getattr(sys, "frozen", False):
+        path = Path(sys.executable).resolve().parent / "settings.ini"
+        return QSettings(str(path), QSettings.Format.IniFormat)
+    return QSettings(SETTINGS_ORG, SETTINGS_APP)
 
 
 class KarakalSettingsService:

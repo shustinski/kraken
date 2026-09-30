@@ -72,8 +72,11 @@ class ExtendMatrixTabState:
     grid_inspection_results_ready: bool = False
     grid_inspection_payload_by_key: dict[str, object] = field(default_factory=dict)
     grid_inspection_payloads_by_layer: dict[str, dict[str, object]] = field(default_factory=dict)
+    grid_inspection_payloads_by_model: dict[str, dict[str, dict[str, object]]] = field(default_factory=dict)
     grid_inspection_layer: str = "confidence"
     grid_inspection_model_id: str | None = None
+    # Active matrix layer selection: a model id string, or "__all__" for the merged view.
+    grid_inspection_matrix_selection: str = ""
     grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
     grid_inspection_algorithm_version: str = ""
     grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)

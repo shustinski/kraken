@@ -1,8 +1,9 @@
 """Evaluate cell-defect inspection on real SEM frames. Qt-free.
 
-Uses the same call the application makes for the binary mask layer:
-``analyze_grid_frame_path(mask, confidence_path=..., use_cache=False)`` with the
-balanced inspection config from ``KarakalPresenter._grid_damage_config_from_payload``.
+Uses the same pair call as the application:
+``analyze_grid_frame_pair_chunk`` with the balanced inspection config from
+``KarakalPresenter._grid_damage_config_from_payload``. Both layers share the
+zone built from the binary mask.
 
 Nothing is written under the repository or the data root.
 """
@@ -29,9 +30,11 @@ if str(_SRC) not in sys.path:
 
 from karakal.core.grid_anomaly import (  # noqa: E402
     GRID_DAMAGE_REASON_TYPES,
+    GridCellReferenceProfile,
     GridDamageAnalysisConfig,
-    analyze_grid_frame_path,
+    analyze_grid_frame_pair_chunk,
     configure_grid_worker_process,
+    estimate_run_cell_reference_profile,
 )
 from karakal.core.grid_calibration import reference_pairs  # noqa: E402
 
@@ -95,7 +98,7 @@ def _example_pairs(value: object) -> tuple[tuple[str, tuple[tuple[str, float], .
     return tuple(pairs)
 
 
-def app_config_from_payload(payload: dict | None) -> GridDamageAnalysisConfig:
+def app_config_from_payload(payload: dict | None, profile: str = "tester") -> GridDamageAnalysisConfig:
     """Mirror ``KarakalPresenter._grid_damage_config_from_payload`` without Qt."""
 
     values = dict(BALANCED_SLIDERS)
@@ -110,7 +113,10 @@ def app_config_from_payload(payload: dict | None) -> GridDamageAnalysisConfig:
     disagreement = _slider_unit(values, "disagreement_sensitivity", 50)
     enabled = incoming.get("enabled_reason_types") or incoming.get("enabled_error_types")
     if enabled is None:
-        enabled_reason_types = GRID_DAMAGE_REASON_TYPES
+        excluded = {"edge_clipped_cell"}
+        if str(profile) == "tester":
+            excluded.add("class_conflict")
+        enabled_reason_types = tuple(reason for reason in GRID_DAMAGE_REASON_TYPES if reason not in excluded)
     else:
         enabled_reason_types = tuple(str(item) for item in enabled)
     reference = incoming.get("calibration_reference")
@@ -222,14 +228,23 @@ def _median(values: list[float]) -> float | None:
     return float(np.median(np.asarray(values, dtype=np.float64)))
 
 
-def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: str = "") -> dict:
+def _compact_result(
+    frame_id: str,
+    role: str,
+    result,
+    elapsed_ms: float,
+    error: str = "",
+    layer: str = "binary",
+) -> dict:
     if result is None:
         return {
             "frame": frame_id,
             "role": role,
+            "layer": layer,
             "elapsed_ms": round(elapsed_ms, 2),
             "error": error or "decode_error",
             "grid_detected": False,
+            "model_file_status": "",
             "reasons": {},
             "defects": [],
         }
@@ -293,7 +308,10 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
     return {
         "frame": frame_id,
         "role": role,
+        "layer": layer,
         "elapsed_ms": round(elapsed_ms, 2),
+        "model_file_status": str(getattr(result, "model_file_status", "") or ""),
+        "severity_level": str(getattr(result, "severity_level", "") or ""),
         "error": error,
         "grid_detected": bool(result.grid_detected),
         "image_width": int(result.image_width),
@@ -315,46 +333,89 @@ def _compact_result(frame_id: str, role: str, result, elapsed_ms: float, error: 
     }
 
 
-def eval_chunk(entries: tuple[tuple[str, str, str, str], ...], config: GridDamageAnalysisConfig) -> list[dict]:
-    """Analyze one chunk. Cache stays off. Safe to run in a spawned worker."""
+def eval_chunk(
+    entries: tuple[tuple[str, str, str, str], ...],
+    config: GridDamageAnalysisConfig,
+    layers: tuple[str, ...] = ("confidence", "binary"),
+    profiles: dict[str, dict | None] | None = None,
+) -> list[dict]:
+    """Analyze one chunk the way the paired grid worker does. Cache stays off."""
 
-    binary_config = replace(config, cell_representation="binary").normalized()
+    wanted = tuple(layer for layer in layers if layer in {"confidence", "binary"}) or ("confidence", "binary")
+    profile_objs: dict[str, GridCellReferenceProfile | None] = {}
+    for role, payload in (profiles or {}).items():
+        if not payload:
+            profile_objs[role] = None
+            continue
+        profile_objs[role] = GridCellReferenceProfile(**payload)
     payloads = []
     for frame_id, role, mask_path, confidence_path in entries:
         started = perf_counter()
+        key = f"{role}:{frame_id}"
         try:
-            result = analyze_grid_frame_path(
-                mask_path,
-                frame_id=f"{role}:{frame_id}",
-                config=binary_config,
+            frame_payloads, errors = analyze_grid_frame_pair_chunk(
+                ((key, confidence_path, mask_path),),
+                config,
                 use_cache=False,
-                read_cache=False,
-                write_cache=False,
-                confidence_path=confidence_path or None,
+                reference_profile=profile_objs.get(role),
+                requested_layers=wanted,
             )
-            payloads.append(_compact_result(frame_id, role, result, (perf_counter() - started) * 1000.0))
-        except Exception as error:
-            payloads.append(
-                _compact_result(
-                    frame_id,
-                    role,
-                    None,
-                    (perf_counter() - started) * 1000.0,
-                    error=f"{type(error).__name__}: {error}",
+            error = errors.get(key, "")
+            frame = frame_payloads.get(key) or {}
+            elapsed = (perf_counter() - started) * 1000.0
+            for layer in wanted:
+                result = frame.get(layer)
+                payloads.append(
+                    _compact_result(
+                        frame_id,
+                        role,
+                        result,
+                        elapsed,
+                        error=error if result is None else "",
+                        layer=layer,
+                    )
                 )
-            )
+        except Exception as error:
+            elapsed = (perf_counter() - started) * 1000.0
+            message = f"{type(error).__name__}: {error}"
+            for layer in wanted:
+                payloads.append(_compact_result(frame_id, role, None, elapsed, error=message, layer=layer))
     return payloads
+
+
+def _profile_payload(profile: GridCellReferenceProfile | None) -> dict | None:
+    if profile is None:
+        return None
+    return {
+        "median_width": float(profile.median_width),
+        "median_height": float(profile.median_height),
+        "median_area": float(profile.median_area),
+        "median_fill": float(profile.median_fill),
+        "median_interior_fill": float(profile.median_interior_fill),
+        "median_center_fill": float(profile.median_center_fill),
+        "median_aspect": float(profile.median_aspect),
+        "candidate_count": int(profile.candidate_count),
+        "seed_count": int(profile.seed_count),
+        "frame_id": str(profile.frame_id),
+        "frame_path": str(profile.frame_path),
+    }
 
 
 def _chunks(items: list, size: int) -> list[tuple]:
     return [tuple(items[offset : offset + size]) for offset in range(0, len(items), size)]
 
 
-def run_jobs(jobs: list[tuple[str, str, str, str]], config: GridDamageAnalysisConfig, workers: int) -> list[dict]:
+def run_jobs(
+    jobs: list[tuple[str, str, str, str]],
+    config: GridDamageAnalysisConfig,
+    workers: int,
+    layers: tuple[str, ...] = ("confidence", "binary"),
+    profiles: dict[str, dict | None] | None = None,
+) -> list[dict]:
     if not jobs:
         return []
     if workers <= 1 or len(jobs) == 1:
-        return eval_chunk(tuple(jobs), config)
+        return eval_chunk(tuple(jobs), config, layers, profiles)
     chunk_size = max(1, min(4, max(1, len(jobs) // (workers * 2))))
     chunks = _chunks(jobs, chunk_size)
     rows: list[dict] = []
@@ -363,13 +424,13 @@ def run_jobs(jobs: list[tuple[str, str, str, str]], config: GridDamageAnalysisCo
         initializer=configure_grid_worker_process,
         initargs=(1,),
     ) as executor:
-        futures = [executor.submit(eval_chunk, chunk, config) for chunk in chunks]
+        futures = [executor.submit(eval_chunk, chunk, config, layers, profiles) for chunk in chunks]
         for future in as_completed(futures):
             batch = future.result()
             rows.extend(batch)
             done = len(rows)
             print(f"analyzed {done}/{len(jobs)}", flush=True)
-    rows.sort(key=lambda item: (item["role"], item["frame"]))
+    rows.sort(key=lambda item: (item["role"], item["frame"], item.get("layer") or ""))
     return rows
 
 
@@ -503,22 +564,23 @@ def write_overlays(output_dir: Path, data_root: Path, rows: list[dict]) -> None:
         if source is None:
             continue
         overlay = _draw_overlay(source, list(row.get("defects") or []))
-        destination = output_dir / "overlays" / str(row["role"])
+        destination = output_dir / "overlays" / str(row["role"]) / str(row.get("layer") or "binary")
         destination.mkdir(parents=True, exist_ok=True)
         _write_image(destination / f"{frame_id}.jpg", overlay)
 
 
 def write_galleries(output_dir: Path, data_root: Path, rows: list[dict], top_n: int) -> None:
-    grouped: dict[tuple[str, str], list[tuple[float, str, dict]]] = {}
+    grouped: dict[tuple[str, str, str], list[tuple[float, str, dict]]] = {}
     for row in rows:
+        layer = str(row.get("layer") or "binary")
         for defect in row.get("defects") or []:
             for reason in defect.get("reasons") or ():
-                grouped.setdefault((str(row["role"]), str(reason)), []).append(
+                grouped.setdefault((str(row["role"]), layer, str(reason)), []).append(
                     (float(defect.get("score") or 0.0), str(row["frame"]), defect)
                 )
-    for (role, reason), items in grouped.items():
+    for (role, layer, reason), items in grouped.items():
         items.sort(key=lambda item: (-item[0], item[1], item[2]["bbox"]))
-        folder = output_dir / "gallery" / role / reason
+        folder = output_dir / "gallery" / role / layer / str(reason)
         folder.mkdir(parents=True, exist_ok=True)
         for rank, (score, frame_id, defect) in enumerate(items[:top_n], start=1):
             source = load_gray(data_root / "source_test" / FRAME_STEM.format(index=int(frame_id)))
@@ -659,6 +721,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--frames", default="", help="1,17,42 or 1-10. Empty uses --sample.")
     parser.add_argument("--sample", type=int, default=18, help="Deterministic frame count when --frames is empty.")
     parser.add_argument("--role", choices=("direct", "inv", "both"), default="both")
+    parser.add_argument("--profile", choices=("tester", "dev"), default="tester")
+    parser.add_argument("--layer", choices=("confidence", "binary", "both"), default="both")
     parser.add_argument("--config", type=Path, default=None, help="JSON config/calibration exported from the app.")
     parser.add_argument("--out", type=Path, default=None, help="Output directory. Default is a temp folder.")
     parser.add_argument("--workers", type=int, default=max(1, min(8, (os.cpu_count() or 2) - 1)))
@@ -689,14 +753,28 @@ def main(argv: list[str] | None = None) -> int:
     payload = {}
     if args.config is not None:
         payload = json.loads(args.config.read_text(encoding="utf-8"))
-    config = app_config_from_payload(payload)
+    config = app_config_from_payload(payload, profile=args.profile)
     roles = ("direct", "inv") if args.role == "both" else (args.role,)
+    layers = ("confidence", "binary") if args.layer == "both" else (args.layer,)
     jobs = discover_jobs(data_root, indexes, roles)
     if not jobs:
         raise SystemExit("no frames matched")
-    print(f"frames={indexes} roles={roles} jobs={len(jobs)} workers={args.workers} out={output_dir}")
+    by_role: dict[str, list[Path]] = {}
+    for _fid, role, mask, _conf in jobs:
+        by_role.setdefault(role, []).append(Path(mask))
+    profiles: dict[str, dict | None] = {}
+    for role, paths in by_role.items():
+        print(f"estimate run cell profile {role} from {len(paths)} masks...", flush=True)
+        profiles[role] = _profile_payload(
+            estimate_run_cell_reference_profile(paths, config=config, sample_limit=24, frame_id=f"run:{role}")
+        )
+        print(f"  -> {profiles[role]}", flush=True)
+    print(
+        f"frames={indexes} roles={roles} layers={layers} profile={args.profile} "
+        f"jobs={len(jobs)} workers={args.workers} out={output_dir}"
+    )
     started = perf_counter()
-    rows = run_jobs(jobs, config, max(1, int(args.workers)))
+    rows = run_jobs(jobs, config, max(1, int(args.workers)), layers, profiles)
     write_summary(output_dir, rows, config)
     if not args.no_images:
         write_overlays(output_dir, data_root, rows)
@@ -707,7 +785,7 @@ def main(argv: list[str] | None = None) -> int:
     for row in rows:
         reasons = row.get("reasons") or {}
         print(
-            f"{row['role']} {row['frame']}: cells={row.get('detected_cells')} "
+            f"{row['role']} {row['frame']} {row.get('layer')}: cells={row.get('detected_cells')} "
             f"normal={row.get('normal_cells')} size={row.get('cell_width')}x{row.get('cell_height')} "
             f"components={row.get('component_count')} zone_skipped={row.get('zone_skipped_components', 0)} "
             f"{reasons} {row.get('elapsed_ms')}ms"

@@ -8,6 +8,7 @@ from .client import (
     compare_versions,
     download_update_installer,
     fetch_update_info,
+    file_sha256,
     is_newer_version,
     load_last_notified_version,
     load_selected_update_channel,
@@ -17,6 +18,7 @@ from .client import (
     save_last_notified_version,
     save_selected_update_channel,
     should_notify_version,
+    verify_installer_sha256,
 )
 
 __all__ = [
@@ -27,6 +29,7 @@ __all__ = [
     "compare_versions",
     "download_update_installer",
     "fetch_update_info",
+    "file_sha256",
     "is_newer_version",
     "load_last_notified_version",
     "load_selected_update_channel",
@@ -36,4 +39,5 @@ __all__ = [
     "save_last_notified_version",
     "save_selected_update_channel",
     "should_notify_version",
+    "verify_installer_sha256",
 ]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import numpy as np
 from pathlib import Path
-from PyQt6.QtCore import QPointF, QRectF, QSettings, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QTransform
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -72,9 +72,7 @@ from ..ui.ui_constants import (
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
     GRID_INSPECTION_DAMAGE_METRIC_KEY,
     GRID_INSPECTION_ERROR_TYPE_OPTIONS,
-    SETTINGS_APP,
     SETTINGS_ATTENTION_COMPUTE_MODE_KEY,
-    SETTINGS_ORG,
     attention_issue_type_color,
     attention_issue_type_icon,
     grid_inspection_error_type_color,
@@ -643,6 +641,8 @@ class ExtendFrameDetailsDialog(QDialog):
             checkbox.setChecked(str(error_type) in self._grid_detail_enabled_error_types)
             if str(error_type) == "conductor_zone":
                 checkbox.setToolTip(self._t("grid_error.conductor_zone_hint"))
+            if str(error_type) == "small_artifact":
+                checkbox.setToolTip(self._t("grid_error.small_artifact_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
             layers_form.addRow(checkbox)
         for widget in self._grid_layer_controls():
@@ -652,6 +652,8 @@ class ExtendFrameDetailsDialog(QDialog):
                 label.setVisible(False)
         self.grid_error_types_title.setVisible(False)
         layers_layout.addWidget(layers_group)
+
+        from ..core.features import show_pair_matrices
 
         comparison_score_group = QGroupBox(self._t("details.selected_comparison_score"), controls_host)
         comparison_score_layout = QVBoxLayout(comparison_score_group)
@@ -683,6 +685,9 @@ class ExtendFrameDetailsDialog(QDialog):
         attention_nav.addWidget(self.attention_next_button)
         comparison_result_layout.addLayout(attention_nav)
         overview_layout.addWidget(comparison_result_group)
+        if not show_pair_matrices():
+            comparison_score_group.hide()
+            comparison_result_group.hide()
         overview_layout.addStretch(1)
         self._attention_issues: tuple[AttentionIssue, ...] = ()
         self._pending_attention_focus: dict[str, object] | None = None
@@ -1598,7 +1603,9 @@ class ExtendFrameDetailsDialog(QDialog):
         self._overlay_cache.update(preserved_overlay)
 
     def _attention_compute_mode(self) -> str:
-        settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        from ..infra.services import default_settings
+
+        settings = default_settings()
         return normalize_attention_compute_mode(
             settings.value(SETTINGS_ATTENTION_COMPUTE_MODE_KEY, DEFAULT_ATTENTION_COMPUTE_MODE, str)
         )
@@ -2136,6 +2143,11 @@ class ExtendFrameDetailsDialog(QDialog):
             bad_cells = int(getattr(result, "bad_cells", 0))
             lines = [
                 f"severity_level: {getattr(result, 'severity_level', '-')}",
+                *(
+                    ["нет файла модели"]
+                    if str(getattr(result, "model_file_status", "") or "") == "missing"
+                    else []
+                ),
                 f"total_cells: {int(getattr(result, 'total_expected_cells', 0))}",
                 f"detected_cells: {int(getattr(result, 'detected_cells', 0))}",
                 f"normal_cells: {int(getattr(result, 'normal_cells', 0))}",
@@ -2408,18 +2420,42 @@ class ExtendFrameDetailsDialog(QDialog):
         self._hold_preview_mode = "base"
         self._activate_base_hold()
 
+    def _grid_mark_status_visible(self, status: str) -> bool:
+        if status == "normal":
+            return bool(self.grid_normal_visible.isChecked())
+        if status in {"suspicious", "artifact", "broken", "missing"}:
+            return bool(self.grid_broken_visible.isChecked())
+        return True
+
+    def _conductor_zone_draw_mode(self, reasons: set[str]) -> str:
+        from ..core.features import show_conductor_zone
+
+        if "conductor_zone" not in reasons:
+            return "cell"
+        if show_conductor_zone():
+            return "zone"
+        if reasons - {"conductor_zone"}:
+            return "cell"
+        return "skip"
+
     def _grid_hotkey_layers(self) -> list[QCheckBox]:
+        from ..core.features import show_class_conflict, show_conductor_zone
+
+        hidden = set()
+        if not show_class_conflict():
+            hidden.add("class_conflict")
+        if not show_conductor_zone():
+            hidden.add("conductor_zone")
         error_types = [
             self.grid_error_type_checks[str(error_type)]
             for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS
-            if str(error_type) in self.grid_error_type_checks
+            if str(error_type) in self.grid_error_type_checks and str(error_type) not in hidden
         ]
         return [
             self.grid_network_visible,
             self.grid_confidence_visible,
             self.grid_source_visible,
             self.grid_normal_visible,
-            self.grid_suspicious_visible,
             self.grid_broken_visible,
             *error_types,
         ]
@@ -3317,11 +3353,7 @@ class ExtendFrameDetailsDialog(QDialog):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ():
             status = str(getattr(cell, "status", "") or "")
-            if status == "normal" and not self.grid_normal_visible.isChecked():
-                continue
-            if status == "suspicious" and not self.grid_suspicious_visible.isChecked():
-                continue
-            if status == "broken" and not self.grid_broken_visible.isChecked():
+            if not self._grid_mark_status_visible(status):
                 continue
             if status != "normal" and self._grid_good_example_hides_cell(cell):
                 continue
@@ -3333,7 +3365,10 @@ class ExtendFrameDetailsDialog(QDialog):
             h = max(1, int(getattr(cell, "height", 1)))
             color = self._grid_cell_color(cell)
             reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
-            if "conductor_zone" in reasons:
+            zone_mode = self._conductor_zone_draw_mode(reasons)
+            if zone_mode == "skip":
+                continue
+            if zone_mode == "zone":
                 fill = QColor(color)
                 fill.setAlpha(70)
                 painter.setPen(Qt.PenStyle.NoPen)
@@ -3806,25 +3841,43 @@ class ExtendFrameDetailsDialog(QDialog):
         )
         if hasattr(self, "grid_error_types_title"):
             self.grid_error_types_title.setVisible(bool(visible))
+        from ..core.features import show_class_conflict, show_conductor_zone, show_grid_examples, show_threshold_window
+
         if hasattr(self, "grid_tuning_button"):
-            self.grid_tuning_button.setVisible(bool(visible))
-        for name in (
-            "grid_preview_status",
+            self.grid_tuning_button.setVisible(bool(visible) and show_threshold_window())
+        example_names = (
             "grid_example_mode_button",
             "grid_example_label_combo",
             "grid_examples_open_button",
             "grid_example_clear_button",
             "grid_example_summary",
-        ):
+        )
+        for name in ("grid_preview_status", *example_names):
             widget = getattr(self, name, None)
-            if widget is not None:
-                widget.setVisible(bool(visible))
+            if widget is None:
+                continue
+            show_widget = bool(visible)
+            if name in example_names and not show_grid_examples():
+                show_widget = False
+            widget.setVisible(show_widget)
+        hidden_types = set()
+        if not show_class_conflict():
+            hidden_types.add("class_conflict")
+        if not show_conductor_zone():
+            hidden_types.add("conductor_zone")
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
         for widget in self._grid_layer_controls():
-            widget.setVisible(bool(visible))
+            show_widget = bool(visible)
+            if widget is self.grid_suspicious_visible:
+                show_widget = False
+            for error_type, checkbox in checks.items():
+                if checkbox is widget and str(error_type) in hidden_types:
+                    show_widget = False
+            widget.setVisible(show_widget)
             if isinstance(layout, QFormLayout):
                 label = layout.labelForField(widget)
                 if label is not None:
-                    label.setVisible(bool(visible))
+                    label.setVisible(show_widget)
 
     def _set_grid_detail_layer_rows(self, grid_details: bool) -> None:
         for widget in (
@@ -4100,17 +4153,16 @@ class ExtendFrameDetailsDialog(QDialog):
         items = []
         for cell in getattr(result, "per_cell_results", ()) or ():
             status = str(getattr(cell, "status", "") or "")
-            if status == "normal" and not self.grid_normal_visible.isChecked():
-                continue
-            if status == "suspicious" and not self.grid_suspicious_visible.isChecked():
-                continue
-            if status == "broken" and not self.grid_broken_visible.isChecked():
+            if not self._grid_mark_status_visible(status):
                 continue
             if status != "normal" and self._grid_good_example_hides_cell(cell):
                 continue
             if status != "normal" and not self._grid_cell_error_type_visible(cell):
                 continue
             reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
+            zone_mode = self._conductor_zone_draw_mode(reasons)
+            if zone_mode == "skip":
+                continue
             color = self._grid_cell_color(cell)
             color.setAlpha(230)
             rect = QRectF(
@@ -4119,7 +4171,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 max(2.0, float(getattr(cell, "width", 1)) * scale_x),
                 max(2.0, float(getattr(cell, "height", 1)) * scale_y),
             )
-            if "conductor_zone" in reasons:
+            if zone_mode == "zone":
                 fill = QColor(color)
                 fill.setAlpha(70)
                 pen = QPen(color, 2.0, Qt.PenStyle.DashLine)
@@ -5206,6 +5258,11 @@ class ExtendFrameDetailsDialog(QDialog):
                     [
                         f"damage_score: {float(getattr(result, 'damage_score', 0.0)):.4f}",
                         f"severity_level: {getattr(result, 'severity_level', '-')}",
+                        *(
+                            ["нет файла модели"]
+                            if str(getattr(result, "model_file_status", "") or "") == "missing"
+                            else []
+                        ),
                         f"cells: {int(getattr(result, 'total_expected_cells', 0))}",
                         f"detected_cells: {int(getattr(result, 'detected_cells', 0))}",
                         f"normal/bad: {int(getattr(result, 'normal_cells', 0))}/{bad_cells}",

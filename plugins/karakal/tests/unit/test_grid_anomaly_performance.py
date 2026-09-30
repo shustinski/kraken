@@ -82,6 +82,8 @@ def _result_digest(result) -> str:
         cell.pop("uncertain_pixel_ratio", None)
         cell.pop("border_uncertainty", None)
         cell.pop("feature_snapshot", None)
+        # Packed outlines read as the same (x, y) pairs; JSON sees the same lists.
+        cell["outline"] = [list(point) for point in cell.get("outline", ()) or ()]
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

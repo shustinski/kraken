@@ -17,6 +17,7 @@ import numpy as np
 
 from .backend_constants import CACHE_DIR
 from .cache_utils import atomic_pickle_dump, trim_directory_by_bytes
+from .grid_packed import pack_features, pack_points
 from .performance import load_performance_config
 from .profiling import current_profiler, profile_stage
 
@@ -228,6 +229,12 @@ class GridCellAnalysisResult:
     border_uncertainty: float | None = None
     feature_snapshot: tuple[tuple[str, float], ...] = ()
     outline: tuple[tuple[int, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        # A run keeps every cell of every frame; tuples of pairs made a frame
+        # cost megabytes. Packed values read back as the same pairs.
+        object.__setattr__(self, "feature_snapshot", pack_features(self.feature_snapshot))
+        object.__setattr__(self, "outline", pack_points(self.outline))
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
         return (

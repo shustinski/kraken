@@ -27,7 +27,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v88_leftover_debris"
+GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v89_broken_cell_pieces"
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -38,6 +38,8 @@ DEBRIS_MIN_AREA_PX = 24.0
 LEFTOVER_DEBRIS_SCORE = 0.75
 # feature_snapshot flag on such pieces: they are not cells and skip confidence fill.
 LEFTOVER_DEBRIS_FEATURE = "leftover_debris"
+# A hole this much larger (share of the cell area) than holes of normal cells breaks the cell.
+HOLE_EXCESS_RATIO = 0.03
 _LOGGER = logging.getLogger(__name__)
 GRID_DAMAGE_REASON_TYPES = (
     "filled_cell",
@@ -735,6 +737,8 @@ class _ContourCandidate:
     inner_hole_ratio: float
     child_count: int
     touches_border: bool
+    # A hole inside a mask piece. Kept for frame-level counts, never scored as a cell.
+    is_hole: bool = False
 
 
 def detect_grid_cell_anomalies(
@@ -924,7 +928,8 @@ def detect_grid_cell_anomalies(
     per_cell: list[GridCellAnalysisResult] = []
     defect_entries: list[tuple[int, _ContourCandidate]] = []
     ordered_candidates = sorted(
-        candidates, key=lambda item: (float(item.centroid[1]), float(item.centroid[0]), int(item.contour_id))
+        (item for item in candidates if not item.is_hole),
+        key=lambda item: (float(item.centroid[1]), float(item.centroid[0]), int(item.contour_id)),
     )
     with profile_stage("validation.grid.cells.classify", frame_id=frame_id):
         from .grid_calibration import (
@@ -974,6 +979,7 @@ def detect_grid_cell_anomalies(
             if "area" in example_reference:
                 median_area = float(example_reference["area"])
         calibrated = str(cfg.scoring_mode) == "calibrated"
+        reference_hole = float(np.median([float(item.inner_hole_ratio) for item in (normal_seed or candidates)]))
         local_medians, neighbor_ids = local_neighbor_medians(ordered_candidates) if calibrated else ([], [])
         lattice_neighbor_counts: list[int] = []
         if calibrated:
@@ -1153,6 +1159,24 @@ def detect_grid_cell_anomalies(
                 score = max(scores.fill, scores.geometry, scores.merge, scores.debris) if reasons else 0.0
                 if forced_geometry and "broken_geometry" in reasons:
                     score = max(float(score), 0.80)
+                hole_area = float(candidate.inner_hole_ratio) * float(candidate.area)
+                slot_sized = (
+                    0.55 <= area_ratio <= 1.90
+                    and min(width_ratio, height_ratio) >= 0.50
+                    and max(width_ratio, height_ratio) <= 1.85
+                )
+                if (
+                    slot_sized
+                    and hole_area >= DEBRIS_MIN_AREA_PX
+                    and float(candidate.inner_hole_ratio) >= reference_hole + HOLE_EXCESS_RATIO
+                    and "merged_contour" not in reasons
+                ):
+                    # A hole the normal cells of this layer do not have breaks the cell shape.
+                    # Blobs larger than a slot stay debris even with holes.
+                    reasons = tuple(
+                        dict.fromkeys((*(reason for reason in reasons if reason != "small_artifact"), "broken_geometry"))
+                    )
+                    score = max(float(score), 0.80)
             else:
                 score, reasons = _classify_detected_cell(
                     candidate,
@@ -1310,6 +1334,16 @@ def detect_grid_cell_anomalies(
         per_cell = [cell for cell in per_cell if not zone_map.contains(cell.centroid[0], cell.centroid[1])]
     if str(cfg.scoring_mode) == "calibrated":
         per_cell = _dedupe_nested_grid_cells(per_cell)
+        per_cell = _group_slot_fragments(
+            per_cell,
+            median_width=median_width,
+            median_height=median_height,
+            columns=edge_columns,
+            rows=edge_rows,
+            pitch_x=edge_pitch_x,
+            pitch_y=edge_pitch_y,
+            config=cfg,
+        )
     per_cell = _collapse_conductor_regions(
         per_cell,
         median_width=median_width,
@@ -2872,10 +2906,27 @@ def _extract_candidates(
             rect_by_index[contour_index] = cached
         return cached
 
+    depth_by_index: dict[int, int] = {}
+
+    def nesting_depth(contour_index: int) -> int:
+        chain: list[int] = []
+        current = contour_index
+        while current >= 0 and current not in depth_by_index and current < len(hierarchy_array):
+            chain.append(current)
+            current = int(hierarchy_array[current][3])
+        depth = depth_by_index.get(current, -1) if current >= 0 else -1
+        for item in reversed(chain):
+            depth += 1
+            depth_by_index[item] = depth
+        return depth_by_index.get(contour_index, 0)
+
     candidates: list[_ContourCandidate] = []
     for index, contour in enumerate(contours):
         parent_idx = int(hierarchy_array[index][3]) if index < len(hierarchy_array) else -1
         calibrated = str(getattr(config, "scoring_mode", "legacy") or "legacy") == "calibrated"
+        # Odd depth is a hole in the mask, not a piece of it. A hole counts against
+        # its cell (the hole check in scoring), not as debris.
+        is_hole = bool(calibrated and parent_idx >= 0 and nesting_depth(index) % 2 == 1)
         min_side = 2 if calibrated else int(config.min_cell_size)
         min_area = 2.0 if calibrated else float(config.min_contour_area)
         x, y, w, h = contour_rect(index)
@@ -2974,6 +3025,7 @@ def _extract_candidates(
                     or x + w >= width - border_margin
                     or y + h >= height - border_margin
                 ),
+                is_hole=is_hole,
             )
         )
     if str(getattr(config, "scoring_mode", "legacy") or "legacy") == "calibrated" and len(candidates) > 4000:
@@ -3862,6 +3914,125 @@ def _conductor_zone_map(
         confidence=confidence,
         foreground=foreground,
     )
+
+
+def _group_slot_fragments(
+    per_cell: list[GridCellAnalysisResult],
+    *,
+    median_width: float,
+    median_height: float,
+    columns: list[float],
+    rows: list[float],
+    pitch_x: float | None,
+    pitch_y: float | None,
+    config: GridDamageAnalysisConfig,
+) -> list[GridCellAnalysisResult]:
+    """One broken cell for defect pieces that together fill one empty lattice slot.
+
+    A cell the network drew as a split 'П' comes out as a bar and legs. Scored
+    one by one they read as debris inside the cell; together they are the cell.
+    """
+
+    enabled = config.enabled_reason_types
+    if enabled is not None and "broken_geometry" not in set(enabled):
+        return per_cell
+    if not columns or not rows:
+        return per_cell
+    cell_w = max(1.0, float(median_width))
+    cell_h = max(1.0, float(median_height))
+    fragment_reasons = {"small_artifact", "broken_geometry"}
+    fragments = [
+        index
+        for index, cell in enumerate(per_cell)
+        if cell.reasons
+        and set(cell.reasons) <= fragment_reasons
+        and cell.bbox[2] <= 1.35 * cell_w
+        and cell.bbox[3] <= 1.35 * cell_h
+    ]
+    if len(fragments) < 2:
+        return per_cell
+    gap_limit = max(2.0, 0.35 * min(cell_w, cell_h))
+    parent = {index: index for index in fragments}
+    box = {index: tuple(int(value) for value in per_cell[index].bbox[:4]) for index in fragments}
+    members = {index: [index] for index in fragments}
+
+    def find(value: int) -> int:
+        while parent[value] != value:
+            parent[value] = parent[parent[value]]
+            value = parent[value]
+        return value
+
+    def bucket(index: int) -> tuple[int, int]:
+        x, y, w, h = per_cell[index].bbox[:4]
+        return int((x + w / 2.0) // cell_w), int((y + h / 2.0) // cell_h)
+
+    buckets: dict[tuple[int, int], list[int]] = {}
+    for index in fragments:
+        buckets.setdefault(bucket(index), []).append(index)
+    for index in fragments:
+        bx, by = bucket(index)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for other in buckets.get((bx + dx, by + dy), ()):
+                    left, right = find(index), find(other)
+                    if left == right or _bbox_gap(box[left], box[right]) > gap_limit:
+                        continue
+                    ax, ay, aw, ah = box[left]
+                    ox, oy, ow, oh = box[right]
+                    x0, y0 = min(ax, ox), min(ay, oy)
+                    x1, y1 = max(ax + aw, ox + ow), max(ay + ah, oy + oh)
+                    if x1 - x0 > 1.35 * cell_w or y1 - y0 > 1.35 * cell_h:
+                        continue
+                    parent[right] = left
+                    box[left] = (x0, y0, x1 - x0, y1 - y0)
+                    members[left].extend(members.pop(right))
+
+    grouped: set[int] = set()
+    merged_cells: list[GridCellAnalysisResult] = []
+    next_contour_id = max((int(cell.contour_id or 0) for cell in per_cell), default=0) + 1
+    for root, group in members.items():
+        if len(group) < 2:
+            continue
+        x, y, w, h = box[root]
+        if w < 0.6 * cell_w or h < 0.6 * cell_h:
+            continue
+        cx, cy = x + w / 2.0, y + h / 2.0
+        if not (
+            _on_grid_axis(cx, columns, pitch_x, 0.45 * cell_w) and _on_grid_axis(cy, rows, pitch_y, 0.45 * cell_h)
+        ):
+            continue
+        member_set = set(group)
+        if any(
+            index not in member_set and x <= float(cell.centroid[0]) <= x + w and y <= float(cell.centroid[1]) <= y + h
+            for index, cell in enumerate(per_cell)
+        ):
+            continue
+        points = [point for index in group for point in (per_cell[index].outline or ())]
+        outline: tuple[tuple[int, int], ...] = ()
+        if len(points) >= 3 and cv2 is not None:
+            hull = cv2.convexHull(np.asarray(points, dtype=np.int32).reshape(-1, 1, 2)).reshape(-1, 2)
+            outline = tuple((int(px), int(py)) for px, py in hull)
+        merged_cells.append(
+            GridCellAnalysisResult(
+                row=0,
+                col=0,
+                bbox=(int(x), int(y), int(w), int(h)),
+                centroid=(float(cx), float(cy)),
+                contour_id=int(next_contour_id),
+                status="broken",
+                score=float(max(0.80, max(float(per_cell[index].score) for index in group))),
+                reasons=("broken_geometry",),
+                feature_snapshot=(("fragment_count", float(len(group))),),
+                outline=outline,
+            )
+        )
+        next_contour_id += 1
+        grouped.update(member_set)
+    if not grouped:
+        return per_cell
+    kept = [cell for index, cell in enumerate(per_cell) if index not in grouped]
+    kept.extend(merged_cells)
+    return kept
 
 
 def _collapse_conductor_regions(

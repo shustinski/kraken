@@ -11,7 +11,6 @@ import os
 import sys
 from pathlib import Path
 
-TESTER_VERSION = "0.1.0-test1"
 _PROFILES = {"dev", "tester"}
 
 
@@ -44,19 +43,26 @@ def tester_build() -> bool:
 
 
 def display_version() -> str:
-    if not tester_build():
-        from ..version import __version__
+    from ..version import APP_VERSION, __version__
 
-        return __version__
     if getattr(sys, "frozen", False):
         lines = _bundled_profile_text().splitlines()
         if len(lines) > 1 and lines[1].strip():
             return lines[1].strip()
-    return TESTER_VERSION
+    return APP_VERSION or __version__
 
 
 def show_class_conflict() -> bool:
     return not tester_build()
+
+
+def show_confidence_defects() -> bool:
+    """Confidence-layer fill defects (filled / partial) are part of the tester build.
+
+    Cells come from the binary mask; interiors are scored on the confidence map.
+    """
+
+    return True
 
 
 def show_pair_matrices() -> bool:

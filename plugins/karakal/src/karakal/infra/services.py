@@ -33,17 +33,16 @@ _LEGACY_MANAGER_MODES = {"manager", "management", "manager_mode"}
 
 
 def default_settings() -> QSettings:
-    """Tester exe keeps its own ini beside the executable.
+    """Frozen builds keep settings.ini beside the executable.
 
-    A frozen tester build must not read the developer registry or cache.
+    Channel and update-root preferences share this file. A frozen build must not
+    read the developer registry or cache.
     """
 
     import sys
     from pathlib import Path
 
-    from ..core.features import tester_build
-
-    if getattr(sys, "frozen", False) and tester_build():
+    if getattr(sys, "frozen", False):
         path = Path(sys.executable).resolve().parent / "settings.ini"
         return QSettings(str(path), QSettings.Format.IniFormat)
     return QSettings(SETTINGS_ORG, SETTINGS_APP)

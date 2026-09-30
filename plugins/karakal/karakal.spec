@@ -1,10 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import re
 from pathlib import Path
+
+_HERE = Path(SPECPATH).resolve()
+_version_file = (_HERE / "src" / "karakal" / "version.py").read_text(encoding="utf-8")
+_match = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', _version_file)
+_default_version = _match.group(1) if _match else "0.1.0-beta0"
 
 _profile = os.environ.get("KARAKAL_BUILD_PROFILE", "dev").strip().lower()
 _tester = _profile == "tester"
-_version = os.environ.get("KARAKAL_TESTER_VERSION", "0.1.0-test1")
+_version = os.environ.get("KARAKAL_VERSION", _default_version).strip() or _default_version
 _profile_file = Path(os.environ.get("TEMP", ".")) / "build_profile.txt"
 _datas = [
     ('src\\karakal\\resources\\icons\\karakal_light.ico', 'karakal/resources/icons'),

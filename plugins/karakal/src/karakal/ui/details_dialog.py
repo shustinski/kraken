@@ -2143,6 +2143,11 @@ class ExtendFrameDetailsDialog(QDialog):
             bad_cells = int(getattr(result, "bad_cells", 0))
             lines = [
                 f"severity_level: {getattr(result, 'severity_level', '-')}",
+                *(
+                    ["нет файла модели"]
+                    if str(getattr(result, "model_file_status", "") or "") == "missing"
+                    else []
+                ),
                 f"total_cells: {int(getattr(result, 'total_expected_cells', 0))}",
                 f"detected_cells: {int(getattr(result, 'detected_cells', 0))}",
                 f"normal_cells: {int(getattr(result, 'normal_cells', 0))}",
@@ -5253,6 +5258,11 @@ class ExtendFrameDetailsDialog(QDialog):
                     [
                         f"damage_score: {float(getattr(result, 'damage_score', 0.0)):.4f}",
                         f"severity_level: {getattr(result, 'severity_level', '-')}",
+                        *(
+                            ["нет файла модели"]
+                            if str(getattr(result, "model_file_status", "") or "") == "missing"
+                            else []
+                        ),
                         f"cells: {int(getattr(result, 'total_expected_cells', 0))}",
                         f"detected_cells: {int(getattr(result, 'detected_cells', 0))}",
                         f"normal/bad: {int(getattr(result, 'normal_cells', 0))}/{bad_cells}",

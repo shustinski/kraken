@@ -145,6 +145,82 @@ def test_l_shaped_zone_does_not_cover_the_corner_array() -> None:
     assert abs(cv2.contourArea(contour)) < 0.92 * float(largest.bbox[2] * largest.bbox[3])
 
 
+def test_a_row_of_equally_damaged_cells_is_scored_against_the_array() -> None:
+    from karakal.core.grid_anomaly import _ContourCandidate, _retarget_local_medians
+
+    def _cell(index: int) -> _ContourCandidate:
+        return _ContourCandidate(
+            contour_id=index,
+            contour=None,
+            bbox=(index * 50, 100, 44, 26),
+            centroid=(index * 50 + 22.0, 113.0),
+            area=700.0,
+            bbox_area=1144.0,
+            aspect_ratio=44 / 26,
+            extent=0.80,
+            solidity=0.90,
+            perimeter=140.0,
+            approx_vertices=4,
+            fill_ratio=1.0,
+            interior_fill_ratio=0.90,
+            center_fill_ratio=0.90,
+            outline_min_side_coverage=1.0,
+            outline_mean_side_coverage=1.0,
+            outline_side_imbalance=0.0,
+            inner_hole_ratio=0.0,
+            child_count=0,
+            touches_border=False,
+        )
+
+    candidates = [_cell(index) for index in range(8)]
+    local = [
+        {"width": 44.0, "height": 26.0, "area": 700.0, "interior_fill": 0.90, "solidity": 0.90, "extent": 0.80}
+        for _ in candidates
+    ]
+    neighbors = [tuple(other for other in range(8) if other != index) for index in range(8)]
+    retargeted, _counts = _retarget_local_medians(
+        candidates,
+        local,
+        neighbors,
+        modal_width=22.0,
+        modal_height=32.0,
+        modal_area=700.0,
+        modal_solidity=0.90,
+        modal_extent=0.85,
+        modal_interior=0.90,
+    )
+    assert len(retargeted) == 8
+    assert all(abs(item["width"] - 22.0) < 0.1 for item in retargeted)
+    assert all(abs(item["height"] - 32.0) < 0.1 for item in retargeted)
+
+
+def test_short_cell_on_a_lattice_node_is_broken_geometry() -> None:
+    image = np.zeros((360, 400), dtype=np.uint8)
+    _lattice(image, rows=5, cols=8, origin=(16, 16))
+    x = 16 + 3 * 36
+    y = 16 + 2 * 48
+    cv2.rectangle(image, (x, y), (x + 22, y + 32), 0, -1)
+    cv2.rectangle(image, (x + 3, y + 9), (x + 19, y + 23), 255, -1)
+    speck_x, speck_y = 16 + 36 + 10, 16 + 48 + 36
+    cv2.rectangle(image, (speck_x, speck_y), (speck_x + 6, speck_y + 5), 255, -1)
+
+    result = detect_grid_cell_anomalies(image, config=_config())
+    short = [
+        cell
+        for cell in result.cells
+        if abs(cell.centroid[0] - (x + 11)) < 16 and abs(cell.centroid[1] - (y + 16)) < 16
+    ]
+    assert short
+    assert any("broken_geometry" in cell.reasons for cell in short)
+    assert all("small_artifact" not in cell.reasons for cell in short)
+    specks = [
+        cell
+        for cell in result.cells
+        if abs(cell.centroid[0] - (speck_x + 3)) < 8 and "broken_geometry" in cell.reasons
+    ]
+    assert specks == []
+
+
 def test_conductor_zone_does_not_raise_damage_score() -> None:
     clean = np.zeros((360, 340), dtype=np.uint8)
     _lattice(clean, rows=5, cols=7, origin=(16, 16))

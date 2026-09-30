@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+
+# Force pytest-qt to bind to the same Qt used by Karakal (PyQt6).
+os.environ.setdefault("PYTEST_QT_API", "pyqt6")
+
 import pytest
 
 

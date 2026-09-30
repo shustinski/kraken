@@ -1,6 +1,16 @@
 {
-  "version": "1.1.0-beta.1",
+  "version": "0.1.0-beta0",
   "channel": "beta",
-  "download_url": "http://127.0.0.1:8080/karakal/beta/Karakal-setup-1.1.0-beta.1.exe",
-  "release_notes_markdown": "## Karakal 1.1.0 beta 1\n\n- Test beta update manifest.\n- Replace this text with beta release notes before publication."
+  "download_url": "Karakal-setup-0.1.0-beta0.exe",
+  "sha256": "REPLACE_WITH_PUBLISH_SHA256",
+  "release_notes_markdown": "## Karakal 0.1.0-beta0\n\n- First tester build with export wizard and auto-update from a share folder.\n",
+  "releases": [
+    {
+      "version": "0.1.0-beta0",
+      "download_url": "Karakal-setup-0.1.0-beta0.exe",
+      "sha256": "REPLACE_WITH_PUBLISH_SHA256",
+      "notes": "First tester build.",
+      "channel": "beta"
+    }
+  ]
 }

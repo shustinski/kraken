@@ -17,6 +17,18 @@ def test_dev_profile_is_the_default(monkeypatch) -> None:
     monkeypatch.delenv("KARAKAL_BUILD_PROFILE", raising=False)
     assert profile_is_tester() is False
     assert show_class_conflict() is True
+    from karakal.core.features import show_confidence_defects
+
+    assert show_confidence_defects() is True
+
+
+def test_confidence_defects_enabled_in_tester_profile(monkeypatch) -> None:
+    monkeypatch.setenv("KARAKAL_BUILD_PROFILE", "tester")
+    from karakal.core.features import show_confidence_defects
+
+    assert show_confidence_defects() is True
+    assert profile_is_tester() is True
+    assert show_class_conflict() is False
 
 
 def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) -> None:
@@ -37,16 +49,85 @@ def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) 
     assert not widget.mode_toggle_button.isVisibleTo(widget)
     assert not widget.pair_matrix_group.isVisibleTo(widget)
     assert not widget._grid_reference_frame_row.isVisibleTo(widget)
+    # Confidence fill defects are enabled in tester; the compute checkbox stays available.
+    assert not widget.grid_layer_compute_checks["confidence"].isHidden()
+    assert widget.grid_layer_compute_checks["confidence"].isChecked()
+    assert widget.grid_layer_display_combo.findData("confidence") >= 0
     assert not widget.grid_layer_compute_checks["derived_conflict"].isVisibleTo(widget)
     assert not widget.grid_error_type_checks["class_conflict"].isVisibleTo(widget)
     assert not widget.grid_error_type_checks["conductor_zone"].isVisibleTo(widget)
     assert not widget.btn_export_layer.isVisibleTo(widget)
     payload = widget._presenter._grid_inspection_config_payload()
     assert "derived_conflict" not in payload["requested_layers"]
+    assert "confidence" in payload["requested_layers"]
+    assert "binary" in payload["requested_layers"]
     assert "class_conflict" not in payload["enabled_error_types"]
     assert "calibration_examples" not in payload
     state = SimpleNamespace(grid_inspection_reference_record_key="saved-reference")
     assert widget._presenter._grid_inspection_reference_profile_for_state(state, GridDamageAnalysisConfig()) is None
+
+
+def test_tester_profile_stays_hidden_after_two_models(tmp_path, qtbot, monkeypatch) -> None:
+    monkeypatch.setenv("KARAKAL_BUILD_PROFILE", "tester")
+    widget = KarakalWidget(settings=QSettings(str(tmp_path / "karakal.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(widget)
+    presenter = widget._presenter
+    for name in ("model_one", "model_zero"):
+        folder = tmp_path / name
+        folder.mkdir()
+        presenter._append_folder_item(folder, checked=True)
+
+    def hidden() -> None:
+        assert not widget.pair_matrix_group.isVisibleTo(widget)
+        assert not widget.grid_layer_compute_checks["confidence"].isHidden()
+        assert widget.grid_layer_display_combo.findData("confidence") >= 0
+        assert not widget.grid_layer_compute_checks["derived_conflict"].isVisibleTo(widget)
+        assert widget.grid_layer_display_combo.findData("derived_conflict") < 0
+        tabs = getattr(widget, "grid_inspection_layer_tabs", None)
+        if tabs is not None:
+            conflict_index = presenter._grid_inspection_layer_keys().index("derived_conflict")
+            assert not tabs.isTabVisible(conflict_index)
+        assert not widget._grid_reference_frame_row.isVisibleTo(widget)
+        profiles = [
+            button
+            for button in widget.analysis_setup_panel.findChildren(QPushButton)
+            if bool(button.property("analysisProfile")) and button.isVisibleTo(widget)
+        ]
+        assert profiles == []
+
+    presenter._sync_mode_controls()
+    hidden()
+    widget.grid_inspection_content_tabs.setCurrentIndex(1)
+    widget.grid_inspection_content_tabs.setCurrentIndex(0)
+    hidden()
+    widget._toggle_language()
+    presenter._sync_mode_controls()
+    hidden()
+    presenter._append_folder_item(tmp_path / "model_one", checked=True)
+    presenter._sync_mode_controls()
+    hidden()
+    payload = presenter._grid_inspection_config_payload()
+    assert "derived_conflict" not in payload["requested_layers"]
+    assert "confidence" in payload["requested_layers"]
+
+    from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
+    from karakal.ui.details_dialog import ExtendFrameDetailsDialog
+
+    record = FrameRecord("frame-1", "frame_0001.jpg")
+    dialog = ExtendFrameDetailsDialog(
+        record,
+        BuildResult(records=(record,), options=BuildOptions()),
+        allowed_result_kinds=("grid_cell_defects",),
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._set_grid_layer_controls_visible(True)
+    dialog._set_grid_detail_layer_rows(True)
+    dialog.details_control_tabs.setCurrentIndex(1)
+    assert not dialog.grid_confidence_layer_row.isHidden()
+    dialog.details_control_tabs.setCurrentIndex(0)
+    assert not dialog.grid_error_type_checks["class_conflict"].isVisibleTo(dialog)
+    assert not dialog.comparison_score_card.isVisibleTo(dialog)
 
 
 def test_tester_launch_switches_a_saved_other_profile(tmp_path, qtbot, monkeypatch) -> None:

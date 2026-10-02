@@ -15,9 +15,11 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from .algorithm_version import GRID_DAMAGE_ALGORITHM_VERSION
 from .backend_constants import CACHE_DIR
 from .cache_utils import atomic_pickle_dump, trim_directory_by_bytes
 from .grid_packed import pack_features, pack_points
+from .grid_template import CellShapeTemplate, CellTemplateMatcher, build_cell_shape_template, geometry_thresholds
 from .performance import load_performance_config
 from .profiling import current_profiler, profile_stage
 
@@ -27,7 +29,7 @@ except Exception:  # pragma: no cover - OpenCV is optional at runtime
     cv2 = None
 
 
-GRID_DAMAGE_ALGORITHM_VERSION = "grid_damage_v89_broken_cell_pieces"
+# Bump the number in algorithm_version.py when results change; it also sets the app version.
 GRID_DAMAGE_CACHE_DIR = CACHE_DIR / "grid_damage"
 GRID_DAMAGE_CACHE_MAX_FILES = 20000
 GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
@@ -40,6 +42,18 @@ LEFTOVER_DEBRIS_SCORE = 0.75
 LEFTOVER_DEBRIS_FEATURE = "leftover_debris"
 # A hole this much larger (share of the cell area) than holes of normal cells breaks the cell.
 HOLE_EXCESS_RATIO = 0.03
+# Score of a lattice slot cut by the frame edge.
+EDGE_CLIP_SCORE = 0.75
+# Template seed cells taken from one frame, so a few frames do not dominate the shape.
+TEMPLATE_SEEDS_PER_FRAME = 40
+# A piece below this share of the template cell area is debris, not a cell.
+CELL_MIN_AREA_RATIO = 0.60
+# Pieces of one slot are one broken cell only if together they stay this close to the template.
+FRAGMENT_UNION_MAX_DEVIATION = 0.45
+# Pixels that must differ deeper than the depth limit to call the shape broken (single pixels are noise).
+DEEP_PIXELS_MIN = 4
+# Conductor grain covers 12-30% of its zone with mask; below this a "zone" is a sparse field.
+ZONE_MIN_DENSITY = 0.08
 _LOGGER = logging.getLogger(__name__)
 GRID_DAMAGE_REASON_TYPES = (
     "filled_cell",
@@ -195,9 +209,12 @@ class GridCellReferenceProfile:
     seed_count: int = 0
     frame_id: str = ""
     frame_path: str = ""
+    # Mean silhouette of the layer cell; None keeps the size-only scoring.
+    shape_template: CellShapeTemplate | None = None
 
     def cache_payload(self) -> dict[str, Any]:
         return {
+            "shape_template": None if self.shape_template is None else self.shape_template.cache_payload(),
             "median_width": round(float(self.median_width), 6),
             "median_height": round(float(self.median_height), 6),
             "median_area": round(float(self.median_area), 6),
@@ -807,16 +824,35 @@ def detect_grid_cell_anomalies(
             zone_map = _empty_conductor_zone_map()
         else:
             zone_map = _binary_conductor_zone_map(gray, threshold, contours, hierarchy, cfg)
-        skipped_box = [0]
-        candidates = _extract_candidates(
-            contours,
-            hierarchy,
-            threshold,
-            gray.shape,
-            cfg,
-            zone_map=zone_map if zone_map.zones else None,
-            zone_skip_count=skipped_box,
+        shape_template = (
+            getattr(reference_profile, "shape_template", None)
+            if reference_profile is not None and str(cfg.scoring_mode) == "calibrated"
+            else None
         )
+        template_view = _TemplateView(shape_template, cfg) if shape_template is not None else None
+        skipped_box = [0]
+        if template_view is not None and zone_map.zones:
+            # Zones are found before the pieces, so every piece inside a zone used to vanish.
+            # In a sparse field the off-lattice cells themselves made the zone; a zone made of
+            # cells is no zone, and the debris and broken cells in it must be checked.
+            all_candidates = _extract_candidates(contours, hierarchy, threshold, gray.shape, cfg)
+            zone_map = template_view.drop_cell_zones(zone_map, all_candidates, threshold)
+            candidates = [
+                item for item in all_candidates if not zone_map.contains(item.centroid[0], item.centroid[1])
+            ]
+            skipped_box[0] = sum(1 for item in all_candidates if not item.is_hole) - sum(
+                1 for item in candidates if not item.is_hole
+            )
+        else:
+            candidates = _extract_candidates(
+                contours,
+                hierarchy,
+                threshold,
+                gray.shape,
+                cfg,
+                zone_map=zone_map if zone_map.zones else None,
+                zone_skip_count=skipped_box,
+            )
         zone_skipped = int(skipped_box[0])
     if zone_skipped:
         _LOGGER.info(
@@ -828,7 +864,8 @@ def detect_grid_cell_anomalies(
         return empty_result
 
     min_required_cells = int(cfg.min_grid_candidate_cells)
-    if len(candidates) < min_required_cells:
+    # With a layer template one cell is enough to check: a lone cell is still a cell.
+    if len(candidates) < min_required_cells and not (template_view is not None and candidates):
         if not zone_map.zones:
             return empty_result
         return _analyze_conductor_only_frame(
@@ -883,7 +920,23 @@ def detect_grid_cell_anomalies(
         )
     # Run-wide cell size: skip crumb-only frames (no array). Without a run profile,
     # keep legacy single-frame behaviour so synthetic unit tests stay valid.
-    if reference_profile is not None:
+    if template_view is not None:
+        matched = template_view.count_cells(candidates)
+        # A frame of crumbs (no array) still throws a few cell-like blobs among thousands.
+        if matched < 1 or (len(candidates) >= max(120, 4 * matched) and matched < 80):
+            return _no_cell_array_result(
+                frame_id=frame_id,
+                frame_path=frame_path,
+                width=width,
+                height=height,
+                component_count=len(candidates),
+                zone_map=zone_map,
+                zone_skipped=zone_skipped,
+                cell_width=float(reference_profile.median_width),
+                cell_height=float(reference_profile.median_height),
+                config=cfg,
+            )
+    elif reference_profile is not None:
         min_matched = max(24, int(cfg.min_grid_candidate_cells) * 3)
         local_profile, _local_seed = _calibrated_size_profile(
             candidates, frame_id=frame_id, frame_path=frame_path
@@ -1073,6 +1126,7 @@ def detect_grid_cell_anomalies(
             frame_examples = []
             example_distances = None
         for candidate_index, candidate in enumerate(ordered_candidates):
+            template_features: tuple[tuple[str, float], ...] = ()
             local = local_medians[candidate_index] if calibrated else {}
             if calibrated:
                 local_width = float(local.get("width", median_width))
@@ -1138,7 +1192,13 @@ def detect_grid_cell_anomalies(
                 before_short = reasons
                 reasons = _promote_short_lattice_cell(
                     reasons,
-                    on_lattice_node=on_column and on_row and not candidate.touches_border and near_conductor_edge,
+                    on_lattice_node=(
+                        template_view is None
+                        and on_column
+                        and on_row
+                        and not candidate.touches_border
+                        and near_conductor_edge
+                    ),
                     area_ratio=array_area_ratio,
                     width_ratio=array_width_ratio,
                     height_ratio=array_height_ratio,
@@ -1157,6 +1217,10 @@ def detect_grid_cell_anomalies(
                     pitch_y=edge_pitch_y,
                 )
                 score = max(scores.fill, scores.geometry, scores.merge, scores.debris) if reasons else 0.0
+                if "edge_clipped_cell" in reasons:
+                    # The slot check already proved the clip. Without this a clean clipped
+                    # cell scored 0 and fell back to normal, so edge clips came and went.
+                    score = max(float(score), float(scores.edge), EDGE_CLIP_SCORE)
                 if forced_geometry and "broken_geometry" in reasons:
                     score = max(float(score), 0.80)
                 hole_area = float(candidate.inner_hole_ratio) * float(candidate.area)
@@ -1177,6 +1241,13 @@ def detect_grid_cell_anomalies(
                         dict.fromkeys((*(reason for reason in reasons if reason != "small_artifact"), "broken_geometry"))
                     )
                     score = max(float(score), 0.80)
+                    hole_broken = True
+                else:
+                    hole_broken = False
+                if template_view is not None:
+                    score, reasons, template_features = template_view.judge(
+                        candidate, reasons, score, hole_broken=hole_broken
+                    )
             else:
                 score, reasons = _classify_detected_cell(
                     candidate,
@@ -1204,7 +1275,9 @@ def detect_grid_cell_anomalies(
                 score, reasons = 0.0, ()
                 detached_edge = True
             is_bad = _is_bad_grid_cell(score, reasons, cfg)
-            if calibrated:
+            if calibrated and template_view is not None:
+                is_cell_like = template_view.is_cell_sized(candidate)
+            elif calibrated:
                 is_cell_like = bool(
                     0.50 <= min(width_ratio, height_ratio)
                     and max(width_ratio, height_ratio) <= 1.85
@@ -1294,6 +1367,7 @@ def detect_grid_cell_anomalies(
                             ("edge_score", float(scores.edge)),
                         )
                         + ((LEFTOVER_DEBRIS_FEATURE, 1.0),) * int(leftover_debris)
+                        + (template_features if template_view is not None else ())
                         if calibrated
                         else (
                             ("width", float(candidate.bbox[2])),
@@ -1330,6 +1404,10 @@ def detect_grid_cell_anomalies(
             confidence=probability,
             foreground=threshold,
         )
+        if template_view is not None:
+            # A zone made of pieces that look like the layer cell is cells, not conductor:
+            # a lone cell or a short array has no lattice around it but must be checked.
+            zone_map = template_view.drop_cell_zones(zone_map, candidates, threshold)
     if zone_map.zones:
         per_cell = [cell for cell in per_cell if not zone_map.contains(cell.centroid[0], cell.centroid[1])]
     if str(cfg.scoring_mode) == "calibrated":
@@ -1343,6 +1421,7 @@ def detect_grid_cell_anomalies(
             pitch_x=edge_pitch_x,
             pitch_y=edge_pitch_y,
             config=cfg,
+            template_view=template_view,
         )
     per_cell = _collapse_conductor_regions(
         per_cell,
@@ -1419,7 +1498,7 @@ def detect_grid_cell_anomalies(
         "missing": sum(1 for cell in cell_rows if cell.status == "missing"),
         "artifact": sum(1 for cell in cell_rows if cell.status == "artifact"),
     }
-    if len(cell_rows) < min_required_cells and not zone_map.zones:
+    if len(cell_rows) < min_required_cells and not zone_map.zones and template_view is None:
         return empty_result
     total_expected = max(1, len(cell_rows)) if cell_rows else 0
     damage_score = _damage_score(cell_rows, max(1, len(cell_rows))) if cell_rows else 0.0
@@ -1596,6 +1675,7 @@ def estimate_run_cell_reference_profile(
     config: GridDamageAnalysisConfig | None = None,
     sample_limit: int = 32,
     frame_id: str = "run",
+    min_frames: int = 2,
 ) -> GridCellReferenceProfile | None:
     """Modal cell size across a run of masks for one model.
 
@@ -1615,6 +1695,7 @@ def estimate_run_cell_reference_profile(
     centers: list[float] = []
     aspects: list[float] = []
     seeds = 0
+    template_seeds: list[tuple[Any, float, float, float]] = []
     paths = [Path(path) for path in mask_paths if str(path)]
     if sample_limit > 0 and len(paths) > sample_limit:
         step = max(1, len(paths) // sample_limit)
@@ -1634,6 +1715,19 @@ def estimate_run_cell_reference_profile(
             continue
         if float(profile.median_area) < 80.0:
             continue
+        frame_seeds = [
+            (item.contour, float(item.bbox[2]), float(item.bbox[3]), float(item.area))
+            for item in cluster
+            if not item.touches_border
+            and not item.is_hole
+            and item.contour is not None
+            and 0.80 <= float(item.bbox[2]) / max(1.0, float(profile.median_width)) <= 1.25
+            and 0.80 <= float(item.bbox[3]) / max(1.0, float(profile.median_height)) <= 1.25
+        ]
+        if len(frame_seeds) > TEMPLATE_SEEDS_PER_FRAME:
+            step_seed = len(frame_seeds) / float(TEMPLATE_SEEDS_PER_FRAME)
+            frame_seeds = [frame_seeds[int(index * step_seed)] for index in range(TEMPLATE_SEEDS_PER_FRAME)]
+        template_seeds.extend(frame_seeds)
         widths.append(float(profile.median_width))
         heights.append(float(profile.median_height))
         areas.append(float(profile.median_area))
@@ -1642,8 +1736,16 @@ def estimate_run_cell_reference_profile(
         centers.append(float(profile.median_center_fill))
         aspects.append(float(profile.median_aspect))
         seeds += int(profile.seed_count)
-    if len(areas) < 2:
+    if len(areas) < max(1, int(min_frames)):
         return None
+    run_w, run_h = float(np.median(widths)), float(np.median(heights))
+    template = build_cell_shape_template(
+        [
+            seed
+            for seed in template_seeds
+            if 0.80 <= seed[1] / max(1.0, run_w) <= 1.25 and 0.80 <= seed[2] / max(1.0, run_h) <= 1.25
+        ]
+    )
     return GridCellReferenceProfile(
         median_width=float(np.median(widths)),
         median_height=float(np.median(heights)),
@@ -1656,6 +1758,7 @@ def estimate_run_cell_reference_profile(
         seed_count=int(seeds),
         frame_id=str(frame_id or "run"),
         frame_path="",
+        shape_template=template,
     )
 
 
@@ -3371,6 +3474,26 @@ def _on_grid_axis(value: float, centers: list[float], pitch: float | None, toler
     return abs(delta - float(pitch)) <= tolerance
 
 
+def _inside_slot_band(
+    start: float,
+    end: float,
+    centers: list[float],
+    pitch: float | None,
+    cell_size: float,
+) -> bool:
+    """Whether [start, end] along the frame edge stays inside one slot of the lattice."""
+
+    if not centers:
+        return False
+    middle = (float(start) + float(end)) / 2.0
+    nearest = min(centers, key=lambda center: abs(center - middle))
+    if pitch is not None and pitch > 1.0:
+        steps = round((middle - nearest) / float(pitch))
+        nearest = nearest + steps * float(pitch)
+    half = 0.5 * float(cell_size) + max(2.0, 0.15 * float(cell_size))
+    return nearest - half <= float(start) and float(end) <= nearest + half
+
+
 def _prefer_edge_slot_over_debris(
     reasons: tuple[str, ...],
     candidate: _ContourCandidate,
@@ -3460,15 +3583,29 @@ def _prefer_edge_slot_over_debris(
         )
     ):
         on_slot = True
-    if not on_slot:
+    # A sliver of a cell that lies mostly outside the frame, drawn only in part:
+    # it sits inside the visible part of an edge slot, whatever its length.
+    sliver = False
+    if horizontal and not vertical and width_fraction <= 0.60 and height_fraction <= 1.25:
+        inner_x = float(x + width) - modal_w / 2.0 if "left" in sides else float(x) + modal_w / 2.0
+        sliver = _on_grid_axis(inner_x, column_centers, pitch_x, tolerance_x) and _inside_slot_band(
+            float(y), float(y + height), row_centers, pitch_y, modal_h
+        )
+    if vertical and not horizontal and height_fraction <= 0.60 and width_fraction <= 1.25:
+        inner_y = float(y + height) - modal_h / 2.0 if "top" in sides else float(y) + modal_h / 2.0
+        sliver = _on_grid_axis(inner_y, row_centers, pitch_y, tolerance_y) and _inside_slot_band(
+            float(x), float(x + width), column_centers, pitch_x, modal_w
+        )
+    if not on_slot and not sliver:
         return reasons
     cropped = (horizontal and width_fraction <= 0.95) or (vertical and height_fraction <= 0.95)
     if not cropped:
         return reasons
-    if horizontal and not vertical and not 0.75 <= height_fraction <= 1.25:
-        return reasons
-    if vertical and not horizontal and not 0.75 <= width_fraction <= 1.25:
-        return reasons
+    if not sliver:
+        if horizontal and not vertical and not 0.75 <= height_fraction <= 1.25:
+            return reasons
+        if vertical and not horizontal and not 0.75 <= width_fraction <= 1.25:
+            return reasons
     if horizontal and vertical:
         visible = width_fraction * height_fraction
     elif horizontal:
@@ -3916,6 +4053,179 @@ def _conductor_zone_map(
     )
 
 
+class _TemplateView:
+    """Layer template applied to the pieces of one frame (calibrated scoring)."""
+
+    def __init__(self, template: CellShapeTemplate, config: GridDamageAnalysisConfig) -> None:
+        self.template = template
+        self.matcher = CellTemplateMatcher(template)
+        self.deviation_limit, self.width_tolerance, self.height_tolerance, self.depth_limit = geometry_thresholds(
+            template, int(config.geometry_sensitivity)
+        )
+        self._measure_by_id: dict[int, tuple[float, int]] = {}
+
+    def ratios(self, candidate: _ContourCandidate) -> tuple[float, float, float]:
+        t = self.template
+        return (
+            float(candidate.bbox[2]) / max(1.0, float(t.cell_width)),
+            float(candidate.bbox[3]) / max(1.0, float(t.cell_height)),
+            float(candidate.area) / max(1.0, float(t.cell_area)),
+        )
+
+    def is_cell_sized(self, candidate: _ContourCandidate) -> bool:
+        width_ratio, height_ratio, area_ratio = self.ratios(candidate)
+        return bool(
+            area_ratio >= CELL_MIN_AREA_RATIO
+            and min(width_ratio, height_ratio) >= 0.50
+            and max(width_ratio, height_ratio) <= 1.85
+            and area_ratio <= 2.40
+        )
+
+    def measure(self, candidate: _ContourCandidate) -> tuple[float, int]:
+        key = int(candidate.contour_id)
+        cached = self._measure_by_id.get(key)
+        if cached is None:
+            cached = (
+                self.matcher.measure_points(candidate.contour, self.depth_limit)
+                if candidate.contour is not None
+                else (1.0, 10**6)
+            )
+            self._measure_by_id[key] = cached
+        return cached
+
+    def deviation(self, candidate: _ContourCandidate) -> float:
+        return self.measure(candidate)[0]
+
+    def is_cells_in_a_row(self, candidate: _ContourCandidate) -> bool:
+        """One cell wide, 1.6-4 cells long, with the area of 1.5-3.8 cells and a solid body."""
+
+        width_ratio, height_ratio, area_ratio = self.ratios(candidate)
+        short, long = sorted((width_ratio, height_ratio))
+        return bool(
+            0.75 <= short <= 1.40
+            and 1.60 <= long <= 4.20
+            and 1.50 <= area_ratio <= 3.80
+            and float(candidate.solidity) >= 0.80
+        )
+
+    def shape_is_off(self, candidate: _ContourCandidate) -> bool:
+        deviation, deep = self.measure(candidate)
+        return deviation > self.deviation_limit or deep >= DEEP_PIXELS_MIN
+
+    def matches(self, candidate: _ContourCandidate) -> bool:
+        width_ratio, height_ratio, area_ratio = self.ratios(candidate)
+        if candidate.is_hole or candidate.touches_border or not 0.75 <= area_ratio <= 1.40:
+            return False
+        if abs(width_ratio - 1.0) > self.width_tolerance or abs(height_ratio - 1.0) > self.height_tolerance:
+            return False
+        return not self.shape_is_off(candidate)
+
+    def count_cells(self, candidates: Sequence[_ContourCandidate]) -> int:
+        """Pieces that are cells, broken ones included; a lone broken cell still makes a frame to check."""
+
+        return sum(1 for candidate in candidates if not candidate.touches_border and self.looks_like_cell(candidate))
+
+    def judge(
+        self,
+        candidate: _ContourCandidate,
+        reasons: tuple[str, ...],
+        score: float,
+        *,
+        hole_broken: bool,
+    ) -> tuple[float, tuple[str, ...], tuple[tuple[str, float], ...]]:
+        """Geometry against the template; size-only and shape-only scores give way to it."""
+
+        if candidate.touches_border or "merged_contour" in reasons or "edge_clipped_cell" in reasons:
+            return score, reasons, ()
+        width_ratio, height_ratio, area_ratio = self.ratios(candidate)
+        if self.is_cells_in_a_row(candidate):
+            # Two or more cells glued along a row or column, at any spacing (also off the
+            # lattice pitch, where the core check does not look).
+            reasons = tuple(dict.fromkeys((*(r for r in reasons if r not in {"small_artifact", "broken_geometry"}), "merged_contour")))
+            return max(float(score), 0.86), reasons, (("template_cells_in_row", float(max(width_ratio, height_ratio))),)
+        if not self.is_cell_sized(candidate):
+            # A piece well below a cell is debris (the leftover rule marks it), not a broken cell.
+            if area_ratio < CELL_MIN_AREA_RATIO and not hole_broken:
+                reasons = tuple(reason for reason in reasons if reason != "broken_geometry")
+            return (score if reasons else 0.0), reasons, ()
+        deviation, deep = self.measure(candidate)
+        features = (
+            ("template_deviation", float(deviation)),
+            ("template_deep_pixels", float(deep)),
+            ("template_width_ratio", float(width_ratio)),
+            ("template_height_ratio", float(height_ratio)),
+        )
+        # Solidity/extent geometry reacts to rounder or sharper edges; the template does not.
+        reasons = tuple(reason for reason in reasons if reason != "broken_geometry" or hole_broken)
+        off_shape = deviation > self.deviation_limit or deep >= DEEP_PIXELS_MIN
+        off_size = abs(width_ratio - 1.0) > self.width_tolerance or abs(height_ratio - 1.0) > self.height_tolerance
+        if off_shape or off_size:
+            reasons = tuple(dict.fromkeys((*(reason for reason in reasons if reason != "small_artifact"), "broken_geometry")))
+            score = max(float(score), 0.80)
+        elif not reasons:
+            score = 0.0
+        return score, reasons, features
+
+    def looks_like_cell(self, candidate: _ContourCandidate) -> bool:
+        """Cell-sized and loosely the template shape: a cell, perhaps a broken one."""
+
+        return (
+            not candidate.is_hole
+            and self.is_cell_sized(candidate)
+            and self.deviation(candidate) <= FRAGMENT_UNION_MAX_DEVIATION
+        )
+
+    def drop_cell_zones(self, zone_map, candidates: Sequence[_ContourCandidate], foreground: np.ndarray | None = None):
+        zones = tuple(getattr(zone_map, "zones", ()) or ())
+        if not zones:
+            return zone_map
+        kept = []
+        dropped = []
+        for zone in zones:
+            x, y, w, h = (int(value) for value in zone.bbox[:4])
+            inside = [
+                item
+                for item in candidates
+                if not item.is_hole
+                and not item.touches_border
+                and float(item.area) >= DEBRIS_MIN_AREA_PX
+                and x <= float(item.centroid[0]) <= x + w
+                and y <= float(item.centroid[1]) <= y + h
+            ]
+            # Only pieces that match the template outright count: conductor grain has
+            # plenty of cell-sized, roughly square blobs, clean cells of a sparse field do not differ.
+            cells = sum(1 for item in inside if self.matches(item))
+            # A lone cell, broken or not, is never grain: grain is many pieces.
+            lone_cells = 0 < len(inside) <= 3 and all(self.looks_like_cell(item) for item in inside)
+            # Conductor grain fills its zone densely; a sparse field with a few cells or
+            # broken pieces does not, and what is in it must be checked.
+            sparse = False
+            if foreground is not None and w > 0 and h > 0:
+                sparse = float(np.count_nonzero(foreground[y : y + h, x : x + w])) / float(w * h) < ZONE_MIN_DENSITY
+            (dropped if (cells and cells * 2 >= len(inside)) or lone_cells or sparse else kept).append(zone)
+        if not dropped:
+            return zone_map
+        occupied = np.array(zone_map.occupied, copy=True)
+        tile = int(getattr(zone_map, "tile", 0) or 0)
+        if tile > 0 and occupied.size:
+            for zone in dropped:
+                x, y, w, h = (int(value) for value in zone.bbox[:4])
+                occupied[max(0, y // tile) : (y + h) // tile + 1, max(0, x // tile) : (x + w) // tile + 1] = False
+        return replace(zone_map, zones=tuple(kept), occupied=occupied)
+
+    def union_looks_like_cell(self, outlines: Sequence[Any]) -> bool:
+        points = [np.asarray(outline, dtype=np.int32).reshape(-1, 2) for outline in outlines if outline is not None and len(outline) >= 3]
+        if not points or cv2 is None:
+            return False
+        stacked = np.concatenate(points)
+        x0, y0 = stacked.min(axis=0)
+        x1, y1 = stacked.max(axis=0)
+        crop = np.zeros((int(y1 - y0 + 1), int(x1 - x0 + 1)), dtype=np.uint8)
+        for item in points:
+            cv2.fillPoly(crop, [(item - (x0, y0)).reshape(-1, 1, 2)], 1)
+        return self.matcher.deviation_of_crop(crop) <= FRAGMENT_UNION_MAX_DEVIATION
+
+
 def _group_slot_fragments(
     per_cell: list[GridCellAnalysisResult],
     *,
@@ -3926,6 +4236,7 @@ def _group_slot_fragments(
     pitch_x: float | None,
     pitch_y: float | None,
     config: GridDamageAnalysisConfig,
+    template_view: "_TemplateView | None" = None,
 ) -> list[GridCellAnalysisResult]:
     """One broken cell for defect pieces that together fill one empty lattice slot.
 
@@ -4006,6 +4317,9 @@ def _group_slot_fragments(
             index not in member_set and x <= float(cell.centroid[0]) <= x + w and y <= float(cell.centroid[1]) <= y + h
             for index, cell in enumerate(per_cell)
         ):
+            continue
+        # Pieces of a cell together still look like the cell; neighbouring grain does not.
+        if template_view is not None and not template_view.union_looks_like_cell([per_cell[index].outline for index in group]):
             continue
         points = [point for index in group for point in (per_cell[index].outline or ())]
         outline: tuple[tuple[int, int], ...] = ()
@@ -5449,6 +5763,10 @@ def _damage_score(cells: list[GridCellAnalysisResult], total_expected: int) -> f
     weighted = 0.0
     bad_scores: list[float] = []
     for cell in cells:
+        if tuple(cell.reasons or ()) == ("edge_clipped_cell",):
+            # A cell cut by the frame is not a network error; it stays listed but does not
+            # make a clean frame look damaged.
+            continue
         status_weight = weights.get(str(cell.status), 0.50)
         weighted += status_weight * max(0.25 if status_weight else 0.0, float(cell.score))
         if cell.status != "normal":

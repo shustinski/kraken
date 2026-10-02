@@ -604,6 +604,7 @@ class KarakalWidget(QWidget):
         self.grid_reference_frame_label = QLabel(self._t("grid_reference.none"), self)
         self.grid_reference_frame_label.setWordWrap(True)
         self.grid_reference_frame_select_button = QPushButton(self._t("grid_reference.select_current"), self)
+        self.grid_reference_frame_folder_button = QPushButton(self._t("grid_reference.select_folder"), self)
         self.grid_reference_frame_clear_button = QPushButton(self._t("grid_reference.clear"), self)
         self.grid_error_type_checks: dict[str, QCheckBox] = {}
         for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
@@ -1742,6 +1743,7 @@ class KarakalWidget(QWidget):
         grid_reference_buttons_layout.setContentsMargins(0, 0, 0, 0)
         grid_reference_buttons_layout.setSpacing(6)
         grid_reference_buttons_layout.addWidget(self.grid_reference_frame_select_button)
+        grid_reference_buttons_layout.addWidget(self.grid_reference_frame_folder_button)
         grid_reference_buttons_layout.addWidget(self.grid_reference_frame_clear_button)
         grid_reference_layout.addWidget(grid_reference_buttons)
         self._grid_reference_frame_row = self._build_setting_row(self._t("grid_reference.label"), grid_reference_control)
@@ -1908,6 +1910,8 @@ class KarakalWidget(QWidget):
                         self.grid_tuning_preset_combo.setCurrentIndex(restored)
             if hasattr(self, "grid_reference_frame_select_button"):
                 self.grid_reference_frame_select_button.setText(self._t("grid_reference.select_current"))
+            if hasattr(self, "grid_reference_frame_folder_button"):
+                self.grid_reference_frame_folder_button.setText(self._t("grid_reference.select_folder"))
             if hasattr(self, "grid_reference_frame_clear_button"):
                 self.grid_reference_frame_clear_button.setText(self._t("grid_reference.clear"))
         self._populate_matrix_score_view_combo(self.matrix_score_view_combo.currentData() or DEFAULT_MATRIX_SCORE_VIEW_MODE)
@@ -2338,6 +2342,7 @@ class KarakalWidget(QWidget):
         self.grid_inspection_error_list.itemClicked.connect(self._presenter._on_grid_inspection_error_item_clicked)
         self.grid_inspection_error_list.itemActivated.connect(self._presenter._on_grid_inspection_error_item_clicked)
         self.grid_reference_frame_select_button.clicked.connect(self._presenter._on_grid_reference_select_requested)
+        self.grid_reference_frame_folder_button.clicked.connect(self._presenter._on_grid_reference_folder_requested)
         self.grid_reference_frame_clear_button.clicked.connect(self._presenter._on_grid_reference_clear_requested)
         for checkbox in self.grid_layer_compute_checks.values():
             checkbox.toggled.connect(self._presenter._on_grid_layer_compute_selection_changed)

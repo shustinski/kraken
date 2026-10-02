@@ -1,12 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
-import re
+import sys
 from pathlib import Path
 
 _HERE = Path(SPECPATH).resolve()
-_version_file = (_HERE / "src" / "karakal" / "version.py").read_text(encoding="utf-8")
-_match = re.search(r'APP_VERSION\s*=\s*["\']([^"\']+)["\']', _version_file)
-_default_version = _match.group(1) if _match else "0.1.0-beta0"
+# The version is built in code from the release, the algorithm number and the beta
+# counter (karakal/version.py); KARAKAL_VERSION can still override it.
+sys.path.insert(0, str(_HERE / "src"))
+from karakal.version import APP_VERSION as _default_version  # noqa: E402
 
 _profile = os.environ.get("KARAKAL_BUILD_PROFILE", "dev").strip().lower()
 _tester = _profile == "tester"

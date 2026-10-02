@@ -78,7 +78,9 @@ def show_app_mode_switch() -> bool:
 
 
 def show_reference_frame() -> bool:
-    return not tester_build()
+    """Reference frames give the layer cell template; testers pick them too."""
+
+    return True
 
 
 def show_conductor_zone() -> bool:

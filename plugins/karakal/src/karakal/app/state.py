@@ -80,7 +80,8 @@ class ExtendMatrixTabState:
     grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
     grid_inspection_algorithm_version: str = ""
     grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)
-    grid_inspection_reference_record_key: str | None = None
+    # Frames whose masks are known good; the layer cell template is built from them.
+    grid_inspection_reference_record_keys: tuple[str, ...] = ()
     excluded_record_keys: set[str] = field(default_factory=set)
     last_analytics_request_signature: tuple[object, ...] | None = None
 

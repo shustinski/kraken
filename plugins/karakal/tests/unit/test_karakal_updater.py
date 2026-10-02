@@ -28,8 +28,9 @@ from karakal.version import APP_VERSION, numeric_version
 
 
 def test_app_version_is_beta_prerelease() -> None:
-    assert re.fullmatch(r"0\.1\.0-beta\d+", APP_VERSION)
-    assert numeric_version() == "0.1.0.0"
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)-beta\d+", APP_VERSION)
+    assert match
+    assert numeric_version() == ".".join((*match.groups(), "0"))
 
 
 def test_semver_prerelease_order() -> None:
@@ -120,3 +121,12 @@ def test_frozen_update_client_path(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(exe_dir / "Karakal.exe"))
     assert karakal_update_client_config_path() == config
+
+
+def test_app_version_carries_the_algorithm_number() -> None:
+    # 0.2.91-beta0: the middle number tells which grid-defect algorithm a build runs.
+    from karakal.core.algorithm_version import GRID_ALGORITHM_NUMBER, GRID_DAMAGE_ALGORITHM_VERSION
+    from karakal.version import BETA, RELEASE
+
+    assert APP_VERSION == f"{RELEASE}.{GRID_ALGORITHM_NUMBER}-beta{BETA}"
+    assert GRID_DAMAGE_ALGORITHM_VERSION.startswith(f"grid_damage_v{GRID_ALGORITHM_NUMBER}_")

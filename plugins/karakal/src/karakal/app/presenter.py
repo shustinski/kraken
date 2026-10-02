@@ -102,7 +102,6 @@ from ..core.grid_anomaly import (
     GridCellReferenceProfile,
     GridDamageAnalysisConfig,
     GridFrameAnalysisResult,
-    build_grid_cell_reference_profile_path,
     estimate_run_cell_reference_profile,
 )
 from ..core.image_formats import SUPPORTED_IMAGE_EXTENSION_SET
@@ -4513,11 +4512,12 @@ class KarakalPresenter(QObject):
                 return record
         return None
 
-    def _grid_inspection_reference_record(self, state: ExtendMatrixTabState | None) -> FrameRecord | None:
-        return self._grid_inspection_record_by_key(
-            state,
-            getattr(state, "grid_inspection_reference_record_key", None) if state is not None else None,
-        )
+    def _grid_inspection_reference_records(self, state: ExtendMatrixTabState | None) -> tuple[FrameRecord, ...]:
+        if state is None:
+            return ()
+        keys = tuple(getattr(state, "grid_inspection_reference_record_keys", ()) or ())
+        by_key = {str(getattr(record, "key", "") or ""): record for record in getattr(state.build_result, "records", ()) or ()}
+        return tuple(by_key[key] for key in keys if key in by_key)
 
     def _grid_inspection_reference_display_name(self, record: FrameRecord | None) -> str:
         if record is None:
@@ -4525,95 +4525,101 @@ class KarakalPresenter(QObject):
         return str(getattr(record, "display_name", "") or getattr(record, "key", "") or "")
 
     def _sync_grid_reference_controls(self, state: ExtendMatrixTabState | None = None) -> None:
-        record = self._grid_inspection_reference_record(state)
-        key = str(getattr(record, "key", "") or "")
-        stale_key = str(getattr(state, "grid_inspection_reference_record_key", "") or "") if state is not None else ""
+        keys = tuple(getattr(state, "grid_inspection_reference_record_keys", ()) or ()) if state is not None else ()
+        records = self._grid_inspection_reference_records(state)
         label = getattr(self, "grid_reference_frame_label", None)
         if label is not None:
-            if record is not None:
-                label.setText(
-                    self._t("grid_reference.selected", name=self._grid_inspection_reference_display_name(record))
-                )
-            elif stale_key:
-                label.setText(self._t("grid_reference.missing", key=stale_key))
-            else:
+            if not keys:
                 label.setText(self._t("grid_reference.none"))
+            elif len(records) == len(keys):
+                label.setText(self._t("grid_reference.selected_count", count=len(records)))
+            else:
+                label.setText(
+                    self._t("grid_reference.selected_missing", count=len(records), missing=len(keys) - len(records))
+                )
         clear_button = getattr(self, "grid_reference_frame_clear_button", None)
         if clear_button is not None:
-            clear_button.setEnabled(bool(stale_key))
+            clear_button.setEnabled(bool(keys))
+        single = str(getattr(records[0], "key", "") or "") if len(records) == 1 else None
         for view in self._grid_inspection_views().values():
             if hasattr(view, "set_reference_key"):
-                view.set_reference_key(key or None)
+                view.set_reference_key(single)
+
+    def _add_grid_reference_records(self, state: ExtendMatrixTabState, records) -> int:
+        keys = list(getattr(state, "grid_inspection_reference_record_keys", ()) or ())
+        added = 0
+        for record in records:
+            key = str(getattr(record, "key", "") or "")
+            if key and key not in keys:
+                keys.append(key)
+                added += 1
+        state.grid_inspection_reference_record_keys = tuple(keys)
+        self._sync_grid_reference_controls(state)
+        return added
 
     def _on_grid_reference_select_requested(self) -> None:
         state = self._current_tab_state()
         if state is None:
             return
-        record = None
-        for view in (getattr(self, "grid_inspection_matrix_view", None), getattr(state, "matrix_view", None)):
-            if view is None or not hasattr(view, "current_record"):
-                continue
-            try:
-                record = view.current_record()
-            except Exception:
-                record = None
-            if record is not None:
-                break
-        if record is None:
-            selected_records = self._grid_inspection_export_selected_records(state)
-            record = selected_records[0] if len(selected_records) == 1 else None
-        if record is None:
-            QMessageBox.information(
-                self._view,
-                self._t("dialog.info_title"),
-                self._t("grid_reference.select_one"),
-            )
+        records = list(self._grid_inspection_export_selected_records(state))
+        if not records:
+            for view in (getattr(self, "grid_inspection_matrix_view", None), getattr(state, "matrix_view", None)):
+                if view is None or not hasattr(view, "current_record"):
+                    continue
+                try:
+                    record = view.current_record()
+                except Exception:
+                    record = None
+                if record is not None:
+                    records = [record]
+                    break
+        if not records:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("grid_reference.select_one"))
             return
-        state.grid_inspection_reference_record_key = str(getattr(record, "key", "") or "") or None
-        self._sync_grid_reference_controls(state)
+        self._add_grid_reference_records(state, records)
+
+    def _on_grid_reference_folder_requested(self) -> None:
+        state = self._current_tab_state()
+        if state is None:
+            return
+        folder = QFileDialog.getExistingDirectory(self._view, self._t("grid_reference.folder_title"))
+        if not folder:
+            return
+        matched = self._grid_reference_records_from_folder(state, Path(folder))
+        if not matched:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("grid_reference.folder_none"))
+            return
+        self._add_grid_reference_records(state, matched)
+
+    def _grid_reference_records_from_folder(self, state: ExtendMatrixTabState, folder: Path) -> list[FrameRecord]:
+        """Frames of the matrix whose file name matches an image in the folder (e.g. good source shots)."""
+
+        try:
+            stems = {
+                item.stem.lower()
+                for item in folder.iterdir()
+                if item.is_file() and item.suffix.lower() in SUPPORTED_IMAGE_EXTENSION_SET
+            }
+        except OSError as error:
+            _LOGGER.warning("Could not read reference folder %s: %s", folder, error)
+            return []
+        matched: list[FrameRecord] = []
+        for record in getattr(state.build_result, "records", ()) or ():
+            names = {
+                Path(str(getattr(record, "display_name", "") or "")).stem.lower(),
+                Path(str(getattr(record, "key", "") or "")).stem.lower(),
+                Path(str(getattr(record, "first_path", "") or "")).stem.lower(),
+            }
+            if names & stems:
+                matched.append(record)
+        return matched
 
     def _on_grid_reference_clear_requested(self) -> None:
         state = self._current_tab_state()
         if state is None:
             return
-        state.grid_inspection_reference_record_key = None
+        state.grid_inspection_reference_record_keys = ()
         self._sync_grid_reference_controls(state)
-
-    def _grid_inspection_reference_profile_for_state(
-        self,
-        state: ExtendMatrixTabState,
-        config: GridDamageAnalysisConfig,
-    ) -> GridCellReferenceProfile | None:
-        if not show_reference_frame():
-            return None
-        record = self._grid_inspection_reference_record(state)
-        if record is None:
-            stale_key = str(getattr(state, "grid_inspection_reference_record_key", "") or "")
-            if stale_key:
-                QMessageBox.warning(
-                    self._view,
-                    self._t("dialog.warning_title"),
-                    self._t("grid_reference.record_missing", key=stale_key),
-                )
-            return None
-        model_id = self._grid_inspection_model_id_for_state(state)
-        path_text = self._grid_inspection_layer_source_path_for_record(record, model_id, "confidence")
-        if not path_text or not Path(path_text).is_file():
-            QMessageBox.warning(
-                self._view,
-                self._t("dialog.warning_title"),
-                self._t("grid_reference.file_missing", name=self._grid_inspection_reference_display_name(record)),
-            )
-            return None
-        profile = build_grid_cell_reference_profile_path(path_text, frame_id=str(record.key), config=config)
-        if profile is None:
-            QMessageBox.warning(
-                self._view,
-                self._t("dialog.warning_title"),
-                self._t("grid_reference.profile_failed", name=self._grid_inspection_reference_display_name(record)),
-            )
-            return None
-        return profile
 
     def _estimate_run_cell_reference_profile_for_state(
         self,
@@ -4623,13 +4629,24 @@ class KarakalPresenter(QObject):
         model_id: str,
         records: tuple[FrameRecord, ...],
     ) -> GridCellReferenceProfile | None:
-        """Modal cell size across the run for one model (merge cores need a stable norm)."""
+        """Cell size and shape template of one model: from reference frames, else from the run."""
 
+        reference_records = self._grid_inspection_reference_records(state)
+        source = reference_records or records
         paths: list[str] = []
-        for record in records:
+        for record in source:
             path_text = self._grid_inspection_layer_source_path_for_record(record, model_id, "binary")
             if path_text and Path(path_text).is_file():
                 paths.append(path_text)
+        if reference_records:
+            # Every reference frame is used; one good frame is enough for a template.
+            return estimate_run_cell_reference_profile(
+                paths,
+                config=config,
+                sample_limit=0,
+                frame_id=f"reference:{model_id}",
+                min_frames=1,
+            )
         if len(paths) < 2:
             return None
         return estimate_run_cell_reference_profile(
@@ -5406,18 +5423,22 @@ class KarakalPresenter(QObject):
                 for record in records
             )
         )
-        reference_selected = bool(str(getattr(state, "grid_inspection_reference_record_key", "") or ""))
-        reference_profile = self._grid_inspection_reference_profile_for_state(state, grid_config)
-        if reference_selected and reference_profile is None:
-            self._sync_action_buttons()
-            return
-        if reference_profile is None and model_id:
+        reference_profile = None
+        if model_id:
             reference_profile = self._estimate_run_cell_reference_profile_for_state(
                 state,
                 grid_config,
                 model_id=model_id,
                 records=records,
             )
+        if self._grid_inspection_reference_records(state) and reference_profile is None:
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("grid_reference.profile_failed", name=str(model_id or "")),
+            )
+            self._sync_action_buttons()
+            return
         state.grid_inspection_config_payload = next_config
         state.grid_inspection_results_ready = False
         state.grid_inspection_payload_by_key = {}

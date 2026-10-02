@@ -42,8 +42,17 @@ def default_settings() -> QSettings:
     import sys
     from pathlib import Path
 
+    import os
+
     if getattr(sys, "frozen", False):
         path = Path(sys.executable).resolve().parent / "settings.ini"
+        return QSettings(str(path), QSettings.Format.IniFormat)
+    # From source a separate settings.ini, e.g. the tester entry point, keeps the
+    # developer settings untouched (the updater reads the same variable).
+    settings_dir = str(os.environ.get("KARAKAL_SETTINGS_DIR", "") or "").strip()
+    if settings_dir:
+        path = Path(settings_dir) / "settings.ini"
+        path.parent.mkdir(parents=True, exist_ok=True)
         return QSettings(str(path), QSettings.Format.IniFormat)
     return QSettings(SETTINGS_ORG, SETTINGS_APP)
 

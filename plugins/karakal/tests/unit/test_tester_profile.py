@@ -1,7 +1,6 @@
 """Tester profile hides unfinished UI and ignores saved extra modes."""
 from __future__ import annotations
 
-from types import SimpleNamespace
 
 from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QCheckBox, QPushButton
@@ -10,7 +9,6 @@ from kraken_core.analysis_protocol import AnalysisProfileKind
 from karakal.app.main_window import KarakalWidget
 from karakal.core.features import show_class_conflict
 from karakal.core.features import tester_build as profile_is_tester
-from karakal.core.grid_anomaly import GridDamageAnalysisConfig
 
 
 def test_dev_profile_is_the_default(monkeypatch) -> None:
@@ -48,7 +46,8 @@ def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) 
     assert widget.app_mode_combo.currentData() == "grid_inspection"
     assert not widget.mode_toggle_button.isVisibleTo(widget)
     assert not widget.pair_matrix_group.isVisibleTo(widget)
-    assert not widget._grid_reference_frame_row.isVisibleTo(widget)
+    # Reference frames give the layer cell template; testers pick them too.
+    assert not widget._grid_reference_frame_row.isHidden()
     # Confidence fill defects are enabled in tester; the compute checkbox stays available.
     assert not widget.grid_layer_compute_checks["confidence"].isHidden()
     assert widget.grid_layer_compute_checks["confidence"].isChecked()
@@ -63,8 +62,6 @@ def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) 
     assert "binary" in payload["requested_layers"]
     assert "class_conflict" not in payload["enabled_error_types"]
     assert "calibration_examples" not in payload
-    state = SimpleNamespace(grid_inspection_reference_record_key="saved-reference")
-    assert widget._presenter._grid_inspection_reference_profile_for_state(state, GridDamageAnalysisConfig()) is None
 
 
 def test_tester_profile_stays_hidden_after_two_models(tmp_path, qtbot, monkeypatch) -> None:
@@ -87,7 +84,7 @@ def test_tester_profile_stays_hidden_after_two_models(tmp_path, qtbot, monkeypat
         if tabs is not None:
             conflict_index = presenter._grid_inspection_layer_keys().index("derived_conflict")
             assert not tabs.isTabVisible(conflict_index)
-        assert not widget._grid_reference_frame_row.isVisibleTo(widget)
+        assert not widget._grid_reference_frame_row.isHidden()
         profiles = [
             button
             for button in widget.analysis_setup_panel.findChildren(QPushButton)

@@ -461,6 +461,11 @@ class ExtendFrameDetailsDialog(QDialog):
         self.frame_id_value.show()
         frame_summary_form.addRow(self._t("matrix.preview.frame"), self.frame_name_value)
         frame_summary_form.addRow(self._t("details.frame_id"), self.frame_id_value)
+        self._frame_summary_group = frame_summary_group
+        self._frame_summary_form = frame_summary_form
+        self._frame_set_actions = None
+        self._frame_set_add_button: QPushButton | None = None
+        self._frame_set_drop_button: QPushButton | None = None
         overview_layout.addWidget(frame_summary_group)
 
         config_group = QGroupBox(self._t("details.display"), controls_host)
@@ -813,6 +818,51 @@ class ExtendFrameDetailsDialog(QDialog):
                 )
             )
 
+    def install_frame_set_actions(self, actions) -> None:
+        """Add «В выборку» and «Отсеять кадр / Вернуть кадр» for the shown frame."""
+
+        if self._frame_set_actions is not None:
+            self._frame_set_actions = actions
+            self.refresh_frame_set_actions()
+            return
+        self._frame_set_actions = actions
+        row = QWidget(self._frame_summary_group)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        self._frame_set_add_button = QPushButton(self._t("frame_sets.card.add_to_set") + " ▾", row)
+        self._frame_set_drop_button = QPushButton(row)
+        row_layout.addWidget(self._frame_set_add_button)
+        row_layout.addWidget(self._frame_set_drop_button)
+        row_layout.addStretch(1)
+        self._frame_summary_form.addRow(row)
+        self._frame_set_add_button.clicked.connect(self._show_frame_set_menu)
+        self._frame_set_drop_button.clicked.connect(self._toggle_frame_drop)
+        self.refresh_frame_set_actions()
+
+    def refresh_frame_set_actions(self) -> None:
+        actions = self._frame_set_actions
+        if actions is None or self._frame_set_drop_button is None:
+            return
+        dropped = actions.card_frame_dropped(str(self._record.key))
+        self._frame_set_drop_button.setText(
+            self._t("frame_sets.card.return" if dropped else "frame_sets.card.drop")
+        )
+
+    def _show_frame_set_menu(self) -> None:
+        actions = self._frame_set_actions
+        if actions is None or self._frame_set_add_button is None:
+            return
+        menu = actions.build_card_menu(str(self._record.key), self)
+        menu.exec(self._frame_set_add_button.mapToGlobal(self._frame_set_add_button.rect().bottomLeft()))
+
+    def _toggle_frame_drop(self) -> None:
+        actions = self._frame_set_actions
+        if actions is None:
+            return
+        actions.card_toggle_drop(str(self._record.key))
+        self.refresh_frame_set_actions()
+
     def _legacy_step_record(self, delta: int) -> bool:
         records = tuple(self._build_result.records or ())
         allowed = tuple(getattr(self, "_calibration_frame_keys", ()) or ())
@@ -847,6 +897,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self.setWindowTitle(self._t("details.window_title", name=self._record.display_name))
         self._legacy_update_frame_id_value()
         self._load_current_payload(reset_view=False, preserve_selection=True)
+        self.refresh_frame_set_actions()
         callback = getattr(self, "_on_grid_frame_changed", None)
         if callable(callback):
             callback(self)

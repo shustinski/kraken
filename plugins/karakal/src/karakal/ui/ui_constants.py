@@ -255,6 +255,9 @@ PANEL_TEXT = QColor(235, 235, 235)
 SUBDUED_TEXT_COLOR = QColor(120, 120, 120)
 MATRIX_BACKGROUND = QColor(30, 30, 30)
 MATRIX_BACKGROUND_ALT = QColor(52, 52, 52)
+# Frames outside the shown set keep their colour at this strength.
+NON_PARTICIPATING_OPACITY = 0.28
+PENDING_DROP_PULSE_MS = 450
 DEFAULT_BORDER = QColor(70, 70, 70)
 HOVER_BORDER = QColor(255, 220, 120)
 PROCESSING_BORDER = QColor(255, 170, 0)
@@ -384,6 +387,8 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QToolButton[folderAction="true"] { background-color: #1d2733; border: 1px solid #30445a; border-radius: 6px; padding: 0px; min-width: 22px; min-height: 22px; max-width: 22px; max-height: 22px; font-size: 11pt; font-weight: 700; color: #dfe8f2; }
 #KarakalRoot QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #42607f; border-radius: 4px; background-color: #10151c; }
 #KarakalRoot QCheckBox::indicator:checked { background-color: #3270d1; border-color: #4e90ff; }
+#KarakalRoot QRadioButton::indicator { width: 14px; height: 14px; border: 1px solid #42607f; border-radius: 8px; background-color: #10151c; }
+#KarakalRoot QRadioButton::indicator:checked { background-color: #4e90ff; border: 1px solid #9cc4ff; }
 #KarakalRoot QProgressBar { border: 1px solid #30445a; border-radius: 6px; background-color: #10151c; text-align: center; }
 #KarakalRoot QProgressBar::chunk { background-color: #3270d1; border-radius: 5px; }
 #KarakalRoot QTabBar::tab { background-color: #17202a; color: #dfe8f2; border: 1px solid #30445a; padding: 6px 10px; }

@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QCheckBox, QGroupBox, QLabel, QSpinBox, QTabWidget, 
 
 from ..core.analysis_modes import INTER_MODEL_ANALYSIS_MODE, POLYGON_OBJECT_TYPE
 from ..core.domain import BuildResult
+from ..core.frame_sets import FrameSetModel
 from ..ui.matrix_view import MatrixLayoutConfig, MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.ui_constants import (
     DEFAULT_CELL_SIZE,
@@ -83,6 +84,11 @@ class ExtendMatrixTabState:
     # Frames whose masks are known good; the layer cell template is built from them.
     grid_inspection_reference_record_keys: tuple[str, ...] = ()
     excluded_record_keys: set[str] = field(default_factory=set)
+    # Drop rules and frame sets of the grid inspection matrix (no recompute needed).
+    frame_sets: FrameSetModel = field(default_factory=FrameSetModel)
+    # Frames of the shown set; None = whole run. Errors list and histograms use only these.
+    frame_set_participating: set[str] | None = None
+    frame_set_version: int = 0
     last_analytics_request_signature: tuple[object, ...] | None = None
 
 

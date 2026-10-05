@@ -76,6 +76,8 @@ from .ui_constants import (
     MATRIX_REFERENCE_PEN_WIDTH,
     MATRIX_SCENE_PADDING,
     MATRIX_SELECTED_BLEND_RATIO,
+    NON_PARTICIPATING_OPACITY,
+    PENDING_DROP_PULSE_MS,
     MINIMAP_FRAME_MARGIN,
     MINIMAP_MIN_SIZE,
     MINIMAP_PROCESSING_TRIANGLE_HALF_WIDTH,
@@ -1316,12 +1318,29 @@ class _MatrixLegendBar(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._gradient_name = DEFAULT_GRADIENT_NAME
+        # Drop threshold on the bar (0 = worst end); frames left of it are dropped.
+        self._marker: float | None = None
         self.setMinimumHeight(18)
         self.setMaximumHeight(22)
 
     def set_gradient_name(self, gradient_name: str) -> None:
         self._gradient_name = gradient_name if gradient_name in GRADIENT_PRESETS else DEFAULT_GRADIENT_NAME
         self.update()
+
+    def set_marker(self, position: float | None) -> None:
+        self._marker = None if position is None else max(0.0, min(float(position), 1.0))
+        self.update()
+
+    def _paint_marker(self, painter: QPainter, rect) -> None:
+        if self._marker is None:
+            return
+        x = rect.left() + self._marker * max(1, rect.width() - 1)
+        zone = QRectF(rect.left(), rect.top(), max(0.0, x - rect.left()), rect.height())
+        painter.fillRect(zone, QBrush(QColor(0, 0, 0, 110), Qt.BrushStyle.BDiagPattern))
+        painter.setPen(QPen(QColor(255, 255, 255, 235), 2))
+        painter.drawLine(QPointF(x, rect.top() - 1), QPointF(x, rect.bottom() + 1))
+        painter.setPen(QPen(QColor(20, 20, 20, 220), 1))
+        painter.drawLine(QPointF(x + 1.5, rect.top()), QPointF(x + 1.5, rect.bottom()))
 
     def paintEvent(self, event: QPaintEvent) -> None:
         super().paintEvent(event)
@@ -1333,22 +1352,43 @@ class _MatrixLegendBar(QWidget):
             painter.drawLine(rect.left() + x, rect.top(), rect.left() + x, rect.bottom())
         painter.setPen(QPen(QColor("#77879a"), 1))
         painter.drawRoundedRect(QRectF(rect), 4, 4)
+        self._paint_marker(painter, rect)
         painter.end()
 
 
 class MatrixLegendWidget(QFrame):
-    """Explain the palette domain and categorical matrix states."""
+    """Explain the palette domain and categorical matrix states.
+
+    When made expandable, a click on the legend opens the drop / sets / export
+    panel right under the bar (see ``attach_expansion``).
+    """
+
+    expandToggled = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._i18n = Translator()
         self._info: MatrixColorScaleInfo | None = None
+        self._expandable = False
+        self._expanded = False
+        self._expansion_widgets: tuple[QWidget, ...] = ()
         self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(3)
-        self.title_label = QLabel(self)
+        self._layout = layout
+        header = QWidget(self)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
+        self.title_label = QLabel(header)
         self.title_label.setStyleSheet("font-weight: 700;")
+        self.expand_label = QLabel(header)
+        self.expand_label.setStyleSheet("color: #8fc6ff;")
+        self.expand_label.setVisible(False)
+        header_layout.addWidget(self.title_label, stretch=1)
+        header_layout.addWidget(self.expand_label)
+        self._header = header
         self.bar = _MatrixLegendBar(self)
         self.range_label = QLabel(self)
         self.range_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1357,12 +1397,62 @@ class MatrixLegendWidget(QFrame):
         self.states_label = QLabel(self)
         self.states_label.setWordWrap(True)
         self.states_label.setStyleSheet("color: #9eacbd;")
-        layout.addWidget(self.title_label)
+        layout.addWidget(header)
         layout.addWidget(self.bar)
         layout.addWidget(self.range_label)
         layout.addWidget(self.stats_label)
         layout.addWidget(self.states_label)
         self.set_scale_info(None)
+
+    def set_expandable(self, enabled: bool) -> None:
+        self._expandable = bool(enabled)
+        self.expand_label.setVisible(self._expandable)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if self._expandable else Qt.CursorShape.ArrowCursor)
+        self._sync_expand_label()
+
+    def attach_expansion(self, under_bar: QWidget, body: QWidget) -> None:
+        """Place ``under_bar`` right below the gradient and ``body`` at the bottom."""
+
+        self._layout.insertWidget(self._layout.indexOf(self.bar) + 1, under_bar)
+        self._layout.addWidget(body)
+        self._expansion_widgets = (under_bar, body)
+        for widget in self._expansion_widgets:
+            widget.setVisible(self._expanded)
+            widget.setCursor(Qt.CursorShape.ArrowCursor)
+        self.set_expandable(True)
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded) and self._expandable
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        for widget in self._expansion_widgets:
+            widget.setVisible(expanded)
+        # Detailed statistics make room for the panel while it is open.
+        self.stats_label.setVisible(not expanded)
+        self.states_label.setVisible(not expanded)
+        self._sync_expand_label()
+        self.expandToggled.emit(expanded)
+
+    def set_threshold_marker(self, position: float | None) -> None:
+        self.bar.set_marker(position)
+
+    def _sync_expand_label(self) -> None:
+        key = "frame_sets.legend.collapse" if self._expanded else "frame_sets.legend.expand"
+        self.expand_label.setText(("▴ " if self._expanded else "▾ ") + self._i18n.tr(key))
+
+    def mousePressEvent(self, event) -> None:
+        if self._expandable and event.button() == Qt.MouseButton.LeftButton:
+            local_y = event.position().y()
+            # Clicks inside the opened panel belong to its own controls.
+            if not self._expanded or local_y <= self.range_label.geometry().bottom():
+                self.set_expanded(not self._expanded)
+                event.accept()
+                return
+        super().mousePressEvent(event)
 
     @staticmethod
     def _format_value(value: float | None) -> str:
@@ -1375,6 +1465,7 @@ class MatrixLegendWidget(QFrame):
     def retranslate(self) -> None:
         self._i18n = Translator()
         self.set_scale_info(self._info)
+        self._sync_expand_label()
 
     def set_scale_info(self, info: MatrixColorScaleInfo | None) -> None:
         self._info = info
@@ -1435,6 +1526,7 @@ class MatrixListWidget(QGraphicsView):
     contextMenuRequested = pyqtSignal(object, object)
     overviewChanged = pyqtSignal(object, object, object, object, object, object)
     colorScaleChanged = pyqtSignal(object)
+    rangeSelectionChanged = pyqtSignal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -1485,6 +1577,15 @@ class MatrixListWidget(QGraphicsView):
         self._record_positions: dict[str, tuple[int, int]] = {}
         self._record_index_by_key: dict[str, int] = {}
         self._excluded_record_keys: set[str] = set()
+        # Frames of the shown set; None = every frame is shown at full strength.
+        self._participating_keys: set[str] | None = None
+        # Frames the open drop panel would remove; they pulse in the matrix.
+        self._pending_drop_keys: set[str] = set()
+        self._pending_pulse_on = False
+        self._pending_pulse_timer = QTimer(self)
+        self._pending_pulse_timer.setInterval(PENDING_DROP_PULSE_MS)
+        self._pending_pulse_timer.timeout.connect(self._toggle_pending_pulse)
+        self._frozen_color_window: tuple[float, float] | None = None
         self._grid_inspection_visual_mode = False
         self._grid_inspection_cache: OrderedDict[tuple[object, ...], tuple[QPixmap, GridCellAnomalyResult]] = (
             OrderedDict()
@@ -2064,6 +2165,9 @@ class MatrixListWidget(QGraphicsView):
         self.colorScaleChanged.emit(self.color_scale_info())
 
     def _update_grid_inspection_score_window(self) -> None:
+        if self._frozen_color_window is not None:
+            self._auto_color_window_low, self._auto_color_window_high = self._frozen_color_window
+            return
         scores = [
             1.0 - max(0.0, min(1.0, float(getattr(result, "score", 0.0) or 0.0)))
             for _pixmap, result in self._grid_inspection_payload_by_key.values()
@@ -2080,6 +2184,124 @@ class MatrixListWidget(QGraphicsView):
 
     def _is_record_excluded(self, record: FrameRecord) -> bool:
         return str(record.key) in self._excluded_record_keys
+
+    # Frame sets ----------------------------------------------------------------
+
+    def grid_quality_by_key(self) -> dict[str, float]:
+        """Return frame quality (1 - damage, higher is better) for every analysed frame."""
+
+        qualities: dict[str, float] = {}
+        for key, (_pixmap, result) in self._grid_inspection_payload_by_key.items():
+            score = self._grid_inspection_display_score(result)
+            if score is not None and math.isfinite(float(score)):
+                qualities[str(key)] = float(score)
+        return qualities
+
+    def palette_position_for_quality(self, quality: float) -> float:
+        """Where a frame quality lands on the legend bar (0 = worst end, 1 = best end)."""
+
+        if self._score_view_mode in {"absolute", "percentile"}:
+            position = max(0.0, min(float(quality), 1.0))
+        else:
+            position = map_score_to_palette_position(
+                quality, self._auto_color_window_low, self._auto_color_window_high
+            )
+        return enhance_palette_position(position)
+
+    def quality_for_palette_position(self, position: float) -> float:
+        """Inverse of ``palette_position_for_quality`` inside the colour window."""
+
+        value = max(0.0, min(float(position), 1.0))
+        # Undo the contrast curve of ``enhance_palette_position``.
+        if value <= 0.5:
+            linear = 0.5 * math.pow(value * 2.0, 1.0 / 0.82)
+        else:
+            linear = 1.0 - 0.5 * math.pow((1.0 - value) * 2.0, 1.0 / 0.82)
+        if self._score_view_mode in {"absolute", "percentile"}:
+            return linear
+        low, high = self._auto_color_window_low, self._auto_color_window_high
+        if abs(high - low) < NORMALIZATION_EPSILON:
+            return high
+        return low + linear * (high - low)
+
+    def color_window(self) -> tuple[float, float]:
+        return float(self._auto_color_window_low), float(self._auto_color_window_high)
+
+    def set_frozen_color_window(self, window: tuple[float, float] | None) -> None:
+        """Keep the colour window fixed while frames are filtered out."""
+
+        normalized = None if window is None else (float(window[0]), float(window[1]))
+        if normalized == self._frozen_color_window:
+            return
+        self._frozen_color_window = normalized
+        if self._grid_inspection_payload_by_key:
+            self._update_grid_inspection_score_window()
+            self.refresh_scene()
+            self.colorScaleChanged.emit(self.color_scale_info())
+
+    def set_participating_keys(self, keys) -> None:
+        """Show only these frames at full strength; the rest keep their colour but fade."""
+
+        normalized = None if keys is None else {str(key) for key in keys}
+        if normalized == self._participating_keys:
+            return
+        self._participating_keys = normalized
+        self.refresh_scene()
+
+    def set_pending_drop_keys(self, keys) -> None:
+        """Pulse the frames that the drop panel would remove right now."""
+
+        normalized = {str(key) for key in (keys or ())}
+        if normalized == self._pending_drop_keys:
+            return
+        previous = self._pending_drop_keys
+        self._pending_drop_keys = normalized
+        if normalized and not self._pending_pulse_timer.isActive():
+            self._pending_pulse_on = True
+            self._pending_pulse_timer.start()
+        elif not normalized:
+            self._pending_pulse_timer.stop()
+            self._pending_pulse_on = False
+        self._restyle_keys(previous | normalized)
+
+    def _toggle_pending_pulse(self) -> None:
+        try:
+            self._pending_pulse_on = not self._pending_pulse_on
+            self._restyle_keys(self._pending_drop_keys)
+        except RuntimeError:
+            self._pending_pulse_timer.stop()
+
+    def _restyle_keys(self, keys) -> None:
+        keys = {str(key) for key in keys}
+        if not keys:
+            return
+        for key in keys:
+            item = self._item_by_key.get(key)
+            if item is not None:
+                self._apply_item_style(item, sync_tile_state=False)
+        if len(keys) > 2000 and self._overview_image is not None:
+            placements = [
+                (record, position[0], position[1])
+                for record in self._records
+                for position in [self._record_positions.get(str(record.key))]
+                if position is not None
+            ]
+            self._overview_image = self._build_overview_image(placements)
+            self._refresh_overview_layer_pixmap()
+            self._emit_overview_state()
+        else:
+            self._refresh_overview_pixels_for_keys(keys)
+        self.viewport().update()
+
+    def _faded_color(self, color: QColor, record: FrameRecord) -> QColor:
+        key = str(record.key)
+        if key in self._pending_drop_keys:
+            if self._pending_pulse_on:
+                return blend_colors(color, MATRIX_BACKGROUND_ALT, 1.0 - NON_PARTICIPATING_OPACITY)
+            return color
+        if self._participating_keys is not None and key not in self._participating_keys:
+            return blend_colors(color, MATRIX_BACKGROUND_ALT, 1.0 - NON_PARTICIPATING_OPACITY)
+        return color
 
     def refresh_scene(self) -> None:
         if not self._records:
@@ -3422,6 +3644,32 @@ class MatrixListWidget(QGraphicsView):
         self._update_range_selection_overlay()
         self.viewport().update()
         self._on_grid_inspection_targets_changed(previous_targets)
+        if previous_keys != self._range_selected_keys:
+            self.rangeSelectionChanged.emit(len(self._range_selected_keys))
+
+    def set_range_selected_keys(self, keys) -> None:
+        """Replace the multi-frame selection (used by the frame set panel)."""
+
+        wanted = {str(key) for key in (keys or ())}
+        self._set_range_selected_records(tuple(record for record in self._records if str(record.key) in wanted))
+
+    def range_selected_keys(self) -> set[str]:
+        return set(self._range_selected_keys)
+
+    def matrix_shape(self) -> tuple[int, int]:
+        return int(self._rows), int(self._columns)
+
+    def record_position(self, key: str) -> tuple[int, int] | None:
+        return self._record_positions.get(str(key))
+
+    def frame_color_rgb(self, key: str) -> tuple[int, int, int] | None:
+        """Colour of a frame as the matrix shows it, without fading."""
+
+        payload = self._grid_inspection_payload_by_key.get(str(key))
+        if payload is None:
+            return None
+        color = self._background_color_for_grid_result(payload[1])
+        return int(color.red()), int(color.green()), int(color.blue())
 
     def _toggle_range_selected_record(self, record: FrameRecord) -> None:
         if record is None:
@@ -3874,9 +4122,9 @@ class MatrixListWidget(QGraphicsView):
                 return QColor(64, 68, 74)
             payload = self._cached_grid_inspection_payload_for_record(record)
             if payload is None:
-                return self._background_color_for_grid_result(None)
+                return self._faded_color(self._background_color_for_grid_result(None), record)
             _pixmap, result = payload
-            return self._background_color_for_grid_result(result)
+            return self._faded_color(self._background_color_for_grid_result(result), record)
         return base_color
 
     def _tooltip_for_record(self, record: FrameRecord) -> str:

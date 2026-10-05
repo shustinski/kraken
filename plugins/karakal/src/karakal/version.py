@@ -1,10 +1,11 @@
 """Single version source for Karakal builds and auto-update.
 
-Version is <release>.<algorithm number>-beta<N>, e.g. 0.2.91-beta0:
-- the middle number is the grid-defect algorithm version (core/algorithm_version.py),
-  so a build tells which analysis it runs;
-- beta N counts tester builds of one algorithm version; it goes back to 0 when the
-  algorithm number changes.
+Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101-beta0:
+- the leading digits of the third part are the grid-defect algorithm version
+  (core/algorithm_version.py), so a build tells which analysis it runs;
+- the last two digits are the interface version: +1 for every interface change
+  (01 = gradient panel with drop rules, frame sets and set export);
+- beta N counts tester builds with the same algorithm and interface.
 """
 
 from __future__ import annotations
@@ -12,9 +13,10 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.2"
+INTERFACE_NUMBER = 1
 BETA = 0
 
-APP_VERSION = f"{RELEASE}.{GRID_ALGORITHM_NUMBER}-beta{BETA}"
+APP_VERSION = f"{RELEASE}.{GRID_ALGORITHM_NUMBER}{INTERFACE_NUMBER:02d}-beta{BETA}"
 __version__ = APP_VERSION
 
 

@@ -286,6 +286,13 @@ class KarakalPresenter(QObject):
         self._preflight_report: AnalysisPreflightReport | None = None
         self._auto_compute_after_build = False
         self._auto_compute_state_after_cleanup: ExtendMatrixTabState | None = None
+        self._frame_sets_controller = None
+        if getattr(view, "grid_inspection_legend", None) is not None and getattr(
+            view, "grid_inspection_matrix_views", None
+        ):
+            from .frame_sets_controller import FrameSetsController
+
+            self._frame_sets_controller = FrameSetsController(self)
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)
@@ -3398,10 +3405,12 @@ class KarakalPresenter(QObject):
     def _grid_inspection_percentile_map_for_state(self, state: ExtendMatrixTabState) -> dict[str, float]:
         excluded_keys = self._excluded_record_keys_for_state(state)
         payloads = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {})
+        shown_keys = getattr(state, "frame_set_participating", None)
         cache_key = (
             GRID_INSPECTION_DAMAGE_METRIC_KEY,
             id(getattr(state, "grid_inspection_payload_by_key", None)),
             tuple(sorted(excluded_keys)),
+            int(getattr(state, "frame_set_version", 0)) if shown_keys is not None else -1,
         )
         cached = state.percentile_cache.get(cache_key)
         if cached is not None:
@@ -3410,6 +3419,8 @@ class KarakalPresenter(QObject):
         for record in getattr(state.build_result, "records", ()) or ():
             key = str(record.key)
             if key in excluded_keys:
+                continue
+            if shown_keys is not None and key not in shown_keys:
                 continue
             result = payloads.get(key)
             if result is None:
@@ -4350,6 +4361,9 @@ class KarakalPresenter(QObject):
             state.percentile_filter_metric_key is not None and state.percentile_filter_bin_index is not None
         ) or state.correlation_filter_band in {"bad", "good"}:
             visible_keys = {str(record.key) for record in self._display_records_for_state(state)}
+        shown_keys = getattr(state, "frame_set_participating", None)
+        if shown_keys is not None:
+            visible_keys = set(shown_keys) if visible_keys is None else visible_keys & set(shown_keys)
         for record_key, result in sorted(
             (getattr(state, "grid_inspection_payload_by_key", {}) or {}).items(), key=lambda item: str(item[0])
         ):
@@ -6422,11 +6436,15 @@ class KarakalPresenter(QObject):
         self._sync_action_buttons()
 
     def _finish_grid_inspection_summary_refresh(self, state: ExtendMatrixTabState) -> None:
-        if (
-            state.widget not in self._tab_states
-            or self._current_tab_state() is not state
-            or self._current_app_mode() != "grid_inspection"
-        ):
+        try:
+            if (
+                state.widget not in self._tab_states
+                or self._current_tab_state() is not state
+                or self._current_app_mode() != "grid_inspection"
+            ):
+                return
+        except RuntimeError:
+            # The window was closed before this deferred refresh ran.
             return
         self._refresh_grid_inspection_errors_panel(state)
         self._schedule_metric_histogram_update(state)
@@ -7187,6 +7205,8 @@ class KarakalPresenter(QObject):
         # Details filter stays local. Main-window filter is the only export source.
         dialog._on_class_conflict_user_wants_changed = None
         dialog._on_grid_frame_changed = lambda details=dialog: self._on_details_grid_frame_changed(details)
+        if self._frame_sets_controller is not None and self._current_app_mode() == "grid_inspection":
+            self._frame_sets_controller.install_card_actions(dialog)
         self._sync_class_conflict_for_dialog(dialog, state)
         if grid_detail_message:
             dialog.show_grid_preview_message(grid_detail_message)

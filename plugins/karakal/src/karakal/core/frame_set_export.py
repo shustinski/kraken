@@ -1,0 +1,390 @@
+"""Export one frame set: chosen files per frame plus a summary for the whole set.
+
+Layout of one export::
+
+    Karakal_export_<date>/
+      <set name>/
+        Исходные снимки/            source image of every frame (copied as is)
+        Маски/<model>/              mask of the layer (copied as is)
+        Confidence/<model>/         confidence map of the layer (copied as is)
+        Ошибки/<model>/             defects as coloured cells on black
+        Ошибки на маске/<model>/    defects outlined over the mask
+        холст.png                   the whole set as one picture
+        результаты.csv              one row per frame
+        отчёт.txt                   what was exported and from where
+
+The model folder level is left out when only one model is exported.
+"""
+
+from __future__ import annotations
+
+import csv
+import shutil
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from .grid_error_export import _write_image, render_grid_error_image, safe_export_folder_name, unique_run_dir
+
+ITEM_SOURCE = "source"
+ITEM_MASK = "mask"
+ITEM_CONFIDENCE = "confidence"
+ITEM_ERRORS = "errors"
+ITEM_ERRORS_OVER_MASK = "errors_over_mask"
+FRAME_ITEMS = (ITEM_SOURCE, ITEM_MASK, ITEM_CONFIDENCE, ITEM_ERRORS, ITEM_ERRORS_OVER_MASK)
+
+ITEM_FOLDERS = {
+    ITEM_SOURCE: "Исходные снимки",
+    ITEM_MASK: "Маски",
+    ITEM_CONFIDENCE: "Confidence",
+    ITEM_ERRORS: "Ошибки",
+    ITEM_ERRORS_OVER_MASK: "Ошибки на маске",
+}
+CANVAS_FILE = "холст.png"
+CSV_FILE = "результаты.csv"
+REPORT_FILE = "отчёт.txt"
+CANVAS_TILE_PX = 12
+CANVAS_MAX_SIDE_PX = 8000
+
+# Size guesses for files that do not exist yet (bytes per image pixel).
+_ERRORS_BYTES_PER_PIXEL = 0.03
+_OVERLAY_BYTES_PER_PIXEL = 0.25
+
+
+@dataclass(slots=True)
+class FrameSetExportModel:
+    model_id: str
+    title: str
+
+
+@dataclass(slots=True)
+class FrameSetExportFrame:
+    key: str
+    name: str
+    original_path: str = ""
+    mask_paths: dict[str, str] = field(default_factory=dict)
+    confidence_paths: dict[str, str] = field(default_factory=dict)
+    results: dict[str, object] = field(default_factory=dict)
+    quality: float | None = None
+    row: int = -1
+    column: int = -1
+    participating: bool = True
+    defect_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class FrameSetExportPlan:
+    set_name: str
+    layer_title: str
+    frames: tuple[FrameSetExportFrame, ...]
+    models: tuple[FrameSetExportModel, ...]
+    items: frozenset[str]
+    canvas: bool = False
+    table: bool = False
+    error_types: tuple[str, ...] = ()
+    defect_labels: dict[str, str] = field(default_factory=dict)
+    canvas_colors: dict[str, tuple[int, int, int]] = field(default_factory=dict)
+    matrix_size: tuple[int, int] = (0, 0)
+    rules_text: tuple[str, ...] = ()
+
+
+@dataclass(slots=True)
+class FrameSetExportPreview:
+    lines: tuple[str, ...]
+    file_count: int
+    approx_bytes: int
+
+
+@dataclass(slots=True)
+class FrameSetExportReport:
+    run_dir: Path
+    set_dir: Path
+    written: int = 0
+    missing: tuple[str, ...] = ()
+    cancelled: bool = False
+    report_path: Path | None = None
+
+
+def _model_folders(plan: FrameSetExportPlan) -> dict[str, str]:
+    if len(plan.models) <= 1:
+        return {model.model_id: "" for model in plan.models}
+    used: set[str] = set()
+    folders: dict[str, str] = {}
+    for model in plan.models:
+        name = safe_export_folder_name(model.title, fallback=model.model_id or "model")
+        candidate, index = name, 2
+        while candidate.lower() in used:
+            candidate = f"{name}_{index}"
+            index += 1
+        used.add(candidate.lower())
+        folders[model.model_id] = candidate
+    return folders
+
+
+def _file_size(path: str) -> int:
+    try:
+        return Path(path).stat().st_size if path else 0
+    except OSError:
+        return 0
+
+
+def _sample_size(paths: list[str]) -> int:
+    """Average size of a few existing files, so the preview stays fast on big runs."""
+
+    sizes = [size for size in (_file_size(path) for path in paths[:8]) if size > 0]
+    return int(sum(sizes) / len(sizes)) if sizes else 0
+
+
+def _image_pixels(frame: FrameSetExportFrame) -> int:
+    for result in frame.results.values():
+        height = int(getattr(result, "image_height", 0) or 0)
+        width = int(getattr(result, "image_width", 0) or 0)
+        if height > 0 and width > 0:
+            return height * width
+    return 0
+
+
+def _count_and_size(plan: FrameSetExportPlan, item: str, model_id: str | None) -> tuple[int, int]:
+    frames = plan.frames
+    if item == ITEM_SOURCE:
+        paths = [frame.original_path for frame in frames if frame.original_path]
+        return len(paths), _sample_size(paths) * len(paths)
+    if item in {ITEM_MASK, ITEM_CONFIDENCE}:
+        source = "mask_paths" if item == ITEM_MASK else "confidence_paths"
+        paths = [getattr(frame, source).get(str(model_id), "") for frame in frames]
+        paths = [path for path in paths if path]
+        return len(paths), _sample_size(paths) * len(paths)
+    with_result = [frame for frame in frames if frame.results.get(str(model_id)) is not None]
+    if item == ITEM_ERRORS_OVER_MASK:
+        with_result = [frame for frame in with_result if frame.mask_paths.get(str(model_id))]
+    per_pixel = _ERRORS_BYTES_PER_PIXEL if item == ITEM_ERRORS else _OVERLAY_BYTES_PER_PIXEL
+    pixels = _image_pixels(with_result[0]) if with_result else 0
+    return len(with_result), int(pixels * per_pixel) * len(with_result)
+
+
+def format_size(size_bytes: int) -> str:
+    megabytes = float(size_bytes) / (1024.0 * 1024.0)
+    if megabytes >= 1024.0:
+        return f"~{megabytes / 1024.0:.1f} ГБ"
+    if megabytes >= 10.0:
+        return f"~{megabytes:.0f} МБ"
+    return f"~{max(0.1, megabytes):.1f} МБ"
+
+
+def preview_frame_set_export(plan: FrameSetExportPlan, output_dir: Path | str) -> FrameSetExportPreview:
+    """Folder tree with file counts and sizes, before anything is written."""
+
+    set_folder = safe_export_folder_name(plan.set_name, fallback="выборка")
+    lines = [f"{Path(output_dir)}\\", "  Karakal_export_<дата>\\", f"    {set_folder}\\  ({len(plan.frames)} кадров)"]
+    model_folders = _model_folders(plan)
+    total_files = 0
+    total_bytes = 0
+    for item in FRAME_ITEMS:
+        if item not in plan.items:
+            continue
+        folder = ITEM_FOLDERS[item]
+        if item == ITEM_SOURCE:
+            count, size = _count_and_size(plan, item, None)
+            lines.append(f"      {folder}\\  {count} файлов, {format_size(size)}")
+            total_files += count
+            total_bytes += size
+            continue
+        if len(plan.models) <= 1:
+            model_id = plan.models[0].model_id if plan.models else ""
+            count, size = _count_and_size(plan, item, model_id)
+            lines.append(f"      {folder}\\  {count} файлов, {format_size(size)}")
+            total_files += count
+            total_bytes += size
+            continue
+        lines.append(f"      {folder}\\")
+        for model in plan.models:
+            count, size = _count_and_size(plan, item, model.model_id)
+            lines.append(f"        {model_folders[model.model_id]}\\  {count} файлов, {format_size(size)}")
+            total_files += count
+            total_bytes += size
+    if plan.canvas:
+        lines.append(f"      {CANVAS_FILE}")
+        total_files += 1
+        total_bytes += 200_000
+    if plan.table:
+        lines.append(f"      {CSV_FILE}")
+        total_files += 1
+        total_bytes += 120 * len(plan.frames)
+    lines.append(f"      {REPORT_FILE}")
+    total_files += 1
+    return FrameSetExportPreview(tuple(lines), total_files, total_bytes)
+
+
+def _copy(source: str, target_dir: Path) -> bool:
+    if not source:
+        return False
+    path = Path(source)
+    if not path.is_file():
+        return False
+    target_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, target_dir / path.name)
+    return True
+
+
+def _read_gray(path: str) -> np.ndarray | None:
+    try:
+        data = np.fromfile(str(path), dtype=np.uint8)
+    except OSError:
+        return None
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
+
+
+def render_errors_over_mask(mask: np.ndarray, errors_bgr: np.ndarray) -> np.ndarray:
+    """Dim mask with defect cells tinted and outlined in their type colour."""
+
+    if mask.shape[:2] != errors_bgr.shape[:2]:
+        errors_bgr = cv2.resize(errors_bgr, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+    base = cv2.cvtColor((mask.astype(np.float32) * 0.55).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    painted = np.any(errors_bgr > 0, axis=2)
+    blended = base.copy()
+    blended[painted] = (base[painted].astype(np.float32) * 0.45 + errors_bgr[painted].astype(np.float32) * 0.55).astype(
+        np.uint8
+    )
+    edges = cv2.morphologyEx(painted.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
+    blended[edges] = errors_bgr[edges]
+    return blended
+
+
+def render_canvas(plan: FrameSetExportPlan) -> np.ndarray:
+    """The matrix with only this set's frames coloured, the rest left dark."""
+
+    rows, columns = plan.matrix_size
+    rows = max(1, int(rows))
+    columns = max(1, int(columns))
+    tile = max(1, min(CANVAS_TILE_PX, CANVAS_MAX_SIDE_PX // max(rows, columns)))
+    gap = 1 if tile >= 4 else 0
+    canvas = np.full((rows * tile, columns * tile, 3), 24, dtype=np.uint8)
+    for frame in plan.frames:
+        if frame.row < 0 or frame.column < 0 or frame.row >= rows or frame.column >= columns:
+            continue
+        red, green, blue = plan.canvas_colors.get(frame.key, (200, 200, 200))
+        top = frame.row * tile
+        left = frame.column * tile
+        canvas[top : top + tile - gap, left : left + tile - gap] = (blue, green, red)
+    return canvas
+
+
+def _write_table(plan: FrameSetExportPlan, path: Path) -> None:
+    types = list(plan.error_types)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.writer(handle, delimiter=";")
+        writer.writerow(
+            ["кадр", "ключ", "строка", "столбец", "качество_%", "участвует"]
+            + [plan.defect_labels.get(item, item) for item in types]
+        )
+        for frame in plan.frames:
+            quality = "" if frame.quality is None else f"{frame.quality * 100.0:.1f}"
+            writer.writerow(
+                [frame.name, frame.key, frame.row + 1, frame.column + 1, quality, "да" if frame.participating else "нет"]
+                + [int(frame.defect_counts.get(item, 0)) for item in types]
+            )
+
+
+def _write_report(plan: FrameSetExportPlan, report: FrameSetExportReport, path: Path) -> None:
+    lines = [
+        f"Экспорт Karakal · {datetime.now():%Y-%m-%d %H:%M}",
+        f"Выборка: {plan.set_name} ({len(plan.frames)} кадров)",
+        f"Слой матрицы: {plan.layer_title}",
+        "Модели: " + (", ".join(model.title for model in plan.models) or "—"),
+        "По каждому кадру: " + (", ".join(ITEM_FOLDERS[item] for item in FRAME_ITEMS if item in plan.items) or "—"),
+    ]
+    if plan.rules_text:
+        lines.append("Отсев:")
+        lines.extend(f"  - {text}" for text in plan.rules_text)
+    lines.append(f"Записано файлов: {report.written}")
+    if report.missing:
+        lines.append(f"Нет исходного файла или результата: {len(report.missing)}")
+        lines.extend(f"  - {name}" for name in report.missing[:200])
+    if report.cancelled:
+        lines.append("Экспорт остановлен пользователем.")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def export_frame_set(
+    plan: FrameSetExportPlan,
+    output_dir: Path | str,
+    *,
+    progress=None,
+    cancelled=None,
+) -> FrameSetExportReport:
+    """Write the export described by ``plan`` into a new dated folder."""
+
+    run_dir = unique_run_dir(Path(output_dir))
+    set_dir = run_dir / safe_export_folder_name(plan.set_name, fallback="выборка")
+    set_dir.mkdir(parents=True, exist_ok=True)
+    report = FrameSetExportReport(run_dir=run_dir, set_dir=set_dir)
+    model_folders = _model_folders(plan)
+    missing: list[str] = []
+    written = 0
+    total = len(plan.frames)
+    for index, frame in enumerate(plan.frames):
+        if cancelled is not None and cancelled():
+            report.cancelled = True
+            break
+        frame_missing = False
+        if ITEM_SOURCE in plan.items:
+            if _copy(frame.original_path, set_dir / ITEM_FOLDERS[ITEM_SOURCE]):
+                written += 1
+            else:
+                frame_missing = True
+        for model in plan.models:
+            model_dir = model_folders.get(model.model_id, "")
+            mask_path = frame.mask_paths.get(model.model_id, "")
+            result = frame.results.get(model.model_id)
+            if ITEM_MASK in plan.items:
+                target = set_dir / ITEM_FOLDERS[ITEM_MASK] / model_dir
+                if _copy(mask_path, target):
+                    written += 1
+                else:
+                    frame_missing = True
+            if ITEM_CONFIDENCE in plan.items:
+                target = set_dir / ITEM_FOLDERS[ITEM_CONFIDENCE] / model_dir
+                if _copy(frame.confidence_paths.get(model.model_id, ""), target):
+                    written += 1
+                else:
+                    frame_missing = True
+            errors_bgr = None
+            if result is not None and (ITEM_ERRORS in plan.items or ITEM_ERRORS_OVER_MASK in plan.items):
+                errors_bgr = render_grid_error_image(result, plan.error_types, color_mode="color")
+                if errors_bgr.ndim == 2:
+                    errors_bgr = cv2.cvtColor(errors_bgr, cv2.COLOR_GRAY2BGR)
+            stem = Path(frame.name).stem or frame.key
+            if ITEM_ERRORS in plan.items:
+                if errors_bgr is None:
+                    frame_missing = True
+                else:
+                    _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", errors_bgr, "png")
+                    written += 1
+            if ITEM_ERRORS_OVER_MASK in plan.items:
+                mask = _read_gray(mask_path) if mask_path else None
+                if errors_bgr is None or mask is None:
+                    frame_missing = True
+                else:
+                    overlay = render_errors_over_mask(mask, errors_bgr)
+                    _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS_OVER_MASK] / model_dir / f"{stem}.png", overlay, "png")
+                    written += 1
+        if frame_missing:
+            missing.append(frame.name)
+        if progress is not None:
+            progress(index + 1, total, frame.name)
+    if plan.canvas and not report.cancelled:
+        _write_image(set_dir / CANVAS_FILE, render_canvas(plan), "png")
+        written += 1
+    if plan.table and not report.cancelled:
+        _write_table(plan, set_dir / CSV_FILE)
+        written += 1
+    report.written = written
+    report.missing = tuple(missing)
+    report.report_path = set_dir / REPORT_FILE
+    _write_report(plan, report, report.report_path)
+    return report

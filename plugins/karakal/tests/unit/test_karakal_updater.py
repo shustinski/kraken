@@ -124,9 +124,9 @@ def test_frozen_update_client_path(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_app_version_carries_the_algorithm_number() -> None:
-    # 0.2.91-beta0: the middle number tells which grid-defect algorithm a build runs.
+    # 0.2.9101-beta0: algorithm 91, interface 01 — a build tells what analysis and UI it runs.
     from karakal.core.algorithm_version import GRID_ALGORITHM_NUMBER, GRID_DAMAGE_ALGORITHM_VERSION
-    from karakal.version import BETA, RELEASE
+    from karakal.version import BETA, INTERFACE_NUMBER, RELEASE
 
-    assert APP_VERSION == f"{RELEASE}.{GRID_ALGORITHM_NUMBER}-beta{BETA}"
+    assert APP_VERSION == f"{RELEASE}.{GRID_ALGORITHM_NUMBER}{INTERFACE_NUMBER:02d}-beta{BETA}"
     assert GRID_DAMAGE_ALGORITHM_VERSION.startswith(f"grid_damage_v{GRID_ALGORITHM_NUMBER}_")

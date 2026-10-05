@@ -45,15 +45,11 @@ from ..infra.services import KarakalSettingsService, default_settings
 from ..updater import (
     QtUpdateController,
     create_karakal_update_controller,
-    follow_update_root_moves,
     karakal_changelog_path,
-    load_karakal_last_update_check,
     load_karakal_update_channel,
     load_karakal_update_client_config,
     load_karakal_update_root,
     save_karakal_update_channel,
-    save_karakal_update_root,
-    validate_karakal_update_root,
 )
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
@@ -1268,18 +1264,8 @@ class KarakalWidget(QWidget):
         )
         save_diag_action.triggered.connect(self._save_diagnostics_bundle)
         diagnostics_menu.addAction(save_diag_action)
-        help_menu = self._menu_bar.addMenu("Help" if self._i18n.language == "en" else "Справка")
+        # Updates live only in the "Update" button at the top right corner.
         self._update_controller = create_karakal_update_controller(self)
-        self._help_update_menu = QMenu(self._t("update.menu"), help_menu)
-        help_menu.addMenu(self._help_update_menu)
-        self._help_check_updates_action = self._help_update_menu.addAction(self._t("update.check"))
-        self._help_check_updates_action.triggered.connect(self._on_manual_update_check)
-        self._help_update_folder_action = self._help_update_menu.addAction(self._t("update.folder"))
-        self._help_update_folder_action.triggered.connect(self._on_choose_update_folder)
-        self._help_whats_new_action = self._help_update_menu.addAction(self._t("update.whats_new"))
-        self._help_whats_new_action.triggered.connect(self._show_whats_new)
-        self._help_update_status_action = self._help_update_menu.addAction(self._update_folder_status_text())
-        self._help_update_status_action.setEnabled(False)
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
         self._setup_update_menu()
 
@@ -1361,65 +1347,19 @@ class KarakalWidget(QWidget):
         self._update_menu.addMenu(self._update_channel_menu)
         self._check_updates_action = self._update_menu.addAction(self._t("update.check"))
         self._check_updates_action.triggered.connect(self._on_manual_update_check)
-        self._update_folder_action = self._update_menu.addAction(self._t("update.folder"))
-        self._update_folder_action.triggered.connect(self._on_choose_update_folder)
         self._whats_new_action = self._update_menu.addAction(self._t("update.whats_new"))
         self._whats_new_action.triggered.connect(self._show_whats_new)
-        self._update_status_action = self._update_menu.addAction(self._update_folder_status_text())
-        self._update_status_action.setEnabled(False)
         self.update_tool_button.setMenu(self._update_menu)
         self.update_tool_button.setText(self._t("update.button"))
-
-    def _update_folder_status_text(self) -> str:
-        root = load_karakal_update_root()
-        last_check = load_karakal_last_update_check()
-        root_label = root or self._t("update.folder.unset")
-        check_label = last_check or self._t("update.last_check.never")
-        return self._t("update.folder.status", root=root_label, checked=check_label)
-
-    def _refresh_update_folder_status(self) -> None:
-        text = self._update_folder_status_text()
-        for attr in ("_update_status_action", "_help_update_status_action"):
-            action = getattr(self, attr, None)
-            if action is not None:
-                action.setText(text)
 
     def _on_manual_update_check(self, _checked: bool = False) -> None:
         if self._update_controller is None:
             self._update_controller = create_karakal_update_controller(self)
         if not load_karakal_update_root():
-            if not self._prompt_update_folder():
-                return
+            # The folder is baked into the build (update_client.json); users never pick it.
+            QMessageBox.information(self, self._t("dialog.info_title"), self._t("update.not_configured"))
+            return
         self._update_controller.check_for_updates(manual=True)
-        self._refresh_update_folder_status()
-
-    def _on_choose_update_folder(self, _checked: bool = False) -> None:
-        self._prompt_update_folder()
-
-    def _prompt_update_folder(self) -> str:
-        from PyQt6.QtWidgets import QFileDialog
-
-        start = load_karakal_update_root() or str(Path.home())
-        selected = QFileDialog.getExistingDirectory(self, self._t("update.folder.dialog"), start)
-        if not selected:
-            return ""
-        ok, message = validate_karakal_update_root(selected)
-        if not ok:
-            QMessageBox.warning(
-                self,
-                self._t("dialog.warning_title"),
-                message or self._t("update.folder.invalid"),
-            )
-            return ""
-        resolved = follow_update_root_moves(selected, channel=load_karakal_update_channel(), persist=True)
-        save_karakal_update_root(resolved or selected)
-        self._refresh_update_folder_status()
-        QMessageBox.information(
-            self,
-            self._t("dialog.info_title"),
-            self._t("update.folder.saved", root=resolved or selected),
-        )
-        return resolved or selected
 
     def _show_whats_new(self, _checked: bool = False) -> None:
         """History of changes bundled with this build (CHANGELOG.md)."""

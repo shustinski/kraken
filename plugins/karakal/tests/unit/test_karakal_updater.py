@@ -78,7 +78,10 @@ def test_update_root_env_and_settings(tmp_path: Path, monkeypatch) -> None:
             encoding="utf-8",
         )
     monkeypatch.delenv("KARAKAL_UPDATE_ROOT", raising=False)
+    monkeypatch.delenv("KARAKAL_UPDATE_ROOT_DEFAULT", raising=False)
     monkeypatch.setenv("KARAKAL_SETTINGS_DIR", str(tmp_path / "settings_home"))
+    # No folder baked into update_client.json: the test must not depend on the real one.
+    monkeypatch.setattr("karakal.updater.karakal_update_client_config_path", lambda: tmp_path / "none.json")
     save_karakal_update_root("")
     assert load_karakal_update_root() == ""
     ok, _ = validate_karakal_update_root(share)

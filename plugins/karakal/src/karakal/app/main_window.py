@@ -1126,14 +1126,22 @@ class KarakalWidget(QWidget):
         overview_layout.addWidget(self.grid_inspection_matrix_minimap)
 
         self.grid_inspection_errors_group = QGroupBox(self._t("grid_errors.group"), overview)
-        errors_layout = QVBoxLayout(self.grid_inspection_errors_group)
-        errors_layout.setContentsMargins(8, 8, 8, 8)
+        # The checkbox in the title collapses the block down to that title.
+        self.grid_inspection_errors_group.setCheckable(True)
+        self.grid_inspection_errors_group.setChecked(True)
+        group_layout = QVBoxLayout(self.grid_inspection_errors_group)
+        group_layout.setContentsMargins(8, 8, 8, 8)
+        group_layout.setSpacing(0)
+        self.grid_inspection_errors_body = QWidget(self.grid_inspection_errors_group)
+        errors_layout = QVBoxLayout(self.grid_inspection_errors_body)
+        errors_layout.setContentsMargins(0, 0, 0, 0)
         errors_layout.setSpacing(6)
-        self.grid_inspection_error_filter = QComboBox(self.grid_inspection_errors_group)
+        group_layout.addWidget(self.grid_inspection_errors_body)
+        self.grid_inspection_error_filter = QComboBox(self.grid_inspection_errors_body)
         self._populate_grid_inspection_error_filter("all")
-        self.grid_inspection_error_counter = QLabel("0 / 0", self.grid_inspection_errors_group)
+        self.grid_inspection_error_counter = QLabel("0 / 0", self.grid_inspection_errors_body)
         self.grid_inspection_error_counter.setWordWrap(True)
-        self.grid_inspection_error_list = QListWidget(self.grid_inspection_errors_group)
+        self.grid_inspection_error_list = QListWidget(self.grid_inspection_errors_body)
         self.grid_inspection_error_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.grid_inspection_error_list.setAlternatingRowColors(True)
         self.grid_inspection_error_list.setUniformItemSizes(False)
@@ -1145,6 +1153,8 @@ class KarakalWidget(QWidget):
         errors_layout.addWidget(self.grid_inspection_error_counter)
         errors_layout.addWidget(self.grid_inspection_error_list, stretch=1)
         overview_layout.addWidget(self.grid_inspection_errors_group, stretch=1)
+        self._grid_overview_layout = overview_layout
+        overview_layout.addStretch(0)
 
         overview.setMinimumWidth(240)
         overview.setMaximumWidth(320)
@@ -1189,6 +1199,19 @@ class KarakalWidget(QWidget):
                 )
             )
         return host
+
+    def set_grid_errors_expanded(self, expanded: bool) -> None:
+        """Show the defect list, or leave only the block title at the top of the column."""
+
+        expanded = bool(expanded)
+        blocker = QSignalBlocker(self.grid_inspection_errors_group)
+        self.grid_inspection_errors_group.setChecked(expanded)
+        del blocker
+        self.grid_inspection_errors_body.setVisible(expanded)
+        layout = self._grid_overview_layout
+        index = layout.indexOf(self.grid_inspection_errors_group)
+        layout.setStretch(index, 1 if expanded else 0)
+        layout.setStretch(index + 1, 0 if expanded else 1)
 
     def _activate_grid_inspection_layer_tab(self, index: int) -> None:
         keys = ("confidence", "binary")
@@ -2275,6 +2298,8 @@ class KarakalWidget(QWidget):
         self.pair_matrix_group.toggled.connect(self._presenter._persist_state)
         self.analysis_settings_group.toggled.connect(self.analysis_settings_body.setVisible)
         self.analysis_settings_group.toggled.connect(self._presenter._persist_state)
+        self.grid_inspection_errors_group.toggled.connect(self.set_grid_errors_expanded)
+        self.grid_inspection_errors_group.toggled.connect(self._presenter._persist_state)
         self.app_mode_combo.currentIndexChanged.connect(self._presenter._on_app_mode_changed)
         for grid_view in self.grid_inspection_matrix_views.values():
             grid_view.recordSelected.connect(self._presenter._on_grid_inspection_record_selected)

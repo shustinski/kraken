@@ -135,3 +135,27 @@ def test_calibration_arrows_stay_inside_selected_frames(qtbot) -> None:
     assert str(dialog._record.key) == "f2"
     assert not dialog._legacy_step_record(1)
     dialog.hide()
+
+
+def test_cell_defects_block_collapses_to_its_title_and_remembers_it(tmp_path, qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(QtUpdateController, "check_for_updates", lambda self, manual=False: None)
+    settings = QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat)
+    window = KarakalMainWindow(settings=settings)
+    qtbot.addWidget(window)
+    window.show()
+    view = window.plugin_widget()
+    group = view.grid_inspection_errors_group
+    assert group.isChecked() and not view.grid_inspection_errors_body.isHidden()
+
+    group.setChecked(False)
+    assert view.grid_inspection_errors_body.isHidden()
+    window.close()
+
+    reopened = KarakalMainWindow(settings=settings)
+    qtbot.addWidget(reopened)
+    view = reopened.plugin_widget()
+    assert not view.grid_inspection_errors_group.isChecked()
+    assert view.grid_inspection_errors_body.isHidden()
+    view.grid_inspection_errors_group.setChecked(True)
+    assert not view.grid_inspection_errors_body.isHidden()
+    reopened.close()

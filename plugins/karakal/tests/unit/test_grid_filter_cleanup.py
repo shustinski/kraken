@@ -17,8 +17,6 @@ from karakal.ui.ui_constants import (
 )
 
 EXPECTED_ERROR_TYPES = (
-    "filled_cell",
-    "partial_filled_cell",
     "small_artifact",
     "edge_clipped_cell",
     "broken_geometry",
@@ -140,9 +138,9 @@ def test_disabled_class_conflict_is_not_stored_as_unchecked() -> None:
 
 def test_old_settings_drop_removed_reasons_and_comparison_layer() -> None:
     types = KarakalPresenter._normalize_grid_error_types(
-        ["filled_cell", "geometry_mismatch", "low_confidence_cell", "class_conflict"]
+        ["filled_cell", "partial_filled_cell", "small_artifact", "geometry_mismatch", "class_conflict"]
     )
-    assert types == ("filled_cell", "class_conflict", "conductor_zone")
+    assert types == ("small_artifact", "class_conflict", "conductor_zone")
     assert KarakalPresenter._normalize_grid_layers(["confidence", "comparison", "binary"]) == ("confidence", "binary")
     softer = KarakalPresenter._grid_damage_config_from_payload({"disagreement_sensitivity": 0})
     stricter = KarakalPresenter._grid_damage_config_from_payload({"disagreement_sensitivity": 100})

@@ -15,6 +15,7 @@ from math import isfinite
 from pathlib import Path
 from time import perf_counter
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, QSignalBlocker, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
@@ -3615,6 +3616,9 @@ class KarakalPresenter(QObject):
             )
             return
         metric_key, card = histogram_items[index]
+        if sip.isdeleted(card):
+            # The tab was closed while the chunked update was still queued.
+            return
         if metric_key not in available_keys:
             card.setVisible(False)
         else:
@@ -7904,6 +7908,9 @@ class KarakalPresenter(QObject):
             "analysis_panel_expanded": bool(self.analysis_settings_group.isChecked())
             if hasattr(self, "analysis_settings_group")
             else True,
+            "grid_errors_expanded": bool(self.grid_inspection_errors_group.isChecked())
+            if hasattr(self, "grid_inspection_errors_group")
+            else True,
         }
 
     def _build_analysis_profile_payload(self) -> dict[str, object]:
@@ -8130,6 +8137,8 @@ class KarakalPresenter(QObject):
             del blocker
         if hasattr(self, "analysis_settings_body"):
             self.analysis_settings_body.setVisible(analysis_panel_expanded)
+        if hasattr(self._view, "set_grid_errors_expanded"):
+            self._view.set_grid_errors_expanded(bool(payload.get("grid_errors_expanded", True)))
         self._sync_mode_controls(None, None)
 
     def _persist_state(self) -> None:

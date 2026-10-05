@@ -24,6 +24,7 @@ from ..core.frame_set_export import (
     format_size,
     preview_frame_set_export,
 )
+from ..core.grid_error_export import unique_run_dir
 from ..core.frame_sets import (
     USER_SET_PREFIX,
     VIEW_ALL,
@@ -50,10 +51,11 @@ class _ExportRunner(QObject):
     progressed = pyqtSignal(int, int)
     finished_report = pyqtSignal(object)
 
-    def __init__(self, plan: FrameSetExportPlan, output_dir: Path) -> None:
+    def __init__(self, plan: FrameSetExportPlan, output_dir: Path, run_name: str) -> None:
         super().__init__()
         self._plan = plan
         self._output_dir = output_dir
+        self._run_name = run_name
         self._cancel = False
 
     def cancel(self) -> None:
@@ -64,6 +66,7 @@ class _ExportRunner(QObject):
             report = export_frame_set(
                 self._plan,
                 self._output_dir,
+                run_name=self._run_name,
                 progress=lambda current, total, _name: self.progressed.emit(int(current), int(total)),
                 cancelled=lambda: self._cancel,
             )
@@ -92,6 +95,7 @@ class FrameSetsController(QObject):
         self._export_table = True
         self._export_fill_black = False
         self._export_set_id = ""
+        self._export_run_name = ""
         self._last_report = None
         self._export_thread: QThread | None = None
         self._defect_cache: tuple[int, int, dict[str, dict[str, int]]] | None = None
@@ -130,7 +134,6 @@ class FrameSetsController(QObject):
         panel.exportBrowseRequested.connect(self._browse_output_dir)
         panel.exportRequested.connect(self._run_export)
         panel.openFolderRequested.connect(self._open_export_folder)
-        panel.showReportRequested.connect(self._open_export_report)
         if self.badge is not None:
             self.badge.resetRequested.connect(lambda: self._on_view_chosen(VIEW_ALL))
 
@@ -507,6 +510,8 @@ class FrameSetsController(QObject):
         state = self._state()
         if state is not None:
             self._export_set_id = self._model(state).view_id
+        self._export_run_name = unique_run_dir(self._output_dir()).name
+        self.panel.set_export_folder_name(self._export_run_name)
         self._refresh_panel()
 
     def _on_export_choices_changed(self) -> None:
@@ -515,6 +520,7 @@ class FrameSetsController(QObject):
         self._export_canvas = self.panel.export_canvas()
         self._export_table = self.panel.export_table()
         self._export_fill_black = self.panel.export_fill_black()
+        self._export_run_name = self.panel.export_folder_name()
         QTimer.singleShot(0, self._refresh_panel)
 
     def _refresh_export(self, state, qualities, all_keys, selected) -> None:
@@ -538,7 +544,7 @@ class FrameSetsController(QObject):
         if not plan.frames or not has_items:
             self.panel.set_export_preview("", self._t("frame_sets.export.nothing"), can_run=False)
             return
-        preview = preview_frame_set_export(plan, self._output_dir())
+        preview = preview_frame_set_export(plan, self._output_dir(), self._export_run_name)
         self.panel.set_export_preview(
             "\n".join(preview.lines),
             self._t("frame_sets.export.summary", files=preview.file_count, size=format_size(preview.approx_bytes)),
@@ -665,7 +671,7 @@ class FrameSetsController(QObject):
         progress.setMinimumDuration(300)
         progress.setValue(0)
         thread = QThread(self)
-        runner = _ExportRunner(plan, output_dir)
+        runner = _ExportRunner(plan, output_dir, self._export_run_name)
         runner.moveToThread(thread)
         thread.started.connect(runner.run)
         runner.progressed.connect(lambda current, total: (progress.setMaximum(max(1, total)), progress.setValue(current)))
@@ -707,7 +713,3 @@ class FrameSetsController(QObject):
     def _open_export_folder(self) -> None:
         if self._last_report is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_report.set_dir)))
-
-    def _open_export_report(self) -> None:
-        if self._last_report is not None and self._last_report.report_path is not None:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._last_report.report_path)))

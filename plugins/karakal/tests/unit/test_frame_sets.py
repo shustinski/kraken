@@ -17,7 +17,6 @@ from karakal.core.frame_set_export import (
     ITEM_ERRORS_OVER_MASK,
     ITEM_MASK,
     ITEM_SOURCE,
-    REPORT_FILE,
     FrameSetExportFrame,
     FrameSetExportModel,
     FrameSetExportPlan,
@@ -129,7 +128,22 @@ def test_export_writes_chosen_items_table_and_report(tmp_path) -> None:
     with (set_dir / CSV_FILE).open(encoding="utf-8-sig") as handle:
         rows = list(csv.reader(handle, delimiter=";"))
     assert len(rows) == 4
-    assert (set_dir / REPORT_FILE).read_text(encoding="utf-8").startswith("Экспорт Karakal")
+    assert not list(set_dir.glob("*.txt"))
+    assert set_dir.parent.name.startswith("Karakal_export_")
+
+
+def test_export_uses_the_chosen_folder_name(tmp_path) -> None:
+    frame = FrameSetExportFrame(key="k0", name="frame.0000.png", results={"m": _result("k0", 2)})
+    plan = FrameSetExportPlan(
+        set_name="Выделено", layer_title="Модель", frames=(frame,), models=(FrameSetExportModel("m", "Модель"),),
+        items=frozenset({ITEM_ERRORS}), error_types=("merged_contour",),
+    )
+    preview = preview_frame_set_export(plan, tmp_path / "out", "Партия 7")
+    assert any(line.strip() == "Партия 7\\" for line in preview.lines)
+    first = export_frame_set(plan, tmp_path / "out", run_name="Партия 7")
+    second = export_frame_set(plan, tmp_path / "out", run_name="Партия 7")
+    assert first.run_dir == tmp_path / "out" / "Партия 7"
+    assert second.run_dir == tmp_path / "out" / "Партия 7_2"
 
 
 def test_export_fills_the_rest_of_the_run_with_black_error_frames(tmp_path) -> None:
@@ -159,7 +173,6 @@ def test_export_fills_the_rest_of_the_run_with_black_error_frames(tmp_path) -> N
         assert image.shape[:2] == (40, 40) and not image.any()
     first = cv2.imdecode(np.fromfile(str(files[0]), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
     assert first.any()
-    assert "чёрные: 3" in (report.set_dir / REPORT_FILE).read_text(encoding="utf-8")
 
 
 def _grid_widget(tmp_path: Path, qtbot):

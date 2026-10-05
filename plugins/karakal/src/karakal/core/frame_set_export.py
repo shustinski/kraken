@@ -2,7 +2,7 @@
 
 Layout of one export::
 
-    Karakal_export_<date>/
+    <export folder>/                default Karakal_export_<date>, the user may rename it
       <set name>/
         Исходные снимки/            source image of every frame (copied as is)
         Маски/<model>/              mask of the layer (copied as is)
@@ -13,7 +13,6 @@ Layout of one export::
         Ошибки на маске/<model>/    defects outlined over the mask
         холст.png                   the whole set as one picture
         результаты.csv              one row per frame
-        отчёт.txt                   what was exported and from where
 
 The model folder level is left out when only one model is exported.
 """
@@ -23,7 +22,6 @@ from __future__ import annotations
 import csv
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -47,7 +45,6 @@ ITEM_FOLDERS = {
 }
 CANVAS_FILE = "холст.png"
 CSV_FILE = "результаты.csv"
-REPORT_FILE = "отчёт.txt"
 CANVAS_TILE_PX = 12
 CANVAS_MAX_SIDE_PX = 8000
 
@@ -110,7 +107,6 @@ class FrameSetExportReport:
     written: int = 0
     missing: tuple[str, ...] = ()
     cancelled: bool = False
-    report_path: Path | None = None
 
 
 def _model_folders(plan: FrameSetExportPlan) -> dict[str, str]:
@@ -201,13 +197,29 @@ def format_size(size_bytes: int) -> str:
     return f"~{max(0.1, megabytes):.1f} МБ"
 
 
-def preview_frame_set_export(plan: FrameSetExportPlan, output_dir: Path | str) -> FrameSetExportPreview:
+def _run_dir(output_dir: Path, run_name: str | None) -> Path:
+    """New export folder: the user's name, or the dated default; never an existing one."""
+
+    name = safe_export_folder_name(run_name or "", fallback="")
+    if not name:
+        return unique_run_dir(output_dir)
+    candidate, index = output_dir / name, 2
+    while candidate.exists():
+        candidate = output_dir / f"{name}_{index}"
+        index += 1
+    return candidate
+
+
+def preview_frame_set_export(
+    plan: FrameSetExportPlan, output_dir: Path | str, run_name: str | None = None
+) -> FrameSetExportPreview:
     """Folder tree with file counts and sizes, before anything is written."""
 
     set_folder = safe_export_folder_name(plan.set_name, fallback="выборка")
+    run_folder = safe_export_folder_name(run_name or "", fallback="Karakal_export_<дата>")
     rows: list[tuple[str, str]] = [
         (f"{Path(output_dir)}\\", ""),
-        ("  Karakal_export_<дата>\\", ""),
+        (f"  {run_folder}\\", ""),
         (f"    {set_folder}\\", f"{len(plan.frames)} кадров"),
     ]
     model_folders = _model_folders(plan)
@@ -245,8 +257,6 @@ def preview_frame_set_export(plan: FrameSetExportPlan, output_dir: Path | str) -
         rows.append((f"      {CSV_FILE}", f"{len(plan.frames)} строк"))
         total_files += 1
         total_bytes += 120 * len(plan.frames)
-    rows.append((f"      {REPORT_FILE}", ""))
-    total_files += 1
     width = max(len(name) for name, info in rows if info) if any(info for _name, info in rows) else 0
     lines = tuple(f"{name.ljust(width)}  {info}" if info else name for name, info in rows)
     return FrameSetExportPreview(lines, total_files, total_bytes)
@@ -324,38 +334,17 @@ def _write_table(plan: FrameSetExportPlan, path: Path) -> None:
             )
 
 
-def _write_report(plan: FrameSetExportPlan, report: FrameSetExportReport, path: Path) -> None:
-    lines = [
-        f"Экспорт Karakal · {datetime.now():%Y-%m-%d %H:%M}",
-        f"Выборка: {plan.set_name} ({len(plan.frames)} кадров)",
-        f"Слой матрицы: {plan.layer_title}",
-        "Модели: " + (", ".join(model.title for model in plan.models) or "—"),
-        "По каждому кадру: " + (", ".join(ITEM_FOLDERS[item] for item in FRAME_ITEMS if item in plan.items) or "—"),
-    ]
-    if plan.rules_text:
-        lines.append("Отсев:")
-        lines.extend(f"  - {text}" for text in plan.rules_text)
-    if plan.fill_frames:
-        lines.append(f"Остальные кадры прогона в «{ITEM_FOLDERS[ITEM_ERRORS]}» — чёрные: {len(plan.fill_frames)}")
-    lines.append(f"Записано файлов: {report.written}")
-    if report.missing:
-        lines.append(f"Нет исходного файла или результата: {len(report.missing)}")
-        lines.extend(f"  - {name}" for name in report.missing[:200])
-    if report.cancelled:
-        lines.append("Экспорт остановлен пользователем.")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
 def export_frame_set(
     plan: FrameSetExportPlan,
     output_dir: Path | str,
     *,
+    run_name: str | None = None,
     progress=None,
     cancelled=None,
 ) -> FrameSetExportReport:
-    """Write the export described by ``plan`` into a new dated folder."""
+    """Write the export described by ``plan`` into a new folder (``run_name`` or a dated one)."""
 
-    run_dir = unique_run_dir(Path(output_dir))
+    run_dir = _run_dir(Path(output_dir), run_name)
     set_dir = run_dir / safe_export_folder_name(plan.set_name, fallback="выборка")
     set_dir.mkdir(parents=True, exist_ok=True)
     report = FrameSetExportReport(run_dir=run_dir, set_dir=set_dir)
@@ -437,6 +426,4 @@ def export_frame_set(
         written += 1
     report.written = written
     report.missing = tuple(missing)
-    report.report_path = set_dir / REPORT_FILE
-    _write_report(plan, report, report.report_path)
     return report

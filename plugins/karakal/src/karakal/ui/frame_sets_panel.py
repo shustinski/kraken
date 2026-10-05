@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
@@ -153,7 +154,6 @@ class FrameSetsPanel(QWidget):
     exportBrowseRequested = pyqtSignal()
     exportRequested = pyqtSignal()
     openFolderRequested = pyqtSignal()
-    showReportRequested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -314,6 +314,11 @@ class FrameSetsPanel(QWidget):
         folder_row.addWidget(self.folder_label, stretch=1)
         folder_row.addWidget(self.browse_button)
         target_layout.addLayout(folder_row)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel(self._t("frame_sets.export.folder_name"), target_column))
+        self.folder_name_edit = QLineEdit(target_column)
+        name_row.addWidget(self.folder_name_edit, stretch=1)
+        target_layout.addLayout(name_row)
         self.tree_view = QPlainTextEdit(target_column)
         self.tree_view.setReadOnly(True)
         self.tree_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -339,9 +344,7 @@ class FrameSetsPanel(QWidget):
         target_layout.addWidget(self.done_label)
         done_buttons = QHBoxLayout()
         self.open_folder_button = QPushButton(self._t("frame_sets.export.open_folder"), target_column)
-        self.show_report_button = QPushButton(self._t("frame_sets.export.show_report"), target_column)
         done_buttons.addWidget(self.open_folder_button)
-        done_buttons.addWidget(self.show_report_button)
         done_buttons.addStretch(1)
         target_layout.addLayout(done_buttons)
         self.set_export_done(None)
@@ -354,9 +357,9 @@ class FrameSetsPanel(QWidget):
         self.back_button.clicked.connect(self.close_export)
         self.cancel_export_button.clicked.connect(self.close_export)
         self.browse_button.clicked.connect(self.exportBrowseRequested.emit)
+        self.folder_name_edit.textEdited.connect(lambda _text: self.exportChoicesChanged.emit())
         self.run_export_button.clicked.connect(self.exportRequested.emit)
         self.open_folder_button.clicked.connect(self.openFolderRequested.emit)
-        self.show_report_button.clicked.connect(self.showReportRequested.emit)
         return page
 
     # Threshold ---------------------------------------------------------------
@@ -521,6 +524,12 @@ class FrameSetsPanel(QWidget):
     def set_output_dir(self, path: str) -> None:
         self.folder_label.setText(path)
 
+    def set_export_folder_name(self, name: str) -> None:
+        self.folder_name_edit.setText(name)
+
+    def export_folder_name(self) -> str:
+        return self.folder_name_edit.text().strip()
+
     def set_export_preview(self, tree: str, summary: str, *, can_run: bool) -> None:
         self.tree_view.setPlainText(tree)
         self.export_summary.setText(summary)
@@ -530,4 +539,3 @@ class FrameSetsPanel(QWidget):
         self.done_label.setText(text or "")
         self.done_label.setVisible(bool(text))
         self.open_folder_button.setVisible(bool(text))
-        self.show_report_button.setVisible(bool(text))

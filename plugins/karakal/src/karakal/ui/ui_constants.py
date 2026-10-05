@@ -95,8 +95,6 @@ GRID_INSPECTION_FIXED_TUNING: tuple[tuple[str, int], ...] = tuple(
     (key, int(GRID_INSPECTION_PRESET_VALUES["balanced"][key])) for key in GRID_INSPECTION_TUNING_KEYS
 )
 GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
-    ("grid_error.filled_cell", "filled_cell"),
-    ("grid_error.partial_filled_cell", "partial_filled_cell"),
     ("grid_error.small_artifact", "small_artifact"),
     # Edge clip must win over broken_geometry when both fire (border crops look "broken").
     ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
@@ -106,8 +104,6 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.conductor_zone", "conductor_zone"),
 )
 GRID_INSPECTION_ERROR_TYPE_COLORS = {
-    "filled_cell": "#eb4052",
-    "partial_filled_cell": "#f2994a",
     "small_artifact": "#ec4899",
     "broken_geometry": "#38bdf8",
     "merged_contour": "#a855f7",

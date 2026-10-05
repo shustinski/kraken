@@ -7,7 +7,9 @@ Layout of one export::
         Исходные снимки/            source image of every frame (copied as is)
         Маски/<model>/              mask of the layer (copied as is)
         Confidence/<model>/         confidence map of the layer (copied as is)
-        Ошибки/<model>/             defects as coloured cells on black
+        Ошибки/<model>/             defects as coloured cells on black; with
+                                    ``fill_frames`` the rest of the run is here
+                                    too, as black frames (no errors to take)
         Ошибки на маске/<model>/    defects outlined over the mask
         холст.png                   the whole set as one picture
         результаты.csv              one row per frame
@@ -51,6 +53,7 @@ CANVAS_MAX_SIDE_PX = 8000
 
 # Size guesses for files that do not exist yet (bytes per image pixel).
 _ERRORS_BYTES_PER_PIXEL = 0.03
+_BLACK_BYTES_PER_PIXEL = 0.002
 _OVERLAY_BYTES_PER_PIXEL = 0.25
 
 
@@ -89,6 +92,8 @@ class FrameSetExportPlan:
     canvas_colors: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     matrix_size: tuple[int, int] = (0, 0)
     rules_text: tuple[str, ...] = ()
+    # Run frames outside the set, written to the errors folder as black frames.
+    fill_frames: tuple[FrameSetExportFrame, ...] = ()
 
 
 @dataclass(slots=True)
@@ -138,13 +143,30 @@ def _sample_size(paths: list[str]) -> int:
     return int(sum(sizes) / len(sizes)) if sizes else 0
 
 
-def _image_pixels(frame: FrameSetExportFrame) -> int:
+def _frame_size(frame: FrameSetExportFrame) -> tuple[int, int] | None:
+    """Image height and width from the frame's grid result."""
+
     for result in frame.results.values():
         height = int(getattr(result, "image_height", 0) or 0)
         width = int(getattr(result, "image_width", 0) or 0)
         if height > 0 and width > 0:
-            return height * width
-    return 0
+            return height, width
+    return None
+
+
+def _image_pixels(frame: FrameSetExportFrame) -> int:
+    size = _frame_size(frame)
+    return size[0] * size[1] if size is not None else 0
+
+
+def _run_frame_size(plan: FrameSetExportPlan) -> tuple[int, int]:
+    """Size for black frames that have no result of their own."""
+
+    for frame in plan.frames + plan.fill_frames:
+        size = _frame_size(frame)
+        if size is not None:
+            return size
+    return 1, 1
 
 
 def _count_and_size(plan: FrameSetExportPlan, item: str, model_id: str | None) -> tuple[int, int]:
@@ -162,7 +184,12 @@ def _count_and_size(plan: FrameSetExportPlan, item: str, model_id: str | None) -
         with_result = [frame for frame in with_result if frame.mask_paths.get(str(model_id))]
     per_pixel = _ERRORS_BYTES_PER_PIXEL if item == ITEM_ERRORS else _OVERLAY_BYTES_PER_PIXEL
     pixels = _image_pixels(with_result[0]) if with_result else 0
-    return len(with_result), int(pixels * per_pixel) * len(with_result)
+    count, size = len(with_result), int(pixels * per_pixel) * len(with_result)
+    if item == ITEM_ERRORS and plan.fill_frames:
+        height, width = _run_frame_size(plan)
+        count += len(plan.fill_frames)
+        size += int(height * width * _BLACK_BYTES_PER_PIXEL) * len(plan.fill_frames)
+    return count, size
 
 
 def format_size(size_bytes: int) -> str:
@@ -178,44 +205,51 @@ def preview_frame_set_export(plan: FrameSetExportPlan, output_dir: Path | str) -
     """Folder tree with file counts and sizes, before anything is written."""
 
     set_folder = safe_export_folder_name(plan.set_name, fallback="выборка")
-    lines = [f"{Path(output_dir)}\\", "  Karakal_export_<дата>\\", f"    {set_folder}\\  ({len(plan.frames)} кадров)"]
+    rows: list[tuple[str, str]] = [
+        (f"{Path(output_dir)}\\", ""),
+        ("  Karakal_export_<дата>\\", ""),
+        (f"    {set_folder}\\", f"{len(plan.frames)} кадров"),
+    ]
     model_folders = _model_folders(plan)
     total_files = 0
     total_bytes = 0
+
+    def files_text(item: str, count: int, size: int) -> str:
+        text = f"{count} файлов, {format_size(size)}"
+        if item == ITEM_ERRORS and plan.fill_frames:
+            text += f" (из них чёрных: {len(plan.fill_frames)})"
+        return text
+
     for item in FRAME_ITEMS:
         if item not in plan.items:
             continue
         folder = ITEM_FOLDERS[item]
-        if item == ITEM_SOURCE:
-            count, size = _count_and_size(plan, item, None)
-            lines.append(f"      {folder}\\  {count} файлов, {format_size(size)}")
-            total_files += count
-            total_bytes += size
-            continue
-        if len(plan.models) <= 1:
-            model_id = plan.models[0].model_id if plan.models else ""
+        if item == ITEM_SOURCE or len(plan.models) <= 1:
+            model_id = None if item == ITEM_SOURCE else (plan.models[0].model_id if plan.models else "")
             count, size = _count_and_size(plan, item, model_id)
-            lines.append(f"      {folder}\\  {count} файлов, {format_size(size)}")
+            rows.append((f"      {folder}\\", files_text(item, count, size)))
             total_files += count
             total_bytes += size
             continue
-        lines.append(f"      {folder}\\")
+        rows.append((f"      {folder}\\", ""))
         for model in plan.models:
             count, size = _count_and_size(plan, item, model.model_id)
-            lines.append(f"        {model_folders[model.model_id]}\\  {count} файлов, {format_size(size)}")
+            rows.append((f"        {model_folders[model.model_id]}\\", files_text(item, count, size)))
             total_files += count
             total_bytes += size
     if plan.canvas:
-        lines.append(f"      {CANVAS_FILE}")
+        rows.append((f"      {CANVAS_FILE}", "1 файл"))
         total_files += 1
         total_bytes += 200_000
     if plan.table:
-        lines.append(f"      {CSV_FILE}")
+        rows.append((f"      {CSV_FILE}", f"{len(plan.frames)} строк"))
         total_files += 1
         total_bytes += 120 * len(plan.frames)
-    lines.append(f"      {REPORT_FILE}")
+    rows.append((f"      {REPORT_FILE}", ""))
     total_files += 1
-    return FrameSetExportPreview(tuple(lines), total_files, total_bytes)
+    width = max(len(name) for name, info in rows if info) if any(info for _name, info in rows) else 0
+    lines = tuple(f"{name.ljust(width)}  {info}" if info else name for name, info in rows)
+    return FrameSetExportPreview(lines, total_files, total_bytes)
 
 
 def _copy(source: str, target_dir: Path) -> bool:
@@ -301,6 +335,8 @@ def _write_report(plan: FrameSetExportPlan, report: FrameSetExportReport, path: 
     if plan.rules_text:
         lines.append("Отсев:")
         lines.extend(f"  - {text}" for text in plan.rules_text)
+    if plan.fill_frames:
+        lines.append(f"Остальные кадры прогона в «{ITEM_FOLDERS[ITEM_ERRORS]}» — чёрные: {len(plan.fill_frames)}")
     lines.append(f"Записано файлов: {report.written}")
     if report.missing:
         lines.append(f"Нет исходного файла или результата: {len(report.missing)}")
@@ -326,7 +362,8 @@ def export_frame_set(
     model_folders = _model_folders(plan)
     missing: list[str] = []
     written = 0
-    total = len(plan.frames)
+    fill_frames = plan.fill_frames if ITEM_ERRORS in plan.items else ()
+    total = len(plan.frames) + len(fill_frames)
     for index, frame in enumerate(plan.frames):
         if cancelled is not None and cancelled():
             report.cancelled = True
@@ -377,6 +414,21 @@ def export_frame_set(
             missing.append(frame.name)
         if progress is not None:
             progress(index + 1, total, frame.name)
+    if fill_frames and not report.cancelled:
+        default_size = _run_frame_size(plan)
+        for index, frame in enumerate(fill_frames, start=len(plan.frames)):
+            if cancelled is not None and cancelled():
+                report.cancelled = True
+                break
+            height, width = _frame_size(frame) or default_size
+            black = np.zeros((height, width, 3), dtype=np.uint8)
+            stem = Path(frame.name).stem or frame.key
+            for model in plan.models:
+                model_dir = model_folders.get(model.model_id, "")
+                _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", black, "png")
+                written += 1
+            if progress is not None:
+                progress(index + 1, total, frame.name)
     if plan.canvas and not report.cancelled:
         _write_image(set_dir / CANVAS_FILE, render_canvas(plan), "png")
         written += 1

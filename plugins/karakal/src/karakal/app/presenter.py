@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 from bisect import bisect_right
@@ -78,9 +77,7 @@ from ..core.features import (
     show_reference_frame,
     tester_build,
 )
-from ..core.grid_anomaly import GRID_DAMAGE_ALGORITHM_VERSION
 from ..core.grid_error_export import (
-    GridErrorExportFrame,
     export_grid_cell_defect_frames,
     export_type_slug,
 )
@@ -108,8 +105,6 @@ from ..core.image_formats import SUPPORTED_IMAGE_EXTENSION_SET
 from ..core.project_profile import AnalysisSourceBinding, KarakalAnalysisProfileV1, SourceBindingKind
 from ..core.exports import (
     available_result_layer_exports,
-    export_grid_cell_defect_bmps,
-    export_grid_cell_defect_canvas,
     export_record_assets,
     export_result_layer_jpgs,
     export_result_layers_jpgs,
@@ -4127,14 +4122,8 @@ class KarakalPresenter(QObject):
 
     def _update_source_labels(self) -> None:
         original_text, original_tooltip = self._compact_folder_label(self._original_folder)
-        export_text = (
-            self._compact_path_text(str(self._export_folder)) if self._export_folder is not None else "not set"
-        )
-        export_tooltip = "" if self._export_folder is None else str(self._export_folder)
         self.original_folder_value.setText(original_text)
         self.original_folder_value.setToolTip(original_tooltip)
-        self.export_folder_value.setText(export_text)
-        self.export_folder_value.setToolTip(export_tooltip)
 
     def _add_folder(self) -> None:
         if self._worker_thread is not None:
@@ -4194,21 +4183,6 @@ class KarakalPresenter(QObject):
         if not path.exists():
             return None
         return path
-
-    def _set_export_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self._view, self._t("dialog.select_export_folder"))
-        if not folder:
-            return
-        path = Path(folder)
-        path.mkdir(parents=True, exist_ok=True)
-        self._export_folder = path
-        self._update_source_labels()
-        self._sync_action_buttons()
-
-    def _clear_export_folder(self) -> None:
-        self._export_folder = None
-        self._update_source_labels()
-        self._sync_action_buttons()
 
     def _current_app_mode(self) -> str:
         combo = getattr(self, "app_mode_combo", None)
@@ -4947,227 +4921,6 @@ class KarakalPresenter(QObject):
             return
         self._export_result_layer_jpgs(state, records=self._current_matrix_selected_records() or None)
 
-    def _on_export_grid_check_bmps_requested(self) -> None:
-        state = self._current_tab_state()
-        if state is None or self._current_app_mode() != "grid_inspection":
-            return
-        self._export_grid_error_frames(state)
-
-    def _export_grid_error_frames(self, state: ExtendMatrixTabState) -> None:
-        from ..core.grid_error_export import (
-            GridErrorExportFrame,
-            GridExportLayerSpec,
-            color_mode_folder_name,
-            export_grid_error_wizard_run,
-            safe_export_folder_name,
-        )
-        from ..ui.grid_export_wizard import ExportLayerOffer, GridErrorExportWizard
-        from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS, SETTINGS_GRID_EXPORT_WIZARD_KEY
-
-        selected_types = self._selected_grid_error_types()
-        if not selected_types:
-            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("export_wizard.types_empty"))
-            return
-        export_folder = self._export_folder or Path.cwd()
-        selected_records = self._grid_inspection_export_selected_records(state)
-        offers = self._grid_export_layer_offers(state, selected_types)
-        if not offers:
-            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("message.no_grid_check_results"))
-            return
-
-        def preview(wizard: GridErrorExportWizard) -> str:
-            choices = wizard.choices()
-            if choices is None:
-                return self._t("export_wizard.preview_empty")
-            mode_folder = color_mode_folder_name(
-                choices.image_format,
-                choices.color_mode,
-                single_color=choices.single_color,
-            )
-            lines = [f"Karakal_export_YYYY-MM-DD_HHMM\\", f"  {mode_folder}\\"]
-            offer_by_key = {offer.key: offer for offer in offers}
-            for key in choices.layer_keys:
-                offer = offer_by_key.get(key)
-                if offer is None:
-                    continue
-                folder = safe_export_folder_name(offer.title, fallback=key)
-                count = int(offer.frame_count)
-                if choices.skip_empty:
-                    count = self._grid_export_nonempty_frame_count(
-                        state,
-                        key,
-                        selected_types,
-                        selected_only=choices.frame_scope == "selected",
-                        selected_records=selected_records,
-                    )
-                lines.append(f"    {folder}\\  ({count} {self._t('export_wizard.files')})")
-            return "\n".join(lines)
-
-        wizard = GridErrorExportWizard(
-            self._t,
-            layers=offers,
-            selected_types=selected_types,
-            has_selection=bool(selected_records),
-            output_dir=export_folder,
-            preview_builder=preview,
-            parent=self._view,
-        )
-        saved = {}
-        try:
-            raw = self._settings_service._settings.value(SETTINGS_GRID_EXPORT_WIZARD_KEY, "", str)
-            if raw:
-                saved = json.loads(raw)
-        except (TypeError, ValueError):
-            saved = {}
-        if isinstance(saved, dict):
-            wizard.apply_saved_choices(saved)
-        if wizard.exec() != QDialog.DialogCode.Accepted:
-            return
-        choices = wizard.choices()
-        if choices is None:
-            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("export_wizard.types_empty"))
-            return
-        try:
-            self._settings_service._settings.setValue(
-                SETTINGS_GRID_EXPORT_WIZARD_KEY,
-                json.dumps(wizard.persistable_choices(), ensure_ascii=False),
-            )
-            self._settings_service.sync()
-        except Exception:
-            pass
-        self._export_folder = Path(choices.output_dir)
-        analysis_layer = self._grid_export_analysis_layer(state)
-        layer_specs = []
-        frames: list[GridErrorExportFrame] = []
-        offer_by_key = {offer.key: offer for offer in offers}
-        records = (
-            selected_records
-            if choices.frame_scope == "selected" and selected_records
-            else tuple(getattr(getattr(state, "build_result", None), "records", ()) or ())
-        )
-        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
-        for key in choices.layer_keys:
-            offer = offer_by_key.get(key)
-            if offer is None:
-                continue
-            model_layers = dict(by_model.get(key) or {})
-            payloads = dict(model_layers.get(analysis_layer) or {})
-            if not payloads and analysis_layer != "binary":
-                payloads = dict(model_layers.get("binary") or {})
-            if not payloads and key == str(getattr(state, "grid_inspection_model_id", "") or ""):
-                payloads = dict((getattr(state, "grid_inspection_payloads_by_layer", {}) or {}).get(analysis_layer) or {})
-            layer_specs.append(
-                GridExportLayerSpec(
-                    key=key,
-                    title=offer.title,
-                    folder_name=offer.title,
-                    source_path=self._grid_export_model_source_path(state, key),
-                    analysis_layer=analysis_layer,
-                )
-            )
-            for record in records:
-                frame_key = str(getattr(record, "key", "") or "")
-                file_name = Path(str(getattr(record, "display_name", "") or frame_key or "frame")).name
-                if Path(file_name).suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}:
-                    file_name = f"{Path(file_name).stem}.{choices.image_format}"
-                result = payloads.get(frame_key)
-                frames.append(
-                    GridErrorExportFrame(
-                        file_name=file_name,
-                        mask_name=key,
-                        layer_name=analysis_layer,
-                        result=result,
-                    )
-                )
-        colors = {item: GRID_INSPECTION_ERROR_TYPE_COLORS.get(item, "") for item in choices.selected_types}
-        config_payload = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
-        progress = QProgressDialog(
-            self._t("export_wizard.title"),
-            self._t("common.cancel"),
-            0,
-            max(1, len(frames)),
-            self._view,
-        )
-        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        thread = QThread(self._view)
-        holder: dict[str, object] = {}
-
-        class _Runner(QObject):
-            progressed = pyqtSignal(int, int, str)
-            finished_report = pyqtSignal(object)
-
-            def __init__(self) -> None:
-                super().__init__()
-                self._cancel = False
-
-            def cancel(self) -> None:
-                self._cancel = True
-
-            def run(self) -> None:
-                report = export_grid_error_wizard_run(
-                    frames,
-                    Path(choices.output_dir),
-                    choices.selected_types,
-                    tuple(layer_specs),
-                    image_format=choices.image_format,
-                    color_mode=choices.color_mode,
-                    single_color=choices.single_color,
-                    skip_empty=choices.skip_empty,
-                    algorithm_version=str(
-                        getattr(state, "grid_inspection_algorithm_version", "") or GRID_DAMAGE_ALGORITHM_VERSION
-                    ),
-                    calibration_fingerprint=str(config_payload.get("calibration_fingerprint") or ""),
-                    type_colors=colors,
-                    progress=lambda current, total, name: self.progressed.emit(int(current), int(total), str(name)),
-                    cancelled=lambda: self._cancel,
-                )
-                self.finished_report.emit(report)
-
-        runner = _Runner()
-        runner.moveToThread(thread)
-        thread.started.connect(runner.run)
-        runner.progressed.connect(
-            lambda current, total, name: (
-                progress.setMaximum(max(1, total)),
-                progress.setValue(min(current, max(1, total))),
-                progress.setLabelText(name or self._t("export_wizard.title")),
-            )
-        )
-        progress.canceled.connect(runner.cancel)
-
-        def _finish(report) -> None:
-            progress.setValue(progress.maximum())
-            thread.quit()
-            run_dir = getattr(report, "run_dir", None) or getattr(report, "output_dir", choices.output_dir)
-            written = len(getattr(report, "written", ()) or ())
-            missing = len(getattr(report, "missing_results", ()) or ())
-            box = QMessageBox(self._view)
-            box.setWindowTitle(self._t("dialog.info_title"))
-            box.setText(
-                self._t(
-                    "export_wizard.done",
-                    count=written,
-                    folder=str(run_dir),
-                    missing=missing,
-                )
-            )
-            open_button = box.addButton(self._t("export_wizard.open_folder"), QMessageBox.ButtonRole.AcceptRole)
-            box.addButton(self._t("common.close") if hasattr(self, "_t") else "OK", QMessageBox.ButtonRole.RejectRole)
-            box.exec()
-            if box.clickedButton() is open_button:
-                try:
-                    os.startfile(str(run_dir))  # type: ignore[attr-defined]
-                except OSError:
-                    pass
-
-        runner.finished_report.connect(_finish)
-        holder["thread"] = thread
-        holder["runner"] = runner
-        self._grid_error_export_job = holder
-        thread.start()
-
     def _grid_export_analysis_layer(self, state: ExtendMatrixTabState) -> str:
         from ..core.features import show_confidence_defects
 
@@ -5180,75 +4933,6 @@ class KarakalPresenter(QObject):
         if show_confidence_defects() and payloads.get("confidence"):
             return "confidence"
         return "binary"
-
-    def _grid_export_model_source_path(self, state: ExtendMatrixTabState, model_id: str) -> str:
-        for spec in getattr(getattr(state, "build_result", None), "model_specs", ()) or ():
-            if str(getattr(spec, "model_id", "") or "") == str(model_id):
-                folder = getattr(spec, "mask_folder", None)
-                return str(folder) if folder is not None else ""
-        return ""
-
-    def _grid_export_layer_offers(self, state: ExtendMatrixTabState, selected_types: tuple[str, ...]):
-        from ..core.grid_error_export import reason_counts
-        from ..ui.grid_export_wizard import ExportLayerOffer
-
-        analysis_layer = self._grid_export_analysis_layer(state)
-        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
-        active_model = str(getattr(state, "grid_inspection_model_id", "") or "")
-        if active_model and active_model not in by_model:
-            by_model[active_model] = dict(getattr(state, "grid_inspection_payloads_by_layer", {}) or {})
-        specs = {
-            str(spec.model_id): str(spec.display_name or spec.model_id)
-            for spec in (getattr(getattr(state, "build_result", None), "model_specs", ()) or ())
-            if str(getattr(spec, "model_id", "") or "")
-        }
-        offers = []
-        for model_id, title in specs.items():
-            model_layers = dict(by_model.get(model_id) or {})
-            payloads = dict(model_layers.get(analysis_layer) or model_layers.get("binary") or {})
-            if not payloads:
-                continue
-            error_count = 0
-            frame_count = 0
-            for result in payloads.values():
-                if result is None:
-                    continue
-                frame_count += 1
-                counts = reason_counts(result, selected_types)
-                error_count += int(sum(counts.values()))
-            offers.append(
-                ExportLayerOffer(
-                    key=model_id,
-                    title=title,
-                    error_count=error_count,
-                    frame_count=frame_count,
-                )
-            )
-        return offers
-
-    def _grid_export_nonempty_frame_count(
-        self,
-        state: ExtendMatrixTabState,
-        model_id: str,
-        selected_types: tuple[str, ...],
-        *,
-        selected_only: bool,
-        selected_records,
-    ) -> int:
-        from ..core.grid_error_export import frame_has_selected_errors
-
-        analysis_layer = self._grid_export_analysis_layer(state)
-        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
-        model_layers = dict(by_model.get(model_id) or {})
-        payloads = dict(model_layers.get(analysis_layer) or model_layers.get("binary") or {})
-        if selected_only and selected_records:
-            keys = {str(getattr(record, "key", "") or "") for record in selected_records}
-            payloads = {key: value for key, value in payloads.items() if key in keys}
-        return sum(
-            1
-            for result in payloads.values()
-            if result is not None and frame_has_selected_errors(result, selected_types)
-        )
 
     def _request_cancel_build(self) -> None:
         if self._worker is None:
@@ -7320,8 +7004,6 @@ class KarakalPresenter(QObject):
         if show_other_mode_export():
             export_layer_action = export_menu.addAction(self._t("context.export_result_layer_jpgs"))
             export_layer_action.setEnabled(bool(getattr(state.build_result, "records", ())))
-        export_grid_bmp_selected_action = None
-        export_grid_bmp_all_action = None
         calibrate_action = None
         diverse_action = None
         if is_grid_inspection_context:
@@ -7330,15 +7012,6 @@ class KarakalPresenter(QObject):
                 calibrate_action.setEnabled(1 <= len(selected_records) <= 20)
                 diverse_action = menu.addAction(self._t("context.calibrate_diverse"))
                 diverse_action.setEnabled(bool(getattr(getattr(state, "build_result", None), "records", ())))
-            export_menu.addSeparator()
-            payload_keys = {str(key) for key in (getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys()}
-            selected_result_keys = {str(getattr(item, "key", "") or "") for item in exclude_source if item is not None}
-            export_grid_bmp_selected_action = export_menu.addAction(
-                self._t("context.export_selected_grid_check_bmps", count=len(exclude_source))
-            )
-            export_grid_bmp_selected_action.setEnabled(bool(selected_result_keys & payload_keys))
-            export_grid_bmp_all_action = export_menu.addAction(self._t("context.export_all_grid_check_bmps"))
-            export_grid_bmp_all_action.setEnabled(bool(payload_keys))
         validation_menu = menu.addMenu(
             self._t("context.grid_inspection_menu")
             if is_grid_inspection_context
@@ -7398,16 +7071,6 @@ class KarakalPresenter(QObject):
             return
         if selected_action is export_layer_action:
             self._export_result_layer_jpgs(state)
-            return
-        if export_grid_bmp_selected_action is not None and selected_action is export_grid_bmp_selected_action:
-            self._export_grid_inspection_bmps(
-                state,
-                self._grid_inspection_records_with_results(state),
-                render_records=tuple(exclude_source),
-            )
-            return
-        if export_grid_bmp_all_action is not None and selected_action is export_grid_bmp_all_action:
-            self._export_grid_inspection_bmps(state, self._grid_inspection_records_with_results(state))
             return
         if selected_action is exclude_action and exclude_source:
             self._set_validation_exclusions(state, exclude_source, exclude=True)
@@ -7885,244 +7548,6 @@ class KarakalPresenter(QObject):
             ),
         )
 
-    def _grid_inspection_records_with_results(self, state: ExtendMatrixTabState) -> tuple[FrameRecord, ...]:
-        payload_keys = {str(key) for key in (getattr(state, "grid_inspection_payload_by_key", {}) or {}).keys()}
-        if not payload_keys:
-            return tuple()
-        return tuple(
-            record
-            for record in (getattr(state.build_result, "records", ()) or ())
-            if str(getattr(record, "key", "") or "") in payload_keys
-        )
-
-    def _select_grid_check_export_format(self) -> str | None:
-        options = (
-            (self._t("export_format.bmp_canvas"), "bmp_canvas"),
-            (self._t("export_format.bmp_overlay_canvas"), "bmp_overlay_canvas"),
-            (self._t("export_format.bmp"), "bmp"),
-            (self._t("export_format.png"), "png"),
-            (self._t("export_format.jpg"), "jpg"),
-        )
-        labels = [label for label, _value in options]
-        selected, accepted = QInputDialog.getItem(
-            self._view,
-            self._t("dialog.export_grid_check_format_title"),
-            self._t("dialog.export_grid_check_format_label"),
-            labels,
-            0,
-            False,
-        )
-        if not accepted:
-            return None
-        selected_text = str(selected)
-        return next((value for label, value in options if label == selected_text), "bmp_canvas")
-
-    def _select_grid_check_canvas_size(
-        self,
-        state: ExtendMatrixTabState,
-        records: tuple[FrameRecord, ...],
-    ) -> tuple[int, int] | None:
-        payloads = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {})
-        first_result = next(
-            (
-                payloads.get(str(getattr(record, "key", "") or ""))
-                for record in records
-                if payloads.get(str(getattr(record, "key", "") or "")) is not None
-            ),
-            None,
-        )
-        columns = max(1, int(getattr(state.layout_config, "frames_per_row", 1) or 1))
-        rows = max(1, (len(records) + columns - 1) // columns)
-        frame_width = max(1, int(getattr(first_result, "image_width", 0) or 1))
-        frame_height = max(1, int(getattr(first_result, "image_height", 0) or 1))
-        default_width = min(65535, frame_width * columns)
-        default_height = min(65535, frame_height * rows)
-        width, accepted = QInputDialog.getInt(
-            self._view,
-            self._t("dialog.export_grid_check_canvas_title"),
-            self._t("dialog.export_grid_check_canvas_width"),
-            default_width,
-            1,
-            65535,
-            1,
-        )
-        if not accepted:
-            return None
-        height, accepted = QInputDialog.getInt(
-            self._view,
-            self._t("dialog.export_grid_check_canvas_title"),
-            self._t("dialog.export_grid_check_canvas_height"),
-            default_height,
-            1,
-            65535,
-            1,
-        )
-        if not accepted:
-            return None
-        return int(width), int(height)
-
-    @staticmethod
-    def _grid_check_export_format_label(image_format: str) -> str:
-        normalized = str(image_format or "bmp").strip().lower().lstrip(".")
-        if normalized in {"jpg", "jpeg"}:
-            return "JPG"
-        if normalized == "png":
-            return "PNG"
-        return "BMP"
-
-    def _export_grid_inspection_bmps(
-        self,
-        state: ExtendMatrixTabState,
-        records: tuple[FrameRecord, ...],
-        *,
-        render_records: tuple[FrameRecord, ...] | None = None,
-        image_format: str | None = None,
-    ) -> None:
-        selected_format = str(image_format or "")
-        if not selected_format:
-            selected_format = self._select_grid_check_export_format() or ""
-        if not selected_format:
-            return
-        format_label = self._grid_check_export_format_label(selected_format)
-        export_folder = self._ensure_export_folder()
-        if export_folder is None:
-            return
-        payloads = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {})
-        if not payloads:
-            QMessageBox.warning(
-                self._view,
-                self._t("dialog.warning_title"),
-                self._t("message.no_grid_check_results"),
-            )
-            return
-        target_records = tuple(record for record in records if record is not None)
-        if not target_records:
-            target_records = self._grid_inspection_records_with_results(state)
-        canvas_size = None
-        canvas_columns = max(1, int(getattr(state.layout_config, "frames_per_row", 1) or 1))
-        if selected_format in {"bmp_canvas", "bmp_overlay_canvas"}:
-            canvas_size = self._select_grid_check_canvas_size(state, target_records)
-            if canvas_size is None:
-                return
-            placements, canvas_columns, _canvas_rows = build_matrix_layout(list(target_records), state.layout_config)
-            target_records = tuple(record for record, _row, _column in placements)
-        render_record_keys = None
-        if render_records is not None:
-            render_record_keys = tuple(
-                str(getattr(record, "key", "") or "")
-                for record in render_records
-                if record is not None and str(getattr(record, "key", "") or "")
-            )
-        total_units = max(1, len(target_records))
-        progress = QProgressDialog(
-            self._t(
-                "message.export_grid_check_bmps_progress", format=format_label, current=0, total=total_units, frame=""
-            ),
-            self._t("common.cancel"),
-            0,
-            total_units,
-            self._view,
-        )
-        progress.setWindowTitle(self._t("context.export_grid_check_bmps"))
-        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        last_progress_update = 0.0
-
-        def on_progress(current: int, total: int, frame_name: str) -> None:
-            nonlocal last_progress_update
-            now = perf_counter()
-            if int(current) < int(total) and now - last_progress_update < 0.10:
-                return
-            last_progress_update = now
-            progress.setMaximum(max(1, int(total)))
-            progress.setValue(max(0, min(int(current), max(1, int(total)))))
-            progress.setLabelText(
-                self._t(
-                    "message.export_grid_check_bmps_progress",
-                    format=format_label,
-                    current=int(current),
-                    total=int(total),
-                    frame=str(frame_name or ""),
-                )
-            )
-            QApplication.processEvents()
-
-        config_payload = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
-        enabled_error_types = tuple(
-            str(item) for item in (config_payload.get("enabled_error_types") or ()) if str(item)
-        )
-        try:
-            if selected_format in {"bmp_canvas", "bmp_overlay_canvas"} and canvas_size is not None:
-                result = export_grid_cell_defect_canvas(
-                    state.build_result,
-                    {str(key): value for key, value in payloads.items()},
-                    export_folder,
-                    canvas_width=canvas_size[0],
-                    canvas_height=canvas_size[1],
-                    frames_per_row=canvas_columns,
-                    records=target_records,
-                    render_record_keys=render_record_keys,
-                    enabled_reason_types=enabled_error_types or None,
-                    overlay_errors_on_source_mask=selected_format == "bmp_overlay_canvas",
-                    file_name="check_matrix_errors.bmp"
-                    if selected_format == "bmp_overlay_canvas"
-                    else "check_matrix.bmp",
-                    progress_callback=on_progress,
-                    cancel_check=progress.wasCanceled,
-                )
-            else:
-                result = export_grid_cell_defect_bmps(
-                    state.build_result,
-                    {str(key): value for key, value in payloads.items()},
-                    export_folder,
-                    records=target_records,
-                    render_record_keys=render_record_keys,
-                    image_format=selected_format,
-                    enabled_reason_types=enabled_error_types or None,
-                    progress_callback=on_progress,
-                    cancel_check=progress.wasCanceled,
-                )
-        except Exception as error:
-            progress.close()
-            QMessageBox.warning(self._view, self._t("dialog.warning_title"), str(error))
-            return
-        progress.close()
-        if bool(result.get("cancelled", False)):
-            return
-        count = int(result.get("exported_count", 0))
-        skipped = int(result.get("skipped_count", 0))
-        destination = str(result.get("destination") or "")
-        if count <= 0:
-            errors = tuple(result.get("errors", ()) or ())
-            message = (
-                "\n".join(str(item) for item in errors[:10]) if errors else self._t("message.no_grid_check_results")
-            )
-            QMessageBox.warning(self._view, self._t("dialog.warning_title"), message)
-            return
-        if selected_format in {"bmp_canvas", "bmp_overlay_canvas"} and canvas_size is not None:
-            message_key = (
-                "message.export_grid_check_overlay_canvas_done"
-                if selected_format == "bmp_overlay_canvas"
-                else "message.export_grid_check_canvas_done"
-            )
-            message = self._t(
-                message_key,
-                width=canvas_size[0],
-                height=canvas_size[1],
-                skipped=skipped,
-                file=destination,
-            )
-        else:
-            message = self._t(
-                "message.export_grid_check_bmps_done",
-                format=format_label,
-                count=count,
-                skipped=skipped,
-                folder=destination,
-            )
-        QMessageBox.information(self._view, self._t("dialog.info_title"), message)
-
     def _store_details_view_payload(self, payload: dict[str, object]) -> None:
         self._details_view_payload = dict(payload or {})
         self._settings_service.save_details_view_payload(self._details_view_payload)
@@ -8297,8 +7722,6 @@ class KarakalPresenter(QObject):
         self.btn_clear_folders.setEnabled(self.folder_list.count() > 0 and not is_busy)
         self.btn_set_original.setEnabled(not is_busy)
         self.btn_clear_original.setEnabled(self._original_folder is not None and not is_busy)
-        self.btn_set_export.setEnabled(not is_busy)
-        self.btn_clear_export.setEnabled(self._export_folder is not None and not is_busy)
         can_start_build = active_model_count >= required_model_count or can_build_from_base_only
         self.btn_build.setEnabled((current_state is not None or can_start_build) and not is_busy)
         self.btn_compute.setEnabled(current_state is not None and not is_busy)
@@ -8310,15 +7733,6 @@ class KarakalPresenter(QObject):
             self.btn_export_layer.setEnabled(
                 current_state is not None and bool(getattr(current_state.build_result, "records", ())) and not is_busy
             )
-        if hasattr(self, "btn_export_grid_checks"):
-            grid_mode = self._current_app_mode() == "grid_inspection"
-            has_grid_payloads = (
-                bool(getattr(current_state, "grid_inspection_payload_by_key", {}) or {})
-                if current_state is not None
-                else False
-            )
-            self.btn_export_grid_checks.setVisible(grid_mode)
-            self.btn_export_grid_checks.setEnabled(grid_mode and has_grid_payloads and not is_busy)
         self.btn_cancel.setEnabled(is_busy)
         report = self._refresh_analysis_preflight()
         if hasattr(self._view, "set_analysis_profile_availability"):

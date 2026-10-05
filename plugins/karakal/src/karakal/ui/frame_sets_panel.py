@@ -1,7 +1,8 @@
 """Panel that opens under the matrix gradient: drop rules, frame sets and export.
 
 The panel only shows state and reports what the user did; the presenter side
-(``app/frame_sets_controller.py``) owns the rules and sets.
+(``app/frame_sets_controller.py``) owns the rules and sets. The badge above the
+matrix tells which set the matrix shows while the panel is closed.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QSizePolicy,
     QSlider,
-    QSpinBox,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
 )
 
 from ..core.frame_set_export import FRAME_ITEMS
-from ..core.frame_sets import RULE_MODE_PERCENTILE, RULE_MODE_SCALE
 from .i18n import Translator
 
 SLIDER_STEPS = 1000
@@ -42,6 +41,24 @@ def _heading(text: str, parent: QWidget) -> QLabel:
     label = QLabel(text, parent)
     label.setProperty("role", "heading")
     label.setStyleSheet("font-weight: 700;")
+    return label
+
+
+def _count_grid() -> QGridLayout:
+    """Rows of name | number | ✕; the numbers stand in one column next to the names."""
+
+    grid = QGridLayout()
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(10)
+    grid.setVerticalSpacing(2)
+    grid.setColumnStretch(3, 1)
+    return grid
+
+
+def _count_label(count: int, parent: QWidget) -> QLabel:
+    label = QLabel(str(int(count)), parent)
+    label.setStyleSheet(_MUTED + " font-family: Consolas, monospace;")
+    label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     return label
 
 
@@ -83,10 +100,44 @@ class FrameSetsSlider(QWidget):
         self.slider.blockSignals(False)
 
 
-class FrameSetsPanel(QWidget):
-    """Drop controls, frame sets, defect sets and export steps."""
+class FrameSetsViewBadge(QFrame):
+    """Strip above the matrix: which set is shown, with a way back to the whole run."""
 
-    modeChanged = pyqtSignal(str)
+    resetRequested = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._i18n = Translator()
+        self.setObjectName("frameSetsViewBadge")
+        self.setStyleSheet(
+            "#frameSetsViewBadge { background: #1d3550; border: 1px solid #3d6a99; border-radius: 4px; }"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 3, 4, 3)
+        layout.setSpacing(8)
+        self.text_label = QLabel(self)
+        self.text_label.setStyleSheet("color: #e3eefa;")
+        self.reset_button = QToolButton(self)
+        self.reset_button.setAutoRaise(True)
+        self.reset_button.setText("✕ " + self._i18n.tr("frame_sets.badge.reset"))
+        layout.addWidget(self.text_label, stretch=1)
+        layout.addWidget(self.reset_button)
+        self.reset_button.clicked.connect(self.resetRequested.emit)
+        self.setVisible(False)
+
+    def show_view(self, name: str, count: int, total: int) -> None:
+        self.text_label.setText(
+            self._i18n.tr("frame_sets.badge.text", name=name, count=int(count), total=int(total))
+        )
+        self.setVisible(True)
+
+    def clear(self) -> None:
+        self.setVisible(False)
+
+
+class FrameSetsPanel(QWidget):
+    """Drop controls, frame sets and export steps."""
+
     applyRequested = pyqtSignal()
     invertRequested = pyqtSignal()
     ruleToggled = pyqtSignal(int, bool)
@@ -97,8 +148,6 @@ class FrameSetsPanel(QWidget):
     addSelectedRequested = pyqtSignal(str)
     selectShownRequested = pyqtSignal()
     clearSelectionRequested = pyqtSignal()
-    defectOptionsChanged = pyqtSignal()
-    defectSetRequested = pyqtSignal()
     exportOpened = pyqtSignal()
     exportChoicesChanged = pyqtSignal()
     exportBrowseRequested = pyqtSignal()
@@ -117,14 +166,6 @@ class FrameSetsPanel(QWidget):
 
         controls = QHBoxLayout()
         controls.setSpacing(8)
-        self.mode_scale_button = QPushButton(self._t("frame_sets.mode.scale"), self)
-        self.mode_percentile_button = QPushButton(self._t("frame_sets.mode.percentile"), self)
-        self._mode_group = QButtonGroup(self)
-        for button in (self.mode_scale_button, self.mode_percentile_button):
-            button.setCheckable(True)
-            self._mode_group.addButton(button)
-            controls.addWidget(button)
-        self.mode_scale_button.setChecked(True)
         self.threshold_label = QLabel(self)
         self.threshold_label.setWordWrap(True)
         self.threshold_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -146,8 +187,6 @@ class FrameSetsPanel(QWidget):
         self.pages.addWidget(self._build_export_page())
         root.addWidget(self.pages)
 
-        self.mode_scale_button.clicked.connect(lambda: self.modeChanged.emit(RULE_MODE_SCALE))
-        self.mode_percentile_button.clicked.connect(lambda: self.modeChanged.emit(RULE_MODE_PERCENTILE))
         self.apply_button.clicked.connect(self.applyRequested.emit)
         self.invert_button.clicked.connect(lambda _checked: self.invertRequested.emit())
         self.set_pending_count(0)
@@ -170,16 +209,18 @@ class FrameSetsPanel(QWidget):
 
         rules_column, rules_layout = self._column(page)
         rules_layout.addWidget(_heading(self._t("frame_sets.rules.title"), rules_column))
-        self.rules_box = QVBoxLayout()
-        self.rules_box.setSpacing(3)
+        self.rules_box = _count_grid()
         rules_layout.addLayout(self.rules_box)
         rules_layout.addStretch(1)
 
         sets_column, sets_layout = self._column(page)
         sets_layout.addWidget(_heading(self._t("frame_sets.sets.title"), sets_column))
-        self.sets_box = QVBoxLayout()
-        self.sets_box.setSpacing(2)
+        self.sets_box = _count_grid()
         sets_layout.addLayout(self.sets_box)
+        self.view_note = QLabel(sets_column)
+        self.view_note.setWordWrap(True)
+        self.view_note.setStyleSheet(_MUTED)
+        sets_layout.addWidget(self.view_note)
         self._view_group = QButtonGroup(self)
         self._view_group.setExclusive(True)
         target_row = QHBoxLayout()
@@ -197,29 +238,14 @@ class FrameSetsPanel(QWidget):
         sets_layout.addLayout(selection_row)
         sets_layout.addStretch(1)
 
-        defects_column, defects_layout = self._column(page)
-        defects_layout.addWidget(_heading(self._t("frame_sets.defects.title"), defects_column))
-        defect_row = QHBoxLayout()
-        self.defect_type_combo = QComboBox(defects_column)
-        self.defect_min_spin = QSpinBox(defects_column)
-        self.defect_min_spin.setRange(1, 9999)
-        self.defect_min_spin.setValue(1)
-        defect_row.addWidget(self.defect_type_combo, stretch=1)
-        defect_row.addWidget(QLabel(self._t("frame_sets.defects.at_least"), defects_column))
-        defect_row.addWidget(self.defect_min_spin)
-        defects_layout.addLayout(defect_row)
-        self.defect_only_kept_check = QCheckBox(self._t("frame_sets.defects.only_kept"), defects_column)
-        defects_layout.addWidget(self.defect_only_kept_check)
-        self.defect_set_button = QPushButton(defects_column)
-        defects_layout.addWidget(self.defect_set_button)
-        defects_layout.addSpacing(8)
-        defects_layout.addWidget(_heading(self._t("frame_sets.export.heading"), defects_column))
-        self.open_export_button = QPushButton(self._t("frame_sets.export.open"), defects_column)
+        export_column, export_layout = self._column(page)
+        export_layout.addWidget(_heading(self._t("frame_sets.export.heading"), export_column))
+        self.open_export_button = QPushButton(self._t("frame_sets.export.open"), export_column)
         self.open_export_button.setStyleSheet("font-weight: 700;")
-        defects_layout.addWidget(self.open_export_button)
-        defects_layout.addStretch(1)
+        export_layout.addWidget(self.open_export_button)
+        export_layout.addStretch(1)
 
-        for index, column in enumerate((rules_column, sets_column, defects_column)):
+        for index, column in enumerate((rules_column, sets_column, export_column)):
             grid.addWidget(column, 0, index)
             grid.setColumnStretch(index, 1)
 
@@ -228,10 +254,6 @@ class FrameSetsPanel(QWidget):
         )
         self.select_shown_button.clicked.connect(self.selectShownRequested.emit)
         self.clear_selection_button.clicked.connect(self.clearSelectionRequested.emit)
-        self.defect_type_combo.currentIndexChanged.connect(lambda _index: self.defectOptionsChanged.emit())
-        self.defect_min_spin.valueChanged.connect(lambda _value: self.defectOptionsChanged.emit())
-        self.defect_only_kept_check.toggled.connect(lambda _checked: self.defectOptionsChanged.emit())
-        self.defect_set_button.clicked.connect(self.defectSetRequested.emit)
         self.open_export_button.clicked.connect(self._open_export)
         return page
 
@@ -253,8 +275,7 @@ class FrameSetsPanel(QWidget):
         grid.setHorizontalSpacing(16)
         sets_column, sets_layout = self._column(page)
         sets_layout.addWidget(_heading(self._t("frame_sets.export.step_sets"), sets_column))
-        self.export_sets_box = QVBoxLayout()
-        self.export_sets_box.setSpacing(2)
+        self.export_sets_box = _count_grid()
         sets_layout.addLayout(self.export_sets_box)
         sets_layout.addStretch(1)
         self._export_set_group = QButtonGroup(self)
@@ -268,6 +289,12 @@ class FrameSetsPanel(QWidget):
             check.toggled.connect(lambda _checked: self.exportChoicesChanged.emit())
             self.item_checks[item] = check
             items_layout.addWidget(check)
+            if item == "errors":
+                self.fill_black_check = QCheckBox(self._t("frame_sets.item.fill_black"), items_column)
+                self.fill_black_check.setToolTip(self._t("frame_sets.item.fill_black_hint"))
+                self.fill_black_check.setStyleSheet("margin-left: 18px;")
+                self.fill_black_check.toggled.connect(lambda _checked: self.exportChoicesChanged.emit())
+                items_layout.addWidget(self.fill_black_check)
         summary_label = QLabel(self._t("frame_sets.export.summary_items"), items_column)
         summary_label.setStyleSheet(_MUTED + " font-weight: 600;")
         items_layout.addWidget(summary_label)
@@ -334,13 +361,6 @@ class FrameSetsPanel(QWidget):
 
     # Threshold ---------------------------------------------------------------
 
-    def mode(self) -> str:
-        return RULE_MODE_PERCENTILE if self.mode_percentile_button.isChecked() else RULE_MODE_SCALE
-
-    def set_mode(self, mode: str) -> None:
-        button = self.mode_percentile_button if mode == RULE_MODE_PERCENTILE else self.mode_scale_button
-        button.setChecked(True)
-
     def set_threshold_text(self, text: str) -> None:
         self.threshold_label.setText(text)
 
@@ -364,36 +384,32 @@ class FrameSetsPanel(QWidget):
             hint = QLabel(self._t("frame_sets.rules.empty"), parent)
             hint.setWordWrap(True)
             hint.setStyleSheet(_MUTED)
-            self.rules_box.addWidget(hint)
+            self.rules_box.addWidget(hint, 0, 0, 1, 4)
             return
-        for rule_id, label, count, enabled in rows:
-            self.rules_box.addLayout(
-                self._rule_row(parent, label, count, enabled, rule_id=rule_id)
-            )
+        for index, (rule_id, label, count, enabled) in enumerate(rows):
+            self._rule_row(parent, index, label, count, enabled, rule_id=rule_id)
         if manual_count:
-            self.rules_box.addLayout(
-                self._rule_row(parent, self._t("frame_sets.rules.manual"), manual_count, True, rule_id=None)
+            self._rule_row(
+                parent, len(rows), self._t("frame_sets.rules.manual"), manual_count, True, rule_id=None
             )
 
-    def _rule_row(self, parent: QWidget, label: str, count: int, enabled: bool, *, rule_id: int | None):
-        row = QHBoxLayout()
+    def _rule_row(
+        self, parent: QWidget, index: int, label: str, count: int, enabled: bool, *, rule_id: int | None
+    ) -> None:
         check = QCheckBox(label, parent)
         check.setChecked(bool(enabled))
-        count_label = QLabel(str(int(count)), parent)
-        count_label.setStyleSheet(_MUTED + " font-family: Consolas, monospace;")
         remove = QToolButton(parent)
         remove.setText("✕")
         remove.setToolTip(self._t("frame_sets.rules.remove"))
-        row.addWidget(check, stretch=1)
-        row.addWidget(count_label)
-        row.addWidget(remove)
+        self.rules_box.addWidget(check, index, 0)
+        self.rules_box.addWidget(_count_label(count, parent), index, 1)
+        self.rules_box.addWidget(remove, index, 2)
         if rule_id is None:
             check.setEnabled(False)
             remove.clicked.connect(self.manualCleared.emit)
         else:
             check.toggled.connect(lambda checked, value=rule_id: self.ruleToggled.emit(value, bool(checked)))
             remove.clicked.connect(lambda _checked=False, value=rule_id: self.ruleRemoved.emit(value))
-        return row
 
     # Sets --------------------------------------------------------------------
 
@@ -404,25 +420,25 @@ class FrameSetsPanel(QWidget):
         for button in list(self._view_group.buttons()):
             self._view_group.removeButton(button)
         parent = self.sets_box.parentWidget() or self
-        for view_id, name, count, removable in rows:
-            row = QHBoxLayout()
+        for index, (view_id, name, count, removable) in enumerate(rows):
             radio = QRadioButton(name, parent)
             radio.setChecked(view_id == active_view)
             self._view_group.addButton(radio)
             radio.toggled.connect(
                 lambda checked, value=view_id: self.viewChosen.emit(value) if checked else None
             )
-            count_label = QLabel(str(int(count)), parent)
-            count_label.setStyleSheet(_MUTED + " font-family: Consolas, monospace;")
-            row.addWidget(radio, stretch=1)
-            row.addWidget(count_label)
+            self.sets_box.addWidget(radio, index, 0)
+            self.sets_box.addWidget(_count_label(count, parent), index, 1)
             if removable:
                 remove = QToolButton(parent)
                 remove.setText("✕")
                 remove.setToolTip(self._t("frame_sets.sets.remove"))
                 remove.clicked.connect(lambda _checked=False, value=view_id: self.setRemoved.emit(value))
-                row.addWidget(remove)
-            self.sets_box.addLayout(row)
+                self.sets_box.addWidget(remove, index, 2)
+
+    def set_view_note(self, text: str) -> None:
+        self.view_note.setText(text)
+        self.view_note.setVisible(bool(text))
 
     def set_targets(self, targets: list[tuple[str, str]]) -> None:
         current = self.target_combo.currentData()
@@ -439,34 +455,6 @@ class FrameSetsPanel(QWidget):
         self.add_selected_button.setText(self._t("frame_sets.add_selected", count=int(count)))
         self.add_selected_button.setEnabled(int(count) > 0)
         self.clear_selection_button.setEnabled(int(count) > 0)
-
-    # Defects -----------------------------------------------------------------
-
-    def set_defect_types(self, options: list[tuple[str, str]]) -> None:
-        current = self.defect_type_combo.currentData()
-        self.defect_type_combo.blockSignals(True)
-        self.defect_type_combo.clear()
-        for value, label in options:
-            self.defect_type_combo.addItem(label, value)
-        index = self.defect_type_combo.findData(current)
-        self.defect_type_combo.setCurrentIndex(max(0, index))
-        self.defect_type_combo.blockSignals(False)
-
-    def defect_type(self) -> str:
-        return str(self.defect_type_combo.currentData() or "")
-
-    def defect_type_label(self) -> str:
-        return str(self.defect_type_combo.currentText() or "")
-
-    def defect_min(self) -> int:
-        return int(self.defect_min_spin.value())
-
-    def defect_only_kept(self) -> bool:
-        return bool(self.defect_only_kept_check.isChecked())
-
-    def set_defect_preview_count(self, count: int) -> None:
-        self.defect_set_button.setText(self._t("frame_sets.defects.show", count=int(count)))
-        self.defect_set_button.setEnabled(int(count) > 0)
 
     # Export ------------------------------------------------------------------
 
@@ -489,19 +477,15 @@ class FrameSetsPanel(QWidget):
         for button in list(self._export_set_group.buttons()):
             self._export_set_group.removeButton(button)
         parent = self.export_sets_box.parentWidget() or self
-        for view_id, name, count in rows:
-            row = QHBoxLayout()
+        for index, (view_id, name, count) in enumerate(rows):
             radio = QRadioButton(name, parent)
             radio.setProperty("view_id", view_id)
             radio.setChecked(view_id == chosen)
             radio.setEnabled(int(count) > 0)
             self._export_set_group.addButton(radio)
             radio.toggled.connect(lambda checked: self.exportChoicesChanged.emit() if checked else None)
-            count_label = QLabel(str(int(count)), parent)
-            count_label.setStyleSheet(_MUTED + " font-family: Consolas, monospace;")
-            row.addWidget(radio, stretch=1)
-            row.addWidget(count_label)
-            self.export_sets_box.addLayout(row)
+            self.export_sets_box.addWidget(radio, index, 0)
+            self.export_sets_box.addWidget(_count_label(count, parent), index, 1)
 
     def export_set_id(self) -> str:
         button = self._export_set_group.checkedButton()
@@ -510,15 +494,23 @@ class FrameSetsPanel(QWidget):
     def export_items(self) -> frozenset[str]:
         return frozenset(item for item, check in self.item_checks.items() if check.isChecked())
 
-    def set_export_items(self, items, *, canvas: bool, table: bool) -> None:
+    def set_export_items(self, items, *, canvas: bool, table: bool, fill_black: bool = False) -> None:
         for item, check in self.item_checks.items():
             check.blockSignals(True)
             check.setChecked(item in set(items))
             check.blockSignals(False)
-        for check, value in ((self.canvas_check, canvas), (self.table_check, table)):
+        for check, value in ((self.canvas_check, canvas), (self.table_check, table), (self.fill_black_check, fill_black)):
             check.blockSignals(True)
             check.setChecked(bool(value))
             check.blockSignals(False)
+
+    def export_fill_black(self) -> bool:
+        return bool(self.fill_black_check.isChecked())
+
+    def set_fill_black_available(self, available: bool) -> None:
+        """Black frames make sense only for the errors folder and a set smaller than the run."""
+
+        self.fill_black_check.setEnabled(bool(available))
 
     def export_canvas(self) -> bool:
         return bool(self.canvas_check.isChecked())

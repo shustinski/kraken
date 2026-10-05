@@ -1,9 +1,10 @@
 """Frame filtering rules and frame sets for the grid inspection matrix.
 
 The matrix shows every frame of a run. The user narrows the work down without
-recomputing anything: threshold rules drop the worst frames, single frames can
-be dropped by hand, and the drop can be inverted so that only the dropped
-frames take part. Named sets keep any list of frames for viewing and export.
+recomputing anything: threshold rules on the colour scale drop the worst
+frames, single frames can be dropped by hand, and the drop can be inverted so
+that only the dropped frames take part. Named sets keep any list of frames for
+viewing and export.
 
 Scores here are frame qualities in 0..1, higher is better (the same value the
 matrix colours by). A rule drops every frame whose quality is below its cutoff.
@@ -19,16 +20,12 @@ VIEW_DROPPED = "dropped"
 VIEW_SELECTED = "selected"
 USER_SET_PREFIX = "set:"
 
-RULE_MODE_SCALE = "scale"
-RULE_MODE_PERCENTILE = "percentile"
-
 
 @dataclass(slots=True)
 class FrameFilterRule:
     """Drop frames whose quality is below ``cutoff``."""
 
     rule_id: int
-    mode: str
     position: float
     cutoff: float
     layer_label: str = ""
@@ -42,21 +39,6 @@ class FrameSet:
     set_id: int
     name: str
     keys: tuple[str, ...] = ()
-
-
-def percentile_cutoff(qualities: dict[str, float], worst_percent: float) -> float:
-    """Return the quality cutoff that drops roughly the worst ``worst_percent`` of frames."""
-
-    values = sorted(float(value) for value in qualities.values())
-    if not values:
-        return 0.0
-    count = int(round(len(values) * max(0.0, min(float(worst_percent), 100.0)) / 100.0))
-    if count <= 0:
-        return values[0]
-    if count >= len(values):
-        return values[-1] + 1e-9
-    # Frames strictly below the cutoff are dropped; ties at the border stay.
-    return values[count]
 
 
 def frames_below(qualities: dict[str, float], cutoff: float) -> set[str]:
@@ -84,8 +66,8 @@ class FrameSetModel:
 
     # Rules -----------------------------------------------------------------
 
-    def add_rule(self, mode: str, position: float, cutoff: float, layer_label: str = "") -> FrameFilterRule:
-        rule = FrameFilterRule(self._take_id(), str(mode), float(position), float(cutoff), str(layer_label))
+    def add_rule(self, position: float, cutoff: float, layer_label: str = "") -> FrameFilterRule:
+        rule = FrameFilterRule(self._take_id(), float(position), float(cutoff), str(layer_label))
         self.rules.append(rule)
         return rule
 

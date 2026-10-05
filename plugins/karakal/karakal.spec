@@ -19,10 +19,12 @@ _datas = [
     ('src\\karakal\\resources\\icons\\karakal.ico', 'karakal/resources/icons'),
     ('src\\karakal\\resources\\icons\\karakal.png', 'karakal/resources/icons'),
     ('resources\\update_client.json', 'resources'),
+    ('CHANGELOG.md', 'resources'),
 ]
-if _tester:
-    _profile_file.write_text(f"tester\n{_version}\n", encoding="utf-8")
-    _datas.append((str(_profile_file), "resources"))
+# Every build carries its profile and version: the window title, "What's new" and the
+# updater read the version from here.
+_profile_file.write_text(f"{'tester' if _tester else 'dev'}\n{_version}\n", encoding="utf-8")
+_datas.append((str(_profile_file), "resources"))
 _exe_name = f"karakal-{_version}" if _tester else "karakal"
 
 a = Analysis(

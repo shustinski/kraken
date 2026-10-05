@@ -43,9 +43,11 @@ __all__ = [
     "KARAKAL_UPDATE_SETTINGS_APP",
     "KARAKAL_UPDATE_SETTINGS_ORG",
     "__version__",
+    "configured_karakal_update_root",
     "create_karakal_update_controller",
     "default_karakal_update_channel",
     "follow_update_root_moves",
+    "karakal_changelog_path",
     "karakal_settings_ini_path",
     "karakal_update_client_config_path",
     "load_karakal_last_update_check",
@@ -78,6 +80,14 @@ def karakal_resources_root() -> Path:
 
 def karakal_update_client_config_path() -> Path:
     return karakal_resources_root() / KARAKAL_UPDATE_CLIENT_FILENAME
+
+
+def karakal_changelog_path() -> Path:
+    """CHANGELOG.md: bundled into resources of a build, at the plugin root in sources."""
+
+    if bool(getattr(sys, "frozen", False)):
+        return karakal_resources_root() / "CHANGELOG.md"
+    return Path(__file__).resolve().parents[2] / "CHANGELOG.md"
 
 
 def karakal_settings_ini_path() -> Path:
@@ -118,8 +128,22 @@ def load_karakal_update_root(*, allow_default: bool = True) -> str:
                 return default_root
     except Exception:
         pass
+    if not allow_default:
+        return ""
     build_default = str(os.getenv("KARAKAL_UPDATE_ROOT_DEFAULT", "")).strip()
-    return build_default if allow_default else ""
+    return build_default or configured_karakal_update_root()
+
+
+def configured_karakal_update_root() -> str:
+    """``update_root`` of resources/update_client.json: the network folder baked into the build."""
+
+    try:
+        payload = json.loads(karakal_update_client_config_path().read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("update_root", "") or "").strip()
 
 
 def save_karakal_update_root(root: str) -> None:

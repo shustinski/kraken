@@ -25,8 +25,6 @@ from ..core.frame_set_export import (
     preview_frame_set_export,
 )
 from ..core.frame_sets import (
-    RULE_MODE_PERCENTILE,
-    RULE_MODE_SCALE,
     USER_SET_PREFIX,
     VIEW_ALL,
     VIEW_DROPPED,
@@ -34,14 +32,13 @@ from ..core.frame_sets import (
     VIEW_SELECTED,
     FrameSetModel,
     frames_below,
-    percentile_cutoff,
 )
 from ..ui.frame_sets_panel import SLIDER_STEPS, FrameSetsPanel, FrameSetsSlider
 from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_OPTIONS
 
 _LOGGER = logging.getLogger(__name__)
 REFRESH_DEBOUNCE_MS = 120
-# Frame-level defect filters offered in the panel (zones are not defects of a cell).
+# Defect types drawn and counted in the export (zones are not defects of a cell).
 _DEFECT_FILTER_SKIP = {"conductor_zone"}
 
 
@@ -88,10 +85,12 @@ class FrameSetsController(QObject):
         self.matrix = view.grid_inspection_matrix_views["unified"]
         self.slider = FrameSetsSlider(self.legend)
         self.panel = FrameSetsPanel(self.legend)
+        self.badge = getattr(view, "grid_inspection_view_badge", None)
         self.legend.attach_expansion(self.slider, self.panel)
         self._export_items = frozenset({ITEM_ERRORS, ITEM_MASK})
         self._export_canvas = False
         self._export_table = True
+        self._export_fill_black = False
         self._export_set_id = ""
         self._last_report = None
         self._export_thread: QThread | None = None
@@ -100,14 +99,12 @@ class FrameSetsController(QObject):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(REFRESH_DEBOUNCE_MS)
         self._refresh_timer.timeout.connect(self.refresh)
-        self.panel.set_defect_types(
-            [
-                (value, self._t(label_key))
-                for label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS
-                if value not in _DEFECT_FILTER_SKIP
-            ]
+        self.panel.set_export_items(
+            self._export_items,
+            canvas=self._export_canvas,
+            table=self._export_table,
+            fill_black=self._export_fill_black,
         )
-        self.panel.set_export_items(self._export_items, canvas=self._export_canvas, table=self._export_table)
         self._connect()
 
     # Wiring ------------------------------------------------------------------
@@ -118,7 +115,6 @@ class FrameSetsController(QObject):
         self.matrix.rangeSelectionChanged.connect(lambda _count: self.schedule_refresh())
         self.legend.expandToggled.connect(lambda _expanded: self.refresh())
         self.slider.valueChanged.connect(lambda _value: self._refresh_threshold())
-        panel.modeChanged.connect(self._on_mode_changed)
         panel.applyRequested.connect(self._apply_rule)
         panel.invertRequested.connect(self._toggle_invert)
         panel.ruleToggled.connect(self._on_rule_toggled)
@@ -129,14 +125,14 @@ class FrameSetsController(QObject):
         panel.addSelectedRequested.connect(self._add_selected)
         panel.selectShownRequested.connect(self._select_shown)
         panel.clearSelectionRequested.connect(lambda: self.matrix.set_range_selected_keys(()))
-        panel.defectOptionsChanged.connect(self._refresh_panel)
-        panel.defectSetRequested.connect(self._make_defect_set)
         panel.exportOpened.connect(self._on_export_opened)
         panel.exportChoicesChanged.connect(self._on_export_choices_changed)
         panel.exportBrowseRequested.connect(self._browse_output_dir)
         panel.exportRequested.connect(self._run_export)
         panel.openFolderRequested.connect(self._open_export_folder)
         panel.showReportRequested.connect(self._open_export_report)
+        if self.badge is not None:
+            self.badge.resetRequested.connect(lambda: self._on_view_chosen(VIEW_ALL))
 
     def schedule_refresh(self) -> None:
         self._refresh_timer.start()
@@ -181,16 +177,18 @@ class FrameSetsController(QObject):
             self.matrix.set_participating_keys(None)
             self.matrix.set_pending_drop_keys(())
             self.legend.set_threshold_marker(None)
+            if self.badge is not None:
+                self.badge.clear()
             return
         model = self._model(state)
         qualities = self._qualities()
         if not model.has_filter():
             model.frozen_window = None
         self.matrix.set_frozen_color_window(model.frozen_window)
-        participating = model.participating_keys(
-            self._all_keys(state), qualities, self.matrix.range_selected_keys()
-        )
+        all_keys = self._all_keys(state)
+        participating = model.participating_keys(all_keys, qualities, self.matrix.range_selected_keys())
         self.matrix.set_participating_keys(participating)
+        self._refresh_badge(state, participating, all_keys)
         if participating != state.frame_set_participating:
             state.frame_set_participating = None if participating is None else set(participating)
             state.frame_set_version += 1
@@ -199,12 +197,46 @@ class FrameSetsController(QObject):
         self._refresh_panel()
         self._refresh_cards()
 
+    def _view_name(self, model: FrameSetModel, view_id: str) -> str:
+        names = {
+            VIEW_ALL: self._t("frame_sets.sets.all"),
+            VIEW_KEPT: self._t("frame_sets.sets.kept_inverted" if model.inverted else "frame_sets.sets.kept"),
+            VIEW_DROPPED: self._t("frame_sets.sets.dropped"),
+            VIEW_SELECTED: self._t("frame_sets.sets.selected"),
+        }
+        if view_id in names:
+            return names[view_id]
+        for item in model.user_sets:
+            if view_id == f"{USER_SET_PREFIX}{item.set_id}":
+                return item.name
+        return ""
+
+    def _refresh_badge(self, state, participating, all_keys) -> None:
+        """Strip above the matrix, shown whenever only a part of the run is bright."""
+
+        if self.badge is None:
+            return
+        if participating is None:
+            self.badge.clear()
+            return
+        model = self._model(state)
+        self.badge.show_view(self._view_name(model, model.view_id), len(participating), len(all_keys))
+
+    def _view_note(self, participating, all_keys) -> str:
+        """What the chosen set does to the matrix, in words."""
+
+        total = len(all_keys)
+        if participating is None:
+            return self._t("frame_sets.view_note.all", total=total)
+        count = len(participating & all_keys)
+        if count == 0:
+            return self._t("frame_sets.view_note.empty")
+        return self._t("frame_sets.view_note.part", count=count, rest=total - count)
+
     def _cutoff(self, qualities: dict[str, float]) -> float | None:
         value = self.slider.value()
         if value <= 0 or not qualities:
             return None
-        if self.panel.mode() == RULE_MODE_PERCENTILE:
-            return percentile_cutoff(qualities, value * 100.0 / SLIDER_STEPS)
         return self.matrix.quality_for_palette_position(value / SLIDER_STEPS)
 
     def _refresh_panel(self) -> None:
@@ -227,9 +259,9 @@ class FrameSetsController(QObject):
             len(model.manual_dropped),
         )
         self.panel.set_sets(self._set_rows(state, qualities, all_keys, selected, removable=True), model.view_id)
+        self.panel.set_view_note(self._view_note(model.participating_keys(all_keys, qualities, selected), all_keys))
         self.panel.set_targets([(f"{USER_SET_PREFIX}{item.set_id}", item.name) for item in model.user_sets])
         self.panel.set_selected_count(len(selected))
-        self.panel.set_defect_preview_count(len(self._defect_keys(state, qualities)))
         if self.panel.export_open():
             self._refresh_export(state, qualities, all_keys, selected)
 
@@ -243,31 +275,21 @@ class FrameSetsController(QObject):
         qualities = self._qualities() if qualities is None else qualities
         dropped = model.dropped_keys(qualities)
         cutoff = self._cutoff(qualities)
-        mode = self.panel.mode()
         if cutoff is None:
             pending: set[str] = set()
-            marker = None if mode == RULE_MODE_PERCENTILE else 0.0
+            marker = 0.0
             text = self._t("frame_sets.threshold.none" if qualities else "frame_sets.threshold.no_results")
         else:
             below = frames_below(qualities, cutoff)
             pending = below - dropped
             share = len(below) / max(1, len(qualities))
-            if mode == RULE_MODE_PERCENTILE:
-                marker = self.matrix.palette_position_for_quality(cutoff)
-                text = self._t(
-                    "frame_sets.threshold.percentile",
-                    percent=f"{self.slider.value() * 100.0 / SLIDER_STEPS:.1f}%",
-                    count=len(below),
-                    quality=_percent(cutoff),
-                )
-            else:
-                marker = self.slider.value() / SLIDER_STEPS
-                text = self._t(
-                    "frame_sets.threshold.scale",
-                    quality=_percent(cutoff),
-                    count=len(below),
-                    share=f"{share * 100.0:.1f}%",
-                )
+            marker = self.slider.value() / SLIDER_STEPS
+            text = self._t(
+                "frame_sets.threshold.scale",
+                quality=_percent(cutoff),
+                count=len(below),
+                share=f"{share * 100.0:.1f}%",
+            )
         self.legend.set_threshold_marker(marker)
         self.matrix.set_pending_drop_keys(pending)
         self.panel.set_threshold_text(text)
@@ -275,14 +297,7 @@ class FrameSetsController(QObject):
         return dropped
 
     def _rule_label(self, rule) -> str:
-        if rule.mode == RULE_MODE_PERCENTILE:
-            label = self._t(
-                "frame_sets.rule.percentile",
-                percent=f"{rule.position * 100.0 / SLIDER_STEPS:.1f}%",
-                quality=_percent(rule.cutoff),
-            )
-        else:
-            label = self._t("frame_sets.rule.scale", quality=_percent(rule.cutoff))
+        label = self._t("frame_sets.rule.scale", quality=_percent(rule.cutoff))
         return f"{label} · {rule.layer_label}" if rule.layer_label else label
 
     def _set_rows(self, state, qualities, all_keys, selected, *, removable: bool):
@@ -300,9 +315,6 @@ class FrameSetsController(QObject):
         return rows
 
     # Drop rules ----------------------------------------------------------------
-
-    def _on_mode_changed(self, _mode: str) -> None:
-        self._refresh_panel()
 
     def _ensure_frozen(self, model: FrameSetModel) -> None:
         if model.frozen_window is None:
@@ -322,7 +334,7 @@ class FrameSetsController(QObject):
             return
         model = self._model(state)
         self._ensure_frozen(model)
-        model.add_rule(self.panel.mode(), float(self.slider.value()), float(cutoff), self._layer_title())
+        model.add_rule(float(self.slider.value()), float(cutoff), self._layer_title())
         self._show_kept_after_drop(model)
         self.refresh()
 
@@ -405,7 +417,7 @@ class FrameSetsController(QObject):
         shown = state.frame_set_participating
         self.matrix.set_range_selected_keys(self._all_keys(state) if shown is None else shown)
 
-    # Defect sets ---------------------------------------------------------------
+    # Defect counts (results table of the export) -----------------------------
 
     def _defect_counts(self, state) -> dict[str, dict[str, int]]:
         payloads = getattr(state, "grid_inspection_payload_by_key", {}) or {}
@@ -426,31 +438,6 @@ class FrameSetsController(QObject):
             counts[str(key)] = frame_counts
         self._defect_cache = (signature[0], signature[1], counts)
         return counts
-
-    def _defect_keys(self, state, qualities) -> set[str]:
-        defect_type = self.panel.defect_type()
-        minimum = self.panel.defect_min()
-        keys = {
-            key for key, counts in self._defect_counts(state).items() if counts.get(defect_type, 0) >= minimum
-        }
-        if self.panel.defect_only_kept():
-            keys &= self._model(state).kept_keys(self._all_keys(state), qualities)
-        return keys
-
-    def _make_defect_set(self) -> None:
-        state = self._state()
-        if state is None:
-            return
-        keys = self._defect_keys(state, self._qualities())
-        if not keys:
-            return
-        model = self._model(state)
-        name = self._t(
-            "frame_sets.defects.set_name", label=self.panel.defect_type_label(), count=self.panel.defect_min()
-        )
-        frame_set = model.add_set(name, keys)
-        model.view_id = f"{USER_SET_PREFIX}{frame_set.set_id}"
-        self.refresh()
 
     # Frame card ----------------------------------------------------------------
 
@@ -527,6 +514,7 @@ class FrameSetsController(QObject):
         self._export_items = self.panel.export_items()
         self._export_canvas = self.panel.export_canvas()
         self._export_table = self.panel.export_table()
+        self._export_fill_black = self.panel.export_fill_black()
         QTimer.singleShot(0, self._refresh_panel)
 
     def _refresh_export(self, state, qualities, all_keys, selected) -> None:
@@ -544,6 +532,8 @@ class FrameSetsController(QObject):
         self.panel.set_export_sets(rows, self._export_set_id)
         self.panel.set_output_dir(str(self._output_dir()))
         plan = self._build_plan(state, qualities, all_keys, selected)
+        set_count = len(self._model(state).set_keys(self._export_set_id, all_keys, qualities, selected))
+        self.panel.set_fill_black_available(ITEM_ERRORS in plan.items and 0 < set_count < len(all_keys))
         has_items = bool(plan.items) or plan.canvas or plan.table
         if not plan.frames or not has_items:
             self.panel.set_export_preview("", self._t("frame_sets.export.nothing"), can_run=False)
@@ -587,10 +577,20 @@ class FrameSetsController(QObject):
         }
         counts = self._defect_counts(state)
         kept = model.kept_keys(all_keys, qualities)
+        fill_black = self._export_fill_black and ITEM_ERRORS in self._export_items
         frames = []
+        fill_frames = []
         for record in getattr(state.build_result, "records", ()) or ():
             key = str(record.key)
             if key not in keys:
+                if fill_black:
+                    fill_frames.append(
+                        FrameSetExportFrame(
+                            key=key,
+                            name=Path(str(record.display_name or key)).name,
+                            results={model_id: results_by_model[model_id].get(key) for model_id, _ in models},
+                        )
+                    )
                 continue
             position = self.matrix.record_position(key) or (-1, -1)
             frames.append(
@@ -634,6 +634,7 @@ class FrameSetsController(QObject):
             rules_text=tuple(self._rule_label(rule) for rule in model.rules if rule.enabled)
             + ((self._t("frame_sets.rules.manual") + f": {len(model.manual_dropped)}",) if model.manual_dropped else ())
             + ((self._t("frame_sets.inverted_note"),) if model.inverted else ()),
+            fill_frames=tuple(fill_frames) if frames else (),
         )
 
     def _browse_output_dir(self) -> None:
@@ -655,7 +656,11 @@ class FrameSetsController(QObject):
             return
         output_dir = self._output_dir()
         progress = QProgressDialog(
-            self._t("frame_sets.export.running"), self._t("common.cancel"), 0, max(1, len(plan.frames)), self._p._view
+            self._t("frame_sets.export.running"),
+            self._t("common.cancel"),
+            0,
+            max(1, len(plan.frames) + len(plan.fill_frames)),
+            self._p._view,
         )
         progress.setMinimumDuration(300)
         progress.setValue(0)

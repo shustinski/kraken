@@ -1,4 +1,5 @@
 {
+  "update_root": "D:/SVZH/ProgramStore",
   "default_channel": "stable",
   "channels": {
     "stable": "stable",

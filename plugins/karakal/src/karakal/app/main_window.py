@@ -46,6 +46,7 @@ from ..updater import (
     QtUpdateController,
     create_karakal_update_controller,
     follow_update_root_moves,
+    karakal_changelog_path,
     load_karakal_last_update_check,
     load_karakal_update_channel,
     load_karakal_update_client_config,
@@ -74,6 +75,7 @@ from ..core.features import (
 from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
+from ..ui.frame_sets_panel import FrameSetsViewBadge
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.profiling_dialog import ProfilingDialog
 from ..ui.history_dialog import StandaloneHistoryDialog
@@ -722,13 +724,6 @@ class KarakalWidget(QWidget):
         self.btn_export_layer.setToolTip(self._t("context.export_result_layer_jpgs_auto"))
         toolbar_layout.addWidget(self.btn_export_layer)
 
-        self.btn_export_grid_checks = QToolButton(folders_group)
-        self.btn_export_grid_checks.setAutoRaise(True)
-        self.btn_export_grid_checks.setProperty("toolbarButton", True)
-        self.btn_export_grid_checks.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon))
-        self.btn_export_grid_checks.setToolTip(self._t("context.export_grid_check_bmps_auto"))
-        self.btn_export_grid_checks.setVisible(False)
-        toolbar_layout.addWidget(self.btn_export_grid_checks)
 
         self.btn_cancel = QToolButton(folders_group)
         self.btn_cancel.setAutoRaise(True)
@@ -828,23 +823,6 @@ class KarakalWidget(QWidget):
         self.original_source_label = QLabel(self._t("sources.original"), source_group)
         source_layout.addRow(self.original_source_label, original_row)
 
-        export_row = QWidget(source_group)
-        export_row_layout = QHBoxLayout(export_row)
-        export_row_layout.setContentsMargins(0, 0, 0, 0)
-        export_row_layout.setSpacing(6)
-        self.export_folder_value = QLabel(self._t("sources.not_set"), export_row)
-        self.export_folder_value.setWordWrap(True)
-        self.export_folder_value.setMinimumWidth(0)
-        self.export_folder_value.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.btn_set_export = QToolButton(export_row)
-        self.btn_set_export.setText(self._t("common.set"))
-        self.btn_clear_export = QToolButton(export_row)
-        self.btn_clear_export.setText(self._t("common.clear"))
-        export_row_layout.addWidget(self.export_folder_value, stretch=1)
-        export_row_layout.addWidget(self.btn_set_export)
-        export_row_layout.addWidget(self.btn_clear_export)
-        self.export_source_label = QLabel(self._t("sources.export"), source_group)
-        source_layout.addRow(self.export_source_label, export_row)
         control_layout.addWidget(source_group)
 
         self.analysis_settings_group = QGroupBox(self._t("ui.analysis_setup"), control_host)
@@ -1127,6 +1105,8 @@ class KarakalWidget(QWidget):
         grid_matrix_page = QWidget(self.grid_inspection_content_tabs)
         grid_matrix_layout = QVBoxLayout(grid_matrix_page)
         grid_matrix_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_inspection_view_badge = FrameSetsViewBadge(grid_matrix_page)
+        grid_matrix_layout.addWidget(self.grid_inspection_view_badge)
 
         row = QWidget(grid_matrix_page)
         row_layout = QHBoxLayout(row)
@@ -1296,6 +1276,8 @@ class KarakalWidget(QWidget):
         self._help_check_updates_action.triggered.connect(self._on_manual_update_check)
         self._help_update_folder_action = self._help_update_menu.addAction(self._t("update.folder"))
         self._help_update_folder_action.triggered.connect(self._on_choose_update_folder)
+        self._help_whats_new_action = self._help_update_menu.addAction(self._t("update.whats_new"))
+        self._help_whats_new_action.triggered.connect(self._show_whats_new)
         self._help_update_status_action = self._help_update_menu.addAction(self._update_folder_status_text())
         self._help_update_status_action.setEnabled(False)
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
@@ -1381,6 +1363,8 @@ class KarakalWidget(QWidget):
         self._check_updates_action.triggered.connect(self._on_manual_update_check)
         self._update_folder_action = self._update_menu.addAction(self._t("update.folder"))
         self._update_folder_action.triggered.connect(self._on_choose_update_folder)
+        self._whats_new_action = self._update_menu.addAction(self._t("update.whats_new"))
+        self._whats_new_action.triggered.connect(self._show_whats_new)
         self._update_status_action = self._update_menu.addAction(self._update_folder_status_text())
         self._update_status_action.setEnabled(False)
         self.update_tool_button.setMenu(self._update_menu)
@@ -1436,6 +1420,28 @@ class KarakalWidget(QWidget):
             self._t("update.folder.saved", root=resolved or selected),
         )
         return resolved or selected
+
+    def _show_whats_new(self, _checked: bool = False) -> None:
+        """History of changes bundled with this build (CHANGELOG.md)."""
+
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayout
+
+        try:
+            text = karakal_changelog_path().read_text(encoding="utf-8")
+        except OSError:
+            text = self._t("update.whats_new.missing")
+        dialog = QDialog(self)
+        dialog.setWindowTitle(self._t("update.whats_new.title", version=display_version()))
+        dialog.resize(720, 560)
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        browser.setOpenExternalLinks(True)
+        browser.setMarkdown(text)
+        layout.addWidget(browser)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def _on_update_channel_triggered(self, action) -> None:
         channel = str(action.data() or "").strip().lower()
@@ -1941,7 +1947,6 @@ class KarakalWidget(QWidget):
         self.btn_build.setToolTip(self._t("folders.build"))
         self.btn_compute.setToolTip(self._t("folders.compute_mismatch"))
         self.btn_export_layer.setToolTip(self._t("context.export_result_layer_jpgs_auto"))
-        self.btn_export_grid_checks.setToolTip(self._t("context.export_grid_check_bmps_auto"))
         self.btn_cancel.setToolTip(self._t("folders.cancel"))
         if hasattr(self, "frame_search_input"):
             self.frame_search_input.setPlaceholderText(self._t("frame_search.placeholder"))
@@ -1950,11 +1955,8 @@ class KarakalWidget(QWidget):
             self.btn_frame_search.setToolTip(self._t("frame_search.button"))
         self.source_group.setTitle(self._t("sources.group"))
         self.original_source_label.setText(self._t("sources.original"))
-        self.export_source_label.setText(self._t("sources.export"))
         self.btn_set_original.setText(self._t("common.set"))
         self.btn_clear_original.setText(self._t("common.clear"))
-        self.btn_set_export.setText(self._t("common.set"))
-        self.btn_clear_export.setText(self._t("common.clear"))
         if hasattr(self, "validation_matrix_title"):
             self.validation_matrix_title.setText(self._t("validation.matrix.title"))
             self.empty_matrix_title.setText(self._t("empty_matrix.title"))
@@ -2405,12 +2407,9 @@ class KarakalWidget(QWidget):
         self.btn_clear_folders.clicked.connect(self._presenter._clear_folders)
         self.btn_set_original.clicked.connect(self._presenter._set_original_folder)
         self.btn_clear_original.clicked.connect(self._presenter._clear_original_folder)
-        self.btn_set_export.clicked.connect(self._presenter._set_export_folder)
-        self.btn_clear_export.clicked.connect(self._presenter._clear_export_folder)
         self.btn_build.clicked.connect(self._presenter._on_build_requested)
         self.btn_compute.clicked.connect(self._presenter._on_compute_requested)
         self.btn_export_layer.clicked.connect(self._presenter._on_export_result_layer_requested)
-        self.btn_export_grid_checks.clicked.connect(self._presenter._on_export_grid_check_bmps_requested)
         self.btn_cancel.clicked.connect(self._presenter._request_cancel_build)
         self.btn_frame_search.clicked.connect(self._presenter._on_frame_search_requested)
         self.frame_search_input.returnPressed.connect(self._presenter._on_frame_search_requested)

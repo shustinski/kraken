@@ -24,7 +24,7 @@ from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.2"
 INTERFACE_NUMBER = 7
-BETA = 1
+BETA = 0
 
 
 def base_version() -> str:

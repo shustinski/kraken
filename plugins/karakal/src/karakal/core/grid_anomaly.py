@@ -1012,6 +1012,17 @@ def detect_grid_cell_anomalies(
 
         reference_solidity = float(np.median([float(item.solidity) for item in (normal_seed or candidates)]))
         reference_extent = float(np.median([float(item.extent) for item in (normal_seed or candidates)]))
+        # Local shape measures are scored only in calibrated mode.
+        local_shapes: dict[int, tuple[float, float]] = {}
+        reference_window_fill, reference_notch_depth = 1.0, 0.0
+        if str(cfg.scoring_mode) == "calibrated":
+            local_shapes = {id(item): _local_shape_measures(item) for item in ordered_candidates}
+            reference_pool = [
+                local_shapes.get(id(item)) or _local_shape_measures(item) for item in (normal_seed or candidates)
+            ]
+            if reference_pool:
+                reference_window_fill = float(np.median([shape[0] for shape in reference_pool]))
+                reference_notch_depth = float(np.median([shape[1] for shape in reference_pool]))
         shared_reference = dict(cfg.calibration_reference)
         if shared_reference:
             median_width = float(shared_reference.get("width", median_width))
@@ -1083,10 +1094,20 @@ def detect_grid_cell_anomalies(
                         "reference_extent": float(reference_extent),
                     }
                 )
+                window_fill, notch_depth = local_shapes[id(candidate)]
                 prepared_scores.append(
                     CalibratedScores(
                         fill=score_fill(candidate.interior_fill_ratio, median_interior_fill),
-                        geometry=score_geometry(candidate.solidity, candidate.extent, reference_solidity, reference_extent),
+                        geometry=score_geometry(
+                            candidate.solidity,
+                            candidate.extent,
+                            reference_solidity,
+                            reference_extent,
+                            window_fill=window_fill,
+                            reference_window_fill=reference_window_fill,
+                            notch_depth=notch_depth,
+                            reference_notch_depth=reference_notch_depth,
+                        ),
                         merge=_score_merge_for_candidate(
                             candidate,
                             cell_width=median_width,
@@ -1113,12 +1134,18 @@ def detect_grid_cell_anomalies(
                 clean = [index for index in ids if not other_mark[index]]
                 neighbors_unmarked = len(ids) >= 3 and len(clean) * 2 >= len(ids)
                 local = local_medians[candidate_index]
+                neighbor_shapes = [local_shapes[id(ordered_candidates[index])] for index in ids]
+                window_fill, notch_depth = local_shapes[id(candidate)]
                 if geometry_agrees_with_neighbors(
                     candidate.solidity,
                     candidate.extent,
                     local["solidity"],
                     local["extent"],
                     neighbors_unmarked=neighbors_unmarked,
+                    window_fill=window_fill,
+                    neighbor_window_fill=float(np.median([shape[0] for shape in neighbor_shapes])) if neighbor_shapes else None,
+                    notch_depth=notch_depth,
+                    neighbor_notch_depth=float(np.median([shape[1] for shape in neighbor_shapes])) if neighbor_shapes else None,
                 ):
                     prepared_scores[candidate_index] = replace(
                         prepared_scores[candidate_index],
@@ -1307,8 +1334,26 @@ def detect_grid_cell_anomalies(
                 and not is_cell_like
                 and not detached_edge
                 and float(candidate.area) >= float(cfg.debris_min_area_px)
-                # A frame-cut piece on a grid row/column is a clipped cell, not debris.
-                and not (candidate.touches_border and (on_column or on_row))
+                # A frame-cut piece on a grid row/column, or one that fits a cell slot, is a
+                # clipped cell, not debris.
+                and not (
+                    candidate.touches_border
+                    and (
+                        on_column
+                        or on_row
+                        or _fits_edge_slot(
+                            candidate,
+                            frame_width=int(width),
+                            frame_height=int(height),
+                            modal_width=median_width,
+                            modal_height=median_height,
+                            column_centers=edge_columns,
+                            row_centers=edge_rows,
+                            pitch_x=edge_pitch_x,
+                            pitch_y=edge_pitch_y,
+                        )
+                    )
+                )
             ):
                 # No filter claimed a piece that is not a cell: scratches, blobs larger
                 # than merged cells, pieces off the lattice. They are debris, not skipped,
@@ -3505,6 +3550,103 @@ def _inside_slot_band(
     return nearest - half <= float(start) and float(end) <= nearest + half
 
 
+def _local_shape_measures(candidate: _ContourCandidate) -> tuple[float, float]:
+    """(worst square-window fill, deepest notch) of a contour.
+
+    The window is a square with the short side, slid along the long side; its worst fill
+    is the extent of the most damaged stretch. The notch is the deepest convexity defect
+    as a share of the cell size in the direction it cuts in. Neither depends on how
+    elongated the cell is; for a square cell both reduce to whole-cell measures.
+    """
+
+    contour = getattr(candidate, "contour", None)
+    x, y, width, height = (int(value) for value in candidate.bbox)
+    short = min(width, height)
+    if contour is None or cv2 is None or short < 4 or len(contour) < 4:
+        return float(candidate.extent), 0.0
+    points = np.asarray(contour, dtype=np.int32).reshape(-1, 1, 2)
+    local = points - np.array([[[x, y]]], dtype=np.int32)
+    filled = np.zeros((height, width), dtype=np.uint8)
+    cv2.drawContours(filled, [local], -1, 1, thickness=-1)
+    if height >= width:
+        line = filled.sum(axis=1, dtype=np.float64)
+    else:
+        line = filled.sum(axis=0, dtype=np.float64)
+    sums = np.convolve(line, np.ones(short, dtype=np.float64), mode="valid")
+    window_fill = float(sums.min()) / float(short * short) if sums.size else float(candidate.extent)
+    notch = 0.0
+    try:
+        hull = cv2.convexHull(points, returnPoints=False)
+        defects = cv2.convexityDefects(points, hull) if hull is not None and len(hull) >= 3 else None
+    except cv2.error:
+        defects = None
+    if defects is not None and len(defects):
+        flat = points.reshape(-1, 2).astype(np.float64)
+        for start, end, _far, depth in np.asarray(defects).reshape(-1, 4):
+            edge = flat[int(end)] - flat[int(start)]
+            length = float(np.hypot(edge[0], edge[1]))
+            if length <= 0.0:
+                continue
+            # The notch points across the hull edge; measure it in cell sizes along that
+            # direction: a bite into the side over the width, a dent in the end over the length.
+            normal_x, normal_y = -edge[1] / length, edge[0] / length
+            reach = float(np.hypot(normal_x / float(width), normal_y / float(height)))
+            notch = max(notch, float(depth) / 256.0 * reach)
+    return min(1.0, window_fill), notch
+
+
+def _fits_edge_slot(
+    candidate: _ContourCandidate,
+    *,
+    frame_width: int,
+    frame_height: int,
+    modal_width: float,
+    modal_height: float,
+    column_centers: list[float] | None = None,
+    row_centers: list[float] | None = None,
+    pitch_x: float | None = None,
+    pitch_y: float | None = None,
+) -> bool:
+    """A frame-cut piece that fits inside one cell slot.
+
+    Across the cut side it is thinner than a cell; along that side it is no longer than
+    a cell and at least a quarter of one, so a small blob at the edge stays debris.
+    It must also be a strip along the edge, or, where the lattice knows the rows
+    (left/right edge) or columns (top/bottom edge), lie in one of them: a round crumb
+    in the gap between slots is debris. The cut-off column or row itself is not
+    needed, so sparse fields and elongated cells work too. Sizes are in cell sides of each axis, so the cell shape does not matter.
+    """
+
+    if not candidate.touches_border:
+        return False
+    x, y, width, height = (int(value) for value in candidate.bbox)
+    margin = 2
+    horizontal = x <= margin or x + width >= int(frame_width) - margin
+    vertical = y <= margin or y + height >= int(frame_height) - margin
+    width_fraction = float(width) / max(1.0, float(modal_width))
+    height_fraction = float(height) / max(1.0, float(modal_height))
+    rows = list(row_centers or ())
+    columns = list(column_centers or ())
+
+    def _in_rows() -> bool:
+        return len(rows) < 2 or _inside_slot_band(float(y), float(y + height), rows, pitch_y, float(modal_height))
+
+    def _in_columns() -> bool:
+        return len(columns) < 2 or _inside_slot_band(float(x), float(x + width), columns, pitch_x, float(modal_width))
+
+    if horizontal and vertical:
+        return width_fraction <= 0.95 and height_fraction <= 0.95
+    # A cell cut by the frame leaves a strip along the edge: at least twice as long
+    # along it as across. That holds where the lattice rows or columns are irregular.
+    if horizontal:
+        strip = height >= 2 * width
+        return width_fraction <= 0.95 and 0.25 <= height_fraction <= 1.25 and (strip or _in_rows())
+    if vertical:
+        strip = width >= 2 * height
+        return height_fraction <= 0.95 and 0.25 <= width_fraction <= 1.25 and (strip or _in_columns())
+    return False
+
+
 def _prefer_edge_slot_over_debris(
     reasons: tuple[str, ...],
     candidate: _ContourCandidate,
@@ -3524,7 +3666,23 @@ def _prefer_edge_slot_over_debris(
     alone only when at least 60% of the slot is still in frame.
     """
 
-    if not candidate.touches_border or len(column_centers) < 2 or len(row_centers) < 2:
+    if not candidate.touches_border:
+        return reasons
+    # Debris that fits one cell slot at the frame edge is a cut cell even where the
+    # lattice has no row or column there (sparse fields, elongated cells).
+    free_fit = "small_artifact" in reasons and _fits_edge_slot(
+        candidate,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        modal_width=modal_width,
+        modal_height=modal_height,
+        column_centers=column_centers,
+        row_centers=row_centers,
+        pitch_x=pitch_x,
+        pitch_y=pitch_y,
+    )
+    lattice = len(column_centers) >= 2 and len(row_centers) >= 2
+    if not lattice and not free_fit:
         return reasons
     x, y, width, height = (int(value) for value in candidate.bbox)
     margin = 2
@@ -3543,7 +3701,7 @@ def _prefer_edge_slot_over_debris(
     modal_h = max(1.0, float(modal_height))
     width_fraction = float(width) / modal_w
     height_fraction = float(height) / modal_h
-    if max(width_fraction, height_fraction) > 1.70:
+    if max(width_fraction, height_fraction) > 1.70 and not free_fit:
         return reasons
     visible_x = float(x) + float(width) / 2.0
     visible_y = float(y) + float(height) / 2.0
@@ -3567,11 +3725,12 @@ def _prefer_edge_slot_over_debris(
             point_y, row_centers, pitch_y, tolerance_y
         )
 
-    on_slot = _on_slot(center_x, center_y) or _on_slot(visible_x, visible_y)
+    on_slot = lattice and (_on_slot(center_x, center_y) or _on_slot(visible_x, visible_y))
     # A one-edge sliver as tall or as wide as a cell continues the border line
     # even when that whole row is missing from the full-cell cluster.
     if (
-        horizontal
+        lattice
+        and horizontal
         and not vertical
         and width_fraction <= 0.40
         and 0.75 <= height_fraction <= 1.25
@@ -3583,7 +3742,8 @@ def _prefer_edge_slot_over_debris(
     ):
         on_slot = True
     if (
-        vertical
+        lattice
+        and vertical
         and not horizontal
         and height_fraction <= 0.40
         and 0.75 <= width_fraction <= 1.25
@@ -3597,22 +3757,22 @@ def _prefer_edge_slot_over_debris(
     # A sliver of a cell that lies mostly outside the frame, drawn only in part:
     # it sits inside the visible part of an edge slot, whatever its length.
     sliver = False
-    if horizontal and not vertical and width_fraction <= 0.60 and height_fraction <= 1.25:
+    if lattice and horizontal and not vertical and width_fraction <= 0.60 and height_fraction <= 1.25:
         inner_x = float(x + width) - modal_w / 2.0 if "left" in sides else float(x) + modal_w / 2.0
         sliver = _on_grid_axis(inner_x, column_centers, pitch_x, tolerance_x) and _inside_slot_band(
             float(y), float(y + height), row_centers, pitch_y, modal_h
         )
-    if vertical and not horizontal and height_fraction <= 0.60 and width_fraction <= 1.25:
+    if lattice and vertical and not horizontal and height_fraction <= 0.60 and width_fraction <= 1.25:
         inner_y = float(y + height) - modal_h / 2.0 if "top" in sides else float(y) + modal_h / 2.0
         sliver = _on_grid_axis(inner_y, row_centers, pitch_y, tolerance_y) and _inside_slot_band(
             float(x), float(x + width), column_centers, pitch_x, modal_w
         )
-    if not on_slot and not sliver:
+    if not on_slot and not sliver and not free_fit:
         return reasons
     cropped = (horizontal and width_fraction <= 0.95) or (vertical and height_fraction <= 0.95)
     if not cropped:
         return reasons
-    if not sliver:
+    if not sliver and not free_fit:
         if horizontal and not vertical and not 0.75 <= height_fraction <= 1.25:
             return reasons
         if vertical and not horizontal and not 0.75 <= width_fraction <= 1.25:

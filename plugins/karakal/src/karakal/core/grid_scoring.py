@@ -39,23 +39,57 @@ def geometry_agrees_with_neighbors(
     *,
     neighbors_unmarked: bool,
     tolerance: float = 0.08,
+    window_fill: float | None = None,
+    neighbor_window_fill: float | None = None,
+    notch_depth: float | None = None,
+    neighbor_notch_depth: float | None = None,
 ) -> bool:
-    """A shared local shape is not broken geometry. Fill is never affected."""
+    """A shared local shape is not broken geometry. Fill is never affected.
+
+    A notch in a long cell barely moves solidity and extent, so the local measures
+    must agree with the neighbors too.
+    """
 
     if not neighbors_unmarked:
         return False
+    if window_fill is not None and neighbor_window_fill is not None:
+        if abs(float(window_fill) - float(neighbor_window_fill)) > tolerance:
+            return False
+    if notch_depth is not None and neighbor_notch_depth is not None:
+        if abs(float(notch_depth) - float(neighbor_notch_depth)) > tolerance:
+            return False
     return (
         abs(float(solidity) - float(neighbor_solidity)) <= tolerance
         and abs(float(extent) - float(neighbor_extent)) <= tolerance
     )
 
 
-def score_geometry(solidity: float, extent: float, reference_solidity: float, reference_extent: float) -> float:
-    """How far solidity and extent are from the normal-cell reference."""
+def score_geometry(
+    solidity: float,
+    extent: float,
+    reference_solidity: float,
+    reference_extent: float,
+    *,
+    window_fill: float | None = None,
+    reference_window_fill: float | None = None,
+    notch_depth: float | None = None,
+    reference_notch_depth: float | None = None,
+) -> float:
+    """How far the cell shape is from the normal-cell reference.
 
-    solidity_drop = float(reference_solidity) - float(solidity)
-    extent_shift = abs(float(extent) - float(reference_extent))
-    return _logistic((max(solidity_drop, extent_shift) - 0.16) / 0.04)
+    Solidity and extent cover the whole cell, so a notch the size of the short side
+    weighs less the longer the cell is. Two local measures keep the same notch at the
+    same score for any cell shape: the fill of the worst square window (side = short
+    side) and the deepest notch in short sides. For a square cell the window is the
+    whole cell.
+    """
+
+    deviation = max(float(reference_solidity) - float(solidity), abs(float(extent) - float(reference_extent)))
+    if window_fill is not None and reference_window_fill is not None:
+        deviation = max(deviation, float(reference_window_fill) - float(window_fill))
+    if notch_depth is not None and reference_notch_depth is not None:
+        deviation = max(deviation, float(notch_depth) - float(reference_notch_depth))
+    return _logistic((deviation - 0.16) / 0.04)
 
 
 def score_merge(largest_axis_ratio: float, area_ratio: float) -> float:

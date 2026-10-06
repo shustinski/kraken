@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,7 @@ __all__ = [
     "load_karakal_update_channel",
     "load_karakal_update_client_config",
     "load_karakal_update_root",
+    "repair_installer_update_root",
     "resolve_karakal_channel_manifest",
     "save_karakal_last_update_check",
     "save_karakal_update_channel",
@@ -111,11 +113,63 @@ def _updater_qsettings():
     return QSettings(str(path), QSettings.Format.IniFormat)
 
 
+def _installer_written_update_root(ini_path: Path) -> str | None:
+    r"""update_root as the installer wrote it, when Qt would misread it; else None.
+
+    Installers up to 0.2.9107 wrote the folder as typed: G:\ProgramStore, in the Windows code page.
+    Qt reads a backslash in settings.ini as an escape (G:rogramStore) and the text as UTF-8,
+    then writes the damaged value back on the next save. Qt itself writes backslashes doubled.
+    """
+
+    try:
+        data = ini_path.read_bytes()
+    except OSError:
+        return None
+    try:
+        text = data.decode("utf-8")
+        utf8 = True
+    except UnicodeDecodeError:
+        text = data.decode("mbcs" if os.name == "nt" else "cp1251", errors="replace")
+        utf8 = False
+    section = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1].strip().lower()
+            continue
+        if section != "general" or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() != KARAKAL_UPDATE_ROOT_SETTINGS_KEY:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1]
+        if not utf8:
+            return value
+        # Qt doubles every backslash it writes; a single one (G:\Store, \\PC\Share) came from the installer.
+        runs = re.findall(r"\\+", value)
+        if any(len(run) % 2 for run in runs):
+            return value
+        return None
+    return None
+
+
+def repair_installer_update_root() -> None:
+    """Re-save an installer-written update folder through Qt before Qt damages it."""
+
+    ini_path = karakal_settings_ini_path()
+    raw = _installer_written_update_root(ini_path)
+    if raw:
+        save_karakal_update_root(raw.replace("\\", "/"))
+
+
 def load_karakal_update_root(*, allow_default: bool = True) -> str:
     env_root = str(os.getenv(KARAKAL_UPDATE_ROOT_ENV, "")).strip()
     if env_root:
         return env_root
     try:
+        repair_installer_update_root()
         settings = _updater_qsettings()
         stored = str(settings.value(KARAKAL_UPDATE_ROOT_SETTINGS_KEY, "", type=str) or "").strip()
         if stored:
@@ -342,8 +396,20 @@ def create_karakal_update_controller(window) -> QtUpdateController:
             return ""
         resolved_root = follow_update_root_moves(root, channel=channel, persist=True)
         manifest_dir = Path(resolved_root) / normalize_update_channel(channel)
-        if manifest_dir.is_dir():
-            return str(manifest_dir)
+        if not manifest_dir.is_dir():
+            # A missing folder is not "no updates": say where the program looked.
+            if manual:
+                from PyQt6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(
+                    window,
+                    KARAKAL_UPDATE_APP_NAME,
+                    "Папка обновлений недоступна:\n"
+                    f"{manifest_dir}\n\n"
+                    "Проверьте, что диск или сетевая папка подключены. Папку обновлений "
+                    "указывают при установке Каракала.",
+                )
+            return None
         return str(manifest_dir)
 
     controller = QtUpdateController(

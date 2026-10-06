@@ -44,6 +44,10 @@ def default_settings() -> QSettings:
 
     import os
 
+    from ..updater import repair_installer_update_root
+
+    # Before Qt first parses settings.ini: it would damage a folder the installer wrote with backslashes.
+    repair_installer_update_root()
     if getattr(sys, "frozen", False):
         path = Path(sys.executable).resolve().parent / "settings.ini"
         return QSettings(str(path), QSettings.Format.IniFormat)

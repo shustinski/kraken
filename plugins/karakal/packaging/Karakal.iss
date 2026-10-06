@@ -103,10 +103,27 @@ begin
   Result := True;
 end;
 
-// The update folder already written by a previous install, if any.
+// settings.ini is read by Qt, which treats a backslash as an escape: G:\ProgramStore came back
+// as G:rogramStore. Forward slashes are plain characters there and Windows accepts them in paths.
+function IniPath(Folder: String): String;
+begin
+  Result := Folder;
+  StringChangeEx(Result, '\', '/', True);
+end;
+
+function ShownPath(Folder: String): String;
+begin
+  Result := Folder;
+  StringChangeEx(Result, '/', '\', True);
+end;
+
+// The update folder already written by a previous install, if it still exists.
+// A missing one is not offered: it may be a path Qt already damaged.
 function InstalledUpdateRoot(): String;
 begin
-  Result := GetIniString('General', 'update_root', '', AddBackslash(WizardDirValue) + 'settings.ini');
+  Result := ShownPath(GetIniString('General', 'update_root', '', AddBackslash(WizardDirValue) + 'settings.ini'));
+  if (Result <> '') and not DirExists(Result) then
+    Result := '';
 end;
 
 procedure UpdateRootBrowseClick(Sender: TObject);
@@ -170,6 +187,6 @@ begin
     // Empty field keeps whatever the machine had (an update never clears the folder).
     Folder := Trim(UpdateRootPage.Values[0]);
     if Folder <> '' then
-      SetIniString('General', 'update_root', Folder, ExpandConstant('{app}\settings.ini'));
+      SetIniString('General', 'update_root', IniPath(Folder), ExpandConstant('{app}\settings.ini'));
   end;
 end;

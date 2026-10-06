@@ -267,11 +267,11 @@ class KarakalPresenter(QObject):
         self._grid_preview_tuning = None
         self._grid_debris_min_area_px = int(DEBRIS_MIN_AREA_PX)
         # Slider drags and typing settle before the open frames are re-analyzed.
-        self._grid_debris_refresh_timer = QTimer()
+        self._grid_debris_refresh_timer = QTimer(self)
         self._grid_debris_refresh_timer.setSingleShot(True)
         self._grid_debris_refresh_timer.setInterval(250)
         self._grid_debris_refresh_timer.timeout.connect(self._refresh_details_after_debris_change)
-        self._grid_types_refresh_timer = QTimer()
+        self._grid_types_refresh_timer = QTimer(self)
         self._grid_types_refresh_timer.setSingleShot(True)
         self._grid_types_refresh_timer.setInterval(150)
         self._grid_types_refresh_timer.timeout.connect(self._apply_grid_view_settings)
@@ -8296,6 +8296,9 @@ class KarakalPresenter(QObject):
         self._settings_service.sync()
 
     def shutdown(self) -> None:
+        # Pending setting refreshes must not reach a closed window.
+        self._grid_debris_refresh_timer.stop()
+        self._grid_types_refresh_timer.stop()
         worker = self._worker
         thread = self._worker_thread
         if worker is not None:

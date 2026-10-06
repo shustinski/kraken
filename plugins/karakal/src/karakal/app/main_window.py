@@ -2326,6 +2326,10 @@ class KarakalWidget(QWidget):
         conflict = self.grid_error_type_checks.get("class_conflict")
         if conflict is not None:
             conflict.toggled.connect(self._presenter._on_class_conflict_checkbox_toggled)
+        for error_type, checkbox in self.grid_error_type_checks.items():
+            if error_type != "class_conflict":
+                # The matrix hides switched-off types at once; switching one on asks for a new run.
+                checkbox.toggled.connect(self._presenter._on_grid_error_types_changed)
         self.grid_layer_display_combo.currentIndexChanged.connect(self._presenter._on_grid_layer_display_selection_changed)
         self.grid_matrix_layer_combo.currentIndexChanged.connect(
             self._presenter._on_grid_matrix_layer_selection_changed

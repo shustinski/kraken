@@ -95,6 +95,7 @@ from ..core.domain import (
     FrameRecord,
     ModelSpec,
 )
+from ..core.grid_narrowing import GridNarrowing, can_narrow, default_run_debris_min_area, narrow_grid_frame_result
 from ..core.grid_calibration import GridCalibration, GridCellExample, reference_from_normal_examples, reference_pairs
 from ..core.grid_anomaly import (
     DEBRIS_MIN_AREA_PX,
@@ -270,6 +271,10 @@ class KarakalPresenter(QObject):
         self._grid_debris_refresh_timer.setSingleShot(True)
         self._grid_debris_refresh_timer.setInterval(250)
         self._grid_debris_refresh_timer.timeout.connect(self._refresh_details_after_debris_change)
+        self._grid_types_refresh_timer = QTimer()
+        self._grid_types_refresh_timer.setSingleShot(True)
+        self._grid_types_refresh_timer.setInterval(150)
+        self._grid_types_refresh_timer.timeout.connect(self._apply_grid_view_settings)
         self._grid_tuning_dialog = None
         self._grid_frame_examples: dict[str, list[dict[str, object]]] = {}
         self._details_view_payload: dict[str, object] = self._settings_service.load_details_view_payload() or {}
@@ -4310,6 +4315,7 @@ class KarakalPresenter(QObject):
             view.set_highlighted_record_keys(highlight_keys)
             view.set_records(records, sort_mode="name", reset_view=True)
         self._sync_grid_reference_controls(state)
+        self._update_grid_calibration_status()
         QTimer.singleShot(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
 
     def _grid_inspection_error_type(self, status: str, reasons: tuple[str, ...]) -> str:
@@ -5472,8 +5478,56 @@ class KarakalPresenter(QObject):
             if callable(apply):
                 apply(updated, getattr(updated, "per_cell_results", ()))
 
+    def _grid_narrowing_for_state(self, state) -> GridNarrowing | None:
+        """Live debris size and defect types the stored run can show without a new analysis."""
+
+        stored = getattr(state, "grid_inspection_config_payload", None) if state is not None else None
+        if not stored:
+            return None
+        run_size = default_run_debris_min_area(stored)
+        live_size = int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX))
+        # A smaller size than the run cannot bring back pieces the run dropped; that needs a new run.
+        return GridNarrowing(
+            debris_min_area_px=max(run_size, live_size),
+            enabled_reason_types=frozenset(self._selected_grid_error_types()),
+        )
+
+    def _grid_matrix_needs_rerun(self, state) -> bool:
+        """Settings changed after the run in a way only a new analysis can show."""
+
+        from ..core.grid_anomaly import GRID_DAMAGE_ALGORITHM_VERSION
+
+        if state is None or not bool(getattr(state, "grid_inspection_results_ready", False)):
+            return False
+        stored = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
+        if not stored:
+            return False
+        if str(getattr(state, "grid_inspection_algorithm_version", "") or "") != GRID_DAMAGE_ALGORITHM_VERSION:
+            return True
+        live = self._grid_inspection_config_payload()
+        for key in (*GRID_INSPECTION_TUNING_KEYS, "calibration_fingerprint"):
+            if stored.get(key) != live.get(key):
+                return True
+        run_types = stored.get("enabled_error_types")
+        return not can_narrow(
+            run_debris_min_area_px=default_run_debris_min_area(stored),
+            run_reason_types=None if run_types is None else [str(item) for item in run_types],
+            debris_min_area_px=int(live["debris_min_area_px"]),
+            enabled_reason_types=[str(item) for item in (live.get("enabled_error_types") or ())],
+        )
+
+    def _grid_narrowing_context_state(self):
+        running = getattr(self, "_active_compute_state", None)
+        if running is not None and getattr(self, "_worker_kind", None) == "grid_inspection":
+            return running
+        return self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+
     def _merge_grid_layer_results(self, layers: dict[str, object]) -> GridFrameAnalysisResult | None:
-        """Unified matrix uses the mask layer. Confidence verdicts stay out of the defect score."""
+        """Unified matrix uses the mask layer. Confidence verdicts stay out of the defect score.
+
+        The mask layer is narrowed to the live debris size and defect types, so the matrix
+        follows those settings without a new run.
+        """
 
         mask_reasons = {
             "filled_cell",
@@ -5484,6 +5538,13 @@ class KarakalPresenter(QObject):
             "edge_clipped_cell",
         }
         binary = layers.get("binary")
+        narrowing = (
+            self._grid_narrowing_for_state(self._grid_narrowing_context_state())
+            if isinstance(self, KarakalPresenter)
+            else None
+        )
+        if narrowing is not None and isinstance(binary, GridFrameAnalysisResult):
+            binary = narrow_grid_frame_result(binary, narrowing)
         base = binary if isinstance(binary, GridFrameAnalysisResult) else None
         if base is None:
             for item in layers.values():
@@ -5561,7 +5622,12 @@ class KarakalPresenter(QObject):
         if calibration is not None and hasattr(calibration, "fingerprint"):
             fingerprint = str(calibration.fingerprint())
         analyzed = str(getattr(self, "_grid_analyzed_fingerprint", "") or "")
-        if not keys and not examples:
+        state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        needs_rerun = self._grid_matrix_needs_rerun(state)
+        label.setStyleSheet("color: #f59e0b; font-weight: 600;" if needs_rerun else "")
+        if needs_rerun:
+            label.setText(self._t("grid_tuning.status_needs_rerun"))
+        elif not keys and not examples:
             label.setText(self._t("grid_tuning.status_preset"))
         elif analyzed and fingerprint and analyzed != fingerprint:
             label.setText(self._t("grid_tuning.status_stale"))
@@ -5748,7 +5814,24 @@ class KarakalPresenter(QObject):
         self._grid_debris_refresh_timer.start()
 
     def _refresh_details_after_debris_change(self) -> None:
+        self._apply_grid_view_settings(refresh_details=True)
+
+    def _on_grid_error_types_changed(self, *_args) -> None:
+        self._grid_types_refresh_timer.start()
+
+    def _apply_grid_view_settings(self, *, refresh_details: bool = False) -> None:
+        """Re-narrow the matrix to the live debris size and defect types, then say if a run is needed."""
+
         if self._current_app_mode() != "grid_inspection":
+            self._update_grid_calibration_status()
+            return
+        state = self._current_tab_state()
+        if state is not None and bool(getattr(state, "grid_inspection_results_ready", False)):
+            self._rebuild_unified_grid_view(state)
+            self._refresh_grid_inspection_errors_panel(state)
+            self._schedule_metric_histogram_update(state)
+        self._update_grid_calibration_status()
+        if not refresh_details:
             return
         tuning = self._grid_preview_tuning or self._grid_tuning_values()
         for details in list(self._details_dialogs):
@@ -5802,6 +5885,7 @@ class KarakalPresenter(QObject):
             dialog.set_values(values)
         for details in list(self._details_dialogs):
             self._refresh_grid_details_preview(details, values)
+        self._update_grid_calibration_status()
 
     def _on_grid_tuning_confirmed(self, values: dict, details_dialog=None) -> None:
         self._grid_custom_tuning = {key: int(values.get(key, 0)) for key in GRID_INSPECTION_TUNING_KEYS}
@@ -5820,6 +5904,7 @@ class KarakalPresenter(QObject):
                 combo.setCurrentIndex(index)
                 del blocker
         self._refresh_grid_details_preview(details_dialog, self._grid_tuning_values())
+        self._update_grid_calibration_status()
 
     def _on_grid_tuning_sliders_changed(self, values: dict, details_dialog=None) -> None:
         self._grid_preview_tuning = {key: int(values.get(key, 0)) for key in GRID_INSPECTION_TUNING_KEYS}
@@ -6868,12 +6953,8 @@ class KarakalPresenter(QObject):
         for key in (*GRID_INSPECTION_TUNING_KEYS, "calibration_fingerprint"):
             if stored_config.get(key) != live.get(key):
                 return None
-        # Runs made before the setting existed used the default size.
-        if int(stored_config.get("debris_min_area_px", DEBRIS_MIN_AREA_PX)) != int(live["debris_min_area_px"]):
-            return None
-        stored_types = tuple(str(item) for item in (stored_config.get("enabled_error_types") or ()))
-        live_types = tuple(str(item) for item in (live.get("enabled_error_types") or ()))
-        if stored_types != live_types:
+        # A larger debris size or fewer defect types only hide defects of the run: reuse it, narrowed.
+        if self._grid_matrix_needs_rerun(state):
             return None
         frame_key = str(getattr(record, "key", "") or "")
         unified = (getattr(state, "grid_inspection_payload_by_key", {}) or {}).get(frame_key)
@@ -6881,6 +6962,9 @@ class KarakalPresenter(QObject):
         result = unified if isinstance(unified, GridFrameAnalysisResult) else binary
         if not isinstance(result, GridFrameAnalysisResult):
             return None
+        narrowing = self._grid_narrowing_for_state(state)
+        if narrowing is not None:
+            result = narrow_grid_frame_result(result, narrowing)
         return self._with_stored_class_conflict(result, state, frame_key)
 
     def _open_record_details(

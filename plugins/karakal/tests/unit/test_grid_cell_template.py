@@ -148,14 +148,14 @@ def test_template_reaches_workers_and_cache_key(rect_profile) -> None:
     assert rect_profile.cache_payload()["shape_template"]["mask_sha1"]
 
 
-def test_without_template_scoring_is_unchanged(tmp_path) -> None:
+def test_short_cell_is_broken_with_and_without_template(tmp_path) -> None:
     profile = _profile(tmp_path, _rect)
     plain = ga.GridCellReferenceProfile(
         **{name: getattr(profile, name) for name in profile.__slots__ if name != "shape_template"}
     )
     image = _frame(_rect, bad=(5, 7), draw_bad=lambda i, x, y: _rect(i, x, y, h=24))
-    # Size-only scoring never knew the 2/3-height cell; the template does.
-    assert _defects(image, plain) == []
+    # A 2/3-height cell: the template knows it, and so does the size shortfall in geometry.
+    assert _defects(image, plain) == [("broken_geometry",)]
     assert _defects(image, profile) == [("broken_geometry",)]
 
 

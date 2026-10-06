@@ -125,9 +125,16 @@ def narrow_grid_frame_result(
 
 
 def default_run_debris_min_area(config_payload: dict | None) -> int:
-    """Runs made before the setting existed used the fixed size."""
+    """Smallest debris a stored run kept.
 
+    Runs since algorithm 93 keep debris down to the analysis floor whatever the operator
+    set; older runs dropped pieces under the operator's size (or the fixed 24 px).
+    """
+
+    payload = config_payload or {}
     try:
-        return int((config_payload or {}).get("debris_min_area_px", DEBRIS_MIN_AREA_PX))
+        if "debris_analysis_floor_px" in payload:
+            return int(float(payload["debris_analysis_floor_px"]))
+        return int(payload.get("debris_min_area_px", DEBRIS_MIN_AREA_PX))
     except (TypeError, ValueError):
         return int(DEBRIS_MIN_AREA_PX)

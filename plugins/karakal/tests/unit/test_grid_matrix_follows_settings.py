@@ -73,9 +73,26 @@ def test_matrix_recolors_without_a_new_run(tmp_path, qtbot) -> None:
     qtbot.waitUntil(lambda: _debris_count(state.grid_inspection_payload_by_key["frame-0"]) == 0, timeout=5000)
     assert not presenter._grid_matrix_needs_rerun(state)
 
-    # Back on and smaller than the run: the matrix keeps the run and asks for a new analysis.
+    # Back on and smaller than before: the run kept small debris, so no new analysis is needed.
     widget.grid_error_type_checks["small_artifact"].setChecked(True)
     widget.grid_debris_min_area_control.set_value(10)
     widget.grid_debris_min_area_control.valueChanged.emit(10)
-    qtbot.waitUntil(lambda: status.text() == presenter._t("grid_tuning.status_needs_rerun"), timeout=5000)
-    assert _debris_count(state.grid_inspection_payload_by_key["frame-0"]) == _debris_count(run)
+    qtbot.wait(600)
+    assert _debris_count(state.grid_inspection_payload_by_key["frame-0"]) >= _debris_count(run)
+    assert not presenter._grid_matrix_needs_rerun(state)
+    assert status.text() != presenter._t("grid_tuning.status_needs_rerun")
+
+    # Geometry never follows the debris size.
+    geometry = lambda: sorted(  # noqa: E731
+        tuple(cell.bbox) for cell in state.grid_inspection_payload_by_key["frame-0"].per_cell_results if "broken_geometry" in cell.reasons
+    )
+    at_ten = geometry()
+    widget.grid_debris_min_area_control.set_value(150)
+    widget.grid_debris_min_area_control.valueChanged.emit(150)
+    qtbot.waitUntil(lambda: _debris_count(state.grid_inspection_payload_by_key["frame-0"]) < _debris_count(run), timeout=5000)
+    assert geometry() == at_ten
+
+    # A threshold change still needs a new run.
+    presenter._grid_custom_tuning = dict(presenter._grid_tuning_values(), geometry_sensitivity=90)
+    presenter._update_grid_calibration_status()
+    assert status.text() == presenter._t("grid_tuning.status_needs_rerun")

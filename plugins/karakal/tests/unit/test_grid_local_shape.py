@@ -68,3 +68,65 @@ def test_cell_cut_by_the_frame_edge_is_not_debris_in_a_sparse_field() -> None:
     strips = [c for c in result.per_cell_results if c.bbox[0] <= 2]
     assert strips
     assert not any("small_artifact" in c.reasons for c in strips)
+
+
+def _preset(geometry: int, **overrides) -> GridDamageAnalysisConfig:
+    """The config the app builds from a preset: strict (geometry 80) or balanced (40)."""
+
+    from dataclasses import replace
+
+    from karakal.app.presenter import KarakalPresenter
+    from karakal.ui.ui_constants import GRID_INSPECTION_PRESET_VALUES
+
+    values = dict(GRID_INSPECTION_PRESET_VALUES["strict" if geometry >= 80 else "balanced"])
+    config = replace(KarakalPresenter._grid_damage_config_from_payload(values), cell_representation="binary", **overrides)
+    return config.normalized()
+
+
+def _replace_cell(image: np.ndarray, x: int, y: int, cell_w: int, cell_h: int, draw) -> None:
+    image[y : y + cell_h, x : x + cell_w] = 0
+    draw(image)
+
+
+def test_short_cell_follows_the_geometry_slider() -> None:
+    image, slots = _lattice(23, 66, 17, 29)
+    x, y = slots[(4, 4)]
+    _replace_cell(image, x, y, 23, 66, lambda img: cv2.rectangle(img, (x, y), (x + 22, y + 44), 255, -1))
+    strict = detect_grid_cell_anomalies(image, config=_preset(80))
+    balanced = detect_grid_cell_anomalies(image, config=_preset(40))
+    assert "broken_geometry" in _reasons_at(strict, x + 2, y + 2)
+    assert "broken_geometry" not in _reasons_at(balanced, x + 2, y + 2)
+
+
+def test_half_cell_is_broken_geometry_not_debris() -> None:
+    image, slots = _lattice(23, 66, 17, 29)
+    x, y = slots[(4, 4)]
+    _replace_cell(image, x, y, 23, 66, lambda img: cv2.rectangle(img, (x, y), (x + 22, y + 32), 255, -1))
+    reasons = _reasons_at(detect_grid_cell_anomalies(image, config=_preset(40)), x + 2, y + 2)
+    assert "broken_geometry" in reasons
+    assert "small_artifact" not in reasons
+
+
+def test_cut_corner_is_broken_on_strict_only() -> None:
+    image, slots = _lattice(23, 66, 17, 29)
+    x, y = slots[(4, 4)]
+    # A slanted end: the corner cut 11 px along both sides.
+    triangle = np.array([[x + 23, y + 66], [x + 12, y + 66], [x + 23, y + 55]], dtype=np.int32)
+    cv2.fillPoly(image, [triangle], 0)
+    assert "broken_geometry" in _reasons_at(detect_grid_cell_anomalies(image, config=_preset(80)), x + 2, y + 2)
+    assert "broken_geometry" not in _reasons_at(detect_grid_cell_anomalies(image, config=_preset(40)), x + 2, y + 2)
+
+
+def test_geometry_does_not_depend_on_the_debris_size() -> None:
+    image, slots = _lattice(23, 66, 17, 29)
+    x, y = slots[(4, 4)]
+    # A cell split into a top bar and a lower part, with a 3 px crumb in the split.
+    _replace_cell(image, x, y, 23, 66, lambda img: None)
+    cv2.rectangle(image, (x, y), (x + 22, y + 12), 255, -1)
+    cv2.rectangle(image, (x, y + 18), (x + 22, y + 65), 255, -1)
+    cv2.rectangle(image, (x + 10, y + 14), (x + 12, y + 16), 255, -1)
+    geometry = {}
+    for size in (5, 24, 120):
+        result = detect_grid_cell_anomalies(image, config=_preset(40, debris_min_area_px=size))
+        geometry[size] = sorted(tuple(c.bbox) for c in result.per_cell_results if "broken_geometry" in c.reasons)
+    assert geometry[5] == geometry[24] == geometry[120]

@@ -38,6 +38,10 @@ _grid_damage_cache_last_trim = 0.0
 DEBRIS_MIN_AREA_PX = 24.0
 # Upper bound of the operator's minimum debris size setting.
 DEBRIS_MIN_AREA_MAX_PX = 200
+# The analysis itself keeps debris down to this size, whatever the operator's setting:
+# fragment grouping, gates and verdicts on cells never depend on that setting.
+# The operator's size only hides debris marks at the very end (and on display).
+DEBRIS_ANALYSIS_FLOOR_PX = 4.0
 # Score of a piece that is debris only because no other filter claimed it.
 LEFTOVER_DEBRIS_SCORE = 0.75
 # feature_snapshot flag on such pieces: they are not cells and skip confidence fill.
@@ -1007,14 +1011,15 @@ def detect_grid_cell_anomalies(
             score_edge,
             score_fill,
             score_geometry,
+            score_size_shortfall,
             slider_threshold,
         )
 
         reference_solidity = float(np.median([float(item.solidity) for item in (normal_seed or candidates)]))
         reference_extent = float(np.median([float(item.extent) for item in (normal_seed or candidates)]))
         # Local shape measures are scored only in calibrated mode.
-        local_shapes: dict[int, tuple[float, float]] = {}
-        reference_window_fill, reference_notch_depth = 1.0, 0.0
+        local_shapes: dict[int, tuple[float, float, float]] = {}
+        reference_window_fill, reference_notch_depth, reference_corner_fill = 1.0, 0.0, 1.0
         if str(cfg.scoring_mode) == "calibrated":
             local_shapes = {id(item): _local_shape_measures(item) for item in ordered_candidates}
             reference_pool = [
@@ -1023,6 +1028,7 @@ def detect_grid_cell_anomalies(
             if reference_pool:
                 reference_window_fill = float(np.median([shape[0] for shape in reference_pool]))
                 reference_notch_depth = float(np.median([shape[1] for shape in reference_pool]))
+                reference_corner_fill = float(np.median([shape[2] for shape in reference_pool]))
         shared_reference = dict(cfg.calibration_reference)
         if shared_reference:
             median_width = float(shared_reference.get("width", median_width))
@@ -1094,7 +1100,7 @@ def detect_grid_cell_anomalies(
                         "reference_extent": float(reference_extent),
                     }
                 )
-                window_fill, notch_depth = local_shapes[id(candidate)]
+                window_fill, notch_depth, corner_fill = local_shapes[id(candidate)]
                 prepared_scores.append(
                     CalibratedScores(
                         fill=score_fill(candidate.interior_fill_ratio, median_interior_fill),
@@ -1107,6 +1113,9 @@ def detect_grid_cell_anomalies(
                             reference_window_fill=reference_window_fill,
                             notch_depth=notch_depth,
                             reference_notch_depth=reference_notch_depth,
+                            corner_fill=corner_fill,
+                            reference_corner_fill=reference_corner_fill,
+                            size_ratio=min(width_ratio, height_ratio),
                         ),
                         merge=_score_merge_for_candidate(
                             candidate,
@@ -1135,7 +1144,7 @@ def detect_grid_cell_anomalies(
                 neighbors_unmarked = len(ids) >= 3 and len(clean) * 2 >= len(ids)
                 local = local_medians[candidate_index]
                 neighbor_shapes = [local_shapes[id(ordered_candidates[index])] for index in ids]
-                window_fill, notch_depth = local_shapes[id(candidate)]
+                window_fill, notch_depth, corner_fill = local_shapes[id(candidate)]
                 if geometry_agrees_with_neighbors(
                     candidate.solidity,
                     candidate.extent,
@@ -1146,10 +1155,17 @@ def detect_grid_cell_anomalies(
                     neighbor_window_fill=float(np.median([shape[0] for shape in neighbor_shapes])) if neighbor_shapes else None,
                     notch_depth=notch_depth,
                     neighbor_notch_depth=float(np.median([shape[1] for shape in neighbor_shapes])) if neighbor_shapes else None,
+                    corner_fill=corner_fill,
+                    neighbor_corner_fill=float(np.median([shape[2] for shape in neighbor_shapes])) if neighbor_shapes else None,
                 ):
+                    # A shared shape is not broken; a cell shorter than its neighbours still is.
+                    prepared_features_row = prepared_features[candidate_index]
+                    size_score = score_size_shortfall(
+                        min(prepared_features_row["width_ratio"], prepared_features_row["height_ratio"])
+                    )
                     prepared_scores[candidate_index] = replace(
                         prepared_scores[candidate_index],
-                        geometry=min(prepared_scores[candidate_index].geometry, NORMAL_SCORE_CEILING),
+                        geometry=max(min(prepared_scores[candidate_index].geometry, NORMAL_SCORE_CEILING), size_score),
                     )
             frame_examples = [
                 {"label": label, "features": dict(features)}
@@ -1201,7 +1217,8 @@ def detect_grid_cell_anomalies(
                     area=float(candidate.area),
                     in_lattice=len(lattice_neighbor_counts) > candidate_index
                     and lattice_neighbor_counts[candidate_index] >= 3,
-                    debris_min_area=float(cfg.debris_min_area_px),
+                    debris_min_area=DEBRIS_ANALYSIS_FLOOR_PX,
+                    solidity=float(candidate.solidity),
                 )
                 array_area_ratio = float(candidate.area) / max(1.0, float(median_area))
                 array_width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
@@ -1333,7 +1350,7 @@ def detect_grid_cell_anomalies(
                 and not is_bad
                 and not is_cell_like
                 and not detached_edge
-                and float(candidate.area) >= float(cfg.debris_min_area_px)
+                and float(candidate.area) >= DEBRIS_ANALYSIS_FLOOR_PX
                 # A frame-cut piece on a grid row/column, or one that fits a cell slot, is a
                 # clipped cell, not debris.
                 and not (
@@ -1584,7 +1601,7 @@ def detect_grid_cell_anomalies(
             elapsed_ms,
         )
 
-    return GridFrameAnalysisResult(
+    result = GridFrameAnalysisResult(
         frame_id=str(frame_id or ""),
         frame_path=str(frame_path or ""),
         image_width=int(width),
@@ -1611,6 +1628,12 @@ def detect_grid_cell_anomalies(
         debug=debug_payload,
         zone_skipped_components=int(zone_skipped),
     )
+    if str(cfg.scoring_mode) == "calibrated" and float(cfg.debris_min_area_px) > DEBRIS_ANALYSIS_FLOOR_PX:
+        # The operator's debris size is a last filter on debris marks only.
+        from .grid_narrowing import GridNarrowing, narrow_grid_frame_result
+
+        result = narrow_grid_frame_result(result, GridNarrowing(debris_min_area_px=int(cfg.debris_min_area_px)))
+    return result
 
 
 def analyze_grid_frame_path(
@@ -3402,6 +3425,7 @@ def _gate_calibrated_reasons(
     area: float,
     in_lattice: bool,
     debris_min_area: float = DEBRIS_MIN_AREA_PX,
+    solidity: float = 1.0,
 ) -> tuple[str, ...]:
     """Keep geometry/debris on slot-sized lattice cells. Merge uses cores, not the lattice."""
 
@@ -3424,8 +3448,19 @@ def _gate_calibrated_reasons(
             }
         ]
     slot_like = 0.55 <= float(area_ratio) <= 1.90 and smallest >= 0.50 and largest <= 1.85
-    if "broken_geometry" in found and not slot_like:
+    # A cell drawn only in part: one side of a cell kept, the other cut short, and the
+    # piece itself solid like a cell (noise blobs of a cell's width are not).
+    partial_cell = (
+        in_lattice
+        and 0.80 <= largest <= 1.25
+        and 0.30 <= smallest < 0.85
+        and float(area_ratio) >= 0.25
+        and float(solidity) >= 0.85
+    )
+    if "broken_geometry" in found and not (slot_like or partial_cell):
         found = [reason for reason in found if reason != "broken_geometry"]
+    if partial_cell and "broken_geometry" in found:
+        found = [reason for reason in found if reason != "small_artifact"]
     if "edge_clipped_cell" in found and (smallest < 0.35 or float(area) < 24.0):
         found = [reason for reason in found if reason != "edge_clipped_cell"]
     # JPEG crumbs are a few pixels. The operator sets how large real debris starts.
@@ -3550,20 +3585,21 @@ def _inside_slot_band(
     return nearest - half <= float(start) and float(end) <= nearest + half
 
 
-def _local_shape_measures(candidate: _ContourCandidate) -> tuple[float, float]:
-    """(worst square-window fill, deepest notch) of a contour.
+def _local_shape_measures(candidate: _ContourCandidate) -> tuple[float, float, float]:
+    """(worst square-window fill, deepest notch, emptiest corner) of a contour.
 
     The window is a square with the short side, slid along the long side; its worst fill
     is the extent of the most damaged stretch. The notch is the deepest convexity defect
     as a share of the cell size in the direction it cuts in. Neither depends on how
-    elongated the cell is; for a square cell both reduce to whole-cell measures.
+    elongated the cell is; for a square cell both reduce to whole-cell measures. The corner is a
+    square of half the short side at each bbox corner; a slanted or cut end empties one.
     """
 
     contour = getattr(candidate, "contour", None)
     x, y, width, height = (int(value) for value in candidate.bbox)
     short = min(width, height)
     if contour is None or cv2 is None or short < 4 or len(contour) < 4:
-        return float(candidate.extent), 0.0
+        return float(candidate.extent), 0.0, 1.0
     points = np.asarray(contour, dtype=np.int32).reshape(-1, 1, 2)
     local = points - np.array([[[x, y]]], dtype=np.int32)
     filled = np.zeros((height, width), dtype=np.uint8)
@@ -3574,6 +3610,13 @@ def _local_shape_measures(candidate: _ContourCandidate) -> tuple[float, float]:
         line = filled.sum(axis=0, dtype=np.float64)
     sums = np.convolve(line, np.ones(short, dtype=np.float64), mode="valid")
     window_fill = float(sums.min()) / float(short * short) if sums.size else float(candidate.extent)
+    corner = max(2, int(round(short / 2.0)))
+    corner_fill = min(
+        float(filled[:corner, :corner].mean()),
+        float(filled[:corner, -corner:].mean()),
+        float(filled[-corner:, :corner].mean()),
+        float(filled[-corner:, -corner:].mean()),
+    )
     notch = 0.0
     try:
         hull = cv2.convexHull(points, returnPoints=False)
@@ -3592,7 +3635,7 @@ def _local_shape_measures(candidate: _ContourCandidate) -> tuple[float, float]:
             normal_x, normal_y = -edge[1] / length, edge[0] / length
             reach = float(np.hypot(normal_x / float(width), normal_y / float(height)))
             notch = max(notch, float(depth) / 256.0 * reach)
-    return min(1.0, window_fill), notch
+    return min(1.0, window_fill), notch, corner_fill
 
 
 def _fits_edge_slot(

@@ -8,7 +8,13 @@ from PyQt6.QtCore import QSettings
 
 from karakal.app.main_window import KarakalWidget
 from karakal.app.presenter import KarakalPresenter
-from karakal.core.grid_anomaly import CONTOUR_AREA_FEATURE, DEBRIS_MIN_AREA_PX
+from karakal.core.grid_anomaly import (
+    CONTOUR_AREA_FEATURE,
+    DEBRIS_ANALYSIS_FLOOR_PX,
+    DEBRIS_MIN_AREA_PX,
+    GridCellAnalysisResult,
+    GridFrameAnalysisResult,
+)
 from karakal.ui.debris_min_area_control import DebrisMinAreaControl
 from karakal.ui.i18n import Translator
 
@@ -20,11 +26,13 @@ def _widget(tmp_path, qtbot) -> KarakalWidget:
     return widget
 
 
-def test_default_size_keeps_previous_results(tmp_path, qtbot) -> None:
+def test_default_size_and_analysis_floor(tmp_path, qtbot) -> None:
     widget = _widget(tmp_path, qtbot)
     assert widget.grid_debris_min_area_control.value() == int(DEBRIS_MIN_AREA_PX)
     payload = widget._presenter._grid_inspection_config_payload()
-    assert KarakalPresenter._grid_damage_config_from_payload(payload).debris_min_area_px == int(DEBRIS_MIN_AREA_PX)
+    assert payload["debris_min_area_px"] == int(DEBRIS_MIN_AREA_PX)
+    # The analysis keeps all debris down to the floor; the operator's size is a display filter.
+    assert KarakalPresenter._grid_damage_config_from_payload(payload).debris_min_area_px == int(DEBRIS_ANALYSIS_FLOOR_PX)
 
 
 def test_main_window_value_reaches_analysis_and_is_saved(tmp_path, qtbot) -> None:
@@ -34,7 +42,8 @@ def test_main_window_value_reaches_analysis_and_is_saved(tmp_path, qtbot) -> Non
 
     payload = widget._presenter._grid_inspection_config_payload()
     assert payload["debris_min_area_px"] == 80
-    assert KarakalPresenter._grid_damage_config_from_payload(payload).debris_min_area_px == 80
+    # Changing the size never changes what the analysis computes.
+    assert KarakalPresenter._grid_damage_config_from_payload(payload).debris_min_area_px == int(DEBRIS_ANALYSIS_FLOOR_PX)
 
     restored = _widget(tmp_path, qtbot)
     assert restored.grid_debris_min_area_control.value() == 80
@@ -69,34 +78,76 @@ def test_control_keeps_slider_and_box_in_step(qtbot) -> None:
     assert seen == [120, 30]
 
 
-def test_frame_preview_redecide_drops_debris_below_size(tmp_path, qtbot) -> None:
+def _result_cell(bbox, reasons, features, score=0.9):
+    return GridCellAnalysisResult(
+        row=0,
+        col=0,
+        bbox=bbox,
+        centroid=(bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2),
+        contour_id=1,
+        status="broken" if reasons else "normal",
+        score=score if reasons else 0.0,
+        reasons=reasons,
+        feature_snapshot=features,
+    )
+
+
+def _frame(cells) -> GridFrameAnalysisResult:
+    return GridFrameAnalysisResult(
+        frame_id="f",
+        frame_path="mask.png",
+        image_width=400,
+        image_height=400,
+        grid_rows=0,
+        grid_cols=0,
+        total_expected_cells=len(cells),
+        detected_cells=len(cells),
+        normal_cells=0,
+        suspicious_cells=0,
+        broken_cells=len(cells),
+        missing_cells=0,
+        artifact_cells=0,
+        damage_score=0.5,
+        severity_level="",
+        grid_detected=True,
+        per_cell_results=tuple(cells),
+    )
+
+
+def test_frame_window_hides_only_debris_under_the_size(tmp_path, qtbot) -> None:
     widget = _widget(tmp_path, qtbot)
+    presenter = widget._presenter
+    small = _result_cell((10, 10, 5, 5), ("small_artifact",), (("debris_score", 0.97), (CONTOUR_AREA_FEATURE, 20.0), ("leftover_debris", 1.0)))
+    large = _result_cell((50, 10, 9, 9), ("small_artifact",), (("debris_score", 0.97), (CONTOUR_AREA_FEATURE, 90.0), ("leftover_debris", 1.0)))
+    # A broken cell made of pieces carries no area: the debris size never touches it.
+    broken = _result_cell((100, 10, 23, 66), ("broken_geometry",), (("fragment_count", 2.0),))
+    presenter._grid_debris_min_area_px = 50
+    shown = presenter._shown_details_result(_frame((small, large, broken)), None, "f")
+    assert sorted(tuple(cell.reasons) for cell in shown.per_cell_results) == [("broken_geometry",), ("small_artifact",)]
 
-    @dataclass(frozen=True)
-    class _Cell:
-        reasons: tuple = ()
-        status: str = "normal"
-        score: float = 0.0
-        feature_snapshot: tuple = ()
 
-    @dataclass(frozen=True)
-    class _Result:
-        per_cell_results: tuple = field(default_factory=tuple)
-
-    small, large = (
-        _Cell(
-            reasons=("small_artifact",),
-            status="broken",
-            score=0.9,
-            feature_snapshot=(("debris_score", 0.97), (CONTOUR_AREA_FEATURE, area)),
-        )
-        for area in (20.0, 90.0)
+def test_redecide_keeps_rule_verdicts_and_follows_threshold_crossings(tmp_path, qtbot) -> None:
+    presenter = _widget(tmp_path, qtbot)._presenter
+    scores = lambda geometry, debris: (  # noqa: E731
+        ("fill_score", 0.0), ("geometry_score", geometry), ("merge_score", 0.0), ("debris_score", debris), ("edge_score", 0.0)
     )
-    tuning = widget._presenter._grid_tuning_values()
-    _result, cells = widget._presenter._redecide_prepared_frame(
-        _Result((small, large)), tuning, {}, debris_min_area=50.0
-    )
-    assert [tuple(item.reasons) for item in cells] == [(), ("small_artifact",)]
+    # Geometry by score, geometry by a rule (low score), debris the analysis gated off, a fragment group.
+    by_score = _result_cell((0, 0, 23, 66), ("broken_geometry",), scores(0.7, 0.0))
+    by_rule = _result_cell((40, 0, 23, 66), ("broken_geometry",), scores(0.05, 0.0))
+    gated = _result_cell((80, 0, 23, 66), (), scores(0.0, 0.95))
+    group = _result_cell((120, 0, 23, 66), ("broken_geometry",), (("fragment_count", 2.0),))
+    frame = _frame((by_score, by_rule, gated, group))
+    balanced = presenter._grid_tuning_values()
+
+    same, _ = presenter._redecide_prepared_frame(frame, balanced, {}, prepared_tuning=balanced)
+    assert same is frame
+
+    soft = dict(balanced, geometry_sensitivity=10)
+    moved, cells = presenter._redecide_prepared_frame(frame, soft, {}, prepared_tuning=balanced)
+    assert [tuple(cell.reasons) for cell in cells] == [(), ("broken_geometry",), (), ("broken_geometry",)]
+
+    back, cells = presenter._redecide_prepared_frame(frame, balanced, {}, prepared_tuning=balanced)
+    assert back is frame
 
 
 def _frame_dialog(qtbot, cells):

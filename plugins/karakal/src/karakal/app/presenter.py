@@ -98,6 +98,7 @@ from ..core.domain import (
 from ..core.grid_narrowing import GridNarrowing, can_narrow, default_run_debris_min_area, narrow_grid_frame_result
 from ..core.grid_calibration import GridCalibration, GridCellExample, reference_from_normal_examples, reference_pairs
 from ..core.grid_anomaly import (
+    DEBRIS_ANALYSIS_FLOOR_PX,
     DEBRIS_MIN_AREA_PX,
     GridCellReferenceProfile,
     GridDamageAnalysisConfig,
@@ -468,6 +469,8 @@ class KarakalPresenter(QObject):
         payload["display_layer"] = "unified"
         payload["tuning_preset"] = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
         payload["debris_min_area_px"] = int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX))
+        # The run keeps debris down to this size; the operator's size is applied on display.
+        payload["debris_analysis_floor_px"] = float(DEBRIS_ANALYSIS_FLOOR_PX)
         if tester_build():
             payload["enabled_error_types"] = [
                 item
@@ -590,7 +593,9 @@ class KarakalPresenter(QObject):
             debris_sensitivity=int(values.get("debris_sensitivity", 75)),
             geometry_sensitivity=int(values.get("geometry_sensitivity", 40)),
             merge_sensitivity=int(values.get("merge_sensitivity", 35)),
-            debris_min_area_px=int(values.get("debris_min_area_px", DEBRIS_MIN_AREA_PX)),
+            # Analysis keeps all debris down to the floor; the operator's size only hides
+            # debris marks on display (matrix narrowing, frame window), never other verdicts.
+            debris_min_area_px=int(DEBRIS_ANALYSIS_FLOOR_PX),
             calibration_reference=reference_pairs(values.get("calibration_reference") if isinstance(values.get("calibration_reference"), dict) else None),
             calibration_examples=_example_pairs(values.get("calibration_examples")),
             example_influence=float(values.get("example_influence") or 0.5),
@@ -5939,21 +5944,47 @@ class KarakalPresenter(QObject):
             "debris": slider_threshold(int(tuning_values.get("debris_sensitivity", 0))),
         }
 
+    # Which score each score-made reason comes from; other reasons come from rules only.
+    _SCORE_OF_REASON = {
+        "filled_cell": "fill",
+        "partial_filled_cell": "fill",
+        "broken_geometry": "geometry",
+        "merged_contour": "merge",
+        "small_artifact": "debris",
+    }
+
     def _redecide_prepared_frame(
         self,
         result,
         tuning_values: dict[str, int],
         payload: dict,
         *,
-        debris_min_area: float = DEBRIS_MIN_AREA_PX,
+        prepared_tuning: dict[str, int] | None = None,
+        prepared_payload: dict | None = None,
     ):
-        from ..core.grid_anomaly import CONTOUR_AREA_FEATURE, _status_for_reasons
+        """Move the analyzed frame to new thresholds without analyzing it again.
+
+        Only crossings change: a reason the new thresholds or operator examples add or
+        drop by score, compared with the thresholds and examples of the analysis.
+        Verdicts made by rules (fragment groups, holes, short cells, template, edge clips)
+        and reasons the analysis gated off stay as analyzed, so a frame does not change
+        when the sliders return to the values it was analyzed with.
+        """
+
+        from ..core.grid_anomaly import _status_for_reasons
         from ..core.grid_calibration import decide_reasons_batch
 
-        thresholds = self._grid_score_thresholds(tuning_values)
+        source_cells = tuple(getattr(result, "per_cell_results", ()) or ())
+        before_values = dict(prepared_tuning or tuning_values)
+        before = self._grid_score_thresholds(before_values)
+        after = self._grid_score_thresholds(tuning_values)
+        before_payload = dict(prepared_payload if prepared_payload is not None else payload)
         examples = list(payload.get("calibration_examples") or ())
         influence = float(payload.get("example_influence", 0.5))
-        source_cells = tuple(getattr(result, "per_cell_results", ()) or ())
+        before_examples = list(before_payload.get("calibration_examples") or ())
+        before_influence = float(before_payload.get("example_influence", 0.5))
+        if before == after and before_examples == examples and before_influence == influence:
+            return result, source_cells
         feature_rows = [dict(cell.feature_snapshot or ()) for cell in source_cells]
         score_rows = [
             {
@@ -5965,30 +5996,52 @@ class KarakalPresenter(QObject):
             }
             for features in feature_rows
         ]
-        decided = decide_reasons_batch(
+        decided_before = decide_reasons_batch(
             score_rows,
-            thresholds,
+            before,
+            feature_rows=feature_rows,
+            examples=before_examples,
+            example_influence=before_influence,
+            edge_enabled=False,
+        )
+        decided_after = decide_reasons_batch(
+            score_rows,
+            after,
             feature_rows=feature_rows,
             examples=examples,
             example_influence=influence,
             edge_enabled=False,
         )
-        # Same size gate as the analysis: a piece below the operator's size is never debris.
-        decided = [
-            tuple(reason for reason in reasons if reason != "small_artifact")
-            if float(features.get(CONTOUR_AREA_FEATURE, debris_min_area)) < float(debris_min_area)
-            else tuple(reasons)
-            for reasons, features in zip(decided, feature_rows)
-        ]
         cells = []
-        for cell, scores, reasons in zip(source_cells, score_rows, decided):
-            marked = bool(reasons)
+        for cell, features, scores, was, now in zip(source_cells, feature_rows, score_rows, decided_before, decided_after):
+            if "geometry_score" not in features:
+                # Fragment groups, zones: made by rules, no scores to move.
+                cells.append(cell)
+                continue
+            reasons = [str(reason) for reason in (cell.reasons or ())]
+            was_set, now_set = set(was), set(now)
+            for reason in was_set - now_set:
+                if reason in reasons:
+                    reasons.remove(reason)
+            for reason in now:
+                # A reason the analysis gated off at the old thresholds stays off.
+                if reason not in was_set and reason not in reasons:
+                    reasons.append(reason)
+            reasons_t = tuple(dict.fromkeys(reasons))
+            if reasons_t == tuple(cell.reasons or ()):
+                cells.append(cell)
+                continue
+            marked = bool(reasons_t)
+            score = max(
+                (scores[self._SCORE_OF_REASON[reason]] for reason in reasons_t if reason in self._SCORE_OF_REASON),
+                default=float(cell.score),
+            )
             cells.append(
                 replace(
                     cell,
-                    reasons=tuple(reasons),
-                    status=_status_for_reasons(reasons) if marked else "normal",
-                    score=float(max(scores.values()) if marked else 0.0),
+                    reasons=reasons_t,
+                    status=_status_for_reasons(reasons_t) if marked else "normal",
+                    score=float(score) if marked else 0.0,
                 )
             )
         updated = replace(result, per_cell_results=tuple(cells))
@@ -6093,15 +6146,19 @@ class KarakalPresenter(QObject):
         config = self._grid_damage_config_from_payload(payload)
         frame_id = str(getattr(record, "key", "") or "")
         reference_key = json.dumps(payload.get("calibration_reference") or {}, sort_keys=True, default=str)
-        # The size gate runs inside the analysis, so each size has its own prepared frame.
-        cache_token = (frame_id, binary_path, confidence_path, reference_key, int(config.debris_min_area_px))
+        cache_token = (frame_id, binary_path, confidence_path, reference_key)
         prepared = getattr(self, "_grid_prepared_frames", {}).get(cache_token)
         if prepared is not None:
-            decided, cells = self._redecide_prepared_frame(
-                prepared, tuning_values, payload, debris_min_area=float(config.debris_min_area_px)
+            prepared_state = (getattr(self, "_grid_prepared_tuning", {}) or {}).get(cache_token) or {}
+            decided, _cells = self._redecide_prepared_frame(
+                prepared,
+                tuning_values,
+                payload,
+                prepared_tuning=prepared_state.get("tuning"),
+                prepared_payload=prepared_state.get("payload"),
             )
-            shown = KarakalPresenter._with_stored_class_conflict(self, decided, state, frame_id)
-            return shown, tuple(getattr(shown, "per_cell_results", ()) or ()) if shown is not None else cells
+            shown = KarakalPresenter._shown_details_result(self, decided, state, frame_id)
+            return shown, tuple(getattr(shown, "per_cell_results", ()) or ())
         binary_result = None
         binary_error: Exception | None = None
         if binary_path:
@@ -6124,9 +6181,29 @@ class KarakalPresenter(QObject):
             cache = {}
             self._grid_prepared_frames = cache
         cache[cache_token] = binary_result
+        tuning_cache = getattr(self, "_grid_prepared_tuning", None)
+        if tuning_cache is None:
+            tuning_cache = {}
+            self._grid_prepared_tuning = tuning_cache
+        tuning_cache[cache_token] = {
+            "tuning": dict(tuning_values),
+            "payload": {
+                "calibration_examples": list(payload.get("calibration_examples") or ()),
+                "example_influence": float(payload.get("example_influence", 0.5)),
+            },
+        }
         self._refresh_grid_calibration_summary()
-        shown = KarakalPresenter._with_stored_class_conflict(self, binary_result, state, frame_id)
+        shown = KarakalPresenter._shown_details_result(self, binary_result, state, frame_id)
         return shown, tuple(getattr(shown, "per_cell_results", ()) or ())
+
+    def _shown_details_result(self, result, state, frame_id: str):
+        """Frame-window result as shown: the operator's debris size hides small debris only."""
+
+        if isinstance(result, GridFrameAnalysisResult):
+            result = narrow_grid_frame_result(
+                result, GridNarrowing(debris_min_area_px=int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX)))
+            )
+        return KarakalPresenter._with_stored_class_conflict(self, result, state, frame_id)
 
     def _unified_grid_payloads_for_keys(
         self,

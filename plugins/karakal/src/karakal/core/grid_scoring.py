@@ -29,6 +29,11 @@ def score_fill(interior_fill: float, reference_interior: float) -> float:
 
 PARTIAL_FILL_GAP = 0.15
 NORMAL_SCORE_CEILING = 0.02
+# Cells this much shorter or narrower than their neighbours are natural spread, not broken.
+SIZE_SPREAD_RATIO = 0.85
+# Rounded cells empty their corners as much as a slanted end does, so the corner counts
+# at a fraction: a balanced preset marks only cut-off corners, a strict one also slants.
+CORNER_WEIGHT = 0.4
 
 
 def geometry_agrees_with_neighbors(
@@ -43,6 +48,8 @@ def geometry_agrees_with_neighbors(
     neighbor_window_fill: float | None = None,
     notch_depth: float | None = None,
     neighbor_notch_depth: float | None = None,
+    corner_fill: float | None = None,
+    neighbor_corner_fill: float | None = None,
 ) -> bool:
     """A shared local shape is not broken geometry. Fill is never affected.
 
@@ -57,6 +64,9 @@ def geometry_agrees_with_neighbors(
             return False
     if notch_depth is not None and neighbor_notch_depth is not None:
         if abs(float(notch_depth) - float(neighbor_notch_depth)) > tolerance:
+            return False
+    if corner_fill is not None and neighbor_corner_fill is not None:
+        if abs(float(corner_fill) - float(neighbor_corner_fill)) > tolerance:
             return False
     return (
         abs(float(solidity) - float(neighbor_solidity)) <= tolerance
@@ -74,6 +84,9 @@ def score_geometry(
     reference_window_fill: float | None = None,
     notch_depth: float | None = None,
     reference_notch_depth: float | None = None,
+    corner_fill: float | None = None,
+    reference_corner_fill: float | None = None,
+    size_ratio: float | None = None,
 ) -> float:
     """How far the cell shape is from the normal-cell reference.
 
@@ -82,6 +95,10 @@ def score_geometry(
     same score for any cell shape: the fill of the worst square window (side = short
     side) and the deepest notch in short sides. For a square cell the window is the
     whole cell.
+
+    A cut or slanted end shows in the emptiest corner (a square of half the short side).
+    A cell drawn only in part keeps one side and loses the other: ``size_ratio`` is the
+    smaller of width and length over the neighbouring cells; 15% short is natural spread.
     """
 
     deviation = max(float(reference_solidity) - float(solidity), abs(float(extent) - float(reference_extent)))
@@ -89,7 +106,17 @@ def score_geometry(
         deviation = max(deviation, float(reference_window_fill) - float(window_fill))
     if notch_depth is not None and reference_notch_depth is not None:
         deviation = max(deviation, float(notch_depth) - float(reference_notch_depth))
+    if corner_fill is not None and reference_corner_fill is not None:
+        deviation = max(deviation, CORNER_WEIGHT * (float(reference_corner_fill) - float(corner_fill)))
+    if size_ratio is not None:
+        deviation = max(deviation, SIZE_SPREAD_RATIO - float(size_ratio))
     return _logistic((deviation - 0.16) / 0.04)
+
+
+def score_size_shortfall(size_ratio: float) -> float:
+    """Geometry score from size alone: a cell shorter or narrower than its neighbours."""
+
+    return _logistic((SIZE_SPREAD_RATIO - float(size_ratio) - 0.16) / 0.04)
 
 
 def score_merge(largest_axis_ratio: float, area_ratio: float) -> float:

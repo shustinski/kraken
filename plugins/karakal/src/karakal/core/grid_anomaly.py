@@ -36,10 +36,15 @@ GRID_DAMAGE_CACHE_TRIM_INTERVAL_SECONDS = 300.0
 _grid_damage_cache_last_trim = 0.0
 # JPEG crumbs are a few pixels; real debris is a painted piece at least this large.
 DEBRIS_MIN_AREA_PX = 24.0
+# Upper bound of the operator's minimum debris size setting.
+DEBRIS_MIN_AREA_MAX_PX = 200
 # Score of a piece that is debris only because no other filter claimed it.
 LEFTOVER_DEBRIS_SCORE = 0.75
 # feature_snapshot flag on such pieces: they are not cells and skip confidence fill.
 LEFTOVER_DEBRIS_FEATURE = "leftover_debris"
+# feature_snapshot key with the contour area in pixels, the value the debris size gate compares.
+# Not a calibration distance key, so it does not move operator examples.
+CONTOUR_AREA_FEATURE = "contour_area_px"
 # A hole this much larger (share of the cell area) than holes of normal cells breaks the cell.
 HOLE_EXCESS_RATIO = 0.03
 # Score of a lattice slot cut by the frame edge.
@@ -129,6 +134,8 @@ class GridDamageAnalysisConfig:
     debris_sensitivity: int = 75
     geometry_sensitivity: int = 40
     merge_sensitivity: int = 35
+    # Operator setting: mask pieces smaller than this are not debris.
+    debris_min_area_px: int = int(DEBRIS_MIN_AREA_PX)
     calibration_reference: tuple[tuple[str, float], ...] = ()
     calibration_examples: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
     example_influence: float = 0.5
@@ -178,6 +185,7 @@ class GridDamageAnalysisConfig:
             debris_sensitivity=max(0, min(100, int(self.debris_sensitivity))),
             geometry_sensitivity=max(0, min(100, int(self.geometry_sensitivity))),
             merge_sensitivity=max(0, min(100, int(self.merge_sensitivity))),
+            debris_min_area_px=max(0, min(DEBRIS_MIN_AREA_MAX_PX, int(self.debris_min_area_px))),
             calibration_reference=tuple(
                 (str(key), float(value))
                 for key, value in self.calibration_reference
@@ -1166,6 +1174,7 @@ def detect_grid_cell_anomalies(
                     area=float(candidate.area),
                     in_lattice=len(lattice_neighbor_counts) > candidate_index
                     and lattice_neighbor_counts[candidate_index] >= 3,
+                    debris_min_area=float(cfg.debris_min_area_px),
                 )
                 array_area_ratio = float(candidate.area) / max(1.0, float(median_area))
                 array_width_ratio = float(candidate.bbox[2]) / max(1.0, float(median_width))
@@ -1297,7 +1306,7 @@ def detect_grid_cell_anomalies(
                 and not is_bad
                 and not is_cell_like
                 and not detached_edge
-                and float(candidate.area) >= DEBRIS_MIN_AREA_PX
+                and float(candidate.area) >= float(cfg.debris_min_area_px)
                 # A frame-cut piece on a grid row/column is a clipped cell, not debris.
                 and not (candidate.touches_border and (on_column or on_row))
             ):
@@ -1365,6 +1374,7 @@ def detect_grid_cell_anomalies(
                             ("merge_score", float(scores.merge)),
                             ("debris_score", float(scores.debris)),
                             ("edge_score", float(scores.edge)),
+                            (CONTOUR_AREA_FEATURE, float(candidate.area)),
                         )
                         + ((LEFTOVER_DEBRIS_FEATURE, 1.0),) * int(leftover_debris)
                         + (template_features if template_view is not None else ())
@@ -3346,6 +3356,7 @@ def _gate_calibrated_reasons(
     area_ratio: float,
     area: float,
     in_lattice: bool,
+    debris_min_area: float = DEBRIS_MIN_AREA_PX,
 ) -> tuple[str, ...]:
     """Keep geometry/debris on slot-sized lattice cells. Merge uses cores, not the lattice."""
 
@@ -3372,8 +3383,8 @@ def _gate_calibrated_reasons(
         found = [reason for reason in found if reason != "broken_geometry"]
     if "edge_clipped_cell" in found and (smallest < 0.35 or float(area) < 24.0):
         found = [reason for reason in found if reason != "edge_clipped_cell"]
-    # JPEG crumbs are a few pixels. Real debris in the tests is a small painted block.
-    if "small_artifact" in found and float(area) < DEBRIS_MIN_AREA_PX:
+    # JPEG crumbs are a few pixels. The operator sets how large real debris starts.
+    if "small_artifact" in found and float(area) < float(debris_min_area):
         found = [reason for reason in found if reason != "small_artifact"]
     return tuple(dict.fromkeys(found))
 

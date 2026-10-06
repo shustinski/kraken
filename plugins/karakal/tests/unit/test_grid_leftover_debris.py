@@ -100,3 +100,33 @@ def test_leftover_debris_is_not_scored_as_filled_cell() -> None:
     scored = score_confidence_fill_on_binary_result(binary, confidence)
     assert not any(tuple(cell.bbox) == (x, y, 180, 180) for cell in scored.per_cell_results)
     assert not any("filled_cell" in cell.reasons for cell in scored.per_cell_results)
+
+
+def _piece_off_lattice(side: int) -> np.ndarray:
+    image = _lattice()
+    cv2.rectangle(image, (1000, 600), (1000 + side - 1, 600 + side - 1), 255, -1)
+    return image
+
+
+def _marks_piece(image: np.ndarray, config: GridDamageAnalysisConfig | None = None) -> bool:
+    # Small pieces get a padded box, so match by position.
+    return any(x <= 1001 <= x + w and y <= 601 <= y + h for x, y, w, h in _debris_boxes(image, config))
+
+
+def test_operator_minimum_size_hides_smaller_debris() -> None:
+    # Mask smoothing grows a 6x6 square to a contour of about 49 px.
+    image = _piece_off_lattice(6)
+    assert _marks_piece(image)
+    assert not _marks_piece(image, _config(debris_min_area_px=60))
+
+
+def test_operator_minimum_size_can_mark_crumbs() -> None:
+    # A 3x3 square is a contour of about 16 px, below the default 24.
+    image = _piece_off_lattice(3)
+    assert not _marks_piece(image)
+    assert _marks_piece(image, _config(debris_min_area_px=10))
+
+
+def test_minimum_size_is_clamped() -> None:
+    assert _config(debris_min_area_px=-5).debris_min_area_px == 0
+    assert _config(debris_min_area_px=10_000).debris_min_area_px == grid_anomaly.DEBRIS_MIN_AREA_MAX_PX

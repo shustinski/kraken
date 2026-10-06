@@ -71,6 +71,7 @@ from ..core.features import (
 from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
+from ..ui.debris_min_area_control import DebrisMinAreaControl
 from ..ui.frame_sets_panel import FrameSetsViewBadge
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.profiling_dialog import ProfilingDialog
@@ -639,6 +640,7 @@ class KarakalWidget(QWidget):
         for preset_key in ("soft", "balanced", "strict", "custom"):
             self.grid_tuning_preset_combo.addItem(self._t(f"grid_tuning.preset.{preset_key}"), preset_key)
         self.grid_tuning_preset_combo.setCurrentIndex(self.grid_tuning_preset_combo.findData("balanced"))
+        self.grid_debris_min_area_control = DebrisMinAreaControl(self._t, parent=self)
         self.metric_group_combo = _NoWheelComboBox(self)
         for label, key in MATRIX_METRIC_GROUP_OPTIONS:
             self.metric_group_combo.addItem(self._t(label), key)
@@ -1782,6 +1784,11 @@ class KarakalWidget(QWidget):
             if checkbox is not None:
                 checkbox.setParent(self._grid_inspection_tuning_group)
                 grid_tuning_layout.addWidget(checkbox)
+        self._grid_debris_min_area_row = self._build_setting_row(
+            self._t("grid_tuning.debris_min_area"),
+            self.grid_debris_min_area_control,
+        )
+        grid_tuning_layout.addWidget(self._grid_debris_min_area_row)
         layout.addWidget(self._matrix_view_group)
         layout.addWidget(self._grid_inspection_tuning_group)
         layout.addWidget(self._analysis_task_group)
@@ -1861,12 +1868,15 @@ class KarakalWidget(QWidget):
                 "_grid_reference_frame_row": "grid_reference.label",
                 "_grid_layer_display_row": "grid_tuning.display_layer",
                 "_grid_tuning_preset_row": "grid_tuning.preset",
+                "_grid_debris_min_area_row": "grid_tuning.debris_min_area",
             }
             for row_name, label_key in grid_tuning_labels.items():
                 row = getattr(self, row_name, None)
                 label = getattr(row, "_title_label", None)
                 if label is not None:
                     label.setText(self._t(label_key))
+            if hasattr(self, "grid_debris_min_area_control"):
+                self.grid_debris_min_area_control.retranslate(self._t)
             if hasattr(self, "grid_tuning_preset_combo"):
                 current_preset = self.grid_tuning_preset_combo.currentData()
                 for preset_key in ("soft", "balanced", "strict", "custom"):
@@ -2321,6 +2331,7 @@ class KarakalWidget(QWidget):
             self._presenter._on_grid_matrix_layer_selection_changed
         )
         self.grid_tuning_preset_combo.currentIndexChanged.connect(self._presenter._on_grid_tuning_preset_changed)
+        self.grid_debris_min_area_control.valueChanged.connect(self._presenter._on_grid_debris_min_area_changed)
         for _metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "binClicked"):
                 card.binClicked.connect(

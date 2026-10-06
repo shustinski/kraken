@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 import numpy as np
 from pathlib import Path
-from PyQt6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QTransform
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QToolTip,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -47,7 +48,7 @@ from ..core.backend_constants import (
     POLYGON_SUPPORT_THRESHOLD,
 )
 from ..core.domain import BuildResult, ComparisonMode, FrameRecord
-from ..core.grid_anomaly import GridFrameAnalysisResult
+from ..core.grid_anomaly import CONTOUR_AREA_FEATURE, GridFrameAnalysisResult
 from ..core.performance import PerformanceConfig
 from ..core.confidence_analysis import (
     _confidence_display_map_from_probability,
@@ -67,6 +68,7 @@ from ..core.confidence_maps import (
     confidence_bad_area_intensity,
 )
 from ..core.workers import AttentionIssuesWorker, DetailConfidenceWorker, DetailPayloadWorker
+from ..ui.debris_min_area_control import DebrisMinAreaControl
 from ..ui.i18n import Translator
 from ..ui.ui_constants import (
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
@@ -80,6 +82,8 @@ from ..ui.ui_constants import (
 )
 
 DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
+# A debris mark of a few pixels is hard to hit; the hover finds it within this many screen pixels.
+DEBRIS_HOVER_SLACK_SCREEN_PX = 4.0
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -100,6 +104,9 @@ class _OverlayGraphicsView(QGraphicsView):
     middleReleased = pyqtSignal()
     leftClicked = pyqtSignal(QPointF, object)
     viewTransformChanged = pyqtSignal()
+    # Mouse over the frame with no button held: scene position and global screen position.
+    hoverMoved = pyqtSignal(QPointF, QPoint)
+    hoverLeft = pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -114,6 +121,7 @@ class _OverlayGraphicsView(QGraphicsView):
         self.setMinimumSize(320, 320)
         self._middle_pan_active = False
         self._middle_pan_last_pos: QPointF | None = None
+        self.viewport().setMouseTracking(True)
 
     def wheelEvent(self, event) -> None:
         factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
@@ -149,7 +157,14 @@ class _OverlayGraphicsView(QGraphicsView):
             self.viewTransformChanged.emit()
             event.accept()
             return
+        if event.buttons() == Qt.MouseButton.NoButton:
+            point = event.position().toPoint()
+            self.hoverMoved.emit(self.mapToScene(point), event.globalPosition().toPoint())
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.hoverLeft.emit()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -650,6 +665,9 @@ class ExtendFrameDetailsDialog(QDialog):
                 checkbox.setToolTip(self._t("grid_error.small_artifact_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
             layers_form.addRow(checkbox)
+        # Shared with the main window: the presenter keeps both in step and re-analyzes this frame.
+        self.grid_debris_min_area_control = DebrisMinAreaControl(self._t, parent=layers_group)
+        layers_form.addRow(self._t("grid_tuning.debris_min_area"), self.grid_debris_min_area_control)
         for widget in self._grid_layer_controls():
             widget.setVisible(False)
             label = layers_form.labelForField(widget)
@@ -966,6 +984,8 @@ class ExtendFrameDetailsDialog(QDialog):
         self.layer_view_combo.currentIndexChanged.connect(self._refresh_scene_from_controls)
         self.grayscale_diff_checkbox.toggled.connect(self._refresh_scene_from_controls)
         self.overlay_view.leftClicked.connect(self._on_overlay_left_clicked)
+        self.overlay_view.hoverMoved.connect(self._on_overlay_hover)
+        self.overlay_view.hoverLeft.connect(self._hide_debris_hover)
         self.overlay_view.middlePressed.connect(self._activate_context_hold)
         self.overlay_view.middleReleased.connect(self._deactivate_base_hold)
         for widget in (
@@ -3876,12 +3896,14 @@ class ExtendFrameDetailsDialog(QDialog):
         self._set_grid_layer_controls_visible(grid_details)
         self._update_color_button_styles()
 
-    def _grid_layer_controls(self) -> tuple[QCheckBox, ...]:
+    def _grid_layer_controls(self) -> tuple[QWidget, ...]:
+        debris_control = getattr(self, "grid_debris_min_area_control", None)
         return (
             self.grid_normal_visible,
             self.grid_suspicious_visible,
             self.grid_broken_visible,
             *tuple(getattr(self, "grid_error_type_checks", {}).values()),
+            *((debris_control,) if debris_control is not None else ()),
         )
 
     def _set_grid_layer_controls_visible(self, visible: bool) -> None:
@@ -4256,6 +4278,60 @@ class ExtendFrameDetailsDialog(QDialog):
             item.setZValue(40.0)
             items.append(item)
         self._grid_mark_items = items
+
+    def _debris_cell_at(self, scene_pos: QPointF):
+        """Smallest shown debris mark under the cursor, with a few screen pixels of slack for tiny pieces."""
+
+        if self._selected_result_kind() != "grid_cell_defects":
+            return None
+        scale_x, scale_y = self._grid_scene_scale()
+        x = float(scene_pos.x()) / max(scale_x, 1e-6)
+        y = float(scene_pos.y()) / max(scale_y, 1e-6)
+        view_scale = max(abs(float(self.overlay_view.transform().m11())), 1e-6)
+        slack = DEBRIS_HOVER_SLACK_SCREEN_PX / (view_scale * max(scale_x, 1e-6))
+        chosen = None
+        chosen_area = None
+        for cell in getattr(self._grid_cell_analysis_result(), "per_cell_results", ()) or ():
+            if "small_artifact" not in tuple(getattr(cell, "reasons", ()) or ()):
+                continue
+            if not self._grid_mark_status_visible(str(getattr(cell, "status", "") or "")):
+                continue
+            if self._grid_good_example_hides_cell(cell) or not self._grid_cell_error_type_visible(cell):
+                continue
+            left = float(getattr(cell, "left", 0))
+            top = float(getattr(cell, "top", 0))
+            width = float(getattr(cell, "width", 0))
+            height = float(getattr(cell, "height", 0))
+            if left - slack <= x <= left + width + slack and top - slack <= y <= top + height + slack:
+                area = width * height
+                if chosen_area is None or area < chosen_area:
+                    chosen = cell
+                    chosen_area = area
+        return chosen
+
+    def _debris_hover_text(self, cell) -> str:
+        area = dict(getattr(cell, "feature_snapshot", ()) or ()).get(CONTOUR_AREA_FEATURE)
+        if area is None:
+            return ""
+        control = getattr(self, "grid_debris_min_area_control", None)
+        if control is None:
+            return self._t("grid_tuning.debris_hover", area=int(round(float(area))))
+        return self._t(
+            "grid_tuning.debris_hover_with_limit",
+            area=int(round(float(area))),
+            limit=int(control.value()),
+        )
+
+    def _on_overlay_hover(self, scene_pos: QPointF, global_pos: QPoint) -> None:
+        cell = self._debris_cell_at(scene_pos)
+        text = "" if cell is None else self._debris_hover_text(cell)
+        if not text:
+            self._hide_debris_hover()
+            return
+        QToolTip.showText(global_pos, text, self.overlay_view.viewport())
+
+    def _hide_debris_hover(self) -> None:
+        QToolTip.hideText()
 
     def _on_overlay_left_clicked(self, scene_pos: QPointF, _modifiers) -> None:
         if not self._grid_example_mode or self._selected_result_kind() != "grid_cell_defects":

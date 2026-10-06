@@ -97,6 +97,7 @@ from ..core.domain import (
 )
 from ..core.grid_calibration import GridCalibration, GridCellExample, reference_from_normal_examples, reference_pairs
 from ..core.grid_anomaly import (
+    DEBRIS_MIN_AREA_PX,
     GridCellReferenceProfile,
     GridDamageAnalysisConfig,
     GridFrameAnalysisResult,
@@ -263,6 +264,12 @@ class KarakalPresenter(QObject):
         self._class_conflict_user_wants = True
         self._grid_custom_tuning = None
         self._grid_preview_tuning = None
+        self._grid_debris_min_area_px = int(DEBRIS_MIN_AREA_PX)
+        # Slider drags and typing settle before the open frames are re-analyzed.
+        self._grid_debris_refresh_timer = QTimer()
+        self._grid_debris_refresh_timer.setSingleShot(True)
+        self._grid_debris_refresh_timer.setInterval(250)
+        self._grid_debris_refresh_timer.timeout.connect(self._refresh_details_after_debris_change)
         self._grid_tuning_dialog = None
         self._grid_frame_examples: dict[str, list[dict[str, object]]] = {}
         self._details_view_payload: dict[str, object] = self._settings_service.load_details_view_payload() or {}
@@ -455,6 +462,7 @@ class KarakalPresenter(QObject):
         payload["requested_layers"] = list(self._selected_grid_compute_layers())
         payload["display_layer"] = "unified"
         payload["tuning_preset"] = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
+        payload["debris_min_area_px"] = int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX))
         if tester_build():
             payload["enabled_error_types"] = [
                 item
@@ -497,6 +505,11 @@ class KarakalPresenter(QObject):
                 names = {str(raw_types)}
             self._class_conflict_user_wants = "class_conflict" in names
         self._sync_class_conflict_controls(self._current_tab_state() if hasattr(self, "matrix_tabs") else None)
+        if values.get("debris_min_area_px") is not None:
+            try:
+                self._apply_grid_debris_min_area(int(values["debris_min_area_px"]))
+            except (TypeError, ValueError):
+                pass
         requested_layers = self._normalize_grid_layers(values.get("requested_layers"))
         layer_checks = getattr(self, "grid_layer_compute_checks", {}) or {}
         if isinstance(layer_checks, dict) and layer_checks:
@@ -572,6 +585,7 @@ class KarakalPresenter(QObject):
             debris_sensitivity=int(values.get("debris_sensitivity", 75)),
             geometry_sensitivity=int(values.get("geometry_sensitivity", 40)),
             merge_sensitivity=int(values.get("merge_sensitivity", 35)),
+            debris_min_area_px=int(values.get("debris_min_area_px", DEBRIS_MIN_AREA_PX)),
             calibration_reference=reference_pairs(values.get("calibration_reference") if isinstance(values.get("calibration_reference"), dict) else None),
             calibration_examples=_example_pairs(values.get("calibration_examples")),
             example_influence=float(values.get("example_influence") or 0.5),
@@ -5716,6 +5730,30 @@ class KarakalPresenter(QObject):
         if getattr(self, "_grid_tuning_dialog", None) is dialog:
             self._grid_tuning_dialog = None
 
+    def _apply_grid_debris_min_area(self, value: int, *, source=None) -> None:
+        """Store the minimum debris size and show it in the main window and every open frame."""
+
+        self._grid_debris_min_area_px = max(0, int(value))
+        controls = [getattr(self._view, "grid_debris_min_area_control", None)]
+        controls.extend(getattr(dialog, "grid_debris_min_area_control", None) for dialog in self._details_dialogs)
+        for control in controls:
+            if control is not None and control is not source and control.value() != self._grid_debris_min_area_px:
+                control.set_value(self._grid_debris_min_area_px)
+
+    def _on_grid_debris_min_area_changed(self, value: int, source=None) -> None:
+        self._apply_grid_debris_min_area(
+            value, source=source or getattr(self._view, "grid_debris_min_area_control", None)
+        )
+        self._persist_state()
+        self._grid_debris_refresh_timer.start()
+
+    def _refresh_details_after_debris_change(self) -> None:
+        if self._current_app_mode() != "grid_inspection":
+            return
+        tuning = self._grid_preview_tuning or self._grid_tuning_values()
+        for details in list(self._details_dialogs):
+            self._refresh_grid_details_preview(details, tuning)
+
     def _open_grid_tuning_dialog(self, details_dialog=None) -> None:
         if details_dialog is None:
             return
@@ -5816,8 +5854,15 @@ class KarakalPresenter(QObject):
             "debris": slider_threshold(int(tuning_values.get("debris_sensitivity", 0))),
         }
 
-    def _redecide_prepared_frame(self, result, tuning_values: dict[str, int], payload: dict):
-        from ..core.grid_anomaly import _status_for_reasons
+    def _redecide_prepared_frame(
+        self,
+        result,
+        tuning_values: dict[str, int],
+        payload: dict,
+        *,
+        debris_min_area: float = DEBRIS_MIN_AREA_PX,
+    ):
+        from ..core.grid_anomaly import CONTOUR_AREA_FEATURE, _status_for_reasons
         from ..core.grid_calibration import decide_reasons_batch
 
         thresholds = self._grid_score_thresholds(tuning_values)
@@ -5843,6 +5888,13 @@ class KarakalPresenter(QObject):
             example_influence=influence,
             edge_enabled=False,
         )
+        # Same size gate as the analysis: a piece below the operator's size is never debris.
+        decided = [
+            tuple(reason for reason in reasons if reason != "small_artifact")
+            if float(features.get(CONTOUR_AREA_FEATURE, debris_min_area)) < float(debris_min_area)
+            else tuple(reasons)
+            for reasons, features in zip(decided, feature_rows)
+        ]
         cells = []
         for cell, scores, reasons in zip(source_cells, score_rows, decided):
             marked = bool(reasons)
@@ -5956,10 +6008,13 @@ class KarakalPresenter(QObject):
         config = self._grid_damage_config_from_payload(payload)
         frame_id = str(getattr(record, "key", "") or "")
         reference_key = json.dumps(payload.get("calibration_reference") or {}, sort_keys=True, default=str)
-        cache_token = (frame_id, binary_path, confidence_path, reference_key)
+        # The size gate runs inside the analysis, so each size has its own prepared frame.
+        cache_token = (frame_id, binary_path, confidence_path, reference_key, int(config.debris_min_area_px))
         prepared = getattr(self, "_grid_prepared_frames", {}).get(cache_token)
         if prepared is not None:
-            decided, cells = self._redecide_prepared_frame(prepared, tuning_values, payload)
+            decided, cells = self._redecide_prepared_frame(
+                prepared, tuning_values, payload, debris_min_area=float(config.debris_min_area_px)
+            )
             shown = KarakalPresenter._with_stored_class_conflict(self, decided, state, frame_id)
             return shown, tuple(getattr(shown, "per_cell_results", ()) or ()) if shown is not None else cells
         binary_result = None
@@ -6813,6 +6868,9 @@ class KarakalPresenter(QObject):
         for key in (*GRID_INSPECTION_TUNING_KEYS, "calibration_fingerprint"):
             if stored_config.get(key) != live.get(key):
                 return None
+        # Runs made before the setting existed used the default size.
+        if int(stored_config.get("debris_min_area_px", DEBRIS_MIN_AREA_PX)) != int(live["debris_min_area_px"]):
+            return None
         stored_types = tuple(str(item) for item in (stored_config.get("enabled_error_types") or ()))
         live_types = tuple(str(item) for item in (live.get("enabled_error_types") or ()))
         if stored_types != live_types:
@@ -6893,6 +6951,12 @@ class KarakalPresenter(QObject):
         # Details filter stays local. Main-window filter is the only export source.
         dialog._on_class_conflict_user_wants_changed = None
         dialog._on_grid_frame_changed = lambda details=dialog: self._on_details_grid_frame_changed(details)
+        debris_control = getattr(dialog, "grid_debris_min_area_control", None)
+        if debris_control is not None:
+            debris_control.set_value(self._grid_debris_min_area_px)
+            debris_control.valueChanged.connect(
+                lambda value, control=debris_control: self._on_grid_debris_min_area_changed(value, control)
+            )
         if self._frame_sets_controller is not None and self._current_app_mode() == "grid_inspection":
             self._frame_sets_controller.install_card_actions(dialog)
         self._sync_class_conflict_for_dialog(dialog, state)

@@ -8,7 +8,8 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   02 = drop by the colour scale only, no defect sets, set note and badge above the matrix;
   03 = export only from the drop panel, numbers next to their names, black frames for the rest of the run;
   04 = update menu: channel, check and what's new only, no Help menu;
-  05 = export folder name, no export report, no fill filters, collapsible cell defects block);
+  05 = export folder name, no export report, no fill filters, collapsible cell defects block;
+  06 = minimum debris size setting in the main and frame windows, debris size on hover);
 - beta N counts tester builds with the same algorithm and interface; scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -21,7 +22,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.2"
-INTERFACE_NUMBER = 5
+INTERFACE_NUMBER = 6
 BETA = 0
 
 

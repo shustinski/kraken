@@ -8,7 +8,6 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtCore import QSettings
 
-from karakal.app import presenter as presenter_module
 from karakal.app.main_window import KarakalWidget
 from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
 from karakal.core.image_io import _grayscale_array_to_qimage
@@ -56,24 +55,19 @@ def test_reference_frames_from_a_folder_match_by_file_name(tmp_path, qtbot) -> N
     assert state.grid_inspection_reference_record_keys == ()
 
 
-def test_template_is_built_from_reference_frames_only(tmp_path, qtbot, monkeypatch) -> None:
+def test_template_is_built_from_reference_frames_only(tmp_path, qtbot) -> None:
     names = [f"TEST_{index:05d}.jpg" for index in range(6)]
     _widget, presenter, state, model_id, records = _widget_with_frames(tmp_path, qtbot, names)
-    calls: list[dict] = []
 
-    def fake_estimate(paths, **kwargs):
-        calls.append({"paths": list(paths), **kwargs})
-        return None
-
-    monkeypatch.setattr(presenter_module, "estimate_run_cell_reference_profile", fake_estimate)
-    presenter._estimate_run_cell_reference_profile_for_state(state, None, model_id=model_id, records=records)
-    assert len(calls[-1]["paths"]) == 6 and calls[-1]["sample_limit"] == 32
+    # The presenter only names the frames; the worker builds the bank from them.
+    request = presenter._estimate_run_cell_reference_profile_for_state(state, None, model_id=model_id, records=records)
+    assert len(request.mask_paths) == 6 and request.sample_limit == 32
 
     presenter._add_grid_reference_records(state, [records[2]])
-    presenter._estimate_run_cell_reference_profile_for_state(state, None, model_id=model_id, records=records)
+    request = presenter._estimate_run_cell_reference_profile_for_state(state, None, model_id=model_id, records=records)
     # One good frame is enough, and every reference frame is used.
-    assert [Path(path).name for path in calls[-1]["paths"]] == [names[2]]
-    assert calls[-1]["sample_limit"] == 0 and calls[-1]["min_frames"] == 1
+    assert [Path(path).name for path in request.mask_paths] == [names[2]]
+    assert request.sample_limit == 0 and request.min_frames == 1
 
 
 def test_tester_entry_point_runs_the_tester_profile_with_its_own_settings(tmp_path, monkeypatch) -> None:

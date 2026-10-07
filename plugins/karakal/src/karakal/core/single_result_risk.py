@@ -14,6 +14,7 @@ import numpy as np
 from .confidence_analysis import _model_output_confidence_metrics
 from .domain import BuildResult, FrameAnalysisSummary, FrameRecord
 from .image_io import load_grayscale_image, resize_grayscale_image
+from .mask_normalization import binarize_mask
 from .mask_primitives import _binary_dilate, _boundary_mask, _label_components, _mask_structure
 from .metric_keys import compute_metric_percentiles
 from .repository_shared import BuildCancelledError
@@ -308,13 +309,8 @@ def _extract_row(record: FrameRecord, model_id: str) -> _FeatureRow:
         return _FeatureRow(record, {}, 0.0, None, None, None, [], "missing_model_output")
     try:
         gray = load_grayscale_image(Path(path_text))
-        unique_values = np.unique(gray)
-        if unique_values.size > 2:
-            return _FeatureRow(record, {}, 0.0, None, None, None, [], "non_binary_mask")
-        if unique_values.size == 1:
-            mask = np.asarray(gray > 0, dtype=bool)
-        else:
-            mask = np.asarray(gray == unique_values[-1], dtype=bool)
+        # Masks saved as JPEG are gray at the edges; they are binarized, not rejected.
+        mask = binarize_mask(gray)
         features, structure_raw, reasons = _mask_features(mask)
         source_raw = None
         source_mask_raw = None

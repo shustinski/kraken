@@ -11,6 +11,10 @@ Layout of one export::
                                     ``fill_frames`` the rest of the run is here
                                     too, as black frames (no errors to take)
         Ошибки на маске/<model>/    defects outlined over the mask
+        Карты ошибок/<model>/       machine maps per frame (lossless PNG): <frame>_class.png
+                                    (uint8, 255 = IGNORE), <frame>_score.png (uint16),
+                                    <frame>_instance.png (uint16), <frame>_preview.png and
+                                    <frame>_manifest.json; whole objects, not boxes
         холст.png                   the whole set as one picture
         результаты.csv              one row per frame
 
@@ -34,7 +38,8 @@ ITEM_MASK = "mask"
 ITEM_CONFIDENCE = "confidence"
 ITEM_ERRORS = "errors"
 ITEM_ERRORS_OVER_MASK = "errors_over_mask"
-FRAME_ITEMS = (ITEM_SOURCE, ITEM_MASK, ITEM_CONFIDENCE, ITEM_ERRORS, ITEM_ERRORS_OVER_MASK)
+ITEM_ERROR_MAPS = "error_maps"
+FRAME_ITEMS = (ITEM_SOURCE, ITEM_MASK, ITEM_CONFIDENCE, ITEM_ERRORS, ITEM_ERRORS_OVER_MASK, ITEM_ERROR_MAPS)
 
 ITEM_FOLDERS = {
     ITEM_SOURCE: "Исходные снимки",
@@ -42,7 +47,11 @@ ITEM_FOLDERS = {
     ITEM_CONFIDENCE: "Confidence",
     ITEM_ERRORS: "Ошибки",
     ITEM_ERRORS_OVER_MASK: "Ошибки на маске",
+    ITEM_ERROR_MAPS: "Карты ошибок",
 }
+# Files written per frame and model for the machine maps.
+_MAP_FILES_PER_FRAME = 5
+_MAPS_BYTES_PER_PIXEL = 0.05
 CANVAS_FILE = "холст.png"
 CSV_FILE = "результаты.csv"
 CANVAS_TILE_PX = 12
@@ -91,6 +100,10 @@ class FrameSetExportPlan:
     rules_text: tuple[str, ...] = ()
     # Run frames outside the set, written to the errors folder as black frames.
     fill_frames: tuple[FrameSetExportFrame, ...] = ()
+    # Machine maps: the run's normal-cell profile per model and the analysis settings of the run.
+    normal_profiles: dict[str, object] = field(default_factory=dict)
+    analysis_config: object | None = None
+    calibration_fingerprint: str = ""
 
 
 @dataclass(slots=True)
@@ -175,6 +188,10 @@ def _count_and_size(plan: FrameSetExportPlan, item: str, model_id: str | None) -
         paths = [getattr(frame, source).get(str(model_id), "") for frame in frames]
         paths = [path for path in paths if path]
         return len(paths), _sample_size(paths) * len(paths)
+    if item == ITEM_ERROR_MAPS:
+        with_mask = [frame for frame in frames if frame.mask_paths.get(str(model_id))]
+        pixels = _image_pixels(with_mask[0]) if with_mask else 0
+        return len(with_mask) * _MAP_FILES_PER_FRAME, int(pixels * _MAPS_BYTES_PER_PIXEL) * len(with_mask)
     with_result = [frame for frame in frames if frame.results.get(str(model_id)) is not None]
     if item == ITEM_ERRORS_OVER_MASK:
         with_result = [frame for frame in with_result if frame.mask_paths.get(str(model_id))]
@@ -334,6 +351,41 @@ def _write_table(plan: FrameSetExportPlan, path: Path) -> None:
             )
 
 
+def _write_error_maps(plan: FrameSetExportPlan, frame: FrameSetExportFrame, model_id: str, target: Path) -> int:
+    """Analyze the frame again with the run's bank and write its machine maps; 0 when it cannot."""
+
+    from .cell_error_analysis import analyze_cell_errors
+    from .error_maps import export_maps
+    from .grid_anomaly import GridDamageAnalysisConfig, _cell_error_config
+
+    profile = plan.normal_profiles.get(model_id)
+    bank = getattr(profile, "normal_bank", None)
+    mask_path = frame.mask_paths.get(model_id, "")
+    mask = _read_gray(mask_path) if mask_path and bank is not None else None
+    if mask is None:
+        return 0
+    confidence_path = frame.confidence_paths.get(model_id, "")
+    confidence = _read_gray(confidence_path) if confidence_path else None
+    config = plan.analysis_config if isinstance(plan.analysis_config, GridDamageAnalysisConfig) else GridDamageAnalysisConfig()
+    cell_config = _cell_error_config(config.normalized())
+    analysis = analyze_cell_errors(
+        mask, bank, confidence=confidence, config=cell_config, frame_id=frame.key, frame_path=mask_path
+    )
+    written = export_maps(
+        analysis,
+        target,
+        Path(frame.name).stem or frame.key,
+        mask=mask,
+        analysis_parameters={
+            "geometry_sensitivity": cell_config.geometry_sensitivity,
+            "merge_sensitivity": cell_config.merge_sensitivity,
+            "debris_min_area_px": cell_config.debris_min_area_px,
+        },
+        calibration_fingerprint=plan.calibration_fingerprint,
+    )
+    return len(written)
+
+
 def export_frame_set(
     plan: FrameSetExportPlan,
     output_dir: Path | str,
@@ -399,6 +451,12 @@ def export_frame_set(
                     overlay = render_errors_over_mask(mask, errors_bgr)
                     _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS_OVER_MASK] / model_dir / f"{stem}.png", overlay, "png")
                     written += 1
+            if ITEM_ERROR_MAPS in plan.items:
+                count = _write_error_maps(plan, frame, model.model_id, set_dir / ITEM_FOLDERS[ITEM_ERROR_MAPS] / model_dir)
+                if count:
+                    written += count
+                else:
+                    frame_missing = True
         if frame_missing:
             missing.append(frame.name)
         if progress is not None:

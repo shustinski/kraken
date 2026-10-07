@@ -641,6 +641,15 @@ class FrameSetsController(QObject):
             + ((self._t("frame_sets.rules.manual") + f": {len(model.manual_dropped)}",) if model.manual_dropped else ())
             + ((self._t("frame_sets.inverted_note"),) if model.inverted else ()),
             fill_frames=tuple(fill_frames) if frames else (),
+            normal_profiles={
+                model_id: (getattr(state, "grid_inspection_run_profiles", {}) or {}).get(model_id) for model_id, _title in models
+            },
+            analysis_config=self._p._grid_damage_config_from_payload(
+                dict(getattr(state, "grid_inspection_config_payload", {}) or {}) or self._p._grid_inspection_config_payload()
+            ),
+            calibration_fingerprint=str(
+                (getattr(state, "grid_inspection_config_payload", {}) or {}).get("calibration_fingerprint") or ""
+            ),
         )
 
     def _browse_output_dir(self) -> None:

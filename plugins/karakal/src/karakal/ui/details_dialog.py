@@ -73,6 +73,7 @@ from ..ui.i18n import Translator
 from ..ui.ui_constants import (
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
     GRID_INSPECTION_DAMAGE_METRIC_KEY,
+    GRID_ERROR_TYPE_HINTS,
     GRID_INSPECTION_ERROR_TYPE_OPTIONS,
     SETTINGS_ATTENTION_COMPUTE_MODE_KEY,
     attention_issue_type_color,
@@ -659,10 +660,8 @@ class ExtendFrameDetailsDialog(QDialog):
             checkbox = QCheckBox(self._t(label_key), layers_group)
             checkbox.setIcon(grid_inspection_error_type_icon(error_type))
             checkbox.setChecked(str(error_type) in self._grid_detail_enabled_error_types)
-            if str(error_type) == "conductor_zone":
-                checkbox.setToolTip(self._t("grid_error.conductor_zone_hint"))
-            if str(error_type) == "small_artifact":
-                checkbox.setToolTip(self._t("grid_error.small_artifact_hint"))
+            if str(error_type) in GRID_ERROR_TYPE_HINTS:
+                checkbox.setToolTip(self._t(f"grid_error.{error_type}_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
             layers_form.addRow(checkbox)
         # Shared with the main window: the presenter keeps both in step and re-analyzes this frame.

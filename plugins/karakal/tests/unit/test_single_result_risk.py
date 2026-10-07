@@ -135,16 +135,21 @@ def test_absolute_structure_checks_rank_abnormal_masks_higher(tmp_path: Path) ->
     assert all(len(record.summary.single_result_risk.reasons) <= 8 for record in result.records)
 
 
-def test_non_binary_mask_is_an_error_without_artificial_score(tmp_path: Path) -> None:
-    gradient = np.arange(96, dtype=np.uint8)[None, :].repeat(96, axis=0)
+def test_jpeg_mask_is_binarized_like_its_lossless_copy(tmp_path: Path) -> None:
+    import cv2
 
-    result = compute_single_result_risk(_build_result(tmp_path, [gradient]))
-    record = result.records[0]
+    lossless = _fragmented_mask()
+    ok, encoded = cv2.imencode(".jpg", lossless, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    assert ok
+    compressed = cv2.imdecode(encoded, cv2.IMREAD_GRAYSCALE)
+    assert np.unique(compressed).size > 2
 
-    assert not record.score_ready
-    assert record.absolute_score is None
-    assert record.summary is not None
-    assert record.summary.notes == ("non_binary_mask",)
+    result = compute_single_result_risk(_build_result(tmp_path, [lossless, compressed]))
+    plain, jpeg = (record.summary.single_result_risk.feature_values for record in result.records)
+
+    assert result.records[1].score_ready
+    assert jpeg["component_density"] == pytest.approx(plain["component_density"])
+    assert jpeg["area_fraction"] == pytest.approx(plain["area_fraction"], rel=0.05)
 
 
 def test_zero_one_binary_mask_is_read_as_foreground(tmp_path: Path) -> None:

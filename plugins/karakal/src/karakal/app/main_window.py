@@ -104,6 +104,7 @@ from ..ui.ui_constants import (
     DEFAULT_MATRIX_ROWS,
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
     GRID_INSPECTION_DAMAGE_METRIC_KEY,
+    GRID_ERROR_TYPE_HINTS,
     GRID_INSPECTION_ERROR_TYPE_OPTIONS,
     grid_inspection_error_type_icon,
     DEFAULT_TOTAL_FRAMES,
@@ -614,10 +615,8 @@ class KarakalWidget(QWidget):
                 checkbox.setEnabled(False)
                 checkbox.setChecked(False)
                 checkbox.setToolTip(self._t("grid_error.class_conflict_unavailable"))
-            if str(error_type) == "conductor_zone":
-                checkbox.setToolTip(self._t("grid_error.conductor_zone_hint"))
-            if str(error_type) == "small_artifact":
-                checkbox.setToolTip(self._t("grid_error.small_artifact_hint"))
+            if str(error_type) in GRID_ERROR_TYPE_HINTS:
+                checkbox.setToolTip(self._t(f"grid_error.{error_type}_hint"))
             self.grid_error_type_checks[str(error_type)] = checkbox
         self.grid_layer_compute_checks: dict[str, QCheckBox] = {}
         for layer_key, label_key in (

@@ -83,6 +83,8 @@ class ExtendMatrixTabState:
     grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)
     # Frames whose masks are known good; the layer cell template is built from them.
     grid_inspection_reference_record_keys: tuple[str, ...] = ()
+    # Normal-cell profile of the last run per model (bank built in the worker), for the frame window.
+    grid_inspection_run_profiles: dict[str, object] = field(default_factory=dict)
     excluded_record_keys: set[str] = field(default_factory=set)
     # Drop rules and frame sets of the grid inspection matrix (no recompute needed).
     frame_sets: FrameSetModel = field(default_factory=FrameSetModel)

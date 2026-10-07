@@ -100,10 +100,11 @@ from ..core.grid_calibration import GridCalibration, GridCellExample, reference_
 from ..core.grid_anomaly import (
     DEBRIS_ANALYSIS_FLOOR_PX,
     DEBRIS_MIN_AREA_PX,
-    GridCellReferenceProfile,
     GridDamageAnalysisConfig,
     GridFrameAnalysisResult,
-    estimate_run_cell_reference_profile,
+    RunProfileRequest,
+    estimate_run_normal_profile,
+    uses_normal_bank,
 )
 from ..core.image_formats import SUPPORTED_IMAGE_EXTENSION_SET
 from ..core.project_profile import AnalysisSourceBinding, KarakalAnalysisProfileV1, SourceBindingKind
@@ -4675,9 +4676,13 @@ class KarakalPresenter(QObject):
         *,
         model_id: str,
         records: tuple[FrameRecord, ...],
-    ) -> GridCellReferenceProfile | None:
-        """Cell size and shape template of one model: from reference frames, else from the run."""
+    ) -> RunProfileRequest | None:
+        """What the worker needs to build one model's bank of normal cells: reference frames, else the run.
 
+        Only paths are collected here; reading and splitting the masks happens in the worker thread.
+        """
+
+        _ = config
         reference_records = self._grid_inspection_reference_records(state)
         source = reference_records or records
         paths: list[str] = []
@@ -4685,23 +4690,28 @@ class KarakalPresenter(QObject):
             path_text = self._grid_inspection_layer_source_path_for_record(record, model_id, "binary")
             if path_text and Path(path_text).is_file():
                 paths.append(path_text)
-        if reference_records:
-            # Every reference frame is used; one good frame is enough for a template.
-            return estimate_run_cell_reference_profile(
-                paths,
-                config=config,
-                sample_limit=0,
-                frame_id=f"reference:{model_id}",
-                min_frames=1,
-            )
-        if len(paths) < 2:
+        if not paths:
             return None
-        return estimate_run_cell_reference_profile(
-            paths,
-            config=config,
-            sample_limit=32,
-            frame_id=f"run:{model_id}",
-        )
+        if reference_records:
+            # Every reference frame is used; one good frame can be enough.
+            return RunProfileRequest(tuple(paths), sample_limit=0, frame_id=f"reference:{model_id}", min_frames=1)
+        return RunProfileRequest(tuple(paths), sample_limit=32, frame_id=f"run:{model_id}", min_frames=1)
+
+    def _on_grid_reference_profile_ready(
+        self, model_id: str, profile: object, *, state: ExtendMatrixTabState | None = None, generation: int | None = None
+    ) -> None:
+        """Keep the run's bank of normal cells for the frame window; warn when reference frames gave none."""
+
+        if not self._is_active_request_generation(generation) or state is None:
+            return
+        state.grid_inspection_run_profiles[str(model_id)] = profile
+        bank = getattr(profile, "normal_bank", None)
+        if self._grid_inspection_reference_records(state) and (bank is None or not bank.ready):
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("grid_reference.profile_failed", name=str(model_id or "")),
+            )
 
     def _current_matrix_selected_records(self) -> tuple[FrameRecord, ...]:
         if self._current_app_mode() == "grid_inspection":
@@ -5312,6 +5322,12 @@ class KarakalPresenter(QObject):
             self._worker.partialResultsReady.connect(
                 lambda payloads, g=generation: self._on_grid_inspection_batch(payloads, generation=g)
             )
+        if hasattr(self._worker, "referenceProfileReady"):
+            self._worker.referenceProfileReady.connect(
+                lambda model_id, profile, g=generation, s=state: self._on_grid_reference_profile_ready(
+                    model_id, profile, state=s, generation=g
+                )
+            )
         if hasattr(self._worker, "multiModelResultsReady"):
             self._worker.multiModelResultsReady.connect(
                 lambda payloads, g=generation: self._on_grid_inspection_multi_model_batch(payloads, generation=g)
@@ -5572,6 +5588,8 @@ class KarakalPresenter(QObject):
             "small_artifact",
             "broken_geometry",
             "merged_contour",
+            "split_cell",
+            "unknown_anomaly",
             "edge_clipped_cell",
         }
         binary = layers.get("binary")
@@ -5728,7 +5746,7 @@ class KarakalPresenter(QObject):
             dialog.set_summary(text)
 
     def _markup_mask_pairs(self):
-        import cv2
+        from ..core.image_io import load_grayscale_image
 
         paths = tuple(getattr(self, "_grid_markup_paths", ()) or ())
         state = self._current_tab_state()
@@ -5743,9 +5761,11 @@ class KarakalPresenter(QObject):
             markup_path = by_stem.get(Path(network_path).stem) or by_stem.get(key) or by_stem.get(Path(key).stem)
             if not network_path or not markup_path:
                 continue
-            network = cv2.imread(network_path, cv2.IMREAD_GRAYSCALE)
-            truth = cv2.imread(markup_path, cv2.IMREAD_GRAYSCALE)
-            if network is None or truth is None:
+            # cv2.imread cannot open non-ASCII Windows paths; such pairs were silently skipped.
+            try:
+                network = load_grayscale_image(Path(network_path))
+                truth = load_grayscale_image(Path(markup_path))
+            except (OSError, ValueError):
                 continue
             pairs.append((network, truth))
         return pairs
@@ -6177,6 +6197,20 @@ class KarakalPresenter(QObject):
         self._put_calibration_in_payload(payload, getattr(self, "_grid_calibration", None))
         config = self._grid_damage_config_from_payload(payload)
         frame_id = str(getattr(record, "key", "") or "")
+        run_profile = self._grid_details_run_profile(state, model_id, record)
+        if uses_normal_bank(run_profile, config):
+            # Grid-free analysis with the run's bank: the sliders change the result, so it is
+            # analyzed again for every slider position instead of moving stored scores.
+            result = analyze_grid_frame_path(
+                binary_path,
+                frame_id=frame_id,
+                config=replace(config, cell_representation="binary"),
+                reference_profile=run_profile,
+                use_cache=False,
+                confidence_path=confidence_path or None,
+            )
+            shown = KarakalPresenter._shown_details_result(self, result, state, frame_id)
+            return shown, tuple(getattr(shown, "per_cell_results", ()) or ())
         reference_key = json.dumps(payload.get("calibration_reference") or {}, sort_keys=True, default=str)
         cache_token = (frame_id, binary_path, confidence_path, reference_key)
         prepared = getattr(self, "_grid_prepared_frames", {}).get(cache_token)
@@ -6227,6 +6261,32 @@ class KarakalPresenter(QObject):
         self._refresh_grid_calibration_summary()
         shown = KarakalPresenter._shown_details_result(self, binary_result, state, frame_id)
         return shown, tuple(getattr(shown, "per_cell_results", ()) or ())
+
+    def _grid_details_run_profile(self, state, model_id: str, record):
+        """The bank of normal cells the frame window judges by: the last run's, else a small one.
+
+        Before any run there is no bank; one is built from up to 8 frames of the tab (a few seconds,
+        once) so the frame window shows what a run would.
+        """
+
+        profiles = getattr(state, "grid_inspection_run_profiles", None)
+        if not isinstance(profiles, dict):
+            return None
+        profile = profiles.get(str(model_id))
+        if profile is not None:
+            return profile
+        records = tuple(getattr(getattr(state, "build_result", None), "records", ()) or ()) or (record,)
+        request = self._estimate_run_cell_reference_profile_for_state(
+            state, GridDamageAnalysisConfig(), model_id=str(model_id), records=records
+        )
+        if request is None:
+            return None
+        profile = estimate_run_normal_profile(
+            request.mask_paths, sample_limit=min(8, len(request.mask_paths)) or 8, frame_id=f"details:{model_id}"
+        )
+        if profile is not None:
+            profiles[str(model_id)] = profile
+        return profile
 
     def _shown_details_result(self, result, state, frame_id: str):
         """Frame-window result as shown: the operator's debris size hides small debris only."""

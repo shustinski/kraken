@@ -202,15 +202,9 @@ def _convexity_has_opposing_dents(contour, *, min_depth: float) -> bool:
         return False
     if defects is None or len(defects) == 0:
         return False
-    deep = 0
-    for row in defects:
-        try:
-            depth = float(row[0][3]) / 256.0
-        except (TypeError, IndexError, ValueError):
-            continue
-        if depth >= min_depth:
-            deep += 1
-    return deep >= 2
+    # OpenCV 4 returns (N, 1, 4), OpenCV 5 returns (N, 4); reading row[0][3] failed silently on 5.
+    depths = np.asarray(defects, dtype=np.float64).reshape(-1, 4)[:, 3] / 256.0
+    return int(np.count_nonzero(depths >= float(min_depth))) >= 2
 
 
 def _area_matches_multiple(area: float, core_count: int, cell_area: float, tolerance: float) -> bool:

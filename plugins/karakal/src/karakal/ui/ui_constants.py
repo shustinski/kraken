@@ -95,20 +95,25 @@ GRID_INSPECTION_PRESET_VALUES: dict[str, dict[str, int]] = {
 GRID_INSPECTION_FIXED_TUNING: tuple[tuple[str, int], ...] = tuple(
     (key, int(GRID_INSPECTION_PRESET_VALUES["balanced"][key])) for key in GRID_INSPECTION_TUNING_KEYS
 )
+# A cell cut by the frame edge is a flag on the object, not a defect type (decision Н5).
 GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.small_artifact", "small_artifact"),
-    # Edge clip must win over broken_geometry when both fire (border crops look "broken").
-    ("grid_error.edge_clipped_cell", "edge_clipped_cell"),
     ("grid_error.broken_geometry", "broken_geometry"),
     ("grid_error.merged_contour", "merged_contour"),
+    ("grid_error.split_cell", "split_cell"),
+    ("grid_error.unknown_anomaly", "unknown_anomaly"),
     ("grid_error.class_conflict", "class_conflict"),
     ("grid_error.conductor_zone", "conductor_zone"),
 )
+# Types whose checkbox has a "grid_error.<type>_hint" tooltip.
+GRID_ERROR_TYPE_HINTS = frozenset({"small_artifact", "split_cell", "unknown_anomaly", "conductor_zone"})
+# Geometry, debris and merge keep their colors; split and unknown are new (core.error_classes).
 GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "small_artifact": "#ec4899",
     "broken_geometry": "#38bdf8",
     "merged_contour": "#a855f7",
-    "edge_clipped_cell": "#facc15",
+    "split_cell": "#f97316",
+    "unknown_anomaly": "#eab308",
     "class_conflict": "#e11d48",
     "conductor_zone": "#64748b",
 }

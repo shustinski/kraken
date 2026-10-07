@@ -6,12 +6,14 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .mask_normalization import binarize_mask
+
 
 def source_cell_rule(source: np.ndarray, truth_mask: np.ndarray) -> dict[str, float]:
     """Brightness/contrast rule from marked cells on the grayscale photo."""
 
     gray = np.asarray(source, dtype=np.float32)
-    truth = np.asarray(truth_mask) > 0
+    truth = binarize_mask(truth_mask)
     if gray.ndim == 3:
         gray = gray[:, :, 0]
     if gray.shape != truth.shape or not np.any(truth) or not np.any(~truth):
@@ -46,7 +48,7 @@ def source_mask_mismatches(
         mask = mask[:, :, 0]
     if gray.shape != mask.shape:
         return []
-    binary = mask > 0
+    binary = binarize_mask(mask)
     cell_like = np.abs(gray - float(rule["mean"])) <= 1.5 * float(rule["std"])
     photo_but_empty = cell_like & ~binary
     mask_but_unlike = binary & (np.abs(gray - float(rule["mean"])) > 2.5 * float(rule["std"]))

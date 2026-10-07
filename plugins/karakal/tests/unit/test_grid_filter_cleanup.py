@@ -18,9 +18,10 @@ from karakal.ui.ui_constants import (
 
 EXPECTED_ERROR_TYPES = (
     "small_artifact",
-    "edge_clipped_cell",
     "broken_geometry",
     "merged_contour",
+    "split_cell",
+    "unknown_anomaly",
     "class_conflict",
     "conductor_zone",
 )

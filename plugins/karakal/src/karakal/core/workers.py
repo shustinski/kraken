@@ -23,6 +23,7 @@ from .grid_anomaly import (
     analyze_grid_frame_sources_chunk,
     configure_grid_worker_process,
     load_cached_grid_frame_result,
+    resolve_reference_profile,
 )
 from .performance import PerformanceConfig, load_performance_config
 from .profiling import ProfileSnapshot, ProfilerRun, WorkerProfilePacket, activate_profiler, export_profile
@@ -329,6 +330,8 @@ class GridInspectionWorker(WorkerBase):
     PARTIAL_RESULT_BATCH_SIZE = 256
     partialResultsReady = pyqtSignal(object)
     analysisErrors = pyqtSignal(object)
+    # model id, the run's normal-cell profile (built here, not in the UI thread)
+    referenceProfileReady = pyqtSignal(str, object)
 
     def __init__(
         self,
@@ -349,6 +352,15 @@ class GridInspectionWorker(WorkerBase):
         self._partial_result_buffer: dict[str, GridFrameAnalysisResult] = {}
         self._analysis_errors: dict[str, str] = {}
 
+    def _prepare_reference_profile(self) -> None:
+        """Build the run's bank of normal cells when the presenter passed only a request for it."""
+
+        before = self._reference_profile
+        with self._profiler.stage("validation.grid.normal_bank"):
+            self._reference_profile = resolve_reference_profile(before, self._config)
+        if self._reference_profile is not before:
+            self.referenceProfileReady.emit(self._model_id, self._reference_profile)
+
     def _source_path(self, record: FrameRecord) -> str:
         model_masks = getattr(record, "model_mask_paths", {}) or {}
         if self._model_id and model_masks.get(self._model_id):
@@ -365,6 +377,7 @@ class GridInspectionWorker(WorkerBase):
                 self._partial_result_buffer.clear()
                 self._analysis_errors.clear()
                 self._emit_progress(0, 0, "", force=True)
+                self._prepare_reference_profile()
                 payloads: dict[str, GridFrameAnalysisResult] = {}
                 cfg = replace(self._config, include_debug_payload=False, debug=False)
                 records = [
@@ -724,6 +737,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                 self._partial_result_buffer.clear()
                 self._analysis_errors.clear()
                 self._emit_progress(0, 0, "", force=True)
+                self._prepare_reference_profile()
                 payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
                 config = replace(self._config, include_debug_payload=False, debug=False)
                 records = self._paired_records()
@@ -863,6 +877,7 @@ class MultiModelGridInspectionWorker(WorkerBase):
     multiModelResultsReady = pyqtSignal(object)
     analysisErrors = pyqtSignal(object)
     modelStarted = pyqtSignal(str, int, int)  # model_id, index (1-based), total_models
+    referenceProfileReady = pyqtSignal(str, object)
 
     def __init__(
         self,
@@ -939,7 +954,12 @@ class MultiModelGridInspectionWorker(WorkerBase):
                     if not paired:
                         continue
                     single_source_layer = self._resolve_single_source_layer(paired)
-                    reference_profile = self._reference_profiles.get(model_id)
+                    requested_profile = self._reference_profiles.get(model_id)
+                    with self._profiler.stage("validation.grid.normal_bank"):
+                        reference_profile = resolve_reference_profile(requested_profile, self._config)
+                    if reference_profile is not requested_profile:
+                        self._reference_profiles[model_id] = reference_profile
+                        self.referenceProfileReady.emit(model_id, reference_profile)
                     chunks = tuple(
                         tuple(paired[offset : offset + chunk_size])
                         for offset in range(0, len(paired), chunk_size)
@@ -1198,6 +1218,7 @@ class DerivedConflictGridInspectionWorker(GridInspectionWorker):
                 self._partial_result_buffer.clear()
                 self._analysis_errors.clear()
                 self._emit_progress(0, 0, "", force=True)
+                self._prepare_reference_profile()
                 payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
                 config = replace(self._config, include_debug_payload=False, debug=False)
                 if self._base_layers:

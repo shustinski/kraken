@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import cv2
 import numpy as np
 
+from . import error_classes
 from .grid_calibration import decide_reasons, example_detector_scores, fit_sliders_from_examples
 from .grid_scoring import slider_threshold
+from .mask_normalization import binarize_mask
+from .segmentation_metrics import boundary_iou
 
 IOU_NORMAL = 0.55
 FILLED_EXTRA = 0.45
@@ -18,10 +22,8 @@ HELD_OUT_DROP = 0.25
 
 
 def _binary(mask: np.ndarray) -> np.ndarray:
-    array = np.asarray(mask)
-    if array.ndim == 3:
-        array = array[:, :, 0]
-    return array > 0
+    # Not ``> 0``: a JPEG mask turns its compression noise into hundreds of specks.
+    return binarize_mask(mask)
 
 
 def _labels(mask: np.ndarray) -> np.ndarray:
@@ -269,3 +271,223 @@ def _predicted_reasons(row: Mapping[str, Any], sliders: Mapping[str, int]) -> tu
         "debris": slider_threshold(int(sliders.get("debris_sensitivity", 75))),
     }
     return decide_reasons(scores, thresholds, features=features or {})
+
+
+# --- Object graph between a prediction and its ground truth -------------------------------
+# One prediction object to one truth object is a normal cell or a geometry error, one to many
+# is a merge, many to one is a split, a prediction with no truth is debris, a truth with no
+# prediction is a miss. The rule is per object, so mixed groups (a merge next to a split) still
+# get a class for each object. Pixels in the ignore mask (conductors) are left out first.
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceMatchConfig:
+    # A prediction is linked to a truth object when it covers this share of it ...
+    min_truth_cover: float = 0.15
+    # ... and this share of the prediction lies on it, or it covers the truth object strongly.
+    min_prediction_cover: float = 0.20
+    strong_truth_cover: float = 0.50
+    # A one-to-one pair below this IoU is a geometry error ...
+    normal_iou: float = 0.70
+    # ... and so is one whose masks differ deeply: pixels farther than this share of the cell's
+    # short side (at least min_deep_depth px) from the other mask. A pixel of edge jitter is not
+    # deep; a bite, a cut corner or a wrong size is, even when the IoU stays high.
+    deep_depth_ratio: float = 0.12
+    min_deep_depth: float = 2.0
+    deep_pixels_share: float = 0.01
+    min_deep_pixels: int = 4
+    # An object with this share of its pixels in the ignore mask is ignored as a whole.
+    ignore_share: float = 0.50
+    boundary_width: int = 2
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionMatch:
+    label: int
+    error_class: int
+    truth_labels: tuple[int, ...]
+    area: int
+    iou: float | None = None
+    boundary_iou: float | None = None
+    deep_pixels: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TruthMatch:
+    label: int
+    prediction_labels: tuple[int, ...]
+    area: int
+    missed: bool
+    ignored: bool
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceMatch:
+    predictions: tuple[PredictionMatch, ...]
+    truths: tuple[TruthMatch, ...]
+    prediction_labels: np.ndarray
+    truth_labels: np.ndarray
+    ignore: np.ndarray | None = None
+
+    def prediction_class(self, label: int) -> int:
+        for item in self.predictions:
+            if item.label == int(label):
+                return item.error_class
+        return error_classes.OK
+
+    def class_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in self.predictions:
+            name = error_classes.ERROR_CLASS_NAMES[item.error_class]
+            counts[name] = counts.get(name, 0) + 1
+        missed = sum(1 for item in self.truths if item.missed)
+        if missed:
+            counts[error_classes.ERROR_CLASS_NAMES[error_classes.MISSED]] = missed
+        return counts
+
+    def expected_class_map(self) -> np.ndarray:
+        """What a perfect detector paints: each prediction object in its class, misses, IGNORE = 255."""
+
+        lookup = np.zeros(int(self.prediction_labels.max()) + 1, dtype=np.uint8)
+        for item in self.predictions:
+            lookup[item.label] = item.error_class
+        class_map = lookup[self.prediction_labels]
+        missed = [item.label for item in self.truths if item.missed]
+        if missed:
+            class_map[np.isin(self.truth_labels, missed) & (self.prediction_labels == 0)] = error_classes.MISSED
+        if self.ignore is not None:
+            class_map[self.ignore] = error_classes.IGNORE
+        return class_map
+
+
+def _deep_difference(prediction: np.ndarray, truth: np.ndarray, depth: float) -> int:
+    """Pixels of one mask lying farther than ``depth`` from the other mask."""
+
+    pad = int(np.ceil(depth)) + 2
+    predicted = np.pad(prediction, pad)
+    expected = np.pad(truth, pad)
+    to_prediction = cv2.distanceTransform((~predicted).astype(np.uint8), cv2.DIST_L2, 3)
+    to_truth = cv2.distanceTransform((~expected).astype(np.uint8), cv2.DIST_L2, 3)
+    missing = expected & ~predicted & (to_prediction > depth)
+    extra = predicted & ~expected & (to_truth > depth)
+    return int(np.count_nonzero(missing) + np.count_nonzero(extra))
+
+
+def instance_labels(mask: np.ndarray) -> np.ndarray:
+    """Connected components (8-connectivity) of a mask image after the shared binarization."""
+
+    return _labels(mask)
+
+
+def match_instance_labels(
+    prediction_labels: np.ndarray,
+    truth_labels: np.ndarray,
+    *,
+    ignore: np.ndarray | None = None,
+    config: InstanceMatchConfig | None = None,
+) -> InstanceMatch:
+    cfg = config or InstanceMatchConfig()
+    predicted = np.asarray(prediction_labels, dtype=np.int32)
+    truth = np.asarray(truth_labels, dtype=np.int32)
+    if predicted.shape != truth.shape:
+        raise ValueError("ground-truth mask size does not match the network mask")
+    ignore_mask = None if ignore is None else np.asarray(ignore, dtype=bool)
+    if ignore_mask is not None and ignore_mask.shape != predicted.shape:
+        raise ValueError("ignore mask size does not match the network mask")
+
+    prediction_area = np.bincount(predicted.reshape(-1), minlength=1)
+    truth_area = np.bincount(truth.reshape(-1), minlength=1)
+    if ignore_mask is not None:
+        prediction_ignored_px = np.bincount(predicted[ignore_mask], minlength=prediction_area.size)
+        truth_ignored_px = np.bincount(truth[ignore_mask], minlength=truth_area.size)
+    else:
+        prediction_ignored_px = np.zeros_like(prediction_area)
+        truth_ignored_px = np.zeros_like(truth_area)
+    prediction_ignored = prediction_ignored_px >= cfg.ignore_share * np.maximum(prediction_area, 1)
+    truth_ignored = truth_ignored_px >= cfg.ignore_share * np.maximum(truth_area, 1)
+    prediction_ignored[0] = truth_ignored[0] = False
+
+    overlap = (predicted > 0) & (truth > 0)
+    if ignore_mask is not None:
+        overlap &= ~ignore_mask
+    stride = int(truth.max()) + 1
+    keys, intersections = np.unique(
+        predicted[overlap].astype(np.int64) * stride + truth[overlap].astype(np.int64), return_counts=True
+    )
+    edges: dict[int, dict[int, int]] = {}
+    reverse: dict[int, dict[int, int]] = {}
+    for key, inter in zip(keys.tolist(), intersections.tolist()):
+        p, g = divmod(int(key), stride)
+        if prediction_ignored[p] or truth_ignored[g]:
+            continue
+        truth_cover = inter / max(1, int(truth_area[g]))
+        prediction_cover = inter / max(1, int(prediction_area[p]))
+        if truth_cover < cfg.min_truth_cover:
+            continue
+        if prediction_cover < cfg.min_prediction_cover and truth_cover < cfg.strong_truth_cover:
+            continue
+        edges.setdefault(p, {})[g] = int(inter)
+        reverse.setdefault(g, {})[p] = int(inter)
+
+    def bounds(labels: np.ndarray, label: int) -> tuple[int, int, int, int]:
+        ys, xs = np.nonzero(labels == label)
+        return int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+
+    predictions: list[PredictionMatch] = []
+    for p in range(1, prediction_area.size):
+        area = int(prediction_area[p])
+        if area == 0:
+            continue
+        if prediction_ignored[p]:
+            predictions.append(PredictionMatch(p, error_classes.IGNORE, (), area))
+            continue
+        linked = tuple(sorted(edges.get(p, {})))
+        if not linked:
+            predictions.append(PredictionMatch(p, error_classes.DEBRIS, (), area))
+            continue
+        if len(linked) >= 2:
+            predictions.append(PredictionMatch(p, error_classes.MERGE, linked, area))
+            continue
+        g = linked[0]
+        if len(reverse.get(g, {})) >= 2:
+            predictions.append(PredictionMatch(p, error_classes.SPLIT, linked, area))
+            continue
+        inter = edges[p][g]
+        iou = inter / float(area + int(truth_area[g]) - inter)
+        y0, y1, x0, x1 = bounds(predicted, p)
+        ty0, ty1, tx0, tx1 = bounds(truth, g)
+        y0, y1, x0, x1 = min(y0, ty0), max(y1, ty1), min(x0, tx0), max(x1, tx1)
+        predicted_crop = predicted[y0:y1, x0:x1] == p
+        truth_crop = truth[y0:y1, x0:x1] == g
+        boundary = boundary_iou(predicted_crop, truth_crop, width=int(cfg.boundary_width))
+        depth = max(float(cfg.min_deep_depth), float(cfg.deep_depth_ratio) * float(min(ty1 - ty0, tx1 - tx0)))
+        deep = _deep_difference(predicted_crop, truth_crop, depth)
+        deep_limit = max(int(cfg.min_deep_pixels), float(cfg.deep_pixels_share) * float(truth_area[g]))
+        normal = iou >= cfg.normal_iou and deep < deep_limit
+        error_class = error_classes.OK if normal else error_classes.BAD_GEOMETRY
+        predictions.append(PredictionMatch(p, error_class, linked, area, float(iou), float(boundary), deep))
+
+    truths = tuple(
+        TruthMatch(
+            label=g,
+            prediction_labels=tuple(sorted(reverse.get(g, {}))),
+            area=int(truth_area[g]),
+            missed=not bool(truth_ignored[g]) and not reverse.get(g),
+            ignored=bool(truth_ignored[g]),
+        )
+        for g in range(1, truth_area.size)
+        if int(truth_area[g]) > 0
+    )
+    return InstanceMatch(tuple(predictions), truths, predicted, truth, ignore_mask)
+
+
+def match_instances(
+    network: np.ndarray,
+    truth: np.ndarray,
+    *,
+    ignore: np.ndarray | None = None,
+    config: InstanceMatchConfig | None = None,
+) -> InstanceMatch:
+    """Object graph between a network mask and a ground-truth mask of the same frame."""
+
+    return match_instance_labels(instance_labels(network), instance_labels(truth), ignore=ignore, config=config)

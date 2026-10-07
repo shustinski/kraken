@@ -466,12 +466,6 @@ def test_binary_border_crop_is_edge_clipped_not_broken_geometry() -> None:
     clipped = [cell for cell in result.cells if "edge_clipped_cell" in cell.reasons]
     assert clipped
     assert all("broken_geometry" not in cell.reasons for cell in clipped)
-    from karakal.core.exports import _grid_defect_reason_rgb
-    from karakal.ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS
-
-    rgb = _grid_defect_reason_rgb(clipped[0].reasons, status=clipped[0].status)
-    expected = GRID_INSPECTION_ERROR_TYPE_COLORS["edge_clipped_cell"].lstrip("#")
-    assert rgb == (int(expected[0:2], 16), int(expected[2:4], 16), int(expected[4:6], 16))
 
 
 def test_binary_irregular_mid_cell_is_broken_geometry() -> None:

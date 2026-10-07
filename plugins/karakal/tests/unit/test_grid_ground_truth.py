@@ -60,3 +60,20 @@ def test_mask_size_mismatch_is_an_error() -> None:
     except ValueError:
         return
     raise AssertionError("size mismatch must be reported")
+
+
+def test_jpeg_copies_of_both_masks_match_like_the_lossless_ones() -> None:
+    truth = _outline()
+    network = _outline(fill=((0, 0),), skip=((2, 0),))
+    cv2.rectangle(network, (86, 20), (118, 52), 255, -1)
+    cv2.rectangle(network, (4, 4), (10, 10), 255, -1)
+
+    def jpeg(image: np.ndarray) -> np.ndarray:
+        return cv2.imdecode(cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])[1], cv2.IMREAD_GRAYSCALE)
+
+    lossless = match_masks(network, truth)
+    compressed = match_masks(jpeg(network), jpeg(truth))
+    assert sorted(item["label"] for item in compressed["components"]) == sorted(
+        item["label"] for item in lossless["components"]
+    )
+    assert compressed["missed"] == lossless["missed"]

@@ -70,6 +70,8 @@ GRID_DAMAGE_REASON_TYPES = (
     "small_artifact",
     "broken_geometry",
     "merged_contour",
+    "split_cell",
+    "unknown_anomaly",
     "edge_clipped_cell",
     "class_conflict",
     "conductor_zone",
@@ -223,9 +225,13 @@ class GridCellReferenceProfile:
     frame_path: str = ""
     # Mean silhouette of the layer cell; None keeps the size-only scoring.
     shape_template: CellShapeTemplate | None = None
+    # Bank of normal cells of the run (normal_bank.NormalBank). With it, frames go through the
+    # grid-free cell-error analysis (cell_error_analysis); without it, through the lattice analysis.
+    normal_bank: Any = None
 
     def cache_payload(self) -> dict[str, Any]:
         return {
+            "normal_bank_id": None if self.normal_bank is None else str(self.normal_bank.bank_id),
             "shape_template": None if self.shape_template is None else self.shape_template.cache_payload(),
             "median_width": round(float(self.median_width), 6),
             "median_height": round(float(self.median_height), 6),
@@ -1636,6 +1642,66 @@ def detect_grid_cell_anomalies(
     return result
 
 
+def uses_normal_bank(
+    reference_profile: GridCellReferenceProfile | None, config: GridDamageAnalysisConfig | None = None
+) -> bool:
+    """Whether frames of this run go through the grid-free analysis with a bank of normal cells."""
+
+    if reference_profile is None or getattr(reference_profile, "normal_bank", None) is None:
+        return False
+    return config is None or str(config.normalized().scoring_mode) == "calibrated"
+
+
+def _cell_error_config(cfg: GridDamageAnalysisConfig):
+    from .cell_error_analysis import CellErrorConfig
+
+    return CellErrorConfig(
+        geometry_sensitivity=int(cfg.geometry_sensitivity),
+        merge_sensitivity=int(cfg.merge_sensitivity),
+        debris_min_area_px=int(DEBRIS_ANALYSIS_FLOOR_PX),
+    )
+
+
+def _analyze_with_normal_bank(
+    path_obj: Path,
+    *,
+    frame_id: str,
+    cfg: GridDamageAnalysisConfig,
+    reference_profile: GridCellReferenceProfile,
+    confidence_obj: Path | None,
+) -> GridFrameAnalysisResult | None:
+    """Grid-free analysis of one mask, shaped as the old result for the matrix and the frame window."""
+
+    from .cell_error_adapter import to_grid_frame_result
+    from .cell_error_analysis import analyze_cell_errors
+    from .grid_narrowing import GridNarrowing, narrow_grid_frame_result
+
+    image = _load_cv2_grayscale_image(path_obj)
+    if image is None:
+        return None
+    confidence = _load_cv2_grayscale_image(confidence_obj) if confidence_obj is not None else None
+    analysis = analyze_cell_errors(
+        image,
+        reference_profile.normal_bank,
+        confidence=confidence,
+        config=_cell_error_config(cfg),
+        frame_id=frame_id,
+        frame_path=str(path_obj),
+    )
+    result = to_grid_frame_result(analysis, severity=cfg.severity_thresholds)
+    enabled = None if cfg.enabled_reason_types is None else frozenset(cfg.enabled_reason_types)
+    if enabled is not None and "conductor_zone" not in enabled:
+        result = replace(
+            result,
+            per_cell_results=tuple(cell for cell in result.per_cell_results if "conductor_zone" not in cell.reasons),
+        )
+    narrowed = narrow_grid_frame_result(
+        result,
+        GridNarrowing(debris_min_area_px=max(int(DEBRIS_ANALYSIS_FLOOR_PX), int(cfg.debris_min_area_px)), enabled_reason_types=enabled),
+    )
+    return narrowed if isinstance(narrowed, GridFrameAnalysisResult) else result
+
+
 def analyze_grid_frame_path(
     path: Path | str,
     *,
@@ -1656,6 +1722,30 @@ def analyze_grid_frame_path(
     should_read_cache = bool(use_cache) if read_cache is None else bool(read_cache)
     should_write_cache = bool(use_cache) if write_cache is None else bool(write_cache)
     confidence_obj = Path(confidence_path) if confidence_path else None
+    if uses_normal_bank(reference_profile, cfg):
+        # The confidence map moves only scores here; it is part of the cache key, not a reason to skip it.
+        cfg = replace(cfg, cell_representation="binary").normalized()
+        token = "cell_errors" + (
+            "|" + "|".join(str(part) for part in _grid_cache_identity(confidence_obj)) if confidence_obj is not None else ""
+        )
+        if should_read_cache:
+            cached = _load_cached_grid_result(
+                path_obj, frame_id=frame_id, config=cfg, reference_profile=reference_profile, zone_cache_token=token
+            )
+            if cached is not None:
+                return cached
+        with profile_stage("validation.grid.frame", frame_id=frame_id, frame_count=1):
+            result = _analyze_with_normal_bank(
+                path_obj, frame_id=frame_id, cfg=cfg, reference_profile=reference_profile, confidence_obj=confidence_obj
+            )
+        if result is not None and should_write_cache:
+            _store_cached_grid_result(
+                path_obj, frame_id=frame_id, config=cfg, reference_profile=reference_profile, result=result, zone_cache_token=token
+            )
+        profiler = current_profiler()
+        if profiler is not None:
+            profiler.increment("frames.processed")
+        return result
     # External confidence fusion changes classify outcomes; skip shared path cache for those runs.
     can_use_shared_cache = confidence_obj is None
     if should_read_cache and can_use_shared_cache:
@@ -1745,6 +1835,81 @@ def build_grid_cell_reference_profile_path(
     if image is None:
         return None
     return build_grid_cell_reference_profile(image, frame_id=frame_id, frame_path=str(path_obj), config=config)
+
+
+@dataclass(frozen=True, slots=True)
+class RunProfileRequest:
+    """What a worker needs to build the run's normal-cell profile in its own thread.
+
+    Building the bank reads and splits dozens of masks; the UI thread only collects the paths.
+    """
+
+    mask_paths: tuple[str, ...]
+    sample_limit: int = 32
+    frame_id: str = "run"
+    min_frames: int = 1
+
+    def resolve(self, config: GridDamageAnalysisConfig | None = None) -> GridCellReferenceProfile | None:
+        return estimate_run_normal_profile(
+            self.mask_paths,
+            config=config,
+            sample_limit=int(self.sample_limit),
+            frame_id=self.frame_id,
+            min_frames=int(self.min_frames),
+        )
+
+
+def resolve_reference_profile(value, config: GridDamageAnalysisConfig | None = None):
+    """A ready profile as it is; a request built now (call it in a worker thread)."""
+
+    return value.resolve(config) if isinstance(value, RunProfileRequest) else value
+
+
+def estimate_run_normal_profile(
+    mask_paths: Sequence[str | Path],
+    *,
+    config: GridDamageAnalysisConfig | None = None,
+    sample_limit: int = 32,
+    frame_id: str = "run",
+    min_frames: int = 1,
+) -> GridCellReferenceProfile | None:
+    """Bank of normal cells from a sample of the run's masks, wrapped as the run's reference profile.
+
+    The bank is built in two passes over the sample (normal_bank). Its status travels with it:
+    a run without a reliable normal cell still gets a profile, and its frames report
+    ``insufficient_normal_model`` instead of guessed defects.
+    """
+
+    from .cell_components import extract_components
+    from .normal_bank import build_normal_bank
+
+    paths = [Path(path) for path in mask_paths if str(path)]
+    if sample_limit > 0 and len(paths) > sample_limit:
+        step = max(1, len(paths) // sample_limit)
+        paths = paths[::step][:sample_limit]
+    component_sets = []
+    for path_obj in paths:
+        image = _load_cv2_grayscale_image(path_obj)
+        if image is not None:
+            component_sets.append(extract_components(image))
+    if len(component_sets) < max(1, int(min_frames)):
+        return None
+    bank = build_normal_bank(component_sets)
+    return GridCellReferenceProfile(
+        median_width=float(bank.cell_width),
+        median_height=float(bank.cell_height),
+        median_area=float(bank.cell_area),
+        median_fill=1.0,
+        median_interior_fill=1.0,
+        median_center_fill=1.0,
+        median_aspect=float(bank.cell_width) / max(1.0, float(bank.cell_height)),
+        candidate_count=int(bank.candidates),
+        seed_count=int(len(bank.exemplars)),
+        frame_id=str(frame_id or "run"),
+        frame_path="",
+        shape_template=bank.template,
+        normal_bank=bank,
+    )
 
 
 def estimate_run_cell_reference_profile(
@@ -2278,6 +2443,11 @@ def analyze_grid_frame_single_source_path(
     """Infer whether one untyped source is a confidence outline or a binary result."""
 
     base_config = (config or GridDamageAnalysisConfig()).normalized()
+    if uses_normal_bank(reference_profile, base_config):
+        result = analyze_grid_frame_path(
+            path, frame_id=frame_id, config=base_config, reference_profile=reference_profile, use_cache=use_cache
+        )
+        return None if result is None else ("binary", result)
     confidence_result = analyze_grid_frame_path(
         path,
         frame_id=frame_id,
@@ -2334,6 +2504,32 @@ def analyze_grid_frame_sources_chunk(
     }
     if not wanted:
         wanted = {"confidence", "binary"}
+    if uses_normal_bank(reference_profile, config):
+        # One analysis of the mask; the confidence map only adds scores (decision Н2), so both
+        # layers show the same objects.
+        for key, confidence_path, binary_path in entries:
+            mask_path = binary_path or confidence_path
+            missing = next((item for item in (binary_path, confidence_path) if item and not Path(item).is_file()), None)
+            if missing is not None and (not binary_path or missing == binary_path):
+                payloads[str(key)] = {layer: _missing_model_file_result(str(key), str(missing)) for layer in sorted(wanted)}
+                continue
+            try:
+                result = analyze_grid_frame_path(
+                    mask_path,
+                    frame_id=key,
+                    config=config,
+                    reference_profile=reference_profile,
+                    use_cache=use_cache,
+                    confidence_path=confidence_path if binary_path and confidence_path and Path(confidence_path).is_file() else None,
+                )
+            except Exception as error:
+                errors[str(key)] = f"{type(error).__name__}: {error}"
+                continue
+            if result is None:
+                errors[str(key)] = "decode_error"
+                continue
+            payloads[str(key)] = {layer: result for layer in sorted(wanted)}
+        return payloads, errors
     for key, confidence_path, binary_path in entries:
         if confidence_path and binary_path:
             pair_payloads, pair_errors = analyze_grid_frame_pair_chunk(

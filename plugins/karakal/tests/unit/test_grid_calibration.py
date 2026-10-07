@@ -235,6 +235,8 @@ def test_slider_preview_does_not_reread_the_mask(monkeypatch) -> None:
     host._refresh_grid_calibration_summary = lambda dialog=None: None
     host._grid_score_thresholds = KarakalPresenter._grid_score_thresholds.__get__(host)
     host._redecide_prepared_frame = KarakalPresenter._redecide_prepared_frame.__get__(host)
+    # No run bank on this tab: the frame window keeps the lattice analysis and its stored scores.
+    host._grid_details_run_profile = KarakalPresenter._grid_details_run_profile.__get__(host)
     host._grid_inspection_model_id_for_state = lambda _state: "m"
     host._grid_inspection_config_payload = lambda: {"scoring_mode": "calibrated"}
     host._grid_damage_config_from_payload = lambda _payload: GridDamageAnalysisConfig(scoring_mode="calibrated")

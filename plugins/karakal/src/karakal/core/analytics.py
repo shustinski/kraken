@@ -31,6 +31,7 @@ from .image_io import (
     _load_optional_gray,
     _resolve_aux_path_from_lookup,
     _resolve_model_path_for_key,
+    _folder_cache_key,
     build_folder_index,
     build_frame_identity,
     build_prediction_view_from_gray,
@@ -1313,7 +1314,13 @@ def _collect_frame_records_modern(
 
     from .diagnostics import log_event, stage_enter, stage_exit
 
+    from .frame_naming import FrameNaming, confidence_lookup, frame_lookup_key
+
     extensions = tuple(str(ext).lower() for ext in options.file_extensions)
+    naming = FrameNaming(
+        mask_suffix=str(getattr(options, "mask_suffix", "") or ""),
+        confidence_suffix=str(getattr(options, "confidence_suffix", "") or ""),
+    ).normalized()
     base_spec = model_specs[0]
     progress_interval = max(1, int(options.progress_update_interval))
     if cancel_check is not None and cancel_check():
@@ -1344,6 +1351,9 @@ def _collect_frame_records_modern(
         progress_callback=_index_progress("index:base"),
         progress_interval=progress_interval,
     )
+    base_raw_index = base_index
+    # Confidence maps lying next to the masks are not frames.
+    base_index = {key: path for key, path in base_raw_index.items() if naming.is_mask_file(path)}
     if not base_index:
         raise ValueError("Selected model folders do not contain matching image frames.")
     log_event("index.base_ready", frames=len(base_index), folder=str(base_spec.mask_folder))
@@ -1375,6 +1385,36 @@ def _collect_frame_records_modern(
         )
         log_event("index.folder_ready", kind=kind, folder=str(folder), job=job_index, jobs=len(folder_jobs))
 
+    confidence_lookups: dict[str, dict[str, Path]] = {}
+
+    def _confidence_lookup_for(spec: ModelSpec) -> dict[str, Path]:
+        """Confidence maps of one model by frame stem: its own folder or the mask folder."""
+
+        mask_folder = Path(spec.mask_folder)
+        if spec is base_spec:
+            mask_index = base_raw_index
+        else:
+            mask_index = fallback_model_indexes.get(_folder_cache_key(mask_folder), ({}, {}, {}))[0]
+        folder = Path(spec.prob_folder) if spec.prob_folder is not None else mask_folder
+        same_folder = _folder_cache_key(folder) == _folder_cache_key(mask_folder)
+        cache_key = f"{_folder_cache_key(folder)}|{int(same_folder)}"
+        cached = confidence_lookups.get(cache_key)
+        if cached is not None:
+            return cached
+        if same_folder:
+            index = mask_index
+        else:
+            index = ensure_folder_path_lookup(
+                folder, extensions, fallback_prob_indexes, recursive=options.recursive, cancel_check=cancel_check
+            )[0]
+        lookup = confidence_lookup(index, naming, same_folder_as_masks=same_folder)
+        confidence_lookups[cache_key] = lookup
+        return lookup
+
+    def _confidence_path(spec: ModelSpec, key: str) -> str:
+        found = _confidence_lookup_for(spec).get(frame_lookup_key(key, naming))
+        return str(found) if found is not None else ""
+
     original_lookup: _FolderPathLookup = (
         ensure_folder_path_lookup(
             Path(original_folder.path),
@@ -1395,19 +1435,7 @@ def _collect_frame_records_modern(
         if cancel_check is not None and cancel_check():
             raise BuildCancelledError("Build cancelled")
         model_mask_paths: dict[str, str] = {base_spec.model_id: str(base_index[key])}
-        model_prob_paths: dict[str, str] = {}
-        if base_spec.prob_folder is not None:
-            resolved_prob = _resolve_model_path_for_key(
-                base_spec.prob_folder,
-                key,
-                extensions,
-                fallback_prob_indexes,
-                recursive=options.recursive,
-                cancel_check=cancel_check,
-            )
-            model_prob_paths[base_spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
-        else:
-            model_prob_paths[base_spec.model_id] = ""
+        model_prob_paths: dict[str, str] = {base_spec.model_id: _confidence_path(base_spec, key)}
         missing_required_model = False
         for spec in model_specs[1:]:
             resolved = _resolve_model_path_for_key(
@@ -1422,26 +1450,20 @@ def _collect_frame_records_modern(
                 missing_required_model = True
                 break
             model_mask_paths[spec.model_id] = str(resolved)
-            if spec.prob_folder is not None:
-                resolved_prob = _resolve_model_path_for_key(
-                    spec.prob_folder,
-                    key,
-                    extensions,
-                    fallback_prob_indexes,
-                    recursive=options.recursive,
-                    cancel_check=cancel_check,
-                )
-                model_prob_paths[spec.model_id] = str(resolved_prob) if resolved_prob is not None else ""
-            else:
-                model_prob_paths[spec.model_id] = ""
+            model_prob_paths[spec.model_id] = _confidence_path(spec, key)
         if missing_required_model:
             continue
+        # Originals carry no mask suffix: look them up by the frame name too.
+        frame_key = (Path(key).parent / (naming.frame_stem(key) + Path(key).suffix)).as_posix()
         original_path = _resolve_aux_path_from_lookup(key, original_lookup)
+        if original_path is None and frame_key != key:
+            original_path = _resolve_aux_path_from_lookup(frame_key, original_lookup)
+        identity = build_frame_identity(frame_key, index)
         records.append(
             FrameRecord(
                 key=key,
                 display_name=Path(key).name,
-                identity=build_frame_identity(key, index),
+                identity=replace(identity, source_key=key),
                 first_path=str(base_index[key]),
                 second_path=str(model_mask_paths.get(model_specs[1].model_id, model_mask_paths[base_spec.model_id]))
                 if len(model_specs) > 1

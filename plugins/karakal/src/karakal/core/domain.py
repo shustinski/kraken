@@ -118,6 +118,10 @@ class BuildOptions:
     comparison_pairs: tuple[ComparisonPairSelection, ...] = ()
     comparison_target: ComparisonTarget = ComparisonTarget.OUTPUTS
     single_result_sensitivity: str = "balanced"
+    # File name suffixes: a mask is NAME<mask_suffix>, its confidence NAME<confidence_suffix>,
+    # in one folder or in two (see core/frame_naming.py).
+    mask_suffix: str = ""
+    confidence_suffix: str = "_confidence"
 
 
 @dataclass(frozen=True, slots=True)

@@ -1276,6 +1276,10 @@ class KarakalWidget(QWidget):
             action.setChecked(mode_key == current_attention_mode)
             self._attention_compute_action_group.addAction(action)
         self._attention_compute_action_group.triggered.connect(self._on_attention_compute_mode_triggered)
+        settings_menu = self._menu_bar.addMenu(self._t("menu.settings"))
+        file_naming_action = QAction(self._t("menu.settings.file_naming"), settings_menu)
+        file_naming_action.triggered.connect(self._show_file_naming_dialog)
+        settings_menu.addAction(file_naming_action)
         diagnostics_menu = self._menu_bar.addMenu("Diagnostics" if self._i18n.language == "en" else "Диагностика")
         profiling_action = QAction(
             "Validation profiling…" if self._i18n.language == "en" else "Профилирование Validation…",
@@ -1293,6 +1297,15 @@ class KarakalWidget(QWidget):
         self._update_controller = create_karakal_update_controller(self)
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
         self._setup_update_menu()
+
+    def _show_file_naming_dialog(self) -> None:
+        from ..ui.file_naming_dialog import FileNamingDialog
+
+        dialog = FileNamingDialog(self._t, self._settings_service.load_frame_naming(), parent=self)
+        if dialog.exec() != FileNamingDialog.DialogCode.Accepted:
+            return
+        self._settings_service.save_frame_naming(dialog.naming())
+        self._settings_service.sync()
 
     def _on_attention_compute_mode_triggered(self, action) -> None:
         mode = str(action.data() or "lightweight")

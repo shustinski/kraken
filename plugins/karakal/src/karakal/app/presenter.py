@@ -4168,10 +4168,40 @@ class KarakalPresenter(QObject):
             )
             return
         item = self._append_folder_item(folder_path, checked=True)
+        self._fill_confidence_from_same_folder(item, folder_path)
         self.folder_list.setCurrentItem(item)
         self._refresh_folder_rows()
         self._refresh_pair_matrix()
         self._sync_action_buttons()
+
+    def _frame_naming(self):
+        from ..core.frame_naming import DEFAULT_FRAME_NAMING
+
+        service = getattr(self, "_settings_service", None)
+        if service is None or not hasattr(service, "load_frame_naming"):
+            return DEFAULT_FRAME_NAMING
+        return service.load_frame_naming()
+
+    def _fill_confidence_from_same_folder(self, item: QListWidgetItem, folder_path: Path) -> None:
+        """A folder that holds both masks and confidence maps is its own confidence folder."""
+
+        if str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip():
+            return
+        naming = self._frame_naming()
+        if not naming.confidence_suffix:
+            return
+        try:
+            found = any(
+                path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSION_SET and naming.is_confidence_file(path)
+                for path in Path(folder_path).iterdir()
+            )
+        except OSError:
+            return
+        if not found:
+            return
+        item.setData(FOLDER_CONFIDENCE_ROLE, str(folder_path))
+        # The confidence row opens, so the operator sees the folder it took.
+        item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, True)
 
     def _clear_folders(self) -> None:
         self.folder_list.clear()
@@ -4842,6 +4872,8 @@ class KarakalPresenter(QObject):
             ),
             comparison_pairs=self._selected_comparison_pairs(),
             single_result_sensitivity=self._selected_single_result_sensitivity(),
+            mask_suffix=self._frame_naming().mask_suffix,
+            confidence_suffix=self._frame_naming().confidence_suffix,
         )
         self._pending_build_snapshot = self._capture_view_snapshot()
         self._worker_kind = "build"

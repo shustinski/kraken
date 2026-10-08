@@ -76,7 +76,13 @@ class SmoothZoom(QObject):
         self._target_scale = target
         self._started = time.perf_counter()
         self._anchor_view = QPointF(anchor_viewport_pos)
-        self._anchor_scene = self._view.mapToScene(anchor_viewport_pos.toPoint())
+        # Sub-pixel anchor: an integer pixel would drift by half a pixel times the zoom.
+        inverted, invertible = self._view.viewportTransform().inverted()
+        self._anchor_scene = (
+            inverted.map(QPointF(anchor_viewport_pos))
+            if invertible
+            else QPointF(self._view.mapToScene(anchor_viewport_pos.toPoint()))
+        )
         self._settle_timer.stop()
         if not self._timer.isActive():
             self._timer.start()

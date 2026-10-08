@@ -85,6 +85,20 @@ def _install_crash_logging() -> Path | None:
     return log_path
 
 
+def _apply_app_theme(app) -> None:
+    """Same look on Windows 10 and 11 (Fusion, dark palette and style sheet for every window)."""
+
+    try:
+        if __package__ in {None, ""}:
+            ensure_package_parent_on_sys_path(__file__)
+            from karakal.ui.app_theme import apply_karakal_app_theme
+        else:
+            from ..ui.app_theme import apply_karakal_app_theme
+        apply_karakal_app_theme(app)
+    except Exception as error:  # noqa: BLE001 - the program must start with the system look then
+        _LOGGER.warning("Could not apply the Karakal theme: %s", error)
+
+
 def _offer_update_at_start() -> bool:
     try:
         if __package__ in {None, ""}:
@@ -132,6 +146,7 @@ def main() -> int:
     app.setApplicationName("Karakal")
     app.setApplicationDisplayName("Karakal")
     apply_karakal_icon()
+    _apply_app_theme(app)
     # Every launch until the user updates: a newer version is offered before the main window.
     if _offer_update_at_start():
         return 0

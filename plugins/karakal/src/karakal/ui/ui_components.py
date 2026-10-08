@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .toolbar_icons import toolbar_icon
 from .ui_constants import FOLDER_BUTTON_SIZE
 
 
@@ -31,16 +32,12 @@ class FolderRowWidget(QWidget):
         confidence_display_text: str,
         confidence_path_text: str,
         confidence_expanded: bool,
-        can_move_up: bool,
-        can_move_down: bool,
         on_checked_changed,
         on_label_changed,
         on_confidence_folder,
         on_clear_confidence_folder,
         on_confidence_toggle,
         on_remove,
-        on_move_up,
-        on_move_down,
         checkbox_tooltip: str,
         confidence_placeholder: str,
         confidence_tooltip: str,
@@ -49,8 +46,7 @@ class FolderRowWidget(QWidget):
         confidence_expand_tooltip: str,
         confidence_collapse_tooltip: str,
         remove_tooltip: str,
-        move_up_tooltip: str,
-        move_down_tooltip: str,
+        grip_tooltip: str = "",
         name_tooltip: str = "",
         name_placeholder: str = "",
         confidence_label: str = "",
@@ -80,6 +76,15 @@ class FolderRowWidget(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(4)
 
+        # Drag handle: the list moves the row (it ignores the press, so the list gets it).
+        self.grip = QLabel(self)
+        self.grip.setPixmap(toolbar_icon("grip").pixmap(16, 16))
+        self.grip.setFixedWidth(14)
+        self.grip.setToolTip(grip_tooltip)
+        self.grip.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.grip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        main_layout.addWidget(self.grip)
+
         self.checkbox = QCheckBox(self)
         self.checkbox.setChecked(checked)
         self.checkbox.setToolTip(checkbox_tooltip)
@@ -99,36 +104,16 @@ class FolderRowWidget(QWidget):
         self.btn_confidence_toggle.setProperty('folderAction', True)
         self.btn_confidence_toggle.setCheckable(True)
         self.btn_confidence_toggle.setChecked(bool(confidence_expanded))
-        self.btn_confidence_toggle.setText('-' if confidence_expanded else '+')
+        self.btn_confidence_toggle.setIcon(toolbar_icon("settings"))
         self.btn_confidence_toggle.setToolTip(confidence_collapse_tooltip if confidence_expanded else confidence_expand_tooltip)
         self.btn_confidence_toggle.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)
         self.btn_confidence_toggle.toggled.connect(lambda expanded: on_confidence_toggle(bool(expanded)))
         main_layout.addWidget(self.btn_confidence_toggle)
 
-        self.btn_up = QToolButton(self)
-        self.btn_up.setAutoRaise(False)
-        self.btn_up.setProperty('folderAction', True)
-        self.btn_up.setText('^')
-        self.btn_up.setToolTip(move_up_tooltip)
-        self.btn_up.setEnabled(can_move_up)
-        self.btn_up.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)
-        self.btn_up.clicked.connect(on_move_up)
-        main_layout.addWidget(self.btn_up)
-
-        self.btn_down = QToolButton(self)
-        self.btn_down.setAutoRaise(False)
-        self.btn_down.setProperty('folderAction', True)
-        self.btn_down.setText('v')
-        self.btn_down.setToolTip(move_down_tooltip)
-        self.btn_down.setEnabled(can_move_down)
-        self.btn_down.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)
-        self.btn_down.clicked.connect(on_move_down)
-        main_layout.addWidget(self.btn_down)
-
         self.btn_remove = QToolButton(self)
         self.btn_remove.setAutoRaise(False)
         self.btn_remove.setProperty('folderAction', True)
-        self.btn_remove.setText('x')
+        self.btn_remove.setIcon(toolbar_icon("trash"))
         self.btn_remove.setToolTip(remove_tooltip)
         self.btn_remove.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)
         self.btn_remove.clicked.connect(on_remove)
@@ -223,7 +208,7 @@ class FolderRowWidget(QWidget):
         btn_clear = QToolButton(parent)
         btn_clear.setAutoRaise(False)
         btn_clear.setProperty('folderAction', True)
-        btn_clear.setText('x')
+        btn_clear.setIcon(toolbar_icon("clear"))
         btn_clear.setToolTip(clear_tooltip)
         btn_clear.setEnabled(bool(path_text))
         btn_clear.setFixedSize(FOLDER_BUTTON_SIZE, FOLDER_BUTTON_SIZE)

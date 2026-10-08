@@ -14,6 +14,7 @@ from ..core.attention_issues import (
 from ..ui.ui_constants import (
     SETTINGS_ATTENTION_COMPUTE_MODE_KEY,
     SETTINGS_BUILD_KEY,
+    SETTINGS_SIDEBAR_COLLAPSED_KEY,
     SETTINGS_FRAME_NAMING_KEY,
     SETTINGS_ANALYSIS_PROFILE_KEY,
     SETTINGS_DETAILS_VIEW_KEY,
@@ -127,6 +128,13 @@ class KarakalSettingsService:
             SETTINGS_ATTENTION_COMPUTE_MODE_KEY,
             normalize_attention_compute_mode(mode),
         )
+
+    def load_sidebar_collapsed(self) -> bool:
+        value = self._settings.value(SETTINGS_SIDEBAR_COLLAPSED_KEY, False)
+        return str(value).strip().lower() in {"1", "true", "yes"}
+
+    def save_sidebar_collapsed(self, collapsed: bool) -> None:
+        self._settings.setValue(SETTINGS_SIDEBAR_COLLAPSED_KEY, bool(collapsed))
 
     def load_frame_naming(self):
         from ..core.frame_naming import DEFAULT_FRAME_NAMING, FrameNaming, validate_frame_naming

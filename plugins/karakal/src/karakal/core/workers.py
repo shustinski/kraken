@@ -138,6 +138,9 @@ class WorkerBase(QObject):
         self._performance_config = performance_config or load_performance_config()
         self._profiler = ProfilerRun(analysis_type, self._performance_config)
         self._cancel_requested = Event()
+        # Set = running, cleared = paused. Workers stop at their next cancellation check.
+        self._resume_allowed = Event()
+        self._resume_allowed.set()
         self._last_progress_emit_at = 0.0
         self._last_profile_emit_at = 0.0
         self._last_frame_state_emit_at = 0.0
@@ -145,8 +148,26 @@ class WorkerBase(QObject):
 
     def request_cancel(self) -> None:
         self._cancel_requested.set()
+        self._resume_allowed.set()
+
+    def request_pause(self) -> None:
+        """Hold the work at the next checkpoint (the current chunk of frames still finishes)."""
+
+        self._resume_allowed.clear()
+
+    def request_resume(self) -> None:
+        self._resume_allowed.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self._resume_allowed.is_set()
 
     def _is_cancelled(self) -> bool:
+        """Checkpoint of the worker thread: waits here while paused, then answers «cancelled?»."""
+
+        while not self._resume_allowed.wait(0.1):
+            if self._cancel_requested.is_set():
+                break
         return self._cancel_requested.is_set()
 
     def _emit_progress(self, current: int, total: int, key: str, *, force: bool = False) -> None:

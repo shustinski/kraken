@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGraphicsScene,
+    QGraphicsPixmapItem,
     QGraphicsView,
     QGroupBox,
     QHBoxLayout,
@@ -35,6 +36,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..core.analysis_modes import CONFIDENCE_COMPARISON_MODE, metric_level_key, metric_visual_ratio
+from .smooth_zoom import SmoothZoom, wheel_zoom_factor
 from ..core.attention_issues import (
     AttentionIssue,
     DEFAULT_ATTENTION_COMPUTE_MODE,
@@ -98,6 +100,10 @@ def _cell_outline_polygon(cell, scale_x: float = 1.0, scale_y: float = 1.0) -> Q
     return polygon
 
 
+# From this zoom on the frame shows its pixels as squares instead of blurring them.
+CRISP_PIXELS_SCALE = 2.0
+
+
 class _OverlayGraphicsView(QGraphicsView):
     """Provide zoom, middle-button preview toggling, and panning for the overlay preview."""
 
@@ -123,15 +129,28 @@ class _OverlayGraphicsView(QGraphicsView):
         self._middle_pan_active = False
         self._middle_pan_last_pos: QPointF | None = None
         self.viewport().setMouseTracking(True)
+        self._smooth_zoom = SmoothZoom(self, min_scale=0.05, max_scale=60.0)
+        self._smooth_zoom.stepped.connect(self.viewTransformChanged.emit)
 
     def wheelEvent(self, event) -> None:
-        factor = 1.15 if event.angleDelta().y() > 0 else 1.0 / 1.15
-        current_scale = self.transform().m11()
-        next_scale = current_scale * factor
-        if 0.05 <= next_scale <= 60.0:
-            self.scale(factor, factor)
-            self.viewTransformChanged.emit()
+        self._smooth_zoom.zoom_by(wheel_zoom_factor(event, 1.15), event.position())
         event.accept()
+
+    def paintEvent(self, event) -> None:
+        self._sync_pixmap_quality()
+        super().paintEvent(event)
+
+    def _sync_pixmap_quality(self) -> None:
+        """Smooth frames; from 2x, crisp pixels (Qt draws smooth faster, so no «fast while moving»)."""
+
+        crisp = abs(float(self.transform().m11())) >= CRISP_PIXELS_SCALE
+        mode = Qt.TransformationMode.FastTransformation if crisp else Qt.TransformationMode.SmoothTransformation
+        scene = self.scene()
+        if scene is None:
+            return
+        for item in scene.items():
+            if isinstance(item, QGraphicsPixmapItem) and item.transformationMode() != mode:
+                item.setTransformationMode(mode)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
@@ -178,6 +197,7 @@ class _OverlayGraphicsView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def fit_to_scene(self) -> None:
+        self._smooth_zoom.stop()
         scene = self.scene()
         if scene is None:
             return
@@ -4863,6 +4883,7 @@ class ExtendFrameDetailsDialog(QDialog):
         target = rect.adjusted(-margin, -margin, margin, margin).intersected(scene.sceneRect())
         if target.isNull():
             target = rect.adjusted(-margin, -margin, margin, margin)
+        self.overlay_view._smooth_zoom.stop()
         self.overlay_view.fitInView(target, Qt.AspectRatioMode.KeepAspectRatio)
         self.overlay_view.centerOn(rect.center())
 
@@ -5127,6 +5148,7 @@ class ExtendFrameDetailsDialog(QDialog):
         target = rect.adjusted(-margin, -margin, margin, margin).intersected(scene.sceneRect())
         if target.isNull():
             target = rect.adjusted(-margin, -margin, margin, margin)
+        self.overlay_view._smooth_zoom.stop()
         self.overlay_view.fitInView(target, Qt.AspectRatioMode.KeepAspectRatio)
         self.overlay_view.centerOn(rect.center())
 

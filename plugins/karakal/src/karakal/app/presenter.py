@@ -140,6 +140,7 @@ from ..ui.details_dialog import ExtendFrameDetailsDialog
 from ..ui.grid_tuning_dialog import GridTuningDialog
 from ..ui.matrix_view import MatrixLayoutConfig, build_matrix_layout
 from ..ui.ui_components import FolderRowWidget
+from ..ui.toolbar_icons import toolbar_icon
 from ..ui.ui_constants import (
     DEFAULT_CELL_SIZE,
     DEFAULT_BOUNDARY_RADIUS,
@@ -2200,8 +2201,6 @@ class KarakalPresenter(QObject):
                     confidence_display_text=confidence_display_text,
                     confidence_path_text=confidence_path_text,
                     confidence_expanded=confidence_expanded,
-                    can_move_up=row > 0,
-                    can_move_down=row < item_count - 1,
                     on_checked_changed=lambda checked, item=item: self._set_folder_item_checked(item, checked),
                     on_label_changed=lambda text, item=item: self._set_folder_item_label(item, text),
                     on_confidence_folder=lambda _checked=False, item=item: self._set_folder_item_confidence_folder(
@@ -2214,8 +2213,6 @@ class KarakalPresenter(QObject):
                         item, expanded
                     ),
                     on_remove=lambda _checked=False, item=item: self._remove_folder_item(item),
-                    on_move_up=lambda _checked=False, item=item: self._move_folder_item(item, -1),
-                    on_move_down=lambda _checked=False, item=item: self._move_folder_item(item, 1),
                     checkbox_tooltip="Use model in analytics",
                     name_tooltip=self._t("folders.layer_name_tooltip", path=path_text),
                     name_placeholder=self._t("folders.layer_name_placeholder"),
@@ -2225,9 +2222,8 @@ class KarakalPresenter(QObject):
                     confidence_clear_tooltip=self._t("folders.clear_confidence"),
                     confidence_expand_tooltip=self._t("folders.show_confidence"),
                     confidence_collapse_tooltip=self._t("folders.hide_confidence"),
-                    remove_tooltip="Remove model folder",
-                    move_up_tooltip="Move up",
-                    move_down_tooltip="Move down",
+                    remove_tooltip=self._t("folders.remove_layer"),
+                    grip_tooltip=self._t("folders.drag_hint"),
                     confidence_label=self._t("folders.confidence_label"),
                     original_label=self._t("folders.original_label"),
                     original_display_text=self._compact_path_text(original_path_text),
@@ -2341,6 +2337,34 @@ class KarakalPresenter(QObject):
         self._refresh_pair_matrix()
         self._sync_action_buttons()
 
+    def _on_folder_rows_moved(self, *_args) -> None:
+        """A layer was dragged: rebuild the rows (dragging drops their widgets) once the drop is done."""
+
+        def refresh() -> None:
+            self._refresh_folder_rows()
+            self._refresh_pair_matrix()
+            self._sync_grid_inspection_matrix_selector(self._current_tab_state())
+            self._sync_action_buttons()
+
+        QTimer.singleShot(0, refresh)
+
+    def _focused_folder_item(self) -> QListWidgetItem | None:
+        focus = QApplication.focusWidget()
+        for row in range(self.folder_list.count()):
+            item = self.folder_list.item(row)
+            widget = self.folder_list.itemWidget(item)
+            if widget is not None and focus is not None and (widget is focus or widget.isAncestorOf(focus)):
+                return item
+        return self.folder_list.currentItem()
+
+    def _move_focused_folder_item(self, delta: int) -> None:
+        item = self._focused_folder_item()
+        if item is None:
+            return
+        self._move_folder_item(item, delta)
+        # The rows were rebuilt: keep the keyboard on the list, the moved row is the current one.
+        self.folder_list.setFocus()
+
     def _move_folder_item(self, item: QListWidgetItem, delta: int) -> None:
         row = self.folder_list.row(item)
         target_row = row + int(delta)
@@ -2351,6 +2375,7 @@ class KarakalPresenter(QObject):
         self.folder_list.setCurrentRow(target_row)
         self._refresh_folder_rows()
         self._refresh_pair_matrix()
+        self._sync_grid_inspection_matrix_selector(self._current_tab_state())
 
     def _build_layout_config(self) -> MatrixLayoutConfig:
         return MatrixLayoutConfig(
@@ -4296,6 +4321,10 @@ class KarakalPresenter(QObject):
             self.build_progress.setFormat(format_text or self._progress_format_text(current, total, key) or "Working...")
         self.build_progress.setToolTip(key)
         self.build_progress.show()
+        worker = getattr(self, "_worker", None)
+        if worker is not None and bool(getattr(worker, "paused", False)):
+            self.build_progress.setFormat(self._t("run.paused_progress", progress=self.build_progress.text()))
+        self._sync_run_buttons()
 
     def _compact_folder_label(self, folder: FolderSpec | None) -> tuple[str, str]:
         if folder is None:
@@ -4618,6 +4647,11 @@ class KarakalPresenter(QObject):
         finally:
             error_list.blockSignals(False)
         counter.setText(self._t("grid_errors.counter", visible=len(visible_items), total=total_count))
+        group = getattr(self, "grid_inspection_errors_group", None)
+        if group is not None:
+            # The count stays readable when the section is collapsed.
+            title = self._t("grid_errors.group")
+            group.setTitle(f"{title} · {total_count}" if total_count else title)
 
     def _on_grid_inspection_error_filter_changed(self, *_args) -> None:
         self._refresh_grid_inspection_errors_panel(self._current_tab_state())
@@ -5089,6 +5123,16 @@ class KarakalPresenter(QObject):
         self._show_progress_bar(visible=True, format_text="Computing analytics...")
         self._sync_action_buttons()
 
+    def _start_compute_after_build(self, state: ExtendMatrixTabState) -> None:
+        """The full run: cell defects in the defect search, metrics otherwise."""
+
+        if state.widget not in self._tab_states:
+            return
+        if self._current_app_mode() == "grid_inspection":
+            self._start_compute_grid_inspection(state)
+            return
+        self._start_compute_analytics(state=state, sync_context=True)
+
     def _on_compute_requested(self) -> None:
         state = self._current_tab_state()
         if state is None:
@@ -5481,6 +5525,7 @@ class KarakalPresenter(QObject):
             view.set_processing_keys(set())
         self._worker = None
         self._worker_thread = None
+        self._sync_run_buttons()
         self._worker_kind = None
         self._active_compute_state = None
         self._active_request_generation = None
@@ -5501,8 +5546,8 @@ class KarakalPresenter(QObject):
         auto_compute_state = self._auto_compute_state_after_cleanup
         self._auto_compute_state_after_cleanup = None
         if auto_compute_state is not None and auto_compute_state.widget in self._tab_states:
-            # Scenario A: start metrics after the index worker is fully cleaned up.
-            QTimer.singleShot(0, lambda s=auto_compute_state: self._start_compute_analytics(state=s, sync_context=True))
+            # Scenario A: start the analysis after the index worker is fully cleaned up.
+            QTimer.singleShot(0, lambda s=auto_compute_state: self._start_compute_after_build(s))
             return
         self._sync_action_buttons()
 
@@ -8155,18 +8200,15 @@ class KarakalPresenter(QObject):
 
     def _sync_action_buttons(self) -> None:
         current_state = self._current_tab_state()
-        checked_specs = self._checked_model_specs()
-        active_model_count = len(checked_specs)
         is_busy = self._worker_thread is not None
         self._sync_confidence_map_function_state(
             None if current_state is None else current_state.build_result,
             allow_fallback=not is_busy,
         )
-        required_model_count = self._required_model_count_for_build()
         self.btn_clear_folders.setEnabled(self.folder_list.count() > 0 and not is_busy)
-        can_start_build = active_model_count >= required_model_count
-        self.btn_build.setEnabled((current_state is not None or can_start_build) and not is_busy)
-        self.btn_compute.setEnabled(current_state is not None and not is_busy)
+        self.btn_add_folder.setEnabled(not is_busy)
+        if hasattr(self, "folders_empty_hint"):
+            self.folders_empty_hint.setVisible(self.folder_list.count() == 0)
         if hasattr(self, "frame_search_input"):
             self.frame_search_input.setEnabled(current_state is not None and not is_busy)
         if hasattr(self, "btn_frame_search"):
@@ -8175,7 +8217,6 @@ class KarakalPresenter(QObject):
             self.btn_export_layer.setEnabled(
                 current_state is not None and bool(getattr(current_state.build_result, "records", ())) and not is_busy
             )
-        self.btn_cancel.setEnabled(is_busy)
         report = self._refresh_analysis_preflight()
         if hasattr(self._view, "set_analysis_profile_availability"):
             self._view.set_analysis_profile_availability(self._analysis_profile_availability())
@@ -8188,47 +8229,165 @@ class KarakalPresenter(QObject):
             self.pair_matrix_table.setEnabled(not is_busy)
         if hasattr(self, "active_pair_list"):
             self.active_pair_list.setEnabled(not is_busy)
-        if hasattr(self._view, "set_workflow_summary"):
-            has_originals = any(spec.original_folder is not None for spec in checked_specs)
-            original_state = (
-                self._t("workflow.state.ready") if has_originals else self._t("workflow.state.pending")
+        self._sync_run_buttons()
+
+    # --- Main run button and pause ------------------------------------------------
+
+    RUN_ACTION_RUN = "run"
+    RUN_ACTION_COMPUTE = "compute"
+    RUN_ACTION_STALE = "stale"
+    RUN_ACTION_RECOMPUTE = "recompute"
+    RUN_ACTION_STOP = "stop"
+
+    def _sources_signature(self, specs) -> tuple[object, ...]:
+        return tuple(
+            (
+                str(spec.model_id),
+                str(spec.mask_folder),
+                str(spec.prob_folder or ""),
+                str(getattr(spec, "original_folder", None) or ""),
             )
-            sources_tone = "ready" if has_originals else "warn"
-            models_status = (
-                self._t("workflow.state.ready") if active_model_count > 0 else self._t("workflow.state.pending")
+            for spec in specs
+        )
+
+    def _sources_changed_since_run(self, state: ExtendMatrixTabState) -> bool:
+        """Other folders than the shown run: only a new run can show them."""
+
+        checked = self._checked_model_specs()
+        if not checked:
+            return False
+        return self._sources_signature(checked) != self._sources_signature(state.build_result.model_specs or ())
+
+    def _run_action(self) -> tuple[str, bool, str]:
+        """(action, enabled, reason) of the main button."""
+
+        if self._worker_thread is not None:
+            return self.RUN_ACTION_STOP, True, ""
+        state = self._current_tab_state()
+        panel = getattr(self._view, "analysis_setup_panel", None)
+        reason = panel.blocking_reason() if panel is not None else ""
+        if state is None or self._sources_changed_since_run(state):
+            return self.RUN_ACTION_RUN, not reason, reason
+        if self._current_app_mode() == "grid_inspection":
+            if not bool(getattr(state, "grid_inspection_results_ready", False)):
+                return self.RUN_ACTION_COMPUTE, True, ""
+            if self._grid_matrix_needs_rerun(state):
+                return self.RUN_ACTION_STALE, True, ""
+            return self.RUN_ACTION_RECOMPUTE, True, ""
+        if not bool(getattr(state.build_result, "scores_computed", False)):
+            return self.RUN_ACTION_COMPUTE, True, ""
+        signature = self._analytics_request_signature(state)
+        if state.last_analytics_request_signature not in (None, signature):
+            return self.RUN_ACTION_STALE, True, ""
+        return self.RUN_ACTION_RECOMPUTE, True, ""
+
+    def _sync_run_buttons(self) -> None:
+        run_button = getattr(self, "btn_run", None)
+        pause_button = getattr(self, "btn_pause", None)
+        if run_button is None:
+            return
+        action, enabled, reason = self._run_action()
+        shift_hint = self._t("run.shift_hint")
+        if action == self.RUN_ACTION_RUN and not enabled:
+            # Not ready: muted but still clickable, a click says why.
+            text, icon, state_name = self._t("run.run"), "play", "blocked"
+            tooltip = reason
+        elif action == self.RUN_ACTION_STOP:
+            total = int(getattr(self, "_active_progress_total", 0) or 0)
+            current = int(getattr(self, "_active_progress_current", 0) or 0)
+            percent = int(round(100.0 * current / total)) if total > 0 else None
+            text = self._t("run.stop") if percent is None else self._t("run.stop_percent", percent=percent)
+            icon, state_name, tooltip = "stop", "stop", self._t("run.stop_tooltip")
+        elif action == self.RUN_ACTION_RUN:
+            text, icon, state_name = self._t("run.run"), "play", "go"
+            tooltip = f"{self._t('run.run_tooltip')}\n{shift_hint}"
+        elif action == self.RUN_ACTION_COMPUTE:
+            text, icon, state_name = self._t("run.compute"), "play", "go"
+            tooltip = f"{self._t('run.compute_tooltip')}\n{shift_hint}"
+        elif action == self.RUN_ACTION_STALE:
+            text, icon, state_name = self._t("run.recompute"), "refresh", "stale"
+            tooltip = f"{self._t('run.stale_tooltip')}\n{shift_hint}"
+        else:
+            text, icon, state_name = self._t("run.recompute"), "refresh", "idle"
+            tooltip = f"{self._t('run.recompute_tooltip')}\n{shift_hint}"
+        run_button.setText(text)
+        run_button.setIcon(toolbar_icon(icon))
+        run_button.setToolTip(tooltip)
+        if run_button.property("runState") != state_name:
+            run_button.setProperty("runState", state_name)
+            run_button.style().unpolish(run_button)
+            run_button.style().polish(run_button)
+        rail_run = getattr(self, "rail_run_button", None)
+        if rail_run is not None:
+            rail_run.setIcon(toolbar_icon(icon))
+            rail_run.setToolTip(f"{text}\n{tooltip}")
+            if rail_run.property("runState") != state_name:
+                rail_run.setProperty("runState", state_name)
+                rail_run.style().unpolish(rail_run)
+                rail_run.style().polish(rail_run)
+        if pause_button is None:
+            return
+        busy = action == self.RUN_ACTION_STOP
+        can_pause = busy and callable(getattr(self._worker, "request_pause", None))
+        pause_button.setVisible(can_pause)
+        if can_pause:
+            paused = bool(getattr(self._worker, "paused", False))
+            pause_button.setText(self._t("run.resume") if paused else self._t("run.pause"))
+            pause_button.setIcon(toolbar_icon("play" if paused else "pause"))
+            pause_button.setToolTip(self._t("run.resume_tooltip") if paused else self._t("run.pause_tooltip"))
+            state_name = "paused" if paused else "pause"
+            if pause_button.property("runState") != state_name:
+                pause_button.setProperty("runState", state_name)
+                pause_button.style().unpolish(pause_button)
+                pause_button.style().polish(pause_button)
+        rail_pause = getattr(self, "rail_pause_button", None)
+        if rail_pause is not None:
+            rail_pause.setVisible(can_pause)
+            if can_pause:
+                paused = bool(getattr(self._worker, "paused", False))
+                rail_pause.setIcon(toolbar_icon("play" if paused else "pause"))
+                rail_pause.setToolTip(pause_button.toolTip())
+                rail_state = "paused" if paused else ""
+                if rail_pause.property("runState") != rail_state:
+                    rail_pause.setProperty("runState", rail_state)
+                    rail_pause.style().unpolish(rail_pause)
+                    rail_pause.style().polish(rail_pause)
+
+    def _on_run_button_clicked(self, _checked: bool = False) -> None:
+        action, enabled, reason = self._run_action()
+        if action == self.RUN_ACTION_STOP:
+            self._request_cancel_build()
+            return
+        if not enabled:
+            if reason:
+                QMessageBox.information(self._view, self._t("dialog.info_title"), reason)
+            return
+        shift = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if shift:
+            # Shift: only gather the frames into a matrix, no analysis.
+            self._on_build_requested()
+        elif action == self.RUN_ACTION_RUN:
+            self._on_primary_run_requested()
+        else:
+            self._on_compute_requested()
+        self._sync_run_buttons()
+
+    def _on_pause_button_clicked(self, _checked: bool = False) -> None:
+        worker = self._worker
+        if worker is None or not callable(getattr(worker, "request_pause", None)):
+            return
+        if bool(getattr(worker, "paused", False)):
+            worker.request_resume()
+            self._show_progress_bar(
+                visible=True,
+                current=int(getattr(self, "_active_progress_current", 0) or 0),
+                total=int(getattr(self, "_active_progress_total", 0) or 0),
+                key=str(getattr(self, "_active_progress_key", "") or ""),
             )
-            models_tone = "ready" if active_model_count > 0 else "warn"
-            if is_busy:
-                analysis_status = self._t("workflow.state.running")
-                analysis_detail = self.build_progress.format() or self._t("workflow.analysis_running")
-                analysis_tone = "busy"
-            elif current_state is None:
-                analysis_status = self._t("workflow.state.pending")
-                analysis_detail = self._t("workflow.analysis_pending")
-                analysis_tone = "idle"
-            elif bool(getattr(current_state.build_result, "scores_computed", False)):
-                analysis_status = self._t("workflow.state.computed")
-                analysis_detail = self._t("workflow.analysis_computed")
-                analysis_tone = "active"
-            else:
-                analysis_status = self._t("workflow.state.built")
-                analysis_detail = self._t("workflow.analysis_built")
-                analysis_tone = "ready"
-            self._view.set_workflow_summary(
-                {
-                    "sources": (
-                        original_state,
-                        self._t("workflow.sources_detail", original=original_state),
-                        sources_tone,
-                    ),
-                    "models": (
-                        models_status,
-                        self._t("workflow.models_detail", count=active_model_count),
-                        models_tone,
-                    ),
-                    "analysis": (analysis_status, analysis_detail, analysis_tone),
-                }
-            )
+        else:
+            worker.request_pause()
+            self.build_progress.setFormat(self._t("run.paused_progress", progress=self.build_progress.text()))
+        self._sync_run_buttons()
 
     def _build_folder_manager_payload(self) -> dict:
         return {

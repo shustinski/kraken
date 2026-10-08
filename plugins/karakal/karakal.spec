@@ -18,6 +18,10 @@ _datas = [
     ('src\\karakal\\resources\\icons\\karakal_light.png', 'karakal/resources/icons'),
     ('src\\karakal\\resources\\icons\\karakal.ico', 'karakal/resources/icons'),
     ('src\\karakal\\resources\\icons\\karakal.png', 'karakal/resources/icons'),
+    ('src\\karakal\\resources\\icons\\arrow_down.png', 'karakal/resources/icons'),
+    ('src\\karakal\\resources\\icons\\arrow_up.png', 'karakal/resources/icons'),
+    ('src\\karakal\\resources\\icons\\chevron_right.png', 'karakal/resources/icons'),
+    ('src\\karakal\\resources\\icons\\chevron_down.png', 'karakal/resources/icons'),
     ('resources\\update_client.json', 'resources'),
     ('CHANGELOG.md', 'resources'),
 ]

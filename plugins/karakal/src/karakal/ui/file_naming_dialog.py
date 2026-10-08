@@ -51,6 +51,11 @@ class FileNamingDialog(QDialog):
         self._refresh_example()
         self.resize(460, 0)
 
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        # Fields get their styled height only when shown: let the dialog grow to fit them.
+        self.resize(max(self.width(), 460), max(self.height(), self.sizeHint().height()))
+
     def naming(self) -> FrameNaming:
         return FrameNaming(mask_suffix=self.mask_edit.text(), confidence_suffix=self.confidence_edit.text()).normalized()
 

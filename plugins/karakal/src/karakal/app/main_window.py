@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -30,7 +30,6 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QSpinBox,
-    QStyle,
     QTabWidget,
     QTableWidget,
     QToolButton,
@@ -54,6 +53,7 @@ from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_mode
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
 from ..core.domain import BuildResult
 from ..core.performance import PerformanceConfig
+from ..ui.toolbar_icons import toolbar_icon
 from ..ui.app_icon import apply_karakal_icon
 from ..core.features import (
     display_version,
@@ -111,7 +111,7 @@ from ..ui.ui_constants import (
     DEFAULT_WINDOW_WIDTH,
     EXTEND_LANGUAGE_BUTTON_OBJECT_NAME,
     EXTEND_ROOT_OBJECT_NAME,
-    EXTEND_WIDGET_STYLESHEET,
+    widget_stylesheet,
     FRAMES_PER_ROW_RANGE,
     GEOMETRY_MODE_OPTIONS,
     MASK_THRESHOLD_RANGE,
@@ -462,7 +462,7 @@ class KarakalWidget(QWidget):
         super().__init__(parent)
         self.setObjectName(EXTEND_ROOT_OBJECT_NAME)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet(EXTEND_WIDGET_STYLESHEET)
+        self.setStyleSheet(widget_stylesheet())
         apply_karakal_icon(self)
         self._settings_service = KarakalSettingsService(settings or default_settings())
         self._performance_config = self._settings_service.load_performance_config()
@@ -493,6 +493,7 @@ class KarakalWidget(QWidget):
             close_app=self._close_for_update,
         )
         self._update_manager.stateChanged.connect(lambda _state: self._sync_update_button())
+        self.set_sidebar_collapsed(self._settings_service.load_sidebar_collapsed(), persist=False)
         self._sync_update_button()
         self._update_manager.start()
 
@@ -503,14 +504,46 @@ class KarakalWidget(QWidget):
 
         self._menu_bar = QMenuBar(self)
         root_layout.addWidget(self._menu_bar)
+        self.sidebar_toggle_button = QToolButton(self._menu_bar)
+        self.sidebar_toggle_button.setObjectName("sidebarToggle")
+        self.sidebar_toggle_button.setIcon(toolbar_icon("sidebar_collapse"))
+        self.sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._menu_bar.setCornerWidget(self.sidebar_toggle_button, Qt.Corner.TopLeftCorner)
 
         content = QWidget(self)
         content_layout = QHBoxLayout(content)
         content_layout.setContentsMargins(8, 6, 8, 8)
+        content_layout.setSpacing(6)
         root_layout.addWidget(content, stretch=1)
 
+        # Collapsed left panel: a narrow rail with expand, add folder, run and pause.
+        self.side_rail = QWidget(content)
+        self.side_rail.setObjectName("sideRail")
+        self.side_rail.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.side_rail.setFixedWidth(44)
+        rail_layout = QVBoxLayout(self.side_rail)
+        rail_layout.setContentsMargins(5, 6, 5, 6)
+        rail_layout.setSpacing(6)
+
+        def rail_button(icon_name: str) -> QToolButton:
+            button = QToolButton(self.side_rail)
+            button.setProperty("railButton", True)
+            button.setIcon(toolbar_icon(icon_name))
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            rail_layout.addWidget(button)
+            return button
+
+        self.rail_expand_button = rail_button("sidebar_expand")
+        self.rail_add_folder_button = rail_button("folder_add")
+        self.rail_run_button = rail_button("play")
+        self.rail_pause_button = rail_button("pause")
+        self.rail_pause_button.hide()
+        rail_layout.addStretch(1)
+        self.side_rail.hide()
+        content_layout.addWidget(self.side_rail)
+
         splitter = QSplitter(Qt.Orientation.Horizontal, content)
-        content_layout.addWidget(splitter)
+        content_layout.addWidget(splitter, stretch=1)
 
         control_scroll = QScrollArea(splitter)
         control_scroll.setWidgetResizable(True)
@@ -521,8 +554,7 @@ class KarakalWidget(QWidget):
         control_layout.setContentsMargins(0, 0, 0, 0)
         control_layout.setSpacing(10)
         control_scroll.setWidget(control_host)
-
-        style = self.style()
+        self.control_scroll = control_scroll
 
         self.thumbnail_size_spin = _NoWheelSpinBox(self)
         self.thumbnail_size_spin.setRange(DEFAULT_CELL_SIZE, DEFAULT_CELL_SIZE)
@@ -664,7 +696,9 @@ class KarakalWidget(QWidget):
         self.run_history_group.hide()
         control_layout.addWidget(self.run_history_group)
 
-        folders_group = QGroupBox(self._t("folders.group"), control_host)
+        # Model output folders: no title, the toolbar and the hint of an empty list say what it is.
+        folders_group = QGroupBox(control_host)
+        folders_group.setObjectName("foldersGroup")
         self.folders_group = folders_group
         folders_layout = QVBoxLayout(folders_group)
 
@@ -672,64 +706,42 @@ class KarakalWidget(QWidget):
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         toolbar_layout.setSpacing(4)
 
-        self.btn_add_folder = QToolButton(folders_group)
-        self.btn_add_folder.setAutoRaise(True)
-        self.btn_add_folder.setProperty("toolbarButton", True)
-        self.btn_add_folder.setProperty("liteToolbarButton", True)
-        self.btn_add_folder.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
-        self.btn_add_folder.setToolTip(self._t("folders.add_model"))
-        toolbar_layout.addWidget(self.btn_add_folder)
+        def tool_button(icon_name: str, tooltip_key: str) -> QToolButton:
+            button = QToolButton(folders_group)
+            button.setAutoRaise(True)
+            button.setProperty("toolbarButton", True)
+            button.setIcon(toolbar_icon(icon_name))
+            button.setToolTip(self._t(tooltip_key))
+            toolbar_layout.addWidget(button)
+            return button
 
-        self.btn_clear_folders = QToolButton(folders_group)
-        self.btn_clear_folders.setAutoRaise(True)
-        self.btn_clear_folders.setProperty("toolbarButton", True)
-        self.btn_clear_folders.setText("x")
-        self.btn_clear_folders.setToolTip(self._t("folders.clear_models"))
-        toolbar_layout.addWidget(self.btn_clear_folders)
-
-        self.btn_build = QToolButton(folders_group)
-        self.btn_build.setAutoRaise(True)
-        self.btn_build.setProperty("toolbarButton", True)
-        self.btn_build.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
-        self.btn_build.setToolTip(self._t("folders.build"))
-        toolbar_layout.addWidget(self.btn_build)
-
-        self.btn_compute = QToolButton(folders_group)
-        self.btn_compute.setAutoRaise(True)
-        self.btn_compute.setProperty("toolbarButton", True)
-        self.btn_compute.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
-        self.btn_compute.setToolTip(self._t("folders.compute_mismatch"))
-        toolbar_layout.addWidget(self.btn_compute)
-
-        self.btn_export_layer = QToolButton(folders_group)
-        self.btn_export_layer.setAutoRaise(True)
-        self.btn_export_layer.setProperty("toolbarButton", True)
-        self.btn_export_layer.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
-        self.btn_export_layer.setToolTip(self._t("context.export_result_layer_jpgs_auto"))
-        toolbar_layout.addWidget(self.btn_export_layer)
-
-
-        self.btn_cancel = QToolButton(folders_group)
-        self.btn_cancel.setAutoRaise(True)
-        self.btn_cancel.setProperty("toolbarButton", True)
-        self.btn_cancel.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_BrowserStop))
-        self.btn_cancel.setToolTip(self._t("folders.cancel"))
-        toolbar_layout.addWidget(self.btn_cancel)
+        self.btn_add_folder = tool_button("folder_add", "folders.add_model")
+        self.btn_clear_folders = tool_button("clear", "folders.clear_models")
+        self.btn_export_layer = tool_button("export", "context.export_result_layer_jpgs_auto")
 
         self.frame_search_input = QLineEdit(folders_group)
         self.frame_search_input.setPlaceholderText(self._t("frame_search.placeholder"))
         self.frame_search_input.setToolTip(self._t("frame_search.tooltip"))
         self.frame_search_input.setClearButtonEnabled(True)
-        self.frame_search_input.setMaximumWidth(130)
+        self.frame_search_input.setMaximumWidth(110)
         toolbar_layout.addWidget(self.frame_search_input)
-
-        self.btn_frame_search = QToolButton(folders_group)
-        self.btn_frame_search.setAutoRaise(True)
-        self.btn_frame_search.setProperty("toolbarButton", True)
-        self.btn_frame_search.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
-        self.btn_frame_search.setToolTip(self._t("frame_search.button"))
-        toolbar_layout.addWidget(self.btn_frame_search)
+        self.btn_frame_search = tool_button("search", "frame_search.button")
         toolbar_layout.addStretch(1)
+
+        # Pause sits next to the main button and shows only while a task runs.
+        self.btn_pause = QPushButton(folders_group)
+        self.btn_pause.setProperty("runButton", True)
+        self.btn_pause.setProperty("runState", "pause")
+        self.btn_pause.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_pause.hide()
+        toolbar_layout.addWidget(self.btn_pause)
+        # The main button: run, (re)compute or stop, by the state of the analysis.
+        self.btn_run = QPushButton(folders_group)
+        self.btn_run.setProperty("runButton", True)
+        self.btn_run.setProperty("runState", "go")
+        self.btn_run.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_run.setMinimumWidth(128)
+        toolbar_layout.addWidget(self.btn_run)
         folders_layout.addLayout(toolbar_layout)
 
         self.build_progress = QProgressBar(folders_group)
@@ -739,9 +751,18 @@ class KarakalWidget(QWidget):
         self.build_progress.hide()
         folders_layout.addWidget(self.build_progress)
 
+        self.folders_empty_hint = QLabel(self._t("folders.empty_hint"), folders_group)
+        self.folders_empty_hint.setWordWrap(True)
+        self.folders_empty_hint.setStyleSheet("color: #8a97a5; padding: 6px 2px;")
+        folders_layout.addWidget(self.folders_empty_hint)
+
         self.folder_list = QListWidget(folders_group)
         self.folder_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.folder_list.setSpacing(2)
+        # Layers are reordered by dragging their handle (or Alt+Up / Alt+Down).
+        self.folder_list.setDragEnabled(True)
+        self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.folder_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         folders_layout.addWidget(self.folder_list, stretch=1)
         control_layout.addWidget(folders_group)
 
@@ -1939,7 +1960,9 @@ class KarakalWidget(QWidget):
         self._populate_single_result_sensitivity_combo(
             self.single_result_sensitivity_combo.currentData() or DEFAULT_SINGLE_RESULT_SENSITIVITY
         )
-        self.folders_group.setTitle(self._t("folders.group"))
+        self.folders_empty_hint.setText(self._t("folders.empty_hint"))
+        if hasattr(self, "side_rail"):
+            self.set_sidebar_collapsed(self.side_rail.isVisibleTo(self), persist=False)
         if hasattr(self, "pair_matrix_group"):
             title = (
                 self._presenter._pair_matrix_title()
@@ -1949,10 +1972,9 @@ class KarakalWidget(QWidget):
             self.pair_matrix_group.setTitle(title)
         self.btn_add_folder.setToolTip(self._t("folders.add_model"))
         self.btn_clear_folders.setToolTip(self._t("folders.clear_models"))
-        self.btn_build.setToolTip(self._t("folders.build"))
-        self.btn_compute.setToolTip(self._t("folders.compute_mismatch"))
         self.btn_export_layer.setToolTip(self._t("context.export_result_layer_jpgs_auto"))
-        self.btn_cancel.setToolTip(self._t("folders.cancel"))
+        if hasattr(self, "_presenter"):
+            self._presenter._sync_run_buttons()
         if hasattr(self, "frame_search_input"):
             self.frame_search_input.setPlaceholderText(self._t("frame_search.placeholder"))
             self.frame_search_input.setToolTip(self._t("frame_search.tooltip"))
@@ -2411,20 +2433,31 @@ class KarakalWidget(QWidget):
             )
         self.btn_add_folder.clicked.connect(self._presenter._add_folder)
         self.btn_clear_folders.clicked.connect(self._presenter._clear_folders)
-        self.btn_build.clicked.connect(self._presenter._on_build_requested)
-        self.btn_compute.clicked.connect(self._presenter._on_compute_requested)
+        self.btn_run.clicked.connect(self._presenter._on_run_button_clicked)
+        self.btn_pause.clicked.connect(self._presenter._on_pause_button_clicked)
         self.btn_export_layer.clicked.connect(self._presenter._on_export_result_layer_requested)
-        self.btn_cancel.clicked.connect(self._presenter._request_cancel_build)
         self.btn_frame_search.clicked.connect(self._presenter._on_frame_search_requested)
         self.frame_search_input.returnPressed.connect(self._presenter._on_frame_search_requested)
         self.folder_list.itemClicked.connect(self._presenter._on_folder_item_clicked)
+        self.sidebar_toggle_button.clicked.connect(self.toggle_sidebar)
+        self.rail_expand_button.clicked.connect(lambda: self.set_sidebar_collapsed(False))
+        self.rail_add_folder_button.clicked.connect(self._presenter._add_folder)
+        self.rail_run_button.clicked.connect(self._presenter._on_run_button_clicked)
+        self.rail_pause_button.clicked.connect(self._presenter._on_pause_button_clicked)
+        sidebar_shortcut = QShortcut(QKeySequence("Ctrl+B"), self)
+        sidebar_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sidebar_shortcut.activated.connect(self.toggle_sidebar)
+        self.folder_list.model().rowsMoved.connect(self._presenter._on_folder_rows_moved)
+        for sequence, delta in (("Alt+Up", -1), ("Alt+Down", 1)):
+            shortcut = QShortcut(QKeySequence(sequence), self.folder_list)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda delta=delta: self._presenter._move_focused_folder_item(delta))
         self.active_pair_list.itemClicked.connect(self._presenter._on_active_pair_item_clicked)
         self.active_pair_list.customContextMenuRequested.connect(self._presenter._on_active_pair_context_menu)
 
         self.matrix_score_view_combo.currentIndexChanged.connect(self._presenter._on_matrix_score_view_changed)
         self.matrix_gradient_combo.currentIndexChanged.connect(self._presenter._on_matrix_gradient_changed)
         self.analysis_setup_panel.profileChanged.connect(self._presenter._on_analysis_profile_changed)
-        self.analysis_setup_panel.runRequested.connect(self._presenter._on_primary_run_requested)
         self.persistent_history_button.clicked.connect(self._open_persistent_analysis_history)
         self.run_history_list.itemClicked.connect(self._presenter._on_run_history_selected)
         self.thumbnail_size_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)
@@ -2454,8 +2487,25 @@ class KarakalWidget(QWidget):
         dialog.exec()
         return dialog
 
-    def set_workflow_summary(self, payload: dict[str, tuple[str, str, str]]) -> None:
-        self.analysis_setup_panel.set_workflow_summary(payload)
+    def sidebar_collapsed(self) -> bool:
+        return not self.control_scroll.isVisible() and self.side_rail.isVisibleTo(self)
+
+    def toggle_sidebar(self) -> None:
+        self.set_sidebar_collapsed(not self.side_rail.isVisibleTo(self))
+
+    def set_sidebar_collapsed(self, collapsed: bool, *, persist: bool = True) -> None:
+        """Hide the left panel down to a rail (expand, add folder, run, pause): the matrix gets the width."""
+
+        collapsed = bool(collapsed)
+        self.control_scroll.setVisible(not collapsed)
+        self.side_rail.setVisible(collapsed)
+        self.sidebar_toggle_button.setIcon(toolbar_icon("sidebar_expand" if collapsed else "sidebar_collapse"))
+        self.sidebar_toggle_button.setToolTip(self._t("sidebar.expand" if collapsed else "sidebar.collapse"))
+        self.rail_expand_button.setToolTip(self._t("sidebar.expand"))
+        self.rail_add_folder_button.setToolTip(self._t("folders.add_model"))
+        if persist:
+            self._settings_service.save_sidebar_collapsed(collapsed)
+            self._settings_service.sync()
 
     def set_analysis_preflight(self, report: AnalysisPreflightReport) -> None:
         self.analysis_setup_panel.set_preflight(report)

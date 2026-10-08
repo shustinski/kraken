@@ -53,6 +53,7 @@ from ..core.subpixel_grid import (
     build_subpixel_grid_from_pair,
 )
 from .i18n import Translator
+from .smooth_zoom import SmoothZoom, wheel_zoom_factor
 from .ui_constants import (
     CARD_CONTENT_SPACING,
     DEFAULT_BORDER,
@@ -1575,6 +1576,8 @@ class MatrixListWidget(QGraphicsView):
         self._item_by_key: dict[str, _MatrixCellItem] = {}
         self._record_by_position: dict[tuple[int, int], FrameRecord] = {}
         self._record_positions: dict[str, tuple[int, int]] = {}
+        self._grid_targets_version = 0
+        self._grid_targets_cache: tuple[tuple[object, ...], frozenset[str]] | None = None
         self._record_index_by_key: dict[str, int] = {}
         self._excluded_record_keys: set[str] = set()
         # Frames of the shown set; None = every frame is shown at full strength.
@@ -1666,6 +1669,9 @@ class MatrixListWidget(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.horizontalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
         self.verticalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
+        self._smooth_zoom = SmoothZoom(self, min_scale=MATRIX_MIN_SCALE, max_scale=MATRIX_MAX_SCALE)
+        self._smooth_zoom.stepped.connect(self._on_smooth_zoom_step)
+        self._smooth_zoom.settled.connect(self._on_smooth_zoom_settled)
 
     def set_profiler(self, profiler: ProfilerRun | None) -> None:
         """Attach the active worker run so UI work appears in one snapshot."""
@@ -1730,6 +1736,7 @@ class MatrixListWidget(QGraphicsView):
         if clear_cache:
             self._grid_inspection_cache.clear()
             self._grid_inspection_payload_by_key.clear()
+            self._touch_grid_targets()
             self._grid_inspection_cache_bytes = 0
 
     def _subpixel_cache_get(self, cache_key: tuple[object, ...]) -> SubpixelGrid | None:
@@ -2043,6 +2050,7 @@ class MatrixListWidget(QGraphicsView):
             ordered = self._sort_records(list(records), sort_mode)
         self._complete_filtered_view_active = bool(prefer_complete)
         if reset_view:
+            self._smooth_zoom.stop()
             self.resetTransform()
         self._rebuild_scene(ordered)
         self.colorScaleChanged.emit(self.color_scale_info())
@@ -2078,6 +2086,7 @@ class MatrixListWidget(QGraphicsView):
         if not normalized_enabled:
             self.set_grid_inspection_visual_mode(False)
             self._grid_inspection_payload_by_key.clear()
+            self._touch_grid_targets()
             self._grid_inspection_cache.clear()
             self._grid_inspection_cache_bytes = 0
             for item in self._item_by_key.values():
@@ -2132,6 +2141,7 @@ class MatrixListWidget(QGraphicsView):
             if result is None:
                 continue
             self._grid_inspection_payload_by_key[key_text] = (thumbnail, result)
+            self._touch_grid_targets()
             changed_keys.add(key_text)
 
         if not changed_keys:
@@ -2637,6 +2647,7 @@ class MatrixListWidget(QGraphicsView):
             self._grid_inspection_cache_bytes -= estimate_size_bytes(previous)
         self._grid_inspection_cache[cache_key] = payload
         self._grid_inspection_payload_by_key[str(cache_key[0])] = payload
+        self._touch_grid_targets()
         self._grid_inspection_cache_bytes += estimate_size_bytes(payload)
         self._grid_inspection_cache.move_to_end(cache_key)
         while self._grid_inspection_cache and (
@@ -2648,6 +2659,7 @@ class MatrixListWidget(QGraphicsView):
                 self._grid_inspection_cache_bytes - estimate_size_bytes(evicted_payload),
             )
             self._grid_inspection_payload_by_key.pop(str(evicted_key[0]), None)
+            self._touch_grid_targets()
         self._update_grid_inspection_score_window()
         return payload
 
@@ -2733,12 +2745,32 @@ class MatrixListWidget(QGraphicsView):
         if self._grid_inspection_visual_mode:
             self._schedule_visible_grid_inspection_request()
 
-    def _grid_inspection_target_keys(self) -> set[str]:
+    def _grid_inspection_target_keys(self) -> frozenset[str]:
+        """Frames with a cell-defect result in this matrix.
+
+        Cached: with 50 000 frames rebuilding the set took ~35 ms on every zoom step.
+        """
+
         if not self._grid_inspection_visual_mode:
-            return set()
-        return {
+            return frozenset()
+        signature = (
+            self._grid_targets_version,
+            id(self._grid_inspection_payload_by_key),
+            len(self._grid_inspection_payload_by_key),
+            id(self._record_positions),
+            len(self._record_positions),
+        )
+        cached = self._grid_targets_cache
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        targets = frozenset(
             str(key) for key in self._grid_inspection_payload_by_key if str(key) and str(key) in self._record_positions
-        }
+        )
+        self._grid_targets_cache = (signature, targets)
+        return targets
+
+    def _touch_grid_targets(self) -> None:
+        self._grid_targets_version += 1
 
     def _is_grid_inspection_target_key(self, key: str | None) -> bool:
         normalized = str(key or "")
@@ -3099,29 +3131,29 @@ class MatrixListWidget(QGraphicsView):
         modifiers = event.modifiers() | QApplication.keyboardModifiers()
         if not bool(modifiers & Qt.KeyboardModifier.ControlModifier):
             return False
-        delta_y = event.angleDelta().y() or event.pixelDelta().y()
-        if delta_y == 0:
+        factor = wheel_zoom_factor(event, GRID_INSPECTION_ZOOM_STEP if self._grid_inspection_visual_mode else 1.12)
+        if factor == 1.0:
             event.accept()
             return True
-        factor = GRID_INSPECTION_ZOOM_STEP if delta_y > 0 else (1.0 / GRID_INSPECTION_ZOOM_STEP)
-        if not self._grid_inspection_visual_mode:
-            factor = 1.12 if delta_y > 0 else (1.0 / 1.12)
-        next_scale = self.transform().m11() * factor
-        if MATRIX_MIN_SCALE <= next_scale <= MATRIX_MAX_SCALE:
-            try:
-                self._zoom_anchor_scene_pos = self.mapToScene(event.position().toPoint())
-                self._set_focus_scene_pos(self._zoom_anchor_scene_pos, schedule=False)
-            except Exception:
-                self._zoom_anchor_scene_pos = self._viewport_center_scene_pos()
-                self._set_focus_scene_pos(self._zoom_anchor_scene_pos, schedule=False)
-            self.scale(factor, factor)
-            self._emit_overview_state()
+        try:
+            self._zoom_anchor_scene_pos = self.mapToScene(event.position().toPoint())
+        except Exception:
+            self._zoom_anchor_scene_pos = self._viewport_center_scene_pos()
+        self._set_focus_scene_pos(self._zoom_anchor_scene_pos, schedule=False)
+        # The view glides to the new scale; each frame re-places items (see _on_smooth_zoom_step).
+        self._smooth_zoom.zoom_by(factor, event.position())
         event.accept()
         return True
 
+    def _on_smooth_zoom_step(self) -> None:
+        self._emit_overview_state()
+        self._update_tile_lod()
+
+    def _on_smooth_zoom_settled(self) -> None:
+        self._update_tile_lod()
+
     def wheelEvent(self, event) -> None:
         if self._handle_zoom_wheel(event):
-            self._update_tile_lod()
             return
         super().wheelEvent(event)
 
@@ -3343,6 +3375,7 @@ class MatrixListWidget(QGraphicsView):
         self._item_by_key.clear()
         self._record_by_position.clear()
         self._record_positions.clear()
+        self._touch_grid_targets()
         self._record_index_by_key.clear()
         self._scene.clear()
         self._overview_layer_item = None

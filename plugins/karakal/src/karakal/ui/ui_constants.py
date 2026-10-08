@@ -20,6 +20,7 @@ SETTINGS_VALIDATION_MASK_KEY = "ui/validation_mask"
 SETTINGS_ANALYSIS_PROFILE_KEY = "analysis/profile_v1"
 SETTINGS_ORIGINAL_FOLDER_KEY = "ui/original_folder"
 SETTINGS_ATTENTION_COMPUTE_MODE_KEY = "ui/attention_compute_mode"
+SETTINGS_SIDEBAR_COLLAPSED_KEY = "ui/sidebar_collapsed"
 SETTINGS_FRAME_NAMING_KEY = "ui/frame_naming"
 SETTINGS_GRID_EXPORT_WIZARD_KEY = "ui/grid_export_wizard"
 
@@ -381,11 +382,34 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QHeaderView::section { background-color: #18212b; color: #dfe8f2; border: 1px solid #30445a; padding: 4px; font-weight: 600; }
 #KarakalRoot QLineEdit, #KarakalRoot QComboBox, #KarakalRoot QSpinBox, #KarakalRoot QDoubleSpinBox { background-color: #10151c; border: 1px solid #30445a; border-radius: 8px; padding: 6px 10px; min-height: 26px; }
 #KarakalRoot QComboBox QAbstractItemView { background-color: #11161d; selection-background-color: #275fbb; selection-color: #ffffff; }
+#KarakalRoot QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border: none; background: transparent; }
+#KarakalRoot QSpinBox::up-button, #KarakalRoot QSpinBox::down-button, #KarakalRoot QDoubleSpinBox::up-button, #KarakalRoot QDoubleSpinBox::down-button { width: 18px; border: none; background: transparent; }
+#KarakalRoot QLabel, #KarakalRoot QCheckBox, #KarakalRoot QRadioButton { background-color: transparent; }
 #KarakalRoot QComboBox QAbstractItemView::item:disabled { color: #6f7a86; background-color: #11161d; }
 #KarakalRoot QPushButton { background-color: #111a24; border: 1px solid #30445a; border-radius: 6px; padding: 4px 8px; color: #edf3fb; }
 #KarakalRoot QPushButton:hover { background-color: #1d2a38; border-color: #46627f; }
 #KarakalRoot QPushButton:checked { background-color: #2767c5; border-color: #4e90ff; color: #ffffff; }
 #KarakalRoot QPushButton:disabled { color: #6f7a86; background-color: #161b22; border-color: #283541; }
+#KarakalRoot QPushButton[runButton="true"] { min-height: 28px; padding: 3px 12px; border-radius: 8px; font-weight: 600; }
+#KarakalRoot QPushButton[runState="go"] { background-color: #1f7a46; border-color: #2fa463; color: #ffffff; }
+#KarakalRoot QPushButton[runState="go"]:hover { background-color: #26905a; }
+#KarakalRoot QPushButton[runState="stale"] { background-color: #8a6424; border-color: #c08f3a; color: #fff3d6; }
+#KarakalRoot QPushButton[runState="stale"]:hover { background-color: #a07530; }
+#KarakalRoot QPushButton[runState="stop"] { background-color: #8c2f3c; border-color: #c24a5a; color: #ffffff; }
+#KarakalRoot QPushButton[runState="stop"]:hover { background-color: #a33848; }
+#KarakalRoot QPushButton[runState="paused"] { background-color: #8a6424; border-color: #c08f3a; color: #fff3d6; }
+#KarakalRoot QPushButton[runState="blocked"] { background-color: #161b22; border-color: #283541; color: #6f7a86; }
+#KarakalRoot QGroupBox#foldersGroup { margin-top: 0px; padding-top: 6px; }
+#KarakalRoot QToolButton[railButton="true"] { min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; border-radius: 8px; border: 1px solid #30445a; background-color: #1d2733; }
+#KarakalRoot QToolButton[railButton="true"]:hover { background-color: #283342; }
+#KarakalRoot QToolButton[runState="go"] { background-color: #1f7a46; border-color: #2fa463; }
+#KarakalRoot QToolButton[runState="stale"], #KarakalRoot QToolButton[runState="paused"] { background-color: #8a6424; border-color: #c08f3a; }
+#KarakalRoot QToolButton[runState="stop"] { background-color: #8c2f3c; border-color: #c24a5a; }
+#KarakalRoot QToolButton[runState="blocked"] { background-color: #161b22; border-color: #283541; }
+#KarakalRoot QWidget#sideRail { background-color: #11161d; border-right: 1px solid #28384b; }
+#KarakalRoot QToolButton#sidebarToggle { border: none; padding: 2px 6px; background: transparent; }
+#KarakalRoot QToolButton#sidebarToggle:hover { background-color: #1d2a38; border-radius: 6px; }
+#KarakalRoot QPushButton[runButton="true"]:disabled { background-color: #161b22; border-color: #283541; color: #6f7a86; }
 #KarakalRoot QToolButton[toolbarButton="true"] { background-color: #1e2630; border: 1px solid #314355; border-radius: 8px; padding: 4px; min-width: 28px; min-height: 28px; max-width: 28px; max-height: 28px; }
 #KarakalRoot QToolButton[toolbarButton="true"]:hover { background-color: #283342; border-color: #46627f; }
 #KarakalRoot QToolButton#extendLanguageToggleButton { background-color: #275fbb; border: 1px solid #3f7ee1; border-radius: 10px; padding: 6px 14px; min-width: 40px; font-weight: 700; }
@@ -407,6 +431,44 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QScrollBar::add-line, #KarakalRoot QScrollBar::sub-line { background-color: #18212b; border: 1px solid #30445a; width: 14px; height: 14px; }
 #KarakalRoot QScrollBar::add-page, #KarakalRoot QScrollBar::sub-page { background-color: #10151c; }
 """
+
+
+
+def widget_stylesheet() -> str:
+    """The main widget style sheet with arrow images for combo and spin boxes.
+
+    Under Fusion a styled drop-down has no arrow of its own, so the arrows are bundled images;
+    their path is known only at run time.
+    """
+
+    from .app_icon import karakal_resource_path
+
+    down = karakal_resource_path("resources/icons/arrow_down.png")
+    up = karakal_resource_path("resources/icons/arrow_up.png")
+    collapsed = karakal_resource_path("resources/icons/chevron_right.png")
+    expanded = karakal_resource_path("resources/icons/chevron_down.png")
+    if down is None or up is None:
+        return EXTEND_WIDGET_STYLESHEET
+    down_url = down.as_posix()
+    up_url = up.as_posix()
+    root = f"#{EXTEND_ROOT_OBJECT_NAME}"
+    sections = ""
+    if collapsed is not None and expanded is not None:
+        # Collapsible sections: a chevron in the title instead of a checkbox.
+        sections = (
+            f"{root} QGroupBox::indicator {{ width: 12px; height: 12px; border: none; background: transparent; }}\n"
+            f'{root} QGroupBox::indicator:unchecked {{ image: url("{collapsed.as_posix()}"); }}\n'
+            f'{root} QGroupBox::indicator:checked {{ image: url("{expanded.as_posix()}"); }}\n'
+        )
+    return EXTEND_WIDGET_STYLESHEET + sections + (
+        f'{root} QComboBox::down-arrow, {root} QSpinBox::down-arrow, {root} QDoubleSpinBox::down-arrow '
+        f'{{ image: url("{down_url}"); width: 10px; height: 6px; }}\n'
+        f'{root} QSpinBox::up-arrow, {root} QDoubleSpinBox::up-arrow '
+        f'{{ image: url("{up_url}"); width: 10px; height: 6px; }}\n'
+        f'{root} QComboBox::down-arrow:disabled, {root} QSpinBox::down-arrow:disabled, '
+        f'{root} QSpinBox::up-arrow:disabled {{ image: none; }}\n'
+    )
+
 
 # Backward-compatible lite aliases.
 LITE_ROOT_OBJECT_NAME = EXTEND_ROOT_OBJECT_NAME

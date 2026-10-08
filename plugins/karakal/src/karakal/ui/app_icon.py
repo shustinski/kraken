@@ -31,6 +31,15 @@ def _icon_path_candidates(root: Path, relative_path: str) -> tuple[Path, ...]:
     return ()
 
 
+def karakal_resource_path(relative_path: str) -> Path | None:
+    """A bundled file under the package (``resources/icons/arrow_down.png``), frozen or not."""
+
+    for root in _resource_roots():
+        for candidate in _icon_path_candidates(root, relative_path):
+            return candidate
+    return None
+
+
 @lru_cache(maxsize=1)
 def karakal_icon() -> QIcon:
     """Return the bundled Karakal icon, or an empty icon if unavailable."""

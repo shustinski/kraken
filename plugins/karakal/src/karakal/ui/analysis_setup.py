@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -26,11 +27,25 @@ from ..core.analysis_profiles import ANALYSIS_PROFILES, AnalysisPreflightReport,
 Translate = Callable[..., str]
 
 
+# Status colours of the source table: ready, partly covered, blocking, not set.
+_STATUS_COLORS = {"ready": "#7fd6a0", "partial": "#f0c674", "blocked": "#f08a8a", "idle": "#8a97a5"}
+# Which source row a blocking problem belongs to.
+_ISSUE_ROLES = {
+    "models_required": AnalysisSourceRole.MODEL_OUTPUT,
+    "single_model_required": AnalysisSourceRole.MODEL_OUTPUT,
+    "model_output_required": AnalysisSourceRole.MODEL_OUTPUT,
+    "grid_source_required": AnalysisSourceRole.MODEL_OUTPUT,
+    "no_frames": AnalysisSourceRole.MODEL_OUTPUT,
+    "duplicate_model_id": AnalysisSourceRole.MODEL_OUTPUT,
+    "duplicate_frame_key": AnalysisSourceRole.MODEL_OUTPUT,
+    "confidence_required": AnalysisSourceRole.CONFIDENCE,
+}
+
+
 class AnalysisSetupPanel(QGroupBox):
-    """Guide users from an analysis goal to validated source roles."""
+    """Analysis goal and the check of its sources; the run itself is the toolbar's main button."""
 
     profileChanged = pyqtSignal(str)
-    runRequested = pyqtSignal()
 
     def __init__(self, translate: Translate, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -76,25 +91,10 @@ class AnalysisSetupPanel(QGroupBox):
         self.role_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.role_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.role_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.role_table.setMinimumHeight(150)
-        self.role_table.setMaximumHeight(180)
+        self.role_table.setMinimumHeight(118)
+        self.role_table.setMaximumHeight(124)
         layout.addWidget(self.role_table)
-
-        self.preflight_label = QLabel(self)
-        self.preflight_label.setWordWrap(True)
-        self.preflight_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.preflight_label)
-
-        self.workflow_label = QLabel(self)
-        self.workflow_label.setWordWrap(True)
-        self.workflow_label.setStyleSheet("color: #aebdce;")
-        layout.addWidget(self.workflow_label)
-
-        self.run_button = QPushButton(self)
-        self.run_button.setMinimumHeight(38)
-        self.run_button.setProperty("primaryAction", True)
-        self.run_button.clicked.connect(self.runRequested.emit)
-        layout.addWidget(self.run_button)
+        self._report: AnalysisPreflightReport | None = None
         self.retranslate(translate)
 
     def retranslate(self, translate: Translate) -> None:
@@ -122,9 +122,7 @@ class AnalysisSetupPanel(QGroupBox):
             button.setToolTip(description)
             if button.isChecked():
                 self.profile_description_label.setText(description)
-        self.run_button.setText(self._t("setup.run"))
-        if not self.preflight_label.text():
-            self.set_preflight(None)
+        self.set_preflight(self._report)
 
     def _profile_clicked(self, key: AnalysisProfileKind, checked: bool) -> None:
         if checked:
@@ -151,18 +149,40 @@ class AnalysisSetupPanel(QGroupBox):
             button.style().unpolish(button)
             button.style().polish(button)
 
-    def set_preflight(self, report: AnalysisPreflightReport | None) -> None:
+    def issue_text(self, issue) -> str:
+        message = self._t(issue.message_key, count=issue.detail)
+        detail = str(issue.detail or "")
+        return f"{message} ({detail})" if detail and detail not in message else message
+
+    def blocking_reason(self) -> str:
+        """Why the analysis cannot start now; empty when it can."""
+
+        report = self._report
         if report is None:
-            self.preflight_label.setText(self._t("preflight.pending"))
-            self.preflight_label.setStyleSheet("padding: 6px; color: #aebdce; background: #151b23; border-radius: 6px;")
-            self.run_button.setEnabled(False)
+            return self._t("preflight.pending")
+        errors = [issue for issue in report.issues if issue.severity == PreflightSeverity.ERROR]
+        return "\n".join(self.issue_text(issue) for issue in errors)
+
+    def set_preflight(self, report: AnalysisPreflightReport | None) -> None:
+        """Coverage and status per source; blocking problems colour their row and fill its tooltip."""
+
+        self._report = report
+        if report is None:
             return
         state_keys = {
-            "ready": "workflow.state.ready",
-            "partial": "workflow.state.partial",
-            "missing": "workflow.state.pending",
-            "empty": "preflight.empty",
+            "ready": ("workflow.state.ready", "ready"),
+            "partial": ("workflow.state.partial", "partial"),
+            "missing": ("setup.not_configured", "idle"),
+            "empty": ("preflight.empty", "partial"),
         }
+        problems: dict[AnalysisSourceRole, list[str]] = {}
+        for issue in report.issues:
+            role = _ISSUE_ROLES.get(issue.code)
+            if role is not None:
+                problems.setdefault(role, []).append(self.issue_text(issue))
+        warnings = [
+            self.issue_text(issue) for issue in report.issues if issue.severity == PreflightSeverity.WARNING
+        ]
         for role_status in report.roles:
             row = self._role_rows.get(role_status.role)
             if row is None:
@@ -173,44 +193,23 @@ class AnalysisSetupPanel(QGroupBox):
                 matched=role_status.matched_count,
                 total=role_status.frame_count,
             )
+            state_key, tone = state_keys.get(role_status.state, ("workflow.state.pending", "idle"))
+            role_problems = problems.get(role_status.role, [])
+            tooltip_lines = [role_status.detail] if role_status.detail else []
+            if role_problems:
+                state_key, tone = "setup.state.blocked", "blocked"
+                tooltip_lines.extend(role_problems)
+            elif tone == "partial":
+                tooltip_lines.extend(warnings)
             source_item = QTableWidgetItem(coverage)
-            source_item.setToolTip(role_status.detail)
+            source_item.setToolTip("\n".join(tooltip_lines))
             self.role_table.setItem(row, 1, source_item)
-            state_key = state_keys.get(role_status.state, "workflow.state.pending")
-            self.role_table.setItem(row, 2, QTableWidgetItem(self._t(state_key)))
-        errors = [issue for issue in report.issues if issue.severity == PreflightSeverity.ERROR]
-        warnings = [issue for issue in report.issues if issue.severity == PreflightSeverity.WARNING]
-        if errors:
-            details = "\n".join(f"• {self._t(issue.message_key, count=issue.detail)} {issue.detail}".strip() for issue in errors)
-            self.preflight_label.setText(f"{self._t('preflight.blocked')}\n{details}")
-            style = "padding: 6px; color: #ffd9de; background: #4a2028; border: 1px solid #8c3948; border-radius: 6px;"
-        elif warnings:
-            details = "\n".join(f"• {self._t(issue.message_key, count=issue.detail)} {issue.detail}".strip() for issue in warnings)
-            self.preflight_label.setText(
-                f"{self._t('preflight.ready_with_warnings', matched=report.matched_frames, total=report.total_frames)}\n{details}"
-            )
-            style = "padding: 6px; color: #ffe9bd; background: #493719; border: 1px solid #8a6424; border-radius: 6px;"
-        else:
-            self.preflight_label.setText(
-                self._t("preflight.ready", matched=report.matched_frames, total=report.total_frames)
-            )
-            style = "padding: 6px; color: #d7f8e4; background: #183c2a; border: 1px solid #2d7750; border-radius: 6px;"
-        self.preflight_label.setStyleSheet(style)
-        self.run_button.setEnabled(report.can_run)
-
-    def set_workflow_summary(self, payload: Mapping[str, tuple[str, str, str]]) -> None:
-        parts: list[str] = []
-        for key, title_key in (
-            ("sources", "workflow.sources"),
-            ("models", "workflow.models"),
-            ("analysis", "workflow.analysis"),
-        ):
-            state, detail, _tone = payload.get(key, (self._t("workflow.state.pending"), "", "idle"))
-            parts.append(f"{self._t(title_key)}: {state} — {detail}")
-        self.workflow_label.setText("\n".join(parts))
+            status_item = QTableWidgetItem(self._t(state_key))
+            status_item.setForeground(QColor(_STATUS_COLORS[tone]))
+            status_item.setToolTip("\n".join(tooltip_lines))
+            self.role_table.setItem(row, 2, status_item)
 
     def set_busy(self, busy: bool) -> None:
-        self.run_button.setEnabled(self.run_button.isEnabled() and not busy)
         for button in self._profile_buttons.values():
             button.setEnabled(not busy)
 

@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
-    QFormLayout,
     QFrame,
     QGroupBox,
     QHeaderView,
@@ -796,31 +795,6 @@ class KarakalWidget(QWidget):
         self.pair_matrix_body.hide()
         pair_layout.addWidget(self.pair_matrix_body)
         control_layout.addWidget(pair_group)
-
-        source_group = QGroupBox(self._t("sources.group"), control_host)
-        self.source_group = source_group
-        source_layout = QFormLayout(source_group)
-        source_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-
-        original_row = QWidget(source_group)
-        original_row_layout = QHBoxLayout(original_row)
-        original_row_layout.setContentsMargins(0, 0, 0, 0)
-        original_row_layout.setSpacing(6)
-        self.original_folder_value = QLabel(self._t("sources.not_set"), original_row)
-        self.original_folder_value.setWordWrap(True)
-        self.original_folder_value.setMinimumWidth(0)
-        self.original_folder_value.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.btn_set_original = QToolButton(original_row)
-        self.btn_set_original.setText(self._t("common.set"))
-        self.btn_clear_original = QToolButton(original_row)
-        self.btn_clear_original.setText(self._t("common.clear"))
-        original_row_layout.addWidget(self.original_folder_value, stretch=1)
-        original_row_layout.addWidget(self.btn_set_original)
-        original_row_layout.addWidget(self.btn_clear_original)
-        self.original_source_label = QLabel(self._t("sources.original"), source_group)
-        source_layout.addRow(self.original_source_label, original_row)
-
-        control_layout.addWidget(source_group)
 
         self.analysis_settings_group = QGroupBox(self._t("ui.analysis_setup"), control_host)
         self.analysis_settings_group.setCheckable(True)
@@ -1938,10 +1912,6 @@ class KarakalWidget(QWidget):
             self.frame_search_input.setToolTip(self._t("frame_search.tooltip"))
         if hasattr(self, "btn_frame_search"):
             self.btn_frame_search.setToolTip(self._t("frame_search.button"))
-        self.source_group.setTitle(self._t("sources.group"))
-        self.original_source_label.setText(self._t("sources.original"))
-        self.btn_set_original.setText(self._t("common.set"))
-        self.btn_clear_original.setText(self._t("common.clear"))
         if hasattr(self, "validation_matrix_title"):
             self.validation_matrix_title.setText(self._t("validation.matrix.title"))
             self.empty_matrix_title.setText(self._t("empty_matrix.title"))
@@ -1951,8 +1921,6 @@ class KarakalWidget(QWidget):
         if hasattr(self, "grid_inspection_errors_group"):
             self.grid_inspection_errors_group.setTitle(self._t("grid_errors.group"))
             self._populate_grid_inspection_error_filter(self.grid_inspection_error_filter.currentData())
-        if hasattr(self, "_presenter"):
-            self._presenter._update_source_labels()
         current_layout = str(self.layout_mode_combo.currentData() or DEFAULT_MATRIX_LAYOUT_MODE)
         current_analysis_mode = str(self.analysis_mode_combo.currentData() or DEFAULT_ANALYSIS_MODE)
         current_comparison_target = str(self.comparison_target_combo.currentData() or DEFAULT_COMPARISON_TARGET)
@@ -2397,8 +2365,6 @@ class KarakalWidget(QWidget):
             )
         self.btn_add_folder.clicked.connect(self._presenter._add_folder)
         self.btn_clear_folders.clicked.connect(self._presenter._clear_folders)
-        self.btn_set_original.clicked.connect(self._presenter._set_original_folder)
-        self.btn_clear_original.clicked.connect(self._presenter._clear_original_folder)
         self.btn_build.clicked.connect(self._presenter._on_build_requested)
         self.btn_compute.clicked.connect(self._presenter._on_compute_requested)
         self.btn_export_layer.clicked.connect(self._presenter._on_export_result_layer_requested)

@@ -91,6 +91,8 @@ class ExtendMatrixTabState:
     # Frames of the shown set; None = whole run. Errors list and histograms use only these.
     frame_set_participating: set[str] | None = None
     frame_set_version: int = 0
+    # (layer, frames per row) the matrix is laid out for; a layer switch re-places it only on change.
+    matrix_layer_signature: tuple[object, ...] = ()
     last_analytics_request_signature: tuple[object, ...] | None = None
 
 

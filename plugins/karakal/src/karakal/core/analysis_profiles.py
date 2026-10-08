@@ -179,6 +179,8 @@ def build_standalone_preflight(
     original_keys, original_duplicates = _folder_inventory(None if original_folder is None else original_folder.path)
     model_inventories: list[set[str]] = []
     confidence_inventories: list[set[str]] = []
+    # Source photos per layer: the layer's own folder, else the shared one.
+    original_inventories: list[set[str]] = [original_keys] if original_folder is not None else []
     duplicate_details: list[str] = []
     if original_duplicates:
         duplicate_details.append(f"original: {', '.join(original_duplicates[:5])}")
@@ -187,6 +189,13 @@ def build_standalone_preflight(
         model_inventories.append(keys)
         if duplicates:
             duplicate_details.append(f"{model.display_name}: {', '.join(duplicates[:5])}")
+        if model.original_folder is not None:
+            layer_original_keys, layer_original_duplicates = _folder_inventory(model.original_folder)
+            original_inventories.append(layer_original_keys)
+            if layer_original_duplicates:
+                duplicate_details.append(
+                    f"{model.display_name} original: {', '.join(layer_original_duplicates[:5])}"
+                )
         if model.prob_folder is not None:
             confidence_keys, confidence_duplicates = _folder_inventory(model.prob_folder)
             confidence_inventories.append(confidence_keys)
@@ -238,6 +247,10 @@ def build_standalone_preflight(
     if profile.key == AnalysisProfileKind.SINGLE_RESULT_RISK:
         baseline = model_inventories[0] if len(model_inventories) == 1 else set()
         compared_sets: list[set[str]] = []
+    elif profile.key == AnalysisProfileKind.GRID_DEFECTS and model_inventories:
+        # Every layer keeps its own frames: layers may be different projects.
+        baseline = set().union(*model_inventories)
+        compared_sets = []
     else:
         baseline = original_keys or (model_inventories[0] if model_inventories else set())
         compared_sets = [inventory for inventory in model_inventories if inventory]
@@ -257,8 +270,9 @@ def build_standalone_preflight(
         )
     if profile.key == AnalysisProfileKind.SINGLE_RESULT_RISK and baseline:
         optional_details: list[str] = []
-        if original_folder is not None and len(original_keys & baseline) < len(baseline):
-            optional_details.append(f"original {len(original_keys & baseline)}/{len(baseline)}")
+        all_original_keys = set().union(*original_inventories) if original_inventories else set()
+        if original_inventories and len(all_original_keys & baseline) < len(baseline):
+            optional_details.append(f"original {len(all_original_keys & baseline)}/{len(baseline)}")
         if any(model.prob_folder is not None for model in model_specs):
             confidence_keys = set().union(*confidence_inventories) if confidence_inventories else set()
             if len(confidence_keys & baseline) < len(baseline):
@@ -278,9 +292,11 @@ def build_standalone_preflight(
     roles = (
         _role_status(
             AnalysisSourceRole.ORIGINAL,
-            (original_keys,) if original_folder is not None else (),
+            tuple(original_inventories),
             baseline,
-            str(original_folder.path) if original_folder else "",
+            str(original_folder.path)
+            if original_folder
+            else ", ".join(model.display_name for model in model_specs if model.original_folder is not None),
         ),
         _role_status(
             AnalysisSourceRole.MODEL_OUTPUT,

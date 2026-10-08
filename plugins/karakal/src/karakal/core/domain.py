@@ -82,6 +82,8 @@ class ModelSpec:
     mask_folder: Path
     prob_folder: Path | None = None
     threshold: float = 0.5
+    # Source photos of this layer's frames (each layer may come from its own project).
+    original_folder: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +124,9 @@ class BuildOptions:
     # in one folder or in two (see core/frame_naming.py).
     mask_suffix: str = ""
     confidence_suffix: str = "_confidence"
+    # True: every layer keeps all of its own frames (layers may be different projects);
+    # False: only frames present in every layer take part (model comparison).
+    union_layer_frames: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,6 +465,7 @@ class FrameRecord:
     original_path: str | None = None
     model_mask_paths: dict[str, str] = field(default_factory=dict)
     model_prob_paths: dict[str, str] = field(default_factory=dict)
+    model_original_paths: dict[str, str] = field(default_factory=dict)
     summary: FrameAnalysisSummary | None = None
 
 

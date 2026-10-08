@@ -12,7 +12,8 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   06 = minimum debris size setting in the main and frame windows, debris size on hover;
   07 = matrix follows a larger debris size and switched-off types at once, stale-matrix warning;
   08 = masks and confidence maps in one folder, Settings menu with file suffixes;
-  09 = split and unknown defect types, no edge-clip type);
+  09 = split and unknown defect types, no edge-clip type;
+  10 = source frames and frames per row set per layer, layers of grid defects keep their own frames);
 - beta N counts tester builds with the same algorithm and interface; scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -25,7 +26,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 9
+INTERFACE_NUMBER = 10
 BETA = 0
 
 

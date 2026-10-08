@@ -148,6 +148,7 @@ from ..ui.ui_constants import (
     DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE,
     DEFAULT_SINGLE_RESULT_SENSITIVITY,
     DEFAULT_FRAMES_PER_ROW,
+    FRAMES_PER_ROW_RANGE,
     DEFAULT_GEOMETRY_MODE,
     DEFAULT_GRADIENT_NAME,
     DEFAULT_MATRIX_COLUMNS,
@@ -171,6 +172,8 @@ from ..ui.ui_constants import (
     FOLDER_CHECKED_ROLE,
     FOLDER_CONFIDENCE_ROLE,
     FOLDER_CONFIDENCE_EXPANDED_ROLE,
+    FOLDER_FRAMES_PER_ROW_ROLE,
+    FOLDER_ORIGINAL_ROLE,
     FOLDER_LABEL_ROLE,
     FOLDER_ROW_MIN_HEIGHT,
     MATRIX_METRIC_OPTIONS,
@@ -241,7 +244,6 @@ class KarakalPresenter(QObject):
         self._worker = None
         self._worker_kind: str | None = None
         self._active_compute_state: ExtendMatrixTabState | None = None
-        self._original_folder: FolderSpec | None = None
         self._export_folder: Path | None = None
         self._saved_validation_mask_payload: dict[str, object] = (
             self._settings_service.load_validation_mask_payload() or {}
@@ -741,6 +743,7 @@ class KarakalPresenter(QObject):
             self._set_details_preferred_model_id(selection)
         else:
             self._set_details_preferred_model_id(state.grid_inspection_model_id)
+        self._refresh_matrix_layer_layout(state)
         # Layer switch must be instant: no worker, just re-project stored payloads.
         self._apply_grid_inspection_active_layer_view(state, streaming=False)
 
@@ -1312,7 +1315,9 @@ class KarakalPresenter(QObject):
             label = str(item.data(FOLDER_LABEL_ROLE) or folder_path.name)
             confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip()
             confidence_folder = Path(confidence_path_text) if confidence_path_text else None
-            model_id = self._stable_model_id_for_folders(folder_path, confidence_folder) or f"model_{row + 1}"
+            original_path_text = str(item.data(FOLDER_ORIGINAL_ROLE) or "").strip()
+            original_folder = Path(original_path_text) if original_path_text else None
+            model_id = self._model_id_for_folder_item(item)
             specs.append(
                 ModelSpec(
                     model_id=model_id,
@@ -1320,9 +1325,87 @@ class KarakalPresenter(QObject):
                     mask_folder=folder_path,
                     prob_folder=confidence_folder,
                     threshold=threshold,
+                    original_folder=original_folder,
                 )
             )
         return tuple(specs)
+
+    def _model_id_for_folder_item(self, item: QListWidgetItem) -> str:
+        folder_path = Path(item.data(Qt.ItemDataRole.UserRole))
+        confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "").strip()
+        confidence_folder = Path(confidence_path_text) if confidence_path_text else None
+        return self._stable_model_id_for_folders(folder_path, confidence_folder) or (
+            f"model_{self.folder_list.row(item) + 1}"
+        )
+
+    def _folder_item_for_model_id(self, model_id: str) -> QListWidgetItem | None:
+        for row in range(self.folder_list.count()):
+            item = self.folder_list.item(row)
+            if self._model_id_for_folder_item(item) == str(model_id):
+                return item
+        return None
+
+    # --- Per-layer matrix: own frames and own width ------------------------------
+
+    def _matrix_layer_model_id(self, state: ExtendMatrixTabState | None) -> str:
+        """Model id of the shown matrix layer; empty for «All layers» or no choice."""
+
+        if state is None:
+            return ""
+        selection = self._grid_inspection_matrix_selection(state)
+        return "" if selection == self.ALL_LAYERS_SELECTION_KEY else selection
+
+    def _matrix_layer_record_keys(self, state: ExtendMatrixTabState) -> set[str] | None:
+        """Frames of the shown layer; None when every frame of the run belongs to it."""
+
+        model_id = self._matrix_layer_model_id(state)
+        if not model_id:
+            return None
+        records = tuple(state.build_result.records or ())
+        keys = {
+            record.key
+            for record in records
+            if (record.model_mask_paths or {}).get(model_id) or (record.model_prob_paths or {}).get(model_id)
+        }
+        if not keys or len(keys) == len(records):
+            return None
+        return keys
+
+    def _layer_frames_per_row(self, model_id: str) -> int:
+        item = self._folder_item_for_model_id(model_id) if model_id else None
+        return max(0, int(item.data(FOLDER_FRAMES_PER_ROW_ROLE) or 0)) if item is not None else 0
+
+    def _matrix_layout_config(self, state: ExtendMatrixTabState) -> MatrixLayoutConfig:
+        """Layout of the shown layer: its own frames per row, else the one of the run."""
+
+        frames_per_row = self._layer_frames_per_row(self._matrix_layer_model_id(state))
+        if frames_per_row <= 0 or int(state.layout_config.frames_per_row) == frames_per_row:
+            return state.layout_config
+        return replace(state.layout_config, frames_per_row=frames_per_row)
+
+    def _matrix_layer_signature(self, state: ExtendMatrixTabState) -> tuple[object, ...]:
+        layer_keys = self._matrix_layer_record_keys(state)
+        return (
+            self._matrix_layer_model_id(state) if layer_keys is not None else "",
+            int(self._matrix_layout_config(state).frames_per_row),
+        )
+
+    def _refresh_matrix_layer_layout(self, state: ExtendMatrixTabState, *, force: bool = False) -> bool:
+        """Re-place the matrix after a layer switch or a layer width change."""
+
+        signature = self._matrix_layer_signature(state)
+        if not force and signature == state.matrix_layer_signature:
+            return False
+        state.matrix_layer_signature = signature
+        if self._current_app_mode() == "grid_inspection":
+            records = list(self._display_records_for_state(state))
+            layout_config = self._matrix_layout_config(state)
+            for view in self._grid_inspection_views().values():
+                view.set_layout_config(layout_config)
+                view.set_records(records, sort_mode="name", reset_view=True)
+        else:
+            self._apply_tab_visual_settings(state, reset_view=True, update_histograms=False)
+        return True
 
     def _stable_model_id_for_folders(self, mask_folder: Path | None, confidence_folder: Path | None = None) -> str:
         """Stable id from absolute folder paths (not from editable labels)."""
@@ -1344,12 +1427,12 @@ class KarakalPresenter(QObject):
         specs = self._checked_model_specs()
         return (
             self._analysis_profile.value,
-            str(self._original_folder.path) if self._original_folder is not None else "",
             tuple(
                 (
                     spec.model_id,
                     str(spec.mask_folder),
                     str(spec.prob_folder) if spec.prob_folder is not None else "",
+                    str(spec.original_folder) if spec.original_folder is not None else "",
                 )
                 for spec in specs
             ),
@@ -1360,7 +1443,7 @@ class KarakalPresenter(QObject):
         if force or signature != self._preflight_signature or self._preflight_report is None:
             self._preflight_report = build_standalone_preflight(
                 self._analysis_profile,
-                self._original_folder,
+                None,
                 self._checked_model_specs(),
             )
             self._preflight_signature = signature
@@ -1373,7 +1456,7 @@ class KarakalPresenter(QObject):
         specs = self._checked_model_specs()
         model_count = len(specs)
         confidence_count = sum(1 for spec in specs if spec.prob_folder is not None)
-        has_grid_source = self._original_folder is not None or model_count > 0
+        has_grid_source = model_count > 0
         return {
             AnalysisProfileKind.MODEL_COMPARISON: (
                 model_count >= 2,
@@ -1939,23 +2022,7 @@ class KarakalPresenter(QObject):
         self._set_details_preferred_model_id(state.metric_scope or state.confidence_model_id or model_id)
 
     def _effective_model_specs_for_build(self) -> tuple[ModelSpec, ...]:
-        specs = self._checked_model_specs()
-        if specs:
-            return specs
-        if self._original_folder is None:
-            return specs
-        base_path = Path(self._original_folder.path)
-        if not base_path.exists():
-            return specs
-        threshold, _boundary_radius = self._selected_polygon_compare_values()
-        fallback_spec = ModelSpec(
-            model_id="base_layer",
-            display_name=str(self._original_folder.label or base_path.name or "base_layer"),
-            mask_folder=base_path,
-            prob_folder=None,
-            threshold=float(threshold),
-        )
-        return (fallback_spec,)
+        return self._checked_model_specs()
 
     def _selected_confidence_uncertainty_profile(self) -> str:
         return str(self.confidence_uncertainty_profile_combo.currentData() or DEFAULT_CONFIDENCE_UNCERTAINTY_PROFILE)
@@ -2066,6 +2133,8 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_LABEL_ROLE, folder_path.name)
         item.setData(FOLDER_CONFIDENCE_ROLE, "")
         item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, False)
+        item.setData(FOLDER_ORIGINAL_ROLE, "")
+        item.setData(FOLDER_FRAMES_PER_ROW_ROLE, 0)
         item.setToolTip(folder_path_text)
         self.folder_list.addItem(item)
         return item
@@ -2094,6 +2163,7 @@ class KarakalPresenter(QObject):
                 confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "")
                 confidence_expanded = bool(item.data(FOLDER_CONFIDENCE_EXPANDED_ROLE))
                 confidence_display_text = self._compact_path_text(confidence_path_text)
+                original_path_text = str(item.data(FOLDER_ORIGINAL_ROLE) or "")
                 row_widget = FolderRowWidget(
                     self.folder_list,
                     path_text=path_text,
@@ -2128,6 +2198,25 @@ class KarakalPresenter(QObject):
                     remove_tooltip="Remove model folder",
                     move_up_tooltip="Move up",
                     move_down_tooltip="Move down",
+                    confidence_label=self._t("folders.confidence_label"),
+                    original_label=self._t("folders.original_label"),
+                    original_display_text=self._compact_path_text(original_path_text),
+                    original_path_text=original_path_text,
+                    on_original_folder=lambda _checked=False, item=item: self._set_folder_item_original_folder(item),
+                    on_clear_original_folder=lambda _checked=False, item=item: (
+                        self._clear_folder_item_original_folder(item)
+                    ),
+                    original_placeholder=self._t("folders.original_not_set"),
+                    original_select_tooltip=self._t("folders.select_original"),
+                    original_clear_tooltip=self._t("folders.clear_original"),
+                    frames_per_row=int(item.data(FOLDER_FRAMES_PER_ROW_ROLE) or 0),
+                    on_frames_per_row_changed=lambda value, item=item: self._set_folder_item_frames_per_row(
+                        item, value
+                    ),
+                    frames_per_row_label=self._t("folders.frames_per_row"),
+                    frames_per_row_common_text=self._t("folders.frames_per_row_common"),
+                    frames_per_row_tooltip=self._t("folders.frames_per_row_tooltip"),
+                    frames_per_row_maximum=int(FRAMES_PER_ROW_RANGE[1]),
                 )
                 row_widget.setMinimumHeight(FOLDER_ROW_MIN_HEIGHT)
                 item.setSizeHint(row_widget.sizeHint())
@@ -2172,6 +2261,37 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_CONFIDENCE_ROLE, "")
         self._refresh_folder_rows()
         self._sync_action_buttons()
+
+    def _set_folder_item_original_folder(self, item: QListWidgetItem) -> None:
+        if self._worker_thread is not None:
+            return
+        folder = QFileDialog.getExistingDirectory(self._view, self._t("dialog.select_original_folder"))
+        if not folder:
+            return
+        folder_path = Path(folder)
+        if not self._folder_has_supported_images(folder_path):
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                f"Source frames folder has no supported images: {folder_path}",
+            )
+            return
+        item.setData(FOLDER_ORIGINAL_ROLE, str(folder_path))
+        self._refresh_folder_rows()
+        self._sync_action_buttons()
+
+    def _clear_folder_item_original_folder(self, item: QListWidgetItem) -> None:
+        item.setData(FOLDER_ORIGINAL_ROLE, "")
+        self._refresh_folder_rows()
+        self._sync_action_buttons()
+
+    def _set_folder_item_frames_per_row(self, item: QListWidgetItem, value: int) -> None:
+        """Matrix width of one layer; the shown matrix follows when it is this layer."""
+
+        item.setData(FOLDER_FRAMES_PER_ROW_ROLE, max(0, int(value)))
+        state = self._current_tab_state()
+        if state is not None and self._matrix_layer_model_id(state) == self._model_id_for_folder_item(item):
+            self._refresh_matrix_layer_layout(state)
 
     def _set_folder_item_confidence_expanded(self, item: QListWidgetItem, expanded: bool) -> None:
         item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, bool(expanded))
@@ -2337,11 +2457,15 @@ class KarakalPresenter(QObject):
         cache_key = (
             str(getattr(state, "object_type", POLYGON_OBJECT_TYPE) or POLYGON_OBJECT_TYPE),
             id(state.build_result.records),
+            self._matrix_layer_model_id(state),
         )
         cached = state.base_records_cache.get(cache_key)
         if cached is not None:
             return tuple(cached)
         records: tuple[FrameRecord, ...] | list[FrameRecord] = state.build_result.records
+        layer_keys = self._matrix_layer_record_keys(state)
+        if layer_keys is not None:
+            records = tuple(record for record in records if record.key in layer_keys)
         object_type = str(getattr(state, "object_type", POLYGON_OBJECT_TYPE) or POLYGON_OBJECT_TYPE)
         if object_type in {POLYGON_OBJECT_TYPE, POINT_OBJECT_TYPE}:
             records = tuple(
@@ -2756,9 +2880,16 @@ class KarakalPresenter(QObject):
         return tuple(records_by_key.get(record.key, record) for record in records_tuple)
 
     def _sync_state_record_coordinates(self, state: ExtendMatrixTabState) -> None:
-        attached_records = self._attach_matrix_coordinates(state.build_result.records, state.layout_config)
-        if attached_records is not state.build_result.records:
-            state.build_result = replace(state.build_result, records=tuple(attached_records))
+        records = state.build_result.records
+        layer_keys = self._matrix_layer_record_keys(state)
+        shown = records if layer_keys is None else tuple(record for record in records if record.key in layer_keys)
+        attached_records = self._attach_matrix_coordinates(shown, self._matrix_layout_config(state))
+        if attached_records is shown:
+            return
+        if layer_keys is not None:
+            by_key = {record.key: record for record in attached_records}
+            attached_records = tuple(by_key.get(record.key, record) for record in records)
+        state.build_result = replace(state.build_result, records=tuple(attached_records))
 
     def _apply_pending_display_controls(self, state: ExtendMatrixTabState) -> None:
         state.layout_config = self._build_layout_config()
@@ -2774,7 +2905,7 @@ class KarakalPresenter(QObject):
             display_records = self._display_records_for_state(state)
             state.matrix_view.set_gradient_preset(state.gradient_name or DEFAULT_GRADIENT_NAME)
             state.matrix_view.set_cell_size(int(state.cell_size))
-            state.matrix_view.set_layout_config(state.layout_config)
+            state.matrix_view.set_layout_config(self._matrix_layout_config(state))
             state.matrix_view.set_score_view_mode(str(state.matrix_score_view_mode or DEFAULT_MATRIX_SCORE_VIEW_MODE))
             state.matrix_view.set_metric_context(
                 state.metric_key,
@@ -4149,11 +4280,6 @@ class KarakalPresenter(QObject):
         parent = path.parent.name if path.parent != path else ""
         return f"{parent}/{tail}" if parent else tail
 
-    def _update_source_labels(self) -> None:
-        original_text, original_tooltip = self._compact_folder_label(self._original_folder)
-        self.original_folder_value.setText(original_text)
-        self.original_folder_value.setToolTip(original_tooltip)
-
     def _add_folder(self) -> None:
         if self._worker_thread is not None:
             return
@@ -4212,37 +4338,6 @@ class KarakalPresenter(QObject):
         self._refresh_pair_matrix()
         self._sync_action_buttons()
 
-    def _set_original_folder(self) -> None:
-        if self._worker_thread is not None:
-            return
-        folder = QFileDialog.getExistingDirectory(self._view, self._t("dialog.select_original_folder"))
-        if not folder:
-            return
-        path = Path(folder)
-        if not self._folder_has_supported_images(path):
-            QMessageBox.warning(
-                self._view,
-                self._t("dialog.warning_title"),
-                f"Base folder has no supported images: {path}",
-            )
-            return
-        self._original_folder = FolderSpec(path=path, label=path.name)
-        self._update_source_labels()
-        self._sync_action_buttons()
-
-    def _clear_original_folder(self) -> None:
-        self._original_folder = None
-        self._update_source_labels()
-        self._sync_action_buttons()
-
-    def _bootstrap_source_folder_for_sampling(self) -> Path | None:
-        if self._original_folder is None:
-            return None
-        path = Path(self._original_folder.path)
-        if not path.exists():
-            return None
-        return path
-
     def _current_app_mode(self) -> str:
         combo = getattr(self, "app_mode_combo", None)
         if combo is None:
@@ -4256,10 +4351,7 @@ class KarakalPresenter(QObject):
     def _on_build_requested(self) -> None:
         state = self._current_tab_state()
         active_model_count = len(self._checked_model_specs())
-        can_build_from_base_only = (
-            active_model_count <= 0 and self._original_folder is not None and Path(self._original_folder.path).exists()
-        )
-        if state is None or active_model_count >= self._required_model_count_for_build() or can_build_from_base_only:
+        if state is None or active_model_count >= self._required_model_count_for_build():
             self._start_build()
             return
         self._apply_pending_display_controls(state)
@@ -4314,8 +4406,9 @@ class KarakalPresenter(QObject):
         if getattr(state, "grid_inspection_payloads_by_model", None):
             self._apply_grid_inspection_active_layer_view(state, streaming=False)
         self._sync_grid_inspection_layer_tabs(state)
+        state.matrix_layer_signature = self._matrix_layer_signature(state)
         for view in views.values():
-            view.set_layout_config(state.layout_config)
+            view.set_layout_config(self._matrix_layout_config(state))
             view.set_excluded_record_keys(set(state.excluded_record_keys))
             view.set_grid_inspection_visual_mode(True)
             view.set_gradient_preset(state.gradient_name or DEFAULT_GRADIENT_NAME)
@@ -4850,13 +4943,7 @@ class KarakalPresenter(QObject):
             return
         model_specs = self._effective_model_specs_for_build()
         required_model_count = self._required_model_count_for_build()
-        building_from_base_only = (
-            len(explicit_model_specs) <= 0
-            and len(model_specs) == 1
-            and self._original_folder is not None
-            and Path(self._original_folder.path).exists()
-        )
-        if len(model_specs) < required_model_count and not building_from_base_only:
+        if len(model_specs) < required_model_count:
             message_key = (
                 "errors.inter_model_model_count_required"
                 if required_model_count > 1
@@ -4884,6 +4971,7 @@ class KarakalPresenter(QObject):
             single_result_sensitivity=self._selected_single_result_sensitivity(),
             mask_suffix=self._frame_naming().mask_suffix,
             confidence_suffix=self._frame_naming().confidence_suffix,
+            union_layer_frames=self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS,
         )
         self._pending_build_snapshot = self._capture_view_snapshot()
         self._worker_kind = "build"
@@ -4891,7 +4979,7 @@ class KarakalPresenter(QObject):
         self._worker = FrameIndexWorker(
             model_specs,
             options,
-            self._original_folder,
+            None,
             performance_config=self._view.performance_config,
         )
         self._connect_worker_profiling(self._worker)
@@ -7164,6 +7252,9 @@ class KarakalPresenter(QObject):
         grid_inspection_source_path = None
         grid_detail_message = None
         pending_grid_analyze = False
+        layer_original = (record.model_original_paths or {}).get(self._matrix_layer_model_id(state))
+        if layer_original and layer_original != record.original_path:
+            record = replace(record, original_path=layer_original, base_path=layer_original)
         if is_grid_inspection_details:
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
             grid_inspection_result = self._reusable_grid_matrix_result(state, record)
@@ -7500,7 +7591,6 @@ class KarakalPresenter(QObject):
             if not folder:
                 return None
             self._export_folder = Path(folder)
-            self._update_source_labels()
             self._sync_action_buttons()
         return self._export_folder
 
@@ -8030,10 +8120,8 @@ class KarakalPresenter(QObject):
 
     def _sync_action_buttons(self) -> None:
         current_state = self._current_tab_state()
-        active_model_count = len(self._checked_model_specs())
-        can_build_from_base_only = (
-            active_model_count <= 0 and self._original_folder is not None and Path(self._original_folder.path).exists()
-        )
+        checked_specs = self._checked_model_specs()
+        active_model_count = len(checked_specs)
         is_busy = self._worker_thread is not None
         self._sync_confidence_map_function_state(
             None if current_state is None else current_state.build_result,
@@ -8041,9 +8129,7 @@ class KarakalPresenter(QObject):
         )
         required_model_count = self._required_model_count_for_build()
         self.btn_clear_folders.setEnabled(self.folder_list.count() > 0 and not is_busy)
-        self.btn_set_original.setEnabled(not is_busy)
-        self.btn_clear_original.setEnabled(self._original_folder is not None and not is_busy)
-        can_start_build = active_model_count >= required_model_count or can_build_from_base_only
+        can_start_build = active_model_count >= required_model_count
         self.btn_build.setEnabled((current_state is not None or can_start_build) and not is_busy)
         self.btn_compute.setEnabled(current_state is not None and not is_busy)
         if hasattr(self, "frame_search_input"):
@@ -8068,12 +8154,11 @@ class KarakalPresenter(QObject):
         if hasattr(self, "active_pair_list"):
             self.active_pair_list.setEnabled(not is_busy)
         if hasattr(self._view, "set_workflow_summary"):
+            has_originals = any(spec.original_folder is not None for spec in checked_specs)
             original_state = (
-                self._t("workflow.state.ready")
-                if self._original_folder is not None
-                else self._t("workflow.state.pending")
+                self._t("workflow.state.ready") if has_originals else self._t("workflow.state.pending")
             )
-            sources_tone = "ready" if self._original_folder is not None else "warn"
+            sources_tone = "ready" if has_originals else "warn"
             models_status = (
                 self._t("workflow.state.ready") if active_model_count > 0 else self._t("workflow.state.pending")
             )
@@ -8119,10 +8204,11 @@ class KarakalPresenter(QObject):
                     "label": str(self.folder_list.item(row).data(FOLDER_LABEL_ROLE) or ""),
                     "confidence_path": str(self.folder_list.item(row).data(FOLDER_CONFIDENCE_ROLE) or ""),
                     "confidence_expanded": bool(self.folder_list.item(row).data(FOLDER_CONFIDENCE_EXPANDED_ROLE)),
+                    "original_path": str(self.folder_list.item(row).data(FOLDER_ORIGINAL_ROLE) or ""),
+                    "frames_per_row": int(self.folder_list.item(row).data(FOLDER_FRAMES_PER_ROW_ROLE) or 0),
                 }
                 for row in range(self.folder_list.count())
             ],
-            "original_folder": str(self._original_folder.path) if self._original_folder is not None else None,
             "export_folder": str(self._export_folder) if self._export_folder is not None else None,
             "comparison_pairs": [
                 {
@@ -8138,7 +8224,6 @@ class KarakalPresenter(QObject):
     def _restore_persisted_state(self) -> None:
         self._restore_folder_manager_state()
         self._restore_build_settings()
-        self._update_source_labels()
         self._refresh_pair_matrix()
         self._on_app_mode_changed()
 
@@ -8161,11 +8246,18 @@ class KarakalPresenter(QObject):
                 if confidence_path and Path(confidence_path).exists():
                     item.setData(FOLDER_CONFIDENCE_ROLE, str(confidence_path))
                 item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, bool(folder_entry.get("confidence_expanded", False)))
-            original_folder = payload.get("original_folder")
+                original_path = folder_entry.get("original_path")
+                if original_path and Path(original_path).exists():
+                    item.setData(FOLDER_ORIGINAL_ROLE, str(original_path))
+                item.setData(FOLDER_FRAMES_PER_ROW_ROLE, max(0, int(folder_entry.get("frames_per_row") or 0)))
+            # Older settings kept one source folder for every layer.
+            legacy_original = payload.get("original_folder")
+            if legacy_original and Path(legacy_original).exists():
+                for row in range(self.folder_list.count()):
+                    item = self.folder_list.item(row)
+                    if not str(item.data(FOLDER_ORIGINAL_ROLE) or ""):
+                        item.setData(FOLDER_ORIGINAL_ROLE, str(legacy_original))
             export_folder = payload.get("export_folder")
-            if original_folder and Path(original_folder).exists():
-                path = Path(original_folder)
-                self._original_folder = FolderSpec(path=path, label=path.name)
             if export_folder and Path(export_folder).exists():
                 self._export_folder = Path(export_folder)
             self._pair_defaults_initialized = bool(payload.get("comparison_pair_defaults_initialized", False))
@@ -8232,16 +8324,6 @@ class KarakalPresenter(QObject):
 
     def _build_analysis_profile_payload(self) -> dict[str, object]:
         bindings: list[AnalysisSourceBinding] = []
-        if self._original_folder is not None:
-            bindings.append(
-                AnalysisSourceBinding(
-                    binding_key="original",
-                    role=AnalysisSourceRole.ORIGINAL,
-                    kind=SourceBindingKind.FILESYSTEM,
-                    source_id=str(self._original_folder.path),
-                    display_name=self._original_folder.label,
-                )
-            )
         for spec in self._checked_model_specs():
             bindings.append(
                 AnalysisSourceBinding(
@@ -8259,6 +8341,16 @@ class KarakalPresenter(QObject):
                         role=AnalysisSourceRole.CONFIDENCE,
                         kind=SourceBindingKind.FILESYSTEM,
                         source_id=str(spec.prob_folder),
+                        display_name=spec.display_name,
+                    )
+                )
+            if spec.original_folder is not None:
+                bindings.append(
+                    AnalysisSourceBinding(
+                        binding_key=f"original:{spec.model_id}",
+                        role=AnalysisSourceRole.ORIGINAL,
+                        kind=SourceBindingKind.FILESYSTEM,
+                        source_id=str(spec.original_folder),
                         display_name=spec.display_name,
                     )
                 )
@@ -8501,8 +8593,4 @@ class KarakalPresenter(QObject):
     def _start_compute_mismatches(self) -> None:
         self._start_compute_metrics()
 
-    def _set_base_folder(self) -> None:
-        self._set_original_folder()
 
-    def _clear_base_folder(self) -> None:
-        self._clear_original_folder()

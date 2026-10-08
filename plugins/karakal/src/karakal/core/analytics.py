@@ -30,7 +30,7 @@ from .image_io import (
     _clear_runtime_image_caches,
     _load_optional_gray,
     _resolve_aux_path_from_lookup,
-    _resolve_model_path_for_key,
+    _build_folder_path_lookup,
     _folder_cache_key,
     build_folder_index,
     build_frame_identity,
@@ -1360,13 +1360,25 @@ def _collect_frame_records_modern(
 
     # Warm every auxiliary folder once up-front. Per-key Path.resolve()/is_file probes
     # previously dominated prepare time at 20k frames (Win32 getfinalpathname).
+    def _original_folder_for(spec: ModelSpec) -> Path | None:
+        """Source photos of one layer: its own folder, else the shared one."""
+
+        if spec.original_folder is not None:
+            return Path(spec.original_folder)
+        return Path(original_folder.path) if original_folder is not None else None
+
+    original_folders: dict[str, Path] = {}
+    for spec in model_specs:
+        folder = _original_folder_for(spec)
+        if folder is not None:
+            original_folders.setdefault(_folder_cache_key(folder), folder)
     for spec in model_specs:
         if spec is not base_spec:
             folder_jobs.append(("mask", Path(spec.mask_folder), fallback_model_indexes))
         if spec.prob_folder is not None:
             folder_jobs.append(("prob", Path(spec.prob_folder), fallback_prob_indexes))
-    if original_folder is not None:
-        folder_jobs.append(("original", Path(original_folder.path), fallback_model_indexes))
+    for folder in original_folders.values():
+        folder_jobs.append(("original", folder, fallback_model_indexes))
 
     for job_index, (kind, folder, cache) in enumerate(folder_jobs, start=1):
         if cancel_check is not None and cancel_check():
@@ -1415,63 +1427,92 @@ def _collect_frame_records_modern(
         found = _confidence_lookup_for(spec).get(frame_lookup_key(key, naming))
         return str(found) if found is not None else ""
 
-    original_lookup: _FolderPathLookup = (
-        ensure_folder_path_lookup(
-            Path(original_folder.path),
-            extensions,
-            fallback_model_indexes,
-            recursive=options.recursive,
-            cancel_check=cancel_check,
-        )
-        if original_folder is not None
-        else ({}, {}, {})
-    )
-
-    records: list[FrameRecord] = []
-    sorted_keys = sorted(base_index.keys(), key=natural_sort_key)
-    match_total = len(sorted_keys)
-    stage_enter("index.match", frames=match_total)
-    for index, key in enumerate(sorted_keys):
-        if cancel_check is not None and cancel_check():
-            raise BuildCancelledError("Build cancelled")
-        model_mask_paths: dict[str, str] = {base_spec.model_id: str(base_index[key])}
-        model_prob_paths: dict[str, str] = {base_spec.model_id: _confidence_path(base_spec, key)}
-        missing_required_model = False
-        for spec in model_specs[1:]:
-            resolved = _resolve_model_path_for_key(
-                spec.mask_folder,
-                key,
+    # Masks of every layer by frame name; confidence maps lying next to them are not frames.
+    mask_lookups: dict[str, _FolderPathLookup] = {}
+    for spec in model_specs:
+        if spec is base_spec:
+            mask_index = base_index
+        else:
+            raw_index = ensure_folder_path_lookup(
+                Path(spec.mask_folder),
+                extensions,
+                fallback_model_indexes,
+                recursive=options.recursive,
+                cancel_check=cancel_check,
+            )[0]
+            mask_index = {key: path for key, path in raw_index.items() if naming.is_mask_file(path)}
+        mask_lookups[spec.model_id] = _build_folder_path_lookup(mask_index)
+    original_lookups: dict[str, _FolderPathLookup] = {}
+    for spec in model_specs:
+        folder = _original_folder_for(spec)
+        if folder is not None:
+            original_lookups[spec.model_id] = ensure_folder_path_lookup(
+                folder,
                 extensions,
                 fallback_model_indexes,
                 recursive=options.recursive,
                 cancel_check=cancel_check,
             )
+
+    union_frames = bool(getattr(options, "union_layer_frames", False))
+    frame_keys = set(base_index)
+    if union_frames:
+        # A frame of a later layer joins an earlier one when the names match.
+        seen_lookups = [mask_lookups[base_spec.model_id]]
+        for spec in model_specs[1:]:
+            lookup = mask_lookups[spec.model_id]
+            for key in lookup[0]:
+                if not any(_resolve_aux_path_from_lookup(key, seen) is not None for seen in seen_lookups):
+                    frame_keys.add(key)
+            seen_lookups.append(lookup)
+
+    records: list[FrameRecord] = []
+    sorted_keys = sorted(frame_keys, key=natural_sort_key)
+    match_total = len(sorted_keys)
+    stage_enter("index.match", frames=match_total)
+    for index, key in enumerate(sorted_keys):
+        if cancel_check is not None and cancel_check():
+            raise BuildCancelledError("Build cancelled")
+        # Originals carry no mask suffix: look them up by the frame name too.
+        frame_key = (Path(key).parent / (naming.frame_stem(key) + Path(key).suffix)).as_posix()
+        model_mask_paths: dict[str, str] = {}
+        model_prob_paths: dict[str, str] = {}
+        model_original_paths: dict[str, str] = {}
+        missing_required_model = False
+        for spec in model_specs:
+            resolved = _resolve_aux_path_from_lookup(key, mask_lookups[spec.model_id])
             if resolved is None:
+                if union_frames:
+                    continue
                 missing_required_model = True
                 break
             model_mask_paths[spec.model_id] = str(resolved)
             model_prob_paths[spec.model_id] = _confidence_path(spec, key)
-        if missing_required_model:
+            original_lookup = original_lookups.get(spec.model_id)
+            if original_lookup is not None:
+                original_found = _resolve_aux_path_from_lookup(key, original_lookup)
+                if original_found is None and frame_key != key:
+                    original_found = _resolve_aux_path_from_lookup(frame_key, original_lookup)
+                if original_found is not None:
+                    model_original_paths[spec.model_id] = str(original_found)
+        if missing_required_model or not model_mask_paths:
             continue
-        # Originals carry no mask suffix: look them up by the frame name too.
-        frame_key = (Path(key).parent / (naming.frame_stem(key) + Path(key).suffix)).as_posix()
-        original_path = _resolve_aux_path_from_lookup(key, original_lookup)
-        if original_path is None and frame_key != key:
-            original_path = _resolve_aux_path_from_lookup(frame_key, original_lookup)
+        mask_paths = list(model_mask_paths.values())
+        # The frame's photo is the one of its first layer that has it.
+        original_path = next(iter(model_original_paths.values()), None)
         identity = build_frame_identity(frame_key, index)
         records.append(
             FrameRecord(
                 key=key,
                 display_name=Path(key).name,
                 identity=replace(identity, source_key=key),
-                first_path=str(base_index[key]),
-                second_path=str(model_mask_paths.get(model_specs[1].model_id, model_mask_paths[base_spec.model_id]))
-                if len(model_specs) > 1
-                else str(base_index[key]),
-                base_path=str(original_path) if original_path is not None else None,
-                original_path=str(original_path) if original_path is not None else None,
+                first_path=mask_paths[0],
+                second_path=mask_paths[1] if len(mask_paths) > 1 else mask_paths[0],
+                base_path=original_path,
+                original_path=original_path,
                 model_mask_paths=model_mask_paths,
                 model_prob_paths=model_prob_paths,
+                model_original_paths=model_original_paths,
             )
         )
         if progress_callback is not None and (

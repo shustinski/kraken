@@ -55,6 +55,9 @@ FOLDER_CHECKED_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 FOLDER_LABEL_ROLE = int(Qt.ItemDataRole.UserRole) + 2
 FOLDER_CONFIDENCE_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 FOLDER_CONFIDENCE_EXPANDED_ROLE = int(Qt.ItemDataRole.UserRole) + 4
+# Source photos and matrix width of one layer (each layer may be its own project).
+FOLDER_ORIGINAL_ROLE = int(Qt.ItemDataRole.UserRole) + 5
+FOLDER_FRAMES_PER_ROW_ROLE = int(Qt.ItemDataRole.UserRole) + 6
 
 DEFAULT_COMPARISON_MODE = ComparisonMode.DISAGREEMENT
 DEFAULT_CELL_SIZE = 15

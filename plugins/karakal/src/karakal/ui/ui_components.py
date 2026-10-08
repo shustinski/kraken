@@ -51,6 +51,8 @@ class FolderRowWidget(QWidget):
         remove_tooltip: str,
         move_up_tooltip: str,
         move_down_tooltip: str,
+        name_tooltip: str = "",
+        name_placeholder: str = "",
         confidence_label: str = "",
         original_label: str = "",
         original_display_text: str = "",
@@ -87,7 +89,8 @@ class FolderRowWidget(QWidget):
         self.name_edit = QLineEdit(display_text, self)
         self.name_edit.setMinimumWidth(0)
         self.name_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.name_edit.setToolTip(path_text)
+        self.name_edit.setToolTip(name_tooltip or path_text)
+        self.name_edit.setPlaceholderText(name_placeholder)
         self.name_edit.editingFinished.connect(lambda: on_label_changed(self.name_edit.text().strip()))
         main_layout.addWidget(self.name_edit, stretch=1)
 

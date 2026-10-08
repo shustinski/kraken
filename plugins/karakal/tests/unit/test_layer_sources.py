@@ -107,3 +107,32 @@ def test_matrix_shows_the_frames_and_width_of_the_chosen_layer(tmp_path, qtbot) 
     assert [Path(entry["original_path"]).name for entry in payload["folders"]] == ["a_src", "b_src"]
     assert [entry["frames_per_row"] for entry in payload["folders"]] == [0, 2]
     qtbot.waitUntil(lambda: presenter._worker_thread is None, timeout=30000)
+
+
+def test_layers_from_folders_with_one_name_get_their_parent_and_keep_a_given_name(tmp_path, qtbot) -> None:
+    from karakal.app.main_window import KarakalWidget
+    from karakal.ui.ui_constants import FOLDER_LABEL_ROLE
+
+    for project in ("night", "day", "other"):
+        _frames(tmp_path / project / ("masks" if project == "other" else "result"), ["F_0001.jpg"])
+    widget = KarakalWidget(settings=QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(widget)
+    presenter = widget._presenter
+    night = presenter._append_folder_item(tmp_path / "night" / "result", checked=True)
+    assert night.data(FOLDER_LABEL_ROLE) == "result"
+    day = presenter._append_folder_item(tmp_path / "day" / "result", checked=True)
+    other = presenter._append_folder_item(tmp_path / "other" / "masks", checked=True)
+    assert [item.data(FOLDER_LABEL_ROLE) for item in (night, day, other)] == ["night/result", "day/result", "masks"]
+
+    presenter._refresh_folder_rows()
+    presenter._set_folder_item_label(day, "Дневная сеть v2")
+    assert [spec.display_name for spec in presenter._checked_model_specs()] == [
+        "night/result",
+        "Дневная сеть v2",
+        "masks",
+    ]
+    combo = widget.grid_matrix_layer_combo
+    assert "Дневная сеть v2" in [combo.itemText(index) for index in range(combo.count())]
+    # A cleared name falls back to the default one.
+    presenter._set_folder_item_label(day, "")
+    assert day.data(FOLDER_LABEL_ROLE) == "day/result"

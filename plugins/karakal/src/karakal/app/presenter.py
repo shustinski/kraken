@@ -679,7 +679,7 @@ class KarakalPresenter(QObject):
                 folder_leaf = ""
                 try:
                     if spec.mask_folder is not None:
-                        folder_leaf = Path(spec.mask_folder).name
+                        folder_leaf = self._folder_layer_label(Path(spec.mask_folder), with_parent=True)
                 except Exception:
                     folder_leaf = ""
                 same_display = sum(
@@ -2115,6 +2115,33 @@ class KarakalPresenter(QObject):
             profile_index = self.polygon_compare_profile_combo.findData(DEFAULT_POLYGON_COMPARE_PROFILE)
         self.polygon_compare_profile_combo.setCurrentIndex(profile_index if profile_index >= 0 else 0)
 
+    @staticmethod
+    def _folder_layer_label(folder_path: Path, *, with_parent: bool) -> str:
+        """Default layer name: the folder name, with its parent when names repeat (P1/result)."""
+
+        folder_path = Path(folder_path)
+        leaf = folder_path.name or str(folder_path)
+        parent = folder_path.parent.name if folder_path.parent != folder_path else ""
+        return f"{parent}/{leaf}" if with_parent and parent else leaf
+
+    def _default_folder_label(self, folder_path: Path) -> str:
+        leaf = Path(folder_path).name.casefold()
+        repeated = any(
+            Path(str(self.folder_list.item(row).data(Qt.ItemDataRole.UserRole) or "")).name.casefold() == leaf
+            and str(self.folder_list.item(row).data(Qt.ItemDataRole.UserRole) or "") != str(folder_path)
+            for row in range(self.folder_list.count())
+        )
+        return self._folder_layer_label(folder_path, with_parent=repeated)
+
+    def _disambiguate_default_folder_labels(self) -> None:
+        """Layers still named after a folder name that repeats get the parent folder in the name."""
+
+        for row in range(self.folder_list.count()):
+            item = self.folder_list.item(row)
+            folder_path = Path(str(item.data(Qt.ItemDataRole.UserRole) or ""))
+            if str(item.data(FOLDER_LABEL_ROLE) or "") == self._folder_layer_label(folder_path, with_parent=False):
+                item.setData(FOLDER_LABEL_ROLE, self._default_folder_label(folder_path))
+
     def _append_folder_item(self, folder_path: Path, *, checked: bool) -> QListWidgetItem:
         folder_path = Path(folder_path)
         folder_path_text = str(folder_path)
@@ -2124,19 +2151,20 @@ class KarakalPresenter(QObject):
             if str(existing_item.data(Qt.ItemDataRole.UserRole) or "") == folder_path_text:
                 existing_item.setData(FOLDER_CHECKED_ROLE, bool(checked))
                 if not existing_item.data(FOLDER_LABEL_ROLE):
-                    existing_item.setData(FOLDER_LABEL_ROLE, folder_path.name)
+                    existing_item.setData(FOLDER_LABEL_ROLE, self._default_folder_label(folder_path))
                 return existing_item
         item = QListWidgetItem()
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
         item.setData(Qt.ItemDataRole.UserRole, folder_path_text)
         item.setData(FOLDER_CHECKED_ROLE, bool(checked))
-        item.setData(FOLDER_LABEL_ROLE, folder_path.name)
+        item.setData(FOLDER_LABEL_ROLE, self._default_folder_label(folder_path))
         item.setData(FOLDER_CONFIDENCE_ROLE, "")
         item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, False)
         item.setData(FOLDER_ORIGINAL_ROLE, "")
         item.setData(FOLDER_FRAMES_PER_ROW_ROLE, 0)
         item.setToolTip(folder_path_text)
         self.folder_list.addItem(item)
+        self._disambiguate_default_folder_labels()
         return item
 
     @staticmethod
@@ -2159,7 +2187,7 @@ class KarakalPresenter(QObject):
             for row in range(item_count):
                 item = self.folder_list.item(row)
                 path_text = str(item.data(Qt.ItemDataRole.UserRole))
-                display_text = str(item.data(FOLDER_LABEL_ROLE) or (Path(path_text).name or path_text))
+                display_text = str(item.data(FOLDER_LABEL_ROLE) or self._default_folder_label(Path(path_text)))
                 confidence_path_text = str(item.data(FOLDER_CONFIDENCE_ROLE) or "")
                 confidence_expanded = bool(item.data(FOLDER_CONFIDENCE_EXPANDED_ROLE))
                 confidence_display_text = self._compact_path_text(confidence_path_text)
@@ -2189,6 +2217,8 @@ class KarakalPresenter(QObject):
                     on_move_up=lambda _checked=False, item=item: self._move_folder_item(item, -1),
                     on_move_down=lambda _checked=False, item=item: self._move_folder_item(item, 1),
                     checkbox_tooltip="Use model in analytics",
+                    name_tooltip=self._t("folders.layer_name_tooltip", path=path_text),
+                    name_placeholder=self._t("folders.layer_name_placeholder"),
                     confidence_placeholder=self._t("folders.confidence_not_set"),
                     confidence_tooltip=confidence_path_text,
                     confidence_select_tooltip=self._t("folders.select_confidence"),
@@ -2235,9 +2265,14 @@ class KarakalPresenter(QObject):
 
     def _set_folder_item_label(self, item: QListWidgetItem, text: str) -> None:
         folder_path = Path(item.data(Qt.ItemDataRole.UserRole))
-        item.setData(FOLDER_LABEL_ROLE, text or folder_path.name)
+        label = text or self._default_folder_label(folder_path)
+        # Focus leaving the name field without a change must not rebuild the rows under the mouse.
+        if text and label == str(item.data(FOLDER_LABEL_ROLE) or ""):
+            return
+        item.setData(FOLDER_LABEL_ROLE, label)
         self._refresh_folder_rows()
         self._refresh_pair_matrix()
+        self._sync_grid_inspection_matrix_selector(self._current_tab_state())
 
     def _set_folder_item_confidence_folder(self, item: QListWidgetItem) -> None:
         if self._worker_thread is not None:

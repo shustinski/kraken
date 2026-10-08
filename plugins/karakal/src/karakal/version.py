@@ -13,7 +13,8 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   07 = matrix follows a larger debris size and switched-off types at once, stale-matrix warning;
   08 = masks and confidence maps in one folder, Settings menu with file suffixes;
   09 = split and unknown defect types, no edge-clip type;
-  10 = source frames and frames per row set per layer, layers of grid defects keep their own frames);
+  10 = source frames and frames per row set per layer, layers of grid defects keep their own frames;
+  11 = layer named with its parent folder when folder names repeat, rename hint);
 - beta N counts tester builds with the same algorithm and interface; scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -26,7 +27,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 10
+INTERFACE_NUMBER = 11
 BETA = 0
 
 

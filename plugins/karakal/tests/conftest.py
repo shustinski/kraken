@@ -12,9 +12,11 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _skip_update_checks(monkeypatch):
-    from karakal.app.main_window import QtUpdateController
+    """No background look into the real update folder; update tests call check() themselves."""
 
-    monkeypatch.setattr(QtUpdateController, "check_for_updates", lambda self, manual=False: None)
+    from karakal.app.update_flow import KarakalUpdateManager
+
+    monkeypatch.setattr(KarakalUpdateManager, "start", lambda self, first_check_delay_ms=1500: None)
 
 
 @pytest.fixture(autouse=True)

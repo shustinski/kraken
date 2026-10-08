@@ -8,7 +8,7 @@ import numpy as np
 from PyQt6.QtCore import QSettings
 from PyQt6.QtGui import QPixmap
 
-from karakal.app.main_window import KarakalMainWindow, QtUpdateController
+from karakal.app.main_window import KarakalMainWindow
 from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
 from karakal.core.image_io import _grayscale_array_to_qimage
 from karakal.plugin.plugin import KarakalPlugin
@@ -20,7 +20,6 @@ from karakal.ui.ui_constants import GRID_INSPECTION_PRESET_VALUES
 
 
 def test_grid_calibration_windows_open_and_close(tmp_path, qtbot, monkeypatch) -> None:
-    monkeypatch.setattr(QtUpdateController, "check_for_updates", lambda self, manual=False: None)
     mask_path = tmp_path / "mask.png"
     assert _grayscale_array_to_qimage(np.full((48, 48), 255, dtype=np.uint8)).save(str(mask_path))
     settings = QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat)
@@ -113,7 +112,6 @@ def test_details_open_close_twenty_times(tmp_path, qtbot, monkeypatch) -> None:
 
 
 def test_plugin_widget_shutdown_is_repeatable(qtbot, monkeypatch) -> None:
-    monkeypatch.setattr(QtUpdateController, "check_for_updates", lambda self, manual=False: None)
     plugin = KarakalPlugin()
     widget = plugin.create_widget(host=None)
     qtbot.addWidget(widget)
@@ -138,7 +136,6 @@ def test_calibration_arrows_stay_inside_selected_frames(qtbot) -> None:
 
 
 def test_cell_defects_block_collapses_to_its_title_and_remembers_it(tmp_path, qtbot, monkeypatch) -> None:
-    monkeypatch.setattr(QtUpdateController, "check_for_updates", lambda self, manual=False: None)
     settings = QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat)
     window = KarakalMainWindow(settings=settings)
     qtbot.addWidget(window)

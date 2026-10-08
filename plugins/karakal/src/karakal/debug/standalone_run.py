@@ -85,6 +85,19 @@ def _install_crash_logging() -> Path | None:
     return log_path
 
 
+def _offer_update_at_start() -> bool:
+    try:
+        if __package__ in {None, ""}:
+            ensure_package_parent_on_sys_path(__file__)
+            from karakal.app.update_flow import offer_update_at_start
+        else:
+            from ..app.update_flow import offer_update_at_start
+        return bool(offer_update_at_start())
+    except Exception as error:  # noqa: BLE001 - updates must never stop the program from starting
+        _LOGGER.warning("Update offer at start failed: %s", error)
+        return False
+
+
 def _load_main_window_class():
     if __package__ in {None, ""}:
         ensure_package_parent_on_sys_path(__file__)
@@ -119,6 +132,9 @@ def main() -> int:
     app.setApplicationName("Karakal")
     app.setApplicationDisplayName("Karakal")
     apply_karakal_icon()
+    # Every launch until the user updates: a newer version is offered before the main window.
+    if _offer_update_at_start():
+        return 0
     window_class = _load_main_window_class()
     window = window_class()
     window.show()

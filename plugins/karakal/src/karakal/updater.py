@@ -385,32 +385,38 @@ def _resolve_manifest_for_controller(channel: str, manual: bool) -> str | None:
     return str(Path(root) / normalize_update_channel(channel))
 
 
+def karakal_channel_manifest_location(channel: str, *, manual: bool, window=None) -> str | None:
+    """Folder of one channel in the update folder.
+
+    ``""``: no update folder in the build or settings; ``None``: the folder is not reachable
+    (a manual check says where the program looked).
+    """
+
+    root = load_karakal_update_root()
+    if not root:
+        return "" if manual else None
+    resolved_root = follow_update_root_moves(root, channel=channel, persist=True)
+    manifest_dir = Path(resolved_root) / normalize_update_channel(channel)
+    if not manifest_dir.is_dir():
+        # A missing folder is not "no updates": say where the program looked.
+        if manual:
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(
+                window,
+                KARAKAL_UPDATE_APP_NAME,
+                "Папка обновлений недоступна:\n"
+                f"{manifest_dir}\n\n"
+                "Проверьте, что диск или сетевая папка подключены. Папку обновлений "
+                "указывают при установке Каракала.",
+            )
+        return None
+    return str(manifest_dir)
+
+
 def create_karakal_update_controller(window) -> QtUpdateController:
     def resolve_manifest_url(channel: str, manual: bool) -> str | None:
-        root = load_karakal_update_root()
-        if not root:
-            if not manual:
-                return None
-            # Manual check without root: signal "not configured" via empty string,
-            # main window should prompt for folder before calling check.
-            return ""
-        resolved_root = follow_update_root_moves(root, channel=channel, persist=True)
-        manifest_dir = Path(resolved_root) / normalize_update_channel(channel)
-        if not manifest_dir.is_dir():
-            # A missing folder is not "no updates": say where the program looked.
-            if manual:
-                from PyQt6.QtWidgets import QMessageBox
-
-                QMessageBox.warning(
-                    window,
-                    KARAKAL_UPDATE_APP_NAME,
-                    "Папка обновлений недоступна:\n"
-                    f"{manifest_dir}\n\n"
-                    "Проверьте, что диск или сетевая папка подключены. Папку обновлений "
-                    "указывают при установке Каракала.",
-                )
-            return None
-        return str(manifest_dir)
+        return karakal_channel_manifest_location(channel, manual=manual, window=window)
 
     controller = QtUpdateController(
         window,

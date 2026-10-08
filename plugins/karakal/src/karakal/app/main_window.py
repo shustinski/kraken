@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -42,14 +42,14 @@ from kraken_core.analysis_protocol import AnalysisProfileKind
 
 from ..infra.services import KarakalSettingsService, default_settings
 from ..updater import (
-    QtUpdateController,
-    create_karakal_update_controller,
     karakal_changelog_path,
+    load_karakal_last_update_check,
     load_karakal_update_channel,
     load_karakal_update_client_config,
     load_karakal_update_root,
     save_karakal_update_channel,
 )
+from .update_flow import STATE_AVAILABLE, STATE_DOWNLOADING, KarakalUpdateManager
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
 from ..core.domain import BuildResult
@@ -451,26 +451,6 @@ class _CorrelationColumnWidget(QFrame):
         self.summary_label.hide()
 
 
-_LIVE_UPDATE_THREADS: set[QThread] = set()
-
-
-def _keep_update_thread(thread: QThread) -> None:
-    """Hold a running update check until it finishes. Do not delete it with the window."""
-
-    try:
-        thread.checked.disconnect()
-    except (TypeError, RuntimeError):
-        pass
-    try:
-        thread.finished.disconnect()
-    except (TypeError, RuntimeError):
-        pass
-    if not thread.isRunning():
-        return
-    _LIVE_UPDATE_THREADS.add(thread)
-    thread.finished.connect(lambda t=thread: _LIVE_UPDATE_THREADS.discard(t))
-
-
 class KarakalWidget(QWidget):
 
     """Embeddable widget for multi-model segmentation quality evaluation."""
@@ -492,7 +472,7 @@ class KarakalWidget(QWidget):
         set_current_language(language)
         self._i18n = Translator(language)
         self._t = self._i18n.tr
-        self._update_controller: QtUpdateController | None = None
+        self._update_manager: KarakalUpdateManager | None = None
 
         self._build_ui()
         self.profiling_dialog = ProfilingDialog(self._performance_config, self)
@@ -505,8 +485,16 @@ class KarakalWidget(QWidget):
         self._apply_build_profile()
         self._presenter._refresh_folder_rows()
         self._presenter._sync_action_buttons()
-        if self._update_controller is not None:
-            QTimer.singleShot(1500, lambda: self._update_controller.check_for_updates(manual=False))
+        self._update_manager = KarakalUpdateManager(
+            self,
+            lambda *args, **kwargs: self._t(*args, **kwargs),
+            is_busy=lambda: self._presenter._worker_thread is not None,
+            cancel_busy=self._presenter._request_cancel_build,
+            close_app=self._close_for_update,
+        )
+        self._update_manager.stateChanged.connect(lambda _state: self._sync_update_button())
+        self._sync_update_button()
+        self._update_manager.start()
 
     def _build_ui(self) -> None:
         root_layout = QVBoxLayout(self)
@@ -884,8 +872,8 @@ class KarakalWidget(QWidget):
         self.update_tool_button.setObjectName("updateToolButton")
         self.update_tool_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_tool_button.setText("Update")
-        self.update_tool_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.update_tool_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.update_tool_button.clicked.connect(self._on_update_button_clicked)
 
         self.language_toggle_button = QToolButton(self._menu_bar)
         self.language_toggle_button.setAutoRaise(True)
@@ -1266,10 +1254,9 @@ class KarakalWidget(QWidget):
         )
         save_diag_action.triggered.connect(self._save_diagnostics_bundle)
         diagnostics_menu.addAction(save_diag_action)
-        # Updates live only in the "Update" button at the top right corner.
-        self._update_controller = create_karakal_update_controller(self)
+        self._setup_help_menu()
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
-        self._setup_update_menu()
+        self._sync_update_button()
 
     def _show_file_naming_dialog(self) -> None:
         from ..ui.file_naming_dialog import FileNamingDialog
@@ -1331,13 +1318,14 @@ class KarakalWidget(QWidget):
         self._settings_service.save_performance_config(config)
         self._settings_service.sync()
 
-    def _setup_update_menu(self) -> None:
-        if self._update_controller is None:
-            self._update_controller = create_karakal_update_controller(self)
+    def _setup_help_menu(self) -> None:
+        """Help: update channel, what's new, any version, check now, about."""
+
         config = load_karakal_update_client_config()
         selected_channel = load_karakal_update_channel(config)
-        self._update_menu = QMenu(self.update_tool_button)
-        self._update_channel_menu = QMenu(self._t("update.channel"), self._update_menu)
+        help_menu = self._menu_bar.addMenu(self._t("menu.help"))
+        self._help_menu = help_menu
+        self._update_channel_menu = help_menu.addMenu(self._t("update.channel_menu"))
         self._update_channel_action_group = QActionGroup(self._update_channel_menu)
         self._update_channel_action_group.setExclusive(True)
         channel_labels = {
@@ -1355,22 +1343,77 @@ class KarakalWidget(QWidget):
             action.setChecked(normalized_channel == selected_channel)
             self._update_channel_action_group.addAction(action)
         self._update_channel_action_group.triggered.connect(self._on_update_channel_triggered)
-        self._update_menu.addMenu(self._update_channel_menu)
-        self._check_updates_action = self._update_menu.addAction(self._t("update.check"))
-        self._check_updates_action.triggered.connect(self._on_manual_update_check)
-        self._whats_new_action = self._update_menu.addAction(self._t("update.whats_new"))
+        self._whats_new_action = help_menu.addAction(self._t("update.whats_new"))
         self._whats_new_action.triggered.connect(self._show_whats_new)
-        self.update_tool_button.setMenu(self._update_menu)
-        self.update_tool_button.setText(self._t("update.button"))
+        self._choose_version_action = help_menu.addAction(self._t("update.choose_version"))
+        self._choose_version_action.triggered.connect(self._on_choose_version)
+        self._check_updates_action = help_menu.addAction(self._t("update.check"))
+        self._check_updates_action.triggered.connect(self._on_manual_update_check)
+        help_menu.addSeparator()
+        self._about_action = help_menu.addAction(self._t("menu.help.about"))
+        self._about_action.triggered.connect(self._show_about)
+
+    def _on_update_button_clicked(self, _checked: bool = False) -> None:
+        if self._update_manager is not None:
+            self._update_manager.on_button_clicked()
+
+    def _sync_update_button(self) -> None:
+        """Grey «Update»; blue «Update to X» when a newer version waits; percent while copying."""
+
+        button = getattr(self, "update_tool_button", None)
+        manager = self._update_manager
+        if button is None:
+            return
+        state = manager.state if manager is not None else ""
+        button.setText(manager.button_text() if manager is not None else self._t("update.button"))
+        button.setToolTip(manager.button_tooltip() if manager is not None else "")
+        button.setEnabled(state != STATE_DOWNLOADING)
+        if state in {STATE_AVAILABLE, STATE_DOWNLOADING}:
+            button.setStyleSheet(
+                "QToolButton#updateToolButton { background-color: #0e639c; color: #ffffff; "
+                "border: 1px solid #1177bb; border-radius: 4px; padding: 2px 10px; font-weight: 600; }"
+                "QToolButton#updateToolButton:hover { background-color: #1177bb; }"
+                "QToolButton#updateToolButton:disabled { background-color: #0b4f7d; color: #d7e6f3; }"
+            )
+        else:
+            button.setStyleSheet("")
+        # The menu bar sizes its corner widget once: give the longer «Update to X» its room.
+        corner = getattr(self, "_top_corner_widget", None)
+        menu_bar = getattr(self, "_menu_bar", None)
+        if corner is not None and menu_bar is not None and menu_bar.cornerWidget(Qt.Corner.TopRightCorner) is corner:
+            corner.adjustSize()
+            menu_bar.setCornerWidget(corner, Qt.Corner.TopRightCorner)
+            corner.show()
+
+    def _close_for_update(self) -> None:
+        """The installer replaces the program: close the standalone window, or this widget in Kraken."""
+
+        top = self.window()
+        (top if isinstance(top, KarakalMainWindow) else self).close()
 
     def _on_manual_update_check(self, _checked: bool = False) -> None:
-        if self._update_controller is None:
-            self._update_controller = create_karakal_update_controller(self)
-        if not load_karakal_update_root():
-            # The folder is baked into the build (update_client.json); users never pick it.
-            QMessageBox.information(self, self._t("dialog.info_title"), self._t("update.not_configured"))
-            return
-        self._update_controller.check_for_updates(manual=True)
+        if self._update_manager is not None:
+            self._update_manager.check(manual=True)
+
+    def _on_choose_version(self, _checked: bool = False) -> None:
+        if self._update_manager is not None:
+            self._update_manager.choose_version()
+
+    def _show_about(self, _checked: bool = False) -> None:
+        root = load_karakal_update_root() or self._t("update.about.no_folder")
+        last_check = load_karakal_last_update_check() or self._t("update.about.never")
+        channel = load_karakal_update_channel()
+        QMessageBox.about(
+            self,
+            self._t("menu.help.about"),
+            self._t(
+                "update.about.text",
+                version=display_version() or __version__,
+                channel=self._t(f"update.channel.{channel}") if channel in {"stable", "beta"} else channel,
+                folder=root,
+                last_check=last_check,
+            ),
+        )
 
     def _show_whats_new(self, _checked: bool = False) -> None:
         """History of changes bundled with this build (CHANGELOG.md)."""
@@ -1398,6 +1441,9 @@ class KarakalWidget(QWidget):
         channel = str(action.data() or "").strip().lower()
         if channel:
             save_karakal_update_channel(channel)
+            # Another channel may have another newest version: the button follows at once.
+            if self._update_manager is not None:
+                self._update_manager.check(manual=False)
 
     def _rebuild_mode_menu(self) -> None:
         self._mode_menu.clear()
@@ -2507,11 +2553,8 @@ class KarakalWidget(QWidget):
         self.matrix_tabs.tabBar().hide()
 
     def shutdown(self) -> None:
-        controller = getattr(self, "_update_controller", None)
-        thread = getattr(controller, "_check_thread", None) if controller is not None else None
-        if thread is not None:
-            _keep_update_thread(thread)
-            controller._check_thread = None
+        if self._update_manager is not None:
+            self._update_manager.stop()
         self._presenter.shutdown()
 
     def closeEvent(self, event) -> None:

@@ -7,7 +7,7 @@ from time import perf_counter
 
 from PyQt6.QtCore import QSettings
 
-from karakal.app.main_window import KarakalWidget, QtUpdateController
+from karakal.app.main_window import KarakalWidget
 from karakal.core.grid_anomaly import GridDamageAnalysisConfig, _grid_damage_cache_key
 from karakal.core.grid_calibration import (
     GridCalibration,
@@ -330,7 +330,6 @@ def test_zero_example_influence_is_kept() -> None:
 
 
 def test_widget_starts_with_broken_calibration(tmp_path, qtbot, monkeypatch) -> None:
-    monkeypatch.setattr(QtUpdateController, "check_for_updates", lambda self, manual=False: None)
     settings = QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat)
     settings.setValue(
         SETTINGS_GRID_CALIBRATION_KEY,

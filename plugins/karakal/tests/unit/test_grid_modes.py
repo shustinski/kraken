@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from PyQt6.QtCore import QSettings
 
-from karakal.app.main_window import KarakalMainWindow, QtUpdateController
+from karakal.app.main_window import KarakalMainWindow
 from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
 from karakal.core.grid_anomaly import GridDamageAnalysisConfig, detect_grid_cell_anomalies
 from karakal.core.grid_hints import source_cell_rule, source_mask_mismatches
@@ -96,7 +96,6 @@ def test_mode_a_presets_find_defects_and_keep_clean_grids(preset: str) -> None:
 
 
 def test_mode_a_windows_hide_markup_controls(tmp_path, qtbot, monkeypatch) -> None:
-    monkeypatch.setattr(QtUpdateController, "check_for_updates", lambda self, manual=False: None)
     mask_path = tmp_path / "mask.png"
     assert _grayscale_array_to_qimage(np.full((48, 48), 255, dtype=np.uint8)).save(str(mask_path))
     settings = QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat)

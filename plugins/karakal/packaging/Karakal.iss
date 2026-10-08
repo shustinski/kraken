@@ -27,6 +27,7 @@ Compression=lzma2
 SolidCompression=yes
 CloseApplications=yes
 UninstallDisplayIcon={app}\karakal.exe
+SetupIconFile={#KarakalRoot}\src\karakal\resources\icons\karakal.ico
 DisableProgramGroupPage=yes
 
 [Languages]

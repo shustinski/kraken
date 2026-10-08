@@ -3,7 +3,8 @@
 Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101-beta0:
 - the leading digits of the third part are the grid-defect algorithm version
   (core/algorithm_version.py), so a build tells which analysis it runs;
-- the last two digits are the interface version: +1 for every interface change
+- the last two digits are the interface version: +1 per published build that changes the
+  interface (several changes between two builds are one step), back to 01 with a new release
   (01 = gradient panel with drop rules, frame sets and set export;
   02 = drop by the colour scale only, no defect sets, set note and badge above the matrix;
   03 = export only from the drop panel, numbers next to their names, black frames for the rest of the run;
@@ -14,9 +15,13 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   08 = masks and confidence maps in one folder, Settings menu with file suffixes;
   09 = split and unknown defect types, no edge-clip type;
   10 = source frames and frames per row set per layer, layers of grid defects keep their own frames;
-  11 = layer named with its parent folder when folder names repeat, rename hint);
-- beta N counts tester builds with the same algorithm and interface; scripts/publish.ps1
+  11 = layer named with its parent folder when folder names repeat, rename hint; Update button:
+       grey, blue with a newer version, one click installs; offer at every start; channel,
+       what's new, other versions and About in the Help menu);
+- beta N counts tester builds with the same algorithm and interface (fixes only); scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
+
+Numbers are chosen once per published build (RELEASING.md, «Номер версии»).
 
 A stable release is the same number without the suffix, e.g. 0.2.9103: newer than any
 0.2.9103-betaN, older than the next 0.2.9104-beta0.

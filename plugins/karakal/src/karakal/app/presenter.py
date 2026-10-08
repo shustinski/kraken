@@ -2475,6 +2475,10 @@ class KarakalPresenter(QObject):
         max_limit = self._max_correlation_limit_for_state(state)
         value = self._correlation_limit_for_state(state)
         spinbox = getattr(state, "correlation_limit_spin", None)
+        if spinbox is not None and sip.isdeleted(spinbox):
+            # A deferred histogram update can outlive the window that owned the field.
+            state.correlation_limit_spin = None
+            spinbox = None
         if spinbox is not None:
             blocker = QSignalBlocker(spinbox)
             spinbox.setRange(1, max_limit)

@@ -7081,8 +7081,12 @@ class KarakalPresenter(QObject):
 
         def _refresh(s=state) -> None:
             self._grid_errors_refresh_pending = False
-            if s.widget in self._tab_states:
-                self._refresh_grid_inspection_errors_panel(s)
+            try:
+                if s.widget in self._tab_states:
+                    self._refresh_grid_inspection_errors_panel(s)
+            except RuntimeError:
+                # The window was closed before this deferred refresh ran.
+                return
 
         QTimer.singleShot(self.GRID_ERRORS_STREAM_REFRESH_MS, _refresh)
 

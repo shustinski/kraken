@@ -298,7 +298,7 @@ def test_unified_layer_ignores_confidence_verdicts() -> None:
             "binary": _frame(("filled_cell",), 0.4),
             "confidence": _frame(("broken_geometry",), 0.9),
             "comparison": _frame(("geometry_mismatch",), 0.8),
-            "derived_conflict": _frame(("class_conflict",), 0.7),
+            "pair_conflict": _frame(("class_conflict",), 0.7),
         },
     )
     assert merged is not None

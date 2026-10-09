@@ -8,7 +8,7 @@ import logging
 import re
 import shutil
 from bisect import bisect_right
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from heapq import heappush, heapreplace
 from math import isfinite
@@ -70,7 +70,6 @@ from ..core.analysis_profiles import (
     build_standalone_preflight,
 )
 from ..core.features import (
-    show_class_conflict,
     show_confidence_defects,
     show_grid_examples,
     show_other_mode_export,
@@ -96,6 +95,16 @@ from ..core.domain import (
     ModelSpec,
 )
 from ..core.grid_narrowing import GridNarrowing, can_narrow, default_run_debris_min_area, narrow_grid_frame_result
+from ..core.pair_conflict import (
+    CONFLICT_ANALYSIS_FLOOR_PX,
+    CONFLICT_MIN_AREA_PX,
+    CONFLICT_MIN_CELL_SHARE,
+    PAIR_CONFLICT_LAYER,
+    ConflictThresholds,
+    filter_class_conflicts,
+    pair_key,
+    parse_pair_key,
+)
 from ..core.grid_calibration import GridCalibration, GridCellExample, reference_from_normal_examples, reference_pairs
 from ..core.grid_anomaly import (
     DEBRIS_ANALYSIS_FLOOR_PX,
@@ -128,7 +137,6 @@ from ..core.metric_keys import (
 )
 from ..core.workers import (
     AnalyticsWorker,
-    DerivedConflictGridInspectionWorker,
     FrameIndexWorker,
     GridInspectionWorker,
     MultiModelGridInspectionWorker,
@@ -174,6 +182,7 @@ from ..ui.ui_constants import (
     FOLDER_CONFIDENCE_ROLE,
     FOLDER_CONFIDENCE_EXPANDED_ROLE,
     FOLDER_FRAMES_PER_ROW_ROLE,
+    FOLDER_CELL_CLASS_ROLE,
     FOLDER_ORIGINAL_ROLE,
     FOLDER_LABEL_ROLE,
     FOLDER_ROW_MIN_HEIGHT,
@@ -213,11 +222,26 @@ def _release_presenter_orphan(worker: object, thread: QThread) -> None:
 
 
 PAIR_ROLE_MODEL_IDS = int(Qt.ItemDataRole.UserRole) + 40
-PAIR_OPERATION_ORDER = ("xor", "iou", "dice", "and")
-PAIR_OPERATION_LABELS = {"xor": "XOR", "iou": "IoU", "dice": "Dice", "and": "AND"}
-PAIR_OPERATION_SHORT_LABELS = {"xor": "X", "iou": "I", "dice": "D", "and": "∩"}
+PAIR_OPERATION_ORDER = ("xor", "iou", "dice")
+PAIR_OPERATION_LABELS = {"xor": "XOR", "iou": "IoU", "dice": "Dice"}
+PAIR_OPERATION_SHORT_LABELS = {"xor": "X", "iou": "I", "dice": "D"}
 GRID_INSPECTION_ERROR_LIST_LIMIT = 1000
 _LOGGER = logging.getLogger(__name__)
+
+
+# Layer of ``grid_inspection_payloads_by_layer`` with the conflicts of the shown layer's pairs.
+PAIR_MARKS_LAYER = "pair_conflict"
+
+
+@dataclass(frozen=True, slots=True)
+class GridConflictPair:
+    """A layer of ones cells and a layer of zero cells of one object: a place both paint is an error."""
+
+    key: str
+    ones_id: str
+    zeros_id: str
+    ones_name: str
+    zeros_name: str
 
 
 def _example_pairs(value: object) -> tuple[tuple[str, tuple[tuple[str, float], ...]], ...]:
@@ -271,6 +295,10 @@ class KarakalPresenter(QObject):
         self._grid_custom_tuning = None
         self._grid_preview_tuning = None
         self._grid_debris_min_area_px = int(DEBRIS_MIN_AREA_PX)
+        self._pair_conflict_min_area_px = int(CONFLICT_MIN_AREA_PX)
+        self._pair_conflict_min_share = float(CONFLICT_MIN_CELL_SHARE)
+        self._grid_pair_buttons: dict[str, QPushButton] = {}
+        self._active_grid_pair_only = False
         # Slider drags and typing settle before the open frames are re-analyzed.
         self._grid_debris_refresh_timer = QTimer(self)
         self._grid_debris_refresh_timer.setSingleShot(True)
@@ -360,8 +388,6 @@ class KarakalPresenter(QObject):
         selected: list[str] = []
         for layer_key in keys:
             if layer_key == "confidence" and not show_confidence_defects():
-                continue
-            if layer_key == "derived_conflict" and not show_class_conflict():
                 continue
             checkbox = checks.get(str(layer_key)) if isinstance(checks, dict) else None
             if checkbox is None:
@@ -475,15 +501,13 @@ class KarakalPresenter(QObject):
         payload["debris_min_area_px"] = int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX))
         # The run keeps debris down to this size; the operator's size is applied on display.
         payload["debris_analysis_floor_px"] = float(DEBRIS_ANALYSIS_FLOOR_PX)
+        # Shown conflicts of ones/zeros pairs; applied on display, never a reason for a new run.
+        payload["conflict_min_area_px"] = int(getattr(self, "_pair_conflict_min_area_px", CONFLICT_MIN_AREA_PX))
+        payload["conflict_min_cell_share"] = float(getattr(self, "_pair_conflict_min_share", CONFLICT_MIN_CELL_SHARE))
         if tester_build():
             payload["enabled_error_types"] = [
-                item
-                for item in payload["enabled_error_types"]
-                if str(item) not in {"class_conflict", "conductor_zone"}
+                item for item in payload["enabled_error_types"] if str(item) != "conductor_zone"
             ]
-            payload["requested_layers"] = [
-                item for item in payload["requested_layers"] if str(item) != "derived_conflict"
-            ] or ["binary", "confidence"]
             return payload
         calibration = getattr(self, "_grid_calibration_confirmed", None)
         self._put_calibration_in_payload(payload, calibration)
@@ -522,6 +546,15 @@ class KarakalPresenter(QObject):
                 self._apply_grid_debris_min_area(int(values["debris_min_area_px"]))
             except (TypeError, ValueError):
                 pass
+        if values.get("conflict_min_area_px") is not None or values.get("conflict_min_cell_share") is not None:
+            try:
+                self._apply_pair_conflict_thresholds(
+                    int(values.get("conflict_min_area_px", self._pair_conflict_min_area_px)),
+                    float(values.get("conflict_min_cell_share", self._pair_conflict_min_share)),
+                    refresh=False,
+                )
+            except (TypeError, ValueError):
+                pass
         requested_layers = self._normalize_grid_layers(values.get("requested_layers"))
         layer_checks = getattr(self, "grid_layer_compute_checks", {}) or {}
         if isinstance(layer_checks, dict) and layer_checks:
@@ -545,7 +578,7 @@ class KarakalPresenter(QObject):
 
     @staticmethod
     def _normalize_grid_layers(value: object) -> tuple[str, ...]:
-        allowed = ("confidence", "binary", "derived_conflict")
+        allowed = ("confidence", "binary")
         allowed_set = set(allowed)
         if value is None:
             return ("confidence", "binary")
@@ -611,7 +644,7 @@ class KarakalPresenter(QObject):
 
     @staticmethod
     def _grid_inspection_layer_keys() -> tuple[str, ...]:
-        return ("confidence", "binary", "derived_conflict")
+        return ("confidence", "binary")
 
     def _grid_inspection_views(self) -> dict[str, object]:
         views = getattr(self, "grid_inspection_matrix_views", None)
@@ -644,7 +677,7 @@ class KarakalPresenter(QObject):
     # --- Matrix layer selector (per-model / all-layers) ---------------------
 
     def _grid_inspection_matrix_selection(self, state: ExtendMatrixTabState | None = None) -> str:
-        """Return the active matrix layer selection (model id or '__all__')."""
+        """Return the model id of the layer shown in the matrix."""
 
         state = state or self._current_tab_state()
         if state is None:
@@ -693,20 +726,25 @@ class KarakalPresenter(QObject):
                     # Disambiguate identical display names by folder leaf.
                     label = f"{label} ({folder_leaf})"
                 combo.addItem(label, model_id)
-        if combo.count() >= 2 or model_count >= 2:
-            combo.addItem(self._t("grid_matrix_layer.all_layers"), self.ALL_LAYERS_SELECTION_KEY)
-        target_selection = current_selection
-        if target_selection:
-            index = combo.findData(target_selection)
-            if index < 0:
-                target_selection = ""
-        if not target_selection:
-            if combo.count() > 1:
-                # Default to «Все слои» when there is more than one model checked.
-                index = combo.findData(self.ALL_LAYERS_SELECTION_KEY)
-                target_selection = self.ALL_LAYERS_SELECTION_KEY if index >= 0 else str(combo.itemData(0) or "")
-            elif combo.count() == 1:
-                target_selection = str(combo.itemData(0) or "")
+        pairs = tuple(
+            pair
+            for pair in self._grid_conflict_pairs()
+            if combo.findData(pair.ones_id) >= 0 and combo.findData(pair.zeros_id) >= 0
+        )
+        if pairs:
+            combo.insertSeparator(combo.count())
+            for pair in pairs:
+                combo.addItem(self._grid_pair_label(pair), pair.key)
+        # Every checked layer is computed; the matrix shows one: the row selected in the list,
+        # or a pair chosen in the pair table (then no row is selected).
+        current_item = self.folder_list.currentItem()
+        target_selection = (self._model_id_for_folder_item(current_item) or "") if current_item is not None else ""
+        if not target_selection or combo.findData(target_selection) < 0:
+            target_selection = current_selection
+        if target_selection and combo.findData(target_selection) < 0:
+            target_selection = ""
+        if not target_selection and combo.count() > 0:
+            target_selection = str(combo.itemData(0) or "")
         if target_selection:
             index = combo.findData(target_selection)
             if index >= 0:
@@ -716,17 +754,7 @@ class KarakalPresenter(QObject):
             row.setVisible(combo.count() >= 2)
         if state is not None and target_selection:
             state.grid_inspection_matrix_selection = target_selection
-
-    def _retranslate_grid_matrix_layer_combo(self) -> None:
-        combo = getattr(self._view, "grid_matrix_layer_combo", None)
-        if combo is None:
-            return
-        for index in range(combo.count()):
-            if str(combo.itemData(index) or "") == self.ALL_LAYERS_SELECTION_KEY:
-                blocker = QSignalBlocker(combo)
-                combo.setItemText(index, self._t("grid_matrix_layer.all_layers"))
-                del blocker
-                break
+        self._sync_grid_pair_table_selection()
 
     def _on_grid_matrix_layer_selection_changed(self, *_args) -> None:
         combo = getattr(self._view, "grid_matrix_layer_combo", None)
@@ -739,14 +767,234 @@ class KarakalPresenter(QObject):
         if not selection or selection == getattr(state, "grid_inspection_matrix_selection", ""):
             return
         state.grid_inspection_matrix_selection = selection
-        if selection != self.ALL_LAYERS_SELECTION_KEY:
+        pair = self._grid_pair(selection)
+        if pair is None:
             state.grid_inspection_model_id = selection
             self._set_details_preferred_model_id(selection)
+            item = self._folder_item_for_model_id(selection)
+            if item is not None and item is not self.folder_list.currentItem():
+                # The list frame and the matrix always point at the same layer.
+                self.folder_list.setCurrentItem(item)
         else:
-            self._set_details_preferred_model_id(state.grid_inspection_model_id)
+            # A pair is shown on its ones layer; no layer row keeps the frame.
+            self._set_details_preferred_model_id(pair.ones_id)
+            if self.folder_list.currentItem() is not None:
+                self.folder_list.selectionModel().clearCurrentIndex()
+                self.folder_list.clearSelection()
+        self._sync_grid_pair_table_selection()
         self._refresh_matrix_layer_layout(state)
         # Layer switch must be instant: no worker, just re-project stored payloads.
         self._apply_grid_inspection_active_layer_view(state, streaming=False)
+        if pair is not None:
+            self._ensure_grid_pair_computed(state, pair)
+
+    # --- Ones/zeros pairs -----------------------------------------------------------
+
+    def _folder_cell_class(self, model_id: str) -> str:
+        item = self._folder_item_for_model_id(model_id)
+        return str(item.data(FOLDER_CELL_CLASS_ROLE) or "") if item is not None else ""
+
+    def _grid_pair_unavailable_reason(self, spec_a: ModelSpec, spec_b: ModelSpec) -> str:
+        """Empty when the two layers make a ones/zeros pair; otherwise the i18n key of why not."""
+
+        classes = {self._folder_cell_class(str(spec_a.model_id)), self._folder_cell_class(str(spec_b.model_id))}
+        if classes != {"ones", "zeros"}:
+            return "pairs.unavailable.classes"
+        originals = [spec.original_folder for spec in (spec_a, spec_b)]
+        if all(folder is not None for folder in originals):
+            try:
+                same = Path(originals[0]).resolve() == Path(originals[1]).resolve()
+            except OSError:
+                same = str(originals[0]) == str(originals[1])
+            if not same:
+                return "pairs.unavailable.projects"
+        return ""
+
+    def _grid_conflict_pairs(self) -> tuple[GridConflictPair, ...]:
+        """Every checked ones layer with every checked zeros layer of the same source frames."""
+
+        specs = self._active_pair_model_specs()
+        pairs: list[GridConflictPair] = []
+        for ones in specs:
+            if self._folder_cell_class(str(ones.model_id)) != "ones":
+                continue
+            for zeros in specs:
+                if self._folder_cell_class(str(zeros.model_id)) != "zeros":
+                    continue
+                if self._grid_pair_unavailable_reason(ones, zeros):
+                    continue
+                pairs.append(
+                    GridConflictPair(
+                        key=pair_key(str(ones.model_id), str(zeros.model_id)),
+                        ones_id=str(ones.model_id),
+                        zeros_id=str(zeros.model_id),
+                        ones_name=str(ones.display_name or ones.model_id),
+                        zeros_name=str(zeros.display_name or zeros.model_id),
+                    )
+                )
+        return tuple(pairs)
+
+    def _grid_pair(self, key: object) -> GridConflictPair | None:
+        if parse_pair_key(key) is None:
+            return None
+        return next((pair for pair in self._grid_conflict_pairs() if pair.key == str(key)), None)
+
+    def _grid_pair_label(self, pair: GridConflictPair) -> str:
+        return self._t("pairs.label", ones=pair.ones_name, zeros=pair.zeros_name)
+
+    def _shown_grid_pair(self, state: ExtendMatrixTabState | None) -> GridConflictPair | None:
+        return self._grid_pair(self._grid_inspection_matrix_selection(state)) if state is not None else None
+
+    def _pair_conflict_thresholds(self) -> ConflictThresholds:
+        return ConflictThresholds(
+            min_area_px=int(getattr(self, "_pair_conflict_min_area_px", CONFLICT_MIN_AREA_PX)),
+            min_cell_share=float(getattr(self, "_pair_conflict_min_share", CONFLICT_MIN_CELL_SHARE)),
+        ).normalized()
+
+    def _filtered_pair_conflicts(
+        self,
+        state: ExtendMatrixTabState,
+        key: str,
+        *,
+        changed_keys: set[str] | None = None,
+    ) -> dict[str, object]:
+        """Conflicts of one pair at the live thresholds; streamed batches only filter their frames."""
+
+        raw = (getattr(state, "grid_inspection_payloads_by_pair", {}) or {}).get(str(key)) or {}
+        thresholds = self._pair_conflict_thresholds()
+        cache = state.grid_inspection_pair_filtered
+        cached = cache.get(str(key))
+        if cached is not None and cached[0] == thresholds and cached[1] is raw:
+            filtered = cached[2]
+            frames = changed_keys if changed_keys is not None else (set(raw) - set(filtered))
+            for frame_key in frames:
+                if frame_key in raw:
+                    filtered[frame_key] = filter_class_conflicts(raw[frame_key], thresholds)
+            return filtered
+        filtered = {frame_key: filter_class_conflicts(result, thresholds) for frame_key, result in raw.items()}
+        cache[str(key)] = (thresholds, raw, filtered)
+        return filtered
+
+    def _layer_conflict_marks(
+        self,
+        state: ExtendMatrixTabState,
+        model_id: str,
+        frame_keys=None,
+    ) -> dict[str, object]:
+        """Conflicts of the pairs a layer belongs to, named after the other network of each pair."""
+
+        marks: dict[str, object] = {}
+        for pair in self._grid_conflict_pairs():
+            if model_id not in (pair.ones_id, pair.zeros_id):
+                continue
+            other = pair.zeros_name if model_id == pair.ones_id else pair.ones_name
+            label = self._t("pairs.conflict_with", name=other)
+            filtered = self._filtered_pair_conflicts(state, pair.key)
+            keys = filtered.keys() if frame_keys is None else (key for key in frame_keys if key in filtered)
+            for frame_key in keys:
+                result = filtered[frame_key]
+                if not getattr(result, "per_cell_results", ()):
+                    continue
+                labelled = replace(
+                    result,
+                    per_cell_results=tuple(
+                        replace(cell, feature_cluster_label=label) for cell in result.per_cell_results
+                    ),
+                )
+                previous = marks.get(frame_key)
+                if isinstance(previous, GridFrameAnalysisResult):
+                    labelled = replace(
+                        previous, per_cell_results=previous.per_cell_results + labelled.per_cell_results
+                    )
+                marks[frame_key] = labelled
+        return marks
+
+    def _grid_pair_conflict_frame_count(self, state: ExtendMatrixTabState | None, pair: GridConflictPair) -> int | None:
+        """Frames of the pair with a shown conflict; None while the pair is not computed."""
+
+        if state is None or not (getattr(state, "grid_inspection_payloads_by_pair", {}) or {}).get(pair.key):
+            return None
+        filtered = self._filtered_pair_conflicts(state, pair.key)
+        return sum(1 for result in filtered.values() if getattr(result, "per_cell_results", ()))
+
+    def _grid_pair_common_frame_count(self, state: ExtendMatrixTabState | None, pair: GridConflictPair) -> int:
+        if state is None:
+            return 0
+        return sum(
+            1
+            for record in tuple(getattr(state.build_result, "records", ()) or ())
+            if (record.model_mask_paths or {}).get(pair.ones_id) and (record.model_mask_paths or {}).get(pair.zeros_id)
+        )
+
+    def _apply_pair_conflict_thresholds(self, min_area_px: int, min_share: float, *, refresh: bool = True) -> None:
+        self._pair_conflict_min_area_px = max(int(CONFLICT_ANALYSIS_FLOOR_PX), int(min_area_px))
+        self._pair_conflict_min_share = float(min(1.0, max(0.0, float(min_share))))
+        view = self._view
+        for control, value in (
+            (getattr(view, "grid_conflict_min_area_spin", None), self._pair_conflict_min_area_px),
+            (getattr(view, "grid_conflict_min_share_spin", None), int(round(self._pair_conflict_min_share * 100.0))),
+        ):
+            if control is not None and control.value() != value:
+                blocker = QSignalBlocker(control)
+                control.setValue(value)
+                del blocker
+        if not refresh:
+            return
+        state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        if state is not None and (
+            getattr(state, "grid_inspection_payloads_by_pair", None) or getattr(state, "grid_inspection_payloads_by_model", None)
+        ):
+            self._apply_grid_inspection_active_layer_view(state, streaming=False)
+            self._refresh_grid_pair_details(state)
+        self._refresh_pair_matrix()
+
+    def _on_pair_conflict_thresholds_changed(self, *_args) -> None:
+        view = self._view
+        area = getattr(view, "grid_conflict_min_area_spin", None)
+        share = getattr(view, "grid_conflict_min_share_spin", None)
+        self._apply_pair_conflict_thresholds(
+            int(area.value()) if area is not None else self._pair_conflict_min_area_px,
+            (float(share.value()) / 100.0) if share is not None else self._pair_conflict_min_share,
+        )
+        self._persist_state()
+
+    def _select_grid_pair(self, key: str) -> None:
+        combo = getattr(self._view, "grid_matrix_layer_combo", None)
+        state = self._current_tab_state()
+        if combo is None or state is None:
+            return
+        self._sync_grid_inspection_matrix_selector(state)
+        index = combo.findData(str(key))
+        if index < 0:
+            return
+        if combo.currentIndex() != index:
+            combo.setCurrentIndex(index)
+        else:
+            self._ensure_grid_pair_computed(state, self._grid_pair(key))
+
+    def _sync_grid_pair_table_selection(self) -> None:
+        state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        shown = self._grid_inspection_matrix_selection(state) if state is not None else ""
+        for key, button in tuple((getattr(self, "_grid_pair_buttons", {}) or {}).items()):
+            try:
+                selected = key == shown
+                if bool(button.property("selected")) != selected:
+                    button.setProperty("selected", selected)
+                    button.style().unpolish(button)
+                    button.style().polish(button)
+            except RuntimeError:
+                continue
+
+    def _ensure_grid_pair_computed(self, state: ExtendMatrixTabState, pair: GridConflictPair | None) -> None:
+        """A pair chosen after the run (cells marked later) gets a short pass of its own."""
+
+        if pair is None or self._worker_thread is not None:
+            return
+        if (getattr(state, "grid_inspection_payloads_by_pair", {}) or {}).get(pair.key):
+            return
+        if not self._grid_pair_common_frame_count(state, pair):
+            return
+        self._start_grid_pair_conflict_pass(state, (pair,))
 
     def _apply_grid_inspection_active_layer_view(
         self,
@@ -763,24 +1011,18 @@ class KarakalPresenter(QObject):
         if not selection:
             # Legacy single-model path: nothing to project.
             return
+        if self._shown_grid_pair(state) is not None:
+            self._apply_grid_pair_view(state, streaming=streaming)
+            return
         by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
         layers: dict[str, dict[str, object]] = {key: {} for key in self._grid_inspection_layer_keys()}
-        if selection == self.ALL_LAYERS_SELECTION_KEY:
-            merged_confidence = self._build_all_layers_payloads(state, layer="confidence")
-            merged_binary = self._build_all_layers_payloads(state, layer="binary")
-            if merged_confidence:
-                layers["confidence"] = dict(merged_confidence)
-            if merged_binary:
-                layers["binary"] = dict(merged_binary)
-            elif merged_confidence:
-                # Some models only produced confidence: fall back so heat map still lights.
-                layers["binary"] = dict(merged_confidence)
-        else:
-            stored = by_model.get(selection) or {}
-            for layer_key in self._grid_inspection_layer_keys():
-                payload = stored.get(layer_key)
-                if payload:
-                    layers[layer_key] = dict(payload)
+        stored = by_model.get(selection) or {}
+        for layer_key in self._grid_inspection_layer_keys():
+            payload = stored.get(layer_key)
+            if payload:
+                layers[layer_key] = dict(payload)
+        # Conflicts with the other network of a pair are marked on the layer itself too.
+        layers[PAIR_MARKS_LAYER] = self._layer_conflict_marks(state, selection)
         state.grid_inspection_payloads_by_layer = layers
         active_layer = str(getattr(state, "grid_inspection_layer", "") or "")
         available_layers = [key for key in self._grid_inspection_layer_keys() if layers.get(key)]
@@ -817,6 +1059,59 @@ class KarakalPresenter(QObject):
             self.grid_inspection_matrix_view.viewport().update()
         self._refresh_grid_inspection_errors_panel(state)
         self._refresh_open_details_class_conflict(state)
+
+    def _apply_grid_pair_view(self, state: ExtendMatrixTabState, *, streaming: bool) -> None:
+        """The matrix of a ones/zeros pair: its common frames, coloured by their conflicts."""
+
+        conflicts = dict(self._filtered_pair_conflicts(state, self._grid_inspection_matrix_selection(state)))
+        layers: dict[str, dict[str, object]] = {key: {} for key in self._grid_inspection_layer_keys()}
+        # The conflicts stand in for the shown layer: lists, frame window and export read it.
+        layers["binary"] = conflicts
+        state.grid_inspection_payloads_by_layer = layers
+        state.grid_inspection_layer = "binary"
+        state.grid_inspection_payload_by_key = dict(conflicts)
+        state.grid_inspection_results_ready = bool(conflicts)
+        self._sync_grid_inspection_layer_tabs(state)
+        views = self._grid_inspection_views()
+        for view in views.values():
+            view.set_grid_inspection_payloads(conflicts, enabled=True)
+            if not streaming:
+                view.finalize_grid_inspection_payloads()
+        if self._current_app_mode() == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
+            self.grid_inspection_matrix_view.viewport().update()
+        self._refresh_grid_inspection_errors_panel(state)
+        self._refresh_grid_pair_details(state)
+
+    def _stream_grid_pair_keys(self, state: ExtendMatrixTabState, changed: dict[str, set[str]]) -> None:
+        """Show the conflicts of one streamed batch on the pair or on the shown layer of the pair."""
+
+        selection = self._grid_inspection_matrix_selection(state)
+        views = self._grid_inspection_views()
+        touched = False
+        for key, frame_keys in changed.items():
+            filtered = self._filtered_pair_conflicts(state, key, changed_keys=frame_keys)
+            pair = parse_pair_key(key)
+            if selection == key:
+                if not state.grid_inspection_payload_by_key:
+                    self._apply_grid_pair_view(state, streaming=True)
+                    continue
+                batch = {frame: filtered[frame] for frame in frame_keys if frame in filtered}
+                state.grid_inspection_payloads_by_layer.setdefault("binary", {}).update(batch)
+                state.grid_inspection_payload_by_key.update(batch)
+                state.grid_inspection_results_ready = True
+                for view in views.values():
+                    view.update_grid_inspection_payloads(batch)
+                touched = True
+            elif pair is not None and selection in pair:
+                marks = self._layer_conflict_marks(state, selection, frame_keys)
+                if marks:
+                    state.grid_inspection_payloads_by_layer.setdefault(PAIR_MARKS_LAYER, {}).update(marks)
+                    touched = True
+        if touched:
+            if self._current_app_mode() == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
+                self.grid_inspection_matrix_view.viewport().update()
+            self._schedule_grid_inspection_errors_panel_refresh(state)
+            self._refresh_open_details_class_conflict(state)
 
     def _on_grid_inspection_layer_changed(self, layer_key: str) -> None:
         state = self._current_tab_state()
@@ -876,18 +1171,12 @@ class KarakalPresenter(QObject):
             )
             available["confidence"] = ("confidence" in requested) and (has_confidence or has_binary)
             available["binary"] = ("binary" in requested) and has_binary
-            model_count = len(tuple(state.build_result.model_specs or ()))
-            available["derived_conflict"] = ("derived_conflict" in requested) and model_count >= 2
-        if not show_class_conflict():
-            available["derived_conflict"] = False
         if not any(available.values()):
             available["confidence"] = True
         for index, key in enumerate(keys):
             if index >= tabs.count():
                 break
             tabs.setTabEnabled(index, bool(available.get(key, False)))
-            if not show_class_conflict() and key == "derived_conflict":
-                tabs.setTabVisible(index, False)
         current_key = (
             str(getattr(state, "grid_inspection_layer", "confidence") or "confidence")
             if state is not None
@@ -1291,15 +1580,14 @@ class KarakalPresenter(QObject):
             self._grid_inspection_tuning_group.setVisible(self._current_app_mode() == "grid_inspection")
         self._sync_grid_reference_controls(state if is_grid_inspection_mode else None)
         if hasattr(self, "pair_matrix_group"):
-            show_pairs = show_pair_matrices() and (
-                (
-                    context.analysis_mode == INTER_MODEL_ANALYSIS_MODE
-                    and self._analysis_profile == AnalysisProfileKind.MODEL_COMPARISON
-                )
-                or (
-                    self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS
-                    and len(self._checked_model_specs()) >= 2
-                )
+            show_pairs = (
+                show_pair_matrices()
+                and context.analysis_mode == INTER_MODEL_ANALYSIS_MODE
+                and self._analysis_profile == AnalysisProfileKind.MODEL_COMPARISON
+            ) or (
+                # Ones/zeros pairs are part of the tester build too.
+                self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS
+                and len(self._checked_model_specs()) >= 2
             )
             self.pair_matrix_group.setVisible(show_pairs)
             if show_pairs:
@@ -1349,25 +1637,34 @@ class KarakalPresenter(QObject):
     # --- Per-layer matrix: own frames and own width ------------------------------
 
     def _matrix_layer_model_id(self, state: ExtendMatrixTabState | None) -> str:
-        """Model id of the shown matrix layer; empty for «All layers» or no choice."""
+        """Model id of the shown matrix layer (of its ones layer for a pair); empty when none is chosen."""
 
         if state is None:
             return ""
         selection = self._grid_inspection_matrix_selection(state)
-        return "" if selection == self.ALL_LAYERS_SELECTION_KEY else selection
+        pair = parse_pair_key(selection)
+        return pair[0] if pair is not None else selection
 
     def _matrix_layer_record_keys(self, state: ExtendMatrixTabState) -> set[str] | None:
-        """Frames of the shown layer; None when every frame of the run belongs to it."""
+        """Frames of the shown layer (common frames of a pair); None when every frame of the run belongs to it."""
 
-        model_id = self._matrix_layer_model_id(state)
-        if not model_id:
+        selection = self._grid_inspection_matrix_selection(state)
+        pair = parse_pair_key(selection)
+        if pair is None and not selection:
             return None
         records = tuple(state.build_result.records or ())
-        keys = {
-            record.key
-            for record in records
-            if (record.model_mask_paths or {}).get(model_id) or (record.model_prob_paths or {}).get(model_id)
-        }
+        if pair is not None:
+            keys = {
+                record.key
+                for record in records
+                if all((record.model_mask_paths or {}).get(model_id) for model_id in pair)
+            }
+        else:
+            keys = {
+                record.key
+                for record in records
+                if (record.model_mask_paths or {}).get(selection) or (record.model_prob_paths or {}).get(selection)
+            }
         if not keys or len(keys) == len(records):
             return None
         return keys
@@ -1387,7 +1684,7 @@ class KarakalPresenter(QObject):
     def _matrix_layer_signature(self, state: ExtendMatrixTabState) -> tuple[object, ...]:
         layer_keys = self._matrix_layer_record_keys(state)
         return (
-            self._matrix_layer_model_id(state) if layer_keys is not None else "",
+            self._grid_inspection_matrix_selection(state) if layer_keys is not None else "",
             int(self._matrix_layout_config(state).frames_per_row),
         )
 
@@ -1426,8 +1723,10 @@ class KarakalPresenter(QObject):
 
     def _analysis_preflight_signature_value(self) -> tuple[object, ...]:
         specs = self._checked_model_specs()
+        naming = self._frame_naming()
         return (
             self._analysis_profile.value,
+            (naming.mask_suffix, naming.confidence_suffix),
             tuple(
                 (
                     spec.model_id,
@@ -1446,6 +1745,7 @@ class KarakalPresenter(QObject):
                 self._analysis_profile,
                 None,
                 self._checked_model_specs(),
+                self._frame_naming(),
             )
             self._preflight_signature = signature
         report = self._preflight_report
@@ -1518,7 +1818,8 @@ class KarakalPresenter(QObject):
 
     def _pair_operations_for_profile(self) -> tuple[str, ...]:
         if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
-            return ("and",)
+            # Defect search pairs are ones/zeros layers (see _grid_conflict_pairs), not operations.
+            return ()
         return ("xor", "iou", "dice")
 
     def _ensure_default_pair_selection(self, specs: tuple[ModelSpec, ...]) -> None:
@@ -1562,6 +1863,11 @@ class KarakalPresenter(QObject):
     def _refresh_pair_matrix(self) -> None:
         if not hasattr(self, "pair_matrix_table"):
             return
+        if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
+            self._refresh_grid_pair_table()
+            return
+        if hasattr(self, "active_pair_list"):
+            self.active_pair_list.setVisible(True)
         specs = self._active_pair_model_specs()
         self._ensure_default_pair_selection(specs)
         if hasattr(self, "pair_matrix_group"):
@@ -1663,13 +1969,81 @@ class KarakalPresenter(QObject):
             return "Combined Risk"
         return "Dice"
 
+    def _refresh_grid_pair_table(self) -> None:
+        """Defect search: a cell per two layers; a ones/zeros pair shows its conflict frames and is chosen by a click."""
+
+        table = self.pair_matrix_table
+        specs = self._active_pair_model_specs()
+        state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        if hasattr(self, "pair_matrix_group"):
+            self.pair_matrix_group.setTitle(self._t("pairs.grid_title"))
+        if hasattr(self, "active_pair_list"):
+            self.active_pair_list.setVisible(False)
+        pairs = {(pair.ones_id, pair.zeros_id): pair for pair in self._grid_conflict_pairs()}
+        self._grid_pair_buttons = {}
+        self._pair_matrix_guard = True
+        try:
+            self._pair_operation_buttons.clear()
+            table.clear()
+            row_specs = specs[:-1]
+            column_specs = specs[1:]
+            table.setRowCount(len(row_specs))
+            table.setColumnCount(len(column_specs))
+            table.setHorizontalHeaderLabels(
+                [self._pair_header_label(index + 1, spec) for index, spec in enumerate(column_specs)]
+            )
+            table.setVerticalHeaderLabels([self._pair_header_label(index, spec) for index, spec in enumerate(row_specs)])
+            for row, spec_a in enumerate(row_specs):
+                for column, spec_b in enumerate(column_specs):
+                    if column + 1 <= row:
+                        item = QTableWidgetItem("" if column + 1 < row else "-")
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                        table.setItem(row, column, item)
+                        continue
+                    ids = (str(spec_a.model_id), str(spec_b.model_id))
+                    pair = pairs.get(ids) or pairs.get((ids[1], ids[0]))
+                    common = self._grid_pair_common_frame_count(state, pair) if pair is not None else 0
+                    if pair is None or (state is not None and state.build_result.records and not common):
+                        reason = (
+                            self._grid_pair_unavailable_reason(spec_a, spec_b) if pair is None else "pairs.unavailable.no_common"
+                        )
+                        item = QTableWidgetItem("—")
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        item.setToolTip(self._t(reason or "pairs.unavailable.classes"))
+                        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                        item.setForeground(QBrush(QColor("#6f7a86")))
+                        table.setItem(row, column, item)
+                        continue
+                    count = self._grid_pair_conflict_frame_count(state, pair)
+                    button = QPushButton(
+                        self._t("pairs.conflict_cell_pending")
+                        if count is None
+                        else self._t("pairs.conflict_cell", count=count),
+                        table,
+                    )
+                    button.setProperty("pairCell", True)
+                    button.setProperty("selected", False)
+                    button.setToolTip(
+                        self._t("pairs.conflict_pending_tooltip", ones=pair.ones_name, zeros=pair.zeros_name)
+                        if count is None
+                        else self._t(
+                            "pairs.conflict_tooltip", ones=pair.ones_name, zeros=pair.zeros_name, count=count, total=common
+                        )
+                    )
+                    button.clicked.connect(lambda _checked=False, key=pair.key: self._select_grid_pair(key))
+                    self._grid_pair_buttons[pair.key] = button
+                    table.setCellWidget(row, column, button)
+            table.resizeRowsToContents()
+            header_height = max(28, table.horizontalHeader().height())
+            table.setMinimumHeight(min(520, max(100, header_height + 28 * max(1, len(row_specs)) + 34)))
+        finally:
+            self._pair_matrix_guard = False
+        self._sync_grid_pair_table_selection()
+
     def _pair_matrix_title(self) -> str:
         if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
-            pair_count = len(self._selected_grid_conflict_pairs())
-            return (
-                f"{self._t('pairs.group')} - AND"
-                f" · {self._t('pairs.summary', count=pair_count)}"
-            )
+            return self._t("pairs.grid_title")
         target = self._selected_comparison_target()
         target_label = {
             ComparisonTarget.OUTPUTS: self._t("comparison_target.outputs"),
@@ -1681,17 +2055,6 @@ class KarakalPresenter(QObject):
             f"{self._t('pairs.group')} - {target_label} / {self._pair_target_metric_label()}"
             f" · {self._t('pairs.summary', count=pair_count)}"
         )
-
-    def _selected_grid_conflict_pairs(self) -> tuple[ComparisonPairSelection, ...]:
-        return tuple(
-            ComparisonPairSelection(pair.model_a_id, pair.model_b_id, ("and",))
-            for pair in self._selected_comparison_pairs()
-            if "and" in tuple(pair.operations)
-        )
-
-    def _selected_grid_xor_pairs(self) -> tuple[ComparisonPairSelection, ...]:
-        # Back-compat alias for earlier XOR naming.
-        return self._selected_grid_conflict_pairs()
 
     def _selected_comparison_pairs(self) -> tuple[ComparisonPairSelection, ...]:
         specs = self._active_pair_model_specs()
@@ -1965,7 +2328,26 @@ class KarakalPresenter(QObject):
             return f"model_confidence::{model_id}"
         return current_metric
 
+    def _on_folder_current_item_changed(self, current: QListWidgetItem | None, _previous=None) -> None:
+        """Defect search: the matrix shows the layer under the list frame (not the checked ones).
+
+        Every checked layer is computed; switching only re-projects stored results, so it
+        also works while a run is going.
+        """
+
+        self._sync_folder_row_selection()
+        if current is None or self._current_app_mode() != "grid_inspection":
+            return
+        combo = getattr(self._view, "grid_matrix_layer_combo", None)
+        model_id = self._model_id_for_folder_item(current) or ""
+        index = combo.findData(model_id) if combo is not None and model_id else -1
+        if index >= 0 and combo.currentIndex() != index:
+            combo.setCurrentIndex(index)
+
     def _on_folder_item_clicked(self, item: QListWidgetItem) -> None:
+        if self._current_app_mode() == "grid_inspection":
+            # The layer follows the list frame (_on_folder_current_item_changed); never recompute here.
+            return
         state = self._current_tab_state()
         if state is None or self._worker_thread is not None:
             return
@@ -1975,21 +2357,6 @@ class KarakalPresenter(QObject):
             return
         if item is not self.folder_list.currentItem():
             self.folder_list.setCurrentItem(item)
-        if self._current_app_mode() == "grid_inspection":
-            state.grid_inspection_model_id = str(model_id)
-            self._set_details_preferred_model_id(str(model_id))
-            # Match the folder click to the matrix switcher when the model is known;
-            # never recompute on a folder click in this mode.
-            combo = getattr(self._view, "grid_matrix_layer_combo", None)
-            if combo is not None:
-                index = combo.findData(str(model_id))
-                if index >= 0 and combo.currentIndex() != index:
-                    combo.setCurrentIndex(index)
-                elif index >= 0:
-                    # currentIndex unchanged; still make sure the stored selection matches.
-                    state.grid_inspection_matrix_selection = str(model_id)
-                    self._apply_grid_inspection_active_layer_view(state, streaming=False)
-            return
         self._apply_global_analysis_context_to_state(state)
         preferred_metric_key = self._preferred_metric_key_for_folder_item_in_current_mode(state, item, model_id)
 
@@ -2163,6 +2530,7 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, False)
         item.setData(FOLDER_ORIGINAL_ROLE, "")
         item.setData(FOLDER_FRAMES_PER_ROW_ROLE, 0)
+        item.setData(FOLDER_CELL_CLASS_ROLE, "")
         item.setToolTip(folder_path_text)
         self.folder_list.addItem(item)
         self._disambiguate_default_folder_labels()
@@ -2243,12 +2611,39 @@ class KarakalPresenter(QObject):
                     frames_per_row_common_text=self._t("folders.frames_per_row_common"),
                     frames_per_row_tooltip=self._t("folders.frames_per_row_tooltip"),
                     frames_per_row_maximum=int(FRAMES_PER_ROW_RANGE[1]),
+                    on_activated=lambda item=item: self._select_folder_item(item),
+                    cell_class=str(item.data(FOLDER_CELL_CLASS_ROLE) or ""),
+                    on_cell_class_changed=lambda value, item=item: self._set_folder_item_cell_class(item, value),
+                    cell_class_label=self._t("folders.cell_class"),
+                    cell_class_options=(
+                        ("", self._t("folders.cell_class.none")),
+                        ("ones", self._t("folders.cell_class.ones")),
+                        ("zeros", self._t("folders.cell_class.zeros")),
+                    ),
+                    cell_class_tooltip=self._t("folders.cell_class_tooltip"),
+                    cell_class_badge_tooltips={
+                        value: self._t("folders.cell_class_badge_tooltip", name=self._t(f"folders.cell_class.{value}"))
+                        for value in ("ones", "zeros")
+                    },
                 )
                 row_widget.setMinimumHeight(FOLDER_ROW_MIN_HEIGHT)
+                row_widget.set_selected(item is self.folder_list.currentItem())
                 item.setSizeHint(row_widget.sizeHint())
                 self.folder_list.setItemWidget(item, row_widget)
         finally:
             self.folder_list.setUpdatesEnabled(True)
+
+    def _select_folder_item(self, item: QListWidgetItem) -> None:
+        if item is not self.folder_list.currentItem():
+            self.folder_list.setCurrentItem(item)
+
+    def _sync_folder_row_selection(self) -> None:
+        current = self.folder_list.currentItem()
+        for row in range(self.folder_list.count()):
+            item = self.folder_list.item(row)
+            widget = self.folder_list.itemWidget(item)
+            if isinstance(widget, FolderRowWidget):
+                widget.set_selected(item is current)
 
     def _set_folder_item_checked(self, item: QListWidgetItem, checked: bool) -> None:
         self._folder_check_guard = True
@@ -2323,6 +2718,26 @@ class KarakalPresenter(QObject):
         state = self._current_tab_state()
         if state is not None and self._matrix_layer_model_id(state) == self._model_id_for_folder_item(item):
             self._refresh_matrix_layer_layout(state)
+
+    def _set_folder_item_cell_class(self, item: QListWidgetItem, value: str) -> None:
+        """Which cells the layer's network paints; a ones and a zeros layer make a conflict pair."""
+
+        normalized = str(value or "") if str(value or "") in {"ones", "zeros"} else ""
+        if normalized == str(item.data(FOLDER_CELL_CLASS_ROLE) or ""):
+            return
+        item.setData(FOLDER_CELL_CLASS_ROLE, normalized)
+        widget = self.folder_list.itemWidget(item)
+        if isinstance(widget, FolderRowWidget):
+            widget.set_cell_class(normalized)
+        self._refresh_pair_matrix()
+        state = self._current_tab_state()
+        self._sync_grid_inspection_matrix_selector(state)
+        if state is not None:
+            # A shown pair that is no longer a pair falls back to a layer.
+            self._refresh_matrix_layer_layout(state)
+            if getattr(state, "grid_inspection_payloads_by_model", None):
+                self._apply_grid_inspection_active_layer_view(state, streaming=False)
+        self._persist_state()
 
     def _set_folder_item_confidence_expanded(self, item: QListWidgetItem, expanded: bool) -> None:
         item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, bool(expanded))
@@ -2521,7 +2936,7 @@ class KarakalPresenter(QObject):
         cache_key = (
             str(getattr(state, "object_type", POLYGON_OBJECT_TYPE) or POLYGON_OBJECT_TYPE),
             id(state.build_result.records),
-            self._matrix_layer_model_id(state),
+            self._grid_inspection_matrix_selection(state),
         )
         cached = state.base_records_cache.get(cache_key)
         if cached is not None:
@@ -4559,9 +4974,14 @@ class KarakalPresenter(QObject):
         shown_keys = getattr(state, "frame_set_participating", None)
         if shown_keys is not None:
             visible_keys = set(shown_keys) if visible_keys is None else visible_keys & set(shown_keys)
-        for record_key, result in sorted(
+        sources = sorted(
             (getattr(state, "grid_inspection_payload_by_key", {}) or {}).items(), key=lambda item: str(item[0])
-        ):
+        )
+        marks = (getattr(state, "grid_inspection_payloads_by_layer", {}) or {}).get(PAIR_MARKS_LAYER) or {}
+        if marks and self._class_conflict_selected():
+            # Conflicts with the other network of the shown layer's pairs.
+            sources.extend(sorted(marks.items(), key=lambda item: str(item[0])))
+        for record_key, result in sources:
             if str(record_key) in excluded_keys:
                 continue
             if visible_keys is not None and str(record_key) not in visible_keys:
@@ -5184,131 +5604,7 @@ class KarakalPresenter(QObject):
             request_cancel()
         self._show_progress_bar(visible=True, format_text="Cancelling...")
 
-    # --- All-layers merge ---------------------------------------------------
-
-    ALL_LAYERS_SELECTION_KEY = "__all__"
     GRID_ERRORS_STREAM_REFRESH_MS = 1500
-
-    @staticmethod
-    def _model_display_name_map(state: ExtendMatrixTabState) -> dict[str, str]:
-        return {
-            str(spec.model_id): str(spec.display_name or spec.model_id)
-            for spec in (getattr(getattr(state, "build_result", None), "model_specs", ()) or ())
-            if str(getattr(spec, "model_id", "") or "")
-        }
-
-    def _merge_all_layers_frame_result(
-        self,
-        state: ExtendMatrixTabState,
-        frame_key: str,
-        layer: str = "binary",
-    ) -> GridFrameAnalysisResult | None:
-        """Combine per-model results for one frame into a single view."""
-
-        by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
-        if not by_model:
-            return None
-        display_names = self._model_display_name_map(state)
-        combined_cells: list = []
-        total_expected = 0
-        total_detected = 0
-        total_normal = 0
-        total_suspicious = 0
-        total_broken = 0
-        total_missing = 0
-        total_artifact = 0
-        frame_id = ""
-        frame_path = ""
-        image_width = 0
-        image_height = 0
-        grid_detected = False
-        seen_bboxes: set[tuple[int, int, int, int, str]] = set()
-        for model_id, model_layers in by_model.items():
-            payloads = (model_layers or {}).get(layer)
-            if not payloads:
-                # Fall back to a binary payload for that model when the requested layer is absent.
-                payloads = (model_layers or {}).get("binary") or {}
-            result = payloads.get(str(frame_key)) if payloads else None
-            if not isinstance(result, GridFrameAnalysisResult):
-                continue
-            if not frame_id:
-                frame_id = str(result.frame_id or "")
-                frame_path = str(result.frame_path or "")
-                image_width = int(result.image_width or 0)
-                image_height = int(result.image_height or 0)
-                grid_detected = bool(result.grid_detected)
-            total_expected += int(getattr(result, "total_expected_cells", 0) or 0)
-            total_detected += int(getattr(result, "detected_cells", 0) or 0)
-            total_normal += int(getattr(result, "normal_cells", 0) or 0)
-            total_suspicious += int(getattr(result, "suspicious_cells", 0) or 0)
-            total_broken += int(getattr(result, "broken_cells", 0) or 0)
-            total_missing += int(getattr(result, "missing_cells", 0) or 0)
-            total_artifact += int(getattr(result, "artifact_cells", 0) or 0)
-            display_name = display_names.get(str(model_id), str(model_id))
-            for cell in getattr(result, "per_cell_results", ()) or ():
-                bbox = tuple(int(v) for v in (getattr(cell, "bbox", (0, 0, 0, 0)) or (0, 0, 0, 0))[:4])
-                key_tuple = (str(model_id), *bbox)
-                short_key = (*bbox, str(model_id))
-                if short_key in seen_bboxes:
-                    continue
-                seen_bboxes.add(short_key)
-                existing_label = str(getattr(cell, "feature_cluster_label", "") or "")
-                # Tag with model attribution — details tooltip already shows this field.
-                if existing_label:
-                    label = f"{display_name} · {existing_label}"
-                else:
-                    label = str(display_name)
-                combined_cells.append(replace(cell, feature_cluster_label=label))
-        if not frame_id and not combined_cells:
-            return None
-        total_bad = total_suspicious + total_broken + total_missing + total_artifact
-        # Normalize by total cell count across models — a frame in N models should not "redden" N×.
-        damage_score = 0.0
-        if total_expected > 0:
-            damage_score = min(1.0, float(total_bad) / float(total_expected))
-        elif combined_cells:
-            damage_score = min(
-                1.0,
-                sum(1 for cell in combined_cells if str(getattr(cell, "status", "")) != "normal")
-                / float(len(combined_cells)),
-            )
-        return GridFrameAnalysisResult(
-            frame_id=frame_id or str(frame_key),
-            frame_path=frame_path,
-            image_width=image_width,
-            image_height=image_height,
-            grid_rows=0,
-            grid_cols=0,
-            total_expected_cells=total_expected,
-            detected_cells=total_detected,
-            normal_cells=total_normal,
-            suspicious_cells=total_suspicious,
-            broken_cells=total_broken,
-            missing_cells=total_missing,
-            artifact_cells=total_artifact,
-            damage_score=float(damage_score),
-            severity_level="",
-            grid_detected=grid_detected,
-            per_cell_results=tuple(combined_cells),
-        )
-
-    def _build_all_layers_payloads(
-        self,
-        state: ExtendMatrixTabState,
-        layer: str = "binary",
-    ) -> dict[str, GridFrameAnalysisResult]:
-        by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
-        frame_keys: set[str] = set()
-        for model_layers in by_model.values():
-            layer_map = (model_layers or {}).get(layer) or (model_layers or {}).get("binary") or {}
-            for key in layer_map:
-                frame_keys.add(str(key))
-        merged: dict[str, GridFrameAnalysisResult] = {}
-        for key in frame_keys:
-            result = self._merge_all_layers_frame_result(state, key, layer=layer)
-            if result is not None:
-                merged[key] = result
-        return merged
 
     # --- Multi-model gathering ---------------------------------------------
 
@@ -5385,6 +5681,8 @@ class KarakalPresenter(QObject):
         state.grid_inspection_payloads_by_layer = {key: {} for key in self._grid_inspection_layer_keys()}
         # Reset stored per-model results so a fresh run does not display stale layers.
         state.grid_inspection_payloads_by_model = {}
+        state.grid_inspection_payloads_by_pair = {}
+        state.grid_inspection_pair_filtered = {}
         self._grid_streaming_unified = None
         self._grid_errors_refresh_pending = False
         requested_layers = self._normalize_grid_layers(next_config.get("requested_layers"))
@@ -5405,36 +5703,19 @@ class KarakalPresenter(QObject):
         for view in self._grid_inspection_views().values():
             view.set_processing_keys(set())
         self._worker_thread = QThread()
-        want_derived_conflict = show_class_conflict() and "derived_conflict" in requested_layers
-        conflict_pairs = self._selected_grid_conflict_pairs() if want_derived_conflict else ()
-        if want_derived_conflict and not conflict_pairs and len(self._checked_model_specs()) >= 2:
-            # Ensure a default AND pair so conflict review can run.
-            self._pair_defaults_initialized = False
-            self._ensure_default_pair_selection(self._active_pair_model_specs())
-            conflict_pairs = self._selected_grid_conflict_pairs()
-        use_multi_model = (
-            not want_derived_conflict
-            and len(multi_model_ids) >= 2
-        )
+        use_multi_model = len(multi_model_ids) >= 2
         self._active_multi_model_run_ids: tuple[str, ...] = (
             multi_model_ids if use_multi_model else ()
         )
-        if want_derived_conflict and conflict_pairs:
-            pair = conflict_pairs[0]
-            threshold, _boundary = self._selected_polygon_compare_values()
-            self._worker = DerivedConflictGridInspectionWorker(
-                records,
-                model_a_id=pair.model_a_id,
-                model_b_id=pair.model_b_id,
-                primary_model_id=model_id,
-                threshold=threshold,
-                config=grid_config,
-                reference_profile=reference_profile,
-                performance_config=self._view.performance_config,
-                requested_layers=requested_layers,
-            )
-        elif use_multi_model:
-            base_layers = tuple(layer for layer in requested_layers if layer != "derived_conflict")
+        self._active_grid_pair_only = False
+        # Ones/zeros pairs are computed in the same job, after the layers.
+        conflict_pairs = tuple(
+            (pair.key, pair.ones_id, pair.zeros_id)
+            for pair in self._grid_conflict_pairs()
+            if pair.ones_id in multi_model_ids and pair.zeros_id in multi_model_ids
+        )
+        if use_multi_model:
+            base_layers = tuple(requested_layers)
             reference_profiles = {}
             for extra_model_id in multi_model_ids:
                 if extra_model_id == model_id and reference_profile is not None:
@@ -5455,9 +5736,10 @@ class KarakalPresenter(QObject):
                 reference_profiles=reference_profiles,
                 performance_config=self._view.performance_config,
                 requested_layers=base_layers or ("confidence", "binary"),
+                conflict_pairs=conflict_pairs,
             )
         elif has_selected_sources and model_id:
-            base_layers = tuple(layer for layer in requested_layers if layer != "derived_conflict")
+            base_layers = tuple(requested_layers)
             self._worker = PairedGridInspectionWorker(
                 records,
                 model_id,
@@ -5474,6 +5756,35 @@ class KarakalPresenter(QObject):
                 reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
             )
+        self._launch_grid_inspection_worker(state)
+
+    def _start_grid_pair_conflict_pass(self, state: ExtendMatrixTabState, pairs: tuple[GridConflictPair, ...]) -> None:
+        """Conflicts of pairs whose layers are already analysed: no layer is analysed again."""
+
+        if self._worker_thread is not None or not pairs:
+            return
+        excluded_keys = self._excluded_record_keys_for_state(state)
+        records = tuple(
+            record
+            for record in tuple(state.build_result.records or ())
+            if str(getattr(record, "key", "") or "") not in excluded_keys
+        )
+        self._worker_kind = "grid_inspection"
+        self._active_compute_state = state
+        self._active_processing_keys = set()
+        self._active_grid_inspection_partial_keys = None
+        self._active_multi_model_run_ids = ()
+        self._active_grid_pair_only = True
+        self._worker_thread = QThread()
+        self._worker = MultiModelGridInspectionWorker(
+            records,
+            (),
+            performance_config=self._view.performance_config,
+            conflict_pairs=tuple((pair.key, pair.ones_id, pair.zeros_id) for pair in pairs),
+        )
+        self._launch_grid_inspection_worker(state)
+
+    def _launch_grid_inspection_worker(self, state: ExtendMatrixTabState) -> None:
         self._connect_worker_profiling(self._worker)
         generation = self._begin_worker_request(state=state)
         self._worker.moveToThread(self._worker_thread)
@@ -5568,11 +5879,12 @@ class KarakalPresenter(QObject):
         return self._t("grid_error.class_conflict_unavailable")
 
     def _class_conflict_ready(self, state, frame_key: str) -> bool:
+        """True when a ones/zeros pair has been computed on this frame."""
+
         if state is None or not frame_key:
             return False
-        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
-        conflict = layers.get("derived_conflict") or {}
-        return str(frame_key) in conflict
+        by_pair = getattr(state, "grid_inspection_payloads_by_pair", {}) or {}
+        return any(str(frame_key) in (payloads or {}) for payloads in by_pair.values())
 
     def _sync_class_conflict_checkbox(self, checkbox, *, available: bool) -> None:
         if checkbox is None:
@@ -5597,8 +5909,8 @@ class KarakalPresenter(QObject):
         )
 
     def _sync_class_conflict_controls(self, state) -> None:
-        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
-        run_ready = bool(layers.get("derived_conflict"))
+        by_pair = getattr(state, "grid_inspection_payloads_by_pair", {}) or {}
+        run_ready = any(bool(payloads) for payloads in by_pair.values())
         checks = getattr(self, "grid_error_type_checks", {}) or {}
         checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
         self._sync_class_conflict_checkbox(checkbox, available=run_ready)
@@ -5639,34 +5951,62 @@ class KarakalPresenter(QObject):
             if callable(apply):
                 apply(stored, tuple(getattr(stored, "per_cell_results", ()) or ()))
                 return
+        if self._shown_grid_pair(state) is not None:
+            dialog.show_grid_preview_message(self._t("pairs.frame_not_computed"))
+            return
         self._start_grid_details_analyze(dialog, record, state)
 
-    def _with_stored_class_conflict(self, result, state, frame_key: str):
-        if result is None:
-            return None
-        kept = tuple(
+    def _refresh_grid_pair_details(self, state) -> None:
+        """Open frame windows of a shown pair follow its conflicts and thresholds."""
+
+        pair = self._shown_grid_pair(state)
+        for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
+            setter = getattr(dialog, "set_grid_pair_partner", None)
+            if callable(setter):
+                setter(pair.zeros_id if pair is not None else None, pair.zeros_name if pair is not None else "")
+            if pair is None:
+                continue
+            record = getattr(dialog, "_record", None)
+            if record is None:
+                continue
+            stored = self._reusable_grid_matrix_result(state, record)
+            apply = getattr(dialog, "apply_grid_inspection_preview", None)
+            if stored is not None and callable(apply):
+                apply(stored, tuple(getattr(stored, "per_cell_results", ()) or ()))
+
+    @staticmethod
+    def _with_conflict_cells(result, conflicts):
+        """A layer result with the conflict cells of its pairs added (once per box)."""
+
+        cells = tuple(
             cell
             for cell in (getattr(result, "per_cell_results", ()) or ())
             if "class_conflict" not in tuple(getattr(cell, "reasons", ()) or ())
         )
-        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
-        conflict = (layers.get("derived_conflict") or {}).get(str(frame_key))
+        seen: set[tuple[int, int, int, int]] = set()
         extra = []
-        if isinstance(conflict, GridFrameAnalysisResult):
-            seen: set[tuple[int, int, int, int]] = set()
-            for cell in getattr(conflict, "per_cell_results", ()) or ():
-                if "class_conflict" not in tuple(getattr(cell, "reasons", ()) or ()):
-                    continue
-                bbox = tuple(int(value) for value in getattr(cell, "bbox", (0, 0, 0, 0))[:4])
-                if bbox in seen:
-                    continue
+        for cell in getattr(conflicts, "per_cell_results", ()) or ():
+            bbox = tuple(int(value) for value in getattr(cell, "bbox", (0, 0, 0, 0))[:4])
+            if bbox not in seen:
                 seen.add(bbox)
                 extra.append(cell)
-        cells = kept + tuple(extra)
-        if cells == tuple(getattr(result, "per_cell_results", ()) or ()):
+        merged = cells + tuple(extra)
+        if merged == tuple(getattr(result, "per_cell_results", ()) or ()):
             return result
-        broken = sum(1 for cell in cells if str(getattr(cell, "status", "")) != "normal")
-        return replace(result, per_cell_results=cells, detected_cells=len(cells), broken_cells=broken)
+        broken = sum(1 for cell in merged if str(getattr(cell, "status", "")) != "normal")
+        return replace(result, per_cell_results=merged, detected_cells=len(merged), broken_cells=broken)
+
+    def _with_stored_class_conflict(self, result, state, frame_key: str):
+        """The shown layer's result with the conflicts of its pairs (the run marks them apart)."""
+
+        if result is None:
+            return None
+        if parse_pair_key(getattr(state, "grid_inspection_matrix_selection", "")) is not None:
+            # A pair's own result is its conflicts.
+            return result
+        layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
+        conflict = (layers.get(PAIR_MARKS_LAYER) or {}).get(str(frame_key))
+        return KarakalPresenter._with_conflict_cells(result, conflict)
 
     def _rebuild_unified_grid_view(self, state) -> None:
         if state is None:
@@ -5797,7 +6137,7 @@ class KarakalPresenter(QObject):
 
         if isinstance(binary, GridFrameAnalysisResult):
             _take(binary, mask_reasons)
-        conflict = layers.get("derived_conflict")
+        conflict = layers.get(PAIR_MARKS_LAYER)
         include_conflict = not hasattr(self, "_class_conflict_user_wants") or self._class_conflict_selected()
         if isinstance(conflict, GridFrameAnalysisResult) and include_conflict:
             _take(conflict, {"class_conflict"})
@@ -6577,13 +6917,23 @@ class KarakalPresenter(QObject):
         state = self._active_compute_state or self._current_tab_state()
         if state is None or not hasattr(self, "grid_inspection_matrix_view"):
             return
-        multi_model_run = bool(getattr(self, "_active_multi_model_run_ids", ()) or ())
+        multi_model_run = bool(getattr(self, "_active_multi_model_run_ids", ()) or ()) or bool(
+            getattr(self, "_active_grid_pair_only", False)
+        )
         if multi_model_run and isinstance(payloads, dict):
             self._apply_multi_model_finished_payloads(state, payloads)
         else:
             payload_map = {str(key): value for key, value in payloads.items()} if isinstance(payloads, dict) else {}
             self._apply_grid_inspection_worker_payloads(state, payload_map, replace_all=True)
+        pair_only = bool(getattr(self, "_active_grid_pair_only", False))
         self._active_multi_model_run_ids = ()
+        self._active_grid_pair_only = False
+        self._refresh_pair_matrix()
+        if pair_only:
+            for view in self._grid_inspection_views().values():
+                view.finalize_grid_inspection_payloads()
+            self._sync_action_buttons()
+            return
         confirmed = getattr(self, "_grid_calibration_confirmed", None)
         if confirmed is not None and hasattr(confirmed, "fingerprint"):
             self._grid_analyzed_fingerprint = confirmed.fingerprint()
@@ -6639,9 +6989,21 @@ class KarakalPresenter(QObject):
             return
         # payloads shape: {model_id: {frame_key: {layer_key: GridFrameAnalysisResult}}}
         by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
+        by_pair = getattr(state, "grid_inspection_payloads_by_pair", None)
+        if by_pair is None:
+            by_pair = state.grid_inspection_payloads_by_pair = {}
         changed_keys: set[str] = set()
+        pair_changed: dict[str, set[str]] = {}
         for model_id, frame_map in payloads.items():
             if not isinstance(frame_map, dict):
+                continue
+            if parse_pair_key(model_id) is not None:
+                stored_pair = by_pair.setdefault(str(model_id), {})
+                for frame_key, layer_payload in frame_map.items():
+                    result = layer_payload.get(PAIR_CONFLICT_LAYER) if isinstance(layer_payload, dict) else None
+                    if result is not None:
+                        stored_pair[str(frame_key)] = result
+                        pair_changed.setdefault(str(model_id), set()).add(str(frame_key))
                 continue
             stored = dict(by_model.get(str(model_id)) or {})
             for layer_key in self._grid_inspection_layer_keys():
@@ -6656,6 +7018,8 @@ class KarakalPresenter(QObject):
                     changed_keys.add(str(frame_key))
             by_model[str(model_id)] = stored
         state.grid_inspection_payloads_by_model = by_model
+        if pair_changed:
+            self._stream_grid_pair_keys(state, pair_changed)
         if not changed_keys:
             return
         layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
@@ -6673,24 +7037,17 @@ class KarakalPresenter(QObject):
         """
 
         selection = self._grid_inspection_matrix_selection(state)
-        if not selection:
+        if not selection or parse_pair_key(selection) is not None:
+            # A shown pair takes its own batches (_stream_grid_pair_keys).
             return
         by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
         layer_keys = self._grid_inspection_layer_keys()
         layers = {key: dict((state.grid_inspection_payloads_by_layer or {}).get(key) or {}) for key in layer_keys}
+        layers[PAIR_MARKS_LAYER] = dict((state.grid_inspection_payloads_by_layer or {}).get(PAIR_MARKS_LAYER) or {})
         changed: dict[str, dict[str, object]] = {key: {} for key in layer_keys}
+        stored = by_model.get(selection) or {}
         for frame_key in changed_keys:
-            if selection == self.ALL_LAYERS_SELECTION_KEY:
-                merged_confidence = self._merge_all_layers_frame_result(state, frame_key, layer="confidence")
-                merged_binary = self._merge_all_layers_frame_result(state, frame_key, layer="binary")
-                values = {
-                    "confidence": merged_confidence,
-                    # Same fallback as the full pass: confidence-only models still light the heat map.
-                    "binary": merged_binary if merged_binary is not None else merged_confidence,
-                }
-            else:
-                stored = by_model.get(selection) or {}
-                values = {key: (stored.get(key) or {}).get(frame_key) for key in layer_keys}
+            values = {key: (stored.get(key) or {}).get(frame_key) for key in layer_keys}
             for layer_key, value in values.items():
                 if value is None:
                     continue
@@ -6737,8 +7094,17 @@ class KarakalPresenter(QObject):
         """Store finished multi-model results and refresh the active view."""
 
         by_model: dict[str, dict[str, dict[str, object]]] = {}
+        by_pair = dict(getattr(state, "grid_inspection_payloads_by_pair", {}) or {})
         for model_id, frame_map in payloads.items():
             if not isinstance(frame_map, dict):
+                continue
+            if parse_pair_key(model_id) is not None:
+                by_pair[str(model_id)] = {
+                    str(frame_key): layer_payload.get(PAIR_CONFLICT_LAYER)
+                    for frame_key, layer_payload in frame_map.items()
+                    if isinstance(layer_payload, dict) and layer_payload.get(PAIR_CONFLICT_LAYER) is not None
+                }
+                state.grid_inspection_pair_filtered.pop(str(model_id), None)
                 continue
             layers: dict[str, dict[str, object]] = {key: {} for key in self._grid_inspection_layer_keys()}
             for frame_key, layer_payload in frame_map.items():
@@ -6749,7 +7115,10 @@ class KarakalPresenter(QObject):
                         continue
                     layers.setdefault(str(layer_key), {})[str(frame_key)] = result
             by_model[str(model_id)] = layers
-        state.grid_inspection_payloads_by_model = by_model
+        state.grid_inspection_payloads_by_pair = by_pair
+        if by_model or not getattr(self, "_active_grid_pair_only", False):
+            state.grid_inspection_payloads_by_model = by_model
+        by_model = state.grid_inspection_payloads_by_model
         state.grid_inspection_results_ready = any(
             bool(layers.get(layer_key))
             for layers in by_model.values()
@@ -6762,6 +7131,7 @@ class KarakalPresenter(QObject):
     def _on_grid_inspection_cancelled(self, *, generation: int | None = None) -> None:
         if not self._is_active_request_generation(generation):
             return
+        self._active_grid_pair_only = False
         self._show_progress_bar(visible=False)
         self._grid_streaming_unified = None
         state = self._active_compute_state
@@ -7287,6 +7657,11 @@ class KarakalPresenter(QObject):
 
         if state is None or record is None:
             return None
+        pair = parse_pair_key(getattr(state, "grid_inspection_matrix_selection", ""))
+        if pair is not None:
+            # Conflicts depend on the two masks only, not on the cell analysis settings.
+            stored = self._filtered_pair_conflicts(state, self._grid_inspection_matrix_selection(state))
+            return stored.get(str(getattr(record, "key", "") or ""))
         if str(getattr(state, "grid_inspection_algorithm_version", "") or "") != GRID_DAMAGE_ALGORITHM_VERSION:
             return None
         stored_config = dict(getattr(state, "grid_inspection_config_payload", {}) or {})
@@ -7339,10 +7714,13 @@ class KarakalPresenter(QObject):
         layer_original = (record.model_original_paths or {}).get(self._matrix_layer_model_id(state))
         if layer_original and layer_original != record.original_path:
             record = replace(record, original_path=layer_original, base_path=layer_original)
+        shown_pair = self._shown_grid_pair(state) if is_grid_inspection_details else None
         if is_grid_inspection_details:
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
             grid_inspection_result = self._reusable_grid_matrix_result(state, record)
-            if grid_inspection_result is None:
+            if grid_inspection_result is None and shown_pair is not None:
+                grid_detail_message = self._t("pairs.frame_not_computed")
+            elif grid_inspection_result is None:
                 pending_grid_analyze = True
                 grid_detail_message = self._t("grid_tuning.preview_loading")
         allowed_result_kinds = None
@@ -7388,6 +7766,8 @@ class KarakalPresenter(QObject):
         if self._frame_sets_controller is not None and self._current_app_mode() == "grid_inspection":
             self._frame_sets_controller.install_card_actions(dialog)
         self._sync_class_conflict_for_dialog(dialog, state)
+        if shown_pair is not None:
+            dialog.set_grid_pair_partner(shown_pair.zeros_id, shown_pair.zeros_name)
         if grid_detail_message:
             dialog.show_grid_preview_message(grid_detail_message)
         record_key = str(getattr(record, "key", "") or "")
@@ -8404,6 +8784,7 @@ class KarakalPresenter(QObject):
                     "confidence_expanded": bool(self.folder_list.item(row).data(FOLDER_CONFIDENCE_EXPANDED_ROLE)),
                     "original_path": str(self.folder_list.item(row).data(FOLDER_ORIGINAL_ROLE) or ""),
                     "frames_per_row": int(self.folder_list.item(row).data(FOLDER_FRAMES_PER_ROW_ROLE) or 0),
+                    "cell_class": str(self.folder_list.item(row).data(FOLDER_CELL_CLASS_ROLE) or ""),
                 }
                 for row in range(self.folder_list.count())
             ],
@@ -8448,6 +8829,8 @@ class KarakalPresenter(QObject):
                 if original_path and Path(original_path).exists():
                     item.setData(FOLDER_ORIGINAL_ROLE, str(original_path))
                 item.setData(FOLDER_FRAMES_PER_ROW_ROLE, max(0, int(folder_entry.get("frames_per_row") or 0)))
+                cell_class = str(folder_entry.get("cell_class") or "")
+                item.setData(FOLDER_CELL_CLASS_ROLE, cell_class if cell_class in {"ones", "zeros"} else "")
             # Older settings kept one source folder for every layer.
             legacy_original = payload.get("original_folder")
             if legacy_original and Path(legacy_original).exists():

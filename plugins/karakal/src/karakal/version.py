@@ -19,7 +19,9 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
        grey, blue with a newer version, one click installs; offer at every start; channel,
        what's new, other versions and About in the Help menu;
   12 = smooth zoom, one dark look on Windows 10 and 11, one run button (run / analyze / recompute /
-       stop) with pause, layers dragged by a handle, collapsible side panel, chevron sections);
+       stop) with pause, layers dragged by a handle, collapsible side panel, chevron sections;
+  13 = the matrix shows the layer selected in the list (no «All layers»), full selection frame,
+       ones/zeros cell class of a layer, pair matrix in the tester build with ones/zeros conflicts);
 - beta N counts tester builds with the same algorithm and interface (fixes only); scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -34,7 +36,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 12
+INTERFACE_NUMBER = 13
 BETA = 0
 
 

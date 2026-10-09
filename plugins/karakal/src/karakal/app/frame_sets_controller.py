@@ -25,6 +25,7 @@ from ..core.frame_set_export import (
     preview_frame_set_export,
 )
 from ..core.grid_error_export import unique_run_dir
+from ..core.pair_conflict import parse_pair_key
 from ..core.frame_sets import (
     USER_SET_PREFIX,
     VIEW_ALL,
@@ -558,15 +559,33 @@ class FrameSetsController(QObject):
             if str(getattr(spec, "model_id", "") or "")
         ]
         selection = self._p._grid_inspection_matrix_selection(state)
+        pair = self._p._grid_pair(selection)
+        if pair is not None:
+            # A shown pair exports its conflicts over the ones network.
+            return [(pair.key, self._p._grid_pair_label(pair))]
         chosen = [item for item in specs if item[0] == selection]
         return chosen or specs
 
+    @staticmethod
+    def _mask_model_id(model_id: str) -> str:
+        pair = parse_pair_key(model_id)
+        return pair[0] if pair is not None else model_id
+
     def _results_for_model(self, state, model_id: str, single: bool) -> dict[str, object]:
+        if parse_pair_key(model_id) is not None:
+            return dict(self._p._filtered_pair_conflicts(state, model_id))
         layer = self._p._grid_export_analysis_layer(state)
         model_layers = dict((getattr(state, "grid_inspection_payloads_by_model", {}) or {}).get(model_id) or {})
         results = dict(model_layers.get(layer) or model_layers.get("binary") or {})
         if not results and single:
             results = dict(getattr(state, "grid_inspection_payload_by_key", {}) or {})
+        if self._p._class_conflict_selected():
+            # Conflicts with the other network of the layer's pairs are its errors too.
+            for frame_key, marks in self._p._layer_conflict_marks(state, model_id).items():
+                result = results.get(frame_key)
+                if result is None:
+                    continue
+                results[frame_key] = self._p._with_conflict_cells(result, marks)
         return results
 
     def _build_plan(self, state, qualities, all_keys, selected) -> FrameSetExportPlan:
@@ -604,9 +623,13 @@ class FrameSetsController(QObject):
                     key=key,
                     name=Path(str(record.display_name or key)).name,
                     original_path=str(record.original_path or record.base_path or ""),
-                    mask_paths={model_id: str((record.model_mask_paths or {}).get(model_id) or "") for model_id, _ in models},
+                    mask_paths={
+                        model_id: str((record.model_mask_paths or {}).get(self._mask_model_id(model_id)) or "")
+                        for model_id, _ in models
+                    },
                     confidence_paths={
-                        model_id: str((record.model_prob_paths or {}).get(model_id) or "") for model_id, _ in models
+                        model_id: str((record.model_prob_paths or {}).get(self._mask_model_id(model_id)) or "")
+                        for model_id, _ in models
                     },
                     results={model_id: results_by_model[model_id].get(key) for model_id, _ in models},
                     quality=qualities.get(key),

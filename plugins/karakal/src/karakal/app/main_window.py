@@ -52,13 +52,13 @@ from .update_flow import STATE_AVAILABLE, STATE_DOWNLOADING, KarakalUpdateManage
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
 from ..core.domain import BuildResult
+from ..core.pair_conflict import CONFLICT_ANALYSIS_FLOOR_PX, CONFLICT_MIN_AREA_PX, CONFLICT_MIN_CELL_SHARE
 from ..core.performance import PerformanceConfig
 from ..ui.toolbar_icons import toolbar_icon
 from ..ui.app_icon import apply_karakal_icon
 from ..core.features import (
     display_version,
     show_app_mode_switch,
-    show_class_conflict,
     show_confidence_defects,
     show_conductor_zone,
     show_other_analysis_profiles,
@@ -641,16 +641,14 @@ class KarakalWidget(QWidget):
         for layer_key, label_key in (
             ("confidence", "grid_layer.confidence"),
             ("binary", "grid_layer.binary"),
-            ("derived_conflict", "grid_layer.derived_conflict"),
         ):
             checkbox = QCheckBox(self._t(label_key), self)
-            checkbox.setChecked(layer_key != "derived_conflict")
+            checkbox.setChecked(True)
             self.grid_layer_compute_checks[str(layer_key)] = checkbox
         self.grid_layer_display_combo = _NoWheelComboBox(self)
         for layer_key, label_key in (
             ("confidence", "grid_layer.confidence"),
             ("binary", "grid_layer.binary"),
-            ("derived_conflict", "grid_layer.derived_conflict"),
         ):
             self.grid_layer_display_combo.addItem(self._t(label_key), layer_key)
         self.grid_layer_display_combo.setCurrentIndex(self.grid_layer_display_combo.findData("confidence"))
@@ -659,6 +657,19 @@ class KarakalWidget(QWidget):
             self.grid_tuning_preset_combo.addItem(self._t(f"grid_tuning.preset.{preset_key}"), preset_key)
         self.grid_tuning_preset_combo.setCurrentIndex(self.grid_tuning_preset_combo.findData("balanced"))
         self.grid_debris_min_area_control = DebrisMinAreaControl(self._t, parent=self)
+        # Conflicts of a ones/zeros pair: shown from this area and this share of the smaller cell.
+        self.grid_conflict_min_area_spin = _NoWheelSpinBox(self)
+        self.grid_conflict_min_area_spin.setRange(int(CONFLICT_ANALYSIS_FLOOR_PX), 2000)
+        self.grid_conflict_min_area_spin.setValue(int(CONFLICT_MIN_AREA_PX))
+        self.grid_conflict_min_area_spin.setSuffix(" px")
+        self.grid_conflict_min_area_spin.setKeyboardTracking(False)
+        self.grid_conflict_min_area_spin.setToolTip(self._t("grid_tuning.conflict_min_area_hint"))
+        self.grid_conflict_min_share_spin = _NoWheelSpinBox(self)
+        self.grid_conflict_min_share_spin.setRange(0, 100)
+        self.grid_conflict_min_share_spin.setValue(int(round(CONFLICT_MIN_CELL_SHARE * 100)))
+        self.grid_conflict_min_share_spin.setSuffix(" %")
+        self.grid_conflict_min_share_spin.setKeyboardTracking(False)
+        self.grid_conflict_min_share_spin.setToolTip(self._t("grid_tuning.conflict_min_share_hint"))
         self.metric_group_combo = _NoWheelComboBox(self)
         for label, key in MATRIX_METRIC_GROUP_OPTIONS:
             self.metric_group_combo.addItem(self._t(label), key)
@@ -757,6 +768,7 @@ class KarakalWidget(QWidget):
         folders_layout.addWidget(self.folders_empty_hint)
 
         self.folder_list = QListWidget(folders_group)
+        self.folder_list.setObjectName("folderList")
         self.folder_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.folder_list.setSpacing(2)
         # Layers are reordered by dragging their handle (or Alt+Up / Alt+Down).
@@ -1071,8 +1083,6 @@ class KarakalWidget(QWidget):
         self.grid_matrix_layer_label = QLabel(self._t("grid_matrix_layer.label"), self._grid_matrix_layer_row)
         matrix_layer_layout.addWidget(self.grid_matrix_layer_label)
         self.grid_matrix_layer_combo = _NoWheelComboBox(self._grid_matrix_layer_row)
-        # Placeholder entry keeps the combo non-empty until the presenter fills it.
-        self.grid_matrix_layer_combo.addItem(self._t("grid_matrix_layer.all_layers"), "__all__")
         matrix_layer_layout.addWidget(self.grid_matrix_layer_combo, stretch=1)
         header_layout.addWidget(self._grid_matrix_layer_row)
         self._grid_matrix_layer_row.setVisible(False)
@@ -1287,6 +1297,8 @@ class KarakalWidget(QWidget):
             return
         self._settings_service.save_frame_naming(dialog.naming())
         self._settings_service.sync()
+        # The readiness table counts frames by these suffixes.
+        self._presenter._sync_action_buttons()
 
     def _on_attention_compute_mode_triggered(self, action) -> None:
         mode = str(action.data() or "lightweight")
@@ -1676,7 +1688,7 @@ class KarakalWidget(QWidget):
                 str(spec.model_id): str(spec.display_name or spec.model_id)
                 for spec in tuple(getattr(build_result, "model_specs", ()) or ())
             }
-            operation_label = {"xor": "XOR", "iou": "IoU", "dice": "Dice", "and": "AND"}.get(operation, operation)
+            operation_label = {"xor": "XOR", "iou": "IoU", "dice": "Dice"}.get(operation, operation)
             return f"{names.get(model_a, model_a)} -> {names.get(model_b, model_b)} [{operation_label}]"
         if '::' in metric_key_text:
             family, model_id = metric_key_text.split('::', 1)
@@ -1818,7 +1830,7 @@ class KarakalWidget(QWidget):
         self._grid_layer_compute_title = QLabel(self._t("grid_tuning.compute_layers"), self._grid_inspection_tuning_group)
         self._grid_layer_compute_title.setWordWrap(True)
         grid_tuning_layout.addWidget(self._grid_layer_compute_title)
-        for layer_key in ("confidence", "binary", "derived_conflict"):
+        for layer_key in ("confidence", "binary"):
             checkbox = self.grid_layer_compute_checks.get(str(layer_key))
             if checkbox is not None:
                 checkbox.setParent(self._grid_inspection_tuning_group)
@@ -1842,6 +1854,16 @@ class KarakalWidget(QWidget):
             self.grid_debris_min_area_control,
         )
         grid_tuning_layout.addWidget(self._grid_debris_min_area_row)
+        self._grid_conflict_min_area_row = self._build_setting_row(
+            self._t("grid_tuning.conflict_min_area"),
+            self.grid_conflict_min_area_spin,
+        )
+        grid_tuning_layout.addWidget(self._grid_conflict_min_area_row)
+        self._grid_conflict_min_share_row = self._build_setting_row(
+            self._t("grid_tuning.conflict_min_share"),
+            self.grid_conflict_min_share_spin,
+        )
+        grid_tuning_layout.addWidget(self._grid_conflict_min_share_row)
         layout.addWidget(self._matrix_view_group)
         layout.addWidget(self._grid_inspection_tuning_group)
         layout.addWidget(self._analysis_task_group)
@@ -1904,7 +1926,6 @@ class KarakalWidget(QWidget):
             for layer_key, label_key in (
                 ("confidence", "grid_layer.confidence"),
                 ("binary", "grid_layer.binary"),
-                ("derived_conflict", "grid_layer.derived_conflict"),
             ):
                 checkbox = getattr(self, "grid_layer_compute_checks", {}).get(str(layer_key))
                 if checkbox is not None:
@@ -1922,6 +1943,8 @@ class KarakalWidget(QWidget):
                 "_grid_layer_display_row": "grid_tuning.display_layer",
                 "_grid_tuning_preset_row": "grid_tuning.preset",
                 "_grid_debris_min_area_row": "grid_tuning.debris_min_area",
+                "_grid_conflict_min_area_row": "grid_tuning.conflict_min_area",
+                "_grid_conflict_min_share_row": "grid_tuning.conflict_min_share",
             }
             for row_name, label_key in grid_tuning_labels.items():
                 row = getattr(self, row_name, None)
@@ -2080,12 +2103,11 @@ class KarakalWidget(QWidget):
         if hasattr(self, "grid_inspection_layer_tabs"):
             self.grid_inspection_layer_tabs.setTabText(0, self._t("grid_layer.confidence"))
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))
-            if self.grid_inspection_layer_tabs.count() > 2:
-                self.grid_inspection_layer_tabs.setTabText(2, self._t("grid_layer.derived_conflict"))
         if hasattr(self, "grid_matrix_layer_label"):
             self.grid_matrix_layer_label.setText(self._t("grid_matrix_layer.label"))
-        if hasattr(self, "grid_matrix_layer_combo"):
-            self._presenter._retranslate_grid_matrix_layer_combo()
+        if hasattr(self, "grid_conflict_min_area_spin"):
+            self.grid_conflict_min_area_spin.setToolTip(self._t("grid_tuning.conflict_min_area_hint"))
+            self.grid_conflict_min_share_spin.setToolTip(self._t("grid_tuning.conflict_min_share_hint"))
         for metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "title_label"):
                 card.title_label.setText(self._metric_text_for_key(metric_key, None))
@@ -2141,24 +2163,6 @@ class KarakalWidget(QWidget):
             binary_index = self.grid_layer_display_combo.findData("binary")
             if binary_index >= 0:
                 self.grid_layer_display_combo.setCurrentIndex(binary_index)
-        if not show_class_conflict():
-            conflict = self.grid_layer_compute_checks.get("derived_conflict")
-            if conflict is not None:
-                conflict.hide()
-                conflict.setChecked(False)
-            index = self.grid_layer_display_combo.findData("derived_conflict")
-            if index >= 0:
-                self.grid_layer_display_combo.removeItem(index)
-            tabs = getattr(self, "grid_inspection_layer_tabs", None)
-            if tabs is not None:
-                for index, key in enumerate(self._presenter._grid_inspection_layer_keys()):
-                    if key == "derived_conflict" and index < tabs.count():
-                        tabs.setTabVisible(index, False)
-        if not show_class_conflict():
-            box = self.grid_error_type_checks.get("class_conflict")
-            if box is not None:
-                box.hide()
-                box.setChecked(False)
         if not show_conductor_zone():
             box = self.grid_error_type_checks.get("conductor_zone")
             if box is not None:
@@ -2371,6 +2375,8 @@ class KarakalWidget(QWidget):
         self.grid_reference_frame_clear_button.clicked.connect(self._presenter._on_grid_reference_clear_requested)
         for checkbox in self.grid_layer_compute_checks.values():
             checkbox.toggled.connect(self._presenter._on_grid_layer_compute_selection_changed)
+        self.grid_conflict_min_area_spin.valueChanged.connect(self._presenter._on_pair_conflict_thresholds_changed)
+        self.grid_conflict_min_share_spin.valueChanged.connect(self._presenter._on_pair_conflict_thresholds_changed)
         conflict = self.grid_error_type_checks.get("class_conflict")
         if conflict is not None:
             conflict.toggled.connect(self._presenter._on_class_conflict_checkbox_toggled)
@@ -2439,6 +2445,7 @@ class KarakalWidget(QWidget):
         self.btn_frame_search.clicked.connect(self._presenter._on_frame_search_requested)
         self.frame_search_input.returnPressed.connect(self._presenter._on_frame_search_requested)
         self.folder_list.itemClicked.connect(self._presenter._on_folder_item_clicked)
+        self.folder_list.currentItemChanged.connect(self._presenter._on_folder_current_item_changed)
         self.sidebar_toggle_button.clicked.connect(self.toggle_sidebar)
         self.rail_expand_button.clicked.connect(lambda: self.set_sidebar_collapsed(False))
         self.rail_add_folder_button.clicked.connect(self._presenter._add_folder)

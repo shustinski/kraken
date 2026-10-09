@@ -24,7 +24,6 @@ from PyQt6.QtWidgets import (
     QWizardPage,
 )
 
-from ..core.features import show_class_conflict
 from .ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS, GRID_INSPECTION_ERROR_TYPE_OPTIONS
 
 Translate = Callable[..., str]
@@ -356,8 +355,6 @@ class GridErrorExportWizard(QWizard):
     def _type_rows(self, selected_types: Sequence[str]) -> tuple[tuple[str, str], ...]:
         wanted = {str(item) for item in selected_types}
         hidden = set(_HIDDEN_TYPES)
-        if not show_class_conflict():
-            hidden.add("class_conflict")
         rows: list[tuple[str, str]] = []
         for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             if str(error_type) in hidden or str(error_type) not in wanted:

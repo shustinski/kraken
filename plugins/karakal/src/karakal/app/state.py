@@ -74,9 +74,13 @@ class ExtendMatrixTabState:
     grid_inspection_payload_by_key: dict[str, object] = field(default_factory=dict)
     grid_inspection_payloads_by_layer: dict[str, dict[str, object]] = field(default_factory=dict)
     grid_inspection_payloads_by_model: dict[str, dict[str, dict[str, object]]] = field(default_factory=dict)
+    # Conflicts of ones/zeros pairs as the run stored them: pair key -> frame key -> result.
+    grid_inspection_payloads_by_pair: dict[str, dict[str, object]] = field(default_factory=dict)
+    # pair key -> (thresholds, raw payloads it was made of, conflicts shown at those thresholds)
+    grid_inspection_pair_filtered: dict[str, tuple[object, object, dict[str, object]]] = field(default_factory=dict)
     grid_inspection_layer: str = "confidence"
     grid_inspection_model_id: str | None = None
-    # Active matrix layer selection: a model id string, or "__all__" for the merged view.
+    # Shown in the matrix: the model id of the layer selected in the folder list, or a pair key.
     grid_inspection_matrix_selection: str = ""
     grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
     grid_inspection_algorithm_version: str = ""

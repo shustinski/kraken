@@ -83,10 +83,17 @@ def test_matrix_shows_the_frames_and_width_of_the_chosen_layer(tmp_path, qtbot) 
     presenter._on_build_finished(collect_frame_records(checked, BuildOptions(union_layer_frames=True)))
     state = presenter._current_tab_state()
     combo = widget.grid_matrix_layer_combo
-    assert len(presenter._display_records_for_state(state)) == 6
+    # Projects are never mixed in one matrix: the first layer is shown until another is selected.
+    assert {record.key for record in presenter._display_records_for_state(state)} == {
+        "A_0001.jpg",
+        "A_0002.jpg",
+        "SHARED_0005.jpg",
+    }
 
     presenter._folder_item_for_model_id(model_b).setData(FOLDER_FRAMES_PER_ROW_ROLE, 2)
-    combo.setCurrentIndex(combo.findData(model_b))
+    # Selecting the layer row in the list (the frame, not the checkbox) shows that layer.
+    presenter.folder_list.setCurrentItem(presenter._folder_item_for_model_id(model_b))
+    assert combo.currentData() == model_b
     shown = presenter._display_records_for_state(state)
     assert {record.key for record in shown} == {"B_0001.jpg", "B_0002.jpg", "B_0003.jpg", "SHARED_0005.jpg"}
     assert presenter._matrix_layout_config(state).frames_per_row == 2
@@ -136,3 +143,56 @@ def test_layers_from_folders_with_one_name_get_their_parent_and_keep_a_given_nam
     # A cleared name falls back to the default one.
     presenter._set_folder_item_label(day, "")
     assert day.data(FOLDER_LABEL_ROLE) == "day/result"
+
+
+def test_a_press_anywhere_in_a_layer_row_selects_it_with_a_full_frame(tmp_path, qtbot) -> None:
+    from PyQt6.QtCore import Qt
+
+    from karakal.app.main_window import KarakalWidget
+
+    for project in ("night", "day"):
+        _frames(tmp_path / project / "result", ["F_0001.jpg"])
+    widget = KarakalWidget(settings=QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(widget)
+    presenter = widget._presenter
+    for project in ("night", "day"):
+        presenter._append_folder_item(tmp_path / project / "result", checked=True)
+    presenter._refresh_folder_rows()
+    listing = presenter.folder_list
+    rows = [listing.itemWidget(listing.item(index)) for index in range(listing.count())]
+    listing.setCurrentRow(0)
+    assert [row.property("selected") for row in rows] == [True, False]
+
+    qtbot.mouseClick(rows[1].name_edit, Qt.MouseButton.LeftButton)
+    assert listing.currentRow() == 1
+    assert [row.property("selected") for row in rows] == [False, True]
+
+
+def test_readiness_counts_a_mask_and_its_confidence_map_in_one_folder_as_one_frame(tmp_path) -> None:
+    from karakal.core.frame_naming import FrameNaming
+
+    names = ["F_0001", "F_0002", "F_0003"]
+    _frames(tmp_path / "result", [f"{name}.jpg" for name in names] + [f"{name}_confidence.jpg" for name in names])
+    _frames(tmp_path / "src", [f"{name}.jpg" for name in names])
+    spec = ModelSpec(
+        "a", "A", tmp_path / "result", prob_folder=tmp_path / "result", original_folder=tmp_path / "src"
+    )
+    report = build_standalone_preflight(AnalysisProfileKind.GRID_DEFECTS, None, (spec,))
+    assert report.total_frames == 3
+    states = {role.role.value: (role.state, role.frame_count) for role in report.roles}
+    assert states == {"original": ("ready", 3), "model_output": ("ready", 3), "confidence": ("ready", 3)}
+
+    # Masks with their own suffix: still one frame per name, matching the source photos.
+    _frames(tmp_path / "suffixed", [f"{name}_mask.jpg" for name in names] + [f"{name}_conf.jpg" for name in names])
+    spec = ModelSpec(
+        "b", "B", tmp_path / "suffixed", prob_folder=tmp_path / "suffixed", original_folder=tmp_path / "src"
+    )
+    report = build_standalone_preflight(
+        AnalysisProfileKind.GRID_DEFECTS, None, (spec,), FrameNaming(mask_suffix="_mask", confidence_suffix="_conf")
+    )
+    assert {role.role.value: role.state for role in report.roles} == {
+        "original": "ready",
+        "model_output": "ready",
+        "confidence": "ready",
+    }
+    assert report.total_frames == 3

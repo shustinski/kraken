@@ -402,6 +402,9 @@ class ExtendFrameDetailsDialog(QDialog):
         self.original_item = scene.addPixmap(QPixmap())
         self.first_source_item = scene.addPixmap(QPixmap())
         self.second_source_item = scene.addPixmap(QPixmap())
+        # Mask of the second network of a ones/zeros pair, above the first one.
+        self.partner_item = scene.addPixmap(QPixmap())
+        self.partner_item.setVisible(False)
         self.result_item = scene.addPixmap(QPixmap())
         self.hold_preview_item = scene.addPixmap(QPixmap())
         # Legacy lite aliases retained for backward compatibility.
@@ -554,6 +557,10 @@ class ExtendFrameDetailsDialog(QDialog):
         self.grid_confidence_color_button = self._color_button()
         self.grid_confidence_legend = QLabel("", layers_group)
         self.grid_confidence_legend.setWordWrap(True)
+        self.grid_partner_visible = QCheckBox(layers_group)
+        self.grid_partner_visible.setChecked(True)
+        self.grid_partner_opacity = self._opacity_slider(55)
+        self.grid_partner_color_button = self._color_button()
         self.grid_source_visible = QCheckBox(layers_group)
         self.grid_source_visible.setChecked(True)
         self.grid_source_opacity = self._opacity_slider(100)
@@ -561,6 +568,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.grid_network_layer_title = QLabel(self._t("details.grid_network_layer"), layers_group)
         self.grid_confidence_layer_title = QLabel(self._t("details.grid_confidence_layer"), layers_group)
         self.grid_source_layer_title = QLabel(self._t("details.grid_source_layer"), layers_group)
+        self.grid_partner_layer_title = QLabel(self._t("details.grid_partner_layer"), layers_group)
         self.grid_marks_title = QLabel(self._t("details.grid_marks"), layers_group)
         self.grid_network_layer_row = self._layer_row(
             self.grid_network_visible,
@@ -583,8 +591,15 @@ class ExtendFrameDetailsDialog(QDialog):
             self.grid_source_opacity,
             extras=(self.grid_source_mode,),
         )
+        self.grid_partner_layer_row = self._layer_row(
+            self.grid_partner_visible,
+            self.grid_partner_opacity,
+            self.grid_partner_color_button,
+        )
+        self._grid_partner_model_id: str | None = None
         self._grid_confidence_scale = None
         layers_form.addRow(self.grid_network_layer_title, self.grid_network_layer_row)
+        layers_form.addRow(self.grid_partner_layer_title, self.grid_partner_layer_row)
         layers_form.addRow(self.grid_confidence_layer_title, self.grid_confidence_layer_row)
         layers_form.addRow("", self.grid_confidence_legend)
         layers_form.addRow(self.grid_source_layer_title, self.grid_source_layer_row)
@@ -1069,6 +1084,9 @@ class ExtendFrameDetailsDialog(QDialog):
             widget.valueChanged.connect(self._on_grid_layer_display_changed)
         self.grid_confidence_invert.toggled.connect(self._on_grid_layer_display_changed)
         self.grid_network_color_button.clicked.connect(lambda: self._choose_grid_layer_color("grid_network"))
+        self.grid_partner_color_button.clicked.connect(lambda: self._choose_grid_layer_color("grid_partner"))
+        self.grid_partner_visible.toggled.connect(self._update_layer_states)
+        self.grid_partner_opacity.valueChanged.connect(self._update_layer_states)
         self.grid_confidence_color_button.clicked.connect(lambda: self._choose_grid_layer_color("grid_confidence"))
         self.result_kind_combo.currentIndexChanged.connect(self._store_view_settings)
         self.layer_view_combo.currentIndexChanged.connect(self._store_view_settings)
@@ -2529,11 +2547,9 @@ class ExtendFrameDetailsDialog(QDialog):
         return "skip"
 
     def _grid_hotkey_layers(self) -> list[QCheckBox]:
-        from ..core.features import show_class_conflict, show_conductor_zone
+        from ..core.features import show_conductor_zone
 
         hidden = set()
-        if not show_class_conflict():
-            hidden.add("class_conflict")
         if not show_conductor_zone():
             hidden.add("conductor_zone")
         error_types = [
@@ -2658,6 +2674,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.original_item.setZValue(0.0)
         self.second_source_item.setZValue(1.0)
         self.first_source_item.setZValue(2.0)
+        self.partner_item.setZValue(2.5)
         self.result_item.setZValue(3.0)
         self.hold_preview_item.setZValue(4.0)
         self._apply_grid_layer_availability()
@@ -2670,6 +2687,9 @@ class ExtendFrameDetailsDialog(QDialog):
         self.second_source_item.setOpacity(self.grid_confidence_opacity.value() / 100.0)
         self.first_source_item.setVisible(show_network)
         self.first_source_item.setOpacity(self.grid_network_opacity.value() / 100.0)
+        show_partner = bool(self._grid_partner_model_id) and self.grid_partner_visible.isChecked()
+        self.partner_item.setVisible(show_partner)
+        self.partner_item.setOpacity(self.grid_partner_opacity.value() / 100.0)
 
     def _update_layer_states(self) -> None:
         grid_details = self._selected_result_kind() == "grid_cell_defects"
@@ -3181,6 +3201,48 @@ class ExtendFrameDetailsDialog(QDialog):
         self._derived_cache[cache_key] = values
         return values
 
+    def set_grid_pair_partner(self, model_id: str | None, name: str = "") -> None:
+        """Show the mask of the second network of a ones/zeros pair over the first one (None hides it)."""
+
+        normalized = str(model_id or "") or None
+        if normalized == self._grid_partner_model_id:
+            return
+        self._grid_partner_model_id = normalized
+        self.grid_partner_layer_title.setText(name or self._t("details.grid_partner_layer"))
+        if normalized:
+            # Both networks as coloured masks: their overlap is what the pair is about.
+            self._select_combo_data(self.grid_network_mode, "binary")
+        self._set_grid_detail_layer_rows(self._selected_result_kind() == "grid_cell_defects")
+        if self._selected_result_kind() == "grid_cell_defects":
+            self._refresh_grid_layer_pixmaps()
+        self._update_color_button_styles()
+
+    def _grid_partner_mask_path(self) -> str:
+        if not self._grid_partner_model_id:
+            return ""
+        return str((getattr(self._record, "model_mask_paths", {}) or {}).get(self._grid_partner_model_id) or "")
+
+    def _grid_partner_mask_array(self) -> np.ndarray | None:
+        path_text = self._grid_partner_mask_path()
+        if not path_text:
+            return None
+        shape = tuple(self._grid_model_output_array().shape)
+        cache_key = ("grid_partner_mask_array", path_text, shape)
+        cached = self._derived_cache.get(cache_key)
+        if isinstance(cached, np.ndarray):
+            return cached
+        try:
+            values = np.asarray(load_grayscale_image(Path(path_text)), dtype=np.uint8)
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
+            _LOGGER.warning("Could not load the second network mask %s: %s", path_text, error)
+            return None
+        if values.ndim != 2 or values.size == 0:
+            return None
+        if len(shape) == 2 and tuple(values.shape) != shape:
+            values = np.asarray(resize_grayscale_image(values, shape), dtype=np.uint8)
+        self._derived_cache[cache_key] = values
+        return values
+
     def _grid_model_output_path(self) -> str:
         model_id = str(self._selected_model_for_current_comparison() or "")
         mask_paths = getattr(self._record, "model_mask_paths", {}) or {}
@@ -3281,6 +3343,22 @@ class ExtendFrameDetailsDialog(QDialog):
         else:
             self.first_source_item.setPixmap(QPixmap())
             self.first_source_item.setTransform(QTransform())
+        partner = self._grid_partner_mask_array()
+        if partner is not None:
+            self.partner_item.setPixmap(
+                self._grid_binary_pixmap(
+                    "partner",
+                    partner,
+                    color=self._named_color("grid_partner"),
+                    threshold=50,
+                    invert=False,
+                    identity=self._grid_partner_mask_path(),
+                )
+            )
+            self._scale_pixmap_item_to_scene(self.partner_item)
+        else:
+            self.partner_item.setPixmap(QPixmap())
+            self.partner_item.setTransform(QTransform())
         self._apply_grid_image_stack()
 
     def _grid_gray_layer_pixmap(self, layer: str, gray: np.ndarray | None, *, identity: str) -> QPixmap:
@@ -3933,7 +4011,7 @@ class ExtendFrameDetailsDialog(QDialog):
         )
         if hasattr(self, "grid_error_types_title"):
             self.grid_error_types_title.setVisible(bool(visible))
-        from ..core.features import show_class_conflict, show_conductor_zone, show_grid_examples, show_threshold_window
+        from ..core.features import show_conductor_zone, show_grid_examples, show_threshold_window
 
         if hasattr(self, "grid_tuning_button"):
             self.grid_tuning_button.setVisible(bool(visible) and show_threshold_window())
@@ -3953,8 +4031,6 @@ class ExtendFrameDetailsDialog(QDialog):
                 show_widget = False
             widget.setVisible(show_widget)
         hidden_types = set()
-        if not show_class_conflict():
-            hidden_types.add("class_conflict")
         if not show_conductor_zone():
             hidden_types.add("conductor_zone")
         checks = getattr(self, "grid_error_type_checks", {}) or {}
@@ -3972,6 +4048,8 @@ class ExtendFrameDetailsDialog(QDialog):
                     label.setVisible(show_widget)
 
     def _set_grid_detail_layer_rows(self, grid_details: bool) -> None:
+        for widget in (self.grid_partner_layer_title, self.grid_partner_layer_row):
+            widget.setVisible(bool(grid_details) and bool(self._grid_partner_model_id))
         for widget in (
             self.grid_network_layer_title,
             self.grid_network_layer_row,
@@ -5564,6 +5642,7 @@ class ExtendFrameDetailsDialog(QDialog):
             "input_output_mask": QColor(255, 88, 40, 255),
             "grid_network": QColor(80, 210, 255, 255),
             "grid_confidence": QColor(239, 68, 68, 255),
+            "grid_partner": QColor(255, 170, 40, 255),
         }
         value = (self._session_view_state.get("colors") or {}).get(key)
         if isinstance(value, str):
@@ -5654,6 +5733,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self.result_mask_color_button: self._active_result_color_key() or "difference_mask",
             self.grid_network_color_button: "grid_network",
             self.grid_confidence_color_button: "grid_confidence",
+            self.grid_partner_color_button: "grid_partner",
         }
         for button, key in mapping.items():
             color = self._named_color(key)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import replace
+from functools import partial
 from time import monotonic
 from threading import Event
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
@@ -14,11 +15,9 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from .domain import BuildOptions, BuildResult, FolderSpec, FrameRecord, ModelSpec
 from .repository_shared import BuildCancelledError
 from .grid_anomaly import (
-    GRID_CLASS_CONFLICT_MIN_AREA,
     GridDamageAnalysisConfig,
     GridCellReferenceProfile,
     GridFrameAnalysisResult,
-    analyze_class_conflict_chunk,
     analyze_grid_frame_chunk,
     analyze_grid_frame_sources_chunk,
     configure_grid_worker_process,
@@ -26,6 +25,7 @@ from .grid_anomaly import (
     resolve_reference_profile,
 )
 from .performance import PerformanceConfig, load_performance_config
+from .pair_conflict import analyze_class_conflict_chunk
 from .profiling import ProfileSnapshot, ProfilerRun, WorkerProfilePacket, activate_profiler, export_profile
 from .analytics import collect_frame_records, compute_build_result_analytics
 from .frame_details import load_frame_detail_base, load_frame_detail_model_confidence
@@ -887,17 +887,18 @@ class PairedGridInspectionWorker(GridInspectionWorker):
 
 
 class MultiModelGridInspectionWorker(WorkerBase):
-    """Compute grid matrices for several model layers in one job.
+    """Compute grid matrices for several model layers, then the conflicts of ones/zeros pairs, in one job.
 
-    Emits ``multiModelResultsReady`` with the running per-model buffer after every
-    finished batch, and ``finished`` with the same structure once all models are done.
-    The output shape is ``{model_id: {frame_key: {layer_key: GridFrameAnalysisResult}}}``.
-    Progress counts every (model, frame) pair so the UI keeps ticking across models.
+    Emits ``multiModelResultsReady`` with every finished batch and ``finished`` with all results.
+    The output shape is ``{model_id: {frame_key: {layer_key: GridFrameAnalysisResult}}}``; a pair
+    is stored under its pair key with the single layer ``conflict``.
+    Progress counts every (model, frame) and (pair, frame) item so the UI keeps ticking across them.
+    ``model_ids`` may be empty: then only the pairs are computed.
     """
 
     multiModelResultsReady = pyqtSignal(object)
     analysisErrors = pyqtSignal(object)
-    modelStarted = pyqtSignal(str, int, int)  # model_id, index (1-based), total_models
+    modelStarted = pyqtSignal(str, int, int)  # model or pair key, index (1-based), total
     referenceProfileReady = pyqtSignal(str, object)
 
     def __init__(
@@ -910,6 +911,7 @@ class MultiModelGridInspectionWorker(WorkerBase):
         use_cache: bool = True,
         performance_config: PerformanceConfig | None = None,
         requested_layers: tuple[str, ...] | None = None,
+        conflict_pairs: tuple[tuple[str, str, str], ...] = (),
     ) -> None:
         super().__init__(performance_config=performance_config, analysis_type="validation_grid")
         self._records = tuple(records)
@@ -925,6 +927,8 @@ class MultiModelGridInspectionWorker(WorkerBase):
         self._reference_profiles: dict[str, GridCellReferenceProfile | None] = {
             str(key): value for key, value in (reference_profiles or {}).items()
         }
+        # (pair key, ones model id, zeros model id)
+        self._conflict_pairs = tuple((str(key), str(ones), str(zeros)) for key, ones, zeros in conflict_pairs)
         self._analysis_errors: dict[str, str] = {}
 
     def _paired_records_for(self, model_id: str) -> list[tuple[str, str, str]]:
@@ -935,6 +939,19 @@ class MultiModelGridInspectionWorker(WorkerBase):
             confidence_path = str((getattr(record, "model_prob_paths", {}) or {}).get(model_id) or "")
             if key and (binary_path or confidence_path):
                 records.append((key, confidence_path, binary_path))
+        return records
+
+    def _conflict_records_for(self, ones_id: str, zeros_id: str) -> list[tuple[str, str, str]]:
+        """Frames where both networks of the pair have a mask."""
+
+        records: list[tuple[str, str, str]] = []
+        for record in self._records:
+            key = str(getattr(record, "key", "") or "")
+            paths = getattr(record, "model_mask_paths", {}) or {}
+            ones_path = str(paths.get(ones_id) or "")
+            zeros_path = str(paths.get(zeros_id) or "")
+            if key and ones_path and zeros_path:
+                records.append((key, ones_path, zeros_path))
         return records
 
     @staticmethod
@@ -953,23 +970,32 @@ class MultiModelGridInspectionWorker(WorkerBase):
             plans.append((model_id, self._paired_records_for(model_id)))
         return plans
 
+    def _pair_plans(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
+        return [
+            (key, self._conflict_records_for(ones_id, zeros_id)) for key, ones_id, zeros_id in self._conflict_pairs
+        ]
+
     def run(self) -> None:
         with activate_profiler(self._profiler):
             try:
                 self._analysis_errors.clear()
                 combined: dict[str, dict[str, dict[str, GridFrameAnalysisResult]]] = {}
                 plans = self._plans()
-                pair_total = sum(len(paired) for _model_id, paired in plans)
-                self._emit_progress(0, max(1, pair_total), "", force=True)
+                pair_plans = self._pair_plans()
+                total_steps = len(plans) + len(pair_plans)
+                item_total = sum(len(paired) for _key, paired in (*plans, *pair_plans))
+                self._emit_progress(0, max(1, item_total), "", force=True)
                 config = replace(self._config, include_debug_payload=False, debug=False)
                 mode, max_workers, chunk_size, opencv_threads = _grid_inspection_execution_settings(
                     self._performance_config
                 )
                 completed_total = 0
-                for index, (model_id, paired) in enumerate(plans, start=1):
+                step = 0
+                for model_id, paired in plans:
+                    step += 1
                     if self._is_cancelled():
                         break
-                    self.modelStarted.emit(model_id, int(index), int(len(plans)))
+                    self.modelStarted.emit(model_id, int(step), int(total_steps))
                     per_model_payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
                     combined[model_id] = per_model_payloads
                     if not paired:
@@ -981,35 +1007,47 @@ class MultiModelGridInspectionWorker(WorkerBase):
                     if reference_profile is not requested_profile:
                         self._reference_profiles[model_id] = reference_profile
                         self.referenceProfileReady.emit(model_id, reference_profile)
-                    chunks = tuple(
-                        tuple(paired[offset : offset + chunk_size])
-                        for offset in range(0, len(paired), chunk_size)
+                    analyze = partial(
+                        analyze_grid_frame_sources_chunk,
+                        config=config,
+                        use_cache=self._use_cache,
+                        reference_profile=reference_profile,
+                        single_source_layer=single_source_layer,
+                        requested_layers=self._requested_layers,
                     )
-                    if mode == "sequential" or len(paired) <= chunk_size:
-                        completed_total = self._run_sequential(
-                            chunks,
-                            config,
-                            per_model_payloads,
-                            model_id=model_id,
-                            combined=combined,
+                    completed_total = self._run_plan(
+                        paired,
+                        analyze,
+                        per_model_payloads,
+                        key=model_id,
+                        completed_total=completed_total,
+                        item_total=item_total,
+                        mode=mode,
+                        chunk_size=chunk_size,
+                        max_workers=max_workers,
+                        opencv_threads=opencv_threads,
+                    )
+                for key, paired in pair_plans:
+                    step += 1
+                    if self._is_cancelled():
+                        break
+                    self.modelStarted.emit(key, int(step), int(total_steps))
+                    per_pair_payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
+                    combined[key] = per_pair_payloads
+                    if not paired:
+                        continue
+                    with self._profiler.stage("validation.grid.pair_conflict", frame_count=len(paired)):
+                        completed_total = self._run_plan(
+                            paired,
+                            partial(analyze_class_conflict_chunk, use_cache=self._use_cache),
+                            per_pair_payloads,
+                            key=key,
                             completed_total=completed_total,
-                            pair_total=pair_total,
-                            reference_profile=reference_profile,
-                            single_source_layer=single_source_layer,
-                        )
-                    else:
-                        completed_total = self._run_process(
-                            chunks,
-                            config,
-                            per_model_payloads,
-                            model_id=model_id,
-                            combined=combined,
-                            completed_total=completed_total,
-                            pair_total=pair_total,
+                            item_total=item_total,
+                            mode=mode,
+                            chunk_size=chunk_size,
                             max_workers=max_workers,
                             opencv_threads=opencv_threads,
-                            reference_profile=reference_profile,
-                            single_source_layer=single_source_layer,
                         )
                 if self._is_cancelled():
                     self._profiler.increment("runs.cancelled")
@@ -1023,82 +1061,95 @@ class MultiModelGridInspectionWorker(WorkerBase):
                 self._finish_profiling()
         self.finished.emit(combined)
 
+    def _run_plan(
+        self,
+        paired: list[tuple[str, str, str]],
+        analyze,
+        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
+        *,
+        key: str,
+        completed_total: int,
+        item_total: int,
+        mode: str,
+        chunk_size: int,
+        max_workers: int,
+        opencv_threads: int,
+    ) -> int:
+        chunks = tuple(tuple(paired[offset : offset + chunk_size]) for offset in range(0, len(paired), chunk_size))
+        if mode == "sequential" or len(paired) <= chunk_size:
+            return self._run_sequential(
+                chunks, analyze, payloads, key=key, completed_total=completed_total, item_total=item_total
+            )
+        return self._run_process(
+            chunks,
+            analyze,
+            payloads,
+            key=key,
+            completed_total=completed_total,
+            item_total=item_total,
+            max_workers=max_workers,
+            opencv_threads=opencv_threads,
+        )
+
     def _apply_chunk(
         self,
         chunk: tuple[tuple[str, str, str], ...],
         chunk_payloads: dict[str, dict[str, GridFrameAnalysisResult]],
         errors: dict[str, str],
         *,
-        per_model_payloads: dict[str, dict[str, GridFrameAnalysisResult]],
-        model_id: str,
-        combined: dict[str, dict[str, dict[str, GridFrameAnalysisResult]]],
+        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
+        key: str,
         completed_total: int,
-        pair_total: int,
+        item_total: int,
     ) -> int:
         if errors:
-            self._analysis_errors.update({f"{model_id}:{key}": value for key, value in errors.items()})
+            self._analysis_errors.update({f"{key}:{frame}": value for frame, value in errors.items()})
             self._profiler.increment("frames.errors", len(errors))
             self.analysisErrors.emit(dict(errors))
         if chunk_payloads:
-            per_model_payloads.update(chunk_payloads)
-            self.multiModelResultsReady.emit(
-                {model_id: {str(key): dict(value) for key, value in chunk_payloads.items()}}
-            )
-        next_completed = min(pair_total, completed_total + len(chunk))
+            payloads.update(chunk_payloads)
+            self.multiModelResultsReady.emit({key: {str(frame): dict(value) for frame, value in chunk_payloads.items()}})
+        next_completed = min(item_total, completed_total + len(chunk))
         last_key = chunk[-1][0] if chunk else ""
-        self._emit_progress(next_completed, max(1, pair_total), last_key, force=next_completed >= pair_total)
+        self._emit_progress(next_completed, max(1, item_total), last_key, force=next_completed >= item_total)
         return next_completed
 
     def _run_sequential(
         self,
         chunks: tuple[tuple[tuple[str, str, str], ...], ...],
-        config: GridDamageAnalysisConfig,
-        per_model_payloads: dict[str, dict[str, GridFrameAnalysisResult]],
+        analyze,
+        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
         *,
-        model_id: str,
-        combined: dict[str, dict[str, dict[str, GridFrameAnalysisResult]]],
+        key: str,
         completed_total: int,
-        pair_total: int,
-        reference_profile: GridCellReferenceProfile | None,
-        single_source_layer: str | None,
+        item_total: int,
     ) -> int:
         for chunk in chunks:
             if self._is_cancelled():
                 break
-            chunk_payloads, errors = analyze_grid_frame_sources_chunk(
-                chunk,
-                config,
-                self._use_cache,
-                reference_profile=reference_profile,
-                single_source_layer=single_source_layer,
-                requested_layers=self._requested_layers,
-            )
+            chunk_payloads, errors = analyze(chunk)
             completed_total = self._apply_chunk(
                 chunk,
                 chunk_payloads,
                 errors,
-                per_model_payloads=per_model_payloads,
-                model_id=model_id,
-                combined=combined,
+                payloads=payloads,
+                key=key,
                 completed_total=completed_total,
-                pair_total=pair_total,
+                item_total=item_total,
             )
         return completed_total
 
     def _run_process(
         self,
         chunks: tuple[tuple[tuple[str, str, str], ...], ...],
-        config: GridDamageAnalysisConfig,
-        per_model_payloads: dict[str, dict[str, GridFrameAnalysisResult]],
+        analyze,
+        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
         *,
-        model_id: str,
-        combined: dict[str, dict[str, dict[str, GridFrameAnalysisResult]]],
+        key: str,
         completed_total: int,
-        pair_total: int,
+        item_total: int,
         max_workers: int,
         opencv_threads: int,
-        reference_profile: GridCellReferenceProfile | None,
-        single_source_layer: str | None,
     ) -> int:
         executor = ProcessPoolExecutor(
             max_workers=max_workers,
@@ -1114,19 +1165,9 @@ class MultiModelGridInspectionWorker(WorkerBase):
                     chunk = chunks[submitted]
                     submitted += 1
                     try:
-                        future = executor.submit(
-                            analyze_grid_frame_sources_chunk,
-                            chunk,
-                            config,
-                            self._use_cache,
-                            reference_profile=reference_profile,
-                            single_source_layer=single_source_layer,
-                            requested_layers=self._requested_layers,
-                        )
+                        future = executor.submit(analyze, chunk)
                     except (OSError, RuntimeError) as error:
-                        _LOGGER.warning(
-                            "Could not submit multi-model grid batch; sequential fallback: %s", error
-                        )
+                        _LOGGER.warning("Could not submit multi-model grid batch; sequential fallback: %s", error)
                         fallback_chunks.append(chunk)
                         fallback_chunks.extend(chunks[submitted:])
                         submitted = len(chunks)
@@ -1147,273 +1188,25 @@ class MultiModelGridInspectionWorker(WorkerBase):
                         chunk,
                         chunk_payloads,
                         errors,
-                        per_model_payloads=per_model_payloads,
-                        model_id=model_id,
-                        combined=combined,
+                        payloads=payloads,
+                        key=key,
                         completed_total=completed_total,
-                        pair_total=pair_total,
+                        item_total=item_total,
                     )
             if fallback_chunks and not self._is_cancelled():
                 completed_total = self._run_sequential(
                     tuple(fallback_chunks),
-                    config,
-                    per_model_payloads,
-                    model_id=model_id,
-                    combined=combined,
+                    analyze,
+                    payloads,
+                    key=key,
                     completed_total=completed_total,
-                    pair_total=pair_total,
-                    reference_profile=reference_profile,
-                    single_source_layer=single_source_layer,
+                    item_total=item_total,
                 )
         finally:
             for future in pending:
                 future.cancel()
             executor.shutdown(wait=False, cancel_futures=True)
         return completed_total
-
-
-class DerivedConflictGridInspectionWorker(GridInspectionWorker):
-    """Review filtered ones∩zeros class conflicts between two model binary layers."""
-
-    def __init__(
-        self,
-        records: tuple[FrameRecord, ...] | list[FrameRecord],
-        *,
-        model_a_id: str,
-        model_b_id: str,
-        primary_model_id: str | None = None,
-        threshold: float = 0.5,
-        min_area: int = GRID_CLASS_CONFLICT_MIN_AREA,
-        use_cache: bool = True,
-        performance_config: PerformanceConfig | None = None,
-        reference_profile: GridCellReferenceProfile | None = None,
-        requested_layers: tuple[str, ...] | None = None,
-        config: GridDamageAnalysisConfig | None = None,
-    ) -> None:
-        super().__init__(
-            records,
-            config or GridDamageAnalysisConfig(cell_representation="binary"),
-            model_id=primary_model_id or model_a_id,
-            reference_profile=reference_profile,
-            use_cache=use_cache,
-            performance_config=performance_config,
-        )
-        self._model_a_id = str(model_a_id)
-        self._model_b_id = str(model_b_id)
-        self._threshold = float(threshold)
-        self._min_area = max(1, int(min_area))
-        layers = tuple(
-            str(layer)
-            for layer in (requested_layers or ("derived_conflict",))
-            if str(layer) in {"confidence", "binary", "derived_conflict"}
-        )
-        self._requested_layers = layers or ("derived_conflict",)
-        self._base_layers = tuple(layer for layer in self._requested_layers if layer != "derived_conflict")
-        self._want_conflict = "derived_conflict" in self._requested_layers
-
-    def _conflict_records(self) -> list[tuple[str, str, str]]:
-        entries: list[tuple[str, str, str]] = []
-        for record in self._records:
-            key = str(getattr(record, "key", "") or "")
-            paths = getattr(record, "model_mask_paths", {}) or {}
-            path_a = str(paths.get(self._model_a_id) or "")
-            path_b = str(paths.get(self._model_b_id) or "")
-            if key and path_a and path_b:
-                entries.append((key, path_a, path_b))
-        return entries
-
-    def _paired_records_for_primary(self) -> list[tuple[str, str, str]]:
-        model_id = str(self._model_id or self._model_a_id)
-        records: list[tuple[str, str, str]] = []
-        for record in self._records:
-            key = str(getattr(record, "key", "") or "")
-            binary_path = str((getattr(record, "model_mask_paths", {}) or {}).get(model_id) or "")
-            confidence_path = str((getattr(record, "model_prob_paths", {}) or {}).get(model_id) or "")
-            if key and (binary_path or confidence_path):
-                records.append((key, confidence_path, binary_path))
-        return records
-
-    def run(self) -> None:
-        with activate_profiler(self._profiler):
-            try:
-                self._partial_result_buffer.clear()
-                self._analysis_errors.clear()
-                self._emit_progress(0, 0, "", force=True)
-                self._prepare_reference_profile()
-                payloads: dict[str, dict[str, GridFrameAnalysisResult]] = {}
-                config = replace(self._config, include_debug_payload=False, debug=False)
-                if self._base_layers:
-                    paired = self._paired_records_for_primary()
-                    base_result, base_errors = analyze_grid_frame_sources_chunk(
-                        tuple(paired),
-                        config,
-                        self._use_cache,
-                        reference_profile=self._reference_profile,
-                        requested_layers=self._base_layers,
-                    )
-                    if base_errors:
-                        self._analysis_errors.update(base_errors)
-                        self.analysisErrors.emit(dict(base_errors))
-                    for key, layers in base_result.items():
-                        payloads[str(key)] = dict(layers)
-                    if payloads:
-                        self._queue_partial_results(dict(payloads), force=True)
-                records = self._conflict_records() if self._want_conflict else []
-                total = max(1, len(records) if self._want_conflict else len(payloads) or len(self._records))
-                completed = 0
-                if self._want_conflict:
-                    mode, max_workers, chunk_size, opencv_threads = _grid_inspection_execution_settings(
-                        self._performance_config
-                    )
-                    chunks = tuple(
-                        tuple(records[offset : offset + chunk_size]) for offset in range(0, len(records), chunk_size)
-                    )
-                    with self._profiler.stage(
-                        "validation.grid.conflict_worker_pool", frame_count=len(records), batch_count=len(chunks)
-                    ):
-                        if mode == "sequential" or len(records) <= chunk_size:
-                            for chunk in chunks:
-                                if self._is_cancelled():
-                                    break
-                                chunk_payloads, errors = analyze_class_conflict_chunk(
-                                    chunk,
-                                    model_a_id=self._model_a_id,
-                                    model_b_id=self._model_b_id,
-                                    threshold=self._threshold,
-                                    min_area=self._min_area,
-                                    use_cache=self._use_cache,
-                                )
-                                completed = self._merge_conflict_chunk(
-                                    chunk, chunk_payloads, errors, payloads, completed=completed, total=total
-                                )
-                        else:
-                            completed = self._run_conflict_process(
-                                chunks,
-                                payloads,
-                                total,
-                                max_workers,
-                                opencv_threads,
-                                completed=completed,
-                            )
-                else:
-                    self._emit_progress(total, total, "", force=True)
-                self._flush_partial_results()
-                if self._is_cancelled():
-                    self._profiler.increment("runs.cancelled")
-                    self.cancelled.emit()
-                    return
-            except Exception as error:
-                _LOGGER.exception("Derived class-conflict grid inspection failed")
-                self.failed.emit(str(error))
-                return
-            finally:
-                self._finish_profiling()
-        self.finished.emit(payloads)
-
-    def _merge_conflict_chunk(
-        self,
-        chunk: tuple[tuple[str, str, str], ...],
-        chunk_payloads: dict[str, dict[str, GridFrameAnalysisResult]],
-        errors: dict[str, str],
-        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
-        *,
-        completed: int,
-        total: int,
-    ) -> int:
-        if errors:
-            self._analysis_errors.update(errors)
-            self._profiler.increment("frames.errors", len(errors))
-            self.analysisErrors.emit(dict(errors))
-        merged_partial: dict[str, dict[str, GridFrameAnalysisResult]] = {}
-        for key, layer_payload in chunk_payloads.items():
-            combined = dict(payloads.get(str(key), {}))
-            combined.update(layer_payload)
-            payloads[str(key)] = combined
-            merged_partial[str(key)] = combined
-        if merged_partial:
-            self._queue_partial_results(merged_partial)
-        next_completed = min(total, completed + len(chunk))
-        last_key = chunk[-1][0] if chunk else ""
-        self._emit_progress(next_completed, total, last_key, force=next_completed >= total)
-        return next_completed
-
-    def _run_conflict_process(
-        self,
-        chunks: tuple[tuple[tuple[str, str, str], ...], ...],
-        payloads: dict[str, dict[str, GridFrameAnalysisResult]],
-        total: int,
-        max_workers: int,
-        opencv_threads: int,
-        *,
-        completed: int,
-    ) -> int:
-        executor = ProcessPoolExecutor(
-            max_workers=max_workers,
-            initializer=configure_grid_worker_process,
-            initargs=(opencv_threads,),
-        )
-        pending: dict[object, tuple[tuple[str, str, str], ...]] = {}
-        submitted = 0
-        fallback: list[tuple[tuple[str, str, str], ...]] = []
-        try:
-            while not self._is_cancelled() and (submitted < len(chunks) or pending):
-                while submitted < len(chunks) and len(pending) < max_workers * 2:
-                    chunk = chunks[submitted]
-                    submitted += 1
-                    try:
-                        future = executor.submit(
-                            analyze_class_conflict_chunk,
-                            chunk,
-                            model_a_id=self._model_a_id,
-                            model_b_id=self._model_b_id,
-                            threshold=self._threshold,
-                            min_area=self._min_area,
-                            use_cache=self._use_cache,
-                        )
-                    except (OSError, RuntimeError) as error:
-                        _LOGGER.warning("Could not submit conflict batch; sequential fallback: %s", error)
-                        fallback.append(chunk)
-                        fallback.extend(chunks[submitted:])
-                        submitted = len(chunks)
-                        break
-                    pending[future] = chunk
-                if not pending:
-                    break
-                done, _not_done = wait(tuple(pending), timeout=0.05, return_when=FIRST_COMPLETED)
-                for future in done:
-                    chunk = pending.pop(future, ())
-                    try:
-                        chunk_payloads, errors = future.result()
-                    except Exception as error:
-                        _LOGGER.warning("Conflict worker batch failed; sequential fallback: %s", error)
-                        fallback.append(chunk)
-                        continue
-                    completed = self._merge_conflict_chunk(
-                        chunk, chunk_payloads, errors, payloads, completed=completed, total=total
-                    )
-            for chunk in fallback:
-                if self._is_cancelled():
-                    break
-                chunk_payloads, errors = analyze_class_conflict_chunk(
-                    chunk,
-                    model_a_id=self._model_a_id,
-                    model_b_id=self._model_b_id,
-                    threshold=self._threshold,
-                    min_area=self._min_area,
-                    use_cache=self._use_cache,
-                )
-                completed = self._merge_conflict_chunk(
-                    chunk, chunk_payloads, errors, payloads, completed=completed, total=total
-                )
-        finally:
-            for future in pending:
-                future.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
-        return completed
-
-
-# Back-compat alias.
-DerivedXorGridInspectionWorker = DerivedConflictGridInspectionWorker
 
 
 class DetailPayloadWorker(WorkerBase):

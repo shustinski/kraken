@@ -1,4 +1,4 @@
-"""Tester profile hides unfinished UI and ignores saved extra modes."""
+"""Tester profile hides unfinished UI, keeps ones/zeros conflicts, and ignores saved extra modes."""
 from __future__ import annotations
 
 
@@ -7,14 +7,12 @@ from PyQt6.QtWidgets import QCheckBox, QPushButton
 from kraken_core.analysis_protocol import AnalysisProfileKind
 
 from karakal.app.main_window import KarakalWidget
-from karakal.core.features import show_class_conflict
 from karakal.core.features import tester_build as profile_is_tester
 
 
 def test_dev_profile_is_the_default(monkeypatch) -> None:
     monkeypatch.delenv("KARAKAL_BUILD_PROFILE", raising=False)
     assert profile_is_tester() is False
-    assert show_class_conflict() is True
     from karakal.core.features import show_confidence_defects
 
     assert show_confidence_defects() is True
@@ -26,7 +24,6 @@ def test_confidence_defects_enabled_in_tester_profile(monkeypatch) -> None:
 
     assert show_confidence_defects() is True
     assert profile_is_tester() is True
-    assert show_class_conflict() is False
 
 
 def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) -> None:
@@ -52,15 +49,16 @@ def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) 
     assert not widget.grid_layer_compute_checks["confidence"].isHidden()
     assert widget.grid_layer_compute_checks["confidence"].isChecked()
     assert widget.grid_layer_display_combo.findData("confidence") >= 0
-    assert not widget.grid_layer_compute_checks["derived_conflict"].isVisibleTo(widget)
-    assert not widget.grid_error_type_checks["class_conflict"].isVisibleTo(widget)
+    assert "derived_conflict" not in widget.grid_layer_compute_checks
+    # Conflicts of a ones/zeros pair are part of the tester build.
+    assert not widget.grid_error_type_checks["class_conflict"].isHidden()
     assert not widget.grid_error_type_checks["conductor_zone"].isVisibleTo(widget)
     assert not widget.btn_export_layer.isVisibleTo(widget)
     payload = widget._presenter._grid_inspection_config_payload()
-    assert "derived_conflict" not in payload["requested_layers"]
-    assert "confidence" in payload["requested_layers"]
-    assert "binary" in payload["requested_layers"]
-    assert "class_conflict" not in payload["enabled_error_types"]
+    assert payload["requested_layers"] == ["confidence", "binary"]
+    assert "class_conflict" in payload["enabled_error_types"]
+    assert payload["conflict_min_area_px"] == 6
+    assert payload["conflict_min_cell_share"] == 0.10
     assert "calibration_examples" not in payload
 
 
@@ -75,15 +73,11 @@ def test_tester_profile_stays_hidden_after_two_models(tmp_path, qtbot, monkeypat
         presenter._append_folder_item(folder, checked=True)
 
     def hidden() -> None:
-        assert not widget.pair_matrix_group.isVisibleTo(widget)
+        # Two layers: the pair table is there for ones/zeros pairs.
+        assert widget.pair_matrix_group.isVisibleTo(widget)
         assert not widget.grid_layer_compute_checks["confidence"].isHidden()
         assert widget.grid_layer_display_combo.findData("confidence") >= 0
-        assert not widget.grid_layer_compute_checks["derived_conflict"].isVisibleTo(widget)
         assert widget.grid_layer_display_combo.findData("derived_conflict") < 0
-        tabs = getattr(widget, "grid_inspection_layer_tabs", None)
-        if tabs is not None:
-            conflict_index = presenter._grid_inspection_layer_keys().index("derived_conflict")
-            assert not tabs.isTabVisible(conflict_index)
         assert not widget._grid_reference_frame_row.isHidden()
         profiles = [
             button
@@ -104,8 +98,7 @@ def test_tester_profile_stays_hidden_after_two_models(tmp_path, qtbot, monkeypat
     presenter._sync_mode_controls()
     hidden()
     payload = presenter._grid_inspection_config_payload()
-    assert "derived_conflict" not in payload["requested_layers"]
-    assert "confidence" in payload["requested_layers"]
+    assert payload["requested_layers"] == ["confidence", "binary"]
 
     from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
     from karakal.ui.details_dialog import ExtendFrameDetailsDialog
@@ -123,7 +116,7 @@ def test_tester_profile_stays_hidden_after_two_models(tmp_path, qtbot, monkeypat
     dialog.details_control_tabs.setCurrentIndex(1)
     assert not dialog.grid_confidence_layer_row.isHidden()
     dialog.details_control_tabs.setCurrentIndex(0)
-    assert not dialog.grid_error_type_checks["class_conflict"].isVisibleTo(dialog)
+    assert not dialog.grid_error_type_checks["class_conflict"].isHidden()
     assert not dialog.comparison_score_card.isVisibleTo(dialog)
 
 

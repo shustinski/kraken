@@ -59,6 +59,8 @@ FOLDER_CONFIDENCE_EXPANDED_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 # Source photos and matrix width of one layer (each layer may be its own project).
 FOLDER_ORIGINAL_ROLE = int(Qt.ItemDataRole.UserRole) + 5
 FOLDER_FRAMES_PER_ROW_ROLE = int(Qt.ItemDataRole.UserRole) + 6
+# Which cells the layer's network paints: "ones", "zeros" or "" (not set); see core/pair_conflict.py.
+FOLDER_CELL_CLASS_ROLE = int(Qt.ItemDataRole.UserRole) + 7
 
 DEFAULT_COMPARISON_MODE = ComparisonMode.DISAGREEMENT
 DEFAULT_CELL_SIZE = 15
@@ -377,6 +379,14 @@ EXTEND_WIDGET_STYLESHEET = """
 #KarakalRoot QListWidget::item:hover { background-color: #1d2a38; color: #edf3fb; }
 #KarakalRoot QListWidget::item:selected { background-color: #275fbb; color: #ffffff; }
 #KarakalRoot QListWidget::item:selected:alternate { background-color: #275fbb; color: #ffffff; }
+#KarakalRoot QListWidget#folderList::item, #KarakalRoot QListWidget#folderList::item:hover, #KarakalRoot QListWidget#folderList::item:selected { background-color: transparent; padding: 0px; margin: 0px; }
+#KarakalRoot QWidget#folderRow { background-color: #161d26; border: 2px solid #232f3c; border-radius: 8px; }
+#KarakalRoot QWidget#folderRow:hover { border-color: #3a536d; }
+#KarakalRoot QWidget#folderRow[selected="true"] { background-color: #19304d; border: 2px solid #4e90ff; }
+#KarakalRoot QWidget#folderRowPart { background-color: transparent; }
+#KarakalRoot QLabel#cellClassBadge { background-color: #24364d; color: #cfe2ff; border-radius: 9px; font-weight: 700; }
+#KarakalRoot QPushButton[pairCell="true"] { min-height: 22px; padding: 1px 6px; border-radius: 6px; font-weight: 600; }
+#KarakalRoot QPushButton[pairCell="true"][selected="true"] { background-color: #19304d; border: 2px solid #4e90ff; }
 #KarakalRoot QTableWidget { border: 1px solid #28384b; border-radius: 8px; gridline-color: #30445a; outline: none; selection-background-color: #275fbb; selection-color: #ffffff; alternate-background-color: #11161d; }
 #KarakalRoot QTableWidget QTableCornerButton::section { background-color: #18212b; border: 1px solid #30445a; }
 #KarakalRoot QHeaderView::section { background-color: #18212b; color: #dfe8f2; border: 1px solid #30445a; padding: 4px; font-weight: 600; }

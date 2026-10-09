@@ -9,6 +9,7 @@ from pathlib import Path
 from kraken_core.analysis_protocol import AnalysisProfileKind, AnalysisSourceRole
 
 from .domain import FolderSpec, ModelSpec
+from .frame_naming import DEFAULT_FRAME_NAMING, FrameNaming
 from .image_formats import SUPPORTED_IMAGE_EXTENSION_SET
 
 
@@ -120,17 +121,44 @@ class AnalysisPreflightReport:
         return sum(1 for issue in self.issues if issue.severity == PreflightSeverity.WARNING)
 
 
-def _folder_inventory(path: Path | None) -> tuple[set[str], tuple[str, ...]]:
+def _same_folder(first: Path | None, second: Path | None) -> bool:
+    if first is None or second is None:
+        return False
+    try:
+        return Path(first).resolve() == Path(second).resolve()
+    except OSError:
+        return str(first) == str(second)
+
+
+def _folder_inventory(
+    path: Path | None,
+    *,
+    naming: FrameNaming | None = None,
+    kind: str = "plain",
+) -> tuple[set[str], tuple[str, ...]]:
+    """Frame names of one folder.
+
+    ``kind`` follows the file name suffixes, like the frame collection does: «mask» keeps only
+    masks, «confidence_beside_masks» only confidence maps (both lie in the mask folder), and
+    «confidence» any file of a separate confidence folder. A mask and its confidence map are
+    one frame, so they are counted by the frame name without the suffix.
+    """
+
     if path is None:
         return set(), ()
     if not path.exists() or not path.is_dir():
         return set(), (str(path),)
+    naming = naming or DEFAULT_FRAME_NAMING
     keys: set[str] = set()
     duplicates: set[str] = set()
     for candidate in path.iterdir():
         if not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED_IMAGE_EXTENSION_SET:
             continue
-        key = candidate.stem.casefold()
+        if kind == "mask" and not naming.is_mask_file(candidate):
+            continue
+        if kind == "confidence_beside_masks" and not naming.is_confidence_file(candidate):
+            continue
+        key = (candidate.stem if kind == "plain" else naming.frame_stem(candidate)).casefold()
         if key in keys:
             duplicates.add(key)
         keys.add(key)
@@ -167,10 +195,12 @@ def build_standalone_preflight(
     profile_value: AnalysisProfileKind | str | None,
     original_folder: FolderSpec | None,
     model_specs: tuple[ModelSpec, ...],
+    naming: FrameNaming | None = None,
 ) -> AnalysisPreflightReport:
     """Validate role requirements and filename coverage before starting work."""
 
     profile = analysis_profile_definition(profile_value)
+    naming = (naming or DEFAULT_FRAME_NAMING).normalized()
     issues: list[PreflightIssue] = []
     model_ids = [model.model_id for model in model_specs]
     if len(model_ids) != len(set(model_ids)):
@@ -185,7 +215,7 @@ def build_standalone_preflight(
     if original_duplicates:
         duplicate_details.append(f"original: {', '.join(original_duplicates[:5])}")
     for model in model_specs:
-        keys, duplicates = _folder_inventory(model.mask_folder)
+        keys, duplicates = _folder_inventory(model.mask_folder, naming=naming, kind="mask")
         model_inventories.append(keys)
         if duplicates:
             duplicate_details.append(f"{model.display_name}: {', '.join(duplicates[:5])}")
@@ -197,7 +227,11 @@ def build_standalone_preflight(
                     f"{model.display_name} original: {', '.join(layer_original_duplicates[:5])}"
                 )
         if model.prob_folder is not None:
-            confidence_keys, confidence_duplicates = _folder_inventory(model.prob_folder)
+            confidence_keys, confidence_duplicates = _folder_inventory(
+                model.prob_folder,
+                naming=naming,
+                kind="confidence_beside_masks" if _same_folder(model.prob_folder, model.mask_folder) else "confidence",
+            )
             confidence_inventories.append(confidence_keys)
             if confidence_duplicates:
                 duplicate_details.append(f"{model.display_name} confidence: {', '.join(confidence_duplicates[:5])}")

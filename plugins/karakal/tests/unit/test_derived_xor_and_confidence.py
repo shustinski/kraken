@@ -1,4 +1,4 @@
-"""Unit tests for ones∩zeros class conflict review and confidence-aware broken geometry."""
+"""Confidence-aware broken geometry and the class-conflict error type (conflicts: test_pair_conflict.py)."""
 
 from __future__ import annotations
 
@@ -50,79 +50,6 @@ def _candidate(
         child_count=int(child_count),
         touches_border=bool(touches_border),
     )
-
-
-@pytest.mark.skipif(grid_anomaly.cv2 is None, reason="OpenCV required for class-conflict CCs")
-def test_class_conflict_no_overlap_is_clean() -> None:
-    ones = np.zeros((64, 64), dtype=bool)
-    zeros = np.zeros((64, 64), dtype=bool)
-    ones[8:28, 8:28] = True
-    zeros[36:56, 36:56] = True
-
-    result = grid_anomaly.analyze_class_conflict_masks(ones, zeros, frame_id="disjoint")
-
-    assert result.damage_score == 0.0
-    assert result.per_cell_results == ()
-    assert result.grid_detected is True
-
-
-@pytest.mark.skipif(grid_anomaly.cv2 is None, reason="OpenCV required for class-conflict CCs")
-def test_class_conflict_large_overlap_needs_review() -> None:
-    ones = np.zeros((64, 64), dtype=bool)
-    zeros = np.zeros((64, 64), dtype=bool)
-    ones[10:40, 10:40] = True
-    zeros[20:35, 20:35] = True  # 15x15 = 225 px overlap
-
-    result = grid_anomaly.analyze_class_conflict_masks(ones, zeros, frame_id="overlap")
-
-    assert len(result.per_cell_results) == 1
-    cell = result.per_cell_results[0]
-    assert cell.reasons == ("class_conflict",)
-    assert cell.status == "suspicious"
-    assert result.damage_score > 0.0
-
-
-@pytest.mark.skipif(grid_anomaly.cv2 is None, reason="OpenCV required for class-conflict CCs")
-def test_class_conflict_identical_masks_are_conflict() -> None:
-    """Same silhouette on ones and zeros is a full class clash."""
-
-    mask = np.zeros((48, 48), dtype=bool)
-    mask[8:40, 8:40] = True
-
-    result = grid_anomaly.analyze_class_conflict_masks(mask, mask, frame_id="identical")
-
-    assert len(result.per_cell_results) >= 1
-    assert result.per_cell_results[0].reasons == ("class_conflict",)
-    assert result.damage_score > 0.0
-
-
-@pytest.mark.skipif(grid_anomaly.cv2 is None, reason="OpenCV required for class-conflict CCs")
-def test_class_conflict_tiny_dirt_is_ignored() -> None:
-    ones = np.zeros((64, 64), dtype=bool)
-    zeros = np.zeros((64, 64), dtype=bool)
-    ones[10:40, 10:40] = True
-    zeros[50:52, 50:52] = True
-    ones[50:52, 50:52] = True  # 2x2 overlap dirt
-    zeros[55, 55:60] = True
-    ones[55, 55:60] = True  # 5 px line overlap
-
-    result = grid_anomaly.analyze_class_conflict_masks(ones, zeros, frame_id="dirt")
-
-    assert result.per_cell_results == ()
-    assert result.damage_score == 0.0
-
-
-@pytest.mark.skipif(grid_anomaly.cv2 is None, reason="OpenCV required for class-conflict CCs")
-def test_class_conflict_thin_contour_fringe_is_ignored() -> None:
-    ones = np.zeros((64, 64), dtype=bool)
-    zeros = np.zeros((64, 64), dtype=bool)
-    ones[10:40, 10:40] = True
-    zeros[10:40, 39:41] = True  # overlap = column x=39 → 1×30 strip
-
-    result = grid_anomaly.analyze_class_conflict_masks(ones, zeros, frame_id="fringe")
-
-    assert result.per_cell_results == ()
-    assert result.damage_score == 0.0
 
 
 def test_confidence_boost_flags_ragged_low_confidence_cell() -> None:
@@ -217,10 +144,8 @@ def test_confidence_boost_is_local_to_candidate_bbox() -> None:
     assert score == 0.0
 
 
-def test_derived_conflict_i18n_labels_exist() -> None:
-    translator = Translator()
-    assert translator.tr("grid_layer.derived_conflict")
-    assert translator.tr("grid_error.class_conflict")
+def test_class_conflict_i18n_label_exists() -> None:
+    assert Translator().tr("grid_error.class_conflict")
 
 
 def test_class_conflict_is_selectable_error_type() -> None:

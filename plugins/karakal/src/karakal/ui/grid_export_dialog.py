@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..core.features import show_class_conflict
 from ..core.grid_error_export import GridErrorExportChoices
 from .ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS, GRID_INSPECTION_ERROR_TYPE_OPTIONS
 
@@ -48,8 +47,6 @@ class GridErrorExportDialog(QDialog):
         self._type_checks: dict[str, QCheckBox] = {}
         enabled = {str(item) for item in enabled_types}
         hidden = set(_HIDDEN_TYPES)
-        if not show_class_conflict():
-            hidden.add("class_conflict")
         for label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             if str(error_type) in hidden:
                 continue

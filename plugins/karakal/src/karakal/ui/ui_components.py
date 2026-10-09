@@ -1,9 +1,10 @@
 ﻿"""Define small reusable Qt widgets used by the validation widget user interface."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, QObject, Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -17,6 +18,13 @@ from PyQt6.QtWidgets import (
 
 from .toolbar_icons import toolbar_icon
 from .ui_constants import FOLDER_BUTTON_SIZE
+
+
+class _NoWheelCombo(QComboBox):
+    """The layer list scrolls under the wheel; a combo inside a row must not catch it."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
 
 
 class FolderRowWidget(QWidget):
@@ -64,14 +72,28 @@ class FolderRowWidget(QWidget):
         frames_per_row_common_text: str = "",
         frames_per_row_tooltip: str = "",
         frames_per_row_maximum: int = 100_000,
+        on_activated=lambda: None,
+        cell_class: str = "",
+        on_cell_class_changed=lambda _value: None,
+        cell_class_label: str = "",
+        cell_class_options: tuple[tuple[str, str], ...] = (),
+        cell_class_tooltip: str = "",
+        cell_class_badge_tooltips: dict[str, str] | None = None,
     ) -> None:
         """Initialize FolderRowWidget."""
         super().__init__(parent)
+        # The selection frame is drawn by the row itself: the list's own highlight is hidden
+        # under the row widget and only peeked out at the edges.
+        self.setObjectName("folderRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setProperty("selected", False)
+        self._on_activated = on_activated
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(2)
 
         main_row = QWidget(self)
+        main_row.setObjectName("folderRowPart")
         main_layout = QHBoxLayout(main_row)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(4)
@@ -99,6 +121,14 @@ class FolderRowWidget(QWidget):
         self.name_edit.editingFinished.connect(lambda: on_label_changed(self.name_edit.text().strip()))
         main_layout.addWidget(self.name_edit, stretch=1)
 
+        # «1» / «0»: which cells the network paints, visible without opening the settings.
+        self.cell_class_badge = QLabel(self)
+        self.cell_class_badge.setObjectName("cellClassBadge")
+        self.cell_class_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cell_class_badge.setFixedSize(18, 18)
+        main_layout.addWidget(self.cell_class_badge)
+        self._cell_class_badge_tooltips = dict(cell_class_badge_tooltips or {})
+
         self.btn_confidence_toggle = QToolButton(self)
         self.btn_confidence_toggle.setAutoRaise(False)
         self.btn_confidence_toggle.setProperty('folderAction', True)
@@ -121,6 +151,7 @@ class FolderRowWidget(QWidget):
 
         # Layer settings under the name: label | value | choose | clear, aligned in one grid.
         details = QWidget(self)
+        details.setObjectName("folderRowPart")
         grid = QGridLayout(details)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(6)
@@ -162,11 +193,59 @@ class FolderRowWidget(QWidget):
         self.frames_per_row_spin.setKeyboardTracking(False)
         self.frames_per_row_spin.valueChanged.connect(lambda value: on_frames_per_row_changed(int(value)))
         grid.addWidget(self.frames_per_row_spin, 2, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(QLabel(cell_class_label, details), 3, 0)
+        self.cell_class_combo = _NoWheelCombo(details)
+        for value, text in cell_class_options:
+            self.cell_class_combo.addItem(text, value)
+        index = self.cell_class_combo.findData(str(cell_class or ""))
+        self.cell_class_combo.setCurrentIndex(max(0, index))
+        self.cell_class_combo.setToolTip(cell_class_tooltip)
+        self.cell_class_combo.currentIndexChanged.connect(
+            lambda _index: on_cell_class_changed(str(self.cell_class_combo.currentData() or ""))
+        )
+        grid.addWidget(self.cell_class_combo, 3, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+        self._show_cell_class_badge(str(cell_class or ""))
 
         layout.addWidget(main_row)
         layout.addWidget(details)
         details.setVisible(bool(confidence_expanded))
         self.details = details
+        # A press anywhere in the row (name, checkbox, buttons) selects the layer.
+        for child in self.findChildren(QWidget):
+            child.installEventFilter(self)
+
+    def set_cell_class(self, value: str) -> None:
+        """Show a class set from outside the row (settings, another control) without echoing it back."""
+
+        index = self.cell_class_combo.findData(str(value or ""))
+        if index >= 0 and index != self.cell_class_combo.currentIndex():
+            previous = self.cell_class_combo.blockSignals(True)
+            self.cell_class_combo.setCurrentIndex(index)
+            self.cell_class_combo.blockSignals(previous)
+        self._show_cell_class_badge(str(value or ""))
+
+    def _show_cell_class_badge(self, value: str) -> None:
+        text = {"ones": "1", "zeros": "0"}.get(value, "")
+        self.cell_class_badge.setText(text)
+        self.cell_class_badge.setToolTip(self._cell_class_badge_tooltips.get(value, ""))
+        self.cell_class_badge.setVisible(bool(text))
+
+    def set_selected(self, selected: bool) -> None:
+        if bool(self.property("selected")) == bool(selected):
+            return
+        self.setProperty("selected", bool(selected))
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._on_activated()
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, event) -> None:
+        self._on_activated()
+        super().mousePressEvent(event)
 
     def _add_folder_row(
         self,

@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from karakal.app.presenter import KarakalPresenter
+from karakal.app.presenter import PAIR_MARKS_LAYER, KarakalPresenter
+from karakal.core.pair_conflict import analyze_class_conflict_masks
 from karakal.core import grid_anomaly
 from karakal.core.grid_anomaly import GridCellAnalysisResult, GridFrameAnalysisResult
 from karakal.ui.ui_constants import (
@@ -121,10 +122,10 @@ def test_class_conflict_checkbox_follows_the_operation() -> None:
     assert box.checked is True
     assert box.tooltip == ""
 
-    state = SimpleNamespace(grid_inspection_payloads_by_layer={"derived_conflict": {"frame": object()}})
+    state = SimpleNamespace(grid_inspection_payloads_by_pair={"pair::a::b": {"frame": object()}})
     assert KarakalPresenter._class_conflict_ready(SimpleNamespace(), state, "frame") is True
     assert KarakalPresenter._class_conflict_ready(SimpleNamespace(), state, "other") is False
-    empty = SimpleNamespace(grid_inspection_payloads_by_layer={})
+    empty = SimpleNamespace(grid_inspection_payloads_by_pair={})
     assert KarakalPresenter._class_conflict_ready(SimpleNamespace(), empty, "frame") is False
 
 
@@ -154,14 +155,14 @@ def test_overlapping_masks_show_class_conflict_on_matrix_and_details() -> None:
     zeros = np.zeros((64, 64), dtype=bool)
     ones[10:40, 10:40] = True
     zeros[20:35, 20:35] = True
-    conflict = grid_anomaly.analyze_class_conflict_masks(ones, zeros, frame_id="overlap")
+    conflict = analyze_class_conflict_masks(ones, zeros, frame_id="overlap")
     merged = KarakalPresenter._merge_grid_layer_results(
         SimpleNamespace(),
-        {"binary": _binary(), "derived_conflict": conflict},
+        {"binary": _binary(), PAIR_MARKS_LAYER: conflict},
     )
     assert merged is not None
     assert any("class_conflict" in cell.reasons for cell in merged.cells)
-    state = SimpleNamespace(grid_inspection_payloads_by_layer={"derived_conflict": {"overlap": conflict}})
+    state = SimpleNamespace(grid_inspection_payloads_by_layer={PAIR_MARKS_LAYER: {"overlap": conflict}})
     shown = KarakalPresenter._with_stored_class_conflict(SimpleNamespace(), _binary(), state, "overlap")
     assert any("class_conflict" in cell.reasons for cell in shown.cells)
 
@@ -173,6 +174,6 @@ def test_unchecked_class_conflict_is_left_out_of_the_matrix() -> None:
     host = _host(box, wants=False)
     host._selected_grid_error_types = lambda: KarakalPresenter._selected_grid_error_types(host)
     host._class_conflict_selected = lambda: KarakalPresenter._class_conflict_selected(host)
-    merged = KarakalPresenter._merge_grid_layer_results(host, {"binary": _binary(), "derived_conflict": conflict})
+    merged = KarakalPresenter._merge_grid_layer_results(host, {"binary": _binary(), PAIR_MARKS_LAYER: conflict})
     assert merged is not None
     assert merged.cells == ()

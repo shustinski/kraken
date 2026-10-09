@@ -52,10 +52,6 @@ def display_version() -> str:
     return APP_VERSION or __version__
 
 
-def show_class_conflict() -> bool:
-    return not tester_build()
-
-
 def show_confidence_defects() -> bool:
     """Confidence-layer fill defects (filled / partial) are part of the tester build.
 

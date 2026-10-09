@@ -5,7 +5,7 @@ Covers the pieces added by ``agent_prompt_multi_model.md``:
 - Stable model ids come from the folder path, not the display label.
 - Clicking a folder while in grid inspection mode never starts a compute.
 - Flipping the matrix layer selector never spawns a background worker.
-- «Все слои» merges per-model results and normalizes on total cell count.
+- Every checked layer is computed, the matrix shows the one under the list frame.
 """
 
 from __future__ import annotations
@@ -198,9 +198,8 @@ def test_matrix_layer_switch_does_not_start_worker(tmp_path, qtbot) -> None:
 
     presenter._sync_grid_inspection_matrix_selector(state)
     combo = widget.grid_matrix_layer_combo
-    assert combo.count() >= 3  # two models + all layers
-    all_layers_index = combo.findData(presenter.ALL_LAYERS_SELECTION_KEY)
-    assert all_layers_index >= 0
+    # One entry per layer, no merged «All layers» view.
+    assert [combo.itemData(index) for index in range(combo.count())] == [str(spec.model_id) for spec in specs]
 
     started_workers: list[str] = []
 
@@ -209,163 +208,19 @@ def test_matrix_layer_switch_does_not_start_worker(tmp_path, qtbot) -> None:
 
     presenter._start_compute_grid_inspection = _reject_start  # type: ignore[assignment]
 
-    combo.setCurrentIndex(all_layers_index)
+    combo.setCurrentIndex(combo.findData(str(specs[1].model_id)))
     assert started_workers == []
     assert presenter._worker_thread is None
+    # The list frame follows the matrix switcher.
+    assert presenter.folder_list.currentRow() == 1
+    assert state.grid_inspection_payload_by_key["frame-0"].broken_cells == 4
 
-    # Then jump to a specific model — still no compute.
-    first_model_index = combo.findData(str(specs[0].model_id))
-    assert first_model_index >= 0
-    combo.setCurrentIndex(first_model_index)
+    # Moving the list frame switches the shown layer — still no compute.
+    presenter.folder_list.setCurrentRow(0)
+    assert combo.currentData() == str(specs[0].model_id)
+    assert state.grid_inspection_payload_by_key["frame-0"].broken_cells == 2
     assert started_workers == []
     assert presenter._worker_thread is None
-
-
-# --- All-layers merge score basics -----------------------------------------
-
-
-def test_all_layers_merge_normalizes_by_total_cell_count(tmp_path, qtbot) -> None:
-    widget = _widget(tmp_path, qtbot)
-    presenter = widget._presenter
-    folder_a = _build_folder(tmp_path, "cells_ones")
-    folder_b = _build_folder(tmp_path, "cells_zeros")
-    _add_checked_folder(widget, folder_a, label="Ones")
-    _add_checked_folder(widget, folder_b, label="Zeros")
-    specs = presenter._checked_model_specs()
-
-    def _defective(count: int, offset: int, tag: str) -> GridFrameAnalysisResult:
-        cells = tuple(
-            GridCellAnalysisResult(
-                0,
-                index,
-                (offset + index * 12, 0, 8, 8),
-                (float(offset + index * 12 + 4), 4.0),
-                None,
-                "broken",
-                0.9,
-                ("filled_cell",),
-            )
-            for index in range(count)
-        )
-        return GridFrameAnalysisResult(
-            frame_id="frame-A",
-            frame_path=f"{tag}.png",
-            image_width=96,
-            image_height=96,
-            grid_rows=1,
-            grid_cols=10,
-            total_expected_cells=10,
-            detected_cells=10,
-            normal_cells=10 - count,
-            suspicious_cells=0,
-            broken_cells=count,
-            missing_cells=0,
-            artifact_cells=0,
-            damage_score=float(count) / 10.0,
-            severity_level="",
-            grid_detected=True,
-            per_cell_results=cells,
-        )
-
-    ones_result = _defective(2, 0, "ones")
-    zeros_result = _defective(4, 200, "zeros")
-    # Minimal stand-in for tab state — no matrix materialization.
-    state = type("State", (), {})()
-    state.build_result = BuildResult(
-        records=(
-            FrameRecord(
-                "frame-A",
-                "frame_A.png",
-                model_mask_paths={
-                    str(specs[0].model_id): str(folder_a / "frame_0001.png"),
-                    str(specs[1].model_id): str(folder_b / "frame_0001.png"),
-                },
-            ),
-        ),
-        options=BuildOptions(),
-        model_specs=specs,
-    )
-    state.grid_inspection_payloads_by_model = {
-        str(specs[0].model_id): {"binary": {"frame-A": ones_result}},
-        str(specs[1].model_id): {"binary": {"frame-A": zeros_result}},
-    }
-
-    merged = presenter._merge_all_layers_frame_result(state, "frame-A", layer="binary")
-    assert merged is not None
-    assert merged.total_expected_cells == 20
-    assert merged.broken_cells == 6
-    assert abs(merged.damage_score - 0.3) < 1e-6
-    assert merged.damage_score <= max(ones_result.damage_score, zeros_result.damage_score) + 1e-6
-    assert merged.damage_score >= min(ones_result.damage_score, zeros_result.damage_score) - 1e-6
-    display_names = {specs[0].display_name, specs[1].display_name}
-    labels = {str(cell.feature_cluster_label) for cell in merged.per_cell_results}
-    assert display_names.issubset(labels)
-
-
-def test_all_layers_view_projects_merged_payloads_onto_layer_state(tmp_path, qtbot) -> None:
-    widget = _widget(tmp_path, qtbot)
-    presenter = widget._presenter
-    folder_a = _build_folder(tmp_path, "cells_ones")
-    folder_b = _build_folder(tmp_path, "cells_zeros")
-    _add_checked_folder(widget, folder_a, label="Ones")
-    _add_checked_folder(widget, folder_b, label="Zeros")
-    specs = presenter._checked_model_specs()
-
-    def _res(defects: int) -> GridFrameAnalysisResult:
-        cell = GridCellAnalysisResult(
-            0, 0, (0, 0, 8, 8), (4.0, 4.0), None, "broken", 0.9, ("filled_cell",)
-        )
-        return GridFrameAnalysisResult(
-            frame_id="frame-A",
-            frame_path="p.png",
-            image_width=96,
-            image_height=96,
-            grid_rows=1,
-            grid_cols=8,
-            total_expected_cells=8,
-            detected_cells=8,
-            normal_cells=8 - defects,
-            suspicious_cells=0,
-            broken_cells=defects,
-            missing_cells=0,
-            artifact_cells=0,
-            damage_score=float(defects) / 8.0,
-            severity_level="",
-            grid_detected=True,
-            per_cell_results=(cell,) * max(1, defects),
-        )
-
-    state = type("State", (), {})()
-    state.build_result = BuildResult(
-        records=(
-            FrameRecord(
-                "frame-A",
-                "frame_A.png",
-                model_mask_paths={
-                    str(specs[0].model_id): str(folder_a / "frame_0001.png"),
-                    str(specs[1].model_id): str(folder_b / "frame_0001.png"),
-                },
-            ),
-        ),
-        options=BuildOptions(),
-        model_specs=specs,
-    )
-    state.grid_inspection_payloads_by_model = {
-        str(specs[0].model_id): {"binary": {"frame-A": _res(1)}},
-        str(specs[1].model_id): {"binary": {"frame-A": _res(3)}},
-    }
-    state.grid_inspection_matrix_selection = presenter.ALL_LAYERS_SELECTION_KEY
-    layers = {"binary": presenter._build_all_layers_payloads(state, layer="binary"), "confidence": {}}
-    state.grid_inspection_payloads_by_layer = layers
-    state.grid_inspection_payload_by_key = dict(layers.get("binary") or {})
-    state.grid_inspection_results_ready = True
-
-    binary_layer = state.grid_inspection_payloads_by_layer.get("binary") or {}
-    assert "frame-A" in binary_layer
-    merged = binary_layer["frame-A"]
-    assert isinstance(merged, GridFrameAnalysisResult)
-    assert merged.total_expected_cells == 16
-    assert merged.broken_cells == 4
 
 
 def test_streamed_multi_model_batches_update_only_their_frames(tmp_path, qtbot) -> None:
@@ -409,7 +264,7 @@ def test_streamed_multi_model_batches_update_only_their_frames(tmp_path, qtbot) 
 
     state.grid_inspection_payloads_by_model = {}
     state.grid_inspection_payloads_by_layer = {key: {} for key in presenter._grid_inspection_layer_keys()}
-    state.grid_inspection_matrix_selection = presenter.ALL_LAYERS_SELECTION_KEY
+    state.grid_inspection_matrix_selection = model_a
     presenter._active_compute_state = state
 
     full_rebuilds: list[str] = []

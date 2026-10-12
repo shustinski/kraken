@@ -1170,6 +1170,10 @@ class KarakalWidget(QWidget):
         )
         self.grid_inspection_content_tabs.addTab(grid_matrix_page, self._t("tab.matrix"))
         self.grid_inspection_content_tabs.addTab(grid_percentiles_page, self._t("tab.percentiles"))
+        from ..ui.memory_map_panel import MemoryMapPanel
+
+        self.memory_map_panel = MemoryMapPanel(self._t, self.grid_inspection_content_tabs)
+        self.grid_inspection_content_tabs.addTab(self.memory_map_panel, self._t("tab.memory_map"))
         root_layout.addWidget(self.grid_inspection_content_tabs, stretch=1)
 
         for layer_view in self.grid_inspection_matrix_views.values():
@@ -2100,6 +2104,7 @@ class KarakalWidget(QWidget):
         if hasattr(self, "grid_inspection_content_tabs"):
             self.grid_inspection_content_tabs.setTabText(0, self._t("tab.matrix"))
             self.grid_inspection_content_tabs.setTabText(1, self._t("tab.percentiles"))
+            self.grid_inspection_content_tabs.setTabText(2, self._t("tab.memory_map"))
         if hasattr(self, "grid_inspection_layer_tabs"):
             self.grid_inspection_layer_tabs.setTabText(0, self._t("grid_layer.confidence"))
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))

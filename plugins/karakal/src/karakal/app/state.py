@@ -85,6 +85,11 @@ class ExtendMatrixTabState:
     grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
     # (model id, markup folder, hand-added cell ids) of every layer when the shown result was computed.
     grid_inspection_markup_signature: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    # Memory map of the shown layer (built on request), what it was built from, and the operator's
+    # block roles by block place (row, col, rows, cols) -> service.
+    memory_map: object = None
+    memory_map_signature: tuple = ()
+    memory_map_roles: dict = field(default_factory=dict)
     grid_inspection_algorithm_version: str = ""
     grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)
     # Frames whose masks are known good; the layer cell template is built from them.

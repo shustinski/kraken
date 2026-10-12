@@ -66,7 +66,7 @@ def test_setup_panel_has_no_banner_and_no_run_button(tmp_path, qtbot) -> None:
     assert widget.folders_group.title() == ""
     titles = [button.text() for button in panel._profile_buttons.values()]
     assert widget._t("profile.grid_defects.title") in titles
-    assert widget._t("profile.grid_defects.title") in ("Поиск дефектов матрицы", "Matrix defect search")
+    assert widget._t("profile.grid_defects.title") in ("Работа с памятью", "Memory work")
 
 
 def test_not_ready_run_explains_why(tmp_path, qtbot, monkeypatch) -> None:

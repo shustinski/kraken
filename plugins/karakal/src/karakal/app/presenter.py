@@ -336,9 +336,23 @@ class KarakalPresenter(QObject):
             from .frame_sets_controller import FrameSetsController
 
             self._frame_sets_controller = FrameSetsController(self)
+        self._memory_map_controller = None
+        if getattr(view, "memory_map_panel", None) is not None:
+            from .memory_map_controller import MemoryMapController
+
+            self._memory_map_controller = MemoryMapController(self, view.memory_map_panel)
+            view.grid_inspection_content_tabs.currentChanged.connect(self._on_grid_content_tab_changed)
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)
+
+    def _on_grid_content_tab_changed(self, _index: int) -> None:
+        """The memory map tab shows what the map of the shown layer is (or would be) made of."""
+
+        controller = getattr(self, "_memory_map_controller", None)
+        tabs = getattr(self._view, "grid_inspection_content_tabs", None)
+        if controller is not None and tabs is not None and tabs.currentWidget() is self._view.memory_map_panel:
+            controller.refresh()
 
     def _current_tab_state(self) -> ExtendMatrixTabState | None:
         widget = self.matrix_tabs.currentWidget()
@@ -789,6 +803,7 @@ class KarakalPresenter(QObject):
         self._apply_grid_inspection_active_layer_view(state, streaming=False)
         if pair is not None:
             self._ensure_grid_pair_computed(state, pair)
+        self._on_grid_content_tab_changed(-1)
 
     # --- Ones/zeros pairs -----------------------------------------------------------
 
@@ -9493,6 +9508,8 @@ class KarakalPresenter(QObject):
         self._settings_service.sync()
 
     def shutdown(self) -> None:
+        if getattr(self, "_memory_map_controller", None) is not None:
+            self._memory_map_controller.shutdown()
         # Pending setting refreshes must not reach a closed window.
         self._grid_debris_refresh_timer.stop()
         self._grid_types_refresh_timer.stop()

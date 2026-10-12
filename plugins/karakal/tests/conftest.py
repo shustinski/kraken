@@ -6,6 +6,12 @@ import os
 
 # Force pytest-qt to bind to the same Qt used by Karakal (PyQt6).
 os.environ.setdefault("PYTEST_QT_API", "pyqt6")
+# Windows and message boxes of the tests never reach the desktop: they used to pop up over the
+# user's work (a modal box then waits for a click), and parallel runs showing real windows in
+# several processes now and then crashed Qt. The offscreen platform needs the font folder.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if os.name == "nt" and os.path.isdir(r"C:\Windows\Fonts"):
+    os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import pytest
 

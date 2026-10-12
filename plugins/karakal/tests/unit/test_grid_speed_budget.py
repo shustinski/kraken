@@ -77,6 +77,7 @@ def _calibrated_1500_elapsed_ms() -> tuple[float, int]:
     return elapsed_ms, len(result.cells)
 
 
+@pytest.mark.performance
 def test_calibrated_1500_cells_stays_within_degradation_budget() -> None:
     """Regression guard for the calibrated contour path on this host.
 
@@ -98,6 +99,7 @@ def test_calibrated_1500_cells_budget_is_documented() -> None:
     assert elapsed_ms > 0.0
 
 
+@pytest.mark.performance
 def test_decision_recompute_stays_within_budget() -> None:
     from karakal.core.grid_calibration import decide_reasons_batch
 

@@ -43,6 +43,7 @@ dev = [
     "PyQt6>=6.6",
     "pytest>=8",
     "pytest-qt>=4.4",
+    "pytest-xdist>=3.8",
     "ruff>=0.6",
 ]
 build = [

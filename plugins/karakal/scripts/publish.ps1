@@ -272,8 +272,15 @@ try {
     if (-not $SkipTests) {
         Write-Host "Running pytest..."
         $env:KARAKAL_BUILD_PROFILE = ""
-        & python -m pytest plugins/karakal/tests/unit -q --tb=line
+        # In parallel (pytest-xdist); the timing checks (marked performance) run on their own
+        # afterwards, so other tests do not slow them down.
+        # The same environment the exe is built from (it has pytest-xdist).
+        $testPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+        if (-not (Test-Path -LiteralPath $testPython)) { $testPython = "python" }
+        & $testPython -m pytest plugins/karakal/tests/unit -q --tb=line -n auto -m "not performance"
         if ($LASTEXITCODE -ne 0) { throw "pytest failed" }
+        & $testPython -m pytest plugins/karakal/tests/unit -q --tb=line -m performance
+        if ($LASTEXITCODE -ne 0) { throw "pytest (timing checks) failed" }
     }
 
     if (-not $SkipBuild) {

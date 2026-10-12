@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import json
 from time import perf_counter
 
@@ -253,6 +255,7 @@ def test_fit_slider_separates_examples_and_skips_sparse_labels() -> None:
     assert slider is not None and slider >= 50
 
 
+@pytest.mark.performance
 def test_cached_decision_stays_within_budget() -> None:
     scores = {"fill": 0.2, "geometry": 0.1, "merge": 0.0, "debris": 0.3, "edge": 0.0}
     thresholds = {"fill": 0.4, "geometry": 0.6, "merge": 0.65, "debris": 0.25, "edge": 1.0}

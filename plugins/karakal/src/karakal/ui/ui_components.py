@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QSizePolicy,
     QSpinBox,
     QToolButton,
@@ -66,6 +67,15 @@ class FolderRowWidget(QWidget):
         original_placeholder: str = "",
         original_select_tooltip: str = "",
         original_clear_tooltip: str = "",
+        markup_label: str = "",
+        markup_display_text: str = "",
+        markup_path_text: str = "",
+        on_markup_folder=lambda *_args: None,
+        on_clear_markup_folder=lambda *_args: None,
+        markup_placeholder: str = "",
+        markup_tooltip: str = "",
+        markup_select_tooltip: str = "",
+        markup_clear_tooltip: str = "",
         frames_per_row: int = 0,
         on_frames_per_row_changed=lambda _value: None,
         frames_per_row_label: str = "",
@@ -79,6 +89,10 @@ class FolderRowWidget(QWidget):
         cell_class_options: tuple[tuple[str, str], ...] = (),
         cell_class_tooltip: str = "",
         cell_class_badge_tooltips: dict[str, str] | None = None,
+        cell_bank_label: str = "",
+        cell_bank_button_text: str = "",
+        cell_bank_tooltip: str = "",
+        on_open_cell_bank=lambda *_args: None,
     ) -> None:
         """Initialize FolderRowWidget."""
         super().__init__(parent)
@@ -183,7 +197,21 @@ class FolderRowWidget(QWidget):
             on_select=on_original_folder,
             on_clear=on_clear_original_folder,
         )
-        grid.addWidget(QLabel(frames_per_row_label, details), 2, 0)
+        # Operator masks of this layer: its bank of normal cells is built from them.
+        self.markup_edit, self.btn_markup_select, self.btn_markup_clear = self._add_folder_row(
+            grid,
+            2,
+            label=markup_label,
+            display_text=markup_display_text,
+            path_text=markup_path_text,
+            placeholder=markup_placeholder,
+            tooltip=markup_tooltip,
+            select_tooltip=markup_select_tooltip,
+            clear_tooltip=markup_clear_tooltip,
+            on_select=on_markup_folder,
+            on_clear=on_clear_markup_folder,
+        )
+        grid.addWidget(QLabel(frames_per_row_label, details), 3, 0)
         self.frames_per_row_spin = QSpinBox(details)
         self.frames_per_row_spin.setRange(0, int(frames_per_row_maximum))
         # 0: the layer has no width of its own and uses the common «Frames per row».
@@ -192,8 +220,8 @@ class FolderRowWidget(QWidget):
         self.frames_per_row_spin.setToolTip(frames_per_row_tooltip)
         self.frames_per_row_spin.setKeyboardTracking(False)
         self.frames_per_row_spin.valueChanged.connect(lambda value: on_frames_per_row_changed(int(value)))
-        grid.addWidget(self.frames_per_row_spin, 2, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
-        grid.addWidget(QLabel(cell_class_label, details), 3, 0)
+        grid.addWidget(self.frames_per_row_spin, 3, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(QLabel(cell_class_label, details), 4, 0)
         self.cell_class_combo = _NoWheelCombo(details)
         for value, text in cell_class_options:
             self.cell_class_combo.addItem(text, value)
@@ -203,7 +231,13 @@ class FolderRowWidget(QWidget):
         self.cell_class_combo.currentIndexChanged.connect(
             lambda _index: on_cell_class_changed(str(self.cell_class_combo.currentData() or ""))
         )
-        grid.addWidget(self.cell_class_combo, 3, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+        grid.addWidget(self.cell_class_combo, 4, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+        if cell_bank_label:
+            grid.addWidget(QLabel(cell_bank_label, details), 5, 0)
+            self.btn_cell_bank = QPushButton(cell_bank_button_text, details)
+            self.btn_cell_bank.setToolTip(cell_bank_tooltip)
+            self.btn_cell_bank.clicked.connect(on_open_cell_bank)
+            grid.addWidget(self.btn_cell_bank, 5, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
         self._show_cell_class_badge(str(cell_class or ""))
 
         layout.addWidget(main_row)

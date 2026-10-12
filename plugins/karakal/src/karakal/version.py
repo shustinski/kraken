@@ -22,6 +22,8 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
        stop) with pause, layers dragged by a handle, collapsible side panel, chevron sections;
   13 = the matrix shows the layer selected in the list (no «All layers»), full selection frame,
        ones/zeros cell class of a layer, pair matrix in the tester build with ones/zeros conflicts);
+  14 = operator markup folder per layer, the cell bank window, cells added to the bank by hand
+       (right click in the frame window);
 - beta N counts tester builds with the same algorithm and interface (fixes only); scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -36,7 +38,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 13
+INTERFACE_NUMBER = 14
 BETA = 0
 
 

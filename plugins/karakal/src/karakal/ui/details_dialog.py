@@ -110,6 +110,8 @@ class _OverlayGraphicsView(QGraphicsView):
     middlePressed = pyqtSignal()
     middleReleased = pyqtSignal()
     leftClicked = pyqtSignal(QPointF, object)
+    # Right click: scene position and global screen position (for a menu).
+    contextRequested = pyqtSignal(QPointF, QPoint)
     viewTransformChanged = pyqtSignal()
     # Mouse over the frame with no button held: scene position and global screen position.
     hoverMoved = pyqtSignal(QPointF, QPoint)
@@ -163,6 +165,10 @@ class _OverlayGraphicsView(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton:
             self.leftClicked.emit(self.mapToScene(event.position().toPoint()), event.modifiers())
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt name
+        self.contextRequested.emit(self.mapToScene(event.pos()), event.globalPos())
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:
         if (
@@ -662,6 +668,11 @@ class ExtendFrameDetailsDialog(QDialog):
         self.grid_tuning_button.clicked.connect(self._request_grid_tuning)
         self.grid_tuning_button.setVisible(False)
         layers_form.addRow(self.grid_tuning_button)
+        self.cell_bank_button = QPushButton(self._t("details.cell_bank"), layers_group)
+        self.cell_bank_button.setToolTip(self._t("details.cell_bank_tooltip"))
+        self.cell_bank_button.clicked.connect(self._request_cell_bank)
+        self.cell_bank_button.setVisible(False)
+        layers_form.addRow(self.cell_bank_button)
         self.grid_preview_status = QLabel("", layers_group)
         self.grid_preview_status.setWordWrap(True)
         self.grid_preview_status.setVisible(False)
@@ -1018,6 +1029,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.layer_view_combo.currentIndexChanged.connect(self._refresh_scene_from_controls)
         self.grayscale_diff_checkbox.toggled.connect(self._refresh_scene_from_controls)
         self.overlay_view.leftClicked.connect(self._on_overlay_left_clicked)
+        self.overlay_view.contextRequested.connect(self._on_overlay_context_requested)
         self.overlay_view.hoverMoved.connect(self._on_overlay_hover)
         self.overlay_view.hoverLeft.connect(self._hide_debris_hover)
         self.overlay_view.middlePressed.connect(self._activate_context_hold)
@@ -4015,6 +4027,8 @@ class ExtendFrameDetailsDialog(QDialog):
 
         if hasattr(self, "grid_tuning_button"):
             self.grid_tuning_button.setVisible(bool(visible) and show_threshold_window())
+        if hasattr(self, "cell_bank_button"):
+            self.cell_bank_button.setVisible(bool(visible))
         example_names = (
             "grid_example_mode_button",
             "grid_example_label_combo",
@@ -4079,6 +4093,42 @@ class ExtendFrameDetailsDialog(QDialog):
             self.second_source_layer_title.setText(self._t("details.comparison_source"))
             self.result_layer_title.setText(self._result_overlay_title())
             self.first_mask_color_button.setVisible(True)
+
+    def _on_overlay_context_requested(self, scene_pos: QPointF, global_pos: QPoint) -> None:
+        """Right click on a cell of the defect view: compare it with the layer's bank or add it there."""
+
+        callback = getattr(self, "_on_cell_bank_context", None)
+        if not callable(callback) or self._selected_result_kind() != "grid_cell_defects":
+            return
+        from PyQt6.QtWidgets import QMenu
+
+        scale_x, scale_y = self._grid_scene_scale()
+        point = (int(scene_pos.x() / max(scale_x, 1e-6)), int(scene_pos.y() / max(scale_y, 1e-6)))
+        menu = QMenu(self)
+        actions = {
+            menu.addAction(self._t("details.cell_bank_compare")): "compare",
+            menu.addAction(self._t("details.cell_bank_add")): "add",
+            menu.addAction(self._t("details.cell_bank_add_size")): "add_size",
+        }
+        chosen = menu.exec(global_pos)
+        if chosen in actions:
+            callback(self, point, actions[chosen])
+
+    def _request_cell_bank(self) -> None:
+        callback = getattr(self, "_on_cell_bank_requested", None)
+        if callable(callback):
+            callback(self)
+
+    def selected_grid_defect_bbox(self) -> tuple[int, int, int, int] | None:
+        """Box of the defect in the yellow frame, if one is selected."""
+
+        value = (self._pending_grid_defect_focus or {}).get("bbox") if self._selection_overlay_items else None
+        if not isinstance(value, (tuple, list)) or len(value) < 4:
+            return None
+        try:
+            return tuple(int(round(float(part))) for part in value[:4])  # type: ignore[return-value]
+        except (TypeError, ValueError):
+            return None
 
     def _request_grid_tuning(self) -> None:
         callback = getattr(self, "_on_grid_tuning_requested", None)

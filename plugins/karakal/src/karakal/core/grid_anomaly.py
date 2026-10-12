@@ -222,6 +222,12 @@ class GridCellReferenceProfile:
     # Bank of normal cells of the run (normal_bank.NormalBank). With it, frames go through the
     # grid-free cell-error analysis (cell_error_analysis); without it, through the lattice analysis.
     normal_bank: Any = None
+    # Operator masks of the layer, when given: used for the bank or not (and why), how many
+    # frames and cells, and the drawn cells the analysis still marks. Not part of the cache key:
+    # the bank id already tells the banks apart.
+    markup_report: dict | None = None
+    # The bank before the cells added by hand: adding or removing one starts from it.
+    base_bank: Any = None
 
     def cache_payload(self) -> dict[str, Any]:
         return {
@@ -1842,6 +1848,10 @@ class RunProfileRequest:
     sample_limit: int = 32
     frame_id: str = "run"
     min_frames: int = 1
+    # Operator masks of the layer: when they give a bank, it is used instead of the run's.
+    markup_paths: tuple[str, ...] = ()
+    # Cells the operator added by hand (normal_bank.ManualCell), put on top of the bank.
+    manual_cells: tuple = ()
 
     def resolve(self, config: GridDamageAnalysisConfig | None = None) -> GridCellReferenceProfile | None:
         return estimate_run_normal_profile(
@@ -1850,6 +1860,8 @@ class RunProfileRequest:
             sample_limit=int(self.sample_limit),
             frame_id=self.frame_id,
             min_frames=int(self.min_frames),
+            markup_paths=self.markup_paths,
+            manual_cells=self.manual_cells,
         )
 
 
@@ -1866,29 +1878,73 @@ def estimate_run_normal_profile(
     sample_limit: int = 32,
     frame_id: str = "run",
     min_frames: int = 1,
+    markup_paths: Sequence[str | Path] = (),
+    manual_cells: Sequence[Any] = (),
 ) -> GridCellReferenceProfile | None:
     """Bank of normal cells from a sample of the run's masks, wrapped as the run's reference profile.
 
     The bank is built in two passes over the sample (normal_bank). Its status travels with it:
     a run without a reliable normal cell still gets a profile, and its frames report
     ``insufficient_normal_model`` instead of guessed defects.
+
+    Operator masks come first: when they give a bank, the run is not sampled at all, and the
+    masks are analyzed with that bank to check that every drawn cell comes out normal. When they
+    give none (too few cells), the run's bank is built as without them; ``markup_report`` says why.
+    Cells added by hand go on top of whichever bank it is; ``base_bank`` keeps it without them.
     """
 
     from .cell_components import extract_components
     from .normal_bank import build_normal_bank
+
+    markup_report = None
+    if markup_paths:
+        from .cell_error_analysis import markup_self_check
+        from .normal_bank import build_markup_bank
+
+        markup = []
+        for path_obj in (Path(path) for path in markup_paths if str(path)):
+            image = _load_cv2_grayscale_image(path_obj)
+            if image is not None:
+                markup.append((path_obj.name, image))
+        bank = build_markup_bank(
+            [extract_components(image) for _name, image in markup], frame_names=[name for name, _image in markup]
+        )
+        markup_report = {
+            "used": bool(bank.ready),
+            "reason": "" if bank.ready else (bank.reason if markup else "no_masks"),
+            "frames": int(bank.frames_used) if markup else 0,
+            "cells": int(bank.candidates),
+            "flagged": markup_self_check(markup, bank) if bank.ready else [],
+        }
+        if bank.ready:
+            return _normal_bank_profile(
+                bank, frame_id=f"markup:{frame_id or 'run'}", markup_report=markup_report, manual_cells=manual_cells
+            )
 
     paths = [Path(path) for path in mask_paths if str(path)]
     if sample_limit > 0 and len(paths) > sample_limit:
         step = max(1, len(paths) // sample_limit)
         paths = paths[::step][:sample_limit]
     component_sets = []
+    names = []
     for path_obj in paths:
         image = _load_cv2_grayscale_image(path_obj)
         if image is not None:
             component_sets.append(extract_components(image))
+            names.append(path_obj.name)
     if len(component_sets) < max(1, int(min_frames)):
         return None
-    bank = build_normal_bank(component_sets)
+    bank = build_normal_bank(component_sets, frame_names=names)
+    return _normal_bank_profile(bank, frame_id=frame_id, markup_report=markup_report, manual_cells=manual_cells)
+
+
+def _normal_bank_profile(
+    bank, *, frame_id: str, markup_report: dict | None = None, manual_cells: Sequence[Any] = ()
+) -> GridCellReferenceProfile:
+    from .normal_bank import apply_manual_cells
+
+    base = bank
+    bank = apply_manual_cells(base, tuple(manual_cells or ()))
     return GridCellReferenceProfile(
         median_width=float(bank.cell_width),
         median_height=float(bank.cell_height),
@@ -1898,12 +1954,27 @@ def estimate_run_normal_profile(
         median_center_fill=1.0,
         median_aspect=float(bank.cell_width) / max(1.0, float(bank.cell_height)),
         candidate_count=int(bank.candidates),
-        seed_count=int(len(bank.exemplars)),
+        seed_count=int(bank.exemplar_count),
         frame_id=str(frame_id or "run"),
         frame_path="",
         shape_template=bank.template,
         normal_bank=bank,
+        markup_report=markup_report,
+        base_bank=base,
     )
+
+
+def with_manual_cells(profile: GridCellReferenceProfile, manual_cells: Sequence[Any]) -> GridCellReferenceProfile:
+    """The same profile after cells were added by hand or removed: no masks are read again."""
+
+    from dataclasses import replace as _replace
+
+    from .normal_bank import apply_manual_cells
+
+    base = profile.base_bank if profile.base_bank is not None else profile.normal_bank
+    if base is None:
+        return profile
+    return _replace(profile, normal_bank=apply_manual_cells(base, tuple(manual_cells or ())), base_bank=base)
 
 
 def estimate_run_cell_reference_profile(

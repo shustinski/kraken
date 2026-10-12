@@ -25,7 +25,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -97,6 +97,12 @@ class CellErrorConfig:
     confidence_weight: float = 0.25
     conductor: ConductorConfig = field(default_factory=ConductorConfig)
     normalization: MaskNormalizationConfig = field(default_factory=MaskNormalizationConfig)
+
+    def effective_shape_limit(self) -> float:
+        """Shape distance above which an outline is broken, at this geometry slider position."""
+
+        looseness = 1.0 - max(0, min(100, int(self.geometry_sensitivity))) / 100.0
+        return float(self.shape_limit) + float(self.shape_limit_loose) * looseness
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,8 +245,7 @@ class _FrameJudge:
         self.components = components
         self.bank = bank
         self.cfg = cfg
-        looseness = 1.0 - max(0, min(100, int(cfg.geometry_sensitivity))) / 100.0
-        self.shape_limit = float(cfg.shape_limit) + float(cfg.shape_limit_loose) * looseness
+        self.shape_limit = cfg.effective_shape_limit()
         (self.w_lo, self.w_hi), (self.h_lo, self.h_hi) = bank.side_limits(cfg.geometry_sensitivity)
         width_scale = bank.width_range[1] / max(1.0, bank.cell_width) if bank.width_variable else 1.0
         height_scale = bank.height_range[1] / max(1.0, bank.cell_height) if bank.height_variable else 1.0
@@ -531,7 +536,7 @@ def analyze_cell_errors(
             frame_path=str(frame_path),
             mode=mode,
             algorithm_version=CELL_ERROR_ALGORITHM_VERSION,
-            normal_model_id=bank.bank_id if bank.exemplars.size else "",
+            normal_model_id=bank.bank_id if bank.exemplar_count else "",
             normal_model_status=bank.status,
             input_shape=shape,
             binarization=components.normalized.metadata(),
@@ -782,3 +787,47 @@ def analyze_cell_errors(
         diagnostics=diagnostics,
         normal_regions=tuple(normal_regions),
     )
+
+
+def markup_self_check(
+    masks: Sequence[tuple[str, np.ndarray]],
+    bank: NormalBank,
+    *,
+    config: CellErrorConfig | None = None,
+) -> list[dict[str, Any]]:
+    """Operator masks analyzed with the bank built from them: every drawn cell should come out
+    normal. What is marked anyway (a drawn hole, a drawn merge) is returned for a warning."""
+
+    from .cell_error_adapter import CLASS_REASONS
+
+    flagged: list[dict[str, Any]] = []
+    for name, mask in masks:
+        result = analyze_cell_errors(mask, bank, config=config, frame_id=str(name))
+        for region in result.regions:
+            flagged.append(
+                {
+                    "frame": str(name),
+                    "class": region.class_name,
+                    "reason": CLASS_REASONS.get(int(region.error_class), region.class_name),
+                    "bbox": [int(value) for value in region.bbox],
+                }
+            )
+    return flagged
+
+
+def bank_verdict(bank: NormalBank, width: int, height: int, descriptor: np.ndarray, config: CellErrorConfig) -> str:
+    """What the bank alone says about one cell: "" (normal), "shape", "size" or "shape,size".
+
+    The frame analysis may still call a normal-looking piece a merge or a split; this is only
+    the comparison with the bank that the bank window shows.
+    """
+
+    if not bank.ready:
+        return ""
+    reasons = []
+    if float(bank.normal_distance(np.asarray(descriptor, dtype=np.float32)[None, :])[0]) > config.effective_shape_limit():
+        reasons.append("shape")
+    (w_lo, w_hi), (h_lo, h_hi) = bank.side_limits(config.geometry_sensitivity)
+    if not (w_lo <= width <= w_hi and h_lo <= height <= h_hi):
+        reasons.append("size")
+    return ",".join(reasons)

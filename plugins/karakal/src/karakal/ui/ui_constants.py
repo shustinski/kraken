@@ -61,6 +61,10 @@ FOLDER_ORIGINAL_ROLE = int(Qt.ItemDataRole.UserRole) + 5
 FOLDER_FRAMES_PER_ROW_ROLE = int(Qt.ItemDataRole.UserRole) + 6
 # Which cells the layer's network paints: "ones", "zeros" or "" (not set); see core/pair_conflict.py.
 FOLDER_CELL_CLASS_ROLE = int(Qt.ItemDataRole.UserRole) + 7
+# Folder of the operator's masks of the layer: the bank of normal cells comes from them.
+FOLDER_MARKUP_ROLE = int(Qt.ItemDataRole.UserRole) + 8
+# Cells the operator added to the layer's bank by hand (ManualCell payloads).
+FOLDER_MANUAL_CELLS_ROLE = int(Qt.ItemDataRole.UserRole) + 9
 
 DEFAULT_COMPARISON_MODE = ComparisonMode.DISAGREEMENT
 DEFAULT_CELL_SIZE = 15

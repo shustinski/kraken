@@ -16,6 +16,14 @@ would drop.
 
 A session bank comes from the frames of the current run, a reference bank from operator
 masks. They are separate objects; nothing in a run changes a saved reference bank.
+
+Operator masks are truth: every cell drawn there is normal, so nothing is trimmed from them,
+a shape is judged by the nearest drawn cell, and the drawn sizes are inside the size limits.
+Only cells cut by the frame edge are left out: they are not the whole cell shape.
+
+Cells the operator adds by hand (ManualCell) join the operator cells on top of any bank: their
+shape is normal, and their size too when the operator says so. They are kept with the layer,
+outside the bank, so a rebuilt bank gets them again.
 """
 
 from __future__ import annotations
@@ -23,7 +31,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -81,6 +89,8 @@ class NormalBankConfig:
     # Floor of that unit: about one pixel of edge shift. Identical examples (synthetic masks)
     # would otherwise make every difference look huge.
     min_distance_norm: float = 1.5
+    # Operator cells kept as examples; beyond this a k-center subset that still covers every one.
+    max_operator_exemplars: int = 8000
 
 
 def shape_descriptor(component: CellComponent, labels: np.ndarray) -> np.ndarray:
@@ -143,18 +153,92 @@ def _greedy_coreset(points: np.ndarray, size: int) -> np.ndarray:
         return np.arange(len(points))
     center = points.mean(axis=0, keepdims=True)
     first = int(np.argmin(_pairwise(points, center)[:, 0]))
+    # _pairwise to one point, with the float64 copy and the squared norms made once (the same
+    # arithmetic, so the same subset): thousands of operator cells take seconds, not minutes.
+    q = points.astype(np.float64)
+    squared = (q * q).sum(axis=1)
+
+    def to_point(index: int) -> np.ndarray:
+        b = q[index : index + 1]
+        return np.sqrt(np.maximum(squared[:, None] + (b * b).sum(axis=1)[None, :] - 2.0 * q @ b.T, 0.0))[:, 0]
+
     chosen = [first]
-    nearest = _pairwise(points, points[first : first + 1])[:, 0]
+    nearest = to_point(first)
     for _ in range(size - 1):
         index = int(np.argmax(nearest))
         chosen.append(index)
-        nearest = np.minimum(nearest, _pairwise(points, points[index : index + 1])[:, 0])
+        nearest = np.minimum(nearest, to_point(index))
     return np.asarray(sorted(chosen))
 
 
 def _spread(values: np.ndarray) -> float:
     median = float(np.median(values))
     return float(1.4826 * np.median(np.abs(values - median)) / max(1.0, median))
+
+
+def _empty_exemplars() -> np.ndarray:
+    return np.zeros((0, DESCRIPTOR_GRID**2 + 4), dtype=np.float32)
+
+
+@dataclass(frozen=True, slots=True)
+class ExemplarView:
+    """What the bank window shows of one example: its pixels, size and frame. Not part of the bank id."""
+
+    frame: str
+    width: int
+    height: int
+    area: int
+    mask_bits: bytes
+
+    def mask(self) -> np.ndarray:
+        bits = np.unpackbits(np.frombuffer(self.mask_bits, dtype=np.uint8), count=self.width * self.height)
+        return bits.reshape(self.height, self.width).astype(bool)
+
+
+def exemplar_view(item: CellComponent, labels: np.ndarray, frame: str) -> ExemplarView:
+    piece, _x0, _y0 = item.crop(labels)
+    return ExemplarView(
+        frame=str(frame),
+        width=int(piece.shape[1]),
+        height=int(piece.shape[0]),
+        area=int(item.area),
+        mask_bits=np.packbits(piece.reshape(-1)).tobytes(),
+    )
+
+
+def _frame_names(component_sets: Sequence[ComponentSet], frame_names: Sequence[str] | None) -> dict[int, str]:
+    names = list(frame_names or ())
+    return {id(components.labels): (names[index] if index < len(names) else "") for index, components in enumerate(component_sets)}
+
+
+def _pack_exemplars(values: np.ndarray) -> dict[str, Any]:
+    return {
+        "shape": list(values.shape),
+        "float16_b64": base64.b64encode(np.ascontiguousarray(values, dtype=np.float16).tobytes()).decode("ascii"),
+    }
+
+
+def _unpack_exemplars(raw: Any) -> np.ndarray:
+    if not isinstance(raw, dict):
+        return _empty_exemplars()
+    shape = tuple(int(value) for value in raw.get("shape") or (0, DESCRIPTOR_GRID**2 + 4))
+    data = base64.b64decode(str(raw.get("float16_b64") or ""))
+    return np.frombuffer(data, dtype=np.float16).astype(np.float32).reshape(shape)
+
+
+def _nearest(queries: np.ndarray, bank: np.ndarray, *, skip_self: bool = False, chunk: int = 512) -> np.ndarray:
+    """Distance from each query to its nearest bank row, in chunks (thousands of operator cells)."""
+
+    out = np.full(len(queries), np.inf)
+    if len(bank) == 0:
+        return out
+    for start in range(0, len(queries), chunk):
+        distances = _pairwise(queries[start : start + chunk], bank)
+        if skip_self:
+            rows = np.arange(distances.shape[0])
+            distances[rows, start + rows] = np.inf
+        out[start : start + chunk] = distances.min(axis=1)
+    return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +256,7 @@ class NormalBank:
     height_variable: bool = False
     width_range: tuple[float, float] = (0.0, 0.0)
     height_range: tuple[float, float] = (0.0, 0.0)
-    exemplars: np.ndarray = field(default_factory=lambda: np.zeros((0, DESCRIPTOR_GRID**2 + 4), dtype=np.float32))
+    exemplars: np.ndarray = field(default_factory=_empty_exemplars)
     distance_norm: float = 1.0
     knn_k: int = 4
     template: CellShapeTemplate | None = None
@@ -181,16 +265,35 @@ class NormalBank:
     dominance: float = 0.0
     reason: str = ""
     version: str = NORMAL_BANK_VERSION
+    # Cells the operator drew. Each one is normal on its own, so a shape is judged by the
+    # nearest of them (not the k-th: no network mistake hides among them), and the sizes
+    # they span stay inside the size limits.
+    operator_exemplars: np.ndarray = field(default_factory=_empty_exemplars)
+    operator_width_range: tuple[float, float] = (0.0, 0.0)
+    operator_height_range: tuple[float, float] = (0.0, 0.0)
+    # For the bank window only (not in the id or the payload): the pixels of each example, in
+    # the order of its descriptors, and width/height of every normal cell the bank was built from.
+    exemplar_views: tuple[ExemplarView, ...] = ()
+    operator_views: tuple[ExemplarView, ...] = ()
+    normal_sizes: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float32))
+    # Ids of the cells added by hand: the last of the operator examples, in this order.
+    manual_ids: tuple[str, ...] = ()
 
     @property
     def ready(self) -> bool:
         return self.status == STATUS_OK
 
     @property
+    def exemplar_count(self) -> int:
+        return int(len(self.exemplars) + len(self.operator_exemplars))
+
+    @property
     def bank_id(self) -> str:
         digest = hashlib.sha1()
         digest.update(json.dumps(self._header(), sort_keys=True).encode("utf-8"))
         digest.update(np.ascontiguousarray(self.exemplars, dtype=np.float16).tobytes())
+        if len(self.operator_exemplars):
+            digest.update(np.ascontiguousarray(self.operator_exemplars, dtype=np.float16).tobytes())
         if self.template is not None:
             digest.update(self.template.mask)
         return f"{self.source}:{digest.hexdigest()[:16]}"
@@ -216,21 +319,39 @@ class NormalBank:
             fraction = 0.50 + 0.20 * unit
             return fraction * float(bounds[1]), float(bounds[1]) * (1.12 + 0.10 * looseness)
 
+        def with_operator(pair: tuple[float, float], drawn: tuple[float, float]) -> tuple[float, float]:
+            # A size the operator drew is normal at any slider position.
+            if drawn[1] <= 0.0:
+                return pair
+            return min(pair[0], float(drawn[0])), max(pair[1], float(drawn[1]))
+
         return (
-            limits(self.cell_width, self.width_spread, self.width_variable, self.width_range),
-            limits(self.cell_height, self.height_spread, self.height_variable, self.height_range),
+            with_operator(
+                limits(self.cell_width, self.width_spread, self.width_variable, self.width_range),
+                self.operator_width_range,
+            ),
+            with_operator(
+                limits(self.cell_height, self.height_spread, self.height_variable, self.height_range),
+                self.operator_height_range,
+            ),
         )
 
     def normal_distance(self, descriptors: np.ndarray) -> np.ndarray:
-        """Distance to the k-th nearest normal example, in units of normal variation (1.0 = edge of normal)."""
+        """Distance to the normal examples, in units of normal variation (1.0 = edge of normal):
+        the k-th nearest example of the run, or the nearest operator cell, whichever is closer."""
 
         values = np.asarray(descriptors, dtype=np.float32)
-        if values.size == 0 or len(self.exemplars) == 0:
-            return np.full(len(values), np.inf)
-        return _kth(_pairwise(values, self.exemplars), self.knn_k) / max(self.distance_norm, 1.0e-6)
+        best = np.full(len(values), np.inf)
+        if values.size == 0:
+            return best
+        if len(self.exemplars):
+            best = _kth(_pairwise(values, self.exemplars), self.knn_k)
+        if len(self.operator_exemplars):
+            best = np.minimum(best, _nearest(values, self.operator_exemplars))
+        return best / max(self.distance_norm, 1.0e-6)
 
     def _header(self) -> dict[str, Any]:
-        return {
+        header = {
             "version": self.version,
             "source": self.source,
             "status": self.status,
@@ -251,14 +372,18 @@ class NormalBank:
             "dominance": round(float(self.dominance), 6),
             "reason": self.reason,
         }
+        # Only a bank with operator cells carries these keys: a run bank keeps its old id.
+        if len(self.operator_exemplars) or self.operator_width_range[1] > 0.0 or self.operator_height_range[1] > 0.0:
+            header["operator_width_range"] = [round(float(value), 4) for value in self.operator_width_range]
+            header["operator_height_range"] = [round(float(value), 4) for value in self.operator_height_range]
+        return header
 
     def to_payload(self) -> dict[str, Any]:
         payload = self._header()
         payload["bank_id"] = self.bank_id
-        payload["exemplars"] = {
-            "shape": list(self.exemplars.shape),
-            "float16_b64": base64.b64encode(np.ascontiguousarray(self.exemplars, dtype=np.float16).tobytes()).decode("ascii"),
-        }
+        payload["exemplars"] = _pack_exemplars(self.exemplars)
+        if len(self.operator_exemplars):
+            payload["operator_exemplars"] = _pack_exemplars(self.operator_exemplars)
         if self.template is not None:
             t = self.template
             payload["template"] = {
@@ -276,10 +401,7 @@ class NormalBank:
     def from_payload(payload: dict[str, Any]) -> "NormalBank":
         if str(payload.get("version") or "") != NORMAL_BANK_VERSION:
             raise ValueError(f"unsupported normal bank version: {payload.get('version')}")
-        raw = payload.get("exemplars") or {}
-        shape = tuple(int(value) for value in raw.get("shape") or (0, DESCRIPTOR_GRID**2 + 4))
-        data = base64.b64decode(str(raw.get("float16_b64") or ""))
-        exemplars = np.frombuffer(data, dtype=np.float16).astype(np.float32).reshape(shape)
+        exemplars = _unpack_exemplars(payload.get("exemplars"))
         template = None
         if isinstance(payload.get("template"), dict):
             t = payload["template"]
@@ -317,6 +439,9 @@ class NormalBank:
             candidates=int(payload.get("candidates", 0)),
             dominance=float(payload.get("dominance", 0.0)),
             reason=str(payload.get("reason") or ""),
+            operator_exemplars=_unpack_exemplars(payload.get("operator_exemplars")),
+            operator_width_range=tuple(float(value) for value in payload.get("operator_width_range") or (0.0, 0.0)),
+            operator_height_range=tuple(float(value) for value in payload.get("operator_height_range") or (0.0, 0.0)),
         )
 
     def save(self, path: Path | str) -> Path:
@@ -340,10 +465,12 @@ def build_normal_bank(
     source: str = SOURCE_SESSION,
     config: NormalBankConfig | None = None,
     conductor_config: ConductorConfig | None = None,
+    frame_names: Sequence[str] | None = None,
 ) -> NormalBank:
     """Bank from several frames: dominant cell-sized cluster, trimmed, capped by a coreset."""
 
     cfg = config or NormalBankConfig()
+    names = _frame_names(component_sets, frame_names)
     pool: list[tuple[CellComponent, np.ndarray]] = []
     frames_used = 0
     for components in component_sets:
@@ -439,6 +566,10 @@ def build_normal_bank(
     norm = float(np.quantile(_kth(distances, k), cfg.norm_quantile))
 
     kept_items = [members[index][0] for index in kept]
+    views = tuple(
+        exemplar_view(members[kept[index]][0], members[kept[index]][1], names.get(id(members[kept[index]][1]), ""))
+        for index in chosen
+    )
     kept_w = np.asarray([item.width for item in kept_items], dtype=np.float64)
     kept_h = np.asarray([item.height for item in kept_items], dtype=np.float64)
     kept_a = np.asarray([item.area for item in kept_items], dtype=np.float64)
@@ -466,4 +597,226 @@ def build_normal_bank(
         frames_used=frames_used,
         candidates=len(pool),
         dominance=dominance,
+        exemplar_views=views,
+        normal_sizes=np.stack([kept_w, kept_h], axis=1).astype(np.float32),
+    )
+
+
+def build_markup_bank(
+    component_sets: Sequence[ComponentSet],
+    *,
+    source: str = SOURCE_REFERENCE,
+    config: NormalBankConfig | None = None,
+    frame_names: Sequence[str] | None = None,
+) -> NormalBank:
+    """Bank from operator masks: every drawn cell is a normal example, none is trimmed.
+
+    Cells touching the frame edge are left out (a cut cell would make a half cell normal), and
+    so are crumbs below ``min_seed_area`` (JPEG specks, not drawn cells). The unit of distance is
+    how far a drawn cell usually is from its nearest other drawn cell, raised so that every drawn
+    cell stays within 1.0 of the kept examples.
+    """
+
+    cfg = config or NormalBankConfig()
+    names = _frame_names(component_sets, frame_names)
+    items: list[tuple[CellComponent, np.ndarray]] = []
+    frames_used = 0
+    for components in component_sets:
+        drawn = [
+            (item, components.labels)
+            for item in components.components
+            if not item.touches_border and item.area >= cfg.min_seed_area
+        ]
+        if drawn:
+            frames_used += 1
+            items.extend(drawn)
+    if len(items) < cfg.min_exemplars:
+        return _insufficient(source, "too_few_markup_cells", frames_used=frames_used, candidates=len(items))
+
+    widths = np.asarray([item.width for item, _labels in items], dtype=np.float64)
+    heights = np.asarray([item.height for item, _labels in items], dtype=np.float64)
+    areas = np.asarray([item.area for item, _labels in items], dtype=np.float64)
+    width_spread, height_spread = _spread(widths), _spread(heights)
+    width_variable = width_spread > cfg.variable_side_spread
+    height_variable = height_spread > cfg.variable_side_spread
+    if width_variable and height_variable:
+        # One side of a cell is fixed (decision В4); the wider spread is the side drawn at several lengths.
+        width_variable, height_variable = width_spread > height_spread, height_spread >= width_spread
+
+    descriptors = np.stack([shape_descriptor(item, labels) for item, labels in items])
+    chosen = _greedy_coreset(descriptors, max(1, int(cfg.max_operator_exemplars)))
+    examples = descriptors[chosen]
+    usual = float(np.quantile(_nearest(descriptors, descriptors, skip_self=True), cfg.norm_quantile))
+    rest = np.setdiff1d(np.arange(len(descriptors)), chosen)
+    cover = float(_nearest(descriptors[rest], examples).max()) if len(rest) else 0.0
+    norm = max(usual, cover, float(cfg.min_distance_norm))
+
+    low_q, high_q = cfg.side_quantiles
+    template = build_cell_shape_template(
+        [(item.contour, float(item.width), float(item.height), float(item.area)) for item, _labels in items]
+    )
+    return NormalBank(
+        source=source,
+        status=STATUS_OK,
+        cell_width=float(np.median(widths)),
+        cell_height=float(np.median(heights)),
+        cell_area=float(np.median(areas)),
+        width_spread=width_spread,
+        height_spread=height_spread,
+        area_spread=_spread(areas),
+        width_variable=bool(width_variable),
+        height_variable=bool(height_variable),
+        width_range=(float(np.quantile(widths, low_q)), float(np.quantile(widths, high_q))),
+        height_range=(float(np.quantile(heights, low_q)), float(np.quantile(heights, high_q))),
+        distance_norm=norm,
+        knn_k=int(cfg.knn_k),
+        template=template,
+        frames_used=frames_used,
+        candidates=len(items),
+        dominance=1.0,
+        operator_exemplars=examples.astype(np.float32),
+        operator_width_range=(float(widths.min()), float(widths.max())),
+        operator_height_range=(float(heights.min()), float(heights.max())),
+        operator_views=tuple(exemplar_view(items[index][0], items[index][1], names.get(id(items[index][1]), "")) for index in chosen),
+        normal_sizes=np.stack([widths, heights], axis=1).astype(np.float32),
+    )
+
+
+ORIGIN_OPERATOR = "operator"
+ORIGIN_RUN = "run"
+
+
+def exemplar_unusualness(bank: NormalBank) -> dict[str, np.ndarray]:
+    """How far each example is from the rest, in units of normal variation, the way the bank
+    judges: a run example by its k-th nearest other run example, an operator cell by its
+    nearest other operator cell or the run examples, whichever is closer (a cell added by hand
+    to a run bank shows how far it was from that bank). The bank window lists the odd ones first."""
+
+    norm = max(float(bank.distance_norm), 1.0e-6)
+    out = {ORIGIN_RUN: np.zeros(len(bank.exemplars)), ORIGIN_OPERATOR: np.zeros(len(bank.operator_exemplars))}
+    if len(bank.exemplars) > 1:
+        distances = _pairwise(bank.exemplars, bank.exemplars)
+        np.fill_diagonal(distances, np.inf)
+        out[ORIGIN_RUN] = _kth(distances, min(bank.knn_k, len(bank.exemplars) - 1)) / norm
+    if len(bank.operator_exemplars):
+        values = _nearest(bank.operator_exemplars, bank.operator_exemplars, skip_self=True)
+        if len(bank.exemplars):
+            values = np.minimum(values, _kth(_pairwise(bank.operator_exemplars, bank.exemplars), bank.knn_k))
+        out[ORIGIN_OPERATOR] = np.where(np.isfinite(values), values, 0.0) / norm
+    return out
+
+
+def nearest_exemplars(bank: NormalBank, descriptor: np.ndarray, count: int = 8) -> list[tuple[str, int, float]]:
+    """The examples closest to one cell: (origin, index in that origin's examples, distance in units)."""
+
+    norm = max(float(bank.distance_norm), 1.0e-6)
+    query = np.asarray(descriptor, dtype=np.float32).reshape(1, -1)
+    found: list[tuple[str, int, float]] = []
+    for origin, pool in ((ORIGIN_RUN, bank.exemplars), (ORIGIN_OPERATOR, bank.operator_exemplars)):
+        if len(pool):
+            distances = _pairwise(query, pool)[0] / norm
+            for index in np.argsort(distances)[:count]:
+                found.append((origin, int(index), float(distances[index])))
+    found.sort(key=lambda entry: entry[2])
+    return found[:count]
+
+
+def cell_at(components: ComponentSet, bbox: tuple[int, int, int, int]) -> CellComponent | None:
+    """The mask piece a box on the frame points at: the one under its centre, else the one
+    with most pixels inside it."""
+
+    x, y, w, h = (int(value) for value in bbox)
+    labels = components.labels
+    rows, cols = labels.shape
+    cx, cy = min(cols - 1, max(0, x + w // 2)), min(rows - 1, max(0, y + h // 2))
+    label = int(labels[cy, cx])
+    if label <= 0:
+        window = labels[max(0, y) : max(0, y + h), max(0, x) : max(0, x + w)]
+        values, counts = np.unique(window[window > 0], return_counts=True)
+        if not len(values):
+            return None
+        label = int(values[int(np.argmax(counts))])
+    return next((item for item in components.components if item.label == label), None)
+
+
+@dataclass(frozen=True, slots=True)
+class ManualCell:
+    """A cell the operator called normal by hand, kept with its layer."""
+
+    cell_id: str
+    view: ExemplarView
+    descriptor: np.ndarray
+    # Its size is normal too: the size limits widen to take it in.
+    size_normal: bool = False
+    # What the bank said about it when it was added ("" when it was not marked): a count of
+    # the marks the operator overruled.
+    flagged: str = ""
+    added: str = ""
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.cell_id,
+            "frame": self.view.frame,
+            "width": int(self.view.width),
+            "height": int(self.view.height),
+            "area": int(self.view.area),
+            "mask_b64": base64.b64encode(self.view.mask_bits).decode("ascii"),
+            "descriptor_b64": base64.b64encode(np.asarray(self.descriptor, dtype=np.float16).tobytes()).decode("ascii"),
+            "size_normal": bool(self.size_normal),
+            "flagged": str(self.flagged or ""),
+            "added": str(self.added or ""),
+        }
+
+    @staticmethod
+    def from_payload(payload: Any) -> "ManualCell | None":
+        try:
+            view = ExemplarView(
+                frame=str(payload.get("frame") or ""),
+                width=int(payload["width"]),
+                height=int(payload["height"]),
+                area=int(payload["area"]),
+                mask_bits=base64.b64decode(str(payload["mask_b64"])),
+            )
+            descriptor = np.frombuffer(base64.b64decode(str(payload["descriptor_b64"])), dtype=np.float16).astype(np.float32)
+            if descriptor.shape != (DESCRIPTOR_GRID**2 + 4,) or view.width <= 0 or view.height <= 0:
+                return None
+            return ManualCell(
+                cell_id=str(payload["id"]),
+                view=view,
+                descriptor=descriptor,
+                size_normal=bool(payload.get("size_normal", False)),
+                flagged=str(payload.get("flagged") or ""),
+                added=str(payload.get("added") or ""),
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+
+
+def apply_manual_cells(bank: NormalBank, cells: Sequence[ManualCell]) -> NormalBank:
+    """The bank with hand-added cells among the operator examples (judged by the nearest one).
+
+    A bank without a reliable normal cell stays as it is: a few hand-picked cells cannot tell
+    the cell size of a layer.
+    """
+
+    if not cells or not bank.ready:
+        return bank
+    descriptors = np.stack([np.asarray(cell.descriptor, dtype=np.float32) for cell in cells])
+    width_range, height_range = bank.operator_width_range, bank.operator_height_range
+    for cell in cells:
+        if not cell.size_normal:
+            continue
+
+        def widen(pair: tuple[float, float], value: float) -> tuple[float, float]:
+            return (value, value) if pair[1] <= 0.0 else (min(pair[0], value), max(pair[1], value))
+
+        width_range = widen(width_range, float(cell.view.width))
+        height_range = widen(height_range, float(cell.view.height))
+    return replace(
+        bank,
+        operator_exemplars=np.concatenate([bank.operator_exemplars, descriptors]).astype(np.float32),
+        operator_views=tuple(bank.operator_views) + tuple(cell.view for cell in cells),
+        operator_width_range=width_range,
+        operator_height_range=height_range,
+        manual_ids=tuple(cell.cell_id for cell in cells),
     )

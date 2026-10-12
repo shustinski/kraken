@@ -183,6 +183,8 @@ from ..ui.ui_constants import (
     FOLDER_CONFIDENCE_EXPANDED_ROLE,
     FOLDER_FRAMES_PER_ROW_ROLE,
     FOLDER_CELL_CLASS_ROLE,
+    FOLDER_MANUAL_CELLS_ROLE,
+    FOLDER_MARKUP_ROLE,
     FOLDER_ORIGINAL_ROLE,
     FOLDER_LABEL_ROLE,
     FOLDER_ROW_MIN_HEIGHT,
@@ -2531,6 +2533,8 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_ORIGINAL_ROLE, "")
         item.setData(FOLDER_FRAMES_PER_ROW_ROLE, 0)
         item.setData(FOLDER_CELL_CLASS_ROLE, "")
+        item.setData(FOLDER_MARKUP_ROLE, "")
+        item.setData(FOLDER_MANUAL_CELLS_ROLE, [])
         item.setToolTip(folder_path_text)
         self.folder_list.addItem(item)
         self._disambiguate_default_folder_labels()
@@ -2561,6 +2565,7 @@ class KarakalPresenter(QObject):
                 confidence_expanded = bool(item.data(FOLDER_CONFIDENCE_EXPANDED_ROLE))
                 confidence_display_text = self._compact_path_text(confidence_path_text)
                 original_path_text = str(item.data(FOLDER_ORIGINAL_ROLE) or "")
+                markup_path_text = str(item.data(FOLDER_MARKUP_ROLE) or "")
                 row_widget = FolderRowWidget(
                     self.folder_list,
                     path_text=path_text,
@@ -2603,6 +2608,15 @@ class KarakalPresenter(QObject):
                     original_placeholder=self._t("folders.original_not_set"),
                     original_select_tooltip=self._t("folders.select_original"),
                     original_clear_tooltip=self._t("folders.clear_original"),
+                    markup_label=self._t("folders.markup_label"),
+                    markup_display_text=self._compact_path_text(markup_path_text),
+                    markup_path_text=markup_path_text,
+                    on_markup_folder=lambda _checked=False, item=item: self._set_folder_item_markup_folder(item),
+                    on_clear_markup_folder=lambda _checked=False, item=item: self._clear_folder_item_markup_folder(item),
+                    markup_placeholder=self._t("folders.markup_not_set"),
+                    markup_tooltip=self._t("folders.markup_tooltip", path=markup_path_text),
+                    markup_select_tooltip=self._t("folders.select_markup"),
+                    markup_clear_tooltip=self._t("folders.clear_markup"),
                     frames_per_row=int(item.data(FOLDER_FRAMES_PER_ROW_ROLE) or 0),
                     on_frames_per_row_changed=lambda value, item=item: self._set_folder_item_frames_per_row(
                         item, value
@@ -2625,6 +2639,12 @@ class KarakalPresenter(QObject):
                         value: self._t("folders.cell_class_badge_tooltip", name=self._t(f"folders.cell_class.{value}"))
                         for value in ("ones", "zeros")
                     },
+                    cell_bank_label=self._t("folders.cell_bank"),
+                    cell_bank_button_text=self._t("folders.open_cell_bank"),
+                    cell_bank_tooltip=self._t("folders.open_cell_bank_tooltip"),
+                    on_open_cell_bank=lambda _checked=False, item=item: self._open_cell_bank(
+                        self._model_id_for_folder_item(item)
+                    ),
                 )
                 row_widget.setMinimumHeight(FOLDER_ROW_MIN_HEIGHT)
                 row_widget.set_selected(item is self.folder_list.currentItem())
@@ -2710,6 +2730,271 @@ class KarakalPresenter(QObject):
         item.setData(FOLDER_ORIGINAL_ROLE, "")
         self._refresh_folder_rows()
         self._sync_action_buttons()
+
+    def _set_folder_item_markup_folder(self, item: QListWidgetItem) -> None:
+        if self._worker_thread is not None:
+            return
+        folder = QFileDialog.getExistingDirectory(self._view, self._t("dialog.select_markup_folder"))
+        if not folder:
+            return
+        folder_path = Path(folder)
+        if not self._folder_has_supported_images(folder_path):
+            QMessageBox.warning(
+                self._view,
+                self._t("dialog.warning_title"),
+                self._t("folders.markup_empty", path=str(folder_path)),
+            )
+            return
+        self._set_folder_item_markup(item, str(folder_path))
+
+    def _clear_folder_item_markup_folder(self, item: QListWidgetItem) -> None:
+        self._set_folder_item_markup(item, "")
+
+    def _set_folder_item_markup(self, item: QListWidgetItem, folder: str) -> None:
+        """Another bank of normal cells for the layer: its stored bank goes, the result is stale."""
+
+        if folder == str(item.data(FOLDER_MARKUP_ROLE) or ""):
+            return
+        item.setData(FOLDER_MARKUP_ROLE, folder)
+        state = self._current_tab_state()
+        profiles = getattr(state, "grid_inspection_run_profiles", None) if state is not None else None
+        if isinstance(profiles, dict):
+            profiles.pop(self._model_id_for_folder_item(item), None)
+        self._refresh_folder_rows()
+        self._sync_action_buttons()
+        self._persist_state()
+
+    def _folder_markup_paths(self, model_id: str) -> tuple[str, ...]:
+        """The layer's operator masks, file by file; empty when the layer has no markup folder."""
+
+        item = self._folder_item_for_model_id(model_id)
+        folder = str(item.data(FOLDER_MARKUP_ROLE) or "") if item is not None else ""
+        if not folder:
+            return ()
+        try:
+            return tuple(
+                sorted(
+                    str(path)
+                    for path in Path(folder).iterdir()
+                    if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSION_SET
+                )
+            )
+        except OSError as error:
+            _LOGGER.warning("Could not read markup folder %s: %s", folder, error)
+            return ()
+
+    # --- Bank of normal cells window -----------------------------------------------------------
+
+    def _open_cell_bank(self, model_id: str, query=None) -> None:
+        """Window with the layer's bank of normal cells; built in a thread when the run has none yet."""
+
+        from ..core.cell_error_analysis import CellErrorConfig
+        from ..core.grid_anomaly import resolve_reference_profile
+        from ..ui.cell_bank_dialog import CellBankDialog
+
+        model_id = str(model_id or "")
+        if not model_id:
+            return
+        dialogs = getattr(self, "_cell_bank_dialogs", None)
+        if dialogs is None:
+            dialogs = self._cell_bank_dialogs = {}
+        dialog = dialogs.get(model_id)
+        if dialog is not None and dialog.isVisible():
+            dialog.set_query(query)
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        item = self._folder_item_for_model_id(model_id)
+        name = str(item.data(FOLDER_LABEL_ROLE) or model_id) if item is not None else model_id
+        geometry = int(self._grid_tuning_values().get("geometry_sensitivity", 40))
+        dialog = CellBankDialog(
+            self._t,
+            layer_name=name,
+            geometry_sensitivity=geometry,
+            shape_limit=CellErrorConfig(geometry_sensitivity=geometry).effective_shape_limit(),
+            parent=None,
+        )
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(lambda _obj=None, key=model_id: dialogs.pop(key, None))
+        dialog.addRequested.connect(
+            lambda shown, size_normal, flagged, key=model_id: self._add_manual_cell(key, shown, size_normal, flagged)
+        )
+        dialog.removeRequested.connect(lambda cell_id, key=model_id: self._remove_manual_cell(key, cell_id))
+        dialogs[model_id] = dialog
+        dialog.set_manual_cells(self._folder_manual_cells(model_id))
+        dialog.set_query(query)
+        state = self._current_tab_state()
+        profiles = getattr(state, "grid_inspection_run_profiles", None) if state is not None else None
+        profile = profiles.get(model_id) if isinstance(profiles, dict) else None
+        if profile is not None:
+            dialog.set_profile(profile)
+        else:
+            records = tuple(getattr(getattr(state, "build_result", None), "records", ()) or ()) if state is not None else ()
+            request = (
+                self._estimate_run_cell_reference_profile_for_state(state, None, model_id=model_id, records=records)
+                if state is not None and records
+                else None
+            )
+            if request is None:
+                dialog.set_profile(None)
+            else:
+
+                def keep(built, key=model_id, store=profiles) -> None:
+                    # The same bank the run would build: the frame window and the next look reuse it.
+                    if isinstance(store, dict):
+                        store.setdefault(key, built)
+
+                dialog.build(lambda request=request: resolve_reference_profile(request), on_built=keep)
+        dialog.show()
+
+    def _open_cell_bank_from_details(self, details) -> None:
+        """Bank of the layer shown in a frame window; the selected defect's cell is put next to it."""
+
+        state = self._current_tab_state()
+        model_id = self._matrix_layer_model_id(state) if state is not None else ""
+        if not model_id:
+            model_id = str(self._grid_inspection_model_id_for_state(state) or "") if state is not None else ""
+        record = getattr(details, "_record", None)
+        query = None
+        bbox = details.selected_grid_defect_bbox() if hasattr(details, "selected_grid_defect_bbox") else None
+        if record is not None and bbox is not None and model_id:
+            path = self._grid_inspection_layer_source_path_for_record(record, model_id, "binary")
+            query = self._cell_bank_query(path, bbox)
+            if query is None:
+                QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("cell_bank.query_none"))
+        self._open_cell_bank(model_id, query)
+
+    @staticmethod
+    def _cell_bank_query(path: str, bbox: tuple[int, int, int, int]):
+        from ..core.cell_components import extract_components
+        from ..core.grid_anomaly import _load_cv2_grayscale_image
+        from ..core.normal_bank import cell_at, exemplar_view, shape_descriptor
+        from ..ui.cell_bank_dialog import CellQuery
+
+        if not path or not Path(path).is_file():
+            return None
+        image = _load_cv2_grayscale_image(Path(path))
+        if image is None:
+            return None
+        components = extract_components(image)
+        item = cell_at(components, bbox)
+        if item is None:
+            return None
+        frame = Path(path).name
+        return CellQuery(
+            frame=frame,
+            view=exemplar_view(item, components.labels, frame),
+            descriptor=shape_descriptor(item, components.labels),
+        )
+
+    def _grid_markup_signature(self) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+        """What every layer's bank is made of besides the run: markup folder and hand-added cells."""
+
+        items = [self.folder_list.item(row) for row in range(self.folder_list.count())]
+        return tuple(
+            (
+                self._model_id_for_folder_item(item),
+                str(item.data(FOLDER_MARKUP_ROLE) or ""),
+                tuple(str(cell.get("id") or "") for cell in (item.data(FOLDER_MANUAL_CELLS_ROLE) or [])),
+            )
+            for item in items
+        )
+
+    def _folder_manual_cells(self, model_id: str) -> tuple:
+        from ..core.normal_bank import ManualCell
+
+        item = self._folder_item_for_model_id(model_id)
+        payloads = list(item.data(FOLDER_MANUAL_CELLS_ROLE) or []) if item is not None else []
+        cells = (ManualCell.from_payload(payload) for payload in payloads)
+        return tuple(cell for cell in cells if cell is not None)
+
+    def _add_manual_cell(self, model_id: str, query, size_normal: bool, flagged: str) -> None:
+        """The operator says this cell is normal: it joins the layer's bank and stays with the layer."""
+
+        import uuid
+        from datetime import date
+
+        from ..core.normal_bank import ManualCell
+
+        item = self._folder_item_for_model_id(model_id)
+        if item is None or query is None:
+            return
+        cell = ManualCell(
+            cell_id=uuid.uuid4().hex[:12],
+            view=query.view,
+            descriptor=query.descriptor,
+            size_normal=bool(size_normal),
+            flagged=str(flagged or ""),
+            added=date.today().isoformat(),
+        )
+        item.setData(FOLDER_MANUAL_CELLS_ROLE, [*list(item.data(FOLDER_MANUAL_CELLS_ROLE) or []), cell.to_payload()])
+        self._on_manual_cells_changed(model_id)
+
+    def _remove_manual_cell(self, model_id: str, cell_id: str) -> None:
+        item = self._folder_item_for_model_id(model_id)
+        if item is None:
+            return
+        cells = [cell for cell in list(item.data(FOLDER_MANUAL_CELLS_ROLE) or []) if str(cell.get("id")) != str(cell_id)]
+        item.setData(FOLDER_MANUAL_CELLS_ROLE, cells)
+        self._on_manual_cells_changed(model_id)
+
+    def _on_manual_cells_changed(self, model_id: str) -> None:
+        """New hand-added cells: the stored bank, the bank window and open frame windows follow at
+        once; the matrix waits for «Recompute» (the button turns yellow)."""
+
+        from ..core.grid_anomaly import with_manual_cells
+
+        cells = self._folder_manual_cells(model_id)
+        state = self._current_tab_state()
+        profiles = getattr(state, "grid_inspection_run_profiles", None) if state is not None else None
+        profile = profiles.get(model_id) if isinstance(profiles, dict) else None
+        if profile is not None:
+            profile = with_manual_cells(profile, cells)
+            profiles[model_id] = profile
+        dialog = (getattr(self, "_cell_bank_dialogs", None) or {}).get(model_id)
+        if dialog is not None:
+            dialog.set_manual_cells(cells)
+            if profile is not None:
+                dialog.set_profile(profile)
+        if state is not None and self._current_app_mode() == "grid_inspection" and profile is not None:
+            shown = self._matrix_layer_model_id(state) or str(self._grid_inspection_model_id_for_state(state) or "")
+            if shown == model_id:
+                for details in list(getattr(self, "_details_dialogs", ()) or ()):
+                    record = getattr(details, "_record", None)
+                    if record is not None:
+                        self._start_grid_details_analyze(details, record, state)
+        self._sync_action_buttons()
+        self._persist_state()
+
+    def _on_cell_bank_context(self, details, point: tuple[int, int], action: str) -> None:
+        """Right click in a frame window: compare the cell under the mouse with the bank, or add it."""
+
+        state = self._current_tab_state()
+        if state is None:
+            return
+        model_id = self._matrix_layer_model_id(state) or str(self._grid_inspection_model_id_for_state(state) or "")
+        record = getattr(details, "_record", None)
+        if not model_id or record is None:
+            return
+        path = self._grid_inspection_layer_source_path_for_record(record, model_id, "binary")
+        query = self._cell_bank_query(path, (int(point[0]), int(point[1]), 1, 1))
+        if query is None:
+            QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("cell_bank.query_none"))
+            return
+        if action in ("add", "add_size"):
+            from ..core.cell_error_analysis import CellErrorConfig, bank_verdict
+
+            profile = self._grid_details_run_profile(state, model_id, record)
+            bank = getattr(profile, "normal_bank", None)
+            if bank is None or not bank.ready:
+                QMessageBox.information(self._view, self._t("dialog.info_title"), self._t("cell_bank.add_no_bank"))
+                return
+            geometry = int(self._grid_tuning_values().get("geometry_sensitivity", 40))
+            verdict = bank_verdict(
+                bank, query.view.width, query.view.height, query.descriptor, CellErrorConfig(geometry_sensitivity=geometry)
+            )
+            self._add_manual_cell(model_id, query, action == "add_size", verdict)
+        self._open_cell_bank(model_id, query)
 
     def _set_folder_item_frames_per_row(self, item: QListWidgetItem, value: int) -> None:
         """Matrix width of one layer; the shown matrix follows when it is this layer."""
@@ -5263,12 +5548,15 @@ class KarakalPresenter(QObject):
         model_id: str,
         records: tuple[FrameRecord, ...],
     ) -> RunProfileRequest | None:
-        """What the worker needs to build one model's bank of normal cells: reference frames, else the run.
+        """What the worker needs to build one model's bank of normal cells: the layer's operator masks,
+        else reference frames, else the run. The run's paths go along with the markup: when the
+        markup gives no bank, the worker falls back to them.
 
         Only paths are collected here; reading and splitting the masks happens in the worker thread.
         """
 
         _ = config
+        markup_paths = self._folder_markup_paths(model_id)
         reference_records = self._grid_inspection_reference_records(state)
         source = reference_records or records
         paths: list[str] = []
@@ -5280,8 +5568,22 @@ class KarakalPresenter(QObject):
             return None
         if reference_records:
             # Every reference frame is used; one good frame can be enough.
-            return RunProfileRequest(tuple(paths), sample_limit=0, frame_id=f"reference:{model_id}", min_frames=1)
-        return RunProfileRequest(tuple(paths), sample_limit=32, frame_id=f"run:{model_id}", min_frames=1)
+            return RunProfileRequest(
+                tuple(paths),
+                sample_limit=0,
+                frame_id=f"reference:{model_id}",
+                min_frames=1,
+                markup_paths=markup_paths,
+                manual_cells=self._folder_manual_cells(model_id),
+            )
+        return RunProfileRequest(
+            tuple(paths),
+            sample_limit=32,
+            frame_id=f"run:{model_id}",
+            min_frames=1,
+            markup_paths=markup_paths,
+            manual_cells=self._folder_manual_cells(model_id),
+        )
 
     def _on_grid_reference_profile_ready(
         self, model_id: str, profile: object, *, state: ExtendMatrixTabState | None = None, generation: int | None = None
@@ -5291,6 +5593,7 @@ class KarakalPresenter(QObject):
         if not self._is_active_request_generation(generation) or state is None:
             return
         state.grid_inspection_run_profiles[str(model_id)] = profile
+        self._warn_about_markup(model_id, getattr(profile, "markup_report", None))
         bank = getattr(profile, "normal_bank", None)
         if self._grid_inspection_reference_records(state) and (bank is None or not bank.ready):
             QMessageBox.warning(
@@ -5298,6 +5601,34 @@ class KarakalPresenter(QObject):
                 self._t("dialog.warning_title"),
                 self._t("grid_reference.profile_failed", name=str(model_id or "")),
             )
+
+    def _warn_about_markup(self, model_id: str, report: dict | None) -> None:
+        """The layer's markup gave no bank (the run's is used), or the analysis still marks drawn cells."""
+
+        if not report:
+            return
+        item = self._folder_item_for_model_id(str(model_id))
+        name = str(item.data(FOLDER_LABEL_ROLE) or model_id) if item is not None else str(model_id)
+        if not report.get("used"):
+            text = self._t(
+                "markup.not_used", name=name, frames=int(report.get("frames", 0)), cells=int(report.get("cells", 0))
+            )
+        elif report.get("flagged"):
+            flagged = list(report["flagged"])
+            examples = "\n".join(
+                self._t(
+                    "markup.flagged_entry",
+                    frame=entry["frame"],
+                    kind=self._t(f"grid_error.{entry['reason']}"),
+                    x=entry["bbox"][0],
+                    y=entry["bbox"][1],
+                )
+                for entry in flagged[:8]
+            )
+            text = self._t("markup.flagged", name=name, count=len(flagged), examples=examples)
+        else:
+            return
+        QMessageBox.warning(self._view, self._t("dialog.warning_title"), text)
 
     def _current_matrix_selected_records(self) -> tuple[FrameRecord, ...]:
         if self._current_app_mode() == "grid_inspection":
@@ -5676,6 +6007,7 @@ class KarakalPresenter(QObject):
             self._sync_action_buttons()
             return
         state.grid_inspection_config_payload = next_config
+        state.grid_inspection_markup_signature = self._grid_markup_signature()
         state.grid_inspection_results_ready = False
         state.grid_inspection_payload_by_key = {}
         state.grid_inspection_payloads_by_layer = {key: {} for key in self._grid_inspection_layer_keys()}
@@ -6073,6 +6405,9 @@ class KarakalPresenter(QObject):
         for key in (*GRID_INSPECTION_TUNING_KEYS, "calibration_fingerprint"):
             if stored.get(key) != live.get(key):
                 return True
+        # Another markup folder means another bank of normal cells.
+        if tuple(getattr(state, "grid_inspection_markup_signature", ()) or ()) != self._grid_markup_signature():
+            return True
         run_types = stored.get("enabled_error_types")
         return not can_narrow(
             run_debris_min_area_px=default_run_debris_min_area(stored),
@@ -6794,7 +7129,11 @@ class KarakalPresenter(QObject):
         if request is None:
             return None
         profile = estimate_run_normal_profile(
-            request.mask_paths, sample_limit=min(8, len(request.mask_paths)) or 8, frame_id=f"details:{model_id}"
+            request.mask_paths,
+            sample_limit=min(8, len(request.mask_paths)) or 8,
+            frame_id=f"details:{model_id}",
+            markup_paths=request.markup_paths,
+            manual_cells=request.manual_cells,
         )
         if profile is not None:
             profiles[str(model_id)] = profile
@@ -7758,6 +8097,8 @@ class KarakalPresenter(QObject):
         dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog._on_grid_tuning_requested = lambda details=dialog: self._open_grid_tuning_dialog(details)
+        dialog._on_cell_bank_requested = lambda details=dialog: self._open_cell_bank_from_details(details)
+        dialog._on_cell_bank_context = self._on_cell_bank_context
         # Details filter stays local. Main-window filter is the only export source.
         dialog._on_class_conflict_user_wants_changed = None
         dialog._on_grid_frame_changed = lambda details=dialog: self._on_details_grid_frame_changed(details)
@@ -8789,6 +9130,8 @@ class KarakalPresenter(QObject):
                     "original_path": str(self.folder_list.item(row).data(FOLDER_ORIGINAL_ROLE) or ""),
                     "frames_per_row": int(self.folder_list.item(row).data(FOLDER_FRAMES_PER_ROW_ROLE) or 0),
                     "cell_class": str(self.folder_list.item(row).data(FOLDER_CELL_CLASS_ROLE) or ""),
+                    "markup_path": str(self.folder_list.item(row).data(FOLDER_MARKUP_ROLE) or ""),
+                    "manual_cells": list(self.folder_list.item(row).data(FOLDER_MANUAL_CELLS_ROLE) or []),
                 }
                 for row in range(self.folder_list.count())
             ],
@@ -8835,6 +9178,14 @@ class KarakalPresenter(QObject):
                 item.setData(FOLDER_FRAMES_PER_ROW_ROLE, max(0, int(folder_entry.get("frames_per_row") or 0)))
                 cell_class = str(folder_entry.get("cell_class") or "")
                 item.setData(FOLDER_CELL_CLASS_ROLE, cell_class if cell_class in {"ones", "zeros"} else "")
+                markup_path = folder_entry.get("markup_path")
+                if markup_path and Path(markup_path).exists():
+                    item.setData(FOLDER_MARKUP_ROLE, str(markup_path))
+                manual_cells = folder_entry.get("manual_cells")
+                item.setData(
+                    FOLDER_MANUAL_CELLS_ROLE,
+                    [dict(cell) for cell in manual_cells if isinstance(cell, dict)] if isinstance(manual_cells, list) else [],
+                )
             # Older settings kept one source folder for every layer.
             legacy_original = payload.get("original_folder")
             if legacy_original and Path(legacy_original).exists():

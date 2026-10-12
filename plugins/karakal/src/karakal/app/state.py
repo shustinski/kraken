@@ -83,6 +83,8 @@ class ExtendMatrixTabState:
     # Shown in the matrix: the model id of the layer selected in the folder list, or a pair key.
     grid_inspection_matrix_selection: str = ""
     grid_inspection_config_payload: dict[str, object] = field(default_factory=dict)
+    # (model id, markup folder, hand-added cell ids) of every layer when the shown result was computed.
+    grid_inspection_markup_signature: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
     grid_inspection_algorithm_version: str = ""
     grid_inspection_calculation_record_keys: set[str] = field(default_factory=set)
     # Frames whose masks are known good; the layer cell template is built from them.

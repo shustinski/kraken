@@ -105,17 +105,24 @@ def _density_zone(components: ComponentSet, cell_area: float, cfg: ConductorConf
     grain_limit = min(float(cfg.max_grain_area), cfg.grain_area_ratio * area_scale)
     seeds = np.zeros((rows, cols), dtype=np.float32)
     masses = np.zeros((rows, cols), dtype=bool)
-    for item in components.components:
-        mass = item.area >= cfg.mass_area_ratio * area_scale
-        ragged = item.solidity < cfg.ragged_max_solidity or item.extent < cfg.ragged_max_extent
+    items = components.components
+    if items:
+        # The same tests piece by piece, on arrays of all pieces at once (a frame has ~1000).
+        area, solidity, extent, softness, cx, cy = np.array(
+            [(i.area, i.solidity, i.extent, i.edge_softness, i.centroid[0], i.centroid[1]) for i in items], dtype=np.float64
+        ).T
+        mass = area >= cfg.mass_area_ratio * area_scale
+        ragged = (solidity < cfg.ragged_max_solidity) | (extent < cfg.ragged_max_extent)
         low, high = cfg.typical_area_range
-        atypical = cell_area > 0 and not low * cell_area <= item.area <= high * cell_area
-        soft = item.edge_softness >= cfg.soft_edge
-        if item.area < grain_limit or ((ragged or atypical or soft) and not mass):
-            cx, cy = int(round(item.centroid[0])), int(round(item.centroid[1]))
-            seeds[min(rows - 1, max(0, cy)), min(cols - 1, max(0, cx))] += 1.0
-        elif mass and item.solidity < cfg.mass_max_solidity:
-            piece, x0, y0 = item.crop(components.labels)
+        atypical = ~((low * cell_area <= area) & (area <= high * cell_area)) if cell_area > 0 else np.zeros(len(items), bool)
+        soft = softness >= cfg.soft_edge
+        grain = (area < grain_limit) | ((ragged | atypical | soft) & ~mass)
+        # Centres rounded half to even, as round() does; several grains on one pixel all count.
+        gx = np.clip(np.rint(cx[grain]).astype(np.intp), 0, cols - 1)
+        gy = np.clip(np.rint(cy[grain]).astype(np.intp), 0, rows - 1)
+        np.add.at(seeds, (gy, gx), 1.0)
+        for index in np.flatnonzero(~grain & mass & (solidity < cfg.mass_max_solidity)):
+            piece, x0, y0 = items[index].crop(components.labels)
             masses[y0 : y0 + piece.shape[0], x0 : x0 + piece.shape[1]] |= piece
     kernel = (window, window)
     grain_count = cv2.boxFilter(seeds, -1, kernel, normalize=False, borderType=cv2.BORDER_CONSTANT)

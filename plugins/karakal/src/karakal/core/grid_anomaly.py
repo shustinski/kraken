@@ -1702,6 +1702,21 @@ def _analyze_with_normal_bank(
     return narrowed if isinstance(narrowed, GridFrameAnalysisResult) else result
 
 
+def _normal_bank_cache_scope(
+    cfg: GridDamageAnalysisConfig, confidence_obj: Path | None
+) -> tuple[GridDamageAnalysisConfig, str]:
+    """Config and token a frame analysed with a bank of normal cells is cached under: the same for
+    storing and for looking it up, or a run never finds its own results.
+
+    The confidence map moves only scores here; it is part of the cache key, not a reason to skip it.
+    """
+
+    token = "cell_errors" + (
+        "|" + "|".join(str(part) for part in _grid_cache_identity(confidence_obj)) if confidence_obj is not None else ""
+    )
+    return replace(cfg, cell_representation="binary").normalized(), token
+
+
 def analyze_grid_frame_path(
     path: Path | str,
     *,
@@ -1723,11 +1738,7 @@ def analyze_grid_frame_path(
     should_write_cache = bool(use_cache) if write_cache is None else bool(write_cache)
     confidence_obj = Path(confidence_path) if confidence_path else None
     if uses_normal_bank(reference_profile, cfg):
-        # The confidence map moves only scores here; it is part of the cache key, not a reason to skip it.
-        cfg = replace(cfg, cell_representation="binary").normalized()
-        token = "cell_errors" + (
-            "|" + "|".join(str(part) for part in _grid_cache_identity(confidence_obj)) if confidence_obj is not None else ""
-        )
+        cfg, token = _normal_bank_cache_scope(cfg, confidence_obj)
         if should_read_cache:
             cached = _load_cached_grid_result(
                 path_obj, frame_id=frame_id, config=cfg, reference_profile=reference_profile, zone_cache_token=token
@@ -1854,7 +1865,13 @@ class RunProfileRequest:
     manual_cells: tuple = ()
 
     def resolve(self, config: GridDamageAnalysisConfig | None = None) -> GridCellReferenceProfile | None:
-        return estimate_run_normal_profile(
+        # The same masks give the same bank: a run computed again (other sliders, other defect
+        # types) takes it from the disk instead of reading and splitting the masks once more.
+        key = _run_profile_cache_key(self)
+        cached = _load_run_profile(key)
+        if cached is not None:
+            return cached
+        profile = estimate_run_normal_profile(
             self.mask_paths,
             config=config,
             sample_limit=int(self.sample_limit),
@@ -1863,6 +1880,96 @@ class RunProfileRequest:
             markup_paths=self.markup_paths,
             manual_cells=self.manual_cells,
         )
+        if profile is not None:
+            _store_run_profile(key, profile)
+        return profile
+
+
+RUN_PROFILE_CACHE_DIR = CACHE_DIR / "normal_banks"
+RUN_PROFILE_CACHE_VERSION = "normal_bank_profile.v1"
+RUN_PROFILE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+# The code a bank is built by: in a source checkout its text is part of the cache key, so a
+# changed algorithm never takes a bank built by the old one (a build has its version for that).
+_RUN_PROFILE_CODE = (
+    "cell_components.py",
+    "cell_error_analysis.py",
+    "conductor_ignore.py",
+    "grid_anomaly.py",
+    "grid_template.py",
+    "mask_normalization.py",
+    "normal_bank.py",
+)
+_run_profile_code_stamp: str | None = None
+
+
+def _sample_mask_paths(mask_paths: Sequence[str | Path], sample_limit: int) -> list[Path]:
+    """The masks a run's bank is read from: every mask, or an even sample of sample_limit of them."""
+
+    paths = [Path(path) for path in mask_paths if str(path)]
+    if sample_limit > 0 and len(paths) > sample_limit:
+        step = max(1, len(paths) // sample_limit)
+        paths = paths[::step][:sample_limit]
+    return paths
+
+
+def _file_stamp(path: str | Path) -> tuple:
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return (str(path),)
+    return (str(path), int(stat.st_size), int(stat.st_mtime_ns))
+
+
+def _code_stamp() -> str:
+    global _run_profile_code_stamp
+    if _run_profile_code_stamp is None:
+        from ..version import APP_VERSION
+
+        digest = hashlib.sha1(f"{RUN_PROFILE_CACHE_VERSION}|{APP_VERSION}|{GRID_DAMAGE_ALGORITHM_VERSION}".encode("utf-8"))
+        folder = Path(__file__).resolve().parent
+        for name in _RUN_PROFILE_CODE:
+            try:
+                digest.update((folder / name).read_bytes())
+            except OSError:
+                digest.update(name.encode("utf-8"))
+        _run_profile_code_stamp = digest.hexdigest()
+    return _run_profile_code_stamp
+
+
+def _run_profile_cache_key(request: RunProfileRequest) -> str:
+    """Everything the bank depends on: the masks read (path, size, time), the operator's masks and
+    cells, the sampling, and the code. Only the sampled masks are looked at on the disk."""
+
+    digest = hashlib.sha1(_code_stamp().encode("utf-8"))
+    payload = (
+        int(request.sample_limit),
+        int(request.min_frames),
+        str(request.frame_id),
+        len(request.mask_paths),
+        tuple(_file_stamp(path) for path in _sample_mask_paths(request.mask_paths, int(request.sample_limit))),
+        tuple(_file_stamp(path) for path in request.markup_paths if str(path)),
+    )
+    digest.update(repr(payload).encode("utf-8"))
+    digest.update(pickle.dumps(tuple(request.manual_cells or ()), protocol=4))
+    return digest.hexdigest()
+
+
+def _load_run_profile(key: str) -> GridCellReferenceProfile | None:
+    path = RUN_PROFILE_CACHE_DIR / f"{key}.pickle"
+    try:
+        with path.open("rb") as handle:
+            profile = pickle.load(handle)
+    except Exception:
+        return None
+    return profile if isinstance(profile, GridCellReferenceProfile) else None
+
+
+def _store_run_profile(key: str, profile: GridCellReferenceProfile) -> None:
+    try:
+        atomic_pickle_dump(RUN_PROFILE_CACHE_DIR / f"{key}.pickle", profile)
+        trim_directory_by_bytes(RUN_PROFILE_CACHE_DIR, max_bytes=RUN_PROFILE_CACHE_MAX_BYTES)
+    except Exception as error:  # a bank that cannot be kept is built again next time
+        _LOGGER.debug("Normal bank not cached: %s", error)
 
 
 def resolve_reference_profile(value, config: GridDamageAnalysisConfig | None = None):
@@ -1921,10 +2028,7 @@ def estimate_run_normal_profile(
                 bank, frame_id=f"markup:{frame_id or 'run'}", markup_report=markup_report, manual_cells=manual_cells
             )
 
-    paths = [Path(path) for path in mask_paths if str(path)]
-    if sample_limit > 0 and len(paths) > sample_limit:
-        step = max(1, len(paths) // sample_limit)
-        paths = paths[::step][:sample_limit]
+    paths = _sample_mask_paths(mask_paths, sample_limit)
     component_sets = []
     names = []
     for path_obj in paths:
@@ -2076,14 +2180,21 @@ def load_cached_grid_frame_result(
     frame_id: str = "",
     config: GridDamageAnalysisConfig | None = None,
     reference_profile: GridCellReferenceProfile | None = None,
+    confidence_path: Path | str | None = None,
 ) -> GridFrameAnalysisResult | None:
-    """Read one valid compact result without starting image analysis."""
+    """Read one valid compact result without starting image analysis (under the key
+    analyze_grid_frame_path stores it with)."""
 
+    cfg = (config or GridDamageAnalysisConfig()).normalized()
+    token = ""
+    if uses_normal_bank(reference_profile, cfg):
+        cfg, token = _normal_bank_cache_scope(cfg, Path(confidence_path) if confidence_path else None)
     return _load_cached_grid_result(
         Path(path),
         frame_id=frame_id,
-        config=(config or GridDamageAnalysisConfig()).normalized(),
+        config=cfg,
         reference_profile=reference_profile,
+        zone_cache_token=token,
     )
 
 

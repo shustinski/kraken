@@ -161,12 +161,24 @@ def _status(foreground: int, total: int) -> str:
     return STATUS_OK
 
 
+def _histogram(gray: np.ndarray) -> np.ndarray:
+    """Counts of the 256 gray levels (float64), as np.bincount gives them.
+
+    OpenCV counts in float32, exact up to 2**24 pixels per level; np.bincount first copies the
+    whole frame into 64-bit integers, several times slower on a 2000 x 2000 mask.
+    """
+
+    if cv2 is not None and gray.size < 2**24:
+        return cv2.calcHist([gray], [0], None, [256], [0, 256]).reshape(-1).astype(np.float64)
+    return np.bincount(gray.reshape(-1), minlength=256).astype(np.float64)
+
+
 def normalize_mask(image: np.ndarray, config: MaskNormalizationConfig | None = None) -> NormalizedMask:
     """Binary mask of one image, with the kind, method and threshold that produced it."""
 
     cfg = config or MaskNormalizationConfig()
     gray = grayscale_levels(image)
-    histogram = np.bincount(gray.reshape(-1), minlength=256).astype(np.float64)
+    histogram = _histogram(gray)
     present = np.flatnonzero(histogram)
     explicit = cfg.threshold_level()
 

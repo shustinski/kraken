@@ -95,15 +95,53 @@ _SOFT_LOW, _SOFT_HIGH = 48, 208
 _SOFT_RING = 2
 
 
-def _edge_softness(soft: np.ndarray | None, labels: np.ndarray, label: int, x: int, y: int, w: int, h: int, area: int) -> float:
+_SOFT_KERNEL = np.ones((2 * _SOFT_RING + 1, 2 * _SOFT_RING + 1), np.uint8)
+
+
+def _edge_softness(soft: np.ndarray | None, piece: np.ndarray, x: int, y: int, area: int) -> float:
+    """Soft pixels in a ring of _SOFT_RING around the piece (its box crop), per pixel of the piece.
+
+    The piece is dilated on a margin of zeros and the ring is then cut to the frame: the same
+    pixels as dilating the piece cut to the frame, since the margin beyond the frame holds no piece.
+    """
+
     if soft is None:
         return 0.0
-    rows, cols = labels.shape
-    x0, y0 = max(0, x - _SOFT_RING), max(0, y - _SOFT_RING)
-    x1, y1 = min(cols, x + w + _SOFT_RING), min(rows, y + h + _SOFT_RING)
-    piece = (labels[y0:y1, x0:x1] == label).astype(np.uint8)
-    ring = cv2.dilate(piece, np.ones((2 * _SOFT_RING + 1, 2 * _SOFT_RING + 1), np.uint8)) > 0
-    return float(np.count_nonzero(soft[y0:y1, x0:x1][ring])) / float(max(1, area))
+    rows, cols = soft.shape
+    h, w = piece.shape
+    ring = _SOFT_RING
+    padded = np.zeros((h + 2 * ring, w + 2 * ring), np.uint8)
+    padded[ring : ring + h, ring : ring + w] = piece
+    grown = cv2.dilate(padded, _SOFT_KERNEL) > 0
+    x0, y0 = max(0, x - ring), max(0, y - ring)
+    x1, y1 = min(cols, x + w + ring), min(rows, y + h + ring)
+    inside = grown[y0 - (y - ring) : y1 - (y - ring), x0 - (x - ring) : x1 - (x - ring)]
+    return float(np.count_nonzero(soft[y0:y1, x0:x1][inside])) / float(max(1, area))
+
+
+_QUARTILES = np.array([0.25, 0.5, 0.75])
+
+
+def _quartiles(values: np.ndarray) -> tuple[float, float, float]:
+    """np.percentile(values, (25, 50, 75)) with the same arithmetic (numpy's «linear» method,
+    float64 weights) but without its per-call overhead: it runs for every piece of every frame."""
+
+    n = values.size
+    ordered = np.sort(values)
+    virtual = (n - 1) * _QUARTILES
+    previous = np.floor(virtual)
+    gamma = virtual - previous
+    low = previous.astype(np.intp)
+    high = low + 1
+    # At the last index numpy takes the last value for both ends.
+    top = virtual >= n - 1
+    low[top] = n - 1
+    high[top] = n - 1
+    a, b = ordered[low], ordered[high]
+    diff = b - a
+    out = a + diff * gamma
+    np.subtract(b, diff * (1 - gamma), out=out, where=gamma >= 0.5)
+    return float(out[0]), float(out[1]), float(out[2])
 
 
 def _component(
@@ -115,8 +153,10 @@ def _component(
     soft: np.ndarray | None = None,
 ) -> CellComponent:
     x, y, w, h, area = (int(value) for value in stats[:5])
-    piece = (labels[y : y + h, x : x + w] == label).astype(np.uint8)
-    padded = np.pad(piece, 1)
+    piece = (labels[y : y + h, x : x + w] == label).view(np.uint8)
+    # A margin of one zero pixel (as np.pad(piece, 1), without its per-call cost).
+    padded = np.zeros((h + 2, w + 2), np.uint8)
+    padded[1:-1, 1:-1] = piece
     found = cv2.findContours(padded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     contours = found[0] if len(found) == 2 else found[1]
     outer = max(contours, key=cv2.contourArea) if contours else np.zeros((0, 1, 2), dtype=np.int32)
@@ -129,7 +169,7 @@ def _component(
     hull_area = float(cv2.contourArea(cv2.convexHull(outer))) if len(outer) >= 3 else 0.0
     solidity = contour_area / hull_area if hull_area > 0.0 else 1.0
     distance = cv2.distanceTransform(padded, cv2.DIST_L2, 3)[1:-1, 1:-1][piece > 0]
-    quartiles = np.percentile(distance, (25, 50, 75)) if distance.size else np.zeros(3)
+    quartiles = _quartiles(distance) if distance.size else (0.0, 0.0, 0.0)
     rows, cols = shape
     sides = tuple(
         side
@@ -158,7 +198,7 @@ def _component(
         touches_border=bool(sides),
         border_sides=sides,
         contour=contour.reshape(-1, 1, 2),
-        edge_softness=_edge_softness(soft, labels, label, x, y, w, h, area),
+        edge_softness=_edge_softness(soft, piece, x, y, area),
     )
 
 

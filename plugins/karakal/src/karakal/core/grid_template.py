@@ -127,6 +127,13 @@ class CellTemplateMatcher:
         self._pad_mask = np.pad(self._mask, pad)
         self._pad_outside_band = np.pad(self._outside_band, pad)
         self._pad_depth = np.pad(self._depth, pad)
+        # The template under every shift at once, in the order of _SHIFTS: one comparison per
+        # cell instead of one per shift (this runs for every cell of every frame).
+        height, width = self._mask.shape
+        windows = [(slice(_SHIFT - dy, _SHIFT - dy + height), slice(_SHIFT - dx, _SHIFT - dx + width)) for dy, dx in _SHIFTS]
+        self._shifted_mask = np.stack([self._pad_mask[w] for w in windows])
+        self._shifted_outside_band = np.stack([self._pad_outside_band[w] for w in windows])
+        self._shifted_depth = np.stack([self._pad_depth[w] for w in windows])
 
     def measure_crop(self, crop: np.ndarray, depth_limit: float) -> tuple[float, int]:
         """(share of area differing beyond the band, pixels differing deeper than depth_limit).
@@ -143,6 +150,14 @@ class CellTemplateMatcher:
         # One alignment for both measures: the shift with the smallest overall difference.
         # Taking each measure's own best shift let a shift hide a cut corner.
         height, width = placed.shape
+        if placed.shape == self._shifted_mask.shape[1:]:
+            diffs = placed[None] ^ self._shifted_mask
+            # The first shift with the fewest differing pixels, as the loop below takes it.
+            best_shift = int(np.argmin(np.count_nonzero(diffs.reshape(len(_SHIFTS), -1), axis=1)))
+            diff = diffs[best_shift]
+            area = float(np.count_nonzero(diff & self._shifted_outside_band[best_shift]))
+            deep = int(np.count_nonzero(diff & (self._shifted_depth[best_shift] > float(depth_limit))))
+            return float((area + lost) / self._area), deep
         best = None
         for dy, dx in _SHIFTS:
             window = (slice(_SHIFT - dy, _SHIFT - dy + height), slice(_SHIFT - dx, _SHIFT - dx + width))

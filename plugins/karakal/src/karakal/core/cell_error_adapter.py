@@ -38,8 +38,11 @@ MAX_OUTLINE_POINTS = 96
 
 
 def _outline(region: ErrorRegion) -> tuple[tuple[int, int], ...]:
-    piece = region.mask().astype(np.uint8)
-    found = cv2.findContours(np.pad(piece, 1), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    piece = region.mask()
+    # A margin of one zero pixel (as np.pad(piece, 1), without its per-call cost: one per cell).
+    padded = np.zeros((piece.shape[0] + 2, piece.shape[1] + 2), np.uint8)
+    padded[1:-1, 1:-1] = piece
+    found = cv2.findContours(padded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = found[0] if len(found) == 2 else found[1]
     if not contours:
         return ()

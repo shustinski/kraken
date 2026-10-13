@@ -207,6 +207,86 @@ def test_old_shape_of_the_result_still_feeds_the_matrix_and_old_export(bank) -> 
     assert image.shape[:2] == frame.mask.shape and image.any()
 
 
+def test_the_bank_of_the_same_masks_comes_from_the_disk(tmp_path, monkeypatch) -> None:
+    import os
+    import pickle
+
+    import karakal.core.cell_components as cell_components
+    from karakal.core.grid_anomaly import RunProfileRequest
+
+    paths = []
+    for seed in range(4):
+        path = tmp_path / f"frame_{seed}.png"
+        cv2.imwrite(str(path), synthetic_frame({"bite": 1}, seed=seed).mask)
+        paths.append(str(path))
+    request = RunProfileRequest(tuple(paths))
+    built = request.resolve()
+    assert built is not None and built.normal_bank.ready
+
+    # Asked again (another run, other sliders): not one mask is split again, and the bank is the same.
+    def no_splitting(*_args, **_kwargs):
+        raise AssertionError("a mask was read for a bank that is cached")
+
+    monkeypatch.setattr(cell_components, "extract_components", no_splitting)
+    again = RunProfileRequest(tuple(paths)).resolve()
+    assert pickle.dumps(again) == pickle.dumps(built)
+    monkeypatch.undo()
+
+    # A changed mask, operator cells, or another sampling: built anew.
+    import karakal.core.grid_anomaly as grid_anomaly
+
+    monkeypatch.setattr(grid_anomaly, "RUN_PROFILE_CACHE_DIR", tmp_path / "banks")
+    keys = {grid_anomaly._run_profile_cache_key(request)}
+    os.utime(paths[1], ns=(1, 1))
+    keys.add(grid_anomaly._run_profile_cache_key(request))
+    keys.add(grid_anomaly._run_profile_cache_key(RunProfileRequest(tuple(paths), sample_limit=2)))
+    keys.add(grid_anomaly._run_profile_cache_key(RunProfileRequest(tuple(paths), manual_cells=("cell",))))
+    assert len(keys) == 4
+
+
+def test_a_layer_computed_again_takes_its_frames_from_the_cache(tmp_path, monkeypatch) -> None:
+    import pickle
+
+    import karakal.core.grid_anomaly as grid_anomaly
+    from karakal.core.domain import FrameRecord
+    from karakal.core.grid_anomaly import GridDamageAnalysisConfig, RunProfileRequest
+    from karakal.core.performance import PerformanceConfig
+    from karakal.core.workers import GridInspectionWorker
+
+    monkeypatch.setattr(grid_anomaly, "GRID_DAMAGE_CACHE_DIR", tmp_path / "cache")
+    paths = []
+    for seed in range(4):
+        path = tmp_path / f"frame_{seed}.png"
+        cv2.imwrite(str(path), synthetic_frame({"bite": 1, "debris": 1}, seed=seed).mask)
+        paths.append(path)
+    records = tuple(FrameRecord(f"f{index}", path.name, model_mask_paths={"m": str(path)}) for index, path in enumerate(paths))
+
+    def run() -> dict:
+        worker = GridInspectionWorker(
+            records,
+            GridDamageAnalysisConfig(scoring_mode="calibrated", cell_representation="binary"),
+            model_id="m",
+            reference_profile=RunProfileRequest(tuple(str(path) for path in paths)),
+            use_cache=True,
+            performance_config=PerformanceConfig(parallel_enabled=False),
+        )
+        finished = []
+        worker.finished.connect(finished.append)
+        worker.run()
+        return finished[0]
+
+    first = run()
+    assert len(first) == 4
+
+    # The same layer once more (one layer, no confidence maps): no frame is analysed again.
+    def no_analysis(*_args, **_kwargs):
+        raise AssertionError("a cached frame was analysed again")
+
+    monkeypatch.setattr(grid_anomaly, "_analyze_with_normal_bank", no_analysis)
+    second = run()
+    assert {key: pickle.dumps(value) for key, value in second.items()} == {key: pickle.dumps(value) for key, value in first.items()}
+
+
 def test_worker_builds_the_bank_itself_and_analyzes_frames_grid_free(tmp_path) -> None:
     from karakal.core.domain import FrameRecord
     from karakal.core.grid_anomaly import GridDamageAnalysisConfig, RunProfileRequest

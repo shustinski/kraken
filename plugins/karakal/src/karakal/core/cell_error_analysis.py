@@ -694,7 +694,8 @@ def analyze_cell_errors(
         x1 = max(b[0] + b[2] for b in boxes)
         y1 = max(b[1] + b[3] for b in boxes)
         ids = [item.component.label for item in members]
-        piece = np.isin(labels[y0:y1, x0:x1], ids)
+        # One piece (almost every region) is a plain comparison: np.isin costs far more per call.
+        piece = labels[y0:y1, x0:x1] == ids[0] if len(ids) == 1 else np.isin(labels[y0:y1, x0:x1], ids)
         area = int(np.count_nonzero(piece))
         ys, xs = np.nonzero(piece)
         score, extra = confidence_adjusted(score, features, error_class != ec.OK)

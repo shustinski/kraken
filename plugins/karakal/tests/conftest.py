@@ -17,6 +17,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _own_bank_cache(tmp_path_factory, monkeypatch):
+    """Banks of normal cells built by the tests are kept in a folder of the test run, not in the
+    user's cache."""
+
+    import karakal.core.grid_anomaly as grid_anomaly
+
+    monkeypatch.setattr(grid_anomaly, "RUN_PROFILE_CACHE_DIR", tmp_path_factory.mktemp("normal_banks"), raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _skip_update_checks(monkeypatch):
     """No background look into the real update folder; update tests call check() themselves."""
 

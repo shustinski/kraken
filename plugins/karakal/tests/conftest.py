@@ -46,7 +46,9 @@ def _settle_background_qthreads(request):
     from karakal.ui.details_dialog import _ORPHAN_THREADS
 
     app = QApplication.instance()
-    for _attempt in range(50):
+    # Up to 30 s: under a parallel run a frame window's thread analyses its frame several times slower
+    # than alone (5 s was too short and failed a test now and then); a thread that never ends still fails.
+    for _attempt in range(300):
         running = [
             thread
             for thread, _worker in (*_ORPHAN_THREADS, *_PRESENTER_ORPHAN_THREADS)

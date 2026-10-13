@@ -356,6 +356,104 @@ def test_a_frame_whose_neighbours_agree_joins_their_array() -> None:
     assert checked == 26 * 64 and wrong == 0
 
 
+def _blocked_memory(seed: int) -> Memory:
+    """Memory in blocks of 10 columns with an empty column after each (period 11), and a conductor
+    over columns 30-34: where frames of the second and the third column overlap."""
+
+    memory = Memory(26, 100, seed=seed)
+    memory.bits[:, 10::11] = -1
+    memory.bits[:, 30:35] = -1
+    return memory
+
+
+def _jumped_positions(memory: Memory, jump_sites: float):
+    # The stage jumped where the conductor is: frames from the third column on are further right.
+    return [
+        (x + (jump_sites * PX if index % 6 >= 2 else 0.0), y) for index, (x, y) in enumerate(frames_of(memory, frame_rows=3, per_row=6))
+    ]
+
+
+def test_the_grid_of_blocks_is_found_from_the_gap_lines() -> None:
+    from karakal.core.memory_map import _detect_grid
+
+    gap = np.zeros(120, bool)
+    gap[5::11] = True
+    grid = _detect_grid(100, gap, np.ones(120, bool))
+    assert grid is not None and grid.period == 11 and grid.gaps == ((100 + 5) % 11,)
+    assert grid.block_sizes() == (10,) and grid.snap_window() == 4
+    # Every fourth block with a wider gap: one period of four blocks.
+    gap = np.zeros(287, bool)
+    for start in range(0, 287, 41):
+        gap[start + 10] = gap[start + 21] = gap[start + 32] = True
+        gap[start + 38 : start + 41] = True
+    grid = _detect_grid(0, gap, np.ones(287, bool))
+    assert grid is not None and grid.period == 41 and sorted(grid.block_sizes()) == [5, 10, 10, 10]
+    # Random gaps: no grid.
+    rng = np.random.default_rng(1)
+    assert _detect_grid(0, rng.random(300) < 0.05, np.ones(300, bool)) is None
+
+
+def test_arrays_behind_a_conductor_are_put_on_the_grid_of_blocks_exactly() -> None:
+    memory = _blocked_memory(seed=81)
+    positions = _jumped_positions(memory, 2.3)
+    mmap = assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=6, config=CFG)
+    assert mmap.column_grid is not None and mmap.column_grid.period == 11
+    assert len(mmap.islands) == 2
+    assert {island.placement for island in mmap.islands} == {"reference", "grid"}
+    # The second array lies where it is: frames of the two islands as far apart as on the stage,
+    # to well under a site (a wrong guess would be whole sites off).
+    left, right = mmap.frames[1], mmap.frames[2]
+    assert left.island != right.island
+    true = positions[2][0] - positions[1][0]
+    assert abs((right.x - left.x) - true) < 0.25 * PX
+    # Gap columns of the field are the empty columns between blocks; every frame lies on the grid.
+    painted = np.isin(mmap.field, (ONE, ZERO, CONFLICT, DEFECT))
+    assert mmap.gap_cols.any() and not painted[:, mmap.gap_cols].any()
+    assert mmap.misaligned == ()
+
+
+def test_text_without_gaps_keeps_every_bit_and_numbers_them_as_bits(tmp_path) -> None:
+    from karakal.core.memory_map_export import MemoryMapExport, field_format, memory_map_text, without_gaps, write_memory_map_files
+
+    memory = _blocked_memory(seed=82)
+    positions = frames_of(memory, frame_rows=3, per_row=6)
+    mmap = assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=6, config=CFG)
+    plain = without_gaps(mmap)
+    removed = plain.gaps_removed[0]
+    assert removed and plain.shape == (mmap.shape[0], mmap.shape[1] - removed) and plain.gaps_removed[2] == 0
+    # No bit is lost, and each kept site still knows its place on the built field.
+    for state in (ONE, ZERO, CONFLICT, DEFECT):
+        assert int((plain.field == state).sum()) == int((mmap.field == state).sum())
+    rows, cols = np.nonzero(plain.field == ONE)
+    assert np.all(mmap.field[plain.orig_rows[rows, cols], plain.orig_cols[rows, cols]] == ONE)
+    text = memory_map_text(plain, field_format(mmap.mode))
+    assert "gap lines between memory blocks left out" in text
+    # The export writes the text without gaps by default, the picture as built.
+    written = write_memory_map_files(mmap, MemoryMapExport(folder=str(tmp_path), name="m", png=False, summary=False))
+    body = [line for line in (tmp_path / "m_field.txt").read_text(encoding="utf-8").splitlines() if not line.startswith("#")]
+    assert len(written) == 1 and max(len(line) for line in body) <= mmap.shape[1] - removed
+
+
+def test_a_frame_sewn_a_column_off_lies_off_the_grid_of_blocks() -> None:
+    from dataclasses import replace as dc_replace
+
+    from karakal.core.memory_map import SEAM_FAILED, match_frames
+
+    memory = _blocked_memory(seed=83)
+    memory.bits[:, 30:35] = (np.random.default_rng(5).random((26, 5)) < 0.67).astype(np.int8)  # no conductor
+    positions = frames_of(memory, frame_rows=3, per_row=6)
+    sites = read_all(memory, positions)
+    seams = [match_frames(sites[a], sites[b], kind, Pitch(PX, PY), CFG, ia=a, ib=b) for a, b, kind in frame_neighbours(18, 6)]
+    # Frame 9 (second row) is sewn only through its left seam, and that one a column off.
+    seams = [
+        dc_replace(s, offset=(s.offset[0] + PX, s.offset[1])) if (s.a, s.b) == (8, 9) else (dc_replace(s, status=SEAM_FAILED) if 9 in (s.a, s.b) else s)
+        for s in seams
+    ]
+    mmap = assemble_memory_map(sites, Pitch(PX, PY), per_row=6, seams=seams, config=CFG)
+    assert mmap.column_grid is not None
+    assert 9 in mmap.misaligned
+
+
 def _write_run(tmp_path, memory: Memory, positions, *, ones=True, zeros=True):
     import cv2
 

@@ -41,6 +41,7 @@ from ..core.memory_map_export import (
     field_format,
     memory_map_text,
     oriented_map,
+    without_gaps,
 )
 
 SYMBOL_KEYS = ("one", "zero", "empty", "conflict", "defect", "partial", "outside")
@@ -172,6 +173,18 @@ class MemoryMapExportDialog(QDialog):
         services = sum(1 for b in mmap.blocks if b.service)
         self.main_only.setToolTip(self._t("memory_map.main_only_tooltip", count=services))
         root.addWidget(self.main_only)
+        # Text without the empty lines between memory blocks: bits one after another.
+        self.no_gaps = QCheckBox(self._t("memory_map.no_gaps"), self)
+        grid = mmap.column_grid
+        has_gaps = bool(mmap.gap_cols.any() or mmap.gap_rows.any())
+        self.no_gaps.setChecked(bool(start.no_gaps) and has_gaps)
+        self.no_gaps.setEnabled(has_gaps)
+        self.no_gaps.setToolTip(
+            self._t("memory_map.no_gaps_tooltip", blocks=" + ".join(str(size) for size in grid.block_sizes()))
+            if grid is not None
+            else self._t("memory_map.no_gaps_none")
+        )
+        root.addWidget(self.no_gaps)
 
         counts = mmap.seam_counts()
         bad = sum(v for k, v in counts.items() if k not in (SEAM_BITS, SEAM_EMPTY))
@@ -200,7 +213,7 @@ class MemoryMapExportDialog(QDialog):
         self._preview_timer.timeout.connect(self._update_preview)
         for combo in (self.field_orientation, self.block_orientation, self.block_order, self.number_from, self.layout_combo):
             combo.currentIndexChanged.connect(self._preview_timer.start)
-        for check in (self.txt_field, self.txt_blocks, self.txt_custom, self.main_only, self.row_numbers, self.column_ruler, self.header_check):
+        for check in (self.txt_field, self.txt_blocks, self.txt_custom, self.main_only, self.no_gaps, self.row_numbers, self.column_ruler, self.header_check):
             check.toggled.connect(self._preview_timer.start)
         for edit in (self.separator_edit, *self.symbol_edits.values()):
             edit.textChanged.connect(self._preview_timer.start)
@@ -218,9 +231,12 @@ class MemoryMapExportDialog(QDialog):
         self._update_preview()
 
     def _turned(self, choice: MemoryMapExport):
-        key = (choice.field_orientation, choice.block_orientation)
+        """The map as the text export writes it: without gap lines if asked, then turned."""
+
+        key = (choice.field_orientation, choice.block_orientation, choice.no_gaps)
         if key != self._oriented_key:
-            self._oriented = oriented_map(self._map, *key)
+            source = without_gaps(self._map) if choice.no_gaps else self._map
+            self._oriented = oriented_map(source, choice.field_orientation, choice.block_orientation)
             self._oriented_key = key
         return self._oriented
 
@@ -272,6 +288,7 @@ class MemoryMapExportDialog(QDialog):
             block_orientation=str(self.block_orientation.currentData() or "none"),
             number_from=int(self.number_from.currentData() or 0),
             block_order=str(self.block_order.currentData() or BLOCK_ORDER_FORWARD),
+            no_gaps=self.no_gaps.isChecked(),
         )
 
     def _accept(self) -> None:

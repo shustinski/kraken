@@ -60,6 +60,8 @@ SEAM_COLORS = {
     SEAM_INCONSISTENT: QColor(230, 60, 220),
 }
 ALONE_COLOR = QColor(240, 70, 70)
+# A frame sewn off the grid of the memory's blocks (self-check).
+OFF_GRID_COLOR = QColor(255, 230, 40)
 SELECTED_COLOR = QColor(255, 255, 255)
 BAR_COLOR = QColor(78, 154, 232)
 MARK_COLOR = QColor(240, 70, 70)
@@ -98,12 +100,15 @@ class FrameGrid(QWidget):
         self._cell = 14
         self._selected = -1
         self._seams: dict[int, list] = {}
+        self._colors: dict = {}
+        self._off_grid: set[int] = set()
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def set_map(self, mmap: MemoryMap | None) -> None:
         self._map = mmap
         self._colors = island_colors(mmap)
+        self._off_grid = set(mmap.misaligned) if mmap is not None else set()
         self._per_row = max(1, int(mmap.per_row)) if mmap is not None else 1
         self._seams = {}
         for seam in mmap.seams if mmap is not None else ():
@@ -165,6 +170,9 @@ class FrameGrid(QWidget):
                 pen = QPen(ALONE_COLOR, 1.5)
                 painter.setPen(pen)
                 painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+            if index in self._off_grid:
+                painter.setPen(QPen(OFF_GRID_COLOR, 2.0))
+                painter.drawRect(rect.adjusted(1.0, 1.0, -1.0, -1.0))
         # Seams that did not sew, between frames that have memory: on the edge the frames share.
         width = max(2.0, self._cell / 5.0)
         for seam in mmap.seams:
@@ -194,7 +202,17 @@ class FrameGrid(QWidget):
         frame = mmap.frames[index]
         lines = [frame.frame_id]
         if frame.island >= 0:
-            lines.append(self._t("memory_map.grid.island", index=frame.island))
+            island = next((item for item in mmap.islands if item.index == frame.island), None)
+            text = self._t("memory_map.grid.island", index=frame.island)
+            if island is not None:
+                text += " — " + self._t(
+                    f"memory_map.placement.{island.placement}",
+                    across=f"{island.uncertainty[0]:.2f}",
+                    down=f"{island.uncertainty[1]:.2f}",
+                )
+            lines.append(text)
+            if index in self._off_grid:
+                lines.append(self._t("memory_map.grid.off_grid"))
         else:
             lines.append(self._t("memory_map.grid.no_island" if frame.sites else "memory_map.grid.no_sites"))
         lines.append(self._t(f"memory_map.placed.{frame.method}"))

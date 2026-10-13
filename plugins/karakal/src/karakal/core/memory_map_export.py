@@ -22,6 +22,7 @@ from .memory_map import (
     MODE_PAIR,
     ONE,
     OUTSIDE,
+    PAINTED,
     PARTIAL,
     SEAM_BITS,
     STATE_NAMES,
@@ -30,6 +31,63 @@ from .memory_map import (
 )
 
 LAYOUT_FIELD = "field"
+
+
+# A gap line of the block grid may carry a few painted crumbs (no cell stands in a gap); with more
+# than this share of its sites painted it holds cells after all (an edge block of other width) and stays.
+GAP_LINE_MAX_PAINTED = 0.02
+
+
+def without_gaps(mmap: MemoryMap) -> MemoryMap:
+    """The map without the gap lines between its blocks (the strap columns and rows of the block
+    grid): a row of text then lists its bits one after another, numbered as bits. A line goes only
+    where it holds no cells: at most a few painted crumbs (GAP_LINE_MAX_PAINTED), counted in
+    gaps_removed. Every site keeps its place on the built field (orig_rows, orig_cols), as with a
+    turned map."""
+
+    from dataclasses import replace
+
+    rows, cols = mmap.shape
+    painted = np.isin(mmap.field, PAINTED)
+    sites = mmap.field != OUTSIDE
+
+    def empty(axis: int) -> np.ndarray:
+        return painted.sum(axis=axis) <= GAP_LINE_MAX_PAINTED * np.maximum(sites.sum(axis=axis), 1)
+
+    drop_c = mmap.gap_cols & empty(0) if mmap.gap_cols.size == cols else np.zeros(cols, bool)
+    drop_r = mmap.gap_rows & empty(1) if mmap.gap_rows.size == rows else np.zeros(rows, bool)
+    crumbs = int(painted[:, drop_c].sum()) + int(painted[drop_r][:, ~drop_c].sum())
+    if not drop_c.any() and not drop_r.any():
+        return mmap
+    keep_r, keep_c = np.flatnonzero(~drop_r), np.flatnonzero(~drop_c)
+    if mmap.orig_rows.size:
+        orig_r, orig_c = mmap.orig_rows, mmap.orig_cols
+    else:
+        orig_r, orig_c = (grid.astype(np.int32) for grid in np.indices((rows, cols)))
+
+    def kept(grid: np.ndarray) -> np.ndarray:
+        return np.ascontiguousarray(grid[np.ix_(keep_r, keep_c)])
+
+    before_c = np.concatenate([[0], np.cumsum(~drop_c)])
+    before_r = np.concatenate([[0], np.cumsum(~drop_r)])
+    blocks = []
+    for b in mmap.blocks:
+        new_rows = int(before_r[b.row + b.rows] - before_r[b.row])
+        new_cols = int(before_c[b.col + b.cols] - before_c[b.col])
+        if new_rows and new_cols:
+            blocks.append(replace(b, row=int(before_r[b.row]), col=int(before_c[b.col]), rows=new_rows, cols=new_cols))
+    return replace(
+        mmap,
+        field=kept(mmap.field),
+        source=kept(mmap.source),
+        block_index=kept(mmap.block_index),
+        orig_rows=kept(orig_r),
+        orig_cols=kept(orig_c),
+        blocks=tuple(blocks),
+        gap_cols=np.zeros(len(keep_c), bool),
+        gap_rows=np.zeros(len(keep_r), bool),
+        gaps_removed=(int(drop_c.sum()), int(drop_r.sum()), crumbs),
+    )
 LAYOUT_BLOCKS = "blocks"
 BLOCK_ORDER_FORWARD = "forward"
 BLOCK_ORDER_REVERSE = "reverse"
@@ -130,6 +188,10 @@ def oriented_map(mmap: MemoryMap, field_orientation: str = "none", block_orienta
         orig_rows=layers["orig_r"][0].astype(np.int32),
         orig_cols=layers["orig_c"][0].astype(np.int32),
         blocks=tuple(blocks),
+        # Gap lines are those of the built field; a turned one has none of its own.
+        gap_cols=np.zeros(0, bool),
+        gap_rows=np.zeros(0, bool),
+        turned=True,
     )
 
 
@@ -274,7 +336,14 @@ def _header_lines(mmap: MemoryMap, fmt: TxtFormat) -> list[str]:
             f"# islands: {len(mmap.islands)} (frames sewn by bits); each is right inside, but no bits link them: "
             "their places relative to each other, and the gaps between them, are not the memory's"
         )
-    if mmap.orig_rows.size:
+    if any(mmap.gaps_removed[:2]):
+        crumbs = mmap.gaps_removed[2] if len(mmap.gaps_removed) > 2 else 0
+        lines.append(
+            f"# gap lines between memory blocks left out: {mmap.gaps_removed[0]} columns, {mmap.gaps_removed[1]} rows;"
+            " rows and columns are numbered as bits"
+            + (f"; {crumbs} painted crumbs in those gaps (no cell stands there) are not written" if crumbs else "")
+        )
+    if mmap.turned:
         lines.append("# turned or mirrored for export: rows and columns are not those of the built field")
     return lines
 
@@ -502,8 +571,22 @@ def memory_map_summary(mmap: MemoryMap, orientation: tuple[str, str] = ("none", 
         ],
         # Frames sewn by bits; places of islands relative to each other are not known.
         "islands": [
-            {"index": i.index, "frames": i.frames, "frames_by_bits": i.by_bits, "blocks": list(i.blocks)} for i in mmap.islands
+            {
+                "index": i.index,
+                "frames": i.frames,
+                "frames_by_bits": i.by_bits,
+                "blocks": list(i.blocks),
+                "placement": i.placement,
+                "uncertainty_sites": [round(float(v), 3) for v in i.uncertainty],
+            }
+            for i in mmap.islands
         ],
+        "block_grid": {
+            axis: {"period": grid.period, "block_sizes": list(grid.block_sizes()), "gap_lines": list(grid.gaps)}
+            for axis, grid in (("columns", mmap.column_grid), ("rows", mmap.row_grid))
+            if grid is not None
+        },
+        "frames_off_grid": [frames[index].frame_id for index in mmap.misaligned],
         "frames": len(frames),
         "frames_placed_by_estimate": [f.frame_id for f in frames if f.method != SEAM_BITS and f.island >= 0],
         "frames_apart": [f.frame_id for f in frames if f.method == "alone" and f.island >= 0],
@@ -556,6 +639,9 @@ class MemoryMapExport:
     block_orientation: str = "none"
     number_from: int = 0
     block_order: str = BLOCK_ORDER_FORWARD
+    # Text without the gap lines between memory blocks (bits numbered as bits); the picture and the
+    # table keep the field as built.
+    no_gaps: bool = True
 
 
 def main_only_map(mmap: MemoryMap) -> MemoryMap:
@@ -585,14 +671,16 @@ def write_memory_map_files(mmap: MemoryMap, choice: MemoryMapExport) -> list[Pat
     built = mmap
     mmap = oriented_map(mmap, choice.field_orientation, choice.block_orientation)
     shown = main_only_map(mmap) if choice.main_only else mmap
+    # Text: the gap lines go first, on the field as built, then it is turned.
+    text = oriented_map(without_gaps(built), choice.field_orientation, choice.block_orientation) if choice.no_gaps else mmap
     common = {"main_only": choice.main_only, "number_from": choice.number_from, "block_order": choice.block_order}
     written: list[Path] = []
     if choice.txt_field:
-        written.append(export_txt(mmap, folder / f"{base}_field.txt", replace(field_format(mmap.mode), **common)))
+        written.append(export_txt(text, folder / f"{base}_field.txt", replace(field_format(mmap.mode), **common)))
     if choice.txt_blocks:
-        written.append(export_txt(mmap, folder / f"{base}_blocks.txt", replace(blocks_format(mmap.mode), **common)))
+        written.append(export_txt(text, folder / f"{base}_blocks.txt", replace(blocks_format(mmap.mode), **common)))
     if choice.txt_custom:
-        written.append(export_txt(mmap, folder / f"{base}_custom.txt", replace(choice.custom, main_only=choice.main_only)))
+        written.append(export_txt(text, folder / f"{base}_custom.txt", replace(choice.custom, main_only=choice.main_only)))
     if choice.png:
         written.append(
             export_png(

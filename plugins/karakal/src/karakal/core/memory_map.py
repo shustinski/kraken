@@ -715,6 +715,12 @@ class MapIsland:
     # Of them placed by bits; the rest joined it by the usual offset.
     by_bits: int
     blocks: tuple[int, ...] = ()
+    # How its place among the islands is known: «reference» (the largest one, the others are laid
+    # out from it), «grid» (its blocks put on the grid of blocks), «stage» (seams predicted from the
+    # stage's moves, error under PLACEMENT_EXACT_SITES), «estimated» (not known to a site).
+    placement: str = "reference"
+    # Standard error of that place across and down, in sites (0 where the grid fixed it).
+    uncertainty: tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -739,6 +745,19 @@ class MemoryMap:
     per_row: int = 0
     # Islands that have blocks on the field, numbered from the top left.
     islands: tuple[MapIsland, ...] = ()
+    # The grid of the memory's blocks found in the bits (None along an axis without one), and the
+    # field's columns and rows that are gap lines between blocks by it.
+    column_grid: "BlockGrid | None" = None
+    row_grid: "BlockGrid | None" = None
+    gap_cols: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
+    gap_rows: np.ndarray = field(default_factory=lambda: np.zeros(0, bool))
+    # Frames whose gap lines lie off the block grid by a consistent few lines: sewn shifted.
+    misaligned: tuple[int, ...] = ()
+    # Gap columns, gap rows and painted crumbs on them left out of this map for export
+    # (memory_map_export.without_gaps).
+    gaps_removed: tuple[int, int, int] = (0, 0, 0)
+    # Turned or mirrored for export (memory_map_export.oriented_map).
+    turned: bool = False
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -768,6 +787,176 @@ class MemoryMap:
         px = self.origin[0] + col * self.pitch.x + dx - frame.x
         py = self.origin[1] + row * self.pitch.y + dy - frame.y
         return index, float(px), float(py)
+
+
+@dataclass(frozen=True, slots=True)
+class BlockGrid:
+    """Gap lines between the memory's blocks along one axis, found in the bits.
+
+    A memory array is cut into equal blocks (e.g. 64 columns) with a line or a few of no cells
+    between them (a strap, a wider gap after every few blocks). The lattice index n (columns or
+    rows of the field lattice) is such a gap line when n % period is in gaps.
+    """
+
+    period: int
+    gaps: tuple[int, ...]
+
+    def is_gap(self, index: np.ndarray) -> np.ndarray:
+        return np.isin(np.mod(np.asarray(index, np.int64), self.period), self.gaps)
+
+    def block_sizes(self) -> tuple[int, ...]:
+        """Lengths of the blocks between gap lines over one period (e.g. 64, 64, 64, 64)."""
+
+        gap = np.zeros(self.period, bool)
+        gap[list(self.gaps)] = True
+        start = int(np.flatnonzero(gap)[0])
+        rolled = np.roll(gap, -start)
+        sizes, run = [], 0
+        for value in rolled[1:].tolist() + [True]:
+            if value:
+                if run:
+                    sizes.append(run)
+                run = 0
+            else:
+                run += 1
+        return tuple(sizes)
+
+    def snap_window(self) -> int:
+        """How far an island may be moved onto the grid: under half the shortest block, at most 8."""
+
+        return int(np.clip((min(self.block_sizes() or (2,)) - 1) // 2, 1, 8))
+
+
+# A line of a block grid: most of its known sites painted by no network.
+GRID_GAP_MAX_PAINTED = 0.05
+# A grid is the gap pattern repeating: the share of gap lines that fall on gap lines one period on.
+GRID_MIN_REPEAT = 0.6
+# A placement is called exact along an axis with this standard error, in sites (3 errors < half a site).
+PLACEMENT_EXACT_SITES = 0.15
+
+PLACEMENT_REFERENCE = "reference"
+PLACEMENT_GRID = "grid"
+PLACEMENT_STAGE = "stage"
+PLACEMENT_ESTIMATED = "estimated"
+
+
+def _line_profile(index: np.ndarray, state: np.ndarray) -> tuple[int, np.ndarray, np.ndarray]:
+    """(first lattice index, gap lines, lines with enough known sites) of sites given by their
+    lattice index along one axis and their states."""
+
+    first = int(index.min())
+    offset = index - first
+    known = state != PARTIAL
+    counts = np.bincount(offset[known], minlength=int(offset.max()) + 1).astype(np.float64)
+    painted = np.bincount(offset[known], weights=np.isin(state[known], PAINTED), minlength=len(counts))
+    filled = counts[counts > 0]
+    valid = counts >= max(3.0, 0.3 * float(np.median(filled))) if filled.size else np.zeros(len(counts), bool)
+    gap = painted < GRID_GAP_MAX_PAINTED * np.maximum(counts, 1.0)
+    return first, gap & valid, valid
+
+
+def _detect_grid(first: int, gap: np.ndarray, valid: np.ndarray) -> BlockGrid | None:
+    """The block grid of one axis: the shortest period over which the gap lines repeat, and the
+    lines of a period that are gaps (by majority over all periods). None without a clear pattern."""
+
+    length = len(gap)
+    if length < 16 or np.count_nonzero(gap) < 3:
+        return None
+    scores = np.zeros(length // 2 + 1)
+    for period in range(4, length // 2 + 1):
+        base = gap[:-period] & valid[period:]
+        total = np.count_nonzero(base)
+        if total:
+            scores[period] = np.count_nonzero(base & gap[period:]) / total
+    best = float(scores.max())
+    if best < GRID_MIN_REPEAT:
+        return None
+    period = int(np.flatnonzero(scores >= 0.9 * best)[0])
+    if length < 2 * period:
+        return None
+    residues = np.mod(first + np.arange(length), period)
+    gaps = []
+    for residue in range(period):
+        lines = (residues == residue) & valid
+        if np.count_nonzero(lines) and np.mean(gap[lines]) >= 0.5:
+            gaps.append(residue)
+    if not gaps or len(gaps) > 0.3 * period:
+        return None
+    return BlockGrid(period, tuple(gaps))
+
+
+def _snap_to_grid(first: int, gap: np.ndarray, valid: np.ndarray, grid: BlockGrid) -> int | None:
+    """Whole lines to move an island by so that its gap lines lie on the grid: the move within the
+    grid's window that puts its gaps on gap lines and its painted lines off them, when it is clearly
+    the best. None when the island shows too few gaps to tell."""
+
+    window = grid.snap_window()
+    lines = first + np.arange(len(gap))
+    painted = valid & ~gap
+    gaps = int(np.count_nonzero(gap))
+    if gaps < 2:
+        return None
+    scored = []
+    for move in range(-window, window + 1):
+        on_grid = grid.is_gap(lines + move)
+        hits = int(np.count_nonzero(gap & on_grid))
+        scored.append((hits - int(np.count_nonzero(gap & ~on_grid)) - int(np.count_nonzero(painted & on_grid)), hits, move))
+    scored.sort(reverse=True)
+    (best, hits, move), second = scored[0], scored[1][0]
+    if hits < 0.6 * gaps or best - second < max(2.0, 0.2 * gaps):
+        return None
+    return move
+
+
+class _StageModel:
+    """Offsets between neighbour frames where no bits give them, from the trusted seams.
+
+    The stage moves smoothly: along one row of frames the step to the right, and between two rows
+    the step down, follow a straight line in the column (residuals of ~0.1 site on real runs). A row
+    with too few seams, or a column far outside the seams it has, takes the median of all seams of
+    the kind with their spread as its error.
+    """
+
+    def __init__(self, trusted: Sequence[Seam], per_row: int, fallback: dict[str, tuple[float, float]], pitch: Pitch) -> None:
+        self.per_row = per_row
+        self.fallback = fallback
+        floor = np.array([0.03 * pitch.x, 0.03 * pitch.y]) ** 2
+        self.spread: dict[str, np.ndarray] = {}
+        self.fits: dict[tuple[str, int], tuple[np.ndarray, np.ndarray, np.ndarray, float, float, int]] = {}
+        groups: dict[tuple[str, int], list[Seam]] = {}
+        for seam in trusted:
+            groups.setdefault((seam.kind, seam.a // per_row), []).append(seam)
+        for kind in ("right", "down"):
+            offsets = np.array([s.offset for s in trusted if s.kind == kind], np.float64).reshape(-1, 2)
+            self.spread[kind] = np.maximum(offsets.var(axis=0), floor) if len(offsets) > 1 else np.array([pitch.x, pitch.y]) ** 2
+        for key, seams in groups.items():
+            cols = np.array([s.a % per_row for s in seams], np.float64)
+            if len(seams) < 3 or np.ptp(cols) < 2:
+                continue
+            offsets = np.array([s.offset for s in seams], np.float64)
+            fx, fy = np.polyfit(cols, offsets[:, 0], 1), np.polyfit(cols, offsets[:, 1], 1)
+            residual = offsets - np.stack([np.polyval(fx, cols), np.polyval(fy, cols)], axis=1)
+            # Few seams say little about their own spread: widen it.
+            variance = residual.var(axis=0) * (len(seams) + 1) / max(1, len(seams) - 2)
+            self.fits[key] = (fx, fy, np.maximum(variance, floor), float(cols.min()), float(cols.max()), len(seams))
+
+    def step(self, kind: str, index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(offset, own variance, shared variance) per axis, from frame index to its right or lower
+        neighbour. The own part is the scatter of single seams around the line: independent from one
+        column to the next, it averages out over many predicted seams. The shared part is the error of
+        the line itself (or of the guess where there is none): the same for every column of the row,
+        it does not."""
+
+        row, col = divmod(index, self.per_row)
+        fit = self.fits.get((kind, row))
+        if fit is not None:
+            fx, fy, variance, low, high, seams = fit
+            offset = np.array([np.polyval(fx, col), np.polyval(fy, col)])
+            if low - 2 <= col <= high + 2:
+                return offset, variance, variance / seams
+            # Far outside its seams the line is a guess: as uncertain as the kind as a whole.
+            return offset, variance, variance / seams + self.spread[kind]
+        return np.array(self.fallback[kind], np.float64), np.zeros(2), self.spread[kind]
 
 
 def _wrap(value: float, period: float) -> float:
@@ -819,7 +1008,7 @@ def _fit_places(
 
 def _place_frames(
     sites: Sequence[FrameSites], seams: Sequence[Seam], per_row: int, cfg: MemoryMapConfig, pitch: Pitch
-) -> tuple[list[tuple[float, float]], list[str], list[Seam], list[int]]:
+) -> tuple[list[tuple[float, float]], list[str], list[Seam], list[int], list[tuple[str, tuple[float, float]]], tuple]:
     """Frames in one plane: their places, how each was placed, the seams as checked, and the island
     of each frame (-1: a frame without sites, in no island)."""
 
@@ -934,13 +1123,89 @@ def _place_frames(
             local[index], island[index], method[index] = (0.0, 0.0), len(components), PLACED_ALONE
             components.append([index])
 
-    # Each island near where the usual offsets put it ...
-    shifts = []
+    # Where islands lie relative to each other. Between two islands no bits are shared, but the
+    # stage moves smoothly: the seams between them are predicted from the trusted seams of the same
+    # rows (_StageModel), through frames without memory too, and every predicted seam between two
+    # islands is one estimate of how they lie; their median links the islands, with its error.
+    model = _StageModel(trusted, per_row, {"right": right, "down": down}, pitch)
+    weight = [sum(sites[index].count for index in members) for members in components]
+    estimates: dict[tuple[int, int], list[tuple[np.ndarray, np.ndarray, np.ndarray]]] = {}
+
+    def chain(start: int, end: int, kind: str, step: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        offset, own, shared = np.zeros(2), np.zeros(2), np.zeros(2)
+        for index in range(start, end, step):
+            o, v_own, v_shared = model.step(kind, index)
+            offset, own, shared = offset + o, own + v_own, shared + v_shared
+        return offset, own, shared
+
+    def link(a: int, b: int, kind: str, step: int) -> None:
+        offset, own, shared = chain(a, b, kind, step)
+        # Island b's shift minus island a's: frame b at local[b] + T_b = local[a] + T_a + offset.
+        relative = np.asarray(local[a]) + offset - np.asarray(local[b])  # type: ignore[arg-type]
+        ka, kb = island[a], island[b]
+        key = (ka, kb) if ka < kb else (kb, ka)
+        estimates.setdefault(key, []).append((relative if ka < kb else -relative, own, shared))
+
+    frame_rows = -(-count // per_row) if count else 0
+    for row in range(frame_rows):
+        last = None
+        for col in range(per_row):
+            index = row * per_row + col
+            if index >= count or island[index] < 0:
+                continue
+            if last is not None and island[last] != island[index]:
+                link(last, index, "right", 1)
+            last = index
+    for col in range(per_row):
+        last = None
+        for row in range(frame_rows):
+            index = row * per_row + col
+            if index >= count or island[index] < 0:
+                continue
+            if last is not None and island[last] != island[index]:
+                link(last, index, "down", per_row)
+            last = index
+    links: dict[int, list[tuple[int, np.ndarray, np.ndarray]]] = {k: [] for k in range(len(components))}
+    for (ka, kb), values in estimates.items():
+        relatives = np.array([value for value, _own, _shared in values])
+        own = np.array([v for _value, v, _shared in values])
+        shared = np.array([v for _value, _own, v in values])
+        relative = np.median(relatives, axis=0)
+        # The error of the median: the own scatter of the seams averages out over many of them (but
+        # never below what their spread says); the error of the stage lines they share does not.
+        independent = own.mean(axis=0) / len(values)
+        if len(values) > 1:
+            scatter = (1.4826 * np.median(np.abs(relatives - relative), axis=0)) ** 2 / len(values)
+            independent = np.maximum(independent, scatter)
+        variance = independent + shared.min(axis=0)
+        links[ka].append((kb, relative, variance))
+        links[kb].append((ka, -relative, variance))
+
+    shifts: list[np.ndarray] = []
     for members in components:
         by_bits = [index for index in members if method[index] != PLACED_ESTIMATED] or members
         diffs = np.array([np.subtract(usual(index), local[index]) for index in by_bits], np.float64)
         shifts.append(np.median(diffs, axis=0))
-    weight = [sum(sites[index].count for index in members) for members in components]
+    error = [np.full(2, np.inf) for _ in components]
+    largest = int(np.argmax(weight)) if components else -1
+    if components:
+        # From the largest island, each island by its most precise chain of links.
+        import heapq
+
+        error[largest] = np.zeros(2)
+        heap = [(0.0, largest)]
+        done: set[int] = set()
+        while heap:
+            _total, k = heapq.heappop(heap)
+            if k in done:
+                continue
+            done.add(k)
+            for other, relative, variance in links[k]:
+                candidate = error[k] + variance
+                if other not in done and float(candidate.sum()) < float(error[other].sum()):
+                    error[other] = candidate
+                    shifts[other] = shifts[k] + relative
+                    heapq.heappush(heap, (float(candidate.sum()), other))
 
     def main_phase(k: int) -> tuple[float, float]:
         # The phase most of the island's sites are on, in the plane.
@@ -971,18 +1236,53 @@ def _place_frames(
         best = max(clusters, key=lambda c: c[2], default=[0.0, 0.0, 0.0])
         return best[0], best[1]
 
-    # ... on the lattice of the largest island (a whole number of sites from where it was) ...
-    if components:
-        largest = int(np.argmax(weight))
-        ref = main_phase(largest)
-        for k in range(len(components)):
-            if k != largest:
-                phase = main_phase(k)
-                shifts[k] = shifts[k] + np.array([_wrap(ref[0] - phase[0], pitch.x), _wrap(ref[1] - phase[1], pitch.y)])
+    # On the lattice of the largest island (a whole number of sites from where it was) ...
+    ref = main_phase(largest) if components else (0.0, 0.0)
+    for k in range(len(components)):
+        if k != largest:
+            phase = main_phase(k)
+            shifts[k] = shifts[k] + np.array([_wrap(ref[0] - phase[0], pitch.x), _wrap(ref[1] - phase[1], pitch.y)])
 
-    # ... and apart from the islands already laid out (the largest first): moved by whole sites,
-    # the shortest way out, until it is clear of all of them by the gap.
+    # ... then on the grid of its blocks: the blocks of every array lie on one grid, so an island
+    # placed within a few lines of its place is moved onto it exactly.
+    steps = (pitch.x, pitch.y)
+
+    def profile(k: int, axis: int) -> tuple[int, np.ndarray, np.ndarray] | None:
+        coords, states = [], []
+        for index in components[k]:
+            s = sites[index]
+            if s.count:
+                coords.append((s.x if axis == 0 else s.y) + local[index][axis] + shifts[k][axis])  # type: ignore[index]
+                states.append(s.state)
+        if not coords:
+            return None
+        lines = np.round((np.concatenate(coords) - ref[axis]) / steps[axis]).astype(np.int64)
+        return _line_profile(lines, np.concatenate(states))
+
+    grids: list[BlockGrid | None] = [None, None]
+    snapped = [[False, False] for _ in components]
+    if components:
+        for axis in (0, 1):
+            found = profile(largest, axis)
+            grids[axis] = _detect_grid(*found) if found is not None else None
+            if grids[axis] is None:
+                continue
+            for k in range(len(components)):
+                if k == largest:
+                    continue
+                found = profile(k, axis)
+                move = _snap_to_grid(*found, grids[axis]) if found is not None else None
+                if move is not None:
+                    shifts[k][axis] += move * steps[axis]
+                    snapped[k][axis] = True
+
+    # ... and apart from the islands already laid out (the largest first): moved by whole sites
+    # (whole periods of the grid where there is one), the shortest way out, until it is clear of
+    # all of them by the gap. A moved island has no known place any more.
     gap_x, gap_y = cfg.island_gap_sites * pitch.x, cfg.island_gap_sites * pitch.y
+    move_x = pitch.x * (grids[0].period if grids[0] is not None else 1)
+    move_y = pitch.y * (grids[1].period if grids[1] is not None else 1)
+    pushed = [False] * len(components)
 
     def whole(value: float, period: float) -> float:
         return float(np.sign(value) * np.ceil(abs(value) / period - 1e-9) * period)
@@ -1010,23 +1310,38 @@ def _place_frames(
             other = blocking()
             if other is None:
                 break
+            pushed[k] = True
             moves = [
-                (whole(other[2] + gap_x - box[0], pitch.x), 0.0),
-                (whole(other[0] - gap_x - box[2], pitch.x), 0.0),
-                (0.0, whole(other[3] + gap_y - box[1], pitch.y)),
-                (0.0, whole(other[1] - gap_y - box[3], pitch.y)),
+                (whole(other[2] + gap_x - box[0], move_x), 0.0),
+                (whole(other[0] - gap_x - box[2], move_x), 0.0),
+                (0.0, whole(other[3] + gap_y - box[1], move_y)),
+                (0.0, whole(other[1] - gap_y - box[3], move_y)),
             ]
             dx, dy = min(moves, key=lambda m: abs(m[0]) / pitch.x + abs(m[1]) / pitch.y)
             sx, sy = sx + dx, sy + dy
             box += (dx, dy, dx, dy)
         if blocking() is not None:
             # Still in the way after many moves: under everything laid out.
-            dy = whole(float(placed[:n_placed, 3].max()) + gap_y - box[1], pitch.y)
+            dy = whole(float(placed[:n_placed, 3].max()) + gap_y - box[1], move_y)
             sy += dy
             box += (0.0, dy, 0.0, dy)
         shifts[k] = np.array([sx, sy])
         placed[n_placed] = box
         n_placed += 1
+
+    placement: list[tuple[str, tuple[float, float]]] = []
+    for k in range(len(components)):
+        sd = tuple(float(np.sqrt(error[k][axis])) / steps[axis] for axis in (0, 1))
+        exact = [snapped[k][axis] or sd[axis] <= PLACEMENT_EXACT_SITES for axis in (0, 1)]
+        if k == largest:
+            label = PLACEMENT_REFERENCE
+        elif pushed[k] or not all(exact):
+            label = PLACEMENT_ESTIMATED
+        elif any(snapped[k]):
+            label = PLACEMENT_GRID
+        else:
+            label = PLACEMENT_STAGE
+        placement.append((label, (0.0 if snapped[k][0] else sd[0], 0.0 if snapped[k][1] else sd[1])))
 
     position = [
         (local[index][0] + float(shifts[island[index]][0]), local[index][1] + float(shifts[island[index]][1]))  # type: ignore[index]
@@ -1034,7 +1349,7 @@ def _place_frames(
         else usual(index)
         for index in range(count)
     ]
-    return position, method, checked, island
+    return position, method, checked, island, placement, (grids[0], grids[1], ref)
 
 
 def assemble_memory_map(
@@ -1055,7 +1370,9 @@ def assemble_memory_map(
             match_frames(sites[a], sites[b], kind, pitch, cfg, ia=a, ib=b)
             for a, b, kind in frame_neighbours(len(sites), per_row)
         ]
-    positions, methods, seams, frame_island = _place_frames(sites, seams, per_row, cfg, pitch)
+    positions, methods, seams, frame_island, placement, (column_grid, row_grid, grid_phase) = _place_frames(
+        sites, seams, per_row, cfg, pitch
+    )
     frames = tuple(
         FramePlacement(s.frame_id, float(p[0]), float(p[1]), m, int(s.shape[1]), int(s.shape[0]), isl, s.count)
         for s, p, m, isl in zip(sites, positions, methods, frame_island)
@@ -1158,6 +1475,13 @@ def assemble_memory_map(
     group_grid = field_group.reshape(n_rows, n_cols)
     # With one network an all-zero (or all-one) line inside a block looks exactly like a gap
     # between blocks; only with both networks is «nothing painted» a gap for sure.
+    # Self-check against the block grid: a frame whose own gap lines lie off the grid, all by the same
+    # few lines, sits shifted by them (a seam that sewed it wrong).
+    misaligned = (
+        _frames_off_grid(col + col0 + int(round((ox - grid_phase[0]) / pitch.x)), state, source, column_grid)
+        if column_grid is not None
+        else ()
+    )
     grid, block_index, blocks = _blocks(grid, cfg, find_gaps=mode == MODE_PAIR)
     # Each block keeps the pixel offset of the group most of its sites come from, and the island
     # of the frames most of its sites were read from (islands lie apart: a block is in one).
@@ -1189,8 +1513,15 @@ def assemble_memory_map(
         blocks = [replace(b, service=b.sites < cfg.service_share * largest) for b in blocks]
         col0 += c0
         row0 += r0
-    blocks, frames, islands = _number_islands(blocks, frames)
+    blocks, frames, islands = _number_islands(blocks, frames, placement)
     origin = (ox + col0 * pitch.x, oy + row0 * pitch.y)
+    # Gap lines of the block grid on this field. The grid counts lattice lines from the phase of
+    # the largest island; the field from the phase of its heaviest group (the same lattice, both
+    # taken within one pitch).
+    first_col = col0 + int(round((ox - grid_phase[0]) / pitch.x))
+    first_row = row0 + int(round((oy - grid_phase[1]) / pitch.y))
+    gap_cols = column_grid.is_gap(first_col + np.arange(grid.shape[1])) if column_grid is not None else np.zeros(grid.shape[1], bool)
+    gap_rows = row_grid.is_gap(first_row + np.arange(grid.shape[0])) if row_grid is not None else np.zeros(grid.shape[0], bool)
     return MemoryMap(
         mode=mode,
         pitch=pitch,
@@ -1205,11 +1536,55 @@ def assemble_memory_map(
         block_index=np.ascontiguousarray(block_index),
         per_row=per_row,
         islands=islands,
+        column_grid=column_grid,
+        row_grid=row_grid,
+        gap_cols=gap_cols,
+        gap_rows=gap_rows,
+        misaligned=misaligned,
     )
 
 
+# A frame shows a gap line of its own when this many of its known sites lie on it, nearly unpainted.
+FRAME_GAP_MIN_SITES = 8
+
+
+def _frames_off_grid(lines: np.ndarray, state: np.ndarray, source: np.ndarray, grid: BlockGrid) -> tuple[int, ...]:
+    """Frames whose gap lines (by their own sites) all lie on the grid only after a move of a few
+    lines, and not where they are: those frames are shifted by that move."""
+
+    known = state != PARTIAL
+    order = np.argsort(source[known], kind="stable")
+    frames, starts = np.unique(source[known][order], return_index=True)
+    lines_k, painted_k = lines[known][order], np.isin(state[known], PAINTED)[order]
+    window = grid.snap_window()
+    shifted: list[int] = []
+    for frame, start, end in zip(frames.tolist(), starts.tolist(), starts[1:].tolist() + [len(order)]):
+        frame_lines = lines_k[start:end]
+        first = int(frame_lines.min())
+        counts = np.bincount(frame_lines - first)
+        painted = np.bincount(frame_lines - first, weights=painted_k[start:end], minlength=len(counts))
+        own = (counts >= FRAME_GAP_MIN_SITES) & (painted < GRID_GAP_MAX_PAINTED * counts)
+        full = (counts >= FRAME_GAP_MIN_SITES) & ~own
+        if not own.any():
+            continue
+        positions = first + np.flatnonzero(own)
+        filled = first + np.flatnonzero(full)
+
+        def fits(move: int) -> bool:
+            return bool(grid.is_gap(positions + move).all()) and not bool(grid.is_gap(filled + move).any())
+
+        if fits(0):
+            continue
+        moves = [move for move in range(-window, window + 1) if move and fits(move)]
+        if len(moves) == 1:
+            shifted.append(int(frame))
+    return tuple(shifted)
+
+
 def _number_islands(
-    blocks: Sequence[MapBlock], frames: Sequence[FramePlacement]
+    blocks: Sequence[MapBlock],
+    frames: Sequence[FramePlacement],
+    placement: Sequence[tuple[str, tuple[float, float]]] = (),
 ) -> tuple[list[MapBlock], tuple[FramePlacement, ...], tuple[MapIsland, ...]]:
     """Islands that have blocks, numbered from the top left of their first block; the frames of an
     island without blocks (periphery strays) are in none."""
@@ -1219,6 +1594,7 @@ def _number_islands(
         if b.island >= 0:
             first[b.island] = min(first.get(b.island, (b.row, b.col)), (b.row, b.col))
     number = {old: new for new, old in enumerate(sorted(first, key=lambda old: first[old]))}
+    old_of = {new: old for old, new in number.items()}
     blocks = [replace(b, island=number.get(b.island, -1)) for b in blocks]
     frames = tuple(replace(f, island=number.get(f.island, -1)) for f in frames)
     islands = tuple(
@@ -1227,6 +1603,11 @@ def _number_islands(
             frames=sum(1 for f in frames if f.island == new),
             by_bits=sum(1 for f in frames if f.island == new and f.method == PLACED_BITS),
             blocks=tuple(b.index for b in blocks if b.island == new),
+            **(
+                {"placement": placement[old_of[new]][0], "uncertainty": placement[old_of[new]][1]}
+                if old_of[new] < len(placement)
+                else {}
+            ),
         )
         for new in range(len(number))
     )

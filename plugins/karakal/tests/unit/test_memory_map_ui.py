@@ -145,7 +145,10 @@ def test_islands_show_on_the_map_in_the_table_and_the_seam_diagram(qtbot) -> Non
     panel.set_map(mmap)
     # Islands: a framed, labelled box each; the table tells the island of each block.
     labels = [item.text() for item in panel.canvas._overlays if hasattr(item, "text")]
-    assert sorted(labels) == ["остров 0", "остров 1"]
+    assert sorted(label.split(" (")[0] for label in labels) == ["остров 0", "остров 1"]
+    # An island whose place is only estimated (the stage jumped where no bits link them) says so.
+    estimated = {f"остров {island.index}" for island in mmap.islands if island.placement == "estimated"}
+    assert {label.split(" (")[0] for label in labels if "место оценено" in label} == estimated
     assert {panel.blocks_table.item(row, 1).text() for row in range(panel.blocks_table.rowCount())} == {"0", "1"}
     assert "Островов: 2" in panel.seams_label.text()
 
@@ -276,6 +279,30 @@ def test_export_dialog_asks_for_a_folder_and_returns_the_choice(tmp_path, qtbot)
     choice = dialog.choice()
     assert choice.txt_custom and choice.custom.symbols["one"] == "#" and choice.custom.cell_separator == " " and choice.main_only
     assert choice.custom.symbols["empty"] == "."  # one network: «not painted»
+
+
+def test_export_dialog_writes_text_without_block_gaps_by_default(qtbot) -> None:
+    from karakal.ui.i18n import Translator
+    from karakal.ui.memory_map_export_dialog import MemoryMapExportDialog
+
+    from test_memory_map import _blocked_memory
+
+    memory = _blocked_memory(seed=84)
+    positions = frames_of(memory, frame_rows=3, per_row=6)
+    mmap = assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=6, config=CFG)
+    assert mmap.column_grid is not None
+    dialog = MemoryMapExportDialog(Translator("en").tr, mmap)
+    qtbot.addWidget(dialog)
+    assert dialog.no_gaps.isEnabled() and dialog.no_gaps.isChecked() and dialog.choice().no_gaps
+    assert "gap lines between memory blocks left out" in dialog.preview.toPlainText()
+    dialog.no_gaps.setChecked(False)
+    dialog._update_preview()
+    assert "gap lines between memory blocks left out" not in dialog.preview.toPlainText() and not dialog.choice().no_gaps
+    # A map without a grid of blocks has nothing to leave out.
+    plain = assemble_memory_map(read_all(Memory(26, 64, seed=85), frames_of(Memory(26, 64, seed=85), 3, 4)), Pitch(PX, PY), per_row=4, config=CFG)
+    other = MemoryMapExportDialog(Translator("en").tr, plain)
+    qtbot.addWidget(other)
+    assert not other.no_gaps.isEnabled()
 
 
 def test_export_dialog_turns_the_bits_and_previews_them(tmp_path, qtbot) -> None:

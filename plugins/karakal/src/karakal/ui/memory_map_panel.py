@@ -470,7 +470,8 @@ class MemoryMapPanel(QWidget):
                         rect.adjusted(-1, -1, 1, 1),
                         colors[island.index],
                         width=2.0,
-                        label=self._t("memory_map.island_label", index=island.index),
+                        label=self._t("memory_map.island_label", index=island.index)
+                        + (f" ({self._t('memory_map.island_estimated_mark')})" if island.placement == "estimated" else ""),
                     )
         if self._frame_lines:
             # Frames on the field (frames of no island have no memory there); those placed without a
@@ -577,15 +578,41 @@ class MemoryMapPanel(QWidget):
             lines.append((self._t("memory_map.state.empty_single"), f"{counts.get('empty', 0):,}".replace(",", " ")))
         lines.append((self._t("memory_map.state.defect"), f"{counts.get('defect', 0):,}".replace(",", " ")))
         lines.append((self._t("memory_map.disagreements"), str(mmap.disagreements)))
+        grid = mmap.column_grid
+        lines.append(
+            (
+                self._t("memory_map.block_grid"),
+                self._t("memory_map.block_grid_value", sizes=" + ".join(str(size) for size in grid.block_sizes()))
+                if grid is not None
+                else self._t("memory_map.block_grid_none"),
+            )
+        )
         lines.append((self._t("memory_map.islands"), str(len(mmap.islands))))
+        if grid is not None:
+            lines.append(
+                (
+                    self._t("memory_map.self_check"),
+                    self._t("memory_map.self_check_bad", count=len(mmap.misaligned))
+                    if mmap.misaligned
+                    else self._t("memory_map.self_check_ok"),
+                )
+            )
         for title, value in lines:
             label = QLabel(value, self)
             label.setWordWrap(True)
             self.summary_form.addRow(title, label)
             if title == self._t("memory_map.islands") and len(mmap.islands) > 1:
                 # The long story in the tooltip: the summary stays short.
-                label.setText(self._t("memory_map.islands_value", count=len(mmap.islands)))
+                # Arrays (islands with a main block) by how their place is known; strips of the
+                # periphery (service blocks only) counted apart.
+                arrays = [i for i in mmap.islands if any(not mmap.blocks[b].service for b in i.blocks)]
+                placed = {kind: sum(1 for island in arrays if island.placement == kind) for kind in ("grid", "stage", "estimated")}
+                label.setText(
+                    self._t("memory_map.islands_value", count=len(arrays), service=len(mmap.islands) - len(arrays), **placed)
+                )
                 label.setToolTip(self._t("memory_map.islands_note"))
+            if title == self._t("memory_map.self_check") and mmap.misaligned:
+                label.setStyleSheet("color: #ffb040;")
         if mmap.mode != MODE_PAIR:
             note = QLabel(self._t("memory_map.single_note"), self)
             note.setWordWrap(True)

@@ -130,9 +130,9 @@ class RoleGraphView(QGraphicsView):
             left = int(rect.left()) - (int(rect.left()) % spacing)
             top = int(rect.top()) - (int(rect.top()) % spacing)
             for x in range(left, int(rect.right()) + spacing, spacing):
-                painter.drawLine(float(x), rect.top(), float(x), rect.bottom())
+                painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
             for y in range(top, int(rect.bottom()) + spacing, spacing):
-                painter.drawLine(rect.left(), float(y), rect.right(), float(y))
+                painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
 
     def refresh_edges(self) -> None:
         for edge, source, target in self._edges:

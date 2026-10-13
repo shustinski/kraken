@@ -194,7 +194,7 @@ def _phase_key(base: str, phase: str) -> str:
     return f"{base[:180]}:{digest}"
 
 
-def _move_job(job: PluginJob, target: PluginJobState, *, at: object, progress: float | None = None) -> PluginJob:
+def _move_job(job: PluginJob, target: PluginJobState, *, at: object, progress: float | None = None, error: str | None = None) -> PluginJob:
     """Move through the legal state graph when an Agent callback catches us up."""
 
     if job.state is target:
@@ -216,7 +216,7 @@ def _move_job(job: PluginJob, target: PluginJobState, *, at: object, progress: f
         if job.state is not PluginJobState.IMPORTING:
             raise ConflictError(f"Plugin job cannot start importing from {job.state.value}")
         return job
-    return job.transition(target, at=timestamp, progress=progress)
+    return job.transition(target, at=timestamp, progress=progress, error=error)
 
 
 class SubmitPluginJobHandler:
@@ -496,7 +496,15 @@ class ImportPluginResultHandler:
                     if manifest.outcome is PluginResultOutcome.FAILED
                     else PluginJobState.CANCELLED
                 )
-                job = _move_job(job, target_state, at=self._clock.now())
+                errors = manifest.parameters_applied.get("transport_errors", ())
+                error = (
+                    "; ".join(str(item) for item in errors)
+                    if errors
+                    else str(manifest.parameters_applied["error"])
+                    if manifest.parameters_applied.get("error")
+                    else None
+                )
+                job = _move_job(job, target_state, at=self._clock.now(), error=error)
                 self._save_job_event(
                     uow,
                     job=job,

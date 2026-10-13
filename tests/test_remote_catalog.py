@@ -441,6 +441,7 @@ def test_remote_structure_routes_do_not_fall_back_to_local_catalog(
     )
     assert not deactivated.active
     assert dual.list_project_principals(project.id) == (remote_principal,)
+    assert dual.list_role_candidates(project.id) == (remote_principal,)
     patch_call = next(call for call in http.calls if call[0] == "PATCH")
     assert patch_call[2] == {
         "active": False,
@@ -568,6 +569,7 @@ def test_server_external_layer_uses_the_server_project(tmp_path: Path) -> None:
     )
     service = object.__new__(PostgresServerServices)
     service.workspace_files = files
+    service.events = SimpleNamespace(find_by_idempotency_key=lambda _project_id, _key: ())
     def project_projection(_project_id: object) -> SimpleNamespace:
         return SimpleNamespace(revision=1, width=2, height=2)
 

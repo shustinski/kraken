@@ -19,6 +19,54 @@ from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain import GridOrientation, LayerType
 
 
+@pytest.mark.parametrize("kind", ["source", "binary"])
+def test_pipeline_vectorization_uses_clicked_image_representation(kind):
+    from kraken_hub.manager_app import DesktopController
+    from kraken_manager.presentation.qt.layer_management import (
+        LayerPipelineSnapshot, PipelineLane, PipelineNode,
+    )
+
+    node = PipelineNode("clicked", "Images", kind, representation_id="clicked-images")
+    snapshot = LayerPipelineSnapshot("project", "layer", (
+        PipelineLane("original-images", "Source", (node,), ()),
+    ))
+    controller = object.__new__(DesktopController)
+    controller._project_id = "project"
+    controller._action_availability = lambda _action: (True, "")
+    controller._pipeline_snapshot = lambda *_args: snapshot
+    observed = []
+
+    def wait_for_source(**arguments):
+        observed.append(arguments["source_representation_id"])
+        return False
+
+    controller._ensure_agent_source_ready = wait_for_source
+    controller._layer_manager_action("layer", node, "vectorize")
+    assert observed == ["clicked-images"]
+
+
+def test_selecting_active_image_refreshes_its_new_vector_representations():
+    from types import SimpleNamespace
+    from kraken_hub.manager_app import DesktopController
+    from kraken_manager.domain.project import RepresentationKind
+
+    project = SimpleNamespace(id="project")
+    layer = SimpleNamespace(id="layer")
+    image = SimpleNamespace(id="binary", kind=RepresentationKind.IMAGE, active=True)
+    controller = object.__new__(DesktopController)
+    controller.service = SimpleNamespace(
+        get_project=lambda _id: project,
+        list_layers=lambda _id: (layer,),
+        list_representations=lambda *_args: (image,),
+    )
+    calls = []
+    controller._load_representations = lambda *_args: calls.append(_args)
+    controller._refresh_matrix = lambda *_args: pytest.fail("Representation list was not refreshed")
+    workspace = SimpleNamespace(_selected_layer_id="layer")
+    controller._activate_representation(workspace, "project", "binary")
+    assert calls == [(workspace, "project", "layer")]
+
+
 def _asset(identifier: str, path: str, *, role: str, frame_id: str | None = None) -> PluginAsset:
     return PluginAsset(
         asset_id=identifier,

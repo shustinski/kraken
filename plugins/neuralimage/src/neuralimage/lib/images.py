@@ -1,5 +1,7 @@
 import os
 import importlib
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 
 import PIL.Image
@@ -10,6 +12,7 @@ import random
 from neuralimage.lib.data_interfaces import CutSettings, SampleGenerationSettings, SamplePrepareSettings
 from neuralimage.lib.file_func import filter_files
 from neuralimage.lib.file_retry import retry_file_read
+from kraken_core.asset_source import AssetSource
 
 
 def resolved_augmentation_variant_count(parameters: SampleGenerationSettings | object) -> int:
@@ -149,10 +152,10 @@ class SampleWorker:
         return filter_files(path, cls.VALID_EXTENSIONS, recursive=recursive)
 
     @staticmethod
-    def collect_image_sizes(image_paths: list[Path]) -> list[tuple[int, int]]:
+    def collect_image_sizes(image_paths: list[Path], *, asset_source: AssetSource | None = None) -> list[tuple[int, int]]:
         image_sizes: list[tuple[int, int]] = []
         for image in image_paths:
-            with retry_file_read(lambda: Image.open(image), path=image) as img:
+            with open_image(image, asset_source) as img:
                 width, height = img.size
             image_sizes.append((height, width))
         return image_sizes
@@ -285,11 +288,27 @@ class SampleCalculator:
 
 
 
+@contextmanager
+def open_image(path: Path | str, asset_source: AssetSource | None = None) -> Iterator[Image.Image]:
+    if asset_source is None:
+        with retry_file_read(lambda: Image.open(path), path=path) as image:
+            yield image
+    else:
+        with asset_source.open(str(path)) as stream, Image.open(stream) as image:
+            yield image
+
+
 class ImagePreparator:
 
-    def __init__(self, path:Path, parameters:SamplePrepareSettings):
+    def __init__(self, path:Path, parameters:SamplePrepareSettings, *, asset_source: AssetSource | None = None):
         self._params = parameters
         self._path = path
+        self._asset_source = asset_source
+
+    @contextmanager
+    def _open_image(self) -> Iterator[Image.Image]:
+        with open_image(self._path, self._asset_source) as image:
+            yield image
 
     @property
     def image(self):
@@ -307,7 +326,7 @@ class ImagePreparator:
             and int(getattr(self._params, 'compression_factor', 1)) <= 1
         ):
             return self._params.target_size
-        with retry_file_read(lambda: Image.open(self._path), path=self._path) as img:
+        with self._open_image() as img:
             size = img.size
         if not self._params.enable_crop or self._params.edge_cut is None:
             return size
@@ -320,7 +339,7 @@ class ImagePreparator:
         return width, height
 
     def _prepare(self):
-        with retry_file_read(lambda: Image.open(self._path), path=self._path) as img:
+        with self._open_image() as img:
             img.load()
             self._image = img.copy()
         self._size = img.size

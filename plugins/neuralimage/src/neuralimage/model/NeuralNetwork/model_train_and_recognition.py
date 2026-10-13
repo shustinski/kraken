@@ -55,6 +55,7 @@ from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.lib.file_func import filter_images
 from neuralimage.lib.func import get_input_channels
 from neuralimage.lib.images import ImagePreparator, SampleCalculator
+from kraken_core.asset_source import AssetSource
 from neuralimage.lib.image_processing import sew_image
 from neuralimage.lib.images import _build_enabled_transform_variants
 from neuralimage.lib.loss_config import format_loss_formula, resolve_loss_term_weights, sanitize_loss_term_weights
@@ -6519,8 +6520,10 @@ class RecognitionRuntimePlan:
 class NeuralRecognizer(threading.Thread):
 
     def __init__(self, recognition_parameters:RecognitionParameters,
-                 message_bus:AbstractMessageBus, callback:Callable[..., None]|None = None  ):
+                 message_bus:AbstractMessageBus, callback:Callable[..., None]|None = None,
+                 *, asset_source: AssetSource | None = None):
         super().__init__()
+        self.asset_source = asset_source
         self.number_of_threads:int = 1
         self.devices_list: list[torch.device] = []
         self._parameters = recognition_parameters
@@ -6814,6 +6817,8 @@ class NeuralRecognizer(threading.Thread):
         self._parameters.preprocessing = artifact_config
 
     def run_multiprocessing(self, runtime_plan: RecognitionRuntimePlan | None = None):
+        if self.asset_source is not None:
+            raise ValueError('Server streams require single-thread recognition')
         if runtime_plan is None:
             runtime_plan = self._build_runtime_plan(multithreading=True)
         workload = RecognitionWorkload(
@@ -6869,6 +6874,7 @@ class NeuralRecognizer(threading.Thread):
             self.devices_list = [torch.device('cpu')]
         device = self.devices_list[0]
         run_single_thread_recognition(
+            asset_source=self.asset_source,
             source_files=list(self._parameters.source_files),
             result_folder=self._parameters.result_folder,
             part_size=self._parameters.part_size,

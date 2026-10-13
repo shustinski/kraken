@@ -4,7 +4,7 @@ import contextlib
 import logging
 import multiprocessing as mp
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import replace
 from queue import Empty
@@ -12,6 +12,7 @@ from time import perf_counter
 from typing import Any
 
 import cv2
+import numpy as np
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal
 
 from .application.processing import (
@@ -120,9 +121,11 @@ class BatchQueueRunnable(QRunnable):
         ui_language: str,
         chunk_size: int = 16,
         progress_interval_seconds: float = 0.05,
+        image_loader: Callable[[str], np.ndarray] | None = None,
     ) -> None:
         super().__init__()
         self.image_paths = list(image_paths)
+        self.image_loader = image_loader
         self.pipeline_config = dict(pipeline_config)
         self.contour_settings = replace(contour_settings)
         self.output_directory = output_directory
@@ -280,6 +283,7 @@ class BatchQueueRunnable(QRunnable):
                     output_directory=self.output_directory,
                     save_options=dict(save_payload),
                     display_settings=dict(display_payload),
+                    image_loader=self.image_loader,
                 )
             )
         return requests
@@ -344,6 +348,7 @@ class BatchProcessor(QObject):
         self._ui_language = active_language()
         self._running = False
         self._runner: BatchQueueRunnable | None = None
+        self.image_loader: Callable[[str], np.ndarray] | None = None
 
     @property
     def is_running(self) -> bool:
@@ -398,6 +403,7 @@ class BatchProcessor(QObject):
             max_workers=self._max_workers,
             chunk_size=self._chunk_size,
             ui_language=self._ui_language,
+            image_loader=self.image_loader,
         )
         runner.signals.result.connect(self._on_worker_result)
         runner.signals.error.connect(self._on_worker_error)

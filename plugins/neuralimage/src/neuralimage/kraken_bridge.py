@@ -14,8 +14,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+from kraken_core.asset_source import ServerAssetSource
 
 from kraken_core.plugin_protocol import (
     PluginAsset,
@@ -32,6 +33,9 @@ from kraken_core.plugin_protocol import (
     parse_plugin_job_json,
     safe_relative_path,
 )
+
+if TYPE_CHECKING:
+    from neuralimage.infrastructure.dataset_source import DatasetStreamSource
 
 
 try:
@@ -261,6 +265,7 @@ class NeuralImageKrakenSession:
     frame_inputs: tuple[object, ...]
     input_paths: tuple[Path, ...]
     output_directory: Path
+    server_source: ServerAssetSource | None = None
 
     @classmethod
     def load(
@@ -300,12 +305,15 @@ class NeuralImageKrakenSession:
         if len(frame_inputs) > 10_000:
             raise KrakenBridgeError("NeuralImage accepts at most 10000 frames per job")
         inputs: list[Path] = []
+        server_mode = manifest.parameters.get("input_transport") == "server"
+        if server_mode and not isinstance(manifest, PluginJobManifest):
+            raise KrakenBridgeError("Server image streams require the frame job protocol")
         stems: set[str] = set()
         for item in frame_inputs:
             if item.media_type not in {"image/png", "image/tiff", "image/jpeg"}:
                 raise KrakenBridgeError(f"Unsupported NeuralImage input media type: {item.media_type}")
-            path = _contained_file(root, item.relative_path)
-            if _sha256(path) != item.sha256:
+            path = root / safe_relative_path(item.relative_path) if server_mode else _contained_file(root, item.relative_path)
+            if not server_mode and _sha256(path) != item.sha256:
                 raise KrakenBridgeError(f"Staged input checksum mismatch: {item.relative_path}")
             if path.stem.casefold() in stems:
                 raise KrakenBridgeError(
@@ -320,7 +328,14 @@ class NeuralImageKrakenSession:
         output_directory = output_directory.resolve(strict=True)
         if output_directory.parent != root or not output_directory.is_dir():
             raise KrakenBridgeError("Kraken output directory escapes staging")
-        return cls(manifest, root, result_path, frame_inputs, tuple(inputs), output_directory)
+        server_source = None
+        if server_mode and isinstance(manifest, PluginJobManifest):
+            server_source = ServerAssetSource(
+                str(manifest.parameters.get("server_url", "")), manifest.job_id,
+                {str(root / item.relative_path): item for item in manifest.inputs},
+                os.environ.get("KRAKEN_ASSET_TOKEN", ""),
+            )
+        return cls(manifest, root, result_path, frame_inputs, tuple(inputs), output_directory, server_source)
 
     def write_result(
         self,
@@ -452,7 +467,7 @@ def _run_recognition(
         if not isinstance(payload, dict) or payload.get("type") != "recognition_completed":
             return
         try:
-            source = Path(str(payload["source_path"])).resolve(strict=True)
+            source = Path(str(payload["source_path"])).resolve(strict=session.server_source is None)
             output = Path(str(payload["output_path"])).resolve(strict=True)
         except (KeyError, OSError):
             return
@@ -483,20 +498,25 @@ def _run_recognition(
 
         remote_address = str(QSettings("INME", "NeuralImage").value("execution/url", "http://localhost:8765"))
     if remote_address is not None:
+        if session.server_source is not None:
+            raise KrakenBridgeError("Remote compute does not support Kraken server streams")
         from .remote.managed import run_recognition
 
         applied_threshold = run_recognition(parameters, bus, remote_address, session.manifest.job_id)
     else:
         from .model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer
 
-        recognizer = NeuralRecognizer(parameters, bus)
+        if session.server_source is not None:
+            recognizer = NeuralRecognizer(parameters, bus, asset_source=session.server_source)
+        else:
+            recognizer = NeuralRecognizer(parameters, bus)
         recognizer.run(multithreading=False)
         applied_threshold = getattr(recognizer, "_resolved_output_threshold", options.threshold)
 
     outputs: list[PluginFrameOutput] = []
     frame_positions = dict(session.manifest.parameters.get("frame_positions", {}))
     for index, (frame, source) in enumerate(zip(session.frame_inputs, session.input_paths, strict=True), start=1):
-        native = completed.get(source.resolve(strict=True))
+        native = completed.get(source.resolve(strict=session.server_source is None))
         if native is None:
             raise KrakenBridgeError(f"Inference did not produce a result for frame {frame.frame_id}")
         if native_directory not in native.parents:
@@ -645,6 +665,7 @@ class NeuralImageTrainSession:
         self.staging_root = staging_root
         self.result_manifest_path = result_manifest_path
         self.output_directory = staging_root / "outputs"
+        self.dataset_source: DatasetStreamSource | None = None
 
     @classmethod
     def load(
@@ -743,6 +764,20 @@ class NeuralImageTrainSession:
         inputs = tuple(self.manifest.inputs)
         if len(inputs) != 1 or inputs[0].media_type != "application/zip":
             raise KrakenBridgeError("Training requires a published dataset ZIP")
+        if getattr(self.manifest, "parameters", {}).get("input_transport") == "server":
+            from kraken_core.asset_source import ServerAssetSource
+            from neuralimage.infrastructure.dataset_source import DatasetStreamSource
+
+            if not isinstance(self.manifest, PluginJobManifest):
+                raise KrakenBridgeError("Server dataset streams require the frame job protocol")
+            source = ServerAssetSource(
+                str(self.manifest.parameters.get("server_url", "")), self.manifest.job_id,
+                {item.relative_path: item for item in inputs}, os.environ.get("KRAKEN_ASSET_TOKEN", ""),
+            )
+            self.dataset_source = DatasetStreamSource.load(source, inputs[0].relative_path, self.staging_root / "dataset")
+            for directory in (self.dataset_source.image_root, self.dataset_source.label_root):
+                directory.mkdir(parents=True, exist_ok=True)
+            return self.dataset_source.image_root, self.dataset_source.label_root
         archive = _contained_file(self.staging_root, inputs[0].relative_path)
         if _sha256(archive) != inputs[0].sha256:
             raise KrakenBridgeError("Dataset checksum does not match the job")
@@ -781,13 +816,22 @@ class NeuralImageTrainSession:
         window = getattr(presenter, "view", None)
         if not isinstance(window, QMainWindow):
             raise KrakenBridgeError("NeuralImage training requires the desktop window")
+        from neuralimage.lib.data_interfaces import WorkMode
+
+        training_mode = getattr(window, "rb_train_only", None)
+        if training_mode is not None:
+            training_mode.click()
         window.set_result_path(str(self.output_directory))
         window.set_jpg_path(str(images))
         window.set_label_path(str(labels))
         state = presenter.main_window_state
+        state.work_mode = WorkMode.train_only.value
         state.sample_folder = str(images)
         state.label_folder = str(labels)
         state.result_folder = str(self.output_directory)
+        presenter.kraken_dataset_source = self.dataset_source
+        if self.dataset_source is not None:
+            presenter._calculate_expected_samples()
         menu = window.menuBar().addMenu("Kraken")
         action = QAction("Вернуть модель в Kraken", window)
         action.setShortcut(QKeySequence("Ctrl+Shift+Return"))

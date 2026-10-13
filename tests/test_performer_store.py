@@ -83,6 +83,17 @@ class LocalSQLitePerformerStoreTests(unittest.TestCase, PerformerStoreContract):
         with self.assertRaises(ValueError):
             ensure_gitlab_performer(principal, self.performer_store)
 
+    def test_authenticated_local_server_account_gets_a_linked_performer(self) -> None:
+        from kraken_manager.application.performers import ensure_linked_performer
+
+        principal = Principal.local(subject="server-worker", display_name="Server Worker")
+        identities = LocalIdentityAclStore(Path(self.temporary.name) / "identity.sqlite3")
+        identities.save(principal)
+        first = ensure_linked_performer(principal, self.performer_store)
+        repeated = ensure_linked_performer(principal, self.performer_store)
+        self.assertEqual(first, repeated)
+        self.assertEqual(first.principal_id, principal.id)
+
 
 @unittest.skipUnless(
     os.environ.get("KRAKEN_TEST_POSTGRES_URL"),

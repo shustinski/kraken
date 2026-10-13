@@ -18,6 +18,27 @@ from kraken_manager.infrastructure.reports import (
 
 
 class StatisticsReportTests(unittest.TestCase):
+    def test_real_review_events_and_binary_purpose_are_counted(self) -> None:
+        now = datetime.now(UTC)
+        comparisons = [{'status': 'changed'}] * 5 + [{'status': 'unchanged'}] * 45
+        records = (
+            ActivityRecord('binary', now, 'RepresentationCreated', 'p', payload={'purpose': 'binary'}),
+            ActivityRecord('issued', now, 'ReviewBatchIssued', 'p'),
+            ActivityRecord('returned', now, 'ReviewReturnCommitted', 'p', payload={'comparisons': comparisons}),
+            ActivityRecord('accepted', now, 'ReviewBatchAccepted', 'p'),
+            ActivityRecord('candidate', now, 'ArtifactVersionCreated', 'p', payload={'candidate': True, 'filename': 'a.cif'}),
+            ActivityRecord('source', now, 'ArtifactVersionCreated', 'p', bytes_count=120, payload={'parameters': {'source_path': 'server/input.jpg'}}),
+        )
+        metrics = ReportService().aggregate(records, ReportFilters(now - timedelta(seconds=1), now + timedelta(seconds=1)))
+        self.assertEqual(metrics.values['returned_changed'], 5)
+        self.assertEqual(metrics.values['returned_unchanged'], 45)
+        self.assertEqual(metrics.values['accepted'], 1)
+        self.assertEqual(metrics.values['backlog'], 0)
+        self.assertEqual(metrics.values['binary_representations'], 1)
+        self.assertEqual(metrics.values['vectorization_operations'], 0)
+        self.assertEqual(metrics.values['imported_files'], 1)
+        self.assertEqual(metrics.values['imported_bytes'], 120)
+
     def test_human_readable_metric_values(self) -> None:
         self.assertEqual(
             "1 234",
@@ -336,6 +357,19 @@ class StatisticsReportTests(unittest.TestCase):
 
         self.assertEqual("p1", record.project_id)
         self.assertEqual("ProjectCreated", record.event_type)
+
+    def test_metric_serialization_preserves_fractional_values_and_integer_counts(self) -> None:
+        from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model
+        from kraken_manager.infrastructure.reports import ReportMetrics
+
+        metrics = ReportMetrics(
+            values={"average_turnaround_seconds": 27.478904, "rework_rate": 0.125, "accepted": 2},
+            by_project={}, by_performer={}, by_vector_layer={}, event_ids_by_metric={},
+        )
+        restored = decode_model(ReportMetrics, encode_model(metrics))
+        self.assertEqual(restored.values, metrics.values)
+        self.assertIs(type(restored.values["accepted"]), int)
+        self.assertIs(type(restored.values["average_turnaround_seconds"]), float)
 
 
 if __name__ == "__main__":

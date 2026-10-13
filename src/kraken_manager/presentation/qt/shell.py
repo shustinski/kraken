@@ -75,6 +75,7 @@ class ProjectManagerShell(QMainWindow):
 
         self._register_default_pages()
         self.navigation_list.currentRowChanged.connect(self._on_navigation_row_changed)
+        self.navigation_list.itemClicked.connect(self._on_navigation_item_clicked)
         self.show_page("projects")
 
     def _build_workspace_menus(self) -> None:
@@ -301,6 +302,10 @@ class ProjectManagerShell(QMainWindow):
             return
         self.navigationRequested.emit(key)
         self.show_page(key)
+
+    def _on_navigation_item_clicked(self, item: QListWidgetItem) -> None:
+        if str(item.data(Qt.ItemDataRole.UserRole)) != self.current_page_key():
+            self._on_navigation_row_changed(self.navigation_list.row(item))
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.close_guard is not None and not self.close_guard():

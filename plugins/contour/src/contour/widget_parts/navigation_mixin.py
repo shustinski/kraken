@@ -643,7 +643,10 @@ class WidgetNavigationMixin(WidgetMixinHost):
         ):
             store = existing_store
         else:
-            store = PyramidFrameStore.from_image_paths(normalized_paths) if normalized_paths else None
+            store = (
+                PyramidFrameStore(normalized_paths, image_loader=getattr(self, "_source_image_loader", None))
+                if normalized_paths else None
+            )
         self._pyramid_frame_store = store
         current_path = str(Path(getattr(self._workspace, "current_image_path", "") or ""))
         current_frame_id = self._image_path_index(current_path) if current_path else None

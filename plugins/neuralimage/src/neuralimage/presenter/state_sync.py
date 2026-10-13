@@ -716,8 +716,11 @@ def restore_task_state_to_ui(
 
     presenter.view.restore_from_dataclass(presenter.main_window_state)
     apply_settings_to_panel(presenter)
+    # Widget setters can emit signals that overwrite the current mode before
+    # the requested radio button has been restored. Keep the supplied snapshot.
+    presenter.main_window_state = clone_main_window_state(main_state)
     restore_work_mode_ui(presenter)
-    presenter.view.apply_ui_mode(getattr(presenter.main_window_state, 'ui_mode', 'simple'))
+    presenter.view.apply_ui_mode(getattr(main_state, 'ui_mode', 'simple'))
     presenter.view.set_simple_workflow_profile(None)
     if getattr(presenter.main_window_state, 'ui_mode', 'simple') != 'simple' and hasattr(
         presenter.view,

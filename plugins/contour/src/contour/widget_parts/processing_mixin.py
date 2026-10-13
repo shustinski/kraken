@@ -1684,7 +1684,8 @@ class WidgetProcessingMixin(WidgetMixinHost):
             if cached is not None:
                 cache.move_to_end(normalized)
                 return cached
-            image = load_image_color(normalized)
+            loader = getattr(self, "_source_image_loader", None) or load_image_color
+            image = loader(normalized)
             previous = cache.pop(normalized, None)
             if previous is not None:
                 self._scene_source_image_cache_bytes -= int(previous.nbytes)
@@ -3533,7 +3534,7 @@ class WidgetProcessingMixin(WidgetMixinHost):
         existing_paths = [
             str(Path(path))
             for path in self._workspace.image_paths
-            if Path(path).is_file() and is_image_path(path)
+            if (str(Path(path)) in getattr(self, "_source_frame_numbers", {}) or Path(path).is_file()) and is_image_path(path)
         ]
         preferred = self._workspace.current_image_path
         self.load_images(existing_paths, preferred_current_image_path=preferred)
@@ -3686,7 +3687,17 @@ class WidgetProcessingMixin(WidgetMixinHost):
         fallback_to_first: bool,
         clear_state_cache: bool = True,
     ) -> None:
-        frame_records, warnings = build_base_frame_records(paths)
+        source_numbers = getattr(self, "_source_frame_numbers", None)
+        if source_numbers is not None:
+            from ..application.frame_layers import BaseFrameRecord
+
+            frame_records = [
+                BaseFrameRecord(str(Path(path)), Path(path).stem, source_numbers[str(Path(path))])
+                for path in paths
+            ]
+            warnings = []
+        else:
+            frame_records, warnings = build_base_frame_records(paths)
         for message in warnings:
             self._append_log(message)
         ordered_paths = [record.path for record in frame_records]

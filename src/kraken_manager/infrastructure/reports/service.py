@@ -304,7 +304,7 @@ _METRIC_EVENT_TYPES: dict[str, frozenset[str]] = {
     "returned_changed": frozenset({"ReviewReturnedChanged", "review.returned_changed"}),
     "returned_unchanged": frozenset({"ReviewReturnedUnchanged", "review.returned_unchanged"}),
     "returned_missing": frozenset({"ReviewReturnedMissing", "review.returned_missing"}),
-    "accepted": frozenset({"ReviewAccepted", "ReviewCandidateAccepted", "review.accepted"}),
+    "accepted": frozenset({"ReviewAccepted", "ReviewCandidateAccepted", "ReviewBatchAccepted", "review.accepted"}),
     "changes_requested": frozenset({"ReviewChangesRequested", "review.changes_requested"}),
     "plugin_failures": frozenset({"PluginJobFailed", "plugin_job.failed"}),
     "incomplete_jobs": frozenset(
@@ -327,11 +327,14 @@ def _semantic_values(item: ActivityRecord) -> frozenset[str]:
         "artifact_kind",
         "representation_kind",
         "pixel_format",
+        "purpose",
     )
     return frozenset(str(item.payload[key]).strip().casefold() for key in fields if item.payload.get(key) is not None)
 
 
 def _is_vector_artifact(item: ActivityRecord) -> bool:
+    if item.payload.get("candidate"):
+        return False
     semantic = _semantic_values(item)
     if semantic.intersection({"vector", "vectorized", "vectorization", "contour"}):
         return True
@@ -352,6 +355,9 @@ def _is_binary_representation(item: ActivityRecord) -> bool:
 
 
 def _is_import(item: ActivityRecord) -> bool:
+    parameters = item.payload.get("parameters", {})
+    if isinstance(parameters, Mapping) and parameters.get("source_path"):
+        return True
     semantic = _semantic_values(item)
     return any(value in {"import", "imported", "managed_copy", "external_link"} or value.startswith("import:") for value in semantic)
 
@@ -365,6 +371,13 @@ def _metric_categories(item: ActivityRecord) -> frozenset[str]:
             categories.add("imported_files")
     if item.event_type in {"RepresentationCreated", "representation.created"} and _is_binary_representation(item):
         categories.add("binary_representations")
+    if item.event_type == "ReviewReturnCommitted":
+        for comparison in item.payload.get("comparisons", ()):
+            metric = {
+                "changed": "returned_changed", "unchanged": "returned_unchanged", "missing": "returned_missing",
+            }.get(comparison.get("status"))
+            if metric is not None:
+                categories.add(metric)
     return frozenset(categories)
 
 
@@ -391,9 +404,13 @@ class _MetricsAccumulator:
         self.overdue = 0
         self.turnaround_total = 0.0
         self.turnaround_count = 0
+        self.review_issued_at: dict[str, datetime] = {}
 
     def add(self, item: ActivityRecord) -> bool:
         categories = _metric_categories(item)
+        batch_id = str(item.payload.get("review_batch_id", ""))
+        if batch_id and "work_issued" in categories:
+            self.review_issued_at[batch_id] = item.recorded_at
         if (
             "vectorization_operations" in categories
             and item.frame_id is not None
@@ -412,7 +429,13 @@ class _MetricsAccumulator:
             return False
 
         for metric in categories:
-            self.counts[metric] += 1
+            if item.event_type == "ReviewReturnCommitted" and metric.startswith("returned_"):
+                self.counts[metric] += sum(
+                    comparison.get("status") == metric.removeprefix("returned_")
+                    for comparison in item.payload.get("comparisons", ())
+                )
+            else:
+                self.counts[metric] += 1
             self.drill_down[metric].append((item.recorded_at, item.event_id))
         if "imported_files" in categories:
             self.imported_bytes += max(0, item.bytes_count)
@@ -422,6 +445,8 @@ class _MetricsAccumulator:
         self.overdue += item.status == "overdue"
         if categories.intersection({"returned_changed", "returned_unchanged", "returned_missing"}):
             duration = item.payload.get("turnaround_seconds")
+            if duration is None and batch_id in self.review_issued_at:
+                duration = max(0.0, (item.recorded_at - self.review_issued_at[batch_id]).total_seconds())
             if isinstance(duration, (int, float)) and not isinstance(duration, bool):
                 self.turnaround_total += float(duration)
                 self.turnaround_count += 1

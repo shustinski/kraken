@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import copy
-from dataclasses import replace
 from pathlib import Path
 
 from neuralimage.application.dto import clone_main_window_state
@@ -345,6 +344,10 @@ def start_task(
     workflow_snapshot_filename: str = WORKFLOW_SNAPSHOT_FILENAME,
 ) -> None:
     from neuralimage.remote.ui import remote_url
+    runtime = getattr(task, 'runtime', None)
+    if runtime is None:
+        runtime = TaskRuntimeContext()
+        task.runtime = runtime
     url = task.runtime.remote_url or remote_url()
     if task.runtime.execution_mode is not None:
         url = task.runtime.remote_url if task.runtime.execution_mode == "remote" else None
@@ -361,10 +364,6 @@ def start_task(
         presenter.neuaral_handler.finished.connect(presenter._on_task_finished)
         presenter.neuaral_handler.start()
         return
-    runtime = getattr(task, 'runtime', None)
-    if runtime is None:
-        runtime = TaskRuntimeContext()
-        task.runtime = runtime
     os.environ['NEURALIMAGE_TORCH_COMPILE'] = '1' if task.settings_state.torch_compile_enabled else '0'
     presenter.message_bus.publish(
         'logging',
@@ -398,11 +397,15 @@ def start_task(
         try:
             artifact_dir = runtime.artifact_dir
             if artifact_dir is None:
-                artifact_dir = artifact_dir_builder(
-                    task.main_window_state,
-                    task.settings_state,
-                    work_mode,
-                )
+                if getattr(presenter, 'kraken_dataset_source', None) is not None:
+                    artifact_dir = Path(task.main_window_state.result_folder)
+                    artifact_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    artifact_dir = artifact_dir_builder(
+                        task.main_window_state,
+                        task.settings_state,
+                        work_mode,
+                    )
                 runtime.artifact_dir = artifact_dir
             training_settings.artifact_dir = artifact_dir
             training_settings.resume_from_checkpoint = bool(runtime.training_checkpoint)
@@ -424,12 +427,16 @@ def start_task(
         if runtime.recognition_manifest is None:
             runtime.recognition_manifest = manifest_path
 
+    source_arguments = {}
+    if getattr(presenter, 'kraken_dataset_source', None) is not None:
+        source_arguments['dataset_source'] = presenter.kraken_dataset_source
     presenter.neuaral_handler = handler_thread_cls(
         work_mode=work_mode,
         recognition_parameters=recognition_parameters,
         tranining_parameters=training_settings,
         message_bus=presenter.message_bus,
         callback=presenter._on_stop_requested,
+        **source_arguments,
     )
     presenter.neuaral_handler.ask.connect(presenter._thread_ask)
     presenter.neuaral_handler.finished.connect(presenter._on_task_finished)

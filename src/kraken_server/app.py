@@ -244,6 +244,15 @@ def create_app(
         path = request.url.path
         if marker in path:
             project_id = path.split(marker, 1)[1].split("/", 1)[0]
+        elif agent_gateway is not None and request.path_params.get("job_id"):
+            # Desktop job routes do not contain /projects/{id}. Resolve their
+            # project from the authenticated owner's lease before checking roles.
+            try:
+                _, project_id = agent_gateway.desktop_identity(
+                    str(request.path_params["job_id"]), subject.principal_id
+                )
+            except PermissionError as exc:
+                raise ForbiddenError(str(exc)) from exc
         held: set[str] = set()
         if project_id:
             try:
@@ -701,6 +710,20 @@ def create_app(
         if binding is None:
             raise NotFoundError(layer_id)
         return binding
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/scan")
+    def scan_layer_source(
+        project_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+    ) -> dict[str, Any]:
+        directory = payload.get("directory")
+        if not isinstance(directory, str) or not directory.strip():
+            raise ValidationError("A source directory is required")
+        operation = getattr(backend, "scan_layer_source", None)
+        if operation is None:
+            raise HTTPException(status_code=503, detail="Server source scanning is unavailable")
+        return operation(project_id, directory, CommandContext(actor.principal_id, str(uuid4()), None))
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/external", status_code=201)
     def create_external_layer(

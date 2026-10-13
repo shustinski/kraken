@@ -1723,6 +1723,7 @@ def process_image_path_timed(
     display_settings: DisplaySettings | None = None,
     *,
     pipeline: PreprocessingPipeline | None = None,
+    image_loader: Callable[[str], np.ndarray] = load_image_color,
 ) -> tuple[BatchImageResult, BatchFrameTiming]:
     timing = BatchFrameTiming()
     result = _process_image_path_impl(
@@ -1733,6 +1734,7 @@ def process_image_path_timed(
         save_options=save_options,
         display_settings=display_settings,
         pipeline=pipeline,
+        image_loader=image_loader,
         include_images_in_result=False,
         timing=timing,
     )

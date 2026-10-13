@@ -7,6 +7,7 @@ import webbrowser
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
+from neuralimage.infrastructure.dataset_source import DatasetStreamSource
 
 from PyQt6.QtCore import QObject, QThread
 from PyQt6.QtWidgets import QMessageBox, QFileDialog, QInputDialog
@@ -1670,7 +1671,7 @@ class GeneralNeuralHandlerThread(QThread):
                  message_bus: AbstractMessageBus,
                  recognition_parameters: RecognitionParameters | None = None,
                  tranining_parameters: TrainingParameters | None = None,
-                 callback: Callable[..., None] | None = None):
+                 callback: Callable[..., None] | None = None, dataset_source: DatasetStreamSource | None = None):
         super().__init__()
         self._last_answer = False
         self._waiting_for_answer = False
@@ -1680,7 +1681,7 @@ class GeneralNeuralHandlerThread(QThread):
                                                recogniton_parameters=recognition_parameters,
                                                tranining_parameters=tranining_parameters,
                                                question_module=self.check,
-                                               message_bus=message_bus)
+                                               message_bus=message_bus, dataset_source=dataset_source)
         self.answer.connect(self._store_answer)
 
     def run(self):

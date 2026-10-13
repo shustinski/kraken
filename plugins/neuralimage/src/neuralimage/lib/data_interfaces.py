@@ -1452,6 +1452,7 @@ class RecognitionParameters:
     jpeg_quality: int = 95
     recognition_multiprocessing_enabled: bool = True
     binarize_output: bool = True
+    lossless_binary_png: bool = False
     use_auto_threshold: bool = True
     threshold: float = 0.5
     postprocess_enabled: bool = False

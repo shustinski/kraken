@@ -168,7 +168,12 @@ def run_sample_count_request(
             presenter._sample_count_signals.calculated.emit(request_id, normalized_path, [], 0)
             return
 
-        if normalized_path == cached_path and cached_sizes is not None:
+        dataset_source = getattr(presenter, 'kraken_dataset_source', None)
+        if dataset_source is not None and sample_path == dataset_source.image_root:
+            image_sizes = sample_worker_cls.collect_image_sizes(
+                [image for image, _label in dataset_source.sample_pairs], asset_source=dataset_source,
+            )
+        elif normalized_path == cached_path and cached_sizes is not None:
             image_sizes = list(cached_sizes)
         else:
             presenter._publish_log_message(

@@ -15,6 +15,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from multiprocessing.synchronize import Event as MpEvent
 from PIL import Image
+from kraken_core.asset_source import AssetSource
+from neuralimage.lib.images import open_image
 
 from neuralimage.active_learning.config import ActiveLearningConfig
 from neuralimage.active_learning.export import ActiveLearningExporter
@@ -642,6 +644,7 @@ def run_single_thread_recognition(
     active_learning: ActiveLearningConfig | None = None,
     active_learning_metadata: dict[str, object] | None = None,
     uncertainty: UncertaintyConfig | None = None,
+    asset_source: AssetSource | None = None,
 ) -> None:
     model.eval()
     model.to(device)
@@ -667,6 +670,7 @@ def run_single_thread_recognition(
             compression_factor=compression_factor,
             source_root=source_root,
             preprocessing=preprocessing,
+            asset_source=asset_source,
         )
         predicted = gpu_predict(
             prepared,
@@ -763,6 +767,7 @@ def run_single_thread_recognition(
             source_path=image_path,
             output_path=output_path,
             frame_name=image_path.name,
+            asset_source=asset_source,
         )
         reporter.publish_frame(index)
         publish('metrics', {
@@ -849,6 +854,7 @@ def cut_image_prepare(
     compression_factor: int = 1,
     source_root: Path | None = None,
     preprocessing: PreprocessingConfig | None = None,
+    asset_source: AssetSource | None = None,
 ) -> dict[str, Any]:
     frame_name = _resolve_relative_frame_name(img_path, source_root)
     payload: dict[str, Any] = {
@@ -867,7 +873,7 @@ def cut_image_prepare(
 
     Image.MAX_IMAGE_PIXELS = None
     channels = segment_size[0]
-    with retry_file_read(lambda: Image.open(img_path), path=img_path) as source_image:
+    with open_image(img_path, asset_source) as source_image:
         payload['baseim_size'] = source_image.size
         compression_factor = max(1, int(compression_factor))
         if compression_factor > 1:
@@ -1650,11 +1656,11 @@ def sew(
     return output_path
 
 
-def _load_preview_array(path: Path | str | None) -> np.ndarray | None:
+def _load_preview_array(path: Path | str | None, asset_source: AssetSource | None = None) -> np.ndarray | None:
     if path is None:
         return None
     try:
-        with retry_file_read(lambda: Image.open(path), path=path) as source_image:
+        with open_image(path, asset_source) as source_image:
             if source_image.mode == 'L':
                 preview_image = source_image.copy()
             elif source_image.mode == 'RGB':
@@ -1662,6 +1668,8 @@ def _load_preview_array(path: Path | str | None) -> np.ndarray | None:
             else:
                 preview_image = source_image.convert('RGB')
     except Exception:
+        if asset_source is not None:
+            raise
         return None
 
     preview_array = np.asarray(preview_image)
@@ -1680,8 +1688,9 @@ def _publish_recognition_preview(
     source_path: Path | str | None,
     output_path: Path | str | None,
     frame_name: str,
+    asset_source: AssetSource | None = None,
 ) -> None:
-    original_image = _load_preview_array(source_path)
+    original_image = _load_preview_array(source_path, asset_source)
     output_image = _load_preview_array(output_path)
     if original_image is None and output_image is None:
         return

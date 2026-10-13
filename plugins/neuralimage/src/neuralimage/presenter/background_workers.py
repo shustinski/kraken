@@ -8,6 +8,7 @@ from PyQt6.QtCore import QThread
 
 from neuralimage.lib.data_interfaces import RecognitionParameters, TrainingParameters, WorkMode
 from neuralimage.lib.message_bus import AbstractMessageBus
+from neuralimage.infrastructure.dataset_source import DatasetStreamSource
 from neuralimage.lib.update_checker import ReleaseInfo, download_update_installer, fetch_update_info
 
 
@@ -64,6 +65,7 @@ class GeneralNeuralHandlerThread(QThread):
         recognition_parameters: RecognitionParameters | None = None,
         tranining_parameters: TrainingParameters | None = None,
         callback: Callable[..., None] | None = None,
+        dataset_source: DatasetStreamSource | None = None,
     ):
         super().__init__()
         self._last_answer = False
@@ -76,6 +78,7 @@ class GeneralNeuralHandlerThread(QThread):
             tranining_parameters=tranining_parameters,
             question_module=self.check,
             message_bus=message_bus,
+            dataset_source=dataset_source,
         )
         self.answer.connect(self._store_answer)
 

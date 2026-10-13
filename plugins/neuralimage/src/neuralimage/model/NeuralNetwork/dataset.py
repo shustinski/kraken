@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
+from kraken_core.asset_source import AssetSource
 from torch.utils.data import Dataset, get_worker_info
 
 from neuralimage.augmentations import (
@@ -207,8 +208,12 @@ def _apply_binary_tech_augmentation_to_pair_with_seed(
 
 
 class NoCutDataset(Dataset):
-    def __init__(self, samples, settings: TrainingParameters, *, apply_train_only_transforms: bool = True):
+    def __init__(
+        self, samples, settings: TrainingParameters, *,
+        apply_train_only_transforms: bool = True, asset_source: AssetSource | None = None,
+    ):
         self.samples = samples
+        self._asset_source = asset_source
         self._sample_folder = Path(settings.image_path)
         self.colors = settings.colors
         self.shuffle_frames = bool(getattr(settings, 'shuffle', True))
@@ -453,8 +458,8 @@ class NoCutDataset(Dataset):
 
     def _prepare_frame_images(self, frame_index: int):
         image_path, label_path = self.samples[frame_index]
-        prepared_image = ImagePreparator(image_path, self._prep_settings).image
-        prepared_label = ImagePreparator(label_path, self._prep_settings).image
+        prepared_image = ImagePreparator(image_path, self._prep_settings, asset_source=self._asset_source).image
+        prepared_label = ImagePreparator(label_path, self._prep_settings, asset_source=self._asset_source).image
 
         prepared_label = prepared_label.convert('L')
         prepared_rare_mask = self._load_prepared_rare_mask(image_path, prepared_image.size)
@@ -506,7 +511,7 @@ class NoCutDataset(Dataset):
         if self._skip_uniform_labels or self._rare_patch_oversampling_enabled:
             return len(self._build_frame_cutter(frame_index, shuffle=False))
         image_path, _label_path = self.samples[frame_index]
-        prepared_size = ImagePreparator(image_path, self._prep_settings).size
+        prepared_size = ImagePreparator(image_path, self._prep_settings, asset_source=self._asset_source).size
         return len(SampleCalculator((prepared_size[1], prepared_size[0]), self._cut_settings))
 
     @staticmethod

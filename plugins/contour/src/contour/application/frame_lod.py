@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from math import ceil
 from pathlib import Path
 from threading import RLock
@@ -98,8 +98,10 @@ class PyramidFrameStore:
         image_paths: Sequence[str | Path] = (),
         *,
         max_cache_bytes: int = 256 * 1024 * 1024,
+        image_loader: Callable[[str], np.ndarray] | None = None,
     ) -> None:
         self.image_paths = [str(Path(path)) for path in image_paths]
+        self._image_loader = image_loader
         self._source_size: tuple[int, int] | None = None
         self._frame_cache: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
         self._frame_cache_bytes = 0
@@ -113,7 +115,7 @@ class PyramidFrameStore:
     def has_lod(self) -> bool:
         if not self.image_paths:
             return False
-        return Path(self.image_paths[0]).is_file()
+        return self._image_loader is not None or Path(self.image_paths[0]).is_file()
 
     def available_lods(self) -> tuple[int, ...]:
         if not self.has_lod():
@@ -146,11 +148,12 @@ class PyramidFrameStore:
             if cached is not None:
                 self._frame_cache.move_to_end(cache_key)
                 return cached
-        source = (
-            _load_source_image(Path(self.image_paths[normalized_frame_id]))
-            if lod <= 0
-            else self.get_frame(normalized_frame_id, 0)
-        )
+        if lod > 0:
+            source = self.get_frame(normalized_frame_id, 0)
+        elif self._image_loader is not None:
+            source = self._image_loader(self.image_paths[normalized_frame_id])
+        else:
+            source = _load_source_image(Path(self.image_paths[normalized_frame_id]))
         if lod <= 0:
             frame = source
         else:

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
-from kraken_manager.application.performers import ensure_gitlab_performer
+from kraken_manager.application.performers import ensure_gitlab_performer, ensure_linked_performer
 from kraken_manager.domain.common import PrincipalId
 from kraken_manager.domain.identity import Principal, PrincipalProvider, SystemRole
 from kraken_manager.infrastructure.auth.gitlab import (
@@ -104,6 +104,8 @@ class HybridSessionResolver:
                 system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(local.account_id)),
             )
             self.identities.save(principal)
+            if self.performers is not None:
+                ensure_linked_performer(principal, self.performers)
             return SessionPrincipal(local.account_id, "local", token)
         if self.oidc is None:
             return None

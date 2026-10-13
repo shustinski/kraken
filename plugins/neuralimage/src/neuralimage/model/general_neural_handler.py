@@ -13,7 +13,6 @@ from typing import Any, Callable, Iterable
 
 import torch
 from torch.utils.data import DataLoader, Dataset, RandomSampler, Sampler, SequentialSampler, Subset
-from PIL import Image
 
 from neuralimage.lib.data_interfaces import (
     WorkMode,
@@ -28,7 +27,9 @@ from neuralimage.lib.data_interfaces import (
 )
 from neuralimage.lib.file_func import filter_files, filter_images
 from neuralimage.lib.func import get_input_channels
-from neuralimage.lib.images import ImagePreparator
+from neuralimage.lib.images import ImagePreparator, open_image
+from kraken_core.asset_source import AssetSource
+from neuralimage.infrastructure.dataset_source import DatasetStreamSource
 from neuralimage.lib.message_bus import AbstractMessageBus
 from neuralimage.model.NeuralNetwork import create_model, model_supports_init_kwarg
 from neuralimage.model.NeuralNetwork.context_utils import normalize_size_pair
@@ -71,8 +72,8 @@ def _stable_sample_sort_key(sample: tuple[Path, Path], *, seed: int = _VALIDATIO
     return hashlib.sha1(payload).hexdigest()
 
 
-def _estimate_label_foreground_ratio(label_path: Path) -> float:
-    with Image.open(label_path) as image:
+def _estimate_label_foreground_ratio(label_path: Path, asset_source: AssetSource | None = None) -> float:
+    with open_image(label_path, asset_source) as image:
         grayscale = image.convert('L')
         histogram = grayscale.histogram()
     if not histogram:
@@ -97,6 +98,7 @@ def _deterministic_validation_split(
     *,
     val_count: int,
     seed: int = _VALIDATION_SPLIT_SEED,
+    asset_source: AssetSource | None = None,
 ) -> tuple[list[tuple[Path, Path]], list[tuple[Path, Path]]]:
     ordered_samples = sorted(samples, key=lambda sample: _stable_sample_sort_key(sample, seed=seed))
     total_count = len(ordered_samples)
@@ -107,10 +109,16 @@ def _deterministic_validation_split(
     try:
         bucket_to_samples: dict[int, list[tuple[Path, Path]]] = {}
         for sample in ordered_samples:
-            ratio = _estimate_label_foreground_ratio(sample[1])
+            ratio = (
+                _estimate_label_foreground_ratio(sample[1], asset_source)
+                if asset_source is not None
+                else _estimate_label_foreground_ratio(sample[1])
+            )
             bucket = _label_ratio_bucket(ratio)
             bucket_to_samples.setdefault(bucket, []).append(sample)
     except Exception:
+        if asset_source is not None:
+            raise
         return ordered_samples[resolved_val_count:], ordered_samples[:resolved_val_count]
 
     bucket_counts = {bucket: len(bucket_samples) for bucket, bucket_samples in bucket_to_samples.items()}
@@ -496,6 +504,7 @@ class FrameBatchSampler(Sampler[list[int]]):
 
 
 class GeneralNeuralHandler:
+    dataset_source: DatasetStreamSource | None = None
     EXISTING_FOLDER_DEFAULT_ANSWER = False
     EXISTING_FOLDER_TIMEOUT_SECONDS = 15
     STOP_JOIN_POLL_SECONDS = 0.2
@@ -509,8 +518,10 @@ class GeneralNeuralHandler:
         recogniton_parameters: RecognitionParameters | None = None,
         tranining_parameters: TrainingParameters | None = None,
         callback: Callable[..., None] | None = None,
+        dataset_source: DatasetStreamSource | None = None,
     ):
         self.work_mode = work_mode
+        self.dataset_source = dataset_source
         self.callback = callback
         self.recognition_parameters = recogniton_parameters
         self.tranining_parameters = tranining_parameters
@@ -616,6 +627,10 @@ class GeneralNeuralHandler:
         )
 
     def _prepare_dataset_pair(self, dataset_image: Path, dataset_label: Path, *, purpose: str) -> tuple[Path, Path]:
+        if self.dataset_source is not None:
+            if dataset_image != self.dataset_source.image_root or dataset_label != self.dataset_source.label_root:
+                raise ValueError('The selected dataset is not registered in the server input source')
+            return dataset_image, dataset_label
         normalized_purpose = str(purpose or 'train').strip().lower()
         is_training_data = normalized_purpose == 'train'
 
@@ -868,12 +883,14 @@ class GeneralNeuralHandler:
             train_samples,
             training_without_tech_aug,
             apply_train_only_transforms=True,
+            asset_source=self.dataset_source,
         )
         val_dataset = (
             NoCutDataset(
                 val_samples,
                 evaluation_settings,
                 apply_train_only_transforms=False,
+                asset_source=self.dataset_source,
             )
             if val_samples
             else None
@@ -885,6 +902,7 @@ class GeneralNeuralHandler:
                 train_samples,
                 evaluation_settings,
                 apply_train_only_transforms=False,
+                asset_source=self.dataset_source,
             )
             self.message_bus.publish(
                 'logging',
@@ -933,7 +951,7 @@ class GeneralNeuralHandler:
 
         def training_images() -> Iterable[Any]:
             for image_path, _label_path in train_samples:
-                image = ImagePreparator(image_path, self.tranining_parameters.prepare).image
+                image = ImagePreparator(image_path, self.tranining_parameters.prepare, asset_source=self.dataset_source).image
                 yield image_to_channel_first_float01(image, channels)
 
         statistics = compute_dataset_statistics(training_images())
@@ -965,6 +983,7 @@ class GeneralNeuralHandler:
         train_samples, val_samples = _deterministic_validation_split(
             samples,
             val_count=val_count,
+            asset_source=self.dataset_source,
         )
         self.message_bus.publish(
             'logging',
@@ -1183,6 +1202,10 @@ class GeneralNeuralHandler:
         image_folder: Path,
         label_folder: Path,
     ) -> list[tuple[Path, Path]] | None:
+        if self.dataset_source is not None:
+            if image_folder != self.dataset_source.image_root or label_folder != self.dataset_source.label_root:
+                raise ValueError('The selected dataset is not registered in the server input source')
+            return list(self.dataset_source.sample_pairs)
         recursive = bool(getattr(self.tranining_parameters, 'recursive_file_search', False))
         image_files = sorted(filter_images(image_folder, recursive=recursive))
         label_files = sorted(filter_images(label_folder, recursive=recursive))

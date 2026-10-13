@@ -88,6 +88,9 @@ class SubprocessPluginRunner:
             "TMPDIR",
             "HOME",
             "USERPROFILE",
+            "USERNAME",
+            "USER",
+            "LOGNAME",
             "HOMEDRIVE",
             "HOMEPATH",
             "LOCALAPPDATA",
@@ -111,11 +114,15 @@ class SubprocessPluginRunner:
     )
     _MAX_RESULT_MANIFEST_BYTES = 16 * 1024 * 1024
 
-    def __init__(self, store: DurableJobStore, staging_root: Path | str, registry: PluginRegistry) -> None:
+    def __init__(
+        self, store: DurableJobStore, staging_root: Path | str, registry: PluginRegistry,
+        *, environment: Mapping[str, str] | None = None,
+    ) -> None:
         self.store = store
         self.staging_root = Path(staging_root).resolve()
         self.staging_root.mkdir(parents=True, exist_ok=True)
         self.registry = registry
+        self.environment = dict(environment or {})
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -229,6 +236,23 @@ class SubprocessPluginRunner:
             else:
                 input_artifacts = manifest.inputs
                 operation = manifest.operation
+            stream_inputs = (
+                isinstance(manifest, PluginJobManifest)
+                and manifest.parameters.get("input_transport") == "server"
+            )
+            if stream_inputs:
+                supported = operation in {
+                    "frames.vectorize.v1",
+                    "frames.dataset.prepare.v1",
+                    "dataset.model.train.v1",
+                    "frames.binary-segment.v1",
+                    "frames.binary-segment.v2",
+                }
+                if not supported or not self.environment.get("KRAKEN_ASSET_TOKEN"):
+                    raise ValueError("Server input streams require a supported operation and authenticated runner")
+                # The stream source verifies each immutable input before exposing
+                # bytes to the plugin. No staged image files exist in this mode.
+                input_artifacts = ()
             for item in input_artifacts:
                 if workspace.digest(item.relative_path) != item.sha256:
                     raise ValueError(f"Missing or damaged staged input: {item.relative_path}")
@@ -244,6 +268,7 @@ class SubprocessPluginRunner:
                 )
             result_path = workspace.path / "result.json"
             environment = self._plugin_environment()
+            environment.update(self.environment)
             environment.update(
                 {
                     "KRAKEN_JOB_MANIFEST": str(workspace.path / "job.json"),

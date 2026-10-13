@@ -652,8 +652,9 @@ class EmbeddedProjectService:
         return self.workspace_registry.get_layer(str(project_id), str(layer_id))
 
     def scan_layer_source(
-        self, directory: Path | str, *, maximum_frames: int
+        self, directory: Path | str, *, maximum_frames: int, project_id: ProjectId | str | None = None
     ) -> LayerSourceScan:
+        del project_id
         return self.workspace_files.scan(directory, maximum_frames=maximum_frames)
 
     def create_layer_from_disk(

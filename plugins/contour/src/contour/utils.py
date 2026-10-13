@@ -4,6 +4,7 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 from threading import Lock
+from typing import BinaryIO
 
 import cv2
 import numpy as np
@@ -57,7 +58,11 @@ def ensure_uint8(image: np.ndarray) -> np.ndarray:
     return np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
 
 
-def _imread_unicode_safe(path: str | Path, flags: int) -> np.ndarray | None:
+def _imread_unicode_safe(path: str | Path | BinaryIO, flags: int) -> np.ndarray | None:
+    if not isinstance(path, (str, Path)):
+        raw_bytes = np.frombuffer(path.read(), dtype=np.uint8)
+        with _CV2_DECODE_LOCK:
+            return cv2.imdecode(raw_bytes, flags) if raw_bytes.size else None
     if isinstance(path, str):
         normalized_text = path
         if not os.path.isfile(path):
@@ -133,7 +138,7 @@ def load_image_color_thumbnail(path: str | Path, max_width: int, max_height: int
     return image
 
 
-def load_image_color(path: str | Path) -> np.ndarray:
+def load_image_color(path: str | Path | BinaryIO) -> np.ndarray:
     image = _imread_unicode_safe(path, cv2.IMREAD_UNCHANGED)
     if image is None:
         raise FileNotFoundError(tr("unable_to_load_image", path=path))

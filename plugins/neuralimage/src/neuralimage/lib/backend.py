@@ -2,7 +2,7 @@ import io
 import json
 import os
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, TextIO
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -25,9 +25,12 @@ def find_size(cif_lines: list[list[str]]) -> tuple[bool, tuple[int, int] | list[
     return False, [0, 0]
 
 
-def cif_to_jpg(cif_file) -> Image.Image | tuple[int, str]:
-    with open(cif_file, 'r') as file:
-        cif_lines = file.readlines()
+def cif_to_jpg(cif_file: str | os.PathLike[str] | TextIO) -> Image.Image | tuple[int, str]:
+    if isinstance(cif_file, (str, os.PathLike)):
+        with open(cif_file, 'r') as file:
+            cif_lines = file.readlines()
+    else:
+        cif_lines = cif_file.readlines()
 
     cif_splitted = make_lines_splitted(cif_lines, ' ')
     is_size_line_contains, size = find_size(cif_splitted)

@@ -124,6 +124,33 @@ def test_server_linked_source_has_previews_and_stable_inputs(tmp_path, orientati
     assert len(tuple(Path(binding.image_directory).iterdir())) == 2
 
 
+def test_attached_layer_replay_reuses_storage_and_authorizes_existing_layer(tmp_path):
+    from kraken_manager.application.use_cases import CreateLayerHandler, CreateRepresentationHandler
+
+    server, local, session, project, layer, binding, representation, _context = _server_layer(tmp_path)
+    server._create_layer = CreateLayerHandler(local._uow(str(project.id)), local.profiles, local.clock)
+    server._create_representation = CreateRepresentationHandler(
+        local._uow(str(project.id)), local.profiles, local.clock
+    )
+    context = CommandContext(str(session.principal.id), "layer", None)
+    history = local.history(project.id)
+
+    def forbidden_bind(*_args):
+        pytest.fail("Replayed attachment must not create or copy another layer folder")
+
+    result = server._attach_workspace_layer(
+        str(project.id),
+        {"name": layer.name, "type": layer.type.value, "order": layer.order},
+        context,
+        bind=forbidden_bind,
+        managed=False,
+    )
+    assert result["layer"]["layer_id"] == str(layer.id)
+    assert result["representation"]["representation_id"] == str(representation.id)
+    assert local.history(project.id) == history
+    assert Path(binding.image_directory).is_dir()
+
+
 def test_server_source_preparation_resumes_after_missing_file(tmp_path):
     server, local, _session, project, layer, binding, representation, context = _server_layer(tmp_path)
     missing = Path(binding.image_directory) / "0002.jpg"
@@ -316,7 +343,8 @@ def test_pipeline_actions_accept_source_plugins_without_installed_distribution(a
 
 
 @pytest.mark.parametrize("capability", ["frames.vectorize.v1", "frames.dataset.prepare.v1"])
-def test_prepared_server_images_can_be_submitted_to_contour_queue(tmp_path, capability):
+@pytest.mark.parametrize("input_transport", ["files", "server"])
+def test_prepared_server_images_can_be_submitted_to_contour_queue(tmp_path, capability, input_transport):
     server, local, session, project, layer, _binding, representation, context = _server_layer(tmp_path)
     server.materialize_representation_inputs(str(project.id), str(layer.id), str(representation.id), context)
     target = local.create_representation(
@@ -344,7 +372,7 @@ def test_prepared_server_images_can_be_submitted_to_contour_queue(tmp_path, capa
             "target_representation_id": str(target.id),
             "coordinates": [[1, 1], [1, 2]],
             "capability": capability,
-            "parameters": {},
+            "parameters": {"input_transport": input_transport},
         },
         CommandContext(str(session.principal.id), "submit", None),
     )
@@ -352,6 +380,12 @@ def test_prepared_server_images_can_be_submitted_to_contour_queue(tmp_path, capa
     assert len(manifests) == 1
     assert len(manifests[0].inputs) == 2
     assert all(local.get_artifact_version(project.id, item.artifact_version_id) for item in manifests[0].inputs)
+    assert manifests[0].parameters["project_width"] == project.width
+    for item in manifests[0].inputs:
+        version = local.get_artifact_version(project.id, item.artifact_version_id)
+        assert manifests[0].parameters["input_media_types"][str(version.id)] == version.media_type
+        if input_transport == "server":
+            assert Path(item.relative_path).name == version.filename
 
 
 @pytest.mark.parametrize("capability", ["frames.vectorize.v1", "frames.binary-segment.v2"])
@@ -536,7 +570,8 @@ def _desktop_job(tmp_path, capability):
     return server, local, session, project, layer, target, gateway, job
 
 
-def test_desktop_lease_is_limited_to_its_initiator_and_job(tmp_path):
+@pytest.mark.parametrize("acting_role", [None, "maintainer"])
+def test_desktop_lease_is_limited_to_its_initiator_and_job(tmp_path, acting_role):
     from uuid import uuid4
     from kraken_server.agent_auth import AgentIdentity
 
@@ -554,7 +589,12 @@ def test_desktop_lease_is_limited_to_its_initiator_and_job(tmp_path):
     assert client.post(endpoint, headers={"Authorization": "Bearer other"}).status_code == 403
     assert gateway.lease(AgentIdentity("machine", "server", frozenset({"frames.vectorize.v1"}))) is None
     headers = {"Authorization": "Bearer owner"}
-    assert client.post(endpoint.replace(str(project.id), str(uuid4())), headers=headers).status_code == 404
+    if acting_role is not None:
+        headers["X-Kraken-Role"] = acting_role
+    assert client.post(endpoint, headers={**headers, "X-Kraken-Role": "viewer"}).status_code == 403
+    assert client.post(endpoint.replace(str(project.id), str(uuid4())), headers=headers).status_code == (
+        403 if acting_role else 404
+    )
     response = client.post(endpoint, headers=headers)
     assert response.status_code == 200
     assert response.json()["job"]["job_id"] == job["id"]
@@ -641,6 +681,41 @@ def test_server_recognition_stages_model_with_its_original_extension(tmp_path):
     )
     options = HeadlessOptions.from_session(session)
     assert options.model_path.suffix == ".pth"
+
+
+@pytest.mark.parametrize("media_type", [None, "application/octet-stream", "image/jpeg"])
+def test_server_stream_manifest_infers_image_type_without_staging_inputs(tmp_path, monkeypatch, media_type):
+    from kraken_agent.jobs import StagingWorkspace
+    from kraken_agent.runner import PluginRegistry
+    from kraken_agent.server_worker import ServerAgentWorker
+    from kraken_manager.domain.workflows import PluginJobManifestV1
+    from kraken_manager.infrastructure.filesystem._codec import decode_model
+    from kraken_server.agent_auth import AgentIdentity
+
+    _server, _local, _session, _project, _layer, _target, gateway, payload = _desktop_job(
+        tmp_path, "frames.dataset.prepare.v1"
+    )
+    leased = gateway.lease(
+        AgentIdentity(f"desktop:{payload['actor_principal_id']}", "desktop", frozenset({"frames.dataset.prepare.v1"})),
+        job_id=payload["id"],
+    )
+    raw = leased["manifest"]
+    raw["parameters"] = {"input_transport": "server"}
+    if media_type is not None:
+        raw["parameters"]["input_media_types"] = {item["artifact_version_id"]: media_type for item in raw["inputs"]}
+    manifest = decode_model(PluginJobManifestV1, raw)
+    workspace = StagingWorkspace(tmp_path / "staging", payload["id"])
+    workspace.create()
+    worker = ServerAgentWorker(
+        server_url="http://localhost", token="owner", data_dir=tmp_path / "worker", registry=PluginRegistry({})
+    )
+    monkeypatch.setattr(worker, "_request", lambda *_args: pytest.fail("Image MIME caused an extra HTTP request"))
+    monkeypatch.setattr(worker, "_download", lambda *_args, **_kwargs: pytest.fail("Image staged as a file"))
+    transport = worker._transport_manifest(manifest, workspace)
+    assert transport.inputs
+    assert all(item.media_type == "image/jpeg" for item in transport.inputs)
+    assert all(not (workspace.path / item.relative_path).exists() for item in transport.inputs)
+    assert transport.parameters["server_url"] == "http://localhost"
 
 
 def test_task_and_pipeline_removal_preserve_audit_and_can_be_repeated(tmp_path):

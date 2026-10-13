@@ -42,6 +42,11 @@ def ensure_gitlab_performer(principal: Principal, store: PerformerStore) -> Perf
 
     if principal.provider is not PrincipalProvider.GITLAB:
         raise ValueError("automatic performers are created only for GitLab principals")
+    return ensure_linked_performer(principal, store)
+
+
+def ensure_linked_performer(principal: Principal, store: PerformerStore) -> Performer:
+    """Ensure the performer linked to an authenticated server account exists."""
 
     existing = store.get_by_principal(principal.id)
     if existing is not None:
@@ -65,4 +70,4 @@ def ensure_gitlab_performer(principal: Principal, store: PerformerStore) -> Perf
         return concurrent
 
 
-__all__ = ["default_performer_color", "ensure_gitlab_performer"]
+__all__ = ["default_performer_color", "ensure_gitlab_performer", "ensure_linked_performer"]

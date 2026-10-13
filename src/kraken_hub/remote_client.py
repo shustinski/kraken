@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -206,6 +206,22 @@ class RemoteHttpClient:
     def __init__(self, base_url: str, *, timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+
+    def iter_bytes(self, path: str, *, token: str) -> Iterator[bytes]:
+        """Read a server asset incrementally without creating a local file."""
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/octet-stream"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                while chunk := response.read(1024 * 1024):
+                    yield chunk
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            raise RemoteServerError(detail, status=exc.code, body=detail) from exc
+        except urllib.error.URLError as exc:
+            raise RemoteServerError(f"Cannot reach Kraken Server at {self.base_url}: {exc.reason}") from exc
 
     def request(
         self,
@@ -1084,6 +1100,22 @@ class RemoteServerProjectService:
         if not isinstance(payload, Mapping):
             return None
         return _layer_file_binding(payload)
+
+    def scan_layer_source(self, directory: Path | str, *, maximum_frames: int, project_id: object):
+        from kraken_manager.workspace import LayerSourceScan
+
+        del maximum_frames  # The server applies the project's authoritative frame limit.
+        payload = self._call(
+            "POST", f"/api/v1/projects/{project_id}/layers/scan", payload={"directory": str(directory)}
+        )
+        return LayerSourceScan(
+            selected_root=payload["selected_root"], working_directory=payload["working_directory"],
+            jpg_files=tuple(payload["jpg_files"]), bmp_files=tuple(payload["bmp_files"]),
+            ssc_files=tuple(payload["ssc_files"]), prv_files=tuple(payload["prv_files"]),
+            frame_positions=payload["frame_positions"], total_files=payload["total_files"],
+            total_bytes=payload["total_bytes"], issues=tuple(payload["issues"]),
+            file_fingerprints={key: tuple(value) for key, value in payload["file_fingerprints"].items()},
+        )
 
     def create_external_layer(
         self,
@@ -1966,8 +1998,21 @@ class RemoteServerProjectService:
         return target
 
     def read_project_blob(self, project_id: object, source_key: str) -> bytes:
-        path = self.managed_artifact_path(project_id, source_key)
-        return path.read_bytes()
+        version = self.artifact_version(project_id, source_key)
+        if version is None or version.blob is None:
+            raise ValueError("Для чтения нужны файлы, сохранённые на сервере")
+        digest = hashlib.sha256()
+        content = bytearray()
+        for chunk in self._http.iter_bytes(
+            f"/api/v1/projects/{project_id}/artifacts/versions/{version.id}", token=self.auth.access_token
+        ):
+            content.extend(chunk)
+            if len(content) > version.blob.size_bytes:
+                raise ValueError("Сервер вернул blob с неверным размером")
+            digest.update(chunk)
+        if digest.hexdigest() != version.blob.sha256 or len(content) != version.blob.size_bytes:
+            raise ValueError("Сервер вернул blob с неверной контрольной суммой или размером")
+        return bytes(content)
 
     def external_artifact_changed(self, version: ArtifactVersion) -> bool:
         if version.external is None:
@@ -2734,6 +2779,11 @@ class _RemoteHistoryEvent:
     def payload(self) -> Mapping[str, object]:
         raw = self._payload.get("payload", {})
         return raw if isinstance(raw, Mapping) else {}
+
+    @property
+    def performer_id(self) -> str | None:
+        value = self._payload.get("performer_id")
+        return None if value is None else str(value)
 
     @property
     def actor(self) -> object:

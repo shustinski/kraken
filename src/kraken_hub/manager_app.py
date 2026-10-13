@@ -1089,7 +1089,7 @@ class DesktopController:
         if project is None:
             self._error("Проект больше не доступен.")
             return
-        project_principals = getattr(self.service, "list_project_principals", None)
+        project_principals = getattr(self.service, "list_role_candidates", None)
         principals = list(
             project_principals(project.id)
             if callable(project_principals)
@@ -1571,7 +1571,7 @@ class DesktopController:
             and Permission.MANAGE_STRUCTURE in self.service.project_permissions(project.id, self.session.principal)
         ):
             workspace_binding = self._setup_project_workspace(project)
-        if workspace_binding is not None:
+        if workspace_binding is not None and not is_remote:
             unavailable = [
                 path
                 for path in (
@@ -1727,6 +1727,13 @@ class DesktopController:
     def _configure_analysis(self, workspace, project_id) -> None:
         from PyQt6.QtCore import QTimer
 
+        if getattr(self.service, "is_remote_project", lambda _id: False)(project_id):
+            workspace._analysis_store = None
+            workspace._analysis_coordinator = None
+            workspace.analysisRequested.connect(
+                lambda configuration: self._start_analysis(workspace, project_id, configuration)
+            )
+            return
         store = FilesystemAnalysisStore(self.service.catalog_root, str(project_id))
         workspace._analysis_store = store
         coordinator = None
@@ -1842,6 +1849,9 @@ class DesktopController:
 
         coordinator = getattr(workspace, "_analysis_coordinator", None)
         if coordinator is None:
+            if getattr(self.service, "is_remote_project", lambda _id: False)(project_id):
+                QMessageBox.warning(workspace, "Karakal", "Серверный анализ Karakal пока не поддерживается.")
+                return
             QMessageBox.warning(
                 workspace,
                 "Kraken Agent не настроен",
@@ -4529,6 +4539,8 @@ class DesktopController:
             ),
             "",
         )
+        if action == "vectorize" and _node.kind in {"source", "binary"}:
+            source_representation_id = str(_node.representation_id or source_representation_id)
         if source_representation_id:
             parameters["source_representation_id"] = source_representation_id
             if not self._ensure_agent_source_ready(
@@ -4956,10 +4968,10 @@ class DesktopController:
         interactive_registry = None
         if is_remote and capability in {"frames.vectorize.v1", "frames.dataset.prepare.v1", "dataset.model.train.v1"}:
             interactive_registry = self.agent_runtime.interactive_registry(capability)
-            parameters = {**parameters, "execution_host": "desktop"}
+            parameters = {**parameters, "execution_host": "desktop", "input_transport": "server"}
         elif is_remote and capability == "frames.binary-segment.v2":
             interactive_registry = self.agent_runtime.execution_registry(capability)
-            parameters = {**parameters, "execution_host": "desktop"}
+            parameters = {**parameters, "execution_host": "desktop", "input_transport": "server"}
         capabilities = frozenset()
         if not is_remote:
             capabilities = self.agent_runtime.ensure_started()
@@ -6035,7 +6047,7 @@ class DesktopController:
                 workspace.vector_representation_combo.setCurrentIndex(vector_index)
                 workspace.vector_representation_combo.blockSignals(False)
         if representation.active:
-            self._refresh_matrix(workspace, project_id)
+            self._load_representations(workspace, project_id, layer_id)
             return
         try:
             self.service.activate_representation(
@@ -6420,7 +6432,7 @@ class DesktopController:
                 return
             self._show_created_layer(workspace, project.id, layer)
             return
-        missing = [
+        missing = [] if is_remote else [
             value
             for value in (
                 project_binding.source_project_dir,
@@ -6436,7 +6448,10 @@ class DesktopController:
             return
         dialog = LayerCreationDialog(
             maximum_frames=project.frame_count,
-            scanner=self.service.scan_layer_source,
+            scanner=lambda directory, *, maximum_frames: self.service.scan_layer_source(
+                directory, maximum_frames=maximum_frames, project_id=project.id
+            ),
+            source_location="server" if is_remote else "local",
             parent=self.shell,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:

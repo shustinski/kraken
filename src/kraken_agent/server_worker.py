@@ -58,7 +58,9 @@ class ServerAgentWorker:
         self.registry = registry
         self.lease_seconds = max(30, min(int(lease_seconds), 300))
         self.store = DurableJobStore(self.data_dir / "server-jobs.sqlite3")
-        self.runner = SubprocessPluginRunner(self.store, self.data_dir / "staging", registry)
+        self.runner = SubprocessPluginRunner(
+            self.store, self.data_dir / "staging", registry, environment={"KRAKEN_ASSET_TOKEN": token}
+        )
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -172,6 +174,15 @@ class ServerAgentWorker:
             )
 
     def _transport_manifest(self, manifest: PluginJobManifestV1, workspace: StagingWorkspace) -> PluginJobManifest:
+        stream_inputs = manifest.parameters.get("input_transport") == "server"
+        if stream_inputs and manifest.capability not in {
+            "frames.vectorize.v1",
+            "frames.dataset.prepare.v1",
+            "dataset.model.train.v1",
+            "frames.binary-segment.v1",
+            "frames.binary-segment.v2",
+        }:
+            raise ValueError("This plugin operation does not support server input streams")
         coordinates = {
             str(FrameCoordinate(item.x_start, item.y).frame_id(manifest.project_id)): (item.x_start, item.y)
             for item in manifest.selection.row_ranges
@@ -192,7 +203,19 @@ class ServerAgentWorker:
             if coordinate is None:
                 raise ValueError(f"Cannot map input frame {item.frame_id} to a project coordinate")
             target = workspace.path / item.relative_path
-            if item.external_uri is None:
+            if stream_inputs:
+                if item.external_uri is not None:
+                    raise ValueError("Server stream jobs require managed server inputs")
+                media_types = manifest.parameters.get("input_media_types", {})
+                media_type = str(media_types.get(str(item.artifact_version_id)) or "application/octet-stream")
+                if media_type == "application/octet-stream":
+                    media_type = mimetypes.guess_type(item.relative_path)[0] or media_type
+                if media_type == "application/octet-stream":
+                    ticket = self._request(
+                        "GET", f"/api/v1/agent/jobs/{manifest.job_id}/inputs/{item.artifact_version_id}/download-ticket"
+                    )
+                    media_type = str(ticket.get("media_type") or media_type)
+            elif item.external_uri is None:
                 media_type = self._download(
                     f"/api/v1/agent/jobs/{manifest.job_id}/inputs/{item.artifact_version_id}",
                     target,
@@ -239,6 +262,9 @@ class ServerAgentWorker:
                 )
             )
         parameters = dict(manifest.parameters)
+        parameters.pop("input_media_types", None)
+        if stream_inputs:
+            parameters["server_url"] = self.server_url
         if parameters.get("execution_host") == "desktop":
             from kraken_manager.infrastructure.plugin.agent_gateway import _stage_model
 
@@ -296,6 +322,7 @@ class ServerAgentWorker:
     def run_leased_job(self, lease: dict[str, Any]) -> dict[str, Any]:
         """Execute a specific lease, including staging and result publication."""
         job_id = str(lease["job_id"])
+        self.runner.environment["KRAKEN_ASSET_TOKEN"] = self.token
         done = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(job_id, done), daemon=True)
         try:

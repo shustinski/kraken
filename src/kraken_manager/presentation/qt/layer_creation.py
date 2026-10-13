@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -98,11 +98,15 @@ class LayerCreationDialog(QDialog):
         *,
         maximum_frames: int,
         scanner: Callable[..., LayerSourceScan],
+        source_location: Literal["local", "server"] = "local",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.maximum_frames = int(maximum_frames)
         self.scanner = scanner
+        if source_location not in {"local", "server"}:
+            raise ValueError("Unsupported layer source location")
+        self.source_location = source_location
         self.scan_result: LayerSourceScan | None = None
         self._scan_thread: _ScanThread | None = None
         self.setObjectName("layerCreationDialog")
@@ -443,7 +447,7 @@ class LayerCreationDialog(QDialog):
         if self.mode == "manual" and not self.manual_images.text():
             self.validation_label.setText("Укажите папку изображений.")
             return
-        if self.mode == "manual":
+        if self.mode == "manual" and self.source_location == "local":
             for label, value, required in (
                 ("Изображения", self.manual_images.text(), True),
                 ("SSC", self.manual_ssc.text(), False),

@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from kraken_manager.application.ports import StorageProfile
+from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.project import GridOrientation, Project
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
@@ -22,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 
 # These calls only read values already loaded on the project object or scan a
 # folder the user picked. They do not open the local project database.
-_REMOTE_PROJECT_LOCAL_CALLS = frozenset({"plan_import_directory", "scan_layer_source"})
+_REMOTE_PROJECT_LOCAL_CALLS = frozenset({"plan_import_directory"})
 
 
 def _project_id_from_call(kwargs: dict[str, Any]) -> str | None:
@@ -456,6 +457,10 @@ class DualCatalogService:
                 include_inactive=include_inactive,
             )
         return backend.list_principals(include_inactive=include_inactive)
+
+    def list_role_candidates(self, project_id: ProjectId | str) -> tuple[Principal, ...]:
+        """Role assignment includes users who do not yet belong to the project."""
+        return self._backend(project_id).list_principals()
 
     def list_performers(self, *, include_archived: bool = False):
         local = self.local.list_performers(include_archived=include_archived)

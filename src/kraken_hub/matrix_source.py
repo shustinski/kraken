@@ -160,7 +160,9 @@ class KrakenMatrixAssetSource:
         if cancellation is not None and cancellation.cancelled:
             return b""
         external_path = str(reference.metadata.get("external_path") or "")
-        if external_path:
+        is_remote_project = getattr(self.service, "is_remote_project", None)
+        remote = callable(is_remote_project) and is_remote_project(self.project_id)
+        if external_path and not remote:
             path = Path(external_path)
             with open_regular_read(path, root=path.parent) as stream:
                 source = stream.read()

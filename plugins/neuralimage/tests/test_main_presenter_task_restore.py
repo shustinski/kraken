@@ -119,12 +119,13 @@ def _import_main_presenter_with_stubs(monkeypatch):
     return importlib.import_module('presenter.main_presenter')
 
 
-def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, monkeypatch):
+@pytest.mark.parametrize('work_mode', ['recognition_only', 'train_only'])
+def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, monkeypatch, work_mode):
     module = _import_main_presenter_with_stubs(monkeypatch)
     presenter = module.MainPresenter(_FakeStateStore())
 
     restored_main = MainWindowState(
-        work_mode='recognition_only',
+        work_mode=work_mode,
         source_folder='source-dir',
         result_folder='result-dir',
         label_folder='label-dir',
@@ -162,7 +163,9 @@ def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, mo
     assert presenter.view.model_path.text() == 'model-file.pth'
     assert presenter.view.le_epochs.value() == 9
     assert presenter.settings_panel.epochs_spinbox.value() == 9
-    assert presenter.view.rb_recognition.isChecked() is True
+    assert presenter.view.rb_recognition.isChecked() is (work_mode == 'recognition_only')
+    assert presenter.main_window_state.work_mode == restored_main.work_mode
+    assert presenter.main_window_state.ui_mode == restored_main.ui_mode
     assert presenter.settings_panel.shift_spinbox.value() == 72
     assert not hasattr(presenter.settings_panel, 'cut_dataset_type')
     assert presenter._update_cut_mode() == 'online'
@@ -276,7 +279,8 @@ def test_main_presenter_shows_warning_for_invalid_workflow_snapshot(qapp, monkey
         ('recognition_only', False),
     ],
 )
-def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, monkeypatch, work_mode, should_save_snapshot):
+@pytest.mark.parametrize('server_dataset', [False, True])
+def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, monkeypatch, work_mode, should_save_snapshot, server_dataset):
     module = _import_main_presenter_with_stubs(monkeypatch)
     presenter = module.MainPresenter(_FakeStateStore())
     monkeypatch.setattr(module, 'GeneralNeuralHandlerThread', _FakeHandlerThread)
@@ -296,6 +300,8 @@ def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, 
     result = root / "result"
     for path in (sample, label, source, result):
         path.mkdir(parents=True, exist_ok=True)
+    if server_dataset:
+        presenter.kraken_dataset_source = object()
 
     task = types.SimpleNamespace(
         task_id=5,
@@ -317,6 +323,8 @@ def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, 
     assert len(calls) == int(should_save_snapshot)
     if should_save_snapshot:
         assert calls[0][2][0].value == work_mode
+        if server_dataset:
+            assert calls[0][2][1].artifact_dir == result
     assert isinstance(presenter.neuaral_handler, _FakeHandlerThread)
     assert presenter.neuaral_handler.started is True
 

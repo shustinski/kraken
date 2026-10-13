@@ -723,6 +723,28 @@ class PostgresServerServices:
         binding = files.registry.get_layer(project_id, layer_id)
         return None if binding is None else layer_binding_to_dict(binding)
 
+    def scan_layer_source(
+        self, project_id: str, directory: str, context: CommandContext
+    ) -> dict[str, Any]:
+        from dataclasses import asdict
+
+        project = self.projections.get_project(_project_id(project_id))
+        if project is None:
+            raise NotFoundError(project_id)
+        actor = self._actor(context.actor_id)
+        try:
+            AuthorizationPolicy().require(
+                principal=actor, storage=self.profiles.get(project.storage_profile),
+                permission=Permission.MANAGE_STRUCTURE,
+                roles=self.identities.roles_for(project.id, actor.id), gitlab_identity_verified=True,
+            )
+            if self.workspace_files is None:
+                raise ValidationError("Server workspace storage is not configured")
+            return asdict(self.workspace_files.scan(directory, maximum_frames=project.frame_count))
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
     def create_external_layer(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext
     ) -> dict[str, Any]:
@@ -882,10 +904,15 @@ class PostgresServerServices:
         workspace = files.registry.get_project(project_id)
         if workspace is None:
             raise ValidationError("У проекта нет двухдискового хранилища")
-        layer_id = str(uuid4())
+        prior = self.events.find_by_idempotency_key(_project_id(project_id), context.idempotency_key)
+        created = next((event for event in reversed(prior) if event.event_type == "LayerCreated"), None)
+        replay = created is not None
+        layer_id = str(created.payload["layer_id"]) if created is not None else str(uuid4())
         name = str(payload.get("name", ""))
         try:
-            binding = bind(files, layer_id, name)
+            binding = files.registry.get_layer(project_id, layer_id) if replay else bind(files, layer_id, name)
+            if binding is None:
+                raise WorkspaceValidationError("Existing layer storage binding is missing")
         except (WorkspaceValidationError, FileExistsError, OSError, ValueError) as exc:
             raise ValidationError(str(exc)) from exc
         actor = self._actor(context.actor_id)
@@ -924,17 +951,18 @@ class PostgresServerServices:
                 )
             )
         except Exception as exc:
-            self._discard_workspace_layer(
-                files,
-                workspace,
-                binding,
-                project_id,
-                layer_id,
-                context,
-                layer,
-                managed=managed,
-                copied_directories=copied_directories or [],
-            )
+            if not replay:
+                self._discard_workspace_layer(
+                    files,
+                    workspace,
+                    binding,
+                    project_id,
+                    layer_id,
+                    context,
+                    layer,
+                    managed=managed,
+                    copied_directories=copied_directories or [],
+                )
             if isinstance(exc, ApplicationNotFoundError):
                 raise NotFoundError(str(exc)) from exc
             if isinstance(exc, (ApplicationConcurrencyError, ApplicationConflictError)):
@@ -2193,6 +2221,9 @@ class PostgresServerServices:
                 row_ranges=tuple(FrameRowRange(y=y, x_start=x, x_end=x) for x, y in coordinates)
             )
             inputs: list[PluginInputV1] = []
+            input_media_types: dict[str, str] = {}
+            raw_parameters = payload.get("parameters", {})
+            parameters = dict(raw_parameters) if isinstance(raw_parameters, Mapping) else {}
             missing: list[str] = []
             for coordinate in selection.iter_coordinates():
                 frame_id = coordinate.frame_id(project.id)
@@ -2202,19 +2233,24 @@ class PostgresServerServices:
                     missing.append(f"({coordinate.x}, {coordinate.y})")
                     continue
                 suffix = "." + version.filename.rsplit(".", 1)[-1] if "." in version.filename else ".bin"
+                input_media_types[str(version.id)] = version.media_type
                 inputs.append(
                     PluginInputV1(
                         frame_id=frame_id,
                         artifact_version_id=version.id,
                         sha256=version.sha256,
-                        relative_path=f"inputs/{coordinate.x}_{coordinate.y}{suffix}",
+                        relative_path=(
+                            f"inputs/{coordinate.x}_{coordinate.y}/{Path(version.filename).name}"
+                            if parameters.get("input_transport") == "server"
+                            else f"inputs/{coordinate.x}_{coordinate.y}{suffix}"
+                        ),
                         external_uri=(
                             None if version.external is None else version.external.uri
                         ),
                     )
                 )
             if str(payload.get("capability", "")) == "dataset.model.train.v1":
-                dataset_id = payload.get("parameters", {}).get("dataset_version_id")
+                dataset_id = parameters.get("dataset_version_id")
                 version = self.projections.get_artifact_version(ArtifactVersionId(str(dataset_id)))
                 series = None if version is None else self.projections.get_artifact_series(version.series_id)
                 if (
@@ -2238,6 +2274,7 @@ class PostgresServerServices:
                         relative_path="inputs/dataset.zip",
                     )
                 ]
+                input_media_types = {str(version.id): version.media_type}
                 missing = []
             if missing:
                 raise ApplicationConflictError(
@@ -2252,11 +2289,11 @@ class PostgresServerServices:
                     selection=selection,
                     capability=str(payload.get("capability", "")),
                     inputs=tuple(inputs),
-                    parameters=(
-                        dict(payload.get("parameters", {}))
-                        if isinstance(payload.get("parameters", {}), Mapping)
-                        else {}
-                    ),
+                    parameters={
+                        **parameters,
+                        "input_media_types": input_media_types,
+                        "project_width": project.width,
+                    },
                 )
             )
             return encode_model(value)
@@ -2438,7 +2475,7 @@ class PostgresServerServices:
         after = 0
         while True:
             page = self.events.list_project_events(
-                project.id, after_position=after, limit=500, start=start, end=end
+                project.id, after_position=after, limit=500
             )
             if not page:
                 break

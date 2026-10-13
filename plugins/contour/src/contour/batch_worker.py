@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import gc
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 
 import cv2
+import numpy as np
 
 from .application.processing import (
     BatchFrameTiming,
@@ -17,6 +19,7 @@ from .application.processing import (
 )
 from .application.use_cases.processing import process_image_path_timed
 from .pipeline import PreprocessingPipeline
+from .utils import load_image_color
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +31,7 @@ class BatchChunkRequest:
     output_directory: str | None
     save_options: dict[str, Any]
     display_settings: dict[str, Any]
+    image_loader: Callable[[str], np.ndarray] | None = None
 
 
 @dataclass(slots=True)
@@ -106,6 +110,7 @@ def process_batch_chunk(
                 save_options=save_options,
                 display_settings=display_settings,
                 pipeline=pipeline,
+                image_loader=request.image_loader or load_image_color,
             )
             metadata.append(
                 BatchImageMetadata(

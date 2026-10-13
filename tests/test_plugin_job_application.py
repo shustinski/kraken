@@ -525,32 +525,40 @@ class PluginJobApplicationTests(unittest.TestCase):
             (PluginResultOutcome.FAILED, PluginJobState.FAILED),
             (PluginResultOutcome.CANCELLED, PluginJobState.CANCELLED),
         ):
-            with self.subTest(outcome=outcome):
-                fixture = Fixture()
-                job = fixture.submit()
-                manifest = PluginResultManifestV1(
-                    job_id=job.id,
-                    plugin_name="Contour",
-                    plugin_version="2.0",
-                    results=(),
-                    parameters_applied={},
-                    outcome=outcome,
-                )
-                command = ImportPluginResultCommand(
-                    context=CommandContext(actor=fixture.actor, idempotency_key=f"terminal-{outcome.value}"),
-                    manifest=manifest,
-                )
+            for parameters in (
+                {"transport_errors": ["Model inference failed"]},
+                {"error": "Model inference failed"},
+            ):
+                self._assert_terminal_result(outcome, state, parameters)
 
-                terminal = fixture.importer()(command)
-                repeated = fixture.importer()(command)
+    def _assert_terminal_result(self, outcome, state, parameters):
+        with self.subTest(outcome=outcome, parameters=parameters):
+            fixture = Fixture()
+            job = fixture.submit()
+            manifest = PluginResultManifestV1(
+                job_id=job.id,
+                plugin_name="Contour",
+                plugin_version="2.0",
+                results=(),
+                parameters_applied=parameters,
+                outcome=outcome,
+            )
+            command = ImportPluginResultCommand(
+                context=CommandContext(actor=fixture.actor, idempotency_key=f"terminal-{outcome.value}"),
+                manifest=manifest,
+            )
 
-                self.assertEqual(terminal.job.state, state)
-                self.assertEqual(terminal.versions, ())
-                self.assertEqual(fixture.reader.reads, 0)
-                self.assertTrue(repeated.already_imported)
-                self.assertFalse(
-                    any(version.tool_name == "Contour" for version in fixture.factory.uow.projections.versions.values())
-                )
+            terminal = fixture.importer()(command)
+            repeated = fixture.importer()(command)
+
+            self.assertEqual(terminal.job.state, state)
+            self.assertEqual(terminal.job.error, "Model inference failed")
+            self.assertEqual(terminal.versions, ())
+            self.assertEqual(fixture.reader.reads, 0)
+            self.assertTrue(repeated.already_imported)
+            self.assertFalse(
+                any(version.tool_name == "Contour" for version in fixture.factory.uow.projections.versions.values())
+            )
 
     def test_unknown_frame_and_content_hash_mismatch_are_rejected(self):
         fixture = Fixture()

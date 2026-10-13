@@ -1,8 +1,7 @@
 """Kraken Agent bridge for the interactive Contour application.
 
-The bridge intentionally knows nothing about Kraken projects or storage. It
-can only resolve files contained by the per-job staging directory supplied by
-Kraken Agent.
+Inputs come from contained staging files or authenticated, immutable server
+streams. Results stay inside the per-job staging directory until publication.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from kraken_core.asset_source import ServerAssetSource
 from kraken_core.plugin_protocol import (
     PluginFrameOutput,
     PluginJobManifest,
@@ -113,7 +113,7 @@ def _atomic_write(path: Path, payload: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class ContourKrakenSession:
-    """Validated, staging-only view of one interactive Contour job."""
+    """Validated view of staged or streamed inputs for one Contour job."""
 
     manifest: PluginJobManifest
     staging_root: Path
@@ -121,6 +121,7 @@ class ContourKrakenSession:
     result_manifest_path: Path
     input_paths: tuple[Path, ...]
     output_directory: Path
+    server_source: ServerAssetSource | None = None
 
     @classmethod
     def load(
@@ -149,13 +150,20 @@ class ContourKrakenSession:
         if len(manifest.inputs) > 10_000:
             raise KrakenBridgeError("Contour protocol v1 accepts at most 10000 frames per job")
 
+        server_source = None
+        if manifest.parameters.get("input_transport") == "server":
+            server_source = ServerAssetSource(
+                base_url=str(manifest.parameters.get("server_url", "")), job_id=manifest.job_id,
+                inputs={item.relative_path: item for item in manifest.inputs},
+                token=os.environ.get("KRAKEN_ASSET_TOKEN", ""),
+            )
         inputs: list[Path] = []
         output_stems: set[str] = set()
         for item in manifest.inputs:
             if item.media_type not in {"image/png", "image/tiff", "image/jpeg"}:
                 raise KrakenBridgeError(f"Unsupported Contour input media type: {item.media_type}")
-            candidate = _resolve_relative_file(root, item.relative_path)
-            if _sha256(candidate) != item.sha256:
+            candidate = root / item.relative_path if server_source is not None else _resolve_relative_file(root, item.relative_path)
+            if server_source is None and _sha256(candidate) != item.sha256:
                 raise KrakenBridgeError(f"Staged input checksum mismatch: {item.relative_path}")
             stem_key = candidate.stem.casefold()
             if stem_key in output_stems:
@@ -179,6 +187,7 @@ class ContourKrakenSession:
             result_manifest_path=result_path,
             input_paths=tuple(inputs),
             output_directory=output_directory,
+            server_source=server_source,
         )
 
     def build_result(self) -> PluginResultManifest:
@@ -288,6 +297,20 @@ class ContourKrakenSession:
 
         if not isinstance(window, QMainWindow):
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
+        if self.server_source is not None:
+            from .infrastructure.image_source import AssetImageLoader
+            from .infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
+
+            loader = AssetImageLoader(self.server_source, self.staging_root)
+            widget = window._widget
+            widget._source_image_loader = loader
+            width = int(self.manifest.parameters.get("project_width") or max(item.x for item in self.manifest.inputs))
+            widget._source_frame_numbers = {
+                str(path): (item.y - 1) * width + item.x - 1
+                for path, item in zip(self.input_paths, self.manifest.inputs, strict=True)
+            }
+            widget._batch_processor.image_loader = loader
+            widget.load_images([str(path) for path in self.input_paths], image_list_mode=IMAGE_LIST_MODE_EXPLICIT)
         menu_bar = window.menuBar()
         assert menu_bar is not None
         menu = QMenu("Kraken", window)
@@ -540,8 +563,12 @@ def prepare_contour_launch(
         *safe_ui_arguments,
         destination_option,
         str(session.output_directory),
-        *(str(path) for path in session.input_paths),
+        *(str(path) for path in session.input_paths if session.server_source is None),
     ]
+    if session.server_source is not None:
+        inputs_directory = session.staging_root / "inputs"
+        inputs_directory.mkdir(exist_ok=True)
+        controlled.extend(("--input-dir", str(inputs_directory)))
     return session, controlled
 
 

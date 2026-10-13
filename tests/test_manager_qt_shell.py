@@ -65,6 +65,19 @@ def test_project_manager_shell_can_hide_administration_navigation(qapp):
     assert not administration_item.isHidden()
 
 
+def test_selected_projects_navigation_can_return_from_workspace(qtbot):
+    shell = ProjectManagerShell()
+    qtbot.addWidget(shell)
+    shell.register_page("workspace", "Project", QWidget(), navigation=False)
+    shell.show_page("workspace")
+    shell.show()
+    item = shell._navigation_items["projects"]
+    assert shell.navigation_list.currentItem() is item
+    qtbot.mouseClick(shell.navigation_list.viewport(), Qt.MouseButton.LeftButton,
+                     pos=shell.navigation_list.visualItemRect(item).center())
+    assert shell.current_page_key() == "projects"
+
+
 def test_project_catalog_delete_action_emits_selected_project(qapp):
     shell = ProjectManagerShell()
     page = shell.page("projects")

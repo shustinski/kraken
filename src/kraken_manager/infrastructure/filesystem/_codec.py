@@ -37,6 +37,8 @@ def decode_model(annotation: Any, value: Any) -> Any:
     origin = get_origin(annotation)
     arguments = get_args(annotation)
     if origin in {Union, types.UnionType}:
+        if int in arguments and float in arguments and type(value) in {int, float}:
+            return value
         errors: list[Exception] = []
         for candidate in arguments:
             if candidate is type(None):

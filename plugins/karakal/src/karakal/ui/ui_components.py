@@ -28,6 +28,13 @@ class _NoWheelCombo(QComboBox):
         event.ignore()
 
 
+class _NoWheelSpinBox(QSpinBox):
+    """Scrolling the side panel over a layer row must not change its «Frames per row»."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 class FolderRowWidget(QWidget):
     """Render one editable row inside the folder manager list."""
 
@@ -212,7 +219,7 @@ class FolderRowWidget(QWidget):
             on_clear=on_clear_markup_folder,
         )
         grid.addWidget(QLabel(frames_per_row_label, details), 3, 0)
-        self.frames_per_row_spin = QSpinBox(details)
+        self.frames_per_row_spin = _NoWheelSpinBox(details)
         self.frames_per_row_spin.setRange(0, int(frames_per_row_maximum))
         # 0: the layer has no width of its own and uses the common «Frames per row».
         self.frames_per_row_spin.setSpecialValueText(frames_per_row_common_text)

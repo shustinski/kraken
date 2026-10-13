@@ -38,6 +38,23 @@ def test_layer_row_has_handle_settings_and_remove_but_no_arrows(tmp_path, qtbot)
     assert row.grip.toolTip() and not row.btn_remove.icon().isNull() and not row.btn_confidence_toggle.icon().isNull()
 
 
+def test_open_layer_settings_fit_in_the_list(tmp_path, qtbot) -> None:
+    # A row with open settings is taller than the list was: its lower fields could not be reached.
+    widget = _widget(tmp_path, qtbot)
+    widget.resize(1366, 700)
+    widget.show()
+    _add(tmp_path, widget._presenter, ("a", "b", "c"))
+    folder_list = widget.folder_list
+    for row in (0, 1):
+        folder_list.itemWidget(folder_list.item(row)).btn_confidence_toggle.setChecked(True)
+    qtbot.waitUntil(lambda: folder_list.viewport().height() >= folder_list.visualItemRect(folder_list.item(2)).bottom())
+    assert folder_list.verticalScrollMode() == folder_list.ScrollMode.ScrollPerPixel
+    host = widget.control_scroll.widget()
+    qtbot.waitUntil(lambda: host.height() >= host.minimumSizeHint().height())
+    row = folder_list.itemWidget(folder_list.item(1))
+    assert row.btn_cell_bank.mapTo(host, row.btn_cell_bank.rect().bottomLeft()).y() <= host.height()
+
+
 def test_dragging_a_layer_reorders_and_rebuilds_rows(tmp_path, qtbot) -> None:
     widget = _widget(tmp_path, qtbot)
     _add(tmp_path, widget._presenter, ("a", "b", "c"))

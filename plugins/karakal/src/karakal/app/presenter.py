@@ -2677,6 +2677,21 @@ class KarakalPresenter(QObject):
                 self.folder_list.setItemWidget(item, row_widget)
         finally:
             self.folder_list.setUpdatesEnabled(True)
+        self._fit_folder_list_height()
+
+    def _fit_folder_list_height(self) -> None:
+        """The layer list is as tall as its rows: the side panel scrolls, not a small window inside it.
+
+        A row with open settings is taller than the list used to be, and its lower fields could not be
+        reached by any scrolling.
+        """
+
+        folder_list = self.folder_list
+        spacing = folder_list.spacing()
+        content = sum(
+            folder_list.item(row).sizeHint().height() + 2 * spacing for row in range(folder_list.count())
+        )
+        folder_list.setMinimumHeight(content + 2 * folder_list.frameWidth() if content else 0)
 
     def _select_folder_item(self, item: QListWidgetItem) -> None:
         if item is not self.folder_list.currentItem():

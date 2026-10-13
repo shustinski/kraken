@@ -771,6 +771,8 @@ class KarakalWidget(QWidget):
         self.folder_list.setObjectName("folderList")
         self.folder_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.folder_list.setSpacing(2)
+        # A row with open settings is taller than a usual row: scroll by pixels, not whole rows.
+        self.folder_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         # Layers are reordered by dragging their handle (or Alt+Up / Alt+Down).
         self.folder_list.setDragEnabled(True)
         self.folder_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)

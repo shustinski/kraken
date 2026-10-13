@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from PyQt6.QtCore import QSettings
 
-from karakal.core.memory_map import MODE_ONES, MODE_PAIR, MemoryMapConfig, Pitch, assemble_memory_map, read_frame_sites
+from karakal.core.memory_map import MODE_ONES, MODE_PAIR, Pitch, assemble_memory_map
 from karakal.core.memory_map_export import MemoryMapExport, TxtFormat, write_memory_map_files
 
 from test_memory_map import CFG, PX, PY, Memory, frames_of, read_all
@@ -32,7 +32,7 @@ def _no_modal_windows(monkeypatch):
 def _widget_with_run(tmp_path: Path, qtbot, *, zeros: bool):
     from karakal.app.main_window import KarakalWidget
     from karakal.core.domain import BuildOptions, BuildResult, FrameRecord
-    from karakal.ui.ui_constants import FOLDER_CELL_CLASS_ROLE, FOLDER_CHECKED_ROLE, FOLDER_FRAMES_PER_ROW_ROLE
+    from karakal.ui.ui_constants import FOLDER_CHECKED_ROLE, FOLDER_FRAMES_PER_ROW_ROLE
 
     memory = Memory(26, 64, seed=21, gap_col=30)
     positions = frames_of(memory, frame_rows=3, per_row=4)
@@ -171,3 +171,78 @@ def test_export_dialog_asks_for_a_folder_and_returns_the_choice(tmp_path, qtbot)
     choice = dialog.choice()
     assert choice.txt_custom and choice.custom.symbols["one"] == "#" and choice.custom.cell_separator == " " and choice.main_only
     assert choice.custom.symbols["empty"] == "."  # one network: «not painted»
+
+
+def test_export_dialog_turns_the_bits_and_previews_them(tmp_path, qtbot) -> None:
+    from karakal.ui.i18n import Translator
+    from karakal.ui.memory_map_export_dialog import MemoryMapExportDialog
+
+    memory = Memory(26, 64, seed=24, gap_col=30)
+    positions = frames_of(memory, frame_rows=3, per_row=4)
+    mmap = assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=4, config=CFG)
+    dialog = MemoryMapExportDialog(Translator("en").tr, mmap)
+    qtbot.addWidget(dialog)
+    body = [line for line in dialog.preview.toPlainText().splitlines() if not line.startswith("#")]
+    symbols = {2: "1", 3: "0", 1: "?", 0: " ", 5: "!", 4: "X"}
+    assert body[0].rstrip() == "".join(symbols[int(v)] for v in mmap.field[0][:120]).rstrip()
+
+    dialog.field_orientation.setCurrentIndex(dialog.field_orientation.findData("flip_h"))
+    dialog.number_from.setCurrentIndex(1)
+    dialog._update_preview()
+    body = [line for line in dialog.preview.toPlainText().splitlines() if not line.startswith("#")]
+    assert body[0].rstrip() == "".join(symbols[int(v)] for v in mmap.field[0][::-1][:120]).rstrip()
+    choice = dialog.choice()
+    assert choice.field_orientation == "flip_h" and choice.number_from == 1 and choice.block_orientation == "none"
+    assert "numbered 1" in dialog.preview.toPlainText()
+
+
+def test_the_map_takes_the_defects_of_the_cell_analysis(tmp_path, qtbot, monkeypatch) -> None:
+    import cv2 as _cv2
+
+    from karakal.core.grid_anomaly import analyze_grid_frame_path
+    from karakal.core.synthetic_masks import synthetic_frame
+
+    widget, presenter, controller, _memory, _positions, records = _widget_with_run(tmp_path, qtbot, zeros=False)
+    state = presenter._current_tab_state()
+    model_id = controller.sources(state)["ones_id"]
+    frame = synthetic_frame({"cut_corner": 3}, seed=5)
+    path = tmp_path / "bitten.png"
+    _cv2.imwrite(str(path), frame.mask)
+    result = analyze_grid_frame_path(path, frame_id="x", use_cache=False, read_cache=False, write_cache=False)
+    broken = [cell for cell in result.per_cell_results if cell.status == "broken"]
+    assert broken
+    key = str(records[0].key)
+    state.grid_inspection_payloads_by_model = {model_id: {"binary": {key: result}}}
+    sources = controller.sources(state)
+    boxes = sources["frames"][0].defect_boxes
+    assert {tuple(int(v) for v in cell.bbox) for cell in broken} <= set(boxes)
+    assert sources["frames"][1].defect_boxes == ()
+
+
+def test_full_memory_analysis_runs_the_defect_search_then_builds_and_shows_the_map(tmp_path, qtbot, monkeypatch) -> None:
+    import karakal.core.memory_map as mm
+    from karakal.ui.ui_constants import FOLDER_FRAMES_PER_ROW_ROLE
+
+    monkeypatch.setattr(mm, "MemoryMapConfig", lambda: CFG)
+    widget, presenter, controller, _memory, _positions, _records = _widget_with_run(tmp_path, qtbot, zeros=True)
+    # No frames per row on the layers: the map finds them from the bits.
+    for row in range(presenter.folder_list.count()):
+        presenter.folder_list.item(row).setData(FOLDER_FRAMES_PER_ROW_ROLE, 0)
+    widget.grid_inspection_content_tabs.setCurrentIndex(0)
+    state = presenter._current_tab_state()
+    assert not state.grid_inspection_results_ready
+    controller.refresh()
+    assert widget.memory_map_panel.per_row_spin.value() == 0  # «auto»
+
+    widget.memory_map_panel.full_button.click()
+    qtbot.waitUntil(lambda: state.memory_map is not None and controller._thread is None, timeout=120000)
+    assert state.grid_inspection_results_ready  # the defect search ran first
+    assert state.grid_inspection_payloads_by_model  # both layers analysed
+    assert state.memory_map.per_row == 4 and state.memory_map.mode == "pair"
+    assert widget.grid_inspection_content_tabs.currentWidget() is widget.memory_map_panel
+    assert "4" in widget.memory_map_panel.status_label.text()
+
+    # With an up-to-date analysis the button builds the map at once.
+    state.memory_map = None
+    widget.memory_map_panel.full_button.click()
+    qtbot.waitUntil(lambda: state.memory_map is not None and controller._thread is None, timeout=60000)

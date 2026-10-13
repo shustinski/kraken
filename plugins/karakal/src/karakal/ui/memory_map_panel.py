@@ -195,6 +195,7 @@ def map_image(mmap: MemoryMap, shown: set[int]) -> QImage:
 
 class MemoryMapPanel(QWidget):
     buildRequested = pyqtSignal(int)
+    fullAnalysisRequested = pyqtSignal()
     cancelRequested = pyqtSignal()
     exportRequested = pyqtSignal()
     # A field site to open in the frame window (row, column).
@@ -216,6 +217,10 @@ class MemoryMapPanel(QWidget):
         root.setSpacing(6)
 
         bar = QHBoxLayout()
+        self.full_button = QPushButton(self._t("memory_map.full"), self)
+        self.full_button.setToolTip(self._t("memory_map.full_tooltip"))
+        self.full_button.clicked.connect(self.fullAnalysisRequested.emit)
+        bar.addWidget(self.full_button)
         self.build_button = QPushButton(self._t("memory_map.build"), self)
         self.build_button.setToolTip(self._t("memory_map.build_tooltip"))
         self.build_button.clicked.connect(lambda: self.buildRequested.emit(int(self.per_row_spin.value())))
@@ -226,7 +231,9 @@ class MemoryMapPanel(QWidget):
         bar.addWidget(self.stop_button)
         bar.addWidget(QLabel(self._t("memory_map.per_row"), self))
         self.per_row_spin = QSpinBox(self)
-        self.per_row_spin.setRange(1, 100_000)
+        self.per_row_spin.setRange(0, 100_000)
+        # 0: found from the bits.
+        self.per_row_spin.setSpecialValueText(self._t("memory_map.per_row_auto"))
         self.per_row_spin.setToolTip(self._t("memory_map.per_row_tooltip"))
         bar.addWidget(self.per_row_spin)
         self.progress = QProgressBar(self)
@@ -286,6 +293,7 @@ class MemoryMapPanel(QWidget):
         side_scroll.setMinimumWidth(380)
         side_scroll.setMaximumWidth(520)
         side = QWidget(side_scroll)
+        self._side = side
         side_scroll.setWidget(side)
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(0, 0, 0, 0)
@@ -304,7 +312,7 @@ class MemoryMapPanel(QWidget):
         self.blocks_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.blocks_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.blocks_table.cellClicked.connect(lambda row, _col: self._show_block(row))
-        self.blocks_table.setMinimumHeight(200)
+        self.blocks_table.setFixedHeight(210)
         self.blocks_table.horizontalHeader().setStretchLastSection(True)
         blocks_layout.addWidget(self.blocks_table)
         self.blocks_table.setToolTip(self._t("memory_map.service_hint"))
@@ -312,7 +320,7 @@ class MemoryMapPanel(QWidget):
         hint.setWordWrap(True)
         hint.setToolTip(self._t("memory_map.service_hint"))
         blocks_layout.addWidget(hint)
-        side_layout.addWidget(blocks, stretch=2)
+        side_layout.addWidget(blocks)
         seams = QGroupBox(self._t("memory_map.seams"), side)
         seams_layout = QVBoxLayout(seams)
         self.seams_label = QLabel("", seams)
@@ -320,9 +328,10 @@ class MemoryMapPanel(QWidget):
         seams_layout.addWidget(self.seams_label)
         self.seams_list = QListWidget(seams)
         self.seams_list.currentRowChanged.connect(self._show_seam)
-        self.seams_list.setMinimumHeight(140)
+        self.seams_list.setFixedHeight(150)
         seams_layout.addWidget(self.seams_list)
-        side_layout.addWidget(seams, stretch=1)
+        side_layout.addWidget(seams)
+        side_layout.addStretch(1)
         splitter.addWidget(side_scroll)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
@@ -334,13 +343,15 @@ class MemoryMapPanel(QWidget):
     def set_sources(self, text: str, can_build: bool, reason: str = "") -> None:
         self.sources_label.setText(text)
         self.build_button.setEnabled(can_build)
+        self.full_button.setEnabled(can_build)
         self.build_button.setToolTip(reason or self._t("memory_map.build_tooltip"))
 
     def set_per_row(self, value: int) -> None:
-        self.per_row_spin.setValue(max(1, int(value)))
+        self.per_row_spin.setValue(max(0, int(value)))
 
     def set_busy(self, stage: str, done: int, total: int) -> None:
         self.build_button.hide()
+        self.full_button.hide()
         self.stop_button.show()
         self.export_button.setEnabled(False)
         self.progress.show()
@@ -351,6 +362,7 @@ class MemoryMapPanel(QWidget):
     def set_idle(self, message: str = "") -> None:
         self.stop_button.hide()
         self.build_button.show()
+        self.full_button.show()
         self.progress.hide()
         self.export_button.setEnabled(self._map is not None)
         self.status_label.setText(message)
@@ -370,11 +382,20 @@ class MemoryMapPanel(QWidget):
             self.seams_list.clear()
             self.seams_label.setText("")
             self._fill_summary()
+            self._fit_side()
             return
         self._render(fit=fit)
         self._fill_summary()
         self._fill_blocks()
         self._fill_seams()
+        self._fit_side()
+
+    def _fit_side(self) -> None:
+        """The side panel keeps its natural height: in a low window it scrolls instead of squeezing
+        its parts over each other."""
+
+        self._side.layout().activate()
+        self._side.setMinimumHeight(self._side.sizeHint().height())
 
     # --- Drawing -------------------------------------------------------------------------------
 

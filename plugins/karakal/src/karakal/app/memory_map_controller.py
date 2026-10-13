@@ -1,4 +1,5 @@
-"""Memory map tab: which networks, building in a thread, block roles, frame window, export.
+"""Memory map tab: which networks, building in a thread, block roles, frame window, export, and
+«Full memory analysis»: frames, cell defects and the map in one click.
 
 The map is built only when the operator asks for it («Build map»). It is made from the layer shown
 in the matrix: with its ones/zeros partner when the layer is in such a pair (both networks), else
@@ -71,7 +72,9 @@ class MemoryMapController(QObject):
         self._thread_state = None
         self._last_export = None
         self.use_processes = True
+        self._pending_full = False
         panel.buildRequested.connect(self.build)
+        panel.fullAnalysisRequested.connect(self.full_analysis)
         panel.cancelRequested.connect(self.cancel)
         panel.exportRequested.connect(self.export)
         panel.frameRequested.connect(self.open_frame)
@@ -105,17 +108,61 @@ class MemoryMapController(QObject):
         def path(record, model_id: str) -> str:
             return str((record.model_mask_paths or {}).get(model_id) or "") if model_id else ""
 
-        frames = [MapFrame(str(record.key), path(record, ones_id), path(record, zeros_id)) for record in records]
-        per_row = presenter._layer_frames_per_row(ones_id or zeros_id) or int(state.layout_config.frames_per_row)
+        defects = self._defect_finder(state)
+        frames = [
+            MapFrame(
+                str(record.key),
+                path(record, ones_id),
+                path(record, zeros_id),
+                defect_boxes=defects(ones_id, str(record.key)) + defects(zeros_id, str(record.key)),
+            )
+            for record in records
+        ]
+        # The layer's own frames per row when it is set, else «auto» (found from the bits).
+        per_row = presenter._layer_frames_per_row(ones_id or zeros_id)
         return {
             "mode": mode,
             "ones_id": ones_id,
             "zeros_id": zeros_id,
             "frames": frames,
             "records": records,
-            "per_row": max(1, int(per_row)),
+            "per_row": max(0, int(per_row)),
             "with_masks": sum(1 for f in frames if f.ones_path or f.zeros_path),
         }
+
+    def _defect_finder(self, state):
+        """Boxes of the cells the defect search marked broken in a layer's frame (as the matrix
+        shows them now: with its defect types and debris size); empty before any analysis."""
+
+        from ..core.grid_anomaly import GridFrameAnalysisResult
+        from ..core.grid_narrowing import narrow_grid_frame_result
+
+        by_model = dict(getattr(state, "grid_inspection_payloads_by_model", {}) or {})
+        shown_model = str(getattr(state, "grid_inspection_model_id", "") or "")
+        by_layer = dict(getattr(state, "grid_inspection_payloads_by_layer", {}) or {})
+        try:
+            narrowing = self._presenter._grid_narrowing_for_state(state)
+        except Exception:
+            narrowing = None
+
+        def boxes(model_id: str, key: str) -> tuple:
+            if not model_id:
+                return ()
+            results = (by_model.get(model_id) or {}).get("binary") or {}
+            if not results and model_id == shown_model:
+                results = by_layer.get("binary") or {}
+            result = results.get(key)
+            if not isinstance(result, GridFrameAnalysisResult):
+                return ()
+            if narrowing is not None:
+                result = narrow_grid_frame_result(result, narrowing)
+            return tuple(
+                tuple(int(v) for v in cell.bbox)
+                for cell in result.per_cell_results
+                if cell.status == "broken" and "conductor_zone" not in tuple(cell.reasons or ())
+            )
+
+        return boxes
 
     def _layer_name(self, model_id: str) -> str:
         item = self._presenter._folder_item_for_model_id(model_id) if model_id else None
@@ -173,8 +220,52 @@ class MemoryMapController(QObject):
         thread.start()
 
     def cancel(self) -> None:
+        self._pending_full = False
         if self._thread is not None:
             self._thread.cancel = True
+
+    # --- Full memory analysis ------------------------------------------------------------------
+
+    def full_analysis(self) -> None:
+        """Whatever is missing, in order: gather the frames and find the cell defects (the main run),
+        then build the map and show it. With an up-to-date analysis the map is built at once."""
+
+        presenter = self._presenter
+        action, enabled, reason = presenter._run_action()
+        if action == presenter.RUN_ACTION_STOP or self._thread is not None:
+            return
+        if not enabled:
+            if reason:
+                QMessageBox.information(self._panel, self._t("dialog.info_title"), reason)
+            return
+        if action == presenter.RUN_ACTION_RECOMPUTE:
+            self._build_and_show()
+            return
+        self._pending_full = True
+        self._panel.set_idle(self._t("memory_map.full_waiting"))
+        if action == presenter.RUN_ACTION_RUN:
+            presenter._on_primary_run_requested()
+        else:
+            presenter._on_compute_requested()
+        presenter._sync_run_buttons()
+
+    def analysis_finished(self) -> None:
+        if not self._pending_full:
+            return
+        self._pending_full = False
+        self._build_and_show()
+
+    def cancel_pending(self) -> None:
+        if self._pending_full:
+            self._pending_full = False
+            self._panel.set_idle(self._t("memory_map.stopped"))
+
+    def _build_and_show(self) -> None:
+        tabs = getattr(self._presenter._view, "grid_inspection_content_tabs", None)
+        if tabs is not None:
+            tabs.setCurrentWidget(self._panel)
+        self.refresh()
+        self.build(int(self._panel.per_row_spin.value()))
 
     def _built(self, state, sources: dict, per_row: int, mmap: MemoryMap) -> None:
         # The operator's roles of blocks of an earlier map carry over to blocks at the same place.
@@ -187,6 +278,8 @@ class MemoryMapController(QObject):
         counts = mmap.seam_counts()
         bad = sum(v for k, v in counts.items() if k not in ("bits", "empty"))
         message = self._t("memory_map.built", blocks=len(mmap.blocks), bad=bad)
+        if int(per_row) <= 0:
+            message += " " + self._t("memory_map.per_row_found", count=mmap.per_row)
         self._panel.set_map(mmap)
         self._finish(message)
 

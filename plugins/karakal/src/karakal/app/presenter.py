@@ -346,6 +346,16 @@ class KarakalPresenter(QObject):
     def __getattr__(self, name: str):
         return getattr(self._view, name)
 
+    def _later(self, msec: int, callback) -> None:
+        """Run callback after msec on a timer of this presenter: when the window (and with it the
+        presenter) is gone, the timer is gone too and the call never reaches deleted widgets."""
+
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(callback)
+        timer.timeout.connect(timer.deleteLater)
+        timer.start(max(0, int(msec)))
+
     def _on_grid_content_tab_changed(self, _index: int) -> None:
         """The memory map tab shows what the map of the shown layer is (or would be) made of."""
 
@@ -1147,7 +1157,7 @@ class KarakalPresenter(QObject):
         generation = self._grid_layer_switch_generation
         self._show_progress_bar(visible=True, format_text=self._t("grid_layer.switching"))
         QApplication.processEvents()
-        QTimer.singleShot(0, lambda s=state, g=generation: self._finish_grid_inspection_layer_switch(s, g))
+        self._later(0, lambda s=state, g=generation: self._finish_grid_inspection_layer_switch(s, g))
 
     def _finish_grid_inspection_layer_switch(self, state: ExtendMatrixTabState, generation: int) -> None:
         if int(getattr(self, "_grid_layer_switch_generation", 0) or 0) != int(generation):
@@ -3061,7 +3071,7 @@ class KarakalPresenter(QObject):
             self._sync_grid_inspection_matrix_selector(self._current_tab_state())
             self._sync_action_buttons()
 
-        QTimer.singleShot(0, refresh)
+        self._later(0, refresh)
 
     def _focused_folder_item(self) -> QListWidgetItem | None:
         focus = QApplication.focusWidget()
@@ -4523,7 +4533,7 @@ class KarakalPresenter(QObject):
     def _schedule_metric_histogram_update(self, state: ExtendMatrixTabState) -> None:
         self._histogram_update_generation += 1
         generation = int(self._histogram_update_generation)
-        QTimer.singleShot(0, lambda s=state, g=generation: self._update_metric_histograms_chunked(s, g, 0))
+        self._later(0, lambda s=state, g=generation: self._update_metric_histograms_chunked(s, g, 0))
 
     def _update_metric_histograms_chunked(self, state: ExtendMatrixTabState, generation: int, index: int) -> None:
         if generation != self._histogram_update_generation or state.widget not in self._tab_states:
@@ -4541,7 +4551,7 @@ class KarakalPresenter(QObject):
             state.selected_percentile_bin_index = None
         histogram_items = list(histogram_cards.items())
         if index >= len(histogram_items):
-            QTimer.singleShot(
+            self._later(
                 0,
                 lambda s=state, g=generation: (
                     self._update_repeated_percentile_lists(s)
@@ -4568,7 +4578,7 @@ class KarakalPresenter(QObject):
                 active_bin=active_bin,
                 tooltip=tooltip,
             )
-        QTimer.singleShot(0, lambda s=state, g=generation, i=index + 1: self._update_metric_histograms_chunked(s, g, i))
+        self._later(0, lambda s=state, g=generation, i=index + 1: self._update_metric_histograms_chunked(s, g, i))
 
     def _connect_histogram_cards(self, state: ExtendMatrixTabState) -> None:
         preview = state.preview
@@ -5150,7 +5160,7 @@ class KarakalPresenter(QObject):
         if hasattr(self._view, "_set_app_mode"):
             self._view._set_app_mode(mode)
         if mode == "grid_inspection":
-            QTimer.singleShot(0, lambda g=refresh_generation: self._refresh_grid_inspection_mode_view_deferred(g))
+            self._later(0, lambda g=refresh_generation: self._refresh_grid_inspection_mode_view_deferred(g))
         self._sync_action_buttons()
 
     def _refresh_grid_inspection_mode_view_deferred(self, generation: int) -> None:
@@ -5228,7 +5238,7 @@ class KarakalPresenter(QObject):
             view.set_records(records, sort_mode="name", reset_view=True)
         self._sync_grid_reference_controls(state)
         self._update_grid_calibration_status()
-        QTimer.singleShot(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
+        self._later(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
 
     def _grid_inspection_error_type(self, status: str, reasons: tuple[str, ...]) -> str:
         reason_set = {str(reason) for reason in reasons}
@@ -5943,6 +5953,9 @@ class KarakalPresenter(QObject):
         return "binary"
 
     def _request_cancel_build(self) -> None:
+        controller = getattr(self, "_memory_map_controller", None)
+        if controller is not None:
+            controller.cancel_pending()
         if self._worker is None:
             return
         request_cancel = getattr(self._worker, "request_cancel", None)
@@ -6209,7 +6222,7 @@ class KarakalPresenter(QObject):
         self._auto_compute_state_after_cleanup = None
         if auto_compute_state is not None and auto_compute_state.widget in self._tab_states:
             # Scenario A: start the analysis after the index worker is fully cleaned up.
-            QTimer.singleShot(0, lambda s=auto_compute_state: self._start_compute_after_build(s))
+            self._later(0, lambda s=auto_compute_state: self._start_compute_after_build(s))
             return
         self._sync_action_buttons()
 
@@ -7305,8 +7318,12 @@ class KarakalPresenter(QObject):
             view.finalize_grid_inspection_payloads()
         if self._current_app_mode() == "grid_inspection":
             self.grid_inspection_matrix_view.viewport().update()
-            QTimer.singleShot(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
+            self._later(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
         self._sync_action_buttons()
+        controller = getattr(self, "_memory_map_controller", None)
+        if controller is not None:
+            # «Full memory analysis» goes on with the map once the defects are found.
+            self._later(0, controller.analysis_finished)
 
     def _finish_grid_inspection_summary_refresh(self, state: ExtendMatrixTabState) -> None:
         try:
@@ -7442,7 +7459,7 @@ class KarakalPresenter(QObject):
                 # The window was closed before this deferred refresh ran.
                 return
 
-        QTimer.singleShot(self.GRID_ERRORS_STREAM_REFRESH_MS, _refresh)
+        self._later(self.GRID_ERRORS_STREAM_REFRESH_MS, _refresh)
 
     def _apply_multi_model_finished_payloads(
         self,

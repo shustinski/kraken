@@ -486,8 +486,10 @@ def match_frames(a: FrameSites, b: FrameSites, kind: str, pitch: Pitch, config: 
     from scipy.spatial import cKDTree
 
     cfg = config or MemoryMapConfig()
-    known_a = a.state != PARTIAL
-    known_b = b.state != PARTIAL
+    # A defect mark is a note over the value, made frame by frame (a neighbour may see the same cell
+    # whole and unmarked): like cells cut by the edge, such sites are not compared.
+    known_a = (a.state != PARTIAL) & (a.state != DEFECT)
+    known_b = (b.state != PARTIAL) & (b.state != DEFECT)
     if np.count_nonzero(known_a) < cfg.min_compared or np.count_nonzero(known_b) < cfg.min_compared:
         return Seam(ia, ib, kind, SEAM_EMPTY)
     rows, cols = a.shape
@@ -571,6 +573,54 @@ def match_frames(a: FrameSites, b: FrameSites, kind: str, pitch: Pitch, config: 
     return Seam(ia, ib, kind, status, (tx, ty), agree, compared, lead)
 
 
+def detect_frames_per_row(
+    sites: Sequence[FrameSites],
+    pitch: Pitch,
+    config: MemoryMapConfig | None = None,
+    *,
+    samples: int = 5,
+    max_per_row: int | None = None,
+    progress=None,
+) -> int | None:
+    """Frames per row from the bits: for a few frames with memory, the frame that continues each
+    one downwards is the one whose top rows match its bottom rows. The number found for at least
+    two frames wins; None when the frames do not overlap downwards (or nothing matched)."""
+
+    cfg = config or MemoryMapConfig()
+    count = len(sites)
+    limit = min(count - 1, int(max_per_row) if max_per_row else count - 1)
+    if limit < 1:
+        return None
+    rich = [i for i, s in enumerate(sites) if s.count >= 4 * cfg.min_compared and i + 1 < count]
+    if not rich:
+        return None
+    # Spread the samples over the run, avoiding its very start (periphery) where possible.
+    picks = [rich[int(k * (len(rich) - 1) / max(1, samples - 1))] for k in range(min(samples, len(rich)))]
+    votes: dict[int, int] = {}
+    for done, index in enumerate(picks):
+        for step in range(1, limit + 1):
+            other = index + step
+            if other >= count:
+                break
+            if sites[other].count < cfg.min_compared:
+                continue
+            seam = match_frames(sites[index], sites[other], "down", pitch, cfg, ia=index, ib=other)
+            if seam.status == SEAM_BITS:
+                votes[step] = votes.get(step, 0) + 1
+                break
+        if progress is not None:
+            progress(done + 1, len(picks))
+        best = max(votes.items(), key=lambda item: item[1], default=None)
+        if best is not None and best[1] >= 2 and best[1] > sum(votes.values()) - best[1]:
+            return best[0]
+    best = max(votes.items(), key=lambda item: item[1], default=None)
+    if best is None:
+        return None
+    if best[1] >= 2 or (len(picks) == 1 and best[1] == 1):
+        return best[0]
+    return None
+
+
 def frame_neighbours(count: int, per_row: int) -> list[tuple[int, int, str]]:
     """Seams of frames laid row by row: (a, b, kind) for the right and the lower neighbour."""
 
@@ -627,6 +677,12 @@ class MemoryMap:
     disagreements: int = 0
     collisions: int = 0
     block_index: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), np.int32))
+    # A map turned or mirrored for export keeps where each site was on the built field
+    # (row, column grids; empty for the built map itself).
+    orig_rows: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), np.int32))
+    orig_cols: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), np.int32))
+    # Frames per row the map was laid out with (found from the bits when asked for «auto»).
+    per_row: int = 0
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -650,6 +706,8 @@ class MemoryMap:
             return None
         frame = self.frames[index]
         block = int(self.block_index[row, col]) if self.block_index.size else -1
+        if self.orig_rows.size:
+            row, col = int(self.orig_rows[row, col]), int(self.orig_cols[row, col])
         dx, dy = self.blocks[block].offset if 0 <= block < len(self.blocks) else (0.0, 0.0)
         px = self.origin[0] + col * self.pitch.x + dx - frame.x
         py = self.origin[1] + row * self.pitch.y + dy - frame.y
@@ -882,6 +940,7 @@ def assemble_memory_map(
         disagreements=disagreements,
         collisions=collisions,
         block_index=np.ascontiguousarray(block_index),
+        per_row=per_row,
     )
 
 
@@ -1067,7 +1126,8 @@ def build_memory_map(
     startup_timeout: float = 120.0,
 ) -> MemoryMap:
     """Read every frame, sew the seams, lay out the field. progress(stage, done, total) is called
-    as it goes («pitch», «frames», «seams», «field»); cancelled() returning True stops it.
+    as it goes («pitch», «frames», «per_row», «seams», «field»); cancelled() returning True stops it.
+    per_row <= 0 finds the frames per row from the bits.
 
     Frames are read in worker processes (in threads when processes cannot start or are off), and
     each frame's sites are kept in a cache: a second build of the same masks reads none of them.
@@ -1188,6 +1248,13 @@ def build_memory_map(
     sites = [
         r if r is not None and r.shape != (0, 0) else _empty_sites(frames[i].frame_id, shape) for i, r in enumerate(results)
     ]
+    if int(per_row) <= 0:
+        # «Auto»: frames per row from the bits.
+        report("per_row", 0, 1)
+        found = detect_frames_per_row(sites, pitch, cfg, progress=lambda done, n: report("per_row", done, n))
+        if found is None:
+            raise ValueError("frames per row could not be found from the masks; set it by hand")
+        per_row = found
     pairs = frame_neighbours(total, per_row)
     seams = []
     for index, (a, b, kind) in enumerate(pairs):

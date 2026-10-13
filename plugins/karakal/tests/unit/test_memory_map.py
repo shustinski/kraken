@@ -385,3 +385,167 @@ def test_one_network_keeps_an_all_zero_line_inside_a_block() -> None:
     mmap = assemble_memory_map(read_all(memory, positions, zeros=False), Pitch(PX, PY), per_row=4, mode=MODE_ONES, config=CFG)
     wrong, checked = _field_vs_memory(memory, mmap, positions, single=True)
     assert wrong == 0 and len(mmap.blocks) == 1
+
+
+def test_orientations_turn_and_mirror_like_numpy() -> None:
+    from karakal.core.memory_map_export import ORIENTATIONS, orient_grid
+
+    grid = np.arange(12).reshape(3, 4)
+    expected = {
+        "none": grid,
+        "rot90": np.rot90(grid, -1),
+        "rot180": np.rot90(grid, 2),
+        "rot270": np.rot90(grid, 1),
+        "transpose": grid.T,
+        "antitranspose": np.rot90(grid, 2).T,
+        "flip_h": grid[:, ::-1],
+        "flip_v": grid[::-1],
+    }
+    assert set(expected) == set(ORIENTATIONS)
+    for name, want in expected.items():
+        assert np.array_equal(orient_grid(grid, name), want), name
+
+
+def _two_block_map():
+    memory = Memory(26, 64, seed=31, gap_col=30)
+    positions = frames_of(memory, frame_rows=3, per_row=4)
+    return memory, positions, assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=4, config=CFG)
+
+
+def test_a_turned_field_keeps_every_site_and_its_frame_pixel() -> None:
+    from karakal.core.memory_map_export import oriented_map
+
+    _memory, _positions, mmap = _two_block_map()
+    turned = oriented_map(mmap, "rot90")
+    assert np.array_equal(turned.field, np.rot90(mmap.field, -1))
+    rows, cols = mmap.shape
+    for block, new in zip(mmap.blocks, turned.blocks):
+        # rot90 clockwise: (r, c) -> (c, rows - 1 - r)
+        assert (new.row, new.col, new.rows, new.cols) == (block.col, rows - (block.row + block.rows), block.cols, block.rows)
+        assert np.all(turned.block_index[new.row : new.row + new.rows, new.col : new.col + new.cols][turned.field[new.row : new.row + new.rows, new.col : new.col + new.cols] != OUTSIDE] == block.index)
+    row, col = (int(v) for v in np.argwhere(mmap.field == ONE)[5])
+    new_row, new_col = col, rows - 1 - row
+    assert turned.frame_point(new_row, new_col) == mmap.frame_point(row, col)
+
+
+def test_blocks_turned_in_place_move_apart_and_keep_their_gap() -> None:
+    from karakal.core.memory_map_export import oriented_map
+
+    _memory, _positions, mmap = _two_block_map()
+    left, right = sorted(mmap.blocks, key=lambda b: b.col)
+    gap = right.col - (left.col + left.cols)
+    flipped = oriented_map(mmap, block_orientation="flip_h")
+    for block in mmap.blocks:
+        box = (slice(block.row, block.row + block.rows), slice(block.col, block.col + block.cols))
+        assert np.array_equal(flipped.field[box], mmap.field[box][:, ::-1])
+    turned = oriented_map(mmap, block_orientation="rot90")
+    new_left, new_right = sorted(turned.blocks, key=lambda b: b.col)
+    assert (new_left.rows, new_left.cols) == (left.cols, left.rows)
+    assert new_right.col - (new_left.col + new_left.cols) == gap
+    box = (slice(new_left.row, new_left.row + new_left.rows), slice(new_left.col, new_left.col + new_left.cols))
+    original = mmap.field[left.row : left.row + left.rows, left.col : left.col + left.cols]
+    assert np.array_equal(turned.field[box], np.rot90(original, -1))
+    # Turned in place and then the whole field: still every site once.
+    both = oriented_map(mmap, "flip_v", "transpose")
+    assert int((both.field != OUTSIDE).sum()) == int((mmap.field != OUTSIDE).sum())
+
+
+def test_numbering_from_one_reverse_block_order_and_turned_table(tmp_path) -> None:
+    import csv
+
+    from karakal.core.memory_map_export import MemoryMapExport, memory_map_text, write_memory_map_files
+    from karakal.core.memory_map_export import blocks_format
+    from dataclasses import replace as dc_replace
+
+    memory, positions, mmap = _two_block_map()
+    text = memory_map_text(mmap, dc_replace(blocks_format(mmap.mode), number_from=1, block_order="reverse")).splitlines()
+    headers = [line for line in text if line.startswith("# block ")]
+    assert headers[0].startswith("# block 2") and headers[1].startswith("# block 1")
+    first = text.index(headers[0])
+    assert text[first + 1].split()[0] == "1"  # rows numbered from 1
+    written = write_memory_map_files(
+        mmap,
+        MemoryMapExport(folder=str(tmp_path), name="t", txt_field=True, png=True, csv=True, summary=True,
+                        field_orientation="rot180", block_orientation="flip_h", number_from=1),
+    )
+    rows = list(csv.DictReader((tmp_path / "t_cells.csv").open(encoding="utf-8")))
+    assert "built_row" in rows[0]
+    one = next(row for row in rows if row["state"] == "one")
+    x, y = positions[int(one["frame"][1:])]
+    assert memory.render(x, y, 1)[int(round(float(one["frame_y"]))), int(round(float(one["frame_x"])))] == 255
+    assert min(int(row["row"]) for row in rows) == 1
+    assert "turned or mirrored" in (tmp_path / "t_field.txt").read_text(encoding="utf-8")
+    assert len(written) == 4
+
+
+def test_defects_found_by_the_cell_analysis_mark_their_sites() -> None:
+    memory = Memory(26, 64, seed=41)
+    x, y = frames_of(memory, frame_rows=3, per_row=4)[0]
+    ones, zeros = memory.render(x, y, 1), memory.render(x, y, 0)
+    plain = read_frame_sites(ones, zeros, Pitch(PX, PY), config=CFG)
+    target = int(np.flatnonzero(plain.state == ONE)[10])
+    cx, cy = plain.x[target], plain.y[target]
+    marked = read_frame_sites(ones, zeros, Pitch(PX, PY), defect_boxes=[(int(cx) - 11, int(cy) - 13, 22, 26)], config=CFG)
+    assert marked.state[target] == DEFECT
+    assert int((marked.state == DEFECT).sum()) == int((plain.state == DEFECT).sum()) + 1
+
+
+def test_frames_per_row_are_found_from_the_bits(tmp_path) -> None:
+    from karakal.core.memory_map import build_memory_map, detect_frames_per_row
+
+    memory = Memory(26, 64, seed=51)
+    positions = frames_of(memory, frame_rows=3, per_row=4)
+    sites = read_all(memory, positions)
+    assert detect_frames_per_row(sites, Pitch(PX, PY), CFG) == 4
+    frames = _write_run(tmp_path, memory, positions)
+    mmap = build_memory_map(frames, per_row=0, pitch=Pitch(PX, PY), config=CFG, cache_dir=None, use_processes=False)
+    assert mmap.per_row == 4 and {s.status for s in mmap.seams} == {SEAM_BITS}
+    # Frames that do not overlap downwards: no answer rather than a guess.
+    assert detect_frames_per_row(read_all(memory, frames_of(memory, frame_rows=1, per_row=4)), Pitch(PX, PY), CFG) is None
+
+
+def test_a_defect_marked_in_one_frame_only_does_not_break_its_seam() -> None:
+    from karakal.core.memory_map import match_frames
+
+    memory = Memory(26, 64, seed=61)
+    positions = frames_of(memory, frame_rows=1, per_row=2)
+    (ax, ay), (bx, by) = positions
+    a = read_frame_sites(memory.render(ax, ay, 1), memory.render(ax, ay, 0), Pitch(PX, PY), config=CFG)
+    # The left frame's analysis marks every cell of the overlap broken; the right frame does not.
+    overlap = [(int(x) - 11, int(y) - 13, 22, 26) for x, y in zip(a.x, a.y) if x > FRAME_W - 4 * PX]
+    a_marked = read_frame_sites(memory.render(ax, ay, 1), memory.render(ax, ay, 0), Pitch(PX, PY), defect_boxes=overlap, config=CFG)
+    b = read_frame_sites(memory.render(bx, by, 1), memory.render(bx, by, 0), Pitch(PX, PY), config=CFG)
+    true = (bx - ax, by - ay)
+    assert match_frames(a, b, "right", Pitch(PX, PY), CFG).status == SEAM_BITS
+    # Every third cell of the overlap marked in one frame only: the seam still matches.
+    some = read_frame_sites(memory.render(ax, ay, 1), memory.render(ax, ay, 0), Pitch(PX, PY), defect_boxes=overlap[::3], config=CFG)
+    seam = match_frames(some, b, "right", Pitch(PX, PY), CFG)
+    assert seam.status == SEAM_BITS and abs(seam.offset[0] - true[0]) < 2 and abs(seam.offset[1] - true[1]) < 2
+    # All of it marked: nothing to compare, and the seam is not trusted (never a wrong translation).
+    assert match_frames(a_marked, b, "right", Pitch(PX, PY), CFG).status != SEAM_BITS
+
+
+def test_turning_blocks_never_loses_a_site_in_any_layout() -> None:
+    from karakal.core.memory_map import MapBlock, MemoryMap
+    from karakal.core.memory_map_export import ORIENTATIONS, oriented_map
+
+    # Like the real memory: a top band whose halves start at different rows, a wide band under it,
+    # three small blocks side by side in the periphery band, a bottom band.
+    rects = [(2, 0, 10, 30), (0, 34, 12, 26), (14, 1, 15, 28), (14, 33, 15, 27), (32, 5, 2, 6), (32, 13, 2, 5), (32, 40, 2, 7), (37, 0, 6, 60)]
+    rows, cols = 43, 61
+    field_ = np.zeros((rows, cols), np.uint8)
+    block = np.full((rows, cols), -1, np.int32)
+    rng = np.random.default_rng(3)
+    blocks = []
+    for index, (r, c, h, w) in enumerate(rects):
+        field_[r : r + h, c : c + w] = rng.integers(2, 4, size=(h, w))
+        block[r : r + h, c : c + w] = index
+        blocks.append(MapBlock(index, r, c, h, w, h * w))
+    mmap = MemoryMap("pair", Pitch(PX, PY), field_, np.zeros((rows, cols), np.int32), tuple(blocks), (), (), block_index=block)
+    for field_orientation in ORIENTATIONS:
+        for block_orientation in ORIENTATIONS:
+            turned = oriented_map(mmap, field_orientation, block_orientation)
+            assert int((turned.field != OUTSIDE).sum()) == int((field_ != OUTSIDE).sum()), (field_orientation, block_orientation)
+            for b in turned.blocks:
+                box = turned.block_index[b.row : b.row + b.rows, b.col : b.col + b.cols]
+                assert int((box == b.index).sum()) == b.sites and set(np.unique(box)) <= {-1, b.index}

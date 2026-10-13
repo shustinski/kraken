@@ -24,6 +24,8 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
+from kraken_agent.runner import PluginRegistry
+
 from kraken_manager.application.dto import ReviewReturnCommitResult, ReviewReturnPlan
 from kraken_manager.application.ports import StorageProfile
 from kraken_manager.domain.artifacts import (
@@ -32,7 +34,7 @@ from kraken_manager.domain.artifacts import (
     ArtifactVersion,
     NoteRevision,
 )
-from kraken_manager.domain.common import ProjectId
+from kraken_manager.domain.common import ProjectId, validate_uuid
 from kraken_manager.domain.identity import (
     Performer,
     Permission,
@@ -2326,6 +2328,23 @@ class RemoteServerProjectService:
         )
         return decode_model(PluginJob, payload)
 
+    def run_interactive_job(self, project_id: object, job_id: object, *, registry: PluginRegistry) -> dict[str, Any]:
+        from kraken_agent.server_worker import ServerAgentWorker
+
+        job_id = validate_uuid(str(job_id), field="job_id")
+        worker = ServerAgentWorker(
+            server_url=self.base_url,
+            token=self.auth.access_token,
+            data_dir=self.data_dir / "desktop-jobs" / str(job_id),
+            registry=registry,
+            headers={"X-Kraken-Role": str(self.acting_role)} if getattr(self, "acting_role", None) else {},
+        )
+        lease = self._call("POST", f"/api/v1/projects/{project_id}/jobs/{job_id}/desktop-lease", payload={})
+        if not isinstance(lease, Mapping) or not isinstance(lease.get("job"), dict):
+            raise RemoteServerError("Server did not grant the interactive job lease")
+        worker.token = self.auth.access_token
+        return worker.run_leased_job(lease["job"])
+
     def cancel_plugin_job(
         self,
         *,
@@ -2549,6 +2568,7 @@ class RemoteServerProjectService:
         project_id: object,
         layer_id: object,
         action_event_id: str,
+        remove_task: bool = False,
     ) -> object:
         del principal
         target = next(
@@ -2556,8 +2576,9 @@ class RemoteServerProjectService:
                 item
                 for item in self.history(project_id)
                 if item.event_id == str(action_event_id)
-                and item.event_type == "LayerPipelineActionRequested"
-                and str(item.payload.get("layer_id", "")) == str(layer_id)
+                and item.event_type in {"LayerPipelineActionRequested", "PluginJobCreated"}
+                and str(item.payload.get("layer_id", item.payload.get("manifest", {}).get("layer_id", "")))
+                == str(layer_id)
             ),
             None,
         )
@@ -2571,9 +2592,11 @@ class RemoteServerProjectService:
                 "event_type": "LayerPipelineActionRemoved",
                 "layer_id": str(layer_id),
                 "action_event_id": target.event_id,
+                "remove_task": remove_task,
+                "plugin_job_id": str(target.payload.get("plugin_job_id", "")),
                 "action": str(target.payload.get("action", "")),
             },
-            idempotency_key=f"pipeline-remove:{target.event_id}",
+            idempotency_key=f"pipeline-remove:{target.event_id}:{'task' if remove_task else 'step'}",
             if_match=self._stream_revision(project_id, stream_id),
         )
         return _RemoteHistoryEvent(payload, project_id=str(project_id))
@@ -2607,6 +2630,19 @@ class RemoteServerProjectService:
             "GET",
             f"/api/v1/projects/{project_id}/viewport?{query}",
         )
+
+    def materialize_representation_inputs(
+        self, *, principal: Principal, project: Project, layer: Layer, representation: Representation
+    ) -> tuple[object, ...]:
+        del principal
+        self._call(
+            "POST",
+            f"/api/v1/projects/{project.id}/layers/{layer.id}/representations/{representation.id}/prepare-inputs",
+            payload={},
+            idempotency_key=f"workspace-inputs:{representation.id}",
+            timeout=600,
+        )
+        return self.frame_cells(project.id, layer.id, representation.id)
 
     def frame_cells(
         self,

@@ -603,6 +603,49 @@ class EmbeddedProjectService:
     def project_workspace(self, project_id: ProjectId | str) -> ProjectWorkspaceBinding | None:
         return self.workspace_registry.get_project(str(project_id))
 
+    def bind_project_workspace(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        source_root: Path | str,
+        derived_root: Path | str,
+        idempotency_key: str,
+    ) -> ProjectWorkspaceBinding:
+        """Give an existing project new workspace folders without moving its data."""
+        current = self.get_project(project.id)
+        if current is None:
+            raise WorkspaceValidationError("project is no longer available")
+        AuthorizationPolicy().require(
+            principal=principal,
+            storage=self.profile,
+            permission=Permission.MANAGE_STRUCTURE,
+            roles=self.project_roles(current.id, principal.id),
+        )
+        existing = self.project_workspace(current.id)
+        if existing is not None:
+            return existing
+        binding = self.workspace_files.create_project(
+            project_id=str(current.id),
+            project_name=current.name,
+            source_root=source_root,
+            derived_root=derived_root,
+        )
+        try:
+            self._record_workspace_event(
+                principal=principal,
+                project_id=current.id,
+                stream_id=f"project-workspace:{current.id}",
+                event_type="ProjectWorkspaceBoundV1",
+                payload=project_workspace_to_dict(binding),
+                idempotency_key=f"{idempotency_key}:workspace",
+            )
+        except Exception:
+            self.workspace_registry.clear_project_binding(str(current.id))
+            self.workspace_files.remove_project_layout(binding)
+            raise
+        return binding
+
     def layer_file_binding(
         self, project_id: ProjectId | str, layer_id: LayerId | str
     ) -> LayerFileBinding | None:
@@ -2385,28 +2428,41 @@ class EmbeddedProjectService:
         project_id: ProjectId | str,
         layer_id: LayerId | str,
         action_event_id: str,
+        remove_task: bool = False,
     ) -> EventEnvelope:
         project = self.get_project(project_id)
         if project is None:
             raise ValueError("Project does not exist")
+        AuthorizationPolicy().require(
+            principal=principal,
+            storage=self.profiles.get(project.storage_profile),
+            permission=Permission.RUN_PLUGIN,
+            roles=self.project_roles(project.id, principal.id),
+        )
         target = next(
             (
                 event
                 for event in self.history(project.id)
                 if event.event_id == str(action_event_id)
-                and event.event_type == "LayerPipelineActionRequested"
-                and str(event.payload.get("layer_id", "")) == str(layer_id)
+                and event.event_type in {"LayerPipelineActionRequested", "PluginJobCreated"}
+                and str(event.payload.get("layer_id", event.payload.get("manifest", {}).get("layer_id", "")))
+                == str(layer_id)
             ),
             None,
         )
         if target is None:
             raise ValueError("Pipeline step does not exist in this layer")
+        if remove_task:
+            job = self._projection(project.id).get_plugin_job(PluginJobId(str(target.payload.get("plugin_job_id", ""))))
+            if job is None or job.state.value not in {"succeeded", "failed", "cancelled"}:
+                raise ValueError("Cancel the task before deleting it")
         prior = next(
             (
                 event
                 for event in self.history(project.id)
                 if event.event_type == "LayerPipelineActionRemoved"
                 and str(event.payload.get("action_event_id", "")) == target.event_id
+                and (not remove_task or event.payload.get("remove_task"))
             ),
             None,
         )
@@ -2423,6 +2479,8 @@ class EmbeddedProjectService:
             payload={
                 "layer_id": str(layer_id),
                 "action_event_id": target.event_id,
+                "remove_task": remove_task,
+                "plugin_job_id": str(target.payload.get("plugin_job_id", "")),
                 "action": str(target.payload.get("action", "")),
             },
             actor=ActorSnapshot.from_principal(principal),
@@ -2874,8 +2932,14 @@ class EmbeddedProjectService:
     def plugin_jobs(self) -> tuple[object, ...]:
         jobs: dict[str, object] = {}
         for project in self.list_projects(include_archived=True):
+            removed = {
+                str(event.payload.get("plugin_job_id", ""))
+                for event in self.history(project.id)
+                if event.event_type == "LayerPipelineActionRemoved" and event.payload.get("remove_task")
+            }
             for job in self._projection(project.id).list_plugin_jobs(project.id):
-                jobs[str(job.id)] = job
+                if str(job.id) not in removed:
+                    jobs[str(job.id)] = job
         return tuple(
             sorted(
                 jobs.values(),
@@ -2929,6 +2993,32 @@ class EmbeddedProjectService:
                     relative_path=f"inputs/{coordinate.x}_{coordinate.y}{suffix}",
                 )
             )
+        if capability == "dataset.model.train.v1":
+            dataset_id = parameters.get("dataset_version_id")
+            version = projection.get_artifact_version(ArtifactVersionId(str(dataset_id)))
+            series = None if version is None else projection.get_artifact_series(version.series_id)
+            if (
+                version is None
+                or series is None
+                or series.project_id != project.id
+                or str(series.layer_id) != str(layer_id)
+                or version.media_type != "application/zip"
+                or version.parameters.get("plugin_output_role") != "dataset"
+            ):
+                raise ValueError("Select a published dataset from this layer")
+            coordinate = next(selection.iter_coordinates())
+            selection = FrameSelectionV1(
+                row_ranges=(FrameRowRange(y=coordinate.y, x_start=coordinate.x, x_end=coordinate.x),)
+            )
+            inputs = [
+                PluginInputV1(
+                    frame_id=coordinate.frame_id(project.id),
+                    artifact_version_id=version.id,
+                    sha256=version.sha256,
+                    relative_path="inputs/dataset.zip",
+                )
+            ]
+            missing = []
         if missing:
             raise ValueError(
                 "Для запуска отсутствуют входные версии кадров: "

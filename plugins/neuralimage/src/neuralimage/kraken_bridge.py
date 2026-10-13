@@ -669,7 +669,7 @@ class NeuralImageTrainSession:
         output_directory.mkdir(exist_ok=True)
         return cls(manifest, root, result_path)
 
-    def publish_model(self) -> PluginResultManifest:
+    def publish_model(self, selected_model: Path | None = None) -> PluginResultManifest | PluginResultPublicationV2:
         models = tuple(
             path
             for path in self.output_directory.rglob("*")
@@ -679,6 +679,13 @@ class NeuralImageTrainSession:
         )
         if not models:
             raise KrakenBridgeError("В папке результата нет модели")
+        if selected_model is not None:
+            selected = selected_model.resolve(strict=True)
+            if selected not in {path.resolve(strict=True) for path in models}:
+                raise KrakenBridgeError("Select a model inside the job output directory")
+            models = (selected,)
+        if len(models) != 1:
+            raise KrakenBridgeError("Select the model to return to Kraken")
         frame_id = ""
         inputs = getattr(self.manifest, "inputs", ())
         if inputs:
@@ -694,34 +701,116 @@ class NeuralImageTrainSession:
             )
             for index, path in enumerate(models, start=1)
         )
-        result = PluginResultManifest(
-            job_id=self.manifest.job_id,
-            outcome=PluginJobOutcome.SUCCEEDED.value,
-            plugin_id="neuralimage",
-            plugin_version=APP_VERSION,
-            outputs=outputs,
-        )
+        if isinstance(self.manifest, PluginJobManifestV2):
+            source = inputs[0]
+            result = PluginResultPublicationV2(
+                job_id=self.manifest.job_id,
+                publication_id=str(uuid4()),
+                sequence=1,
+                plugin_id="neuralimage",
+                plugin_version=APP_VERSION,
+                final=True,
+                outputs=tuple(
+                    PluginAsset(
+                        asset_id=output.output_id,
+                        role="model",
+                        scope=PluginAssetScope.FRAME,
+                        relative_path=output.relative_path,
+                        sha256=output.sha256,
+                        media_type=output.media_type,
+                        frame_id=source.frame_id,
+                        x=source.x,
+                        y=source.y,
+                    )
+                    for output in outputs
+                ),
+            )
+        else:
+            result = PluginResultManifest(
+                job_id=self.manifest.job_id,
+                outcome=PluginJobOutcome.SUCCEEDED.value,
+                plugin_id="neuralimage",
+                plugin_version=APP_VERSION,
+                outputs=outputs,
+            )
         _atomic_text(self.result_manifest_path, result.to_json())
         return result
+
+    def prepare_dataset(self) -> tuple[Path, Path]:
+        from zipfile import ZipFile
+        import stat
+
+        inputs = tuple(self.manifest.inputs)
+        if len(inputs) != 1 or inputs[0].media_type != "application/zip":
+            raise KrakenBridgeError("Training requires a published dataset ZIP")
+        archive = _contained_file(self.staging_root, inputs[0].relative_path)
+        if _sha256(archive) != inputs[0].sha256:
+            raise KrakenBridgeError("Dataset checksum does not match the job")
+        destination = self.staging_root / "dataset"
+        destination.mkdir(exist_ok=False)
+        with ZipFile(archive) as stream:
+            members = stream.infolist()
+            names: set[str] = set()
+            for member in members:
+                name = safe_relative_path(member.filename.rstrip("/"))
+                if stat.S_ISLNK(member.external_attr >> 16) or name.casefold() in names:
+                    raise KrakenBridgeError("Dataset contains symbolic links or duplicate paths")
+                names.add(name.casefold())
+            for member in members:
+                target = destination / safe_relative_path(member.filename.rstrip("/"))
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with stream.open(member) as source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+        images, labels = destination / "images", destination / "cif"
+        pairs = [(path, labels / f"{path.stem}.cif") for path in images.glob("*") if path.is_file()]
+        if not pairs or any(not label.is_file() for _image, label in pairs):
+            raise KrakenBridgeError("Dataset must contain images and matching CIF labels")
+        return images, labels
 
     def run_interactive(self) -> None:
         from neuralimage.controller import AppController
         from PyQt6.QtGui import QAction, QKeySequence
-        from PyQt6.QtWidgets import QMainWindow, QMessageBox
+        from PyQt6.QtWidgets import QFileDialog, QMainWindow, QMessageBox
 
+        images, labels = self.prepare_dataset()
         controller = AppController(ui_only=False)
         presenter = getattr(controller, "main_window_presenter", None)
         window = getattr(presenter, "view", None)
         if not isinstance(window, QMainWindow):
             raise KrakenBridgeError("NeuralImage training requires the desktop window")
         window.set_result_path(str(self.output_directory))
+        window.set_jpg_path(str(images))
+        window.set_label_path(str(labels))
+        state = presenter.main_window_state
+        state.sample_folder = str(images)
+        state.label_folder = str(labels)
+        state.result_folder = str(self.output_directory)
         menu = window.menuBar().addMenu("Kraken")
         action = QAction("Вернуть модель в Kraken", window)
         action.setShortcut(QKeySequence("Ctrl+Shift+Return"))
 
         def return_model() -> None:
             try:
-                self.publish_model()
+                models = tuple(
+                    path
+                    for path in self.output_directory.rglob("*")
+                    if path.is_file() and path.suffix.casefold() in {".onnx", ".pt", ".pth", ".h5", ".keras"}
+                )
+                selected = None
+                if len(models) > 1:
+                    filename, _filter = QFileDialog.getOpenFileName(
+                        window,
+                        "Модель для Kraken",
+                        str(self.output_directory),
+                        "Модели (*.onnx *.pt *.pth *.h5 *.keras)",
+                    )
+                    if not filename:
+                        return
+                    selected = Path(filename)
+                self.publish_model(selected)
             except Exception as exc:
                 QMessageBox.critical(window, "Kraken", f"Не удалось вернуть модель:\n{exc}")
                 return
@@ -730,6 +819,7 @@ class NeuralImageTrainSession:
 
         action.triggered.connect(return_model)
         menu.addAction(action)
+        setattr(window, "_kraken_return_action", action)
         controller.exec()
 
 

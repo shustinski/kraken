@@ -36,7 +36,10 @@ def _stage_model(workspace: StagingWorkspace, parameters: dict[str, object]) -> 
         return parameters
     if len(digest) != 64:
         raise ValueError("model_sha256 is required when a model file is staged")
-    relative = f"inputs/model/{Path(source).name}"
+    filename = str(parameters.get("model_filename") or Path(source).name)
+    if Path(filename).name != filename or filename in {".", ".."}:
+        raise ValueError("Invalid model filename")
+    relative = f"inputs/model/{filename}"
     workspace.stage_file(source, relative, expected_sha256=digest)
     staged = dict(parameters)
     staged["model_relative_path"] = relative
@@ -218,4 +221,3 @@ class AgentPluginGateway:
 
 
 __all__ = ["AgentPluginGateway", "AgentUnavailable"]
-

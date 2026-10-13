@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import replace
+from uuid import UUID, uuid5
 
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.dto import (
@@ -26,11 +27,12 @@ from kraken_manager.application.ports import (
     UnitOfWorkFactory,
 )
 from kraken_manager.domain.artifacts import (
+    ArtifactScope,
     ArtifactSeries,
     ArtifactVersion,
     deterministic_frame_series_id,
 )
-from kraken_manager.domain.common import ArtifactVersionId, FrameId, PluginJobId
+from kraken_manager.domain.common import ArtifactSeriesId, ArtifactVersionId, FrameId, PluginJobId
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope, ProgramSnapshot
 from kraken_manager.domain.identity import Permission
 from kraken_manager.domain.project import ProjectState, RepresentationKind, StructureState
@@ -305,7 +307,15 @@ class SubmitPluginJobHandler:
                     or series.archived
                     or series.project_id != project.id
                     or series.layer_id != layer.id
-                    or series.frame_id != item.frame_id
+                    or (
+                        series.frame_id != item.frame_id
+                        and not (
+                            command.capability == "dataset.model.train.v1"
+                            and series.scope is ArtifactScope.LAYER_ATTACHMENT
+                            and version.media_type == "application/zip"
+                            and version.parameters.get("plugin_output_role") == "dataset"
+                        )
+                    )
                 ):
                     raise ConflictError("Plugin input artifact does not belong to the declared layer/frame")
 
@@ -522,6 +532,8 @@ class ImportPluginResultHandler:
                 accepted = required_output is not None and (result.media_type, result.role) == required_output
                 if original.capability == "dataset.model.train.v1" and result.role == "model":
                     accepted = True
+                if original.capability == "dataset.model.train.v1" and result.role != "model":
+                    raise ConflictError("Training must return a model artifact")
                 if (
                     result.outcome is PluginFrameOutcome.SUCCEEDED
                     and required_output is not None
@@ -530,8 +542,14 @@ class ImportPluginResultHandler:
                 ):
                     raise ConflictError("Plugin output format/role does not match the requested capability")
             result_frames = {item.frame_id for item in manifest.results}
-            is_partial = manifest.outcome is PluginResultOutcome.PARTIAL or result_frames != set(inputs_by_frame) or any(
-                item.outcome is not PluginFrameOutcome.SUCCEEDED for item in manifest.results
+            dataset_output = original.capability == "frames.dataset.prepare.v1"
+            model_output = original.capability == "dataset.model.train.v1"
+            aggregate_output = dataset_output or model_output
+            complete_selection = len(manifest.results) == 1 if aggregate_output else result_frames == set(inputs_by_frame)
+            is_partial = (
+                manifest.outcome is PluginResultOutcome.PARTIAL
+                or not complete_selection
+                or any(item.outcome is not PluginFrameOutcome.SUCCEEDED for item in manifest.results)
             )
 
             project = uow.projections.get_project(job.project_id)
@@ -607,14 +625,33 @@ class ImportPluginResultHandler:
                 input_version = uow.projections.get_artifact_version(input_item.artifact_version_id)
                 if input_version is None or input_version.sha256 != input_item.sha256:
                     raise ConflictError("A snapshotted plugin input version is missing or damaged")
-                series_id = deterministic_frame_series_id(target.id, result.frame_id)
+                series_id = (
+                    ArtifactSeriesId(
+                        str(
+                            uuid5(
+                                UUID(str(job.id)),
+                                "model-artifact-series" if model_output else "dataset-artifact-series",
+                            )
+                        )
+                    )
+                    if aggregate_output
+                    else deterministic_frame_series_id(target.id, result.frame_id)
+                )
                 series = uow.projections.get_artifact_series(series_id)
                 # Domain validation guarantees a normalized relative POSIX
                 # manifest path; application code must not depend on pathlib.
                 filename = result.relative_path.rsplit("/", 1)[-1]
                 new_series = series is None
-                if new_series:
-                    series = ArtifactSeries.for_frame(
+                expected_series = (
+                    ArtifactSeries(
+                        id=series_id,
+                        project_id=project.id,
+                        layer_id=job.layer_id,
+                        scope=ArtifactScope.LAYER_ATTACHMENT,
+                        name=filename,
+                    )
+                    if aggregate_output
+                    else ArtifactSeries.for_frame(
                         series_id=series_id,
                         project_id=project.id,
                         layer_id=job.layer_id,
@@ -622,12 +659,16 @@ class ImportPluginResultHandler:
                         frame_id=result.frame_id,
                         name=filename,
                     )
+                )
+                if new_series:
+                    series = expected_series
                 elif (
                     series.archived
                     or series.project_id != project.id
                     or series.layer_id != job.layer_id
-                    or series.representation_id != target.id
-                    or series.frame_id != result.frame_id
+                    or series.scope != expected_series.scope
+                    or series.representation_id != expected_series.representation_id
+                    or series.frame_id != expected_series.frame_id
                 ):
                     raise ConflictError("Canonical output artifact series has conflicting metadata")
 
@@ -648,7 +689,7 @@ class ImportPluginResultHandler:
                 active = uow.projections.get_active_artifact_version(series.id)
                 parameters = dict(manifest.parameters_applied)
                 parameters["plugin_output_role"] = result.role
-                coordinate = coordinates_by_frame.get(result.frame_id)
+                coordinate = None if aggregate_output else coordinates_by_frame.get(result.frame_id)
                 if coordinate is not None:
                     parameters["x"], parameters["y"] = coordinate
                 version = ArtifactVersion.managed(
@@ -660,7 +701,11 @@ class ImportPluginResultHandler:
                     author_principal_id=command.context.actor.id,
                     created_at=now,
                     parent_version_id=None if active is None else active.id,
-                    input_version_ids=(input_item.artifact_version_id,),
+                    input_version_ids=(
+                        tuple(item.artifact_version_id for item in original.inputs)
+                        if aggregate_output
+                        else (input_item.artifact_version_id,)
+                    ),
                     tool_name=manifest.plugin_name,
                     tool_version=manifest.plugin_version,
                     parameters=parameters,

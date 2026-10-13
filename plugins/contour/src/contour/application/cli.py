@@ -101,6 +101,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
             QTimer.singleShot(0, _finish_startup_profile)
         app.exec()
+        from PyQt6.QtCore import QEvent
+
+        window.deleteLater()
+        app.sendPostedEvents(window, QEvent.Type.DeferredDelete)
         if startup_profile is not None:
             startup_profile.finish(status="stopped")
     except BaseException:

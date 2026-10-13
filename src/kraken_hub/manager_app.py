@@ -46,7 +46,7 @@ from kraken_core.plugin_protocol import (
     WorkspacePluginContextV1,
     WorkspacePluginResultV1,
 )
-from kraken_core.plugins import PluginInventoryItem
+from kraken_core.plugins import PluginInventoryItem, is_plugin_launchable
 from kraken_core.qt import configure_application_identity
 from kraken_core.styles import load_shared_stylesheet
 from kraken_manager.application.imports import ImportMappingMode
@@ -54,7 +54,7 @@ from kraken_manager.application.analysis_runs import AnalysisRunCoordinator
 from kraken_manager.domain.artifacts import ArtifactScope, ArtifactSeries, ArtifactVersion
 from kraken_manager.domain.identity import Performer, Permission, ProjectRole
 from kraken_manager.domain.project import GridOrientation as DomainOrientation
-from kraken_manager.domain.project import LayerType, RepresentationKind, RepresentationPurpose
+from kraken_manager.domain.project import LayerType, Project, RepresentationKind, RepresentationPurpose
 from kraken_manager.infrastructure.analysis import FilesystemAnalysisStore
 from kraken_manager.infrastructure.plugin import AgentAnalysisGateway, AgentPluginGateway
 from kraken_manager.infrastructure.workspace_files import validate_workspace_roots
@@ -72,7 +72,7 @@ from kraken_manager.presentation.qt import (
 )
 from kraken_manager.presentation.qt.models import LayerListItem, ProjectListItem
 from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimensionsWidget
-from kraken_manager.workspace import DerivedRunKind
+from kraken_manager.workspace import DerivedRunKind, ProjectWorkspaceBinding
 
 from . import windows_credentials
 from .agent_runtime import LocalAgentRuntime
@@ -1034,12 +1034,30 @@ class DesktopController:
         return gateway
 
     def cancel_agent_job(self, job) -> None:
-        gateway = self._gateway_for_job(job)
+        gateway = None if self.service.is_remote_project(job.project_id) else self._gateway_for_job(job)
         self.service.cancel_plugin_job(
             principal=self.session.principal,
             gateway=gateway,
             job=job,
             idempotency_key=str(uuid4()),
+        )
+        if self.my_work_refresh is not None:
+            self.my_work_refresh()
+
+    def delete_agent_job(self, job) -> None:
+        if job.state.value not in {"succeeded", "failed", "cancelled"}:
+            self.cancel_agent_job(job)
+        creation = next(
+            event
+            for event in self.service.history(job.project_id)
+            if event.event_type == "PluginJobCreated" and str(event.payload.get("plugin_job_id", "")) == str(job.id)
+        )
+        self.service.remove_layer_pipeline_action(
+            principal=self.session.principal,
+            project_id=job.project_id,
+            layer_id=job.layer_id,
+            action_event_id=creation.event_id,
+            remove_task=True,
         )
         if self.my_work_refresh is not None:
             self.my_work_refresh()
@@ -1547,12 +1565,12 @@ class DesktopController:
             return
         is_remote = bool(getattr(self.service, "is_remote_project", lambda _id: False)(project.id))
         workspace_binding = self.service.project_workspace(project.id)
-        if workspace_binding is None and not is_remote:
-            self._error(
-                "Этот проект создан до введения двухдискового хранилища. "
-                "Автоматическая миграция отключена; создайте новый проект."
-            )
-            return
+        if (
+            workspace_binding is None
+            and not is_remote
+            and Permission.MANAGE_STRUCTURE in self.service.project_permissions(project.id, self.session.principal)
+        ):
+            workspace_binding = self._setup_project_workspace(project)
         if workspace_binding is not None:
             unavailable = [
                 path
@@ -1675,6 +1693,36 @@ class DesktopController:
                 workspace.layer_tabs.setCurrentIndex(0)
                 self._select_layer(workspace, project.id, first)
         self._configure_analysis(workspace, project.id)
+
+    def _setup_project_workspace(self, project: Project) -> ProjectWorkspaceBinding | None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            self.shell,
+            "Настроить хранилище проекта",
+            f"Для проекта «{project.name}» нужно выбрать каталоги исходных и "
+            "производных данных. Kraken создаст в них новые папки проекта.\n\n"
+            "Существующие слои, представления и история сохранятся. "
+            "Существующие файлы не будут перенесены или удалены.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return None
+        roots = _configure_workspace_roots(self.shell, self.service, force=True)
+        if roots is None:
+            return None
+        try:
+            return self.service.bind_project_workspace(
+                principal=self.session.principal,
+                project=project,
+                source_root=roots[0],
+                derived_root=roots[1],
+                idempotency_key=str(uuid4()),
+            )
+        except Exception as exc:
+            self._error(str(exc))
+            return None
 
     def _configure_analysis(self, workspace, project_id) -> None:
         from PyQt6.QtCore import QTimer
@@ -3028,7 +3076,7 @@ class DesktopController:
         self._load_representations(workspace, project_id, item.layer_id)
         if self._layer_dialog is not None:
             self._layer_dialog.select_layer(item.layer_id)
-            self._layer_dialog.set_pipeline(self._pipeline_snapshot(project_id, item.layer_id))
+            self._refresh_layer_pipeline(project_id, item.layer_id)
 
     def open_layer_manager(self) -> None:
         workspace = self._workspace
@@ -3057,8 +3105,8 @@ class DesktopController:
             str(getattr(workspace, "_selected_layer_id", "")),
         )
         selected = str(getattr(workspace, "_selected_layer_id", ""))
-        if selected:
-            self._layer_dialog.set_pipeline(self._pipeline_snapshot(project_id, selected))
+        if selected and not self._refresh_layer_pipeline(project_id, selected):
+            return
         self._layer_dialog.show()
         self._layer_dialog.raise_()
         self._layer_dialog.activateWindow()
@@ -3123,7 +3171,18 @@ class DesktopController:
             )
         self._activate_representation(workspace, self._project_id, representation_id)
         if self._layer_dialog is not None and layer_id:
-            self._layer_dialog.set_pipeline(self._pipeline_snapshot(self._project_id, layer_id))
+            self._refresh_layer_pipeline(self._project_id, layer_id)
+
+    def _refresh_layer_pipeline(self, project_id: str, layer_id: str) -> bool:
+        if self._layer_dialog is None:
+            return False
+        try:
+            snapshot = self._pipeline_snapshot(project_id, layer_id)
+        except Exception as exc:
+            self._error(f"Не удалось загрузить историю обработки слоя: {exc}")
+            return False
+        self._layer_dialog.set_pipeline(snapshot)
+        return True
 
     def _pipeline_snapshot(self, project_id, layer_id) -> LayerPipelineSnapshot:
         representations = self.service.list_representations(project_id, layer_id)
@@ -3154,6 +3213,17 @@ class DesktopController:
             if event.event_type == "LayerPipelineActionRequested"
             and str(event.payload.get("layer_id", "")) == str(layer_id)
             and event.event_id not in removed_action_ids
+        ]
+        histories = [event for event in histories if event.event_id not in removed_action_ids]
+        recorded_job_ids = {
+            str(event.payload.get("plugin_job_id", ""))
+            for event in project_history
+            if event.event_type == "PluginJobCreated"
+        }
+        action_events = [
+            event
+            for event in action_events
+            if str(event.payload.get("parameters", {}).get("plugin_job_id", "")) not in recorded_job_ids
         ]
         sources = [
             value for value in representations
@@ -3292,7 +3362,7 @@ class DesktopController:
                 declared_source = str(parameters.get("source_representation_id", ""))
                 if declared_source and declared_source != str(source.id):
                     continue
-                if target_id not in target_ids and source is not sources[0]:
+                if not declared_source and target_id not in target_ids and source is not sources[0]:
                     continue
                 job_id = str(event.payload.get("plugin_job_id", event.event_id))
                 current_event = latest_job_events.get(job_id, event)
@@ -3320,20 +3390,25 @@ class DesktopController:
                         details={
                             "время": current_event.recorded_at.isoformat(),
                             "автор": current_event.actor.display_name,
-                            "программа": (
-                                ""
-                                if program is None
-                                else f"{program.name} {program.version or ''}".strip()
-                            ),
+                            "программа": ("" if program is None else f"{program.name} {program.version or ''}".strip()),
                             "состояние": str(job.get("state", "queued")),
                             "прогресс": job.get("progress", 0),
                             "ошибка": job.get("error") or "",
                             "параметры": parameters,
+                            "pipeline_event_id": event.event_id,
+                            "job_id": job_id,
+                            "deletable": True,
                         },
                     )
                 )
                 lane_edges.append((str(source.id), job_id))
-                if output_kind:
+                if output_kind and str(job.get("state", "")) == "succeeded":
+                    output_versions = [
+                        str(item.payload.get("version_id", item.payload.get("artifact_version_id", "")))
+                        for item in project_history
+                        if item.event_type == "ArtifactVersionCreated"
+                        and str(item.payload.get("plugin_job_id", "")) == job_id
+                    ]
                     lane_nodes.append(
                         PipelineNode(
                             output_id,
@@ -3341,10 +3416,16 @@ class DesktopController:
                             output_kind,
                             str(job.get("state", "")),
                             state=str(job.get("state", "")),
-                            details={"job_id": job_id, "capability": capability},
+                            details={
+                                "job_id": job_id,
+                                "capability": capability,
+                                "artifact_version_ids": tuple(output_versions),
+                                "pipeline_event_id": event.event_id,
+                                "deletable": True,
+                            },
                         )
                     )
-                if output_id:
+                if output_id and (not output_kind or str(job.get("state", "")) == "succeeded"):
                     lane_edges.append((job_id, output_id))
             for value in lane_binaries:
                 lane_nodes.append(
@@ -4392,6 +4473,10 @@ class DesktopController:
                 self._error("Этот шаг является частью неизменяемой истории задания")
                 return
             try:
+                job_id = str(_node.details.get("job_id", ""))
+                job = next((item for item in self.service.plugin_jobs() if str(item.id) == job_id), None)
+                if job is not None and job.state.value not in {"succeeded", "failed", "cancelled"}:
+                    self.cancel_agent_job(job)
                 self.service.remove_layer_pipeline_action(
                     principal=self.session.principal,
                     project_id=self._project_id,
@@ -4413,6 +4498,28 @@ class DesktopController:
         plugin_id = "contour" if action in {"prepare_dataset", "vectorize"} else "neuralimage"
         _plugin, capability, mode = self._action_requirement(action)
         parameters: dict[str, object] = {}
+        if action == "train":
+            versions = tuple(_node.details.get("artifact_version_ids", ()))
+            if not versions and _node.details.get("path") and not self.service.is_remote_project(self._project_id):
+                try:
+                    arguments, launch_parameters = self._neural_train_launch_arguments(
+                        layer_id=str(_layer_id), node=_node
+                    )
+                    process = self._launch_managed_plugin("neuralimage", arguments=arguments)
+                    if process is not None:
+                        self._monitor_workspace_result(
+                            process,
+                            result_manifest=str(launch_parameters["workspace_result_manifest"]),
+                            workspace_run_id=str(launch_parameters["workspace_run_id"]),
+                            layer_id=str(_layer_id),
+                        )
+                except (OSError, ValueError) as exc:
+                    self._error(str(exc))
+                return
+            if not versions:
+                self._error("Выборка ещё не опубликована. Верните результат из Contour в Kraken.")
+                return
+            parameters["dataset_version_id"] = str(versions[0])
         snapshot = self._pipeline_snapshot(self._project_id, _layer_id)
         source_representation_id = next(
             (
@@ -4438,16 +4545,21 @@ class DesktopController:
             key_root = f"external-model/{self._project_id}/{_layer_id}"
             key = f"{key_root}/path"
             model_path = ""
+            model_filename = ""
             if action == "recognize":
+                version_ids = tuple(_node.details.get("artifact_version_ids", ()))
+                if version_ids:
+                    model_version = self.service.artifact_version(self._project_id, version_ids[0])
+                    if model_version is not None:
+                        model_path = str(self.service.managed_artifact_path(self._project_id, model_version.id))
+                        model_filename = model_version.filename
                 result_directory = Path(str(_node.details.get("path", "")))
-                model_path = str(
+                model_path = model_path or str(
                     next(
                         (
                             path
                             for path in result_directory.rglob("*")
-                            if path.is_file()
-                            and path.suffix.casefold()
-                            in {".onnx", ".pt", ".pth", ".h5", ".keras"}
+                            if path.is_file() and path.suffix.casefold() in {".onnx", ".pt", ".pth", ".h5", ".keras"}
                         ),
                         "",
                     )
@@ -4481,7 +4593,9 @@ class DesktopController:
                 settings.setValue(f"{key_root}/size", link.size)
                 settings.setValue(f"{key_root}/sha256", link.observed_sha256)
             parameters = {
+                **parameters,
                 "model_source_path": link.path,
+                "model_filename": model_filename or Path(link.path).name,
                 "model_sha256": link.observed_sha256,
                 "observed_size": link.size,
                 "changed_since_observation": False,
@@ -4513,6 +4627,9 @@ class DesktopController:
             )
         from PyQt6.QtWidgets import QMessageBox
 
+        if plugin_id == "contour":
+            self.shell.statusBar().showMessage("Contour запускается с изображениями слоя…", 10000)
+            return
         QMessageBox.information(
             self.shell,
             "Задание создано",
@@ -4714,12 +4831,15 @@ class DesktopController:
         if project is None:
             self._error("Проект больше не доступен")
             return False
-        if self.service.frame_cells(
+        existing = self.service.frame_cells(
             project.id,
             layer_id,
             source_representation_id,
-        ):
-            return True
+        )
+        if existing:
+            binding = getattr(self.service, "layer_file_binding", lambda *_args: None)(project.id, layer_id)
+            if binding is None or len(existing) >= len(binding.frame_positions):
+                return True
         layer = next(
             (
                 item
@@ -4753,14 +4873,14 @@ class DesktopController:
             return False
         pending.add(key)
         progress_dialog = QProgressDialog(
-            "Изображения сохраняются для запуска задания…",
+            "Подготовка изображений для просмотра и обработки…",
             "",
             0,
             0,
             self.shell,
         )
         progress_dialog.setObjectName("agentSourcePreparationProgress")
-        progress_dialog.setWindowTitle("Подготовка задания")
+        progress_dialog.setWindowTitle("Подготовка изображений")
         progress_dialog.setWindowModality(Qt.WindowModality.NonModal)
         progress_dialog.setCancelButton(None)
         progress_dialog.setMinimumDuration(0)
@@ -4793,7 +4913,7 @@ class DesktopController:
                 )
                 return
             self.shell.statusBar().showMessage(
-                "Изображения подготовлены. Задание запускается…",
+                "Изображения подготовлены.",
                 5000,
             )
             QTimer.singleShot(0, retry)
@@ -4833,6 +4953,13 @@ class DesktopController:
         is_remote = bool(
             getattr(self.service, "is_remote_project", lambda _value: False)(project.id)
         )
+        interactive_registry = None
+        if is_remote and capability in {"frames.vectorize.v1", "frames.dataset.prepare.v1", "dataset.model.train.v1"}:
+            interactive_registry = self.agent_runtime.interactive_registry(capability)
+            parameters = {**parameters, "execution_host": "desktop"}
+        elif is_remote and capability == "frames.binary-segment.v2":
+            interactive_registry = self.agent_runtime.execution_registry(capability)
+            parameters = {**parameters, "execution_host": "desktop"}
         capabilities = frozenset()
         if not is_remote:
             capabilities = self.agent_runtime.ensure_started()
@@ -4842,8 +4969,6 @@ class DesktopController:
             maximum=self.service.profile.capabilities.max_frames
         )
         if not coordinates:
-            if is_remote:
-                raise ValueError("Для серверного задания выберите кадры в матрице")
             coordinates = tuple(
                 (cell.x, cell.y)
                 for cell in self.service.frame_cells(
@@ -4858,14 +4983,44 @@ class DesktopController:
             str(project.frame_id_at(x, y)): (x, y)
             for x, y in coordinates
         }
-        if capability == "frames.vectorize.v1":
-            target_id = str(
-                workspace.vector_representation_combo.currentData() or ""
+        if capability in {"frames.vectorize.v1", "frames.binary-segment.v2"}:
+            vector_output = capability == "frames.vectorize.v1"
+            representations = self.service.list_representations(project.id, layer_id)
+            targets = [
+                item
+                for item in representations
+                if item.kind is (RepresentationKind.VECTOR if vector_output else RepresentationKind.IMAGE)
+                and (vector_output or item.purpose is RepresentationPurpose.BINARY)
+                and str(item.source_image_representation_id or "") == source_representation_id
+            ]
+            selected_id = str(workspace.vector_representation_combo.currentData() or "") if vector_output else ""
+            target = next(
+                (item for item in targets if str(item.id) == selected_id),
+                targets[0] if targets else None,
             )
-            if not target_id:
-                raise ValueError(
-                    "Сначала создайте слой CIF, связанный с исходными изображениями"
+            if target is None:
+                layer = next(
+                    (item for item in self.service.list_layers(project.id) if str(item.id) == layer_id),
+                    None,
                 )
+                source = next(
+                    (item for item in representations if str(item.id) == source_representation_id),
+                    None,
+                )
+                if layer is None or source is None or source.kind is not RepresentationKind.IMAGE:
+                    raise ValueError("Исходный слой изображений больше не доступен")
+                target = self.service.create_representation(
+                    principal=self.session.principal,
+                    project=project,
+                    layer=layer,
+                    name=f"CIF — {source.name}" if vector_output else f"NeuralImage — {source.name}",
+                    kind=RepresentationKind.VECTOR if vector_output else RepresentationKind.IMAGE,
+                    purpose=RepresentationPurpose.VECTOR if vector_output else RepresentationPurpose.BINARY,
+                    source_image_representation_id=source.id,
+                    idempotency_key=str(uuid4()),
+                    active=True,
+                )
+            target_id = str(target.id)
         else:
             target_id = source_representation_id
 
@@ -4901,7 +5056,7 @@ class DesktopController:
                 ),
             )
             self._agent_gateway = gateway
-        return self.service.submit_plugin_job(
+        job = self.service.submit_plugin_job(
             principal=self.session.principal,
             gateway=gateway,
             project_id=project.id,
@@ -4913,6 +5068,49 @@ class DesktopController:
             parameters=parameters,
             idempotency_key=str(uuid4()),
         )
+        if interactive_registry is not None:
+            self._run_remote_interactive_job(job, registry=interactive_registry)
+        return job
+
+    def _run_remote_interactive_job(self, job, *, registry) -> None:
+        project_id = str(job.project_id)
+        layer_id = str(job.layer_id)
+        worker = _BackgroundCallThread(
+            lambda: self.service.run_interactive_job(project_id, job.id, registry=registry),
+            parent=self.shell,
+        )
+        workers = getattr(self, "_background_workers", None)
+        if workers is None:
+            workers = set()
+            self._background_workers = workers
+        workers.add(worker)
+
+        def finished(result) -> None:
+            imported = result.get("imported", {})
+            state = imported.get("job", {}).get("state", "")
+            if state == "cancelled":
+                self.shell.statusBar().showMessage("??????? ????????.", 10000)
+            elif state == "failed":
+                self._error(f"Contour завершил задание со статусом: {state}")
+            elif imported.get("requires_partial_confirmation"):
+                self._error("Contour вернул неполный результат. Проверьте задание в разделе «Моя работа».")
+            else:
+                self.shell.statusBar().showMessage("Результаты Contour сохранены в проекте.", 10000)
+            if (
+                self._workspace is not None
+                and str(self._project_id) == project_id
+                and str(getattr(self._workspace, "_selected_layer_id", "")) == layer_id
+            ):
+                self._load_representations(self._workspace, project_id, layer_id)
+                self._refresh_layer_pipeline(project_id, layer_id)
+            if self.my_work_refresh is not None:
+                self.my_work_refresh()
+
+        worker.succeeded.connect(finished)
+        worker.failed.connect(lambda message: self._error(f"Не удалось завершить работу Contour: {message}"))
+        worker.finished.connect(lambda: workers.discard(worker))
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
 
     @staticmethod
     def _action_requirement(action: str) -> tuple[str, str, str]:
@@ -4948,8 +5146,10 @@ class DesktopController:
         if not requirement[0]:
             return False, f"Неизвестное действие: {action}"
         plugin_id, operation, mode = requirement
+        if plugin_id == "karakal" and getattr(self.service, "is_remote_project", lambda _id: False)(self._project_id):
+            return True, ""
         inventory = self.plugin_items.get(plugin_id)
-        if inventory is None or not inventory.installed or not inventory.metadata.enabled:
+        if inventory is None or not is_plugin_launchable(inventory) or not inventory.metadata.enabled:
             return False, f"Плагин {plugin_id} не установлен или отключён"
         capability = next(
             (
@@ -5359,7 +5559,7 @@ class DesktopController:
         arguments: tuple[str, ...] = (),
     ):
         inventory = self.plugin_items.get(plugin_id)
-        if inventory is None or not inventory.installed or not inventory.metadata.enabled:
+        if inventory is None or not is_plugin_launchable(inventory) or not inventory.metadata.enabled:
             self._error(f"Плагин {plugin_id} не установлен или отключён")
             return None
         from .app import launch_plugin
@@ -5781,6 +5981,20 @@ class DesktopController:
         )
         workspace.add_vector_representation_button.setEnabled(bool(images))
         self._refresh_matrix(workspace, project_id)
+        selected = next((item for item in images if str(item.id) == current_image_id), None)
+        if (
+            selected is not None
+            and selected.purpose is RepresentationPurpose.SOURCE
+            and selected.source
+            and selected.source != "managed-import"
+            and getattr(self.service, "is_remote_project", lambda _id: False)(project_id)
+            and self._has_permission(Permission.IMPORT_ARTIFACT)
+        ):
+            self._ensure_agent_source_ready(
+                layer_id=str(layer_id),
+                source_representation_id=current_image_id,
+                retry=lambda: self._refresh_matrix(workspace, project_id),
+            )
 
     def _activate_representation(self, workspace, project_id, representation_id: str) -> None:
         if not representation_id:
@@ -6160,15 +6374,12 @@ class DesktopController:
             self._error("Проект больше не доступен")
             return
         project_binding = self.service.project_workspace(project.id)
-        if project_binding is None:
-            is_remote = bool(
-                getattr(self.service, "is_remote_project", lambda _id: False)(
-                    project.id
-                )
-            )
-            if not is_remote:
-                self._error("Проект не привязан к двухдисковому хранилищу.")
+        is_remote = bool(getattr(self.service, "is_remote_project", lambda _id: False)(project.id))
+        if project_binding is None and not is_remote:
+            project_binding = self._setup_project_workspace(project)
+            if project_binding is None:
                 return
+        if project_binding is None:
             name, accepted = QInputDialog.getText(
                 self.shell,
                 "Новый слой",
@@ -6751,6 +6962,20 @@ def _my_work_panel(
             )
         refresh()
 
+    def delete_job(job) -> None:
+        if (
+            QMessageBox.question(
+                host, "Удалить задание", "Удалить задание из списка и pipeline? Выполнение будет отменено."
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        try:
+            controller.delete_agent_job(job)
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось удалить задание", str(exc))
+        refresh()
+
     def import_partial_job(job) -> None:
         if QMessageBox.question(
             host,
@@ -6886,6 +7111,10 @@ def _my_work_panel(
                 action_layout.addWidget(cancel_button)
             if job.error:
                 action_host.setToolTip(job.error)
+            if Permission.RUN_PLUGIN in permissions:
+                delete_button = QPushButton("Удалить", action_host)
+                delete_button.clicked.connect(lambda _checked=False, value=job: delete_job(value))
+                action_layout.addWidget(delete_button)
             table.setCellWidget(offset, 7, action_host)
 
     refresh_button.clicked.connect(refresh)

@@ -194,6 +194,7 @@ def create_app(
             actual_revision=(None if revision_match is None else int(revision_match.group(2))),
         )
 
+    @app.exception_handler(PermissionError)
     @app.exception_handler(ForbiddenError)
     async def forbidden(request: Request, exc: ForbiddenError) -> JSONResponse:
         return problem(403, "authorization.denied", "Permission denied", str(exc), str(request.url.path))
@@ -306,10 +307,26 @@ def create_app(
             return subject
         raise ForbiddenError("Project membership is required")
 
-    def agent_identity(authorization: str | None = Header(default=None)) -> Any:
-        if agent_token_store is None or not authorization or not authorization.startswith("Bearer "):
+    def desktop_identity(request: Request, subject: SessionPrincipal, job_id: str) -> tuple[Any, str]:
+        if agent_gateway is None:
+            raise HTTPException(status_code=503, detail="Server agent queue is not configured")
+        shared_mutation_actor(request, subject)
+        try:
+            identity, project_id = agent_gateway.desktop_identity(job_id, subject.principal_id)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if not has_project_access(project_id, subject):
+            raise ForbiddenError("Project membership is required")
+        backend.authorize_desktop_job(project_id, subject.principal_id)
+        return identity, project_id
+
+    def agent_identity(request: Request, authorization: str | None = Header(default=None)) -> Any:
+        if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Agent authentication required")
-        identity = agent_token_store.resolve(authorization.removeprefix("Bearer ").strip())
+        token = authorization.removeprefix("Bearer ").strip()
+        identity = None if agent_token_store is None else agent_token_store.resolve(token)
+        if identity is None and not token.startswith("kat_") and request.path_params.get("job_id"):
+            return desktop_identity(request, principal(authorization), str(request.path_params["job_id"]))[0]
         if identity is None:
             raise HTTPException(status_code=401, detail="Agent token is invalid or revoked")
         return identity
@@ -807,6 +824,28 @@ def create_app(
             payload,
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
+
+    @app.post(
+        f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations/{{representation_id}}/prepare-inputs"
+    )
+    async def prepare_representation_inputs(
+        project_id: str,
+        layer_id: str,
+        representation_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        operation = getattr(backend, "materialize_representation_inputs", None)
+        if operation is None:
+            raise HTTPException(status_code=503, detail="Сервер не поддерживает подготовку изображений")
+        async with heavy_operations:
+            return await run_in_threadpool(
+                operation,
+                project_id,
+                layer_id,
+                representation_id,
+                command_context(actor, idempotency_key, None, revision_required=False),
+            )
 
     @app.patch(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/representations/{{representation_id}}")
     def update_representation(
@@ -1377,6 +1416,24 @@ def create_app(
         lease = agent_gateway.lease(effective, seconds=int(payload.get("lease_seconds", 60)))
         return {"job": lease}
 
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/jobs/{{job_id}}/desktop-lease")
+    def lease_desktop_job(
+        project_id: str,
+        job_id: str,
+        request: Request,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+    ) -> dict[str, Any]:
+        identity, actual_project_id = desktop_identity(request, actor, job_id)
+        if actual_project_id != project_id:
+            raise NotFoundError("Job was not found in the project")
+        lease = agent_gateway.lease(identity, job_id=job_id, seconds=60)
+        if lease is None:
+            raise ConflictError("The interactive job is already running or has finished")
+        backend.start_desktop_job(
+            project_id, job_id, command_context(actor, f"desktop-start:{job_id}", None, revision_required=False)
+        )
+        return {"job": lease}
+
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/jobs")
     def list_project_jobs(
         project_id: str,
@@ -1447,22 +1504,24 @@ def create_app(
     ) -> dict[str, Any]:
         if agent_gateway is None:
             raise HTTPException(status_code=503, detail="Server agent queue is not configured")
-        if blob_gateway is None:
-            return {"mode": "proxy"}
         manifest = agent_gateway.manifest(job_id, agent)
         if version_id not in {str(item.artifact_version_id) for item in manifest.inputs}:
             raise HTTPException(status_code=403, detail="Artifact is not an input of the leased job")
         metadata = backend.get_artifact_version(str(manifest.project_id), version_id)
+        media_type = str(metadata.get("media_type", "application/octet-stream"))
+        if blob_gateway is None:
+            return {"mode": "proxy", "media_type": media_type}
         stored_blob = metadata.get("blob")
         if not isinstance(stored_blob, dict):
             raise ValidationError("Agent input does not have managed bytes")
-        return blob_gateway.ticket(
+        ticket = blob_gateway.ticket(
             "download",
             str(stored_blob.get("sha256", "")),
             int(stored_blob.get("size_bytes", -1)),
             context={"agent": agent.token_id, "job": job_id, "version": version_id,
                      "project": str(manifest.project_id)},
         )
+        return {**ticket, "media_type": media_type}
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/publications")
     def publish_agent_result(
@@ -1581,6 +1640,7 @@ def create_app(
         if agent_gateway is None:
             raise HTTPException(status_code=503, detail="Server agent queue is not configured")
         error = str(payload.get("error", ""))
+        agent_gateway.manifest(job_id, agent)
         failed = backend.fail_agent_job(job_id, error)
         agent_gateway.finish(job_id, agent, failed=True, error=error)
         return {"state": "failed", "imported": failed}

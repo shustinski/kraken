@@ -76,11 +76,7 @@ class KrakenMatrixDataSource:
             x, y = int(cell["x"]), int(cell["y"])
             number = (y - 1) * matrix_width + x
             artifact_sha256 = str(cell.get("sha256") or "")
-            asset_source_key = str(
-                cell.get("asset_sha256")
-                or cell.get("asset_source_key")
-                or ""
-            )
+            asset_source_key = str(cell.get("asset_source_key") or cell.get("asset_sha256") or "")
             version = str(cell.get("artifact_version_id") or payload.get("revision") or "")
             asset_revision = str(cell.get("asset_revision") or version)
             tooltip = (

@@ -953,6 +953,7 @@ class PipelineNodeItem(QGraphicsRectItem):
             actions = (*actions, ("Свернуть", "collapse_pipeline"))
         menu = QMenu()
         by_action = {}
+        menu.setToolTipsVisible(True)
         for label, code in actions:
             menu_action = menu.addAction(label)
             enabled, reason = (

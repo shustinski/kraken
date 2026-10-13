@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from kraken_core.plugins import PluginInventoryItem
+from kraken_core.plugins import PluginInventoryItem, is_plugin_launchable
+from kraken_agent.runner import PluginRegistry
 
 
 _KARAKAL_WORKER_OPERATIONS = frozenset(
@@ -114,16 +115,19 @@ class LocalAgentRuntime:
         protocols: dict[str, str] = {}
         for inventory in self.plugins:
             plugin = inventory.metadata
-            if not plugin.enabled or not (inventory.installed or plugin.source_dir):
+            if not plugin.enabled or not is_plugin_launchable(inventory):
                 continue
             if not plugin.capabilities:
                 continue
             plugin_root = Path(plugin.source_dir).resolve() if plugin.source_dir else None
             executable_path = plugin.executable_for().path
-            command = build_launch_command(
-                plugin,
-                root=None if plugin_root is None else plugin_root.parent.parent,
-            )
+            if not executable_path and plugin_root is not None and (plugin_root / "__main__.py").is_file():
+                command = [sys.executable, str(plugin_root / "__main__.py")]
+            else:
+                command = build_launch_command(
+                    plugin,
+                    root=None if plugin_root is None else plugin_root.parent.parent,
+                )
             for capability in plugin.capabilities:
                 if capability.operation in capabilities:
                     raise ValueError(
@@ -151,6 +155,20 @@ class LocalAgentRuntime:
         _atomic_json(target, {"plugins": specs})
         self.protocol_by_capability = protocols
         return target, frozenset(capabilities)
+
+    def interactive_registry(self, operation: str) -> PluginRegistry:
+        path, _capabilities = self._registry()
+        spec = PluginRegistry.from_json(path).get(operation)
+        if spec is None or not spec.interactive:
+            raise ValueError(f"Interactive plugin is not installed for {operation}")
+        return PluginRegistry({operation: spec})
+
+    def execution_registry(self, operation: str) -> PluginRegistry:
+        path, _capabilities = self._registry()
+        spec = PluginRegistry.from_json(path).get(operation)
+        if spec is None:
+            raise ValueError(f"Plugin is not installed for {operation}")
+        return PluginRegistry({operation: spec})
 
     def _request(
         self,

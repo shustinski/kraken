@@ -80,7 +80,14 @@ _TRANSITIONS: dict[AgentJobState, frozenset[AgentJobState]] = {
         }
     ),
     AgentJobState.WAITING_FOR_USER: frozenset(
-        {AgentJobState.RUNNING, AgentJobState.IMPORTING, AgentJobState.CANCELLED, AgentJobState.RECOVERY_REQUIRED}
+        {
+            AgentJobState.RUNNING,
+            AgentJobState.IMPORTING,
+            AgentJobState.PARTIAL,
+            AgentJobState.FAILED,
+            AgentJobState.CANCELLED,
+            AgentJobState.RECOVERY_REQUIRED,
+        }
     ),
     AgentJobState.IMPORTING: frozenset(
         {

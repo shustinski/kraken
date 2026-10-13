@@ -67,6 +67,16 @@ class PluginInventoryItem:
     installed: bool = False
 
 
+def is_plugin_launchable(item: PluginInventoryItem) -> bool:
+    """Include source entry points supported by the desktop launcher."""
+    if item.installed:
+        return True
+    if not item.metadata.source_dir:
+        return False
+    root = Path(item.metadata.source_dir)
+    return (root / "__main__.py").is_file() or (root / "src" / item.metadata.id / "__main__.py").is_file()
+
+
 def load_plugin_catalog(path: str | Path) -> list[PluginMetadata]:
     source = str(path)
     try:

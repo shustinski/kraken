@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from kraken_core.analysis_protocol import (
     AnalysisArtifactInput,
@@ -24,6 +27,71 @@ from kraken_core.analysis_run_protocol import (
     canonical_json,
 )
 from kraken_manager.infrastructure.analysis import FilesystemAnalysisStore
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_analysis_connection_closes_and_preserves_transaction_behavior(tmp_path: Path, fail: bool) -> None:
+    store = FilesystemAnalysisStore(tmp_path / "catalog", "project")
+    with store._connect() as setup:
+        setup.execute("CREATE TABLE connection_test (value INTEGER)")
+
+    class TransactionFailure(Exception):
+        pass
+
+    try:
+        with store._connect() as connection:
+            connection.execute("INSERT INTO connection_test VALUES (1)")
+            if fail:
+                raise TransactionFailure
+    except TransactionFailure:
+        assert fail
+
+    try:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            connection.execute("SELECT 1")
+        with store._connect() as check:
+            assert check.execute("SELECT COUNT(*) FROM connection_test").fetchone()[0] == (0 if fail else 1)
+    finally:
+        connection.close()
+        setup.close()
+
+
+def test_delete_project_after_opening_analysis_storage(tmp_path: Path) -> None:
+    from kraken_hub.composition import EmbeddedProjectService
+    from kraken_manager.domain.project import GridOrientation
+
+    service = EmbeddedProjectService(tmp_path / "data")
+    session = service.create_initial_account("owner", "Owner", "")
+    project = service.create_project(
+        principal=session.principal,
+        name="Delete after opening",
+        width=1,
+        height=1,
+        orientation=GridOrientation.Y_DOWN,
+        idempotency_key="project",
+    )
+    binding = service.project_workspace(project.id)
+    assert binding is not None
+    service.get_project(project.id)
+    source = Path(binding.source_project_dir) / "img" / "keep.jpg"
+    source.write_bytes(b"preserved")
+    store = FilesystemAnalysisStore(service.catalog_root, str(project.id))
+    assert store.list_runs() == ()
+    with store._connect() as connection:
+        connection.execute("SELECT 1").fetchone()
+
+    try:
+        result = service.delete_project(
+            principal=session.principal,
+            project=project,
+            confirmation_name=project.name,
+        )
+        assert result.catalog_cache_removed
+        assert not store.layout.project_dir.exists()
+        assert source.read_bytes() == b"preserved"
+        assert service.list_projects() == ()
+    finally:
+        connection.close()
 
 
 def _contracts(frame_count: int = 1001):

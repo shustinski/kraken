@@ -42,6 +42,7 @@ class ServerAgentWorker:
         data_dir: Path,
         registry: PluginRegistry,
         lease_seconds: int = 60,
+        headers: dict[str, str] | None = None,
     ) -> None:
         parsed_server = urlparse(server_url)
         if parsed_server.scheme != "https" and parsed_server.hostname not in {
@@ -52,6 +53,7 @@ class ServerAgentWorker:
             raise ValueError("Kraken Agent requires HTTPS except for a loopback server")
         self.server_url = server_url.rstrip("/")
         self.token = token
+        self.headers = dict(headers or {})
         self.data_dir = data_dir.resolve()
         self.registry = registry
         self.lease_seconds = max(30, min(int(lease_seconds), 300))
@@ -70,6 +72,7 @@ class ServerAgentWorker:
             data=body,
             method=method,
             headers={
+                **self.headers,
                 "Authorization": f"Bearer {self.token}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
@@ -91,13 +94,18 @@ class ServerAgentWorker:
         token = str(transfer["token"]) if mode == "gateway" else self.token
         request = urllib.request.Request(
             url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={**({} if mode == "gateway" else self.headers), "Authorization": f"Bearer {token}"},
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
         try:
             with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as output:
-                media_type = response.headers.get_content_type()
+                media_type = (
+                    str(transfer.get("media_type") or response.headers.get_content_type())
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                )
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
                     digest.update(chunk)
@@ -107,6 +115,18 @@ class ServerAgentWorker:
         if digest.hexdigest() != expected_sha256:
             destination.unlink(missing_ok=True)
             raise ValueError(f"Downloaded input hash mismatch: {destination.name}")
+        if media_type == "application/octet-stream":
+            # Older gateways describe raw blob bytes rather than artifact types.
+            # Frame staging preserves the original extension; hashes are checked
+            # above and the plugin still validates the actual image contents.
+            media_type = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".tif": "image/tiff",
+                ".tiff": "image/tiff",
+                ".zip": "application/zip",
+            }.get(destination.suffix.casefold(), media_type)
         return media_type
 
     def _upload(self, path: str, source: Path) -> None:
@@ -131,6 +151,7 @@ class ServerAgentWorker:
                 data=stream,
                 method="PUT" if mode == "gateway" else "POST",
                 headers={
+                    **({} if mode == "gateway" else self.headers),
                     "Authorization": f"Bearer {transfer['token'] if mode == 'gateway' else self.token}",
                     "Accept": "application/json",
                     "Content-Type": "application/octet-stream",
@@ -217,6 +238,11 @@ class ServerAgentWorker:
                     relative_path=item.relative_path,
                 )
             )
+        parameters = dict(manifest.parameters)
+        if parameters.get("execution_host") == "desktop":
+            from kraken_manager.infrastructure.plugin.agent_gateway import _stage_model
+
+            parameters = _stage_model(workspace, parameters)
         return PluginJobManifest(
             job_id=str(manifest.job_id),
             operation=manifest.capability,
@@ -225,17 +251,30 @@ class ServerAgentWorker:
             actor_id=str(manifest.actor_principal_id),
             target_representation_id=str(manifest.target_representation_id),
             inputs=tuple(inputs),
-            parameters=dict(manifest.parameters),
+            parameters=parameters,
             protocol_version=manifest.protocol_version,
         )
 
     def _heartbeat(self, job_id: str, done: threading.Event) -> None:
         while not done.wait(max(10, self.lease_seconds // 3)):
-            self._request(
-                "POST",
-                f"/api/v1/agent/jobs/{job_id}/heartbeat",
-                {"lease_seconds": self.lease_seconds},
-            )
+            try:
+                self._request("POST", f"/api/v1/agent/jobs/{job_id}/heartbeat", {"lease_seconds": self.lease_seconds})
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {403, 409}:
+                    LOGGER.exception("Server heartbeat failed for job %s", job_id)
+                    continue
+                from kraken_agent.jobs import AgentJobState, JobStateError
+
+                try:
+                    job = self.store.get(job_id)
+                    self.store.transition(job_id, AgentJobState.CANCELLED, expected_revision=job.revision)
+                except KeyError:
+                    self.runner.stop()
+                except JobStateError:
+                    LOGGER.info("Job %s already finished when its lease ended", job_id)
+                return
+            except OSError, ValueError:
+                LOGGER.exception("Server heartbeat failed for job %s", job_id)
 
     def run_once(self) -> bool:
         lease = self._request(
@@ -248,10 +287,19 @@ class ServerAgentWorker:
         ).get("job")
         if not isinstance(lease, dict):
             return False
+        try:
+            self.run_leased_job(lease)
+        except Exception:
+            LOGGER.exception("Server job %s failed", lease.get("job_id"))
+        return True
+
+    def run_leased_job(self, lease: dict[str, Any]) -> dict[str, Any]:
+        """Execute a specific lease, including staging and result publication."""
         job_id = str(lease["job_id"])
         done = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(job_id, done), daemon=True)
         try:
+            heartbeat.start()
             raw_manifest = lease["manifest"]
             schema = str(raw_manifest.get("schema", "")) if isinstance(raw_manifest, dict) else ""
             if schema in {ANALYSIS_PARTITION_JOB_SCHEMA, PLUGIN_JOB_SCHEMA_V2, PLUGIN_JOB_SCHEMA}:
@@ -269,9 +317,10 @@ class ServerAgentWorker:
                 transport = self._transport_manifest(manifest, workspace)
                 workspace.write_manifest(transport)
                 self.store.enqueue(transport)
-            heartbeat.start()
             self.runner.run_once()
             job = self.store.get(job_id)
+            if job.state.value == "cancelled":
+                return {"imported": {"job": {"state": "cancelled"}}}
             if job.result is None:
                 raise RuntimeError(job.error or "Plugin finished without a result")
             result = job.result
@@ -291,7 +340,7 @@ class ServerAgentWorker:
                 f"/api/v1/agent/jobs/{job_id}/publications",
                 result.to_dict(),
             )
-            self._request("POST", f"/api/v1/agent/jobs/{job_id}/complete", {})
+            return self._request("POST", f"/api/v1/agent/jobs/{job_id}/complete", {})
         except Exception as exc:  # noqa: BLE001 - plugin and transport failures must fail the lease
             try:
                 self._request(
@@ -301,11 +350,11 @@ class ServerAgentWorker:
                 )
             except Exception:  # noqa: BLE001 - preserve the original failure after best-effort reporting
                 LOGGER.exception("Could not report failure for server job %s", job_id)
+            raise
         finally:
             done.set()
             if heartbeat.is_alive():
                 heartbeat.join(timeout=5)
-        return True
 
     def run_forever(self, *, idle_seconds: float = 2.0) -> None:
         self.store.recover_interrupted()

@@ -631,7 +631,9 @@ class ContourMainView(QMainWindow):
         if hasattr(self._widget, "confirm_ok_to_leave_current_vectors") and not self._widget.confirm_ok_to_leave_current_vectors():
             event.ignore()
             return
-        self._widget._persist_session_state()
+        if not self._widget.close():
+            event.ignore()
+            return
         self._save_window_layout()
         super().closeEvent(event)
 

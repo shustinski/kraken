@@ -15,6 +15,7 @@ from kraken_core.plugins import (
     PluginInventoryItem,
     PluginMetadata,
     build_plugin_inventory,
+    is_plugin_launchable,
     load_plugin_catalog,
     merge_plugin_sources,
     scan_plugin_directory,
@@ -262,7 +263,7 @@ def run_legacy_gui(items: list[PluginInventoryItem], *, update_url: str = "") ->
         header_layout.addWidget(status, 1)
 
         open_button = QPushButton("Open")
-        open_button.setEnabled(plugin.enabled and item.installed)
+        open_button.setEnabled(plugin.enabled and is_plugin_launchable(item))
         open_button.clicked.connect(lambda _checked=False, selected=plugin: launch_plugin(selected))
         header_layout.addWidget(open_button)
 

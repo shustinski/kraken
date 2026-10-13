@@ -171,11 +171,20 @@ class SubprocessPluginRunner:
             if manifest.operation == "frames.vectorize.v1":
                 if output.role != "vector" or output.media_type != "application/x-cif":
                     raise ValueError("Vectorization outputs must be CIF vectors")
-            elif manifest.operation == "frames.binary-segment.v1":
+            elif manifest.operation in {"frames.binary-segment.v1", "frames.binary-segment.v2"}:
                 if output.role != "binary-image" or output.media_type != "image/png":
                     raise ValueError("Binary segmentation outputs must be lossless PNG binary images")
+            elif manifest.operation == "frames.dataset.prepare.v1":
+                if output.role != "dataset" or output.media_type != "application/zip":
+                    raise ValueError("Dataset preparation must return a dataset ZIP archive")
         outcome = PluginJobOutcome(result.outcome)
-        if outcome is PluginJobOutcome.SUCCEEDED and output_frames != set(inputs):
+        if outcome is PluginJobOutcome.SUCCEEDED and manifest.operation == "frames.dataset.prepare.v1":
+            if len(result.outputs) != 1:
+                raise ValueError("Dataset preparation must return exactly one archive for the selection")
+        elif outcome is PluginJobOutcome.SUCCEEDED and manifest.operation == "dataset.model.train.v1":
+            if not result.outputs or any(output.role != "model" for output in result.outputs):
+                raise ValueError("Training must return model artifacts")
+        elif outcome is PluginJobOutcome.SUCCEEDED and output_frames != set(inputs):
             raise ValueError("A succeeded plugin result must contain exactly one output per input frame")
         if outcome in {PluginJobOutcome.FAILED, PluginJobOutcome.CANCELLED} and result.outputs:
             raise ValueError("Failed or cancelled plugin results cannot publish outputs")

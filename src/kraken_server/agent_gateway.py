@@ -15,6 +15,10 @@ from kraken_manager.infrastructure.filesystem._codec import decode_model, encode
 
 from .agent_auth import AgentIdentity, PostgresAgentTokenStore
 
+DESKTOP_CAPABILITIES = frozenset(
+    {"frames.vectorize.v1", "frames.dataset.prepare.v1", "dataset.model.train.v1", "frames.binary-segment.v2"}
+)
+
 
 class PostgresAgentGateway:
     def __init__(self, engine: Any, tokens: PostgresAgentTokenStore, blobs: Any) -> None:
@@ -57,7 +61,28 @@ class PostgresAgentGateway:
         )
 
     def is_available(self, capability: str, protocol_version: str) -> bool:
-        return protocol_version == "1.0" and self.tokens.has_capability(capability)
+        return protocol_version == "1.0" and (
+            capability in DESKTOP_CAPABILITIES or self.tokens.has_capability(capability)
+        )
+
+    def desktop_identity(self, job_id: str, principal_id: str) -> tuple[AgentIdentity, str]:
+        import sqlalchemy as sa
+
+        with self.engine.connect() as connection:
+            payload = connection.execute(
+                sa.select(self.jobs.c.payload).where(self.jobs.c.job_id == job_id)
+            ).scalar_one_or_none()
+        if (
+            payload is None
+            or str(payload.get("actor_principal_id", "")) != principal_id
+            or payload.get("parameters", {}).get("execution_host") != "desktop"
+            or payload.get("capability") not in DESKTOP_CAPABILITIES
+        ):
+            raise PermissionError("Only the initiating user can run this interactive desktop job")
+        return (
+            AgentIdentity(f"desktop:{principal_id}", "Kraken desktop", frozenset({payload["capability"]})),
+            str(payload["project_id"]),
+        )
 
     def submit(self, manifest: PluginJobManifestV1) -> None:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -101,32 +126,42 @@ class PostgresAgentGateway:
         if result.rowcount != 1:
             raise RuntimeError("Agent job is not cancellable")
 
-    def lease(self, agent: AgentIdentity, *, seconds: int = 60) -> dict[str, Any] | None:
+    def lease(self, agent: AgentIdentity, *, seconds: int = 60, job_id: str | None = None) -> dict[str, Any] | None:
         import sqlalchemy as sa
 
         now = datetime.now(UTC)
         lease_until = now + timedelta(seconds=max(15, min(int(seconds), 300)))
         with self.engine.begin() as connection:
-            rows = connection.execute(
-                sa.select(self.jobs)
-                .where(
-                    sa.or_(
-                        sa.and_(
-                            self.jobs.c.state == "queued",
-                            sa.or_(self.jobs.c.lease_until.is_(None), self.jobs.c.lease_until < now),
+            statement = sa.select(self.jobs)
+            if job_id is not None:
+                statement = statement.where(self.jobs.c.job_id == job_id)
+            rows = (
+                connection.execute(
+                    statement.where(
+                        sa.or_(
+                            sa.and_(
+                                self.jobs.c.state == "queued",
+                                sa.or_(self.jobs.c.lease_until.is_(None), self.jobs.c.lease_until < now),
+                            ),
+                            sa.and_(self.jobs.c.state == "leased", self.jobs.c.lease_until < now),
                         ),
-                        sa.and_(self.jobs.c.state == "leased", self.jobs.c.lease_until < now),
-                    ),
+                    )
+                    .order_by(self.jobs.c.created_at)
+                    .with_for_update(skip_locked=True)
+                    .limit(100)
                 )
-                .order_by(self.jobs.c.created_at)
-                .with_for_update(skip_locked=True)
-                .limit(100)
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             row = next(
                 (
                     item
                     for item in rows
                     if str(item["payload"].get("capability", "")) in agent.capabilities
+                    and (
+                        item["payload"].get("parameters", {}).get("execution_host") != "desktop"
+                        or agent.token_id == f"desktop:{item['payload'].get('actor_principal_id', '')}"
+                    )
                 ),
                 None,
             )

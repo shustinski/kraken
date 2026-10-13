@@ -939,11 +939,11 @@ def test_my_work_exposes_review_and_agent_recovery_actions(qapp) -> None:
     assert {
         button.text()
         for button in table.cellWidget(1, 7).findChildren(QPushButton)
-    } == {"Повторить", "Отменить"}
+    } == {"Повторить", "Отменить", "Удалить"}
     assert {
         button.text()
         for button in table.cellWidget(2, 7).findChildren(QPushButton)
-    } == {"Импортировать", "Отменить"}
+    } == {"Импортировать", "Отменить", "Удалить"}
     assert controller.my_work_refresh is not None
 
 
@@ -1606,3 +1606,36 @@ def test_local_administration_page_is_wired_for_desktop_session(qapp, tmp_path) 
     assert "Создать резервную копию" in labels
     assert "Восстановить резервную копию" in labels
     assert "Подключить проект из локального каталога…" in labels
+
+
+def test_layer_manager_reports_history_failure_without_opening_dialog() -> None:
+    from kraken_hub.remote_client import RemoteServerError
+
+    controller = object.__new__(DesktopController)
+    controller._workspace = SimpleNamespace(layer_model=SimpleNamespace(items=lambda: ()), _selected_layer_id="layer")
+    controller._project_id = "project"
+    controller.shell = SimpleNamespace(current_page_key=lambda: "workspace")
+    shown = []
+    pipelines = []
+    controller._layer_dialog = SimpleNamespace(
+        set_layers=lambda *_args: None,
+        set_pipeline=pipelines.append,
+        show=lambda: shown.append(True),
+    )
+    errors = []
+    controller._error = errors.append
+
+    def fail(*_args):
+        raise RemoteServerError("History unavailable", status=500)
+
+    controller._pipeline_snapshot = fail
+    controller.open_layer_manager()
+    assert len(errors) == 1
+    assert "History unavailable" in errors[0]
+    assert shown == []
+    assert pipelines == []
+
+    snapshot = SimpleNamespace(layer_id="layer")
+    controller._pipeline_snapshot = lambda *_args: snapshot
+    assert controller._refresh_layer_pipeline("project", "layer")
+    assert pipelines == [snapshot]

@@ -227,7 +227,25 @@ class ContourKrakenSession:
             if path.is_file() and not path.is_symlink() and path.suffix.casefold() == ".zip"
         )
         if not archives:
-            raise KrakenBridgeError("Dataset preparation did not publish a zip archive")
+            from zipfile import ZIP_DEFLATED, ZipFile
+
+            images = self.output_directory / "images"
+            labels = self.output_directory / "cif"
+            pairs = [(path, labels / f"{path.stem}.cif") for path in sorted(images.glob("*")) if path.is_file()]
+            if not pairs or any(not label.is_file() for _image, label in pairs):
+                raise KrakenBridgeError("Export samples with images and CIF labels before returning the dataset")
+            archive = self.output_directory / "dataset.zip"
+            temporary = self.output_directory / ".dataset.zip.tmp"
+            try:
+                with ZipFile(temporary, "x", compression=ZIP_DEFLATED) as stream:
+                    for image, label in pairs:
+                        for path in (image, label):
+                            _resolve_relative_file(self.staging_root, path.relative_to(self.staging_root).as_posix())
+                            stream.write(path, path.relative_to(self.output_directory).as_posix())
+                os.replace(temporary, archive)
+            finally:
+                temporary.unlink(missing_ok=True)
+            archives = [archive]
         outputs: list[PluginFrameOutput] = []
         for index, archive in enumerate(archives, start=1):
             resolved = archive.resolve(strict=True)

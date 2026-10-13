@@ -237,6 +237,10 @@ class ServerServices(Protocol):
 
     def list_plugin_jobs(self, project_id: str | None = None) -> list[dict[str, Any]]: ...
 
+    def start_desktop_job(self, project_id: str, job_id: str, context: CommandContext) -> None: ...
+
+    def authorize_desktop_job(self, project_id: str, principal_id: str) -> None: ...
+
     def submit_plugin_job(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext
     ) -> dict[str, Any]: ...
@@ -973,13 +977,33 @@ class InMemoryServerServices:
 
     def list_plugin_jobs(self, project_id: str | None = None) -> list[dict[str, Any]]:
         with self._lock:
+            removed = {
+                str(event.get("payload", {}).get("plugin_job_id", ""))
+                for events in self._events.values()
+                for event in events
+                if event.get("event_type") == "LayerPipelineActionRemoved"
+                and event.get("payload", {}).get("remove_task")
+            }
             jobs = [
                 dict(job)
                 for job in self._plugin_jobs.values()
-                if project_id is None or str(job.get("project_id")) == project_id
+                if (project_id is None or str(job.get("project_id")) == project_id)
+                and str(job.get("id")) not in removed
             ]
         jobs.sort(key=lambda item: (str(item.get("updated_at", "")), str(item.get("id", ""))), reverse=True)
         return jobs
+
+    def authorize_desktop_job(self, project_id: str, principal_id: str) -> None:
+        if not self.project_roles(project_id, principal_id).get("roles"):
+            raise ForbiddenError("Project membership is required")
+
+    def start_desktop_job(self, project_id: str, job_id: str, context: CommandContext) -> None:
+        with self._lock:
+            job = self._plugin_jobs.get(job_id)
+            if job is None or str(job.get("project_id")) != project_id:
+                raise NotFoundError("Job was not found")
+            job["state"] = "running" if job["capability"] == "frames.binary-segment.v2" else "waiting_for_user"
+            job["revision"] = int(job["revision"]) + 1
 
     def submit_plugin_job(
         self, project_id: str, payload: Mapping[str, Any], context: CommandContext

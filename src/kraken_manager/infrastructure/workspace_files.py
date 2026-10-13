@@ -193,6 +193,11 @@ class WorkspaceRegistry:
     def remove_project(self, project_id: str) -> None:
         self._path(project_id).unlink(missing_ok=True)
 
+    def clear_project_binding(self, project_id: str) -> None:
+        payload = self._read(project_id)
+        payload["project"] = None
+        _atomic_json(self._path(project_id), payload)
+
     def get_project(self, project_id: str) -> ProjectWorkspaceBinding | None:
         raw = self._read(project_id).get("project")
         return ProjectWorkspaceBinding(**raw) if isinstance(raw, dict) else None

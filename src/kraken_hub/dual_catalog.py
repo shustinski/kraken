@@ -493,6 +493,9 @@ class DualCatalogService:
     def history(self, project_id, *, as_of=None):
         return self._backend(project_id).history(project_id, as_of=as_of)
 
+    def run_interactive_job(self, project_id, job_id, *, registry):
+        return self._backend(project_id).run_interactive_job(project_id, job_id, registry=registry)
+
     def activity_records(self):
         local_records = self.local.activity_records()
         remote_records = () if self.remote is None else self.remote.activity_records()

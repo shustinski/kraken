@@ -7,11 +7,15 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 from dataclasses import replace
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Any
+from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
+
+from kraken_core.safe_files import contained_path, ensure_regular_directory, open_regular_read
 
 from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
 from kraken_manager.application.authorization import AuthorizationPolicy
@@ -780,6 +784,82 @@ class PostgresServerServices:
         if project is None:
             raise NotFoundError(f"Project {project_id} was not found")
         return int(project.width) * int(project.height)
+
+    def materialize_representation_inputs(
+        self, project_id: str, layer_id: str, representation_id: str, context: CommandContext
+    ) -> dict[str, int]:
+        """Snapshot registered workspace images using the normal artifact handlers."""
+        try:
+            project = self.projections.get_project(_project_id(project_id))
+            layer = self.projections.get_layer(_layer_id(layer_id))
+            representation = self.projections.get_representation(
+                RepresentationId(validate_uuid(representation_id, field="representation_id"))
+            )
+            if (
+                project is None
+                or layer is None
+                or str(layer.project_id) != project_id
+                or representation is None
+                or representation.layer_id != layer.id
+                or str(representation.project_id) != project_id
+            ):
+                raise ApplicationNotFoundError("Source representation was not found in the project")
+            if representation.kind is not RepresentationKind.IMAGE:
+                raise ValueError("The source representation must contain images")
+            files = self.workspace_files
+            binding = None if files is None else files.registry.get_layer(project_id, layer_id)
+            if binding is None or not binding.frame_positions:
+                raise ValueError("The source layer has no registered image files")
+            root = ensure_regular_directory(binding.image_directory)
+            if Path(str(representation.source or "")).resolve() != root:
+                raise ValueError("The representation does not use the registered layer image directory")
+            application_context = self._application_context(context)
+            prepared = 0
+            for filename, position in sorted(binding.frame_positions.items(), key=lambda item: item[1]):
+                if Path(filename).name != filename or not 1 <= position <= project.frame_count:
+                    raise ValueError("Invalid registered image position or filename")
+                x = (position - 1) % project.width + 1
+                row = (position - 1) // project.width
+                y = row + 1 if project.orientation is GridOrientation.Y_DOWN else project.height - row
+                frame_id = project.frame_id_at(x, y)
+                series_id = deterministic_frame_series_id(representation.id, frame_id)
+                key = f"workspace-input:{representation.id}:{frame_id}"
+                self._create_artifact_series(
+                    CreateArtifactSeriesCommand(
+                        context=replace(application_context, idempotency_key=f"{key}:series"),
+                        project_id=project.id,
+                        scope=ArtifactScope.FRAME_REPRESENTATION,
+                        name=filename,
+                        layer_id=layer.id,
+                        representation_id=representation.id,
+                        frame_id=frame_id,
+                        series_id=series_id,
+                    )
+                )
+                if self.projections.get_active_artifact_version(series_id) is not None:
+                    prepared += 1
+                    continue
+                path = contained_path(root, (filename,))
+                with open_regular_read(path, root=root) as stream:
+                    self._add_artifact_version(
+                        AddArtifactVersionCommand(
+                            context=replace(application_context, idempotency_key=f"{key}:version"),
+                            project_id=project.id,
+                            series_id=series_id,
+                            filename=filename,
+                            media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                            expected_series_revision=self.artifact_stream_revision(project_id, str(series_id)),
+                            parameters={"x": x, "y": y, "source_path": str(path)},
+                        ),
+                        iter(lambda: stream.read(1024 * 1024), b""),
+                    )
+                prepared += 1
+            return {"prepared_frames": prepared}
+        except OSError as exc:
+            raise ValidationError(f"Не удалось подготовить исходные изображения: {exc}") from exc
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
 
     def _attach_workspace_layer(
         self,
@@ -2012,13 +2092,72 @@ class PostgresServerServices:
             projects = tuple(item for item in projects if str(item.id) == project_id)
             if not projects:
                 raise NotFoundError("Project was not found")
+        removed = {
+            str(event.payload.get("plugin_job_id", ""))
+            for project in projects
+            for event in self._pipeline_events(str(project.id))
+            if event.event_type == "LayerPipelineActionRemoved" and event.payload.get("remove_task")
+        }
         jobs = [
             job
             for project in projects
             for job in self.projections.list_plugin_jobs(project.id)
+            if str(job.id) not in removed
         ]
         jobs.sort(key=lambda item: (item.updated_at, str(item.id)), reverse=True)
         return [encode_model(item) for item in jobs]
+
+    def _pipeline_events(self, project_id: str) -> Iterator[EventEnvelope]:
+        after = 0
+        while True:
+            page = self.events.list_project_events(_project_id(project_id), after_position=after, limit=500)
+            if not page:
+                return
+            for _position, event in page:
+                yield event
+            after = page[-1][0]
+
+    def authorize_desktop_job(self, project_id: str, principal_id: str) -> None:
+        actor = self._actor(principal_id)
+        try:
+            with self.uow_factory() as uow:
+                project = uow.projections.get_project(_project_id(project_id))
+                if project is None:
+                    raise ApplicationNotFoundError("Project was not found")
+                profile = self.profiles.get(project.storage_profile)
+                if profile is None:
+                    raise ApplicationNotFoundError("Storage profile was not found")
+                AuthorizationPolicy().require(
+                    principal=actor,
+                    storage=profile,
+                    permission=Permission.RUN_PLUGIN,
+                    roles=uow.acl.roles_for(project.id, actor.id),
+                    gitlab_identity_verified=True,
+                )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+
+    def start_desktop_job(self, project_id: str, job_id: str, context: CommandContext) -> None:
+        from kraken_manager.application.plugin_jobs import SynchronizePluginJobHandler
+        from kraken_manager.application.dto import SynchronizePluginJobCommand
+
+        job = self.projections.get_plugin_job(PluginJobId(job_id))
+        if job is None:
+            raise NotFoundError("Job was not found")
+        state = "running" if job.capability == "frames.binary-segment.v2" else "waiting_for_user"
+        try:
+            SynchronizePluginJobHandler(self.uow_factory, self.profiles, SystemClock())(
+                SynchronizePluginJobCommand(
+                    context=self._application_context(context),
+                    project_id=_project_id(project_id),
+                    job_id=job.id,
+                    expected_revision=job.revision,
+                    state=state,
+                    progress=job.progress,
+                )
+            )
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
 
     def submit_plugin_job(
         self,
@@ -2074,6 +2213,32 @@ class PostgresServerServices:
                         ),
                     )
                 )
+            if str(payload.get("capability", "")) == "dataset.model.train.v1":
+                dataset_id = payload.get("parameters", {}).get("dataset_version_id")
+                version = self.projections.get_artifact_version(ArtifactVersionId(str(dataset_id)))
+                series = None if version is None else self.projections.get_artifact_series(version.series_id)
+                if (
+                    version is None
+                    or series is None
+                    or series.project_id != project.id
+                    or str(series.layer_id) != str(layer_id)
+                    or version.media_type != "application/zip"
+                    or version.parameters.get("plugin_output_role") != "dataset"
+                ):
+                    raise ValueError("Select a published dataset from this layer")
+                coordinate = next(selection.iter_coordinates())
+                selection = FrameSelectionV1(
+                    row_ranges=(FrameRowRange(y=coordinate.y, x_start=coordinate.x, x_end=coordinate.x),)
+                )
+                inputs = [
+                    PluginInputV1(
+                        frame_id=coordinate.frame_id(project.id),
+                        artifact_version_id=version.id,
+                        sha256=version.sha256,
+                        relative_path="inputs/dataset.zip",
+                    )
+                ]
+                missing = []
             if missing:
                 raise ApplicationConflictError(
                     "Missing input artifact versions for frames: " + ", ".join(missing)
@@ -2251,7 +2416,7 @@ class PostgresServerServices:
                     "display_name": event.actor.display_name,
                 },
                 "performer_id": None if event.performer_id is None else str(event.performer_id),
-                "payload": dict(event.payload),
+                "payload": encode_model(event.payload),
             }
             for position, event in page
         ]
@@ -2407,6 +2572,28 @@ class PostgresServerServices:
         event_type = str(payload.get("event_type", ""))
         if event_type not in {"LayerPipelineActionRequested", "LayerPipelineActionRemoved"}:
             raise ValidationError("Unsupported pipeline event type")
+        if event_type == "LayerPipelineActionRemoved":
+            if not isinstance(payload.get("remove_task", False), bool):
+                raise ValidationError("remove_task must be a boolean")
+            target = next(
+                (
+                    event
+                    for event in self._pipeline_events(project_id)
+                    if event.event_id == str(payload.get("action_event_id", ""))
+                ),
+                None,
+            )
+            if target is None or target.event_type not in {"LayerPipelineActionRequested", "PluginJobCreated"}:
+                raise NotFoundError("Pipeline step was not found")
+            target_layer = target.payload.get("layer_id", target.payload.get("manifest", {}).get("layer_id", ""))
+            if str(target_layer) != layer_id:
+                raise ValidationError("Pipeline step belongs to another layer")
+            if payload.get("remove_task"):
+                job_id = str(target.payload.get("plugin_job_id", ""))
+                job = self.projections.get_plugin_job(PluginJobId(job_id))
+                if job is None or job.state.value not in {"succeeded", "failed", "cancelled"}:
+                    raise ConflictError("Cancel the task before deleting it")
+                payload = {**payload, "plugin_job_id": job_id}
         return self._append_auxiliary_event(
             project_id,
             stream_id=f"layer-pipeline:{layer_id}",

@@ -102,7 +102,7 @@ def test_the_tab_builds_the_map_of_the_shown_ones_layer(tmp_path, qtbot, monkeyp
     assert panel.export_button.isEnabled()
 
     # The operator makes block 0 a service block; it shows and stays with the tab state.
-    panel.blocks_table.cellWidget(0, 3).setCurrentIndex(1)
+    panel.blocks_table.cellWidget(0, 4).setCurrentIndex(1)
     assert state.memory_map.blocks[0].service
     assert list(state.memory_map_roles.values()) == [True]
 
@@ -116,6 +116,63 @@ def test_the_tab_builds_the_map_of_the_shown_ones_layer(tmp_path, qtbot, monkeyp
     x0, y0, w, h = focus["bbox"]
     x, y = positions[index]
     assert memory.render(x, y, 1)[int(round(y0 + h / 2)), int(round(x0 + w / 2))] == 255
+    # A frame asked for by its number (from the seam diagram) opens as it is.
+    panel.frameOpenRequested.emit(3)
+    assert opened[-1][0].key == records[3].key and opened[-1][1] is None
+
+
+def _two_island_map():
+    """The memory behind a conductor with a stage jump (see test_memory_map): two islands."""
+
+    memory = Memory(26, 64, seed=71)
+    memory.bits[:, 14:18] = -1
+    positions = [
+        (x + (3.3 * PX if index % 4 else 0.0), y) for index, (x, y) in enumerate(frames_of(memory, frame_rows=3, per_row=4))
+    ]
+    return assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=4, config=CFG)
+
+
+def test_islands_show_on_the_map_in_the_table_and_the_seam_diagram(qtbot) -> None:
+    from PyQt6.QtCore import QPoint, Qt
+
+    from karakal.ui.i18n import Translator
+    from karakal.ui.memory_map_panel import MemoryMapPanel
+
+    mmap = _two_island_map()
+    assert len(mmap.islands) == 2
+    panel = MemoryMapPanel(Translator("ru").tr)
+    qtbot.addWidget(panel)
+    panel.set_map(mmap)
+    # Islands: a framed, labelled box each; the table tells the island of each block.
+    labels = [item.text() for item in panel.canvas._overlays if hasattr(item, "text")]
+    assert sorted(labels) == ["остров 0", "остров 1"]
+    assert {panel.blocks_table.item(row, 1).text() for row in range(panel.blocks_table.rowCount())} == {"0", "1"}
+    assert "Островов: 2" in panel.seams_label.text()
+
+    panel.seams_button.click()
+    dialog = panel._seams_dialog
+    assert dialog is not None and not dialog.isModal()
+    grid = dialog.grid
+    assert grid.width() >= 4 * 6 and grid.height() >= 3 * 6
+    # The right seams of the first column did not sew; the others did.
+    assert dialog.histograms["right_dx"]._values.size == 6 and dialog.histograms["agreement"]._values.size > 0
+    text = grid.frame_text(1)
+    assert "остров 1" in text or "остров 0" in text
+    assert "слева" in text and ("не сошёлся" in text or "сравнивать нечего" in text)
+    grid.repaint()
+
+    # Click: the frame shows on the map; double click: it is asked to open.
+    cell = grid._cell
+    centre = QPoint(int(1 * cell + cell / 2), int(cell / 2))
+    qtbot.mouseClick(grid, Qt.MouseButton.LeftButton, pos=centre)
+    assert panel.canvas._marker is not None
+    with qtbot.waitSignal(panel.frameOpenRequested, timeout=1000) as opened:
+        qtbot.mouseDClick(grid, Qt.MouseButton.LeftButton, pos=centre)
+    assert opened.args == [1]
+
+    # A new map reaches the open diagram.
+    panel.set_map(None)
+    assert dialog.grid._map is None and not panel.seams_button.isEnabled()
 
 
 def test_a_ones_zeros_pair_gives_the_full_map(tmp_path, qtbot, monkeypatch) -> None:

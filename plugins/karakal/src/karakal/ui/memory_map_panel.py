@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Callable
 
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -47,12 +47,15 @@ from ..core.memory_map import (
     ONE,
     OUTSIDE,
     PARTIAL,
+    PLACED_ALONE,
+    PLACED_BITS,
     SEAM_BITS,
     SEAM_EMPTY,
     STATE_NAMES,
     ZERO,
     MemoryMap,
 )
+from .memory_map_seams_dialog import SERVICE_ISLAND, island_colors
 
 # Map colours (RGB). EMPTY is amber with both networks (a missing cell) and grey with one.
 STATE_RGB = {
@@ -68,6 +71,9 @@ SINGLE_EMPTY_RGB = (96, 100, 106)
 SERVICE_COLOR = QColor(255, 176, 64)
 BLOCK_COLOR = QColor(200, 210, 222, 160)
 FRAME_COLOR = QColor(255, 216, 74, 140)
+# Frames placed without a seam of their own: joined by the usual offset, or apart on their own.
+FRAME_ESTIMATED_COLOR = QColor(255, 150, 40, 200)
+FRAME_ALONE_COLOR = QColor(240, 70, 70, 220)
 SEAM_COLOR = QColor(255, 80, 80)
 LEGEND_STATES = (ONE, ZERO, EMPTY, CONFLICT, DEFECT, PARTIAL)
 
@@ -202,6 +208,8 @@ class MemoryMapPanel(QWidget):
     frameRequested = pyqtSignal(int, int)
     # The operator's role of a block: (block index, service).
     blockRoleChanged = pyqtSignal(int, bool)
+    # A frame to open in the frame window (its index in the run).
+    frameOpenRequested = pyqtSignal(int)
 
     def __init__(self, translator: Callable[..., str], parent=None) -> None:
         super().__init__(parent)
@@ -210,7 +218,9 @@ class MemoryMapPanel(QWidget):
         self._shown: set[int] = set(LEGEND_STATES)
         self._block_lines = True
         self._frame_lines = False
+        self._island_lines = True
         self._filling_blocks = False
+        self._seams_dialog = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 4, 0, 0)
@@ -270,10 +280,11 @@ class MemoryMapPanel(QWidget):
             check.toggled.connect(lambda on, code=code: self._toggle_state(code, on))
             self.legend_checks[code] = check
             legend.addWidget(check)
-        for key, default in (("blocks", True), ("frames", False)):
+        for key, default in (("blocks", True), ("islands", True), ("frames", False)):
             check = QCheckBox(self._t(f"memory_map.show_{key}"), self)
             check.setChecked(default)
             check.toggled.connect(lambda on, key=key: self._toggle_lines(key, on))
+            check.setToolTip(self._t(f"memory_map.show_{key}_tooltip"))
             self.legend_checks[key] = check
             legend.addWidget(check)
         fit = QPushButton(self._t("memory_map.fit"), self)
@@ -294,6 +305,12 @@ class MemoryMapPanel(QWidget):
         side_scroll.setMaximumWidth(520)
         side = QWidget(side_scroll)
         self._side = side
+        self._side_scroll = side_scroll
+        # A child timer: it goes with the panel and never fires into a closed one.
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(0)
+        self._fit_timer.timeout.connect(self._fit_side_height)
         side_scroll.setWidget(side)
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(0, 0, 0, 0)
@@ -302,9 +319,15 @@ class MemoryMapPanel(QWidget):
         side_layout.addWidget(summary)
         blocks = QGroupBox(self._t("memory_map.blocks"), side)
         blocks_layout = QVBoxLayout(blocks)
-        self.blocks_table = QTableWidget(0, 4, blocks)
+        self.blocks_table = QTableWidget(0, 5, blocks)
         self.blocks_table.setHorizontalHeaderLabels(
-            [self._t("memory_map.block_no"), self._t("memory_map.block_place"), self._t("memory_map.block_sites"), self._t("memory_map.block_role")]
+            [
+                self._t("memory_map.block_no"),
+                self._t("memory_map.block_island"),
+                self._t("memory_map.block_place"),
+                self._t("memory_map.block_sites"),
+                self._t("memory_map.block_role"),
+            ]
         )
         self.blocks_table.verticalHeader().hide()
         self.blocks_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -330,8 +353,16 @@ class MemoryMapPanel(QWidget):
         self.seams_list.currentRowChanged.connect(self._show_seam)
         self.seams_list.setFixedHeight(150)
         seams_layout.addWidget(self.seams_list)
+        self.seams_button = QPushButton(self._t("memory_map.seams_open"), seams)
+        self.seams_button.setToolTip(self._t("memory_map.seams_open_tooltip"))
+        self.seams_button.setEnabled(False)
+        self.seams_button.clicked.connect(self.open_seams_dialog)
+        seams_layout.addWidget(self.seams_button)
         side_layout.addWidget(seams)
         side_layout.addStretch(1)
+        # Each part keeps at least its own height: the panel scrolls rather than lays them over each other.
+        for group in (summary, blocks, seams):
+            group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         splitter.addWidget(side_scroll)
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 1)
@@ -374,6 +405,9 @@ class MemoryMapPanel(QWidget):
     def set_map(self, mmap: MemoryMap | None, *, fit: bool = True) -> None:
         self._map = mmap
         self.export_button.setEnabled(mmap is not None)
+        self.seams_button.setEnabled(mmap is not None)
+        if self._seams_dialog is not None:
+            self._seams_dialog.set_map(mmap)
         self._update_legend_texts()
         if mmap is None:
             self.canvas.set_image(QImage(1, 1, QImage.Format.Format_RGB888), fit=True)
@@ -392,10 +426,21 @@ class MemoryMapPanel(QWidget):
 
     def _fit_side(self) -> None:
         """The side panel keeps its natural height: in a low window it scrolls instead of squeezing
-        its parts over each other."""
+        its parts over each other. Once more when the new texts have taken their style (they grow)."""
 
-        self._side.layout().activate()
-        self._side.setMinimumHeight(self._side.sizeHint().height())
+        self._fit_side_height()
+        self._fit_timer.start()
+
+    def _fit_side_height(self) -> None:
+        layout = self._side.layout()
+        layout.activate()
+        height = self._side.sizeHint().height()
+        if layout.hasHeightForWidth():
+            # Wrapped texts are as tall as they are at the narrowest the panel gets: the size hint
+            # alone counts them on one line, and they then cover the table below them.
+            narrowest = max(1, self._side_scroll.minimumWidth() - self._side_scroll.verticalScrollBar().sizeHint().width())
+            height = max(height, layout.totalHeightForWidth(narrowest))
+        self._side.setMinimumHeight(height)
 
     # --- Drawing -------------------------------------------------------------------------------
 
@@ -413,11 +458,67 @@ class MemoryMapPanel(QWidget):
                     self.canvas.add_rect(rect, SERVICE_COLOR, dashed=True, width=1.5)
                 else:
                     self.canvas.add_rect(rect, BLOCK_COLOR)
+        if self._island_lines and len(mmap.islands) > 1:
+            # Each island in its colour around its blocks: their places relative to each other are
+            # not known, the gaps between islands are the layout's, not the memory's. Islands of
+            # service blocks only are left to the blocks' own dashed frames.
+            colors = island_colors(mmap)
+            for island in mmap.islands:
+                rect = self._island_rect(island.index)
+                if rect is not None and colors[island.index] != SERVICE_ISLAND:
+                    self.canvas.add_rect(
+                        rect.adjusted(-1, -1, 1, 1),
+                        colors[island.index],
+                        width=2.0,
+                        label=self._t("memory_map.island_label", index=island.index),
+                    )
         if self._frame_lines:
-            for frame in mmap.frames:
-                x0 = (frame.x - mmap.origin[0]) / mmap.pitch.x + 0.5
-                y0 = (frame.y - mmap.origin[1]) / mmap.pitch.y + 0.5
-                self.canvas.add_rect(QRectF(x0, y0, frame.width / mmap.pitch.x, frame.height / mmap.pitch.y), FRAME_COLOR)
+            # Frames on the field (frames of no island have no memory there); those placed without a
+            # seam of their own are dashed.
+            for index in range(len(mmap.frames)):
+                frame = mmap.frames[index]
+                if frame.island < 0:
+                    continue
+                color = {PLACED_BITS: FRAME_COLOR, PLACED_ALONE: FRAME_ALONE_COLOR}.get(frame.method, FRAME_ESTIMATED_COLOR)
+                self.canvas.add_rect(self._frame_rect(index), color, dashed=frame.method != PLACED_BITS)
+
+    def _frame_rect(self, index: int) -> QRectF:
+        mmap = self._map
+        frame = mmap.frames[index]
+        x0 = (frame.x - mmap.origin[0]) / mmap.pitch.x + 0.5
+        y0 = (frame.y - mmap.origin[1]) / mmap.pitch.y + 0.5
+        return QRectF(x0, y0, frame.width / mmap.pitch.x, frame.height / mmap.pitch.y)
+
+    def _island_rect(self, index: int) -> QRectF | None:
+        blocks = [b for b in self._map.blocks if b.island == index]
+        if not blocks:
+            return None
+        r0, c0 = min(b.row for b in blocks), min(b.col for b in blocks)
+        r1, c1 = max(b.row + b.rows for b in blocks), max(b.col + b.cols for b in blocks)
+        return QRectF(c0, r0, c1 - c0, r1 - r0)
+
+    def show_frame(self, index: int) -> None:
+        """Mark a frame on the map and bring it into view."""
+
+        mmap = self._map
+        if mmap is None or not 0 <= index < len(mmap.frames):
+            return
+        rect = self._frame_rect(index)
+        self.canvas.mark(rect)
+        self.canvas.show_rect(rect)
+
+    def open_seams_dialog(self) -> None:
+        from .memory_map_seams_dialog import MemoryMapSeamsDialog
+
+        if self._seams_dialog is None:
+            self._seams_dialog = MemoryMapSeamsDialog(self._t, self._map, self)
+            self._seams_dialog.frameSelected.connect(self.show_frame)
+            self._seams_dialog.frameOpened.connect(self.frameOpenRequested.emit)
+        else:
+            self._seams_dialog.set_map(self._map)
+        self._seams_dialog.show()
+        self._seams_dialog.raise_()
+        self._seams_dialog.activateWindow()
 
     def _toggle_state(self, code: int, on: bool) -> None:
         (self._shown.add if on else self._shown.discard)(code)
@@ -426,6 +527,8 @@ class MemoryMapPanel(QWidget):
     def _toggle_lines(self, key: str, on: bool) -> None:
         if key == "blocks":
             self._block_lines = on
+        elif key == "islands":
+            self._island_lines = on
         else:
             self._frame_lines = on
         self._render()
@@ -474,10 +577,15 @@ class MemoryMapPanel(QWidget):
             lines.append((self._t("memory_map.state.empty_single"), f"{counts.get('empty', 0):,}".replace(",", " ")))
         lines.append((self._t("memory_map.state.defect"), f"{counts.get('defect', 0):,}".replace(",", " ")))
         lines.append((self._t("memory_map.disagreements"), str(mmap.disagreements)))
+        lines.append((self._t("memory_map.islands"), str(len(mmap.islands))))
         for title, value in lines:
             label = QLabel(value, self)
             label.setWordWrap(True)
             self.summary_form.addRow(title, label)
+            if title == self._t("memory_map.islands") and len(mmap.islands) > 1:
+                # The long story in the tooltip: the summary stays short.
+                label.setText(self._t("memory_map.islands_value", count=len(mmap.islands)))
+                label.setToolTip(self._t("memory_map.islands_note"))
         if mmap.mode != MODE_PAIR:
             note = QLabel(self._t("memory_map.single_note"), self)
             note.setWordWrap(True)
@@ -486,13 +594,18 @@ class MemoryMapPanel(QWidget):
     def _fill_blocks(self) -> None:
         mmap = self._map
         self._filling_blocks = True
+        colors = island_colors(mmap)
         self.blocks_table.setRowCount(len(mmap.blocks) if mmap else 0)
         for row, block in enumerate(mmap.blocks if mmap else ()):
             self.blocks_table.setItem(row, 0, QTableWidgetItem(str(block.index)))
+            island = QTableWidgetItem(str(block.island) if block.island >= 0 else "—")
+            if block.island in colors:
+                island.setForeground(colors[block.island])
+            self.blocks_table.setItem(row, 1, island)
             self.blocks_table.setItem(
-                row, 1, QTableWidgetItem(self._t("memory_map.block_place_value", row=block.row, col=block.col, rows=block.rows, cols=block.cols))
+                row, 2, QTableWidgetItem(self._t("memory_map.block_place_value", row=block.row, col=block.col, rows=block.rows, cols=block.cols))
             )
-            self.blocks_table.setItem(row, 2, QTableWidgetItem(f"{block.sites:,}".replace(",", " ")))
+            self.blocks_table.setItem(row, 3, QTableWidgetItem(f"{block.sites:,}".replace(",", " ")))
             combo = QComboBox(self.blocks_table)
             combo.addItem(self._t("memory_map.role.main"), False)
             combo.addItem(self._t("memory_map.role.service"), True)
@@ -500,7 +613,7 @@ class MemoryMapPanel(QWidget):
             combo.currentIndexChanged.connect(
                 lambda _i, combo=combo, index=block.index: self._role_changed(index, bool(combo.currentData()))
             )
-            self.blocks_table.setCellWidget(row, 3, combo)
+            self.blocks_table.setCellWidget(row, 4, combo)
         self._filling_blocks = False
 
     def _role_changed(self, index: int, service: bool) -> None:
@@ -526,7 +639,8 @@ class MemoryMapPanel(QWidget):
                 bits=counts.get(SEAM_BITS, 0),
                 empty=counts.get(SEAM_EMPTY, 0),
                 bad=sum(v for k, v in counts.items() if k not in (SEAM_BITS, SEAM_EMPTY)),
-                estimated=sum(1 for f in mmap.frames if f.method != SEAM_BITS),
+                islands=len(mmap.islands),
+                estimated=sum(1 for f in mmap.frames if f.method != PLACED_BITS and f.island >= 0),
             )
         )
         for seam in mmap.seams:
@@ -576,6 +690,8 @@ class MemoryMapPanel(QWidget):
         if block >= 0:
             service = mmap.blocks[block].service
             parts.append(self._t("memory_map.hover_block", index=block) + (f" ({self._t('memory_map.service_mark')})" if service else ""))
+            if mmap.blocks[block].island >= 0:
+                parts.append(self._t("memory_map.island_label", index=mmap.blocks[block].island))
         if point is not None:
             parts.append(self._t("memory_map.hover_frame", frame=mmap.frames[point[0]].frame_id))
         self.hover_label.setText(" · ".join(parts))

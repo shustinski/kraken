@@ -180,6 +180,11 @@ class MemoryMapExportDialog(QDialog):
             warning.setWordWrap(True)
             warning.setStyleSheet("color: #ffb040;")
             root.addWidget(warning)
+        if len(mmap.islands) > 1:
+            islands = QLabel(self._t("memory_map.export_islands_note", count=len(mmap.islands)), self)
+            islands.setWordWrap(True)
+            islands.setStyleSheet("color: #8a97a5;")
+            root.addWidget(islands)
 
         root.addWidget(QLabel(self._t("memory_map.preview"), self))
         self.preview = QPlainTextEdit(self)

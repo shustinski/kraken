@@ -221,6 +221,123 @@ def test_a_frame_without_cells_is_placed_by_the_usual_offset() -> None:
     assert all(seam.status == SEAM_BITS for seam in mmap.seams if 5 not in (seam.a, seam.b))
 
 
+def _island_vs_memory(memory: Memory, mmap, positions, island: int, columns: range | None = None) -> tuple[int, int]:
+    """Compare the memory sites one island's frames see whole with the field: (wrong, checked).
+
+    An island has a plane of its own (islands are laid apart), told by any of its frames. columns:
+    only the memory columns of this island's array (a frame may see a strip of the next array
+    behind a conductor; too small to be a block, it is not on the field)."""
+
+    members = [i for i, frame in enumerate(mmap.frames) if frame.island == island]
+    frame = mmap.frames[members[0]]
+    shift_x, shift_y = frame.x - positions[members[0]][0], frame.y - positions[members[0]][1]
+    margin_x, margin_y = 0.5 * PX, 0.5 * PY
+    wrong = checked = 0
+    rows, cols = memory.bits.shape
+    for r in range(rows):
+        for c in columns or range(cols):
+            x, y = memory.centre(r, c)
+            if not any(
+                fx + margin_x <= x <= fx + FRAME_W - margin_x and fy + margin_y <= y <= fy + FRAME_H - margin_y
+                for fx, fy in (positions[i] for i in members)
+            ):
+                continue
+            site = _field_site(mmap, x + shift_x, y + shift_y)
+            got = OUTSIDE if site is None else int(mmap.field[site])
+            checked += 1
+            wrong += int(got != _expected(memory, r, c))
+    return wrong, checked
+
+
+def test_arrays_behind_a_conductor_are_islands_laid_apart_each_read_right() -> None:
+    from karakal.core.memory_map import seam_statistics
+
+    # A conductor where the first and the second frame column overlap, and the stage jumped there:
+    # the right frames are 3.3 sites further than usual, so nothing links the two arrays by bits and
+    # the usual offset would lay the right array over the left one.
+    memory = Memory(26, 64, seed=71)
+    memory.bits[:, 14:18] = -1
+    positions = [
+        (x + (3.3 * PX if index % 4 else 0.0), y) for index, (x, y) in enumerate(frames_of(memory, frame_rows=3, per_row=4))
+    ]
+    mmap = assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=4, config=CFG)
+    assert all(seam.status != SEAM_BITS for seam in mmap.seams if seam.kind == "right" and seam.a % 4 == 0)
+    assert len(mmap.islands) == 2
+    assert sorted(island.frames for island in mmap.islands) == [3, 9]
+    assert all(frame.method == "bits" for frame in mmap.frames)
+    # Each array is read right inside its island, and every block lies in one island.
+    for island in mmap.islands:
+        left_array = mmap.frames[0].island == island.index
+        wrong, checked = _island_vs_memory(memory, mmap, positions, island.index, range(0, 14) if left_array else range(18, 64))
+        assert checked > 200 and wrong == 0, (island, wrong, checked)
+        assert island.blocks and all(mmap.blocks[b].island == island.index for b in island.blocks)
+    assert mmap.collisions == 0
+    # The islands are apart by the gap at least.
+    left, right = sorted(mmap.blocks, key=lambda b: b.col)
+    assert right.col - (left.col + left.cols) >= CFG.island_gap_sites or right.row - (left.row + left.rows) >= CFG.island_gap_sites
+    stats = seam_statistics(mmap)
+    assert np.all(np.abs(stats["right_dx"]) < 0.05) and stats["agreement"].size and stats["compared"].min() > 0
+
+
+def test_a_frame_without_trusted_seams_does_not_shift_cells_into_its_array() -> None:
+    # Frame 5 (second row, second column) shows other bits than its neighbours: none of its seams
+    # matches. The stage drifts a site sideways every other row, so its neighbours disagree on where
+    # it is; placed by a guess its cells would land a site off over theirs.
+    memory = Memory(26, 64, seed=72)
+    positions = frames_of(memory, frame_rows=3, per_row=4)
+    sites = read_all(memory, positions)
+    other = Memory(26, 64, seed=73)
+    x, y = positions[5]
+    sites[5] = read_frame_sites(other.render(x, y, 1), other.render(x, y, 0), Pitch(PX, PY), frame_id="F005", config=CFG)
+    mmap = assemble_memory_map(sites, Pitch(PX, PY), per_row=4, config=CFG)
+    assert all(seam.status != SEAM_BITS for seam in mmap.seams if 5 in (seam.a, seam.b))
+    assert mmap.frames[5].method == "alone"
+    main = mmap.frames[0].island
+    assert all(frame.island == main and frame.method == "bits" for i, frame in enumerate(mmap.frames) if i != 5)
+    # Every site the other frames see whole is right: nothing of frame 5 was laid over them.
+    wrong, checked = _island_vs_memory(memory, mmap, positions, main)
+    seen_by_others = 0
+    for r in range(26):
+        for c in range(64):
+            cx, cy = memory.centre(r, c)
+            if any(
+                fx + 0.5 * PX <= cx <= fx + FRAME_W - 0.5 * PX and fy + 0.5 * PY <= cy <= fy + FRAME_H - 0.5 * PY
+                for i, (fx, fy) in enumerate(positions)
+                if i != 5
+            ):
+                seen_by_others += 1
+    assert checked >= seen_by_others and wrong <= checked - seen_by_others
+
+
+def test_a_frame_whose_neighbours_agree_joins_their_array() -> None:
+    # No sideways drift: the usual offsets from all four neighbours agree on frame 5's place.
+    memory = Memory(26, 64, seed=74)
+    step_x, step_y = FRAME_W - 4 * PX, FRAME_H - 3 * PY
+    positions = [(fc * step_x - 10.0, fr * step_y - 5.0) for fr in range(3) for fc in range(4)]
+    sites = read_all(memory, positions)
+    # Frame 5 shows other bits where it overlaps its neighbours (none of its seams matches) and the
+    # true ones in its middle, which no other frame sees.
+    x, y = positions[5]
+    hybrid = Memory(26, 64, seed=74)
+    noise = Memory(26, 64, seed=75).bits
+    for r in range(26):
+        for c in range(64):
+            cx, cy = hybrid.centre(r, c)
+            if any(
+                fx + 0.5 * PX <= cx <= fx + FRAME_W - 0.5 * PX and fy + 0.5 * PY <= cy <= fy + FRAME_H - 0.5 * PY
+                for i, (fx, fy) in enumerate(positions)
+                if i != 5
+            ):
+                hybrid.bits[r, c] = noise[r, c]
+    sites[5] = read_frame_sites(hybrid.render(x, y, 1), hybrid.render(x, y, 0), Pitch(PX, PY), frame_id="F005", config=CFG)
+    mmap = assemble_memory_map(sites, Pitch(PX, PY), per_row=4, config=CFG)
+    assert all(seam.status != SEAM_BITS for seam in mmap.seams if 5 in (seam.a, seam.b))
+    assert mmap.frames[5].method == "estimated" and len(mmap.islands) == 1
+    # Its middle is read from it; where its neighbours see the same cells, theirs win.
+    wrong, checked = _field_vs_memory(memory, mmap, positions)
+    assert checked == 26 * 64 and wrong == 0
+
+
 def _write_run(tmp_path, memory: Memory, positions, *, ones=True, zeros=True):
     import cv2
 

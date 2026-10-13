@@ -269,6 +269,11 @@ def _header_lines(mmap: MemoryMap, fmt: TxtFormat) -> list[str]:
         f"# disagreements between frames: {mmap.disagreements}; collisions: {mmap.collisions}",
         f"# layout: {fmt.layout}; first row and column are numbered {fmt.number_from}",
     ]
+    if len(mmap.islands) > 1:
+        lines.append(
+            f"# islands: {len(mmap.islands)} (frames sewn by bits); each is right inside, but no bits link them: "
+            "their places relative to each other, and the gaps between them, are not the memory's"
+        )
     if mmap.orig_rows.size:
         lines.append("# turned or mirrored for export: rows and columns are not those of the built field")
     return lines
@@ -334,8 +339,9 @@ def memory_map_text(mmap: MemoryMap, fmt: TxtFormat, *, preview: tuple[int, int]
             grid = np.where(mmap.block_index[box] == block.index, mmap.field[box], OUTSIDE)
             if fmt.block_gap and lines:
                 lines.append("")
+            island = f", island {block.island + n}" if block.island >= 0 and len(mmap.islands) > 1 else ""
             lines.append(
-                f"# block {block.index + n}{' (service)' if block.service else ''}: field rows {block.row + n}..{block.row + block.rows - 1 + n}, "
+                f"# block {block.index + n}{' (service)' if block.service else ''}{island}: field rows {block.row + n}..{block.row + block.rows - 1 + n}, "
                 f"columns {block.col + n}..{block.col + block.cols - 1 + n} ({block.rows} x {block.cols})"
             )
             lines.extend(_rows_text(cut(grid, 3), fmt, first_row=0, first_col=0))
@@ -482,11 +488,25 @@ def memory_map_summary(mmap: MemoryMap, orientation: tuple[str, str] = ("none", 
         "pitch": {"x": round(mmap.pitch.x, 4), "y": round(mmap.pitch.y, 4)},
         "cells": mmap.counts(),
         "blocks": [
-            {"index": b.index, "row": b.row, "col": b.col, "rows": b.rows, "cols": b.cols, "sites": b.sites, "service": b.service}
+            {
+                "index": b.index,
+                "row": b.row,
+                "col": b.col,
+                "rows": b.rows,
+                "cols": b.cols,
+                "sites": b.sites,
+                "service": b.service,
+                "island": b.island,
+            }
             for b in mmap.blocks
         ],
+        # Frames sewn by bits; places of islands relative to each other are not known.
+        "islands": [
+            {"index": i.index, "frames": i.frames, "frames_by_bits": i.by_bits, "blocks": list(i.blocks)} for i in mmap.islands
+        ],
         "frames": len(frames),
-        "frames_placed_by_estimate": [f.frame_id for f in frames if f.method != SEAM_BITS],
+        "frames_placed_by_estimate": [f.frame_id for f in frames if f.method != SEAM_BITS and f.island >= 0],
+        "frames_apart": [f.frame_id for f in frames if f.method == "alone" and f.island >= 0],
         "seams": mmap.seam_counts(),
         "untrusted_seams": [
             {

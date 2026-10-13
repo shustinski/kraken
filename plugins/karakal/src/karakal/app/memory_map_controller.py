@@ -78,6 +78,7 @@ class MemoryMapController(QObject):
         panel.cancelRequested.connect(self.cancel)
         panel.exportRequested.connect(self.export)
         panel.frameRequested.connect(self.open_frame)
+        panel.frameOpenRequested.connect(self.open_frame_index)
         panel.blockRoleChanged.connect(self.set_block_role)
 
     def _t(self, key: str, **kwargs) -> str:
@@ -329,6 +330,16 @@ class MemoryMapController(QObject):
         w, h = 0.6 * mmap.pitch.x, 0.45 * mmap.pitch.y
         focus = {"bbox": [px - w / 2, py - h / 2, w, h]}
         self._presenter._open_record_details(records[index], state, grid_focus=focus)
+
+    def open_frame_index(self, index: int) -> None:
+        """A frame of the run in the frame window (from the seam diagram)."""
+
+        state = self._presenter._current_tab_state()
+        if state is None or getattr(state, "memory_map", None) is None:
+            return
+        records = tuple(state.build_result.records)
+        if 0 <= index < len(records):
+            self._presenter._open_record_details(records[index], state)
 
     def export(self) -> None:
         from ..ui.memory_map_export_dialog import MemoryMapExportDialog

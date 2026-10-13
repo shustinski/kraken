@@ -21,16 +21,20 @@ The work goes in three steps.
    translation in a plausible window is tried, and the one where the overlapping sites carry the
    same states wins. Random data make the true one unique; a seam whose best translation is not
    clearly better than the next, or has too few sites to compare, is not trusted.
-3. Field (assemble_memory_map). Frames are placed through trusted seams first; frames without one
-   (empty, periphery) take the typical offset of the trusted seams. Every trusted seam outside that
-   placement is checked against it: a seam that disagrees is reported. Sites seen by several frames
-   take the state of the frame that sees them farthest from its edge; disagreements are counted.
-   Lines of sites with nothing painted at all are gaps between blocks; the rest splits into blocks.
+3. Field (assemble_memory_map). Frames sewn by trusted seams form islands. Inside an island the
+   frames take the places that agree best with all its trusted seams; a trusted seam that disagrees
+   with the others is reported. A frame with no trusted seam of its own joins the island most of
+   its neighbours are in, by the usual offset. Islands are not linked by any bits (a conductor or
+   the periphery lies between them), so where they lie relative to each other is not known: each
+   island goes near its usual place, on the lattice of the largest one, and at least a few sites
+   apart from the others, never shifted into another by a guess. Sites seen by several frames take
+   the state of the frame placed by bits that sees them farthest from its edge; disagreements are
+   counted. Lines of sites with nothing painted at all are gaps between blocks; the rest splits
+   into blocks, each in one island.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -73,7 +77,11 @@ SEAM_EMPTY = "empty"
 SEAM_INCONSISTENT = "inconsistent"
 
 PLACED_BITS = "bits"
+# No trusted seam: joined to the island of its neighbours by the usual offset (or, without sites,
+# put where the usual offsets put it).
 PLACED_ESTIMATED = "estimated"
+# Sites but no trusted seam and no island around: an island of its own.
+PLACED_ALONE = "alone"
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +141,10 @@ class MemoryMapConfig:
     min_block_painted: float = 0.05
     # A block smaller than this share of the largest one is a service block.
     service_share: float = 0.02
+    # Islands (frames sewn together by bits) lie at least this many sites apart on the field.
+    island_gap_sites: int = 4
+    # A frame with no trusted seam joins an island when this many of its neighbours are in it.
+    attach_neighbours: int = 2
 
 
 # --- Pitch --------------------------------------------------------------------------------------
@@ -644,6 +656,9 @@ class FramePlacement:
     method: str
     width: int = 0
     height: int = 0
+    # Island of the frame (-1: none, the frame has no memory on the field) and its lattice sites.
+    island: int = -1
+    sites: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -661,6 +676,20 @@ class MapBlock:
     # A small block apart from the memory arrays (service rows, redundancy, test structures).
     # Found by size; the operator may make it a main block, or a main block a service one.
     service: bool = False
+    # The island the block was sewn in.
+    island: int = -1
+
+
+@dataclass(frozen=True, slots=True)
+class MapIsland:
+    """Frames sewn together by their bits. Inside an island every site is in its place; where the
+    island lies relative to the others is not known (no bits link them), so it is laid out apart."""
+
+    index: int
+    frames: int
+    # Of them placed by bits; the rest joined it by the usual offset.
+    by_bits: int
+    blocks: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -683,6 +712,8 @@ class MemoryMap:
     orig_cols: np.ndarray = field(default_factory=lambda: np.zeros((0, 0), np.int32))
     # Frames per row the map was laid out with (found from the bits when asked for «auto»).
     per_row: int = 0
+    # Islands that have blocks on the field, numbered from the top left.
+    islands: tuple[MapIsland, ...] = ()
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -714,9 +745,59 @@ class MemoryMap:
         return index, float(px), float(py)
 
 
+def _wrap(value: float, period: float) -> float:
+    """value moved by whole periods into [-period / 2, period / 2)."""
+
+    return float((value + 0.5 * period) % period - 0.5 * period)
+
+
+def _fit_places(
+    local: list[tuple[float, float] | None], fit: Sequence[Seam], components: Sequence[Sequence[int]]
+) -> list[tuple[float, float] | None]:
+    """Places that agree best with all these seams at once (least squares; each island keeps its
+    first frame where it is). Seams that close loops share out what one seam alone gets wrong."""
+
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import lsqr
+
+    nodes = [node for members in components for node in members]
+    if not fit or not nodes:
+        return local
+    index = {node: i for i, node in enumerate(nodes)}
+    rows: list[int] = []
+    cols: list[int] = []
+    values: list[float] = []
+    target: list[tuple[float, float]] = []
+    for seam in fit:
+        rows += [len(target), len(target)]
+        cols += [index[seam.b], index[seam.a]]
+        values += [1.0, -1.0]
+        target.append(seam.offset)
+    for members in components:
+        rows.append(len(target))
+        cols.append(index[members[0]])
+        values.append(1.0)
+        target.append(local[members[0]])  # type: ignore[arg-type]
+    matrix = coo_matrix((values, (rows, cols)), shape=(len(target), len(nodes))).tocsr()
+    start = np.array([local[node] for node in nodes], np.float64)
+    goal = np.array(target, np.float64)
+    out = list(local)
+    solved = np.empty_like(start)
+    for axis in (0, 1):
+        # The correction to the tree's places: small, so the solver converges at once.
+        step = lsqr(matrix, goal[:, axis] - matrix @ start[:, axis], atol=1e-12, btol=1e-12)[0]
+        solved[:, axis] = start[:, axis] + step
+    for node, (x, y) in zip(nodes, solved):
+        out[node] = (float(x), float(y))
+    return out
+
+
 def _place_frames(
     sites: Sequence[FrameSites], seams: Sequence[Seam], per_row: int, cfg: MemoryMapConfig, pitch: Pitch
-) -> tuple[list[tuple[float, float]], list[str], list[Seam]]:
+) -> tuple[list[tuple[float, float]], list[str], list[Seam], list[int]]:
+    """Frames in one plane: their places, how each was placed, the seams as checked, and the island
+    of each frame (-1: a frame without sites, in no island)."""
+
     count = len(sites)
     trusted = [seam for seam in seams if seam.status == SEAM_BITS]
 
@@ -725,12 +806,16 @@ def _place_frames(
         return (float(np.median(offsets[:, 0])), float(np.median(offsets[:, 1]))) if len(offsets) else fallback
 
     rows, cols = sites[0].shape if sites else (0, 0)
-    prior = {
-        "right": typical("right", (float(cols), 0.0)),
-        "down": typical("down", (0.0, float(rows))),
-    }
-    # Placement tree: trusted seams with the most evidence first (a maximum spanning forest), so
-    # a weaker trusted seam that disagrees with stronger ones stays out of it and is reported.
+    right = typical("right", (float(cols), 0.0))
+    down = typical("down", (0.0, float(rows)))
+
+    def usual(index: int) -> tuple[float, float]:
+        # Where the usual offsets put a frame in the row-by-row grid.
+        c, r = index % per_row, index // per_row
+        return (c * right[0] + r * down[0], c * right[1] + r * down[1])
+
+    # Placement tree: trusted seams with the most evidence first (a maximum spanning forest), so a
+    # weaker trusted seam that disagrees with stronger ones stays out of it and is reported.
     parent = list(range(count))
 
     def root(node: int) -> int:
@@ -740,51 +825,191 @@ def _place_frames(
         return node
 
     tree_edges: set[tuple[int, int]] = set()
+    tree_links: dict[int, list[tuple[int, tuple[float, float]]]] = {index: [] for index in range(count)}
     for seam in sorted(trusted, key=lambda item: (item.compared, item.lead), reverse=True):
         ra, rb = root(seam.a), root(seam.b)
         if ra != rb:
             parent[ra] = rb
             tree_edges.add((min(seam.a, seam.b), max(seam.a, seam.b)))
-    # Links: a tree seam carries its own offset; any other seam the typical one for its kind.
-    links: dict[int, list[tuple[int, tuple[float, float], bool]]] = {index: [] for index in range(count)}
-    for seam in seams:
-        in_tree = (min(seam.a, seam.b), max(seam.a, seam.b)) in tree_edges
-        offset = seam.offset if in_tree else prior[seam.kind]
-        links[seam.a].append((seam.b, offset, in_tree))
-        links[seam.b].append((seam.a, (-offset[0], -offset[1]), in_tree))
-    position: list[tuple[float, float] | None] = [None] * count
-    method = [PLACED_ESTIMATED] * count
-    if count:
-        start = max(range(count), key=lambda i: sum(1 for _o, _off, tree in links[i] if tree))
-        # 0-1 BFS: a frame is placed when taken from the queue, by the fewest estimated links.
-        queue: deque[tuple[int, tuple[float, float], str]] = deque([(start, (0.0, 0.0), PLACED_BITS)])
-        while queue:
-            node, where, how = queue.popleft()
-            if position[node] is not None:
-                continue
-            position[node], method[node] = where, how
-            for other, offset, in_tree in links[node]:
-                if position[other] is not None:
-                    continue
-                item = (other, (where[0] + offset[0], where[1] + offset[1]), PLACED_BITS if in_tree else PLACED_ESTIMATED)
-                (queue.appendleft if in_tree else queue.append)(item)
-        # Frames with no seams at all: their place in the row-by-row grid.
-        for index in range(count):
-            if position[index] is None:
-                position[index] = (
-                    (index % per_row) * prior["right"][0] + (index // per_row) * prior["down"][0],
-                    (index % per_row) * prior["right"][1] + (index // per_row) * prior["down"][1],
-                )
-    checked = []
+            tree_links[seam.a].append((seam.b, seam.offset))
+            tree_links[seam.b].append((seam.a, (-seam.offset[0], -seam.offset[1])))
+    # Islands: the trees. Places inside an island are counted from its first frame.
+    local: list[tuple[float, float] | None] = [None] * count
+    island = [-1] * count
+    components: list[list[int]] = []
+    for start in range(count):
+        if local[start] is not None or not tree_links[start]:
+            continue
+        members, stack = [start], [start]
+        local[start], island[start] = (0.0, 0.0), len(components)
+        while stack:
+            node = stack.pop()
+            for other, offset in tree_links[node]:
+                if local[other] is None:
+                    local[other] = (local[node][0] + offset[0], local[node][1] + offset[1])  # type: ignore[index]
+                    island[other] = island[start]
+                    members.append(other)
+                    stack.append(other)
+        components.append(members)
+    # Every trusted seam outside the tree is checked against it; those that agree refine the places.
     limit = cfg.seam_tolerance * min(pitch.x, pitch.y)
+    checked: list[Seam] = []
+    fit: list[Seam] = []
     for seam in seams:
-        if seam.status == SEAM_BITS and (min(seam.a, seam.b), max(seam.a, seam.b)) not in tree_edges:
-            pa, pb = position[seam.a], position[seam.b]
-            residual = np.hypot(pb[0] - pa[0] - seam.offset[0], pb[1] - pa[1] - seam.offset[1])
-            if residual > limit:
-                seam = Seam(seam.a, seam.b, seam.kind, SEAM_INCONSISTENT, seam.offset, seam.agreement, seam.compared, seam.lead)
+        if seam.status == SEAM_BITS:
+            if (min(seam.a, seam.b), max(seam.a, seam.b)) not in tree_edges:
+                pa, pb = local[seam.a], local[seam.b]
+                residual = np.hypot(pb[0] - pa[0] - seam.offset[0], pb[1] - pa[1] - seam.offset[1])  # type: ignore[index]
+                if residual > limit:
+                    seam = replace(seam, status=SEAM_INCONSISTENT)
+            if seam.status == SEAM_BITS:
+                fit.append(seam)
         checked.append(seam)
-    return [p for p in position], method, checked  # type: ignore[misc]
+    local = _fit_places(local, fit, components)
+    method = [PLACED_BITS if island[index] >= 0 else PLACED_ESTIMATED for index in range(count)]
+
+    # A frame with sites but no trusted seam (its seams failed) joins the island most of its
+    # neighbours are in, by the usual offsets from them, when those agree on its place: a hole in
+    # an array stays in the array. Where they disagree (the stage drifts) a guess could shift its
+    # cells by a site, so it stays an island of its own.
+    def neighbours(index: int):
+        if index % per_row:
+            yield index - 1, right
+        if (index + 1) % per_row and index + 1 < count:
+            yield index + 1, (-right[0], -right[1])
+        if index - per_row >= 0:
+            yield index - per_row, down
+        if index + per_row < count:
+            yield index + per_row, (-down[0], -down[1])
+
+    joined = True
+    while joined:
+        joined = False
+        for index in range(count):
+            if island[index] >= 0 or not sites[index].count:
+                continue
+            votes: dict[int, list[tuple[float, float]]] = {}
+            for other, step in neighbours(index):
+                if island[other] >= 0:
+                    where = local[other]
+                    votes.setdefault(island[other], []).append((where[0] + step[0], where[1] + step[1]))  # type: ignore[index]
+            best = max(votes, key=lambda k: (len(votes[k]), len(components[k])), default=None)
+            if best is None or len(votes[best]) < cfg.attach_neighbours:
+                continue
+            guesses = np.array(votes[best])
+            mean = guesses.mean(axis=0)
+            if np.hypot(*(guesses - mean).T).max() > limit:
+                continue
+            local[index], island[index] = (float(mean[0]), float(mean[1])), best
+            components[best].append(index)
+            joined = True
+    # Sites and no island around: an island of its own.
+    for index in range(count):
+        if island[index] < 0 and sites[index].count:
+            local[index], island[index], method[index] = (0.0, 0.0), len(components), PLACED_ALONE
+            components.append([index])
+
+    # Each island near where the usual offsets put it ...
+    shifts = []
+    for members in components:
+        by_bits = [index for index in members if method[index] != PLACED_ESTIMATED] or members
+        diffs = np.array([np.subtract(usual(index), local[index]) for index in by_bits], np.float64)
+        shifts.append(np.median(diffs, axis=0))
+    weight = [sum(sites[index].count for index in members) for members in components]
+
+    def main_phase(k: int) -> tuple[float, float]:
+        # The phase most of the island's sites are on, in the plane.
+        clusters: list[list[float]] = []
+        tol_x, tol_y = cfg.phase_tolerance * pitch.x, cfg.phase_tolerance * pitch.y
+        entries = []
+        for index in components[k]:
+            s = sites[index]
+            counts = np.bincount(s.group.astype(np.int64), minlength=len(s.phases)) if s.count else ()
+            for g, phase in enumerate(s.phases):
+                if g < len(counts) and counts[g]:
+                    entries.append(
+                        (
+                            int(counts[g]),
+                            (phase[0] + local[index][0] + shifts[k][0]) % pitch.x,  # type: ignore[index]
+                            (phase[1] + local[index][1] + shifts[k][1]) % pitch.y,  # type: ignore[index]
+                        )
+                    )
+        for w, px, py in sorted(entries, reverse=True):
+            found = next(
+                (c for c in clusters if _circular_diff(px, c[0], pitch.x) <= tol_x and _circular_diff(py, c[1], pitch.y) <= tol_y),
+                None,
+            )
+            if found is None:
+                clusters.append([px, py, float(w)])
+            else:
+                found[2] += w
+        best = max(clusters, key=lambda c: c[2], default=[0.0, 0.0, 0.0])
+        return best[0], best[1]
+
+    # ... on the lattice of the largest island (a whole number of sites from where it was) ...
+    if components:
+        largest = int(np.argmax(weight))
+        ref = main_phase(largest)
+        for k in range(len(components)):
+            if k != largest:
+                phase = main_phase(k)
+                shifts[k] = shifts[k] + np.array([_wrap(ref[0] - phase[0], pitch.x), _wrap(ref[1] - phase[1], pitch.y)])
+
+    # ... and apart from the islands already laid out (the largest first): moved by whole sites,
+    # the shortest way out, until it is clear of all of them by the gap.
+    gap_x, gap_y = cfg.island_gap_sites * pitch.x, cfg.island_gap_sites * pitch.y
+
+    def whole(value: float, period: float) -> float:
+        return float(np.sign(value) * np.ceil(abs(value) / period - 1e-9) * period)
+
+    # Boxes laid out so far (x0, y0, x1, y1): many single-frame islands are checked at once.
+    placed = np.zeros((len(components), 4), np.float64)
+    n_placed = 0
+    for k in sorted(range(len(components)), key=lambda k: -weight[k]):
+        xs = [sites[index].x + local[index][0] for index in components[k] if sites[index].count]  # type: ignore[index]
+        ys = [sites[index].y + local[index][1] for index in components[k] if sites[index].count]  # type: ignore[index]
+        if not xs:
+            continue
+        x_all, y_all = np.concatenate(xs), np.concatenate(ys)
+        sx, sy = float(shifts[k][0]), float(shifts[k][1])
+        box = np.array([x_all.min() + sx, y_all.min() + sy, x_all.max() + sx, y_all.max() + sy], np.float64)
+
+        def blocking() -> np.ndarray | None:
+            o = placed[:n_placed]
+            hit = np.flatnonzero(
+                (box[0] < o[:, 2] + gap_x) & (box[2] + gap_x > o[:, 0]) & (box[1] < o[:, 3] + gap_y) & (box[3] + gap_y > o[:, 1])
+            )
+            return o[hit[0]] if hit.size else None
+
+        for _attempt in range(64):
+            other = blocking()
+            if other is None:
+                break
+            moves = [
+                (whole(other[2] + gap_x - box[0], pitch.x), 0.0),
+                (whole(other[0] - gap_x - box[2], pitch.x), 0.0),
+                (0.0, whole(other[3] + gap_y - box[1], pitch.y)),
+                (0.0, whole(other[1] - gap_y - box[3], pitch.y)),
+            ]
+            dx, dy = min(moves, key=lambda m: abs(m[0]) / pitch.x + abs(m[1]) / pitch.y)
+            sx, sy = sx + dx, sy + dy
+            box += (dx, dy, dx, dy)
+        if blocking() is not None:
+            # Still in the way after many moves: under everything laid out.
+            dy = whole(float(placed[:n_placed, 3].max()) + gap_y - box[1], pitch.y)
+            sy += dy
+            box += (0.0, dy, 0.0, dy)
+        shifts[k] = np.array([sx, sy])
+        placed[n_placed] = box
+        n_placed += 1
+
+    position = [
+        (local[index][0] + float(shifts[island[index]][0]), local[index][1] + float(shifts[island[index]][1]))  # type: ignore[index]
+        if island[index] >= 0
+        else usual(index)
+        for index in range(count)
+    ]
+    return position, method, checked, island
 
 
 def assemble_memory_map(
@@ -805,13 +1030,13 @@ def assemble_memory_map(
             match_frames(sites[a], sites[b], kind, pitch, cfg, ia=a, ib=b)
             for a, b, kind in frame_neighbours(len(sites), per_row)
         ]
-    positions, methods, seams = _place_frames(sites, seams, per_row, cfg, pitch)
+    positions, methods, seams, frame_island = _place_frames(sites, seams, per_row, cfg, pitch)
     frames = tuple(
-        FramePlacement(s.frame_id, float(p[0]), float(p[1]), m, int(s.shape[1]), int(s.shape[0]))
-        for s, p, m in zip(sites, positions, methods)
+        FramePlacement(s.frame_id, float(p[0]), float(p[1]), m, int(s.shape[1]), int(s.shape[0]), isl, s.count)
+        for s, p, m, isl in zip(sites, positions, methods, frame_island)
     )
     # Every site in the frame plane: (X, Y) = frame position + site pixel.
-    gx, gy, st, edge, src, grp = [], [], [], [], [], []
+    gx, gy, st, edge, src, grp, est = [], [], [], [], [], [], []
     # Phases of the frames' site groups in the frame plane, merged into the field's groups.
     clusters: list[list[float]] = []  # [phase x, phase y, weight]
     tol_x, tol_y = cfg.phase_tolerance * pitch.x, cfg.phase_tolerance * pitch.y
@@ -843,6 +1068,7 @@ def assemble_memory_map(
         st.append(s.state)
         edge.append(s.edge_distance())
         src.append(np.full(s.count, index, np.int32))
+        est.append(np.full(s.count, methods[index] != PLACED_BITS))
         lookup = np.array([local_to_global.get((index, local), 0) for local in range(len(s.phases))] or [0])
         grp.append(lookup[s.group])
     if not gx:
@@ -851,6 +1077,7 @@ def assemble_memory_map(
     X, Y = np.concatenate(gx), np.concatenate(gy)
     state, edge, source = np.concatenate(st), np.concatenate(edge), np.concatenate(src)
     group = np.concatenate(grp)
+    estimated = np.concatenate(est)
     # One lattice for the field: the phase of the biggest group. A group shifted by part of a
     # pitch snaps to it by one whole number of sites, chosen once for the group: rounding site by
     # site would send a half-pitch block up in one frame and down in the next.
@@ -868,8 +1095,9 @@ def assemble_memory_map(
     row -= row0
     n_rows, n_cols = int(row.max()) + 1, int(col.max()) + 1
     key = row * n_cols + col
-    # Best view of a site: known (not partial) first, then farthest from its frame edge.
-    rank = np.lexsort((-edge, state == PARTIAL, key))
+    # Best view of a site: known (not partial) first, then from a frame placed by bits (a frame
+    # placed by the usual offset may be a site off), then farthest from its frame edge.
+    rank = np.lexsort((-edge, estimated, state == PARTIAL, key))
     key_sorted = key[rank]
     first = np.ones(len(rank), bool)
     first[1:] = key_sorted[1:] != key_sorted[:-1]
@@ -906,13 +1134,22 @@ def assemble_memory_map(
     # With one network an all-zero (or all-one) line inside a block looks exactly like a gap
     # between blocks; only with both networks is «nothing painted» a gap for sure.
     grid, block_index, blocks = _blocks(grid, cfg, find_gaps=mode == MODE_PAIR)
-    # Each block keeps the pixel offset of the group most of its sites come from.
+    # Each block keeps the pixel offset of the group most of its sites come from, and the island
+    # of the frames most of its sites were read from (islands lie apart: a block is in one).
+    island_of_frame = np.array(list(frame_island) + [-1], np.int64)
     with_offset = []
     for b in blocks:
-        ids = group_grid[b.row : b.row + b.rows, b.col : b.col + b.cols][block_index[b.row : b.row + b.rows, b.col : b.col + b.cols] == b.index]
+        box = (slice(b.row, b.row + b.rows), slice(b.col, b.col + b.cols))
+        inside = block_index[box] == b.index
+        ids = group_grid[box][inside]
         ids = ids[ids >= 0]
         g = int(np.bincount(ids).argmax()) if ids.size else main
-        with_offset.append(MapBlock(b.index, b.row, b.col, b.rows, b.cols, b.sites, (float(group_offset[g, 0]), float(group_offset[g, 1]))))
+        islands = island_of_frame[source_grid[box][inside]]
+        islands = islands[islands >= 0]
+        isl = int(np.bincount(islands).argmax()) if islands.size else -1
+        with_offset.append(
+            replace(b, offset=(float(group_offset[g, 0]), float(group_offset[g, 1])), island=isl)
+        )
     blocks = with_offset
     source_grid = np.where(grid == OUTSIDE, -1, source_grid)
     # Trim the field to its blocks.
@@ -922,11 +1159,12 @@ def assemble_memory_map(
         r1 = max(b.row + b.rows for b in blocks)
         c1 = max(b.col + b.cols for b in blocks)
         grid, source_grid, block_index = grid[r0:r1, c0:c1], source_grid[r0:r1, c0:c1], block_index[r0:r1, c0:c1]
-        blocks = [MapBlock(b.index, b.row - r0, b.col - c0, b.rows, b.cols, b.sites, b.offset) for b in blocks]
+        blocks = [replace(b, row=b.row - r0, col=b.col - c0) for b in blocks]
         largest = max(b.sites for b in blocks)
         blocks = [replace(b, service=b.sites < cfg.service_share * largest) for b in blocks]
         col0 += c0
         row0 += r0
+    blocks, frames, islands = _number_islands(blocks, frames)
     origin = (ox + col0 * pitch.x, oy + row0 * pitch.y)
     return MemoryMap(
         mode=mode,
@@ -941,7 +1179,33 @@ def assemble_memory_map(
         collisions=collisions,
         block_index=np.ascontiguousarray(block_index),
         per_row=per_row,
+        islands=islands,
     )
+
+
+def _number_islands(
+    blocks: Sequence[MapBlock], frames: Sequence[FramePlacement]
+) -> tuple[list[MapBlock], tuple[FramePlacement, ...], tuple[MapIsland, ...]]:
+    """Islands that have blocks, numbered from the top left of their first block; the frames of an
+    island without blocks (periphery strays) are in none."""
+
+    first: dict[int, tuple[int, int]] = {}
+    for b in blocks:
+        if b.island >= 0:
+            first[b.island] = min(first.get(b.island, (b.row, b.col)), (b.row, b.col))
+    number = {old: new for new, old in enumerate(sorted(first, key=lambda old: first[old]))}
+    blocks = [replace(b, island=number.get(b.island, -1)) for b in blocks]
+    frames = tuple(replace(f, island=number.get(f.island, -1)) for f in frames)
+    islands = tuple(
+        MapIsland(
+            index=new,
+            frames=sum(1 for f in frames if f.island == new),
+            by_bits=sum(1 for f in frames if f.island == new and f.method == PLACED_BITS),
+            blocks=tuple(b.index for b in blocks if b.island == new),
+        )
+        for new in range(len(number))
+    )
+    return blocks, frames, islands
 
 
 def _blocks(grid: np.ndarray, cfg: MemoryMapConfig, *, find_gaps: bool = True) -> tuple[np.ndarray, np.ndarray, list[MapBlock]]:
@@ -1272,3 +1536,27 @@ def with_block_roles(mmap: MemoryMap, service: Iterable[int]) -> MemoryMap:
 
     chosen = {int(index) for index in service}
     return replace(mmap, blocks=tuple(replace(b, service=b.index in chosen) for b in mmap.blocks))
+
+
+def seam_statistics(mmap: MemoryMap) -> dict[str, np.ndarray]:
+    """What the operator's seam histograms show.
+
+    For seams matched by bits (trusted or not agreeing with the others), how far the offset is from
+    the usual one of its kind, in sites («right_dx», «right_dy», «down_dx», «down_dy»): a stage that
+    drifts shows as a spread, a wrong match as a value a whole site away. For every seam that
+    compared anything: the share of agreeing bits in percent («agreement») and the sites compared
+    («compared»).
+    """
+
+    out: dict[str, np.ndarray] = {}
+    for kind in ("right", "down"):
+        offsets = np.array(
+            [s.offset for s in mmap.seams if s.kind == kind and s.status in (SEAM_BITS, SEAM_INCONSISTENT)], np.float64
+        ).reshape(-1, 2)
+        usual = np.median(offsets, axis=0) if len(offsets) else np.zeros(2)
+        out[f"{kind}_dx"] = (offsets[:, 0] - usual[0]) / mmap.pitch.x
+        out[f"{kind}_dy"] = (offsets[:, 1] - usual[1]) / mmap.pitch.y
+    compared = [s for s in mmap.seams if s.compared]
+    out["agreement"] = np.array([100.0 * s.agreement for s in compared], np.float64)
+    out["compared"] = np.array([s.compared for s in compared], np.float64)
+    return out

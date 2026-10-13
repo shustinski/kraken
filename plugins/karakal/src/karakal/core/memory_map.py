@@ -467,6 +467,16 @@ def read_frame_sites(
     for bx, by, bw, bh in defect_boxes:
         defect |= (x >= bx) & (x < bx + bw) & (y >= by) & (y < by + bh) & (p_one | p_zero)
     state[defect] = DEFECT
+    if layers[0] is not None and layers[1] is not None:
+        # A cell split between the networks: one paints the site centre, the other a few pixels
+        # from it (the rest of the same cell; a neighbour cell is much farther). Both see a cell
+        # there, as with a cell painted by both: a conflict, even where each half alone reads as a
+        # fragment of a cell.
+        reach = max(1, int(round(0.12 * float(np.sqrt(max(area, 1.0))))))
+        kernel = np.ones((2 * reach + 1, 2 * reach + 1), np.uint8)
+        near_one = (cv2.dilate(layers[0][0].astype(np.uint8), kernel) > 0)[yi, xi]
+        near_zero = (cv2.dilate(layers[1][0].astype(np.uint8), kernel) > 0)[yi, xi]
+        state[(p_one & near_zero) | (p_zero & near_one)] = CONFLICT
     # Cut by the frame: a painted cell touching the edge, or an empty site close to it.
     near_edge = np.minimum.reduce([x, y, cols - 1 - x, rows - 1 - y]) < cfg.edge_margin * min(pitch.x, pitch.y)
     state[(partial_painted & ~conductor) | ((state == EMPTY) & near_edge)] = PARTIAL
@@ -533,37 +543,52 @@ def match_frames(a: FrameSites, b: FrameSites, kind: str, pitch: Pitch, config: 
 
     # Lattice translations that put a phase of B on a phase of A, inside the window; the same
     # translation reached through two phase pairs is tried once.
-    candidates: list[tuple[float, float]] = []
+    candidates = np.zeros((0, 2))
     for pa in phases_in(a, band_a):
         for pb in phases_in(b, band_b):
             base = np.array([(pa[0] - pb[0]) % pitch.x, (pa[1] - pb[1]) % pitch.y])
             m = np.arange(np.ceil((lo[0] - base[0]) / pitch.x), np.floor((hi[0] - base[0]) / pitch.x) + 1)
             n = np.arange(np.ceil((lo[1] - base[1]) / pitch.y), np.floor((hi[1] - base[1]) / pitch.y) + 1)
-            for mi in m:
-                for ni in n:
-                    t = (float(base[0] + mi * pitch.x), float(base[1] + ni * pitch.y))
-                    if all(abs(t[0] - c[0]) > 2.0 or abs(t[1] - c[1]) > 2.0 for c in candidates):
-                        candidates.append(t)
-    if not candidates:
+            grid = np.stack(
+                [np.repeat(base[0] + m * pitch.x, len(n)), np.tile(base[1] + n * pitch.y, len(m))], axis=1
+            )
+            if min(pitch.x, pitch.y) > 2.0:
+                # Translations of one phase pair are whole pitches apart: only those already found
+                # through another pair can be the same one.
+                same = (np.abs(grid[:, None, 0] - candidates[None, :, 0]) <= 2.0) & (
+                    np.abs(grid[:, None, 1] - candidates[None, :, 1]) <= 2.0
+                )
+                candidates = np.concatenate([candidates, grid[~same.any(axis=1)]])
+            else:
+                for t in grid:
+                    if not np.any((np.abs(t[0] - candidates[:, 0]) <= 2.0) & (np.abs(t[1] - candidates[:, 1]) <= 2.0)):
+                        candidates = np.concatenate([candidates, t[None]])
+    if not len(candidates):
         return Seam(ia, ib, kind, SEAM_EMPTY)
     tree = cKDTree(np.stack([a.x[band_a], a.y[band_a]], axis=1))
     state_a = a.state[band_a]
     bx, by, state_b = b.x[band_b], b.y[band_b], b.state[band_b]
     radius = cfg.centre_tolerance * min(pitch.x, pitch.y)
+    # Every translation at once, one query of the tree for all of them. B's pixel (x, y) is A's
+    # pixel (x + tx, y + ty), added in the sites' own precision as a single translation would be.
+    moved_x = bx[None, :] + candidates[:, 0].astype(bx.dtype)[:, None]
+    moved_y = by[None, :] + candidates[:, 1].astype(by.dtype)[:, None]
+    inside = (moved_x >= 0) & (moved_x < cols) & (moved_y >= 0) & (moved_y < rows)
+    if not inside.any():
+        return Seam(ia, ib, kind, SEAM_EMPTY)
+    owner = np.nonzero(inside)[0]
+    dist, idx = tree.query(np.stack([moved_x[inside], moved_y[inside]], axis=1), distance_upper_bound=radius)
+    found = np.isfinite(dist)
+    same_state = state_a[idx[found]] == np.broadcast_to(state_b, inside.shape)[inside][found]
+    compared_all = np.bincount(owner[found], minlength=len(candidates))
+    agreeing_all = np.bincount(owner[found], weights=same_state, minlength=len(candidates))
     scored = []
-    for tx, ty in candidates:
-        # B's pixel (x, y) is A's pixel (x + tx, y + ty).
-        moved = np.stack([bx + tx, by + ty], axis=1)
-        inside = (moved[:, 0] >= 0) & (moved[:, 0] < cols) & (moved[:, 1] >= 0) & (moved[:, 1] < rows)
-        if not inside.any():
-            continue
-        dist, idx = tree.query(moved[inside], distance_upper_bound=radius)
-        found = np.isfinite(dist)
-        compared = int(np.count_nonzero(found))
+    for index in np.flatnonzero(inside.any(axis=1)):
+        compared = int(compared_all[index])
         if compared < cfg.min_compared:
             continue
-        agree = float(np.mean(state_a[idx[found]] == state_b[inside][found]))
-        scored.append((agree, compared, (tx, ty)))
+        # The share of agreeing sites, as the mean of their equality is (a sum of whole counts).
+        scored.append((float(agreeing_all[index] / compared), compared, (float(candidates[index, 0]), float(candidates[index, 1]))))
     if not scored:
         return Seam(ia, ib, kind, SEAM_EMPTY)
     # Agreement decides: a wrong translation compares as many sites or more (a wider overlap),
@@ -1296,7 +1321,7 @@ def map_mode(frames: Sequence[MapFrame]) -> str:
     return MODE_ZEROS if has_zeros else MODE_ONES
 
 
-MEMORY_MAP_VERSION = "memory_map.v3"
+MEMORY_MAP_VERSION = "memory_map.v4"
 READ_SETTINGS = (
     "clean_area",
     "fragment_area",

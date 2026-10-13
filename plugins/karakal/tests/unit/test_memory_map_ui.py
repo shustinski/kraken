@@ -188,6 +188,54 @@ def test_a_ones_zeros_pair_gives_the_full_map(tmp_path, qtbot, monkeypatch) -> N
     assert widget.memory_map_panel.legend_checks[3].isVisibleTo(widget.memory_map_panel)  # zeros in the legend
 
 
+def test_a_pair_whose_zeros_are_not_in_the_gathered_frames_says_it_maps_ones_only(tmp_path, qtbot, monkeypatch) -> None:
+    from dataclasses import replace as dc_replace
+
+    import karakal.core.memory_map as mm
+
+    monkeypatch.setattr(mm, "MemoryMapConfig", lambda: CFG)
+    widget, presenter, controller, _memory, _positions, _records = _widget_with_run(tmp_path, qtbot, zeros=True)
+    state = presenter._current_tab_state()
+    full = controller.sources(state)
+    assert full["mode"] == MODE_PAIR and full["ones_count"] == full["zeros_count"] == 12
+    # The run was gathered before the zeros layer had its class (or was added): its frames have
+    # the ones masks only.
+    ones_id, zeros_id = full["ones_id"], full["zeros_id"]
+    state.build_result = dc_replace(
+        state.build_result,
+        records=tuple(dc_replace(r, model_mask_paths={ones_id: r.model_mask_paths[ones_id]}) for r in state.build_result.records),
+    )
+    sources = controller.sources(state)
+    assert sources["mode"] == MODE_ONES and sources["missing"] == zeros_id and sources["zeros_count"] == 0
+    controller.refresh()
+    text = widget.memory_map_panel.sources_label.text()
+    assert presenter._t("memory_map.sources_frames_pair", ones=12, zeros=0) in text
+    assert text.startswith(presenter._t("memory_map.sources_missing", name=controller._layer_name(zeros_id)))
+    _build(qtbot, widget, controller)
+    assert state.memory_map.mode == MODE_ONES
+
+
+def test_two_layers_without_cell_classes_are_named_as_the_reason_for_one_network(tmp_path, qtbot) -> None:
+    widget, presenter, controller, _memory, _positions, _records = _widget_with_run(tmp_path, qtbot, zeros=True)
+    items = [presenter.folder_list.item(row) for row in range(presenter.folder_list.count())]
+    # Both layers loaded, no cell classes: no pair, and the map says why.
+    for item in items:
+        presenter._set_folder_item_cell_class(item, "")
+    state = presenter._current_tab_state()
+    sources = controller.sources(state)
+    assert sources["mode"] == MODE_ONES and sources["no_pair"] is not None
+    other, key = sources["no_pair"]
+    assert key == "memory_map.no_pair.classes"
+    controller.refresh()
+    assert other in widget.memory_map_panel.sources_label.text()
+    assert widget.memory_map_panel.sources_label.text().startswith(presenter._t(key, shown=controller._layer_name(sources["ones_id"]), other=other))
+    # Classes given: the pair, both networks.
+    presenter._set_folder_item_cell_class(items[0], "ones")
+    presenter._set_folder_item_cell_class(items[1], "zeros")
+    sources = controller.sources(state)
+    assert sources["mode"] == MODE_PAIR and sources["no_pair"] is None
+
+
 def test_export_writes_the_chosen_files_and_leaves_service_blocks_out(tmp_path) -> None:
     from karakal.core.memory_map import with_block_roles
 

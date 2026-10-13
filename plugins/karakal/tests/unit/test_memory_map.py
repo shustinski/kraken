@@ -45,6 +45,8 @@ class Memory:
         self.missing: set[tuple[int, int]] = set()
         self.conflict: set[tuple[int, int]] = set()
         self.merged: set[tuple[int, int]] = set()
+        # Cells split between the networks: the ones network paints the left part, the zeros one the rest.
+        self.split: set[tuple[int, int]] = set()
 
     def centre(self, r: int, c: int) -> tuple[float, float]:
         dy = self.shift if self.shift_from is not None and c >= self.shift_from else 0.0
@@ -62,11 +64,15 @@ class Memory:
                 bit = int(self.bits[r, c])
                 if bit < 0 or (r, c) in self.missing:
                     continue
+                x, y = self.centre(r, c)
+                x0, y0 = int(round(x - fx - CELL_W / 2)), int(round(y - fy - CELL_H / 2))
+                if (r, c) in self.split:
+                    left, right = (x0, x0 + CELL_W // 2 - 2) if value == 1 else (x0 + CELL_W // 2 - 2, x0 + CELL_W)
+                    image[max(0, y0) : max(0, y0 + CELL_H), max(0, left) : max(0, right)] = 255
+                    continue
                 paint = bit == value or (r, c) in self.conflict
                 if not paint:
                     continue
-                x, y = self.centre(r, c)
-                x0, y0 = int(round(x - fx - CELL_W / 2)), int(round(y - fy - CELL_H / 2))
                 image[max(0, y0) : max(0, y0 + CELL_H), max(0, x0) : max(0, x0 + CELL_W)] = 255
                 if (r, c) in self.merged:
                     image[max(0, y0 + 8) : max(0, y0 + 16), max(0, x0 + CELL_W) : max(0, x0 + int(PX) + 3)] = 255
@@ -107,7 +113,7 @@ def _expected(memory: Memory, r: int, c: int, *, single: bool = False) -> int:
         return DEFECT
     if (r, c) in memory.missing:
         return EMPTY
-    if (r, c) in memory.conflict:
+    if (r, c) in memory.conflict or (r, c) in memory.split:
         return CONFLICT
     if single:
         return ONE if bit == 1 else EMPTY
@@ -176,6 +182,18 @@ def test_frames_are_read_back_into_the_memory_bits() -> None:
     index, px, py = mmap.frame_point(int(row), int(col))
     x, y = positions[index]
     assert memory.render(x, y, 1)[int(round(py)), int(round(px))] == 255
+
+
+def test_a_cell_split_between_the_networks_is_a_conflict_on_the_map() -> None:
+    # The ones network paints the left part of these cells and the zeros network the rest: no pixel
+    # is painted by both, yet both networks see a cell there.
+    memory = Memory(26, 64, seed=12)
+    memory.split = {(3, 5), (10, 20), (17, 40), (22, 60)}
+    positions = frames_of(memory, frame_rows=3, per_row=4)
+    mmap = assemble_memory_map(read_all(memory, positions), Pitch(PX, PY), per_row=4, config=CFG)
+    wrong, checked = _field_vs_memory(memory, mmap, positions)
+    assert checked == 26 * 64 and wrong == 0
+    assert mmap.counts()["conflict"] == len(memory.split)
 
 
 def test_one_network_reads_ones_and_leaves_the_rest_empty() -> None:

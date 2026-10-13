@@ -121,7 +121,17 @@ class MemoryMapController(QObject):
         ]
         # The layer's own frames per row when it is set, else «auto» (found from the bits).
         per_row = presenter._layer_frames_per_row(ones_id or zeros_id)
+        ones_count = sum(1 for f in frames if f.ones_path)
+        zeros_count = sum(1 for f in frames if f.zeros_path)
+        # A pair whose other layer is not in the gathered frames (added, checked or given its class
+        # after the run): the map can only be built from one network, and says so.
+        missing = ""
+        if mode == MODE_PAIR and not zeros_count:
+            mode, missing = MODE_ONES, zeros_id
+        elif mode == MODE_PAIR and not ones_count:
+            mode, missing = MODE_ZEROS, ones_id
         return {
+            "no_pair": self._no_pair_reason(shown) if pair is None else None,
             "mode": mode,
             "ones_id": ones_id,
             "zeros_id": zeros_id,
@@ -129,7 +139,25 @@ class MemoryMapController(QObject):
             "records": records,
             "per_row": max(0, int(per_row)),
             "with_masks": sum(1 for f in frames if f.ones_path or f.zeros_path),
+            "ones_count": ones_count,
+            "zeros_count": zeros_count,
+            "missing": missing,
         }
+
+    def _no_pair_reason(self, shown: str) -> tuple[str, str] | None:
+        """Another checked layer that could be the shown one's partner, and why it is not one:
+        (layer name, i18n key of the reason); None when no other layer is checked."""
+
+        presenter = self._presenter
+        specs = presenter._active_pair_model_specs()
+        shown_spec = next((spec for spec in specs if str(spec.model_id) == shown), None)
+        others = [spec for spec in specs if str(spec.model_id) != shown]
+        if shown_spec is None or not others:
+            return None
+        other = others[0]
+        reason = presenter._grid_pair_unavailable_reason(shown_spec, other) or "pairs.unavailable.classes"
+        key = "memory_map.no_pair.projects" if reason == "pairs.unavailable.projects" else "memory_map.no_pair.classes"
+        return self._layer_name(str(other.model_id)), key
 
     def _defect_finder(self, state):
         """Boxes of the cells the defect search marked broken in a layer's frame (as the matrix
@@ -188,7 +216,21 @@ class MemoryMapController(QObject):
             MODE_ONES: self._t("memory_map.sources_ones", name=self._layer_name(sources["ones_id"])),
             MODE_ZEROS: self._t("memory_map.sources_zeros", name=self._layer_name(sources["zeros_id"])),
         }
-        text = names[sources["mode"]] + " " + self._t("memory_map.sources_frames", count=sources["with_masks"])
+        if sources["missing"]:
+            text = self._t("memory_map.sources_missing", name=self._layer_name(sources["missing"])) + " " + names[sources["mode"]]
+        elif sources["no_pair"]:
+            # Both networks loaded, but they are no pair: the map is of the shown layer alone.
+            other, key = sources["no_pair"]
+            shown = sources["ones_id"] or sources["zeros_id"]
+            text = self._t(key, shown=self._layer_name(shown), other=other) + " " + names[sources["mode"]]
+        else:
+            text = names[sources["mode"]]
+        if sources["ones_id"] and sources["zeros_id"]:
+            text += " " + self._t("memory_map.sources_frames_pair", ones=sources["ones_count"], zeros=sources["zeros_count"])
+            if not sources["missing"] and sources["ones_count"] != sources["zeros_count"]:
+                text += " " + self._t("memory_map.sources_partial")
+        else:
+            text += " " + self._t("memory_map.sources_frames", count=sources["with_masks"])
         busy = self._thread is not None
         self._panel.set_sources(text, sources["with_masks"] > 0 and not busy)
         mmap = getattr(state, "memory_map", None)

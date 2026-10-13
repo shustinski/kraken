@@ -14,7 +14,9 @@ from karakal.core.image_io import _grayscale_array_to_qimage
 from karakal.core.mask_normalization import binarize_mask
 from karakal.core.pair_conflict import (
     CONFLICT_AREA_FEATURE,
+    CONFLICT_REASON,
     CONFLICT_SHARE_FEATURE,
+    CONFLICT_SPLIT_FEATURE,
     PAIR_CONFLICT_LAYER,
     ConflictThresholds,
     analyze_class_conflict_frame_paths,
@@ -318,3 +320,78 @@ def test_cells_marked_after_the_run_get_a_pass_of_their_own(tmp_path, qtbot) -> 
     assert state.grid_inspection_payloads_by_model == layers_before, "the layers are not analysed again"
     assert presenter._grid_pair_conflict_frame_count(state, pair) == 1
     assert state.grid_inspection_payload_by_key["F_0001.png"].per_cell_results
+
+
+# A small array: 3 rows x 9 columns of 12x30 cells, 8 px apart across, 10 px apart down.
+def _array_cells() -> list[tuple[int, int, int, int]]:
+    return [(4 + 20 * col, 6 + 40 * row, 12, 30) for row in range(3) for col in range(9)]
+
+
+def _split_frame(halves: dict[int, tuple[tuple[int, int, int, int], tuple[int, int, int, int]]]):
+    """Ones and zeros masks of the array, cells alternating by class; a cell of `halves` is drawn
+    as (its ones part, its zeros part) instead."""
+
+    ones, zeros = [], []
+    for index, box in enumerate(_array_cells()):
+        if index in halves:
+            ones.append(halves[index][0])
+            zeros.append(halves[index][1])
+        else:
+            (ones if index % 2 else zeros).append(box)
+    return _cells((130, 200), ones), _cells((130, 200), zeros)
+
+
+def _splits(result) -> list:
+    return [cell for cell in result.per_cell_results if conflict_features(cell).get(CONFLICT_SPLIT_FEATURE) == 1.0]
+
+
+@needs_cv2
+def test_a_cell_split_between_the_networks_is_a_conflict_without_any_overlap() -> None:
+    x, y, _w, _h = _array_cells()[10]
+    ones, zeros = _split_frame({10: ((x, y, 6, 30), (x + 6, y, 6, 30))})
+    assert not np.any(ones & zeros)
+    result = analyze_class_conflict_masks(ones, zeros, frame_id="split")
+    (cell,) = result.per_cell_results
+    features = conflict_features(cell)
+    assert features[CONFLICT_SPLIT_FEATURE] == 1.0
+    assert cell.bbox == (x, y, 12, 30) and CONFLICT_REASON in cell.reasons
+    assert features[CONFLICT_AREA_FEATURE] == 180 and features[CONFLICT_SHARE_FEATURE] == pytest.approx(0.5)
+    # The usual thresholds keep it.
+    assert filter_class_conflicts(result, ConflictThresholds()).per_cell_results
+
+
+@needs_cv2
+def test_a_split_with_a_small_gap_or_a_hairline_overlap_is_found_once() -> None:
+    x, y, _w, _h = _array_cells()[13]
+    ones, zeros = _split_frame({13: ((x, y, 5, 30), (x + 7, y, 5, 30))})  # 2 px apart
+    assert len(_splits(analyze_class_conflict_masks(ones, zeros))) == 1
+    ones, zeros = _split_frame({13: ((x, y, 7, 30), (x + 6, y, 6, 30))})  # one column painted by both
+    result = analyze_class_conflict_masks(ones, zeros)
+    assert len(result.per_cell_results) == 1
+
+
+@needs_cv2
+def test_whole_neighbours_specks_and_a_cell_broken_by_one_network_are_no_split() -> None:
+    # The array alone: whole cells of both classes side by side.
+    ones, zeros = _split_frame({})
+    assert analyze_class_conflict_masks(ones, zeros).per_cell_results == ()
+    # A zeros speck at the edge of a whole ones cell.
+    x, y, _w, _h = _array_cells()[11]
+    zeros_speck = zeros.copy()
+    zeros_speck[y + 10 : y + 13, x + 12 : x + 14] = True
+    assert _splits(analyze_class_conflict_masks(ones, zeros_speck)) == []
+    # One network draws a cell in two pieces: its own broken cell, not a conflict of the pair.
+    x, y, _w, _h = _array_cells()[12]
+    ones_broken = ones.copy()
+    ones_broken[y : y + 30, x : x + 12] = False
+    ones_broken[y : y + 30, x : x + 5] = True
+    ones_broken[y : y + 30, x + 7 : x + 12] = True
+    zeros_without = zeros.copy()
+    zeros_without[y : y + 30, x : x + 12] = False
+    assert analyze_class_conflict_masks(ones_broken, zeros_without).per_cell_results == ()
+    # Crumbs of both networks side by side (conductor grain): together far smaller than a cell.
+    ones_crumbs, zeros_crumbs = ones.copy(), zeros.copy()
+    ones_crumbs[120:126, 185:189] = True
+    zeros_crumbs[120:126, 190:194] = True
+    assert _splits(analyze_class_conflict_masks(ones_crumbs, zeros_crumbs)) == []
+

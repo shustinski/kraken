@@ -25,6 +25,7 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   14 = operator markup folder per layer, the cell bank window, cells added to the bank by hand
        (right click in the frame window);
   15 = «Memory work» mode with the memory map tab: built on request, block roles, export of bits;
+  16 = «Full memory analysis» button, frames per row «auto», turning and mirroring in the map export;
 - beta N counts tester builds with the same algorithm and interface (fixes only); scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -39,7 +40,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 15
+INTERFACE_NUMBER = 16
 BETA = 0
 
 

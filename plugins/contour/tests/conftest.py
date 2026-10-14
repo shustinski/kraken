@@ -5,10 +5,15 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+_TEST_ROOT = Path(__file__).resolve().parent
+for _path in (_TEST_ROOT, _TEST_ROOT / "unit", _TEST_ROOT / "integration"):
+    if _path.is_dir() and str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 
 # ``pytest`` is the everyday behavioral suite.  Algorithmic image processing,

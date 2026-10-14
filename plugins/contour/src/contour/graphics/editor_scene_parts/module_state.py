@@ -1,0 +1,30 @@
+"""editor_scene: module state."""
+from __future__ import annotations
+import logging
+
+_LOGGER = logging.getLogger(__name__)
+
+_ZOOM_COLOR_QUANTIZATION_STEP = 17
+
+_ZOOM_BATCH_TILE_SIZE = 256.0
+
+_ZOOM_RASTER_MAX_DIMENSION = 4096
+
+_CONTACT_PASTE_SPATIAL_CELL_SIZE = 64.0
+
+_POLYGON_SPATIAL_CELL_SIZE = 256.0
+
+_OUTER_POLYGON_ITEM_Z = 3.0
+
+_HOLE_POLYGON_ITEM_Z = 3.2
+
+_OUTER_PICK_Z_SPAN = 0.19
+
+_PICK_CYCLE_DISTANCE = 4.0
+
+_DEFERRED_GEOMETRY_REPAIR_DELAY_MS = 50
+
+_ZOOM_QUANTIZED_CHANNELS = tuple(
+    min(255, max(0, round(channel / _ZOOM_COLOR_QUANTIZATION_STEP) * _ZOOM_COLOR_QUANTIZATION_STEP))
+    for channel in range(256)
+)

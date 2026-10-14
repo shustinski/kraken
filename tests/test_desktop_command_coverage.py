@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 from kraken_hub import manager_app
 from kraken_hub.composition import EmbeddedProjectService
@@ -75,7 +76,7 @@ def test_every_application_command_is_routed_to_desktop_service_and_qt() -> None
     }
     assert commands == set(DESKTOP_COMMAND_ROUTES)
 
-    ui_source = inspect.getsource(manager_app)
+    ui_source = _desktop_ui_source()
     for command, (service_method, ui_marker) in DESKTOP_COMMAND_ROUTES.items():
         assert hasattr(EmbeddedProjectService, service_method), (
             f"{command} has no EmbeddedProjectService.{service_method}"
@@ -83,3 +84,17 @@ def test_every_application_command_is_routed_to_desktop_service_and_qt() -> None
         assert ui_marker in ui_source, f"{command} has no Qt route marker {ui_marker!r}"
 
     assert not commands.intersection(TECHNICAL_TYPE_ALLOWLIST)
+
+
+def _desktop_ui_source() -> str:
+    """Qt routes live in the desktop facade and the modules split out of it."""
+    root = Path(manager_app.__file__).resolve().parent
+    chunks = [inspect.getsource(manager_app)]
+    parts = root / "manager_app_parts"
+    if parts.is_dir():
+        chunks.extend(
+            path.read_text(encoding="utf-8")
+            for path in sorted(parts.glob("*.py"))
+            if path.name != "__init__.py"
+        )
+    return "\n".join(chunks)

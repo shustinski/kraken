@@ -1,0 +1,188 @@
+"""repository: polygon confidence config."""
+from __future__ import annotations
+from dataclasses import dataclass
+import numpy as np
+from neuralimage.Validation_gradient_widget_lite.core.backend_constants import (
+    POLYGON_CONFIDENCE_HYSTERESIS_FLOOR,
+    POLYGON_CONFIDENCE_HYSTERESIS_LOW_RATIO,
+    POLYGON_CONFIDENCE_COMPLETION_LOW_RATIO,
+    POLYGON_CONFIDENCE_COMPLETION_WEAK_RATIO,
+    POLYGON_CONFIDENCE_PREPROC_GAUSSIAN_SIGMA,
+    POLYGON_CONFIDENCE_PREPROC_MEDIAN_RADIUS,
+    POLYGON_CONFIDENCE_LOCAL_NORMALIZATION_RADIUS,
+    POLYGON_CONFIDENCE_LOCAL_NORMALIZATION_STRENGTH,
+    POLYGON_CONFIDENCE_ELONGATED_VERTICAL_RADIUS,
+    POLYGON_CONFIDENCE_ELONGATED_HORIZONTAL_RADIUS,
+    POLYGON_CONFIDENCE_ELONGATED_MIN_ASPECT_RATIO,
+    POLYGON_CONFIDENCE_ELONGATED_MIN_AREA,
+    POLYGON_CONFIDENCE_DOMINANT_MIN_AREA,
+    POLYGON_CONFIDENCE_DOMINANT_MIN_MEAN_PROBABILITY,
+    POLYGON_CONFIDENCE_DOMINANT_MIN_ASPECT_RATIO,
+    POLYGON_CONFIDENCE_DOMINANT_MIN_EXTENT,
+    POLYGON_CONFIDENCE_DOMINANT_LARGE_AREA,
+    POLYGON_CONFIDENCE_DOMINANT_LOCK_RADIUS,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_LOW_SCALE,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_AREA,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_MAJOR_SPAN,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_EXTENT,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_ASPECT_RATIO,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_BAND_EXPAND,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_ROI_PADDING,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_SEED_LOW_SCALE,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_MAJOR_CLOSE_RADIUS,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_MINOR_CLOSE_RADIUS,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_BARRIER_DELTA,
+    POLYGON_CONFIDENCE_LARGE_POLYGON_BARRIER_COVERAGE_MIN,
+    POLYGON_CONFIDENCE_SMALL_LOW_SCALE,
+    POLYGON_CONFIDENCE_SMALL_HIGH_SCALE,
+    POLYGON_CONFIDENCE_SMALL_MAX_AREA,
+    POLYGON_CONFIDENCE_ADAPTIVE_RADIUS,
+    POLYGON_CONFIDENCE_ADAPTIVE_LOW_OFFSET,
+    POLYGON_CONFIDENCE_ADAPTIVE_HIGH_OFFSET,
+    POLYGON_CONFIDENCE_SEPARATION_CORE_MIN_AREA,
+    POLYGON_CONFIDENCE_SEPARATION_ROI_PADDING,
+    POLYGON_CONFIDENCE_SEPARATION_BOUNDARY_LOW_WEIGHT,
+    POLYGON_CONFIDENCE_SEPARATION_BOUNDARY_CONTRAST_WEIGHT,
+    POLYGON_CONFIDENCE_SEPARATION_BOUNDARY_UNCERTAINTY_WEIGHT,
+    POLYGON_CONFIDENCE_SEPARATION_BARRIER_THRESHOLD,
+    POLYGON_CONFIDENCE_SEPARATION_BARRIER_DILATE_RADIUS,
+    POLYGON_CONFIDENCE_SEPARATION_BRIDGE_PROBABILITY_MAX,
+    POLYGON_CONFIDENCE_SEPARATION_BRIDGE_BARRIER_THRESHOLD,
+    POLYGON_CONFIDENCE_ENABLE_WATERSHED,
+    POLYGON_CONFIDENCE_MERGE_DISTANCE,
+    POLYGON_CONFIDENCE_MERGE_IOU_THRESHOLD,
+    POLYGON_CONFIDENCE_PROPOSAL_MEAN_FLOOR,
+    POLYGON_CONFIDENCE_PROPOSAL_MIN_AREA,
+    POLYGON_CONFIDENCE_PROPOSAL_PEAK_FLOOR,
+    POLYGON_CONFIDENCE_WATERSHED_SEED_MIN_AREA,
+    POLYGON_CONFIDENCE_HOLE_PROBABILITY_SCALE,
+    POLYGON_CONFIDENCE_HOLE_PROBABILITY_MAX,
+    POLYGON_CONFIDENCE_HOLE_MIN_AREA,
+    POLYGON_CONFIDENCE_SPILL_LARGE_AREA_FRACTION,
+    POLYGON_CONFIDENCE_SPILL_LARGE_EXTENT,
+    POLYGON_CONFIDENCE_SPILL_LOW_TEXTURE_MAX,
+    POLYGON_CONFIDENCE_SPILL_TRIM_DELTA,
+    POLYGON_CONFIDENCE_SPILL_BOUNDARY_SEPARATION_MAX,
+    POLYGON_CONFIDENCE_SPILL_PEAK_MARGIN_MAX,
+    POLYGON_CONFIDENCE_SPILL_RIBBON_ASPECT_MIN,
+    POLYGON_CONFIDENCE_SPILL_BORDER_COVERAGE_MIN,
+    POLYGON_CONFIDENCE_SPILL_MEAN_PROBABILITY_MAX,
+    POLYGON_CONFIDENCE_SPILL_CROSS_AXIS_MAX,
+    POLYGON_CONFIDENCE_SPILL_PROMINENCE_MIN,
+    POLYGON_CONFIDENCE_SPILL_STRONG_AXIS_COVERAGE_MIN,
+    POLYGON_CONFIDENCE_SPILL_STRONG_AREA_FRACTION_MIN,
+    POLYGON_CONFIDENCE_BOUNDARY_SNAP_MIN_ASPECT,
+    POLYGON_CONFIDENCE_BOUNDARY_SNAP_PROFILE_QUANTILE,
+    POLYGON_CONFIDENCE_BOUNDARY_SNAP_MIN_DROP,
+    POLYGON_CONFIDENCE_BOUNDARY_SNAP_MIN_RETAINED_FRACTION,
+    POLYGON_CONFIDENCE_VALLEY_MINOR_COVERAGE_MIN,
+)
+from neuralimage.Validation_gradient_widget_lite.core.domain import (
+    PolygonConfidencePipelineConfig,
+)
+
+def _polygon_confidence_config() -> PolygonConfidencePipelineConfig:
+    """Return the default configuration for polygon confidence extraction."""
+
+    return PolygonConfidencePipelineConfig(
+        gaussian_sigma=float(POLYGON_CONFIDENCE_PREPROC_GAUSSIAN_SIGMA),
+        median_radius=int(POLYGON_CONFIDENCE_PREPROC_MEDIAN_RADIUS),
+        local_normalization_radius=int(POLYGON_CONFIDENCE_LOCAL_NORMALIZATION_RADIUS),
+        local_normalization_strength=float(POLYGON_CONFIDENCE_LOCAL_NORMALIZATION_STRENGTH),
+        hysteresis_low_ratio=float(POLYGON_CONFIDENCE_HYSTERESIS_LOW_RATIO),
+        hysteresis_low_floor=float(POLYGON_CONFIDENCE_HYSTERESIS_FLOOR),
+        elongated_vertical_radius=int(POLYGON_CONFIDENCE_ELONGATED_VERTICAL_RADIUS),
+        elongated_horizontal_radius=int(POLYGON_CONFIDENCE_ELONGATED_HORIZONTAL_RADIUS),
+        elongated_min_aspect_ratio=float(POLYGON_CONFIDENCE_ELONGATED_MIN_ASPECT_RATIO),
+        elongated_min_area=int(POLYGON_CONFIDENCE_ELONGATED_MIN_AREA),
+        dominant_min_area=int(POLYGON_CONFIDENCE_DOMINANT_MIN_AREA),
+        dominant_min_mean_probability=float(POLYGON_CONFIDENCE_DOMINANT_MIN_MEAN_PROBABILITY),
+        dominant_min_aspect_ratio=float(POLYGON_CONFIDENCE_DOMINANT_MIN_ASPECT_RATIO),
+        dominant_min_extent=float(POLYGON_CONFIDENCE_DOMINANT_MIN_EXTENT),
+        dominant_large_area=int(POLYGON_CONFIDENCE_DOMINANT_LARGE_AREA),
+        dominant_lock_radius=int(POLYGON_CONFIDENCE_DOMINANT_LOCK_RADIUS),
+        large_polygon_low_scale=float(POLYGON_CONFIDENCE_LARGE_POLYGON_LOW_SCALE),
+        large_polygon_min_area=int(POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_AREA),
+        large_polygon_min_major_span=int(POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_MAJOR_SPAN),
+        large_polygon_min_extent=float(POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_EXTENT),
+        large_polygon_min_aspect_ratio=float(POLYGON_CONFIDENCE_LARGE_POLYGON_MIN_ASPECT_RATIO),
+        large_polygon_band_expand=int(POLYGON_CONFIDENCE_LARGE_POLYGON_BAND_EXPAND),
+        large_polygon_roi_padding=int(POLYGON_CONFIDENCE_LARGE_POLYGON_ROI_PADDING),
+        large_polygon_seed_low_scale=float(POLYGON_CONFIDENCE_LARGE_POLYGON_SEED_LOW_SCALE),
+        large_polygon_major_close_radius=int(POLYGON_CONFIDENCE_LARGE_POLYGON_MAJOR_CLOSE_RADIUS),
+        large_polygon_minor_close_radius=int(POLYGON_CONFIDENCE_LARGE_POLYGON_MINOR_CLOSE_RADIUS),
+        large_polygon_barrier_delta=float(POLYGON_CONFIDENCE_LARGE_POLYGON_BARRIER_DELTA),
+        large_polygon_barrier_coverage_min=float(POLYGON_CONFIDENCE_LARGE_POLYGON_BARRIER_COVERAGE_MIN),
+        small_low_scale=float(POLYGON_CONFIDENCE_SMALL_LOW_SCALE),
+        small_high_scale=float(POLYGON_CONFIDENCE_SMALL_HIGH_SCALE),
+        small_min_area=max(1, int(POLYGON_CONFIDENCE_PROPOSAL_MIN_AREA)),
+        small_max_area=int(POLYGON_CONFIDENCE_SMALL_MAX_AREA),
+        small_peak_floor=float(POLYGON_CONFIDENCE_PROPOSAL_PEAK_FLOOR),
+        small_mean_floor=float(POLYGON_CONFIDENCE_PROPOSAL_MEAN_FLOOR),
+        adaptive_radius=int(POLYGON_CONFIDENCE_ADAPTIVE_RADIUS),
+        adaptive_low_offset=float(POLYGON_CONFIDENCE_ADAPTIVE_LOW_OFFSET),
+        adaptive_high_offset=float(POLYGON_CONFIDENCE_ADAPTIVE_HIGH_OFFSET),
+        separation_core_min_area=int(POLYGON_CONFIDENCE_SEPARATION_CORE_MIN_AREA),
+        separation_roi_padding=int(POLYGON_CONFIDENCE_SEPARATION_ROI_PADDING),
+        separation_boundary_low_weight=float(POLYGON_CONFIDENCE_SEPARATION_BOUNDARY_LOW_WEIGHT),
+        separation_boundary_contrast_weight=float(POLYGON_CONFIDENCE_SEPARATION_BOUNDARY_CONTRAST_WEIGHT),
+        separation_boundary_uncertainty_weight=float(POLYGON_CONFIDENCE_SEPARATION_BOUNDARY_UNCERTAINTY_WEIGHT),
+        separation_barrier_threshold=float(POLYGON_CONFIDENCE_SEPARATION_BARRIER_THRESHOLD),
+        separation_barrier_dilate_radius=int(POLYGON_CONFIDENCE_SEPARATION_BARRIER_DILATE_RADIUS),
+        separation_bridge_probability_max=float(POLYGON_CONFIDENCE_SEPARATION_BRIDGE_PROBABILITY_MAX),
+        separation_bridge_barrier_threshold=float(POLYGON_CONFIDENCE_SEPARATION_BRIDGE_BARRIER_THRESHOLD),
+        merge_iou_threshold=float(POLYGON_CONFIDENCE_MERGE_IOU_THRESHOLD),
+        merge_distance=int(POLYGON_CONFIDENCE_MERGE_DISTANCE),
+        enable_watershed=bool(POLYGON_CONFIDENCE_ENABLE_WATERSHED),
+        watershed_seed_min_area=int(POLYGON_CONFIDENCE_WATERSHED_SEED_MIN_AREA),
+        hole_probability_scale=float(POLYGON_CONFIDENCE_HOLE_PROBABILITY_SCALE),
+        hole_probability_max=float(POLYGON_CONFIDENCE_HOLE_PROBABILITY_MAX),
+        hole_min_area=int(POLYGON_CONFIDENCE_HOLE_MIN_AREA),
+        spill_large_area_fraction=float(POLYGON_CONFIDENCE_SPILL_LARGE_AREA_FRACTION),
+        spill_large_extent=float(POLYGON_CONFIDENCE_SPILL_LARGE_EXTENT),
+        spill_low_texture_max=float(POLYGON_CONFIDENCE_SPILL_LOW_TEXTURE_MAX),
+        spill_trim_delta=float(POLYGON_CONFIDENCE_SPILL_TRIM_DELTA),
+        spill_boundary_separation_max=float(POLYGON_CONFIDENCE_SPILL_BOUNDARY_SEPARATION_MAX),
+        spill_peak_margin_max=float(POLYGON_CONFIDENCE_SPILL_PEAK_MARGIN_MAX),
+        spill_ribbon_aspect_min=float(POLYGON_CONFIDENCE_SPILL_RIBBON_ASPECT_MIN),
+        spill_border_coverage_min=float(POLYGON_CONFIDENCE_SPILL_BORDER_COVERAGE_MIN),
+        spill_mean_probability_max=float(POLYGON_CONFIDENCE_SPILL_MEAN_PROBABILITY_MAX),
+        spill_cross_axis_max=float(POLYGON_CONFIDENCE_SPILL_CROSS_AXIS_MAX),
+        spill_prominence_min=float(POLYGON_CONFIDENCE_SPILL_PROMINENCE_MIN),
+        spill_strong_axis_coverage_min=float(POLYGON_CONFIDENCE_SPILL_STRONG_AXIS_COVERAGE_MIN),
+        spill_strong_area_fraction_min=float(POLYGON_CONFIDENCE_SPILL_STRONG_AREA_FRACTION_MIN),
+        boundary_snap_min_aspect=float(POLYGON_CONFIDENCE_BOUNDARY_SNAP_MIN_ASPECT),
+        boundary_snap_profile_quantile=float(POLYGON_CONFIDENCE_BOUNDARY_SNAP_PROFILE_QUANTILE),
+        boundary_snap_min_drop=float(POLYGON_CONFIDENCE_BOUNDARY_SNAP_MIN_DROP),
+        boundary_snap_min_retained_fraction=float(POLYGON_CONFIDENCE_BOUNDARY_SNAP_MIN_RETAINED_FRACTION),
+        valley_minor_coverage_min=float(POLYGON_CONFIDENCE_VALLEY_MINOR_COVERAGE_MIN),
+    )
+
+@dataclass(slots=True)
+class _PolygonConfidenceCandidate:
+    """Internal candidate mask proposed by one confidence extraction branch."""
+
+    mask: np.ndarray
+    source_branches: tuple[str, ...]
+    area: int
+    bbox: tuple[int, int, int, int]
+    aspect_ratio: float
+    elongation: float
+    extent: float
+    peak_probability: float
+    mean_probability: float
+
+def _polygon_confidence_weak_threshold(strong_threshold: float, config: PolygonConfidencePipelineConfig | None = None) -> float:
+    cfg = config or _polygon_confidence_config()
+    strong = float(max(0.0, min(1.0, strong_threshold)))
+    weak = max(float(cfg.hysteresis_low_floor), strong * float(cfg.hysteresis_low_ratio))
+    return float(min(strong, weak))
+
+def _polygon_confidence_completion_threshold(strong_threshold: float, weak_threshold: float) -> float:
+    strong = float(max(0.0, min(1.0, strong_threshold)))
+    weak = float(max(0.0, min(1.0, weak_threshold)))
+    completion = max(
+        POLYGON_CONFIDENCE_HYSTERESIS_FLOOR,
+        min(weak * POLYGON_CONFIDENCE_COMPLETION_WEAK_RATIO, strong * POLYGON_CONFIDENCE_COMPLETION_LOW_RATIO),
+    )
+    return float(min(strong, completion))

@@ -4,1609 +4,177 @@ Independent from Qt; tune and test without UI changes.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass, field, replace
 from math import pi
 from typing import Any
-
 import cv2
 import numpy as np
-
 from ...application.preview_cancellation import raise_if_preview_cancelled
 from ..io_normalize import to_gray_u8
 from ..via_detection.binary_mask import detect_binary_components, looks_like_binary_mask
 
-# BGR for overlay: green = accepted, yellow = soft, red = hard
-_COLOR_ACCEPT = (0, 220, 0)
-_COLOR_SOFT = (0, 220, 255)
-_COLOR_HARD = (0, 0, 255)
-
-_MATCHED_PCT_OFFSET = 0.5
-_RADIAL_SMOOTH_SIGMA = 1.0
-
-
-def _clip01(value: float) -> float:
-    if value <= 0.0:
-        return 0.0
-    if value >= 1.0:
-        return 1.0
-    return float(value)
-
-
-class _CenterDistanceIndex:
-    """Bucketing for O(1) amortized "any center within min_dist" checks on a 2D grid."""
-
-    __slots__ = ("_buckets", "_cell", "_min_dist")
-
-    def __init__(self, min_dist: float) -> None:
-        self._min_dist = float(max(0.0, min_dist))
-        self._cell = max(1.0, self._min_dist)
-        self._buckets: dict[tuple[int, int], list[tuple[float, float]]] = {}
-
-    def is_close(self, cx: float, cy: float) -> bool:
-        if self._min_dist <= 0.0:
-            return False
-        c = self._cell
-        ix, iy = int(cx // c), int(cy // c)
-        md = self._min_dist
-        for dxi in (-1, 0, 1):
-            for dyi in (-1, 0, 1):
-                for ox, oy in self._buckets.get((ix + dxi, iy + dyi), ()):
-                    if float(np.hypot(cx - ox, cy - oy)) < md:
-                        return True
-        return False
-
-    def add(self, cx: float, cy: float) -> None:
-        c = self._cell
-        self._buckets.setdefault((int(cx // c), int(cy // c)), []).append((cx, cy))
-
-
-@dataclass(frozen=True, slots=True)
-class BrightViaDetectorConfig:
-    diameter_min: int = 6
-    diameter_max: int = 8
-    clahe_clip_limit: float = 2.0
-    clahe_tile_grid_size: int = 8
-    median_blur_kernel: int = 3
-    tophat_kernel_size: int = 11
-    dog_sigma_small: float = 0.8
-    dog_sigma_large: float = 2.0
-    threshold_percentile: float = 99.0
-    mask_combine_mode: str = "OR"
-    min_area_factor: float = 0.45
-    max_area_factor: float = 1.8
-    min_circularity: float = 0.30
-    min_aspect: float = 0.45
-    max_aspect: float = 2.2
-    bright_center_min_score: float = 6.0
-    bright_range_enabled: bool = False
-    bright_range_min: float = 140.0
-    bright_range_max: float = 255.0
-    dark_range_enabled: bool = False
-    dark_range_min: float = 0.0
-    dark_range_max: float = 60.0
-    metal_constraint_mode: str = "soft"
-    use_metal_mask: bool = True
-    metal_fraction_min: float = 0.3
-    max_radial_asymmetry: float = 32.0
-    max_edge_likeness: float = 35.0
-    max_line_likeness: float = 65.0
-    nms_distance: int = 5
-    min_final_score: float = 45.0
-    show_rejected_candidates: bool = True
-    hard_reject_on_asymmetry: bool = False
-    hard_reject_on_edge: bool = False
-    hard_reject_on_line: bool = False
-    min_annular_contrast: float = 6.0
-    max_annular_contrast: float = 0.0
-    min_isolation_score: float = 0.4
-    tiled_threshold_size: int = 256
-    scale_kernels_from_diameter: bool = True
-
-    @classmethod
-    def from_legacy_settings(cls, settings: Any) -> BrightViaDetectorConfig:
-        defaults = cls()
-
-        def _attr(legacy: str, field: str) -> Any:
-            return getattr(settings, legacy, getattr(defaults, field))
-
-        return cls(
-            diameter_min=int(_attr("bright_via_diameter_min", "diameter_min")),
-            diameter_max=int(_attr("bright_via_diameter_max", "diameter_max")),
-            clahe_clip_limit=float(_attr("bright_via_clahe_clip_limit", "clahe_clip_limit")),
-            clahe_tile_grid_size=int(_attr("bright_via_clahe_tile_grid_size", "clahe_tile_grid_size")),
-            median_blur_kernel=int(_attr("bright_via_median_blur_kernel", "median_blur_kernel")),
-            tophat_kernel_size=int(_attr("bright_via_tophat_kernel_size", "tophat_kernel_size")),
-            dog_sigma_small=float(_attr("bright_via_dog_sigma_small", "dog_sigma_small")),
-            dog_sigma_large=float(_attr("bright_via_dog_sigma_large", "dog_sigma_large")),
-            threshold_percentile=float(_attr("bright_via_threshold_percentile", "threshold_percentile")),
-            mask_combine_mode=str(_attr("bright_via_mask_combine_mode", "mask_combine_mode")),
-            min_area_factor=float(_attr("bright_via_min_area_factor", "min_area_factor")),
-            max_area_factor=float(_attr("bright_via_max_area_factor", "max_area_factor")),
-            min_circularity=float(_attr("bright_via_min_circularity", "min_circularity")),
-            min_aspect=float(_attr("bright_via_min_aspect", "min_aspect")),
-            max_aspect=float(_attr("bright_via_max_aspect", "max_aspect")),
-            bright_center_min_score=float(_attr("bright_via_bright_center_min_score", "bright_center_min_score")),
-            bright_range_enabled=bool(_attr("via_white_range_enabled", "bright_range_enabled")),
-            bright_range_min=float(_attr("via_white_range_min", "bright_range_min")),
-            bright_range_max=float(_attr("via_white_range_max", "bright_range_max")),
-            dark_range_enabled=bool(_attr("via_black_range_enabled", "dark_range_enabled")),
-            dark_range_min=float(_attr("via_black_range_min", "dark_range_min")),
-            dark_range_max=float(_attr("via_black_range_max", "dark_range_max")),
-            metal_constraint_mode=_normalize_metal_constraint_mode(
-                _attr(
-                    "bright_via_metal_constraint_mode",
-                    "metal_constraint_mode",
-                )
-                if hasattr(settings, "bright_via_metal_constraint_mode")
-                else ("soft" if bool(_attr("bright_via_use_metal_mask", "use_metal_mask")) else "disabled")
-            ),
-            use_metal_mask=bool(_attr("bright_via_use_metal_mask", "use_metal_mask")),
-            metal_fraction_min=float(_attr("bright_via_metal_fraction_min", "metal_fraction_min")),
-            max_radial_asymmetry=float(_attr("bright_via_max_radial_asymmetry", "max_radial_asymmetry")),
-            max_edge_likeness=float(_attr("bright_via_max_edge_likeness", "max_edge_likeness")),
-            max_line_likeness=float(_attr("bright_via_max_line_likeness", "max_line_likeness")),
-            nms_distance=int(_attr("bright_via_nms_distance", "nms_distance")),
-            min_final_score=float(_attr("bright_via_min_final_score", "min_final_score")),
-            show_rejected_candidates=bool(_attr("bright_via_show_rejected", "show_rejected_candidates")),
-            hard_reject_on_asymmetry=bool(_attr("bright_via_hard_reject_on_asymmetry", "hard_reject_on_asymmetry")),
-            hard_reject_on_edge=bool(_attr("bright_via_hard_reject_on_edge", "hard_reject_on_edge")),
-            hard_reject_on_line=bool(_attr("bright_via_hard_reject_on_line", "hard_reject_on_line")),
-            min_annular_contrast=float(_attr("bright_via_min_annular_contrast", "min_annular_contrast")),
-            min_isolation_score=float(_attr("bright_via_min_isolation_score", "min_isolation_score")),
-            max_annular_contrast=float(_attr("bright_via_max_annular_contrast", "max_annular_contrast")),
-            tiled_threshold_size=int(_attr("bright_via_tiled_threshold_size", "tiled_threshold_size")),
-            scale_kernels_from_diameter=bool(
-                _attr("bright_via_scale_kernels_from_diameter", "scale_kernels_from_diameter")
-            ),
-        ).validated()
-
-    def validated(self) -> BrightViaDetectorConfig:
-        errors: list[str] = []
-        if self.diameter_min <= 0 or self.diameter_max <= 0:
-            errors.append("diameters must be positive")
-        if self.diameter_min > self.diameter_max:
-            errors.append("diameter_min must be <= diameter_max")
-        if self.median_blur_kernel < 1 or self.median_blur_kernel % 2 == 0:
-            errors.append("median_blur_kernel must be odd and >= 1")
-        if self.tophat_kernel_size < 3 or self.tophat_kernel_size % 2 == 0:
-            errors.append("tophat_kernel_size must be odd and >= 3")
-        if self.clahe_tile_grid_size < 1:
-            errors.append("clahe_tile_grid_size must be >= 1")
-        if self.clahe_clip_limit <= 0.0:
-            errors.append("clahe_clip_limit must be positive")
-        if self.dog_sigma_small <= 0.0 or self.dog_sigma_large <= 0.0:
-            errors.append("DoG sigmas must be positive")
-        if self.dog_sigma_small >= self.dog_sigma_large:
-            errors.append("dogSigmaSmall must be < dogSigmaLarge")
-        if not 90.0 <= self.threshold_percentile <= 99.9:
-            errors.append("thresholdPercentile must be in range 90-99.9")
-        if str(self.mask_combine_mode).upper() not in {"OR", "AND"}:
-            errors.append("maskCombineMode must be OR or AND")
-        if _normalize_metal_constraint_mode(self.metal_constraint_mode) not in {"disabled", "soft", "strict"}:
-            errors.append("metalConstraintMode must be disabled, soft, or strict")
-        for name, value in (
-            ("min_area_factor", self.min_area_factor),
-            ("max_area_factor", self.max_area_factor),
-            ("min_circularity", self.min_circularity),
-            ("min_aspect", self.min_aspect),
-            ("max_aspect", self.max_aspect),
-            ("metal_fraction_min", self.metal_fraction_min),
-            ("max_radial_asymmetry", self.max_radial_asymmetry),
-            ("max_edge_likeness", self.max_edge_likeness),
-            ("max_line_likeness", self.max_line_likeness),
-        ):
-            if float(value) < 0.0:
-                errors.append(f"{name} must be non-negative")
-        if not 0.0 <= float(self.min_final_score) <= 100.0:
-            errors.append("minFinalScore must be 0-100")
-        if self.min_area_factor <= 0.0 or self.max_area_factor <= 0.0:
-            errors.append("area factors must be positive")
-        if self.min_aspect <= 0.0 or self.max_aspect <= 0.0:
-            errors.append("aspect thresholds must be positive")
-        if self.min_aspect > self.max_aspect:
-            errors.append("minAspect must be <= maxAspect")
-        if self.nms_distance < 0:
-            errors.append("nmsDistance must be >= 0")
-        if float(self.min_annular_contrast) < 0.0:
-            errors.append("min_annular_contrast must be non-negative")
-        if self.tiled_threshold_size < 32:
-            errors.append("tiled_threshold_size must be >= 32")
-        if errors:
-            raise ValueError("; ".join(errors))
-        return self
-
-    def with_diameter_scaled_kernels(self) -> BrightViaDetectorConfig:
-        if not self.scale_kernels_from_diameter:
-            return self
-        nominal = (float(self.diameter_min) + float(self.diameter_max)) * 0.5
-        tophat = _odd_kernel_size(max(7, round(nominal * 1.4)))
-        dog_large = max(float(self.dog_sigma_small) + 0.1, nominal * 0.25)
-        return replace(
-            self,
-            tophat_kernel_size=tophat,
-            dog_sigma_large=dog_large,
-            scale_kernels_from_diameter=False,
-        ).validated()
-
-
-@dataclass(frozen=True, slots=True)
-class BrightViaDetection:
-    center: tuple[float, float]
-    bbox: tuple[int, int, int, int]
-    area: float
-    circularity: float
-    aspect: float
-    brightness_score: float
-    local_peak_score: float
-    tophat_response: float
-    dog_response: float
-    metal_fraction: float
-    final_score: float
-    radial_asymmetry: float = 0.0
-    edge_likeness: float = 0.0
-    line_likeness: float = 0.0
-    distance_to_edge: float = 0.0
-    annular_contrast: float = 0.0
-    isolation_score: float = 1.0
-    status: str = "accepted"
-    hard_reason: str = ""
-
-
-@dataclass(slots=True)
-class BrightViaDetectionResult:
-    """detections: accepted only (exported / mask). candidates: all after NMS + scoring."""
-
-    detections: list[BrightViaDetection] = field(default_factory=list)
-    candidates: list[BrightViaDetection] = field(default_factory=list)
-    debug_images: dict[str, np.ndarray] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class BrightViaPreparedCandidates:
-    gray: np.ndarray
-    processed: np.ndarray
-    tophat: np.ndarray
-    dog: np.ndarray
-    tophat_mask: np.ndarray
-    dog_mask: np.ndarray
-    via_mask: np.ndarray
-    candidate_mask: np.ndarray
-    metal_mask: np.ndarray
-    edge_distance: np.ndarray
-    raw_candidates: list[_RawStage1]
-    min_area: float
-    max_area: float
-    nominal_diameter: float
-    nominal_radius: float
-    metal_mode: str
-    isolation: tuple[np.ndarray, np.ndarray] | None = None
-
-
-@dataclass(slots=True)
-class _CandidateDebugMaps:
-    radial_symmetry: np.ndarray
-    edge_likeness: np.ndarray
-    line_likeness: np.ndarray
-
-    @classmethod
-    def empty(cls, shape: tuple[int, ...]) -> _CandidateDebugMaps:
-        return cls(
-            radial_symmetry=np.zeros(shape, dtype=np.uint8),
-            edge_likeness=np.zeros(shape, dtype=np.uint8),
-            line_likeness=np.zeros(shape, dtype=np.uint8),
-        )
-
-
-@dataclass(slots=True)
-class _RawStage1:
-    center: tuple[float, float]
-    contour: np.ndarray | None
-    bbox: tuple[int, int, int, int]
-    area: float
-    circularity: float
-    aspect: float
-    prelim: float
-    source: str
-
-
-def detect_bright_vias(image: np.ndarray, config: BrightViaDetectorConfig) -> BrightViaDetectionResult:
-    cfg = config.validated().with_diameter_scaled_kernels()
-    gray = to_gray_u8(image)
-    if looks_like_binary_mask(gray):
-        return _detect_binary_vias(gray, cfg)
-    prepared = prepare_bright_via_candidates(image, cfg)
-    return score_bright_via_candidates(prepared, cfg)
-
-
-def _detect_binary_vias(gray: np.ndarray, cfg: BrightViaDetectorConfig) -> BrightViaDetectionResult:
-    """Deterministic connected-component detector for binary mask inputs.
-
-    Binary masks already contain the segmentation result.  Running CLAHE,
-    top-hat and radial gates on them can only lose information, especially at
-    frame borders.  Geometry is therefore the only filter on this path.
-    """
-
-    foreground, components = detect_binary_components(
-        gray,
-        diameter_min=cfg.diameter_min,
-        diameter_max=cfg.diameter_max,
-        min_area_factor=cfg.min_area_factor,
-        max_area_factor=cfg.max_area_factor,
-        min_aspect=cfg.min_aspect,
-        max_aspect=cfg.max_aspect,
-        nms_distance=cfg.nms_distance,
-    )
-    gray_f32 = gray.astype(np.float32)
-    detections: list[BrightViaDetection] = []
-    for component in components:
-        cx, cy = component.center
-        x, y, width, height = component.bbox
-        detections.append(
-            BrightViaDetection(
-                center=(cx, cy),
-                bbox=(x, y, width, height),
-                area=component.area,
-                circularity=component.circularity,
-                aspect=component.aspect,
-                brightness_score=float(_center_mean_score_f32(gray_f32, (cx, cy), min(width, height))),
-                local_peak_score=255.0,
-                tophat_response=255.0,
-                dog_response=255.0,
-                metal_fraction=1.0,
-                final_score=100.0,
-                annular_contrast=255.0,
-                isolation_score=1.0,
-                status="accepted",
-            )
-        )
-    overlay = _draw_overlay(gray, detections, cfg, show_rejected=False)
-    empty = np.zeros_like(gray, dtype=np.uint8)
-    return BrightViaDetectionResult(
-        detections=detections,
-        candidates=list(detections),
-        debug_images={
-            "raw_gray": gray,
-            "processed": gray,
-            "via_mask": foreground,
-            "candidate_mask": foreground,
-            "tophat": empty,
-            "dog": empty,
-            "tophat_mask": empty,
-            "dog_mask": empty,
-            "metal_mask": empty,
-            "radial_symmetry": empty,
-            "edge_likeness": empty,
-            "line_likeness": empty,
-            "distance_to_edge": empty,
-            "final_overlay": overlay,
-        },
-    )
-
-
-def prepare_bright_via_candidates(image: np.ndarray, config: BrightViaDetectorConfig) -> BrightViaPreparedCandidates:
-    cfg = config.validated()
-    gray = _normalize_u8(to_gray_u8(image))
-    if gray.size == 0:
-        return BrightViaPreparedCandidates(
-            gray=gray,
-            processed=gray,
-            tophat=gray,
-            dog=gray,
-            tophat_mask=gray,
-            dog_mask=gray,
-            via_mask=gray,
-            candidate_mask=gray,
-            metal_mask=gray,
-            edge_distance=gray.astype(np.float32),
-            raw_candidates=[],
-            min_area=0.0,
-            max_area=0.0,
-            nominal_diameter=0.0,
-            nominal_radius=0.0,
-            metal_mode="disabled",
-            isolation=None,
-        )
-    raise_if_preview_cancelled()
-    processed = _preprocess(gray, cfg)
-    raise_if_preview_cancelled()
-    tophat = _white_tophat(processed, cfg.tophat_kernel_size)
-    raise_if_preview_cancelled()
-    dog = _dog_response(processed, cfg.dog_sigma_small, cfg.dog_sigma_large)
-    raise_if_preview_cancelled()
-    nominal_diameter = (float(cfg.diameter_min) + float(cfg.diameter_max)) * 0.5
-    matched = _via_matched_filter_response(processed, nominal_diameter)
-    matched_norm = _normalize_response(matched)
-    tophat_norm = _normalize_response(tophat)
-    dog_norm = _normalize_response(dog)
-    tile_size = int(cfg.tiled_threshold_size)
-    tophat_mask = _percentile_mask(tophat_norm, cfg.threshold_percentile)
-    dog_mask = _percentile_mask(dog_norm, cfg.threshold_percentile)
-    # The matched filter is the primary, brightness-robust candidate source.
-    # A slightly lower tiled percentile keeps recall high; scoring prunes noise.
-    # Global (not tiled) threshold: the matched response is zero-DC, so bright
-    # metal stripes yield low response and do not inflate a local floor that would
-    # hide vias sharing their tile.
-    matched_mask = _percentile_mask(matched_norm, max(95.0, float(cfg.threshold_percentile) - _MATCHED_PCT_OFFSET))
-    bright_peak_mask = _bright_local_peak_mask(gray, tile_size, cfg.threshold_percentile)
-    if cfg.mask_combine_mode.upper() == "AND":
-        via_mask = cv2.bitwise_and(tophat_mask, dog_mask)
-    else:
-        via_mask = cv2.bitwise_or(tophat_mask, dog_mask)
-    if cv2.countNonZero(matched_mask) > 0:
-        via_mask = cv2.bitwise_or(via_mask, matched_mask)
-    if cv2.countNonZero(bright_peak_mask) > 0:
-        via_mask = cv2.bitwise_or(via_mask, bright_peak_mask)
-    raise_if_preview_cancelled()
-    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    via_mask = cv2.morphologyEx(via_mask, cv2.MORPH_OPEN, open_kernel)
-    candidate_soup = cv2.bitwise_or(via_mask, cv2.bitwise_or(tophat_mask, dog_mask))
-    metal_mode = "disabled" if not cfg.use_metal_mask else _normalize_metal_constraint_mode(cfg.metal_constraint_mode)
-    metal_mask = _metal_mask(processed) if metal_mode != "disabled" else np.zeros_like(gray, dtype=np.uint8)
-    edge_distance = _edge_distance_map(processed)
-    min_area = pi * (float(cfg.diameter_min) * 0.5) ** 2 * float(cfg.min_area_factor)
-    max_area = pi * (float(cfg.diameter_max) * 0.5) ** 2 * float(cfg.max_area_factor)
-    nominal_radius = max(1.0, nominal_diameter * 0.5)
-    isolation = _build_isolation_map(processed, round(nominal_diameter))
-    raise_if_preview_cancelled()
-    raws = _stage1_raw_candidates(
-        gray_u8=gray,
-        tophat_u8=tophat_norm,
-        dog_u8=dog_norm,
-        matched_u8=matched_norm,
-        tophat_mask=tophat_mask,
-        dog_mask=dog_mask,
-        matched_mask=matched_mask,
-        via_mask=via_mask,
-        cfg=cfg,
-        min_area=min_area,
-        max_area=max_area,
-    )
-    raise_if_preview_cancelled()
-    raws = _raw_nms(raws, float(cfg.nms_distance))
-    return BrightViaPreparedCandidates(
-        gray=gray,
-        processed=processed,
-        tophat=tophat_norm,
-        dog=dog_norm,
-        tophat_mask=tophat_mask,
-        dog_mask=dog_mask,
-        via_mask=via_mask,
-        candidate_mask=candidate_soup,
-        metal_mask=metal_mask,
-        edge_distance=edge_distance,
-        raw_candidates=raws,
-        min_area=min_area,
-        max_area=max_area,
-        nominal_diameter=nominal_diameter,
-        nominal_radius=nominal_radius,
-        metal_mode=metal_mode,
-        isolation=isolation,
-    )
-
-
-def score_bright_via_candidates(
-    prepared: BrightViaPreparedCandidates, config: BrightViaDetectorConfig
-) -> BrightViaDetectionResult:
-    cfg = config.validated()
-    if prepared.gray.size == 0:
-        return BrightViaDetectionResult()
-    debug = _CandidateDebugMaps.empty(prepared.gray.shape[:2])
-    gray_f32 = prepared.gray.astype(np.float32, copy=False)
-    processed_f32 = prepared.processed.astype(np.float32, copy=False)
-    # Lightly smoothed copy for the radial-symmetry gate only: CLAHE amplifies
-    # pixel noise on flat regions, which would otherwise make a clean isolated via
-    # look asymmetric. A small blur keeps the via structure (>=8 px) but removes
-    # that noise so the symmetry score reflects real geometry.
-    radial_f32 = cv2.GaussianBlur(processed_f32, (0, 0), _RADIAL_SMOOTH_SIGMA)
-    tophat_f32 = prepared.tophat.astype(np.float32, copy=False)
-    dog_f32 = prepared.dog.astype(np.float32, copy=False)
-    raise_if_preview_cancelled()
-
-    candidates_scored: list[BrightViaDetection] = []
-    for i, raw in enumerate(prepared.raw_candidates):
-        if i & 31 == 0:
-            raise_if_preview_cancelled()
-        det = _score_one_candidate(
-            raw=raw,
-            gray=prepared.gray,
-            gray_f32=gray_f32,
-            processed=prepared.processed,
-            processed_f32=processed_f32,
-            radial_f32=radial_f32,
-            tophat=prepared.tophat,
-            tophat_f32=tophat_f32,
-            dog=prepared.dog,
-            dog_f32=dog_f32,
-            metal_mask=prepared.metal_mask,
-            edge_distance=prepared.edge_distance,
-            cfg=cfg,
-            metal_mode=prepared.metal_mode,
-            nominal_diameter=prepared.nominal_diameter,
-            nominal_radius=prepared.nominal_radius,
-            min_area=prepared.min_area,
-            max_area=prepared.max_area,
-            isolation=prepared.isolation,
-            debug=debug,
-        )
-        if det is not None:
-            candidates_scored.append(det)
-    raise_if_preview_cancelled()
-    candidates_scored = suppress_close_points(candidates_scored, cfg.nms_distance)
-    accepted = [c for c in candidates_scored if c.status == "accepted"]
-    rejected = [c for c in candidates_scored if c.status != "accepted"]
-    compact_candidates = accepted + rejected
-    show_rejected = bool(cfg.show_rejected_candidates)
-    if prepared.gray.shape[0] * prepared.gray.shape[1] >= 1_800_000:
-        show_rejected = False
-    overlay = _draw_overlay(prepared.gray, compact_candidates, cfg, show_rejected=show_rejected)
-
-    return BrightViaDetectionResult(
-        detections=accepted,
-        candidates=compact_candidates,
-        debug_images={
-            "raw_gray": prepared.gray,
-            "processed": prepared.processed,
-            "tophat": prepared.tophat,
-            "dog": prepared.dog,
-            "tophat_mask": prepared.tophat_mask,
-            "dog_mask": prepared.dog_mask,
-            "via_mask": prepared.via_mask,
-            "candidate_mask": prepared.candidate_mask,
-            "metal_mask": prepared.metal_mask,
-            "radial_symmetry": debug.radial_symmetry,
-            "edge_likeness": debug.edge_likeness,
-            "line_likeness": debug.line_likeness,
-            "distance_to_edge": _normalize_response(prepared.edge_distance),
-            "final_overlay": overlay,
-        },
-    )
-
-
-def _stage1_raw_candidates(
-    *,
-    gray_u8: np.ndarray,
-    tophat_u8: np.ndarray,
-    dog_u8: np.ndarray,
-    matched_u8: np.ndarray,
-    tophat_mask: np.ndarray,
-    dog_mask: np.ndarray,
-    matched_mask: np.ndarray,
-    via_mask: np.ndarray,
-    cfg: BrightViaDetectorConfig,
-    min_area: float,
-    max_area: float,
-) -> list[_RawStage1]:
-    raws: list[_RawStage1] = []
-    pi_v = float(pi)
-    tophat_f32 = tophat_u8.astype(np.float32, copy=False)
-    dog_f32 = dog_u8.astype(np.float32, copy=False)
-    # Gather every source first. The score-ranked NMS after this stage resolves
-    # duplicates without imposing a count-dependent cutoff or source-order bias.
-    for cx, cy, val in _local_maxima_points(matched_u8, matched_mask):
-        raw = _raw_from_peak(cx, cy, val, matched_u8, "matched_peak", cfg, min_area, max_area, pi_v)
-        if raw is not None:
-            raws.append(raw)
-    for contour, tag in _contours_from_mask(via_mask, min_area, max_area):
-        det = _raw_from_contour(contour, tophat_f32, dog_f32, tag, pi_v)
-        if det is not None:
-            raws.append(det)
-    for label, tmask, response in (
-        ("tophat_peak", tophat_mask, tophat_u8),
-        ("dog_peak", dog_mask, dog_u8),
-        ("gray_peak", _percentile_mask(gray_u8, 95.0), gray_u8),
-    ):
-        for cx, cy, val in _local_maxima_points(response, tmask):
-            raw = _raw_from_peak(cx, cy, val, response, label, cfg, min_area, max_area, pi_v)
-            if raw is not None:
-                raws.append(raw)
-    return raws
-
-
-def _contours_from_mask(via_mask: np.ndarray, min_area: float, max_area: float) -> list[tuple[np.ndarray, str]]:
-    contours, _h = cv2.findContours(via_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    out: list[tuple[np.ndarray, str]] = []
-    for c in contours:
-        a = float(cv2.contourArea(c))
-        if a > max_area * 1.2 or a < 2.0:
-            continue
-        out.append((c, "contour"))
-    return out
-
-
-def _raw_from_contour(
-    contour: np.ndarray,
-    tophat_f32: np.ndarray,
-    dog_f32: np.ndarray,
-    tag: str,
-    pi_v: float,
-) -> _RawStage1 | None:
-    area = float(cv2.contourArea(contour))
-    per = float(cv2.arcLength(contour, True))
-    if per <= 1e-6 or area <= 1.0:
-        return None
-    circ = float(4.0 * pi_v * area / (per * per))
-    x, y, w, h = cv2.boundingRect(contour)
-    aspect = float(w) / float(max(1, h))
-    center = _contour_center_from_rect(contour, x, y, w, h)
-    top = _disk_mean_f32(tophat_f32, center, max(1.0, (w + h) * 0.2))
-    dog = _disk_mean_f32(dog_f32, center, max(1.0, (w + h) * 0.2))
-    prelim = max(top, dog) * max(0.2, min(1.0, circ * 1.2))
-    return _RawStage1(
-        center=center,
-        contour=contour,
-        bbox=(int(x), int(y), int(w), int(h)),
-        area=area,
-        circularity=circ,
-        aspect=aspect,
-        prelim=float(prelim),
-        source=tag,
-    )
-
-
-def _raw_from_peak(
-    cx: float,
-    cy: float,
-    val: float,
-    _response: np.ndarray,
-    label: str,
-    cfg: BrightViaDetectorConfig,
-    min_area: float,
-    max_area: float,
-    pi_v: float,
-) -> _RawStage1 | None:
-    d = (float(cfg.diameter_min) + float(cfg.diameter_max)) * 0.5
-    r = max(1.0, d * 0.5)
-    side = max(2, round(d))
-    ix = round(cx) - side // 2
-    iy = round(cy) - side // 2
-    area = pi_v * r * r
-    if not (min_area * 0.5 <= area <= max_area * 1.2):
-        return None
-    return _RawStage1(
-        center=(float(cx), float(cy)),
-        contour=None,
-        bbox=(ix, iy, side, side),
-        area=float(area),
-        circularity=1.0,
-        aspect=1.0,
-        prelim=float(val),
-        source=label,
-    )
-
-
-def _contour_center_from_rect(
-    contour: np.ndarray, x_coord: int, y_coord: int, width: int, height: int
-) -> tuple[float, float]:
-    moments = cv2.moments(contour)
-    if abs(float(moments.get("m00", 0.0))) > 1e-6:
-        return float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"])
-    return float(x_coord + width * 0.5), float(y_coord + height * 0.5)
-
-
-def _contour_geometry_center(raw: _RawStage1) -> tuple[float, float]:
-    if raw.contour is None:
-        return raw.center
-    x_coord, y_coord, width, height = raw.bbox
-    bbox_center = (x_coord + 0.5 * max(0, width - 1), y_coord + 0.5 * max(0, height - 1))
-    rect_center = tuple(float(value) for value in cv2.minAreaRect(raw.contour)[0])
-    circle_center_raw, _radius = cv2.minEnclosingCircle(raw.contour)
-    circle_center = tuple(float(value) for value in circle_center_raw)
-    return (
-        float(np.median([bbox_center[0], rect_center[0], circle_center[0]])),
-        float(np.median([bbox_center[1], rect_center[1], circle_center[1]])),
-    )
-
-
-def _refine_center_on_bright_core(
-    gray_f32: np.ndarray, center: tuple[float, float], diameter: float
-) -> tuple[float, float]:
-    """Snap the candidate center onto the intensity-weighted centroid of the bright core.
-
-    The stage-1 center is the centroid of a percentile-threshold blob, which drifts
-    off the real via when the blob is irregular or merges with neighbouring bright
-    structures. Re-centering on the brightest core (top intensities inside a small
-    window) removes that drift without depending on the thresholded shape.
-    """
-
-    height, width = gray_f32.shape[:2]
-    search_r = max(2, round(float(diameter) * 0.6))
-    cx0 = round(center[0])
-    cy0 = round(center[1])
-    x0 = max(0, cx0 - search_r)
-    x1 = min(width, cx0 + search_r + 1)
-    y0 = max(0, cy0 - search_r)
-    y1 = min(height, cy0 + search_r + 1)
-    if x1 - x0 < 2 or y1 - y0 < 2:
-        return center
-    patch = gray_f32[y0:y1, x0:x1]
-    weights = patch - float(patch.min())
-    peak = float(weights.max())
-    if peak <= 1e-6:
-        return center
-    # Keep only the bright core so a neighbouring spot inside the window cannot pull
-    # the centroid away from the via being measured.
-    weights = np.where(weights >= peak * 0.5, weights, 0.0)
-    total = float(weights.sum())
-    if total <= 1e-6:
-        return center
-    ys, xs = np.mgrid[y0:y1, x0:x1]
-    refined_x = float((weights * xs).sum() / total)
-    refined_y = float((weights * ys).sum() / total)
-    drift_sq = (refined_x - center[0]) ** 2 + (refined_y - center[1]) ** 2
-    if drift_sq > float(search_r * search_r):
-        return center
-    return (refined_x, refined_y)
-
-
-def _fixed_size_bbox(center: tuple[float, float], diameter: float, shape: tuple[int, ...]) -> tuple[int, int, int, int]:
-    """Square bbox of side ``diameter`` centered on ``center`` (clamped to image)."""
-
-    side = max(1, round(float(diameter)))
-    half = side / 2.0
-    x = round(center[0] - half)
-    y = round(center[1] - half)
-    if len(shape) >= 2:
-        max_x = max(0, int(shape[1]) - side)
-        max_y = max(0, int(shape[0]) - side)
-        x = min(max(0, x), max_x)
-        y = min(max(0, y), max_y)
-    return (x, y, side, side)
-
-
-def _local_maxima_points(
-    response_u8: np.ndarray,
-    support: np.ndarray,
-) -> list[tuple[float, float, float]]:
-    if response_u8.size == 0:
-        return []
-    work = response_u8.astype(np.float32)
-    work[support == 0] = 0.0
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    dil = cv2.dilate(work, kernel)
-    lm = (work >= dil) & (work > 0) & (support > 0)
-    maxima = lm.astype(np.uint8)
-    if int(cv2.countNonZero(maxima)) == 0:
-        return []
-    # A saturated/flat peak is one maximum, not one candidate per pixel. Collapse
-    # each connected plateau while retaining every spatially distinct maximum.
-    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(maxima, connectivity=8)
-    points: list[tuple[float, float, float]] = []
-    for label in range(1, count):
-        x, y, width, height, area = stats[label]
-        if int(area) <= 0:
-            continue
-        roi = work[y : y + height, x : x + width]
-        region = labels[y : y + height, x : x + width] == label
-        peak = float(np.max(roi[region]))
-        peak_y, peak_x = np.nonzero(region & (roi == peak))
-        points.append(
-            (
-                float(x) + float(np.mean(peak_x)),
-                float(y) + float(np.mean(peak_y)),
-                peak,
-            )
-        )
-    points.sort(key=lambda point: point[2], reverse=True)
-    return points
-
-
-def _raw_nms(raws: list[_RawStage1], min_dist: float) -> list[_RawStage1]:
-    if not raws or min_dist <= 0:
-        return raws
-    kept: list[_RawStage1] = []
-    idx = _CenterDistanceIndex(float(min_dist))
-    for r in sorted(raws, key=lambda z: _raw_nms_rank(z), reverse=True):
-        cx, cy = r.center
-        if idx.is_close(cx, cy):
-            continue
-        kept.append(r)
-        idx.add(cx, cy)
-    return kept
-
-
-def _passes_brightness_gate(center_mean: float, cfg: BrightViaDetectorConfig) -> bool:
-    if cfg.bright_range_enabled or cfg.dark_range_enabled:
-        bright_ok = cfg.bright_range_enabled and float(cfg.bright_range_min) <= center_mean <= float(
-            cfg.bright_range_max
-        )
-        dark_ok = cfg.dark_range_enabled and float(cfg.dark_range_min) <= center_mean <= float(cfg.dark_range_max)
-        return bright_ok or dark_ok
-    return center_mean >= float(cfg.bright_center_min_score) * 0.999
-
-
-def _brightness_gate_reason(center_mean: float, cfg: BrightViaDetectorConfig) -> str:
-    if cfg.bright_range_enabled or cfg.dark_range_enabled:
-        parts: list[str] = []
-        if cfg.bright_range_enabled:
-            parts.append(f"bright={cfg.bright_range_min:.0f}-{cfg.bright_range_max:.0f}")
-        if cfg.dark_range_enabled:
-            parts.append(f"dark={cfg.dark_range_min:.0f}-{cfg.dark_range_max:.0f}")
-        return f"brightness_out_of_range (raw={center_mean:.1f}, {'; '.join(parts)})"
-    return f"low_center (raw={center_mean:.1f} min={cfg.bright_center_min_score})"
-
-
-def _score_one_candidate(
-    *,
-    raw: _RawStage1,
-    gray: np.ndarray,
-    gray_f32: np.ndarray,
-    processed: np.ndarray,
-    processed_f32: np.ndarray,
-    radial_f32: np.ndarray,
-    tophat: np.ndarray,
-    tophat_f32: np.ndarray,
-    dog: np.ndarray,
-    dog_f32: np.ndarray,
-    metal_mask: np.ndarray,
-    edge_distance: np.ndarray,
-    cfg: BrightViaDetectorConfig,
-    metal_mode: str,
-    nominal_diameter: float,
-    nominal_radius: float,
-    min_area: float,
-    max_area: float,
-    isolation: tuple[np.ndarray, np.ndarray] | None,
-    debug: _CandidateDebugMaps,
-) -> BrightViaDetection | None:
-    x, y, w, h = raw.bbox
-    if raw.contour is not None:
-        center = _contour_geometry_center(raw)
-    else:
-        center = _refine_center_on_bright_core(gray_f32, raw.center, nominal_diameter)
-    area = raw.area
-    aspect = float(w) / float(max(1, h)) if h > 0 else 999.0
-    if raw.contour is not None:
-        perimeter = float(cv2.arcLength(raw.contour, True))
-        circularity = float(4.0 * pi * area / (perimeter * perimeter + 1e-6))
-    else:
-        circularity = 1.0
-    if area < min_area * 0.99 or area > max_area * 1.01:
-        return _hard(
-            center,
-            (x, y, w, h),
-            area,
-            circularity,
-            aspect,
-            "size",
-        )
-    if aspect < float(cfg.min_aspect) * 0.999 or aspect > float(cfg.max_aspect) * 1.001:
-        return _hard(center, (x, y, w, h), area, circularity, aspect, "aspect")
-
-    eff_d = max(nominal_diameter, float(np.sqrt(max(area, 1.0) * 4.0 / pi)))
-    eff_r = max(1.0, eff_d * 0.5)
-    center_mean = _center_mean_score_f32(gray_f32, center, eff_d)
-    annular = _bright_center_score_f32(processed_f32, center, eff_d)
-    local_contrast = annular
-    if annular < float(cfg.min_annular_contrast) * 0.999:
-        return _hard(
-            center,
-            (x, y, w, h),
-            area,
-            circularity,
-            aspect,
-            f"low_annular (raw={annular:.1f} min={cfg.min_annular_contrast})",
-        )
-    max_annular = float(cfg.max_annular_contrast)
-    if max_annular > 0.0 and annular > max_annular * 1.001:
-        return _hard(
-            center,
-            (x, y, w, h),
-            area,
-            circularity,
-            aspect,
-            f"high_annular (raw={annular:.1f} max={max_annular})",
-        )
-    if not _passes_brightness_gate(center_mean, cfg):
-        return _hard(
-            center,
-            (x, y, w, h),
-            area,
-            circularity,
-            aspect,
-            _brightness_gate_reason(center_mean, cfg),
-        )
-
-    radial = _radial_symmetry_score_f32(radial_f32, center[0], center[1], eff_r)
-    edge = _edge_likeness_score_f32(processed_f32, center[0], center[1], max(nominal_radius, eff_r))
-    line = _line_likeness_score_f32(processed_f32, center[0], center[1], max(nominal_radius, eff_r))
-    d_edge = _sample_distance(edge_distance, center)
-
-    if (
-        cfg.hard_reject_on_asymmetry
-        and float(cfg.max_radial_asymmetry) > 0
-        and radial > float(cfg.max_radial_asymmetry)
-    ):
-        return _hard(center, (x, y, w, h), area, circularity, aspect, f"asymmetry>{cfg.max_radial_asymmetry}")
-    if cfg.hard_reject_on_edge and float(cfg.max_edge_likeness) > 0 and edge > float(cfg.max_edge_likeness):
-        return _hard(center, (x, y, w, h), area, circularity, aspect, f"edge>{cfg.max_edge_likeness}")
-    if cfg.hard_reject_on_line and float(cfg.max_line_likeness) > 0 and line > float(cfg.max_line_likeness):
-        return _hard(center, (x, y, w, h), area, circularity, aspect, f"line>{cfg.max_line_likeness}")
-
-    iso_score = _isolation_score(
-        isolation,
-        round(center[0]),
-        round(center[1]),
-        round(max(nominal_radius, eff_r)),
-    )
-    if iso_score < float(cfg.min_isolation_score) - 1e-4:
-        return _hard(
-            center,
-            (x, y, w, h),
-            area,
-            circularity,
-            aspect,
-            f"low_isolation (iso={iso_score:.2f})",
-        )
-
-    metal = 1.0
-    if metal_mode != "disabled":
-        metal = mask_fraction(metal_mask, _expanded_bbox(center, nominal_diameter * 1.8, processed.shape))
-    if metal_mode == "strict" and metal < float(cfg.metal_fraction_min) - 1e-4:
-        return _hard(
-            center,
-            (x, y, w, h),
-            area,
-            circularity,
-            aspect,
-            f"metal<{cfg.metal_fraction_min}",
-        )
-
-    if debug is not None:
-        _paint_score_disk(debug.radial_symmetry, center, max(2.0, eff_r), radial, 60.0)
-        _paint_score_disk(debug.edge_likeness, center, max(2.0, eff_r), edge, 80.0)
-        _paint_score_disk(debug.line_likeness, center, max(2.0, eff_r), line, 100.0)
-
-    top = _disk_mean_f32(tophat_f32, center, max(1.0, nominal_diameter * 0.35))
-    dogm = _disk_mean_f32(dog_f32, center, max(1.0, nominal_diameter * 0.35))
-    local_peak = 0.5 * (float(top) + float(dogm))
-    fscore = _composite_final_0_100(
-        center_mean=center_mean,
-        local_contrast=local_contrast,
-        local_peak=local_peak,
-        area=area,
-        min_area=min_area,
-        max_area=max_area,
-        circularity=circularity,
-        min_circularity=float(cfg.min_circularity),
-        radial_asymmetry=radial,
-        edge_likeness=edge,
-        line_likeness=line,
-        max_asym=cfg.max_radial_asymmetry,
-        max_edge=cfg.max_edge_likeness,
-        max_line=cfg.max_line_likeness,
-        metal_fraction=metal,
-        metal_mode=metal_mode,
-        distance_to_edge=d_edge,
-        annular_contrast=annular,
-        isolation_score=iso_score,
-    )
-    st = "accepted" if fscore >= float(cfg.min_final_score) else "soft_reject"
-    if abs(float(cfg.diameter_max) - float(cfg.diameter_min)) < 1e-6:
-        out_diameter = float(cfg.diameter_min)
-    else:
-        out_diameter = min(max(eff_d, float(cfg.diameter_min)), float(cfg.diameter_max))
-    out_bbox = _fixed_size_bbox(center, out_diameter, processed.shape)
-    return BrightViaDetection(
-        center=(float(center[0]), float(center[1])),
-        bbox=out_bbox,
-        area=float(area),
-        circularity=float(circularity),
-        aspect=float(aspect if aspect < 1000 else 1.0),
-        brightness_score=float(center_mean),
-        local_peak_score=float(local_peak),
-        tophat_response=float(top),
-        dog_response=float(dogm),
-        metal_fraction=float(metal),
-        final_score=float(fscore),
-        radial_asymmetry=float(radial),
-        edge_likeness=float(edge),
-        line_likeness=float(line),
-        distance_to_edge=float(d_edge),
-        annular_contrast=float(annular),
-        isolation_score=float(iso_score),
-        status=st,
-        hard_reason="",
-    )
-
-
-def _hard(
-    center: tuple[float, float],
-    bbox: tuple[int, int, int, int],
-    area: float,
-    circularity: float,
-    aspect: float,
-    reason: str,
-) -> BrightViaDetection:
-    return BrightViaDetection(
-        center=(float(center[0]), float(center[1])),
-        bbox=bbox,
-        area=float(area),
-        circularity=float(circularity),
-        aspect=float(aspect),
-        brightness_score=0.0,
-        local_peak_score=0.0,
-        tophat_response=0.0,
-        dog_response=0.0,
-        metal_fraction=0.0,
-        final_score=0.0,
-        status="hard_reject",
-        hard_reason=reason,
-    )
-
-
-def _composite_final_0_100(
-    *,
-    center_mean: float,
-    local_contrast: float,
-    local_peak: float,
-    area: float,
-    min_area: float,
-    max_area: float,
-    circularity: float,
-    min_circularity: float,
-    radial_asymmetry: float,
-    edge_likeness: float,
-    line_likeness: float,
-    max_asym: float,
-    max_edge: float,
-    max_line: float,
-    metal_fraction: float,
-    metal_mode: str,
-    distance_to_edge: float,
-    annular_contrast: float = 0.0,
-    isolation_score: float = 1.0,
-) -> float:
-    bright_abs_norm = _clip01(center_mean / 255.0)
-    bright_contrast_norm = _clip01(local_contrast / 40.0)
-    lp_norm = _clip01(local_peak / 255.0)
-    mid = 0.5 * (min_area + max_area)
-    span = max(max_area - min_area, 1.0)
-    area_norm = 1.0 - float(min(1.0, abs(area - mid) / (span * 0.5 + 1e-6)))
-    area_norm = _clip01(area_norm)
-    circ_ref = max(min_circularity, 0.01)
-    circ_norm = _clip01(circularity / circ_ref)
-    m_as = max(float(max_asym), 1e-3)
-    sym_norm = _clip01(1.0 - radial_asymmetry / m_as)
-    annular_norm = _clip01(float(annular_contrast) / 40.0)
-    isolation_norm = _clip01(float(isolation_score))
-    mbonus = 0.0
-    if metal_mode == "soft":
-        mbonus = 5.0 * _clip01(metal_fraction)
-    elif metal_mode == "strict":
-        mbonus = 3.0 * _clip01(metal_fraction)
-    distb = min(5.0, max(0.0, float(distance_to_edge) * 0.25))
-    edge_penalty = 30.0 * max(0.0, float(edge_likeness) / max(float(max_edge), 1e-3) - 1.0)
-    line_penalty = 5.0 * max(0.0, float(line_likeness) / max(float(max_line), 1e-3) - 1.0)
-    proximity_penalty = 5.0 * max(0.0, 1.0 - float(distance_to_edge))
-    core = (
-        10.0 * bright_abs_norm
-        + 8.0 * bright_contrast_norm
-        + 15.0 * lp_norm
-        + 5.0 * area_norm
-        + 12.0 * circ_norm
-        + 15.0 * sym_norm
-        + 20.0 * annular_norm
-        + 25.0 * isolation_norm
-    )
-    total = core + mbonus + distb - edge_penalty - line_penalty - proximity_penalty
-    if total <= 0.0:
-        return 0.0
-    if total >= 100.0:
-        return 100.0
-    return float(total)
-
-
-def radial_symmetry_score(gray: np.ndarray, cx: float, cy: float, radius: float) -> float:
-    data = _as_gray_f32(gray)
-    return _radial_symmetry_score_f32(data, cx, cy, radius)
-
-
-def _radial_symmetry_score_f32(data: np.ndarray, cx: float, cy: float, radius: float) -> float:
-    if data.size == 0:
-        return 0.0
-    radius = max(1.0, float(radius))
-    offsets = (
-        (0.0, -1.0),
-        (0.70710678, -0.70710678),
-        (1.0, 0.0),
-        (0.70710678, 0.70710678),
-        (0.0, 1.0),
-        (-0.70710678, 0.70710678),
-        (-1.0, 0.0),
-        (-0.70710678, -0.70710678),
-    )
-    points = [(cx + radius * dx, cy + radius * dy) for dx, dy in offsets]
-    samples = [_bilinear_sample(data, x, y) for x, y in points if _sample_is_inside(data, x, y)]
-    if len(samples) < 3:
-        return 0.0
-    return float(np.std(np.asarray(samples, dtype=np.float32)))
-
-
-def edge_likeness_score(gray: np.ndarray, cx: float, cy: float, radius: float) -> float:
-    data = _as_gray_f32(gray)
-    return _edge_likeness_score_f32(data, cx, cy, radius)
-
-
-def _edge_likeness_score_f32(data: np.ndarray, cx: float, cy: float, radius: float) -> float:
-    if data.size == 0:
-        return 0.0
-    radius = max(1.0, float(radius))
-    offsets = (
-        ((0.0, -1.0), (0.0, 1.0)),
-        ((1.0, 0.0), (-1.0, 0.0)),
-        ((0.70710678, -0.70710678), (-0.70710678, 0.70710678)),
-        ((0.70710678, 0.70710678), (-0.70710678, -0.70710678)),
-    )
-    differences: list[float] = []
-    for first, second in offsets:
-        first_x, first_y = cx + radius * first[0], cy + radius * first[1]
-        second_x, second_y = cx + radius * second[0], cy + radius * second[1]
-        if not (_sample_is_inside(data, first_x, first_y) and _sample_is_inside(data, second_x, second_y)):
-            continue
-        differences.append(abs(_bilinear_sample(data, first_x, first_y) - _bilinear_sample(data, second_x, second_y)))
-    return float(max(differences, default=0.0))
-
-
-def line_likeness_score(gray: np.ndarray, cx: float, cy: float, radius: float) -> float:
-    data = _as_gray_f32(gray)
-    return _line_likeness_score_f32(data, cx, cy, radius)
-
-
-def _line_likeness_score_f32(data: np.ndarray, cx: float, cy: float, radius: float) -> float:
-    patch = _local_patch(data, cx, cy, max(2.0, float(radius) * 1.8))
-    if patch.size <= 4:
-        return 0.0
-    gx = cv2.Sobel(patch, cv2.CV_32F, 1, 0, ksize=3)
-    gy = cv2.Sobel(patch, cv2.CV_32F, 0, 1, ksize=3)
-    jxx = float(np.mean(gx * gx))
-    jyy = float(np.mean(gy * gy))
-    jxy = float(np.mean(gx * gy))
-    trace = jxx + jyy
-    if trace <= 1e-6:
-        return 0.0
-    delta = float(np.sqrt((jxx - jyy) * (jxx - jyy) + 4.0 * jxy * jxy))
-    return float(np.clip(100.0 * delta / (trace + 1e-6), 0.0, 100.0))
-
-
-def bright_center_score(gray: np.ndarray, center: tuple[float, float], diameter: float) -> float:
-    data = _as_gray_f32(gray)
-    return _bright_center_score_f32(data, center, diameter)
-
-
-def _bright_center_score_f32(data: np.ndarray, center: tuple[float, float], diameter: float) -> float:
-    if data.size == 0:
-        return 0.0
-    cx, cy = float(center[0]), float(center[1])
-    radius = max(1.0, float(diameter) * 0.5)
-    pad = max(2, round(radius * 2.2))
-    left = max(0, round(cx) - pad)
-    right = min(data.shape[1], round(cx) + pad + 1)
-    top = max(0, round(cy) - pad)
-    bottom = min(data.shape[0], round(cy) + pad + 1)
-    if right <= left or bottom <= top:
-        return 0.0
-    patch = data[top:bottom, left:right]
-    yy = (np.arange(top, bottom, dtype=np.float32) - cy).reshape(-1, 1)
-    xx = (np.arange(left, right, dtype=np.float32) - cx).reshape(1, -1)
-    dist2 = xx * xx + yy * yy
-    center_mask = dist2 <= max(1.0, radius * 0.45) ** 2
-    ring_mask = (dist2 >= max(1.0, radius * 0.85) ** 2) & (dist2 <= max(2.0, radius * 1.65) ** 2)
-    if not np.any(center_mask) or not np.any(ring_mask):
-        return 0.0
-    return float(patch[center_mask].mean() - patch[ring_mask].mean())
-
-
-def center_mean_score(gray: np.ndarray, center: tuple[float, float], diameter: float) -> float:
-    data = _as_gray_f32(gray)
-    return _center_mean_score_f32(data, center, diameter)
-
-
-def _center_mean_score_f32(data: np.ndarray, center: tuple[float, float], diameter: float) -> float:
-    if data.size == 0:
-        return 0.0
-    radius = max(1.0, float(diameter) * 0.22)
-    return _disk_mean_f32(data, center, radius)
-
-
-def mask_fraction(mask: np.ndarray, bbox: tuple[int, int, int, int]) -> float:
-    data = to_gray_u8(mask)
-    if data.size == 0:
-        return 0.0
-    x_coord, y_coord, width, height = bbox
-    left = max(0, int(x_coord))
-    top = max(0, int(y_coord))
-    right = min(data.shape[1], left + max(0, int(width)))
-    bottom = min(data.shape[0], top + max(0, int(height)))
-    if right <= left or bottom <= top:
-        return 0.0
-    patch = data[top:bottom, left:right]
-    return float(cv2.countNonZero(patch)) / float(patch.size)
-
-
-def suppress_close_points(detections: list[BrightViaDetection], distance: int) -> list[BrightViaDetection]:
-    if distance <= 0 or not detections:
-        return sorted(detections, key=lambda item: (item.center[1], item.center[0]))
-    kept: list[BrightViaDetection] = []
-    min_dist = float(distance)
-    idx = _CenterDistanceIndex(min_dist)
-    for candidate in sorted(
-        detections,
-        key=lambda item: (item.isolation_score, _nms_quality(item), item.final_score),
-        reverse=True,
-    ):
-        cx, cy = candidate.center
-        if idx.is_close(cx, cy):
-            continue
-        kept.append(candidate)
-        idx.add(cx, cy)
-    return sorted(kept, key=lambda item: (item.center[1], item.center[0]))
-
-
-def _preprocess(gray: np.ndarray, cfg: BrightViaDetectorConfig) -> np.ndarray:
-    tile = max(1, int(cfg.clahe_tile_grid_size))
-    processed = cv2.createCLAHE(clipLimit=float(cfg.clahe_clip_limit), tileGridSize=(tile, tile)).apply(gray)
-    if cfg.median_blur_kernel > 1:
-        processed = cv2.medianBlur(processed, int(cfg.median_blur_kernel))
-    return processed
-
-
-def _white_tophat(gray: np.ndarray, kernel_size: int) -> np.ndarray:
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(kernel_size), int(kernel_size)))
-    return cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
-
-
-def _dog_response(gray: np.ndarray, sigma_small: float, sigma_large: float) -> np.ndarray:
-    data = gray.astype(np.float32)
-    small = cv2.GaussianBlur(data, (0, 0), float(sigma_small))
-    large = cv2.GaussianBlur(data, (0, 0), float(sigma_large))
-    return np.maximum(small - large, 0.0)
-
-
-def _via_matched_filter_kernel(diameter: float) -> np.ndarray:
-    """Zero-DC disk-minus-ring kernel tuned to the via diameter.
-
-    Because the kernel sums to ~0, the response measures *local* bright-disk
-    contrast against the immediate surround instead of absolute brightness. That
-    makes the candidate stage robust on bright backgrounds (e.g. SEM metal
-    stripes) where global percentile thresholds on tophat/DoG drown the vias.
-    """
-
-    d = max(3.0, float(diameter))
-    radius = d * 0.5
-    ring_width = max(1.5, radius * 0.7)
-    size = int(np.ceil(d + 2.0 * ring_width)) + 1
-    if size % 2 == 0:
-        size += 1
-    center = size // 2
-    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
-    dist = np.sqrt((xx - center) ** 2 + (yy - center) ** 2)
-    core = (dist <= radius).astype(np.float32)
-    ring = ((dist > radius) & (dist <= radius + ring_width)).astype(np.float32)
-    core_sum = float(core.sum())
-    ring_sum = float(ring.sum())
-    if core_sum <= 0.0 or ring_sum <= 0.0:
-        return np.zeros((size, size), dtype=np.float32)
-    return (core / core_sum - ring / ring_sum).astype(np.float32)
-
-
-def _via_matched_filter_response(processed: np.ndarray, diameter: float) -> np.ndarray:
-    if processed.size == 0:
-        return np.zeros_like(processed, dtype=np.float32)
-    kernel = _via_matched_filter_kernel(diameter)
-    if kernel.size == 0:
-        return np.zeros(processed.shape[:2], dtype=np.float32)
-    data = processed.astype(np.float32, copy=False)
-    response = cv2.filter2D(data, cv2.CV_32F, kernel, borderType=cv2.BORDER_REPLICATE)
-    np.maximum(response, 0.0, out=response)
-    return response
-
-
-def _percentile_mask(response: np.ndarray, percentile: float) -> np.ndarray:
-    if response.size == 0:
-        return np.zeros_like(response, dtype=np.uint8)
-    threshold = float(np.percentile(response, float(percentile)))
-    # On flat / binary images most of the response is exactly 0, so the high
-    # percentile collapses to 0 and a plain ``>= threshold`` would flood the whole
-    # frame. Require a strictly positive response so the background is never a
-    # candidate region.
-    return np.where((response >= threshold) & (response > 0), 255, 0).astype(np.uint8)
-
-
-def _bright_local_peak_mask(gray: np.ndarray, tile_size: int, percentile: float) -> np.ndarray:
-    """Local maxima on raw gray above a tiled brightness floor (catches vias on bright metal)."""
-    if gray.size == 0:
-        return np.zeros_like(gray, dtype=np.uint8)
-    floor = _tiled_percentile_mask(gray, min(99.5, float(percentile) + 0.5), tile_size)
-    work = gray.astype(np.float32)
-    work[floor == 0] = 0.0
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    dil = cv2.dilate(work, kernel)
-    peaks = ((work >= dil) & (work > 0) & (floor > 0)).astype(np.uint8) * 255
-    return peaks
-
-
-def _tiled_percentile_mask(response: np.ndarray, percentile: float, tile_size: int) -> np.ndarray:
-    if response.size == 0:
-        return np.zeros_like(response, dtype=np.uint8)
-    tile = max(32, int(tile_size))
-    height, width = response.shape[:2]
-    mask = np.zeros((height, width), dtype=np.uint8)
-    for y0 in range(0, height, tile):
-        y1 = min(height, y0 + tile)
-        for x0 in range(0, width, tile):
-            x1 = min(width, x0 + tile)
-            tile_data = response[y0:y1, x0:x1]
-            if tile_data.size == 0:
-                continue
-            threshold = float(np.percentile(tile_data, float(percentile)))
-            mask[y0:y1, x0:x1] = np.where((tile_data >= threshold) & (tile_data > 0), 255, 0).astype(np.uint8)
-    return mask
-
-
-def _odd_kernel_size(value: int) -> int:
-    size = max(3, int(value))
-    if size % 2 == 0:
-        size += 1
-    return size
-
-
-def _build_isolation_map(gray: np.ndarray, max_radius: int) -> tuple[np.ndarray, np.ndarray] | None:
-    if gray.size == 0:
-        return None
-    _threshold, otsu = cv2.threshold(to_gray_u8(gray), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    mask_area = float(cv2.countNonZero(otsu))
-    if mask_area <= 0.0:
-        return None
-    if mask_area / float(otsu.size) > 0.55:
-        mask = otsu
-    else:
-        threshold = float(np.percentile(gray, 92.0))
-        mask = np.where((gray >= threshold) & (gray > 0), 255, 0).astype(np.uint8)
-        # On flat / binary frames the 92nd percentile collapses to (near) zero and
-        # the percentile mask floods, merging every via into one giant component
-        # (which zeroes out all isolation scores). Detect that and fall back to the
-        # sparse Otsu mask so each via stays its own component.
-        if float(cv2.countNonZero(mask)) / float(mask.size) > 0.40:
-            mask = otsu
-    kernel_size = _odd_kernel_size(max(3, round(max_radius * 0.45)))
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    if cv2.countNonZero(mask) <= 0:
-        return None
-    count, labels, stats, _centers = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if count <= 1:
-        return None
-    return labels, stats
-
-
-def _isolation_score(
-    isolation: tuple[np.ndarray, np.ndarray] | None,
-    cx: int,
-    cy: int,
-    radius: int,
-) -> float:
-    if isolation is None:
-        return 1.0
-    labels, stats = isolation
-    if cy < 0 or cx < 0 or cy >= labels.shape[0] or cx >= labels.shape[1]:
-        return 0.35
-    label = int(labels[cy, cx])
-    if label <= 0 or label >= stats.shape[0]:
-        return 0.35
-    width = float(stats[label, cv2.CC_STAT_WIDTH])
-    height = float(stats[label, cv2.CC_STAT_HEIGHT])
-    diameter = float(radius * 2 + 1)
-    elongation = max(width, height) / max(1.0, min(width, height))
-    span = max(width, height)
-    size_score = 1.0 if span <= diameter * 2.5 else max(0.0, 1.0 - (span - diameter * 2.5) / (diameter * 3.0))
-    elongation_score = 1.0 if elongation <= 3.0 else max(0.0, 1.0 - (elongation - 3.0) / 5.0)
-    return min(size_score, elongation_score)
-
-
-def _nms_quality(det: BrightViaDetection) -> float:
-    return float(det.circularity) * max(1.0, float(det.annular_contrast))
-
-
-def _raw_nms_rank(raw: _RawStage1) -> float:
-    # Via-specific responses take precedence over generic gray-level peaks when
-    # two candidates describe the same location. This is a quality ordering,
-    # independent of how many candidates exist in the image.
-    source_priority = {
-        "matched_peak": 3.0,
-        "contour": 2.0,
-        "tophat_peak": 1.0,
-        "dog_peak": 1.0,
-    }.get(raw.source, 0.0)
-    quality = float(raw.prelim) * max(0.2, min(1.0, float(raw.circularity) * 1.2))
-    return source_priority * 256.0 + quality
-
-
-def _metal_mask(gray: np.ndarray) -> np.ndarray:
-    if gray.size == 0:
-        return np.zeros_like(gray, dtype=np.uint8)
-    _t, mask = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-
-def _edge_distance_map(gray: np.ndarray) -> np.ndarray:
-    if gray.size == 0:
-        return np.zeros_like(gray, dtype=np.float32)
-    blur = cv2.GaussianBlur(to_gray_u8(gray), (3, 3), 0.0)
-    median = float(np.median(blur))
-    lower = int(max(0, 0.66 * median))
-    upper = int(min(255, max(lower + 1, 1.33 * median)))
-    edges = cv2.Canny(blur, lower, upper)
-    return cv2.distanceTransform(cv2.bitwise_not(edges), cv2.DIST_L2, 3)
-
-
-def _expanded_bbox(center: tuple[float, float], size: float, shape: tuple[int, ...]) -> tuple[int, int, int, int]:
-    half = max(1, round(float(size) * 0.5))
-    cx, cy = round(center[0]), round(center[1])
-    left = max(0, cx - half)
-    top = max(0, cy - half)
-    right = min(int(shape[1]), cx + half + 1)
-    bottom = min(int(shape[0]), cy + half + 1)
-    return left, top, max(0, right - left), max(0, bottom - top)
-
-
-def _disk_mean(image: np.ndarray, center: tuple[float, float], radius: float) -> float:
-    data = _as_gray_f32(image)
-    return _disk_mean_f32(data, center, radius)
-
-
-def _disk_mean_f32(data: np.ndarray, center: tuple[float, float], radius: float) -> float:
-    if data.size == 0:
-        return 0.0
-    bbox = _expanded_bbox(center, float(radius) * 2.0, data.shape)
-    x_coord, y_coord, width, height = bbox
-    if width <= 0 or height <= 0:
-        return 0.0
-    patch = data[y_coord : y_coord + height, x_coord : x_coord + width]
-    yy = (np.arange(y_coord, y_coord + height, dtype=np.float32) - float(center[1])).reshape(-1, 1)
-    xx = (np.arange(x_coord, x_coord + width, dtype=np.float32) - float(center[0])).reshape(1, -1)
-    disk = xx * xx + yy * yy <= max(1.0, float(radius)) ** 2
-    if not np.any(disk):
-        return 0.0
-    return float(patch[disk].mean())
-
-
-def _local_patch(data: np.ndarray, cx: float, cy: float, radius: float) -> np.ndarray:
-    if data.size == 0:
-        return data
-    pad = max(1, round(float(radius)))
-    left = max(0, round(cx) - pad)
-    right = min(data.shape[1], round(cx) + pad + 1)
-    top = max(0, round(cy) - pad)
-    bottom = min(data.shape[0], round(cy) + pad + 1)
-    if right <= left or bottom <= top:
-        return np.zeros((0, 0), dtype=data.dtype)
-    return data[top:bottom, left:right]
-
-
-def _bilinear_sample(data: np.ndarray, x_coord: float, y_coord: float) -> float:
-    if data.size == 0:
-        return 0.0
-    x_max = max(0.0, float(data.shape[1] - 1.0))
-    y_max = max(0.0, float(data.shape[0] - 1.0))
-    if x_coord < 0.0:
-        x_coord = 0.0
-    elif x_coord > x_max:
-        x_coord = x_max
-    if y_coord < 0.0:
-        y_coord = 0.0
-    elif y_coord > y_max:
-        y_coord = y_max
-    x0 = int(np.floor(x_coord))
-    y0 = int(np.floor(y_coord))
-    x1 = min(data.shape[1] - 1, x0 + 1)
-    y1 = min(data.shape[0] - 1, y0 + 1)
-    dx = x_coord - x0
-    dy = y_coord - y0
-    top = float(data[y0, x0]) * (1.0 - dx) + float(data[y0, x1]) * dx
-    bottom = float(data[y1, x0]) * (1.0 - dx) + float(data[y1, x1]) * dx
-    return float(top * (1.0 - dy) + bottom * dy)
-
-
-def _sample_is_inside(data: np.ndarray, x_coord: float, y_coord: float) -> bool:
-    return bool(
-        data.size
-        and 0.0 <= float(x_coord) <= float(data.shape[1] - 1)
-        and 0.0 <= float(y_coord) <= float(data.shape[0] - 1)
-    )
-
-
-def _sample_distance(distance_map: np.ndarray, center: tuple[float, float]) -> float:
-    if distance_map.size == 0:
-        return 0.0
-    return _bilinear_sample(distance_map, center[0], center[1])
-
-
-def _as_gray_f32(image: np.ndarray) -> np.ndarray:
-    if image.ndim == 2 and image.dtype == np.float32:
-        return image
-    return to_gray_u8(image).astype(np.float32)
-
-
-def _paint_score_disk(
-    image: np.ndarray,
-    center: tuple[float, float],
-    radius: float,
-    value: float,
-    scale_max: float,
-) -> None:
-    if image.size == 0:
-        return
-    ratio = float(value) * 255.0 / max(1.0, float(scale_max))
-    if ratio <= 0.0:
-        encoded = 0
-    elif ratio >= 255.0:
-        encoded = 255
-    else:
-        encoded = round(ratio)
-    cv2.circle(image, (round(center[0]), round(center[1])), max(1, round(radius)), encoded, thickness=-1)
-
-
-def _normalize_u8(gray: np.ndarray) -> np.ndarray:
-    data = to_gray_u8(gray)
-    if data.size == 0:
-        return data
-    min_value = float(data.min())
-    max_value = float(data.max())
-    if max_value - min_value <= 1e-6:
-        return np.zeros_like(data, dtype=np.uint8)
-    return np.clip((data.astype(np.float32) - min_value) * (255.0 / (max_value - min_value)), 0, 255).astype(np.uint8)
-
-
-def _normalize_response(response: np.ndarray) -> np.ndarray:
-    data = np.nan_to_num(response.astype(np.float32), copy=False)
-    max_value = float(data.max()) if data.size else 0.0
-    if max_value <= 1e-6:
-        return np.zeros(data.shape, dtype=np.uint8)
-    return np.clip(data * (255.0 / max_value), 0, 255).astype(np.uint8)
-
-
-def _normalize_metal_constraint_mode(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if text in {"disabled", "off", "none", "false", "0"}:
-        return "disabled"
-    if text in {"strict", "hard"}:
-        return "strict"
-    return "soft"
-
-
-def _draw_overlay(
-    gray: np.ndarray,
-    candidates: list[BrightViaDetection],
-    cfg: BrightViaDetectorConfig,
-    *,
-    show_rejected: bool | None = None,
-) -> np.ndarray:
-    base = cv2.cvtColor(to_gray_u8(gray), cv2.COLOR_GRAY2BGR)
-    display_rejected = cfg.show_rejected_candidates if show_rejected is None else bool(show_rejected)
-    for det in candidates:
-        if not display_rejected and det.status != "accepted":
-            continue
-        color = _COLOR_ACCEPT
-        if det.status == "soft_reject":
-            color = _COLOR_SOFT
-        elif det.status == "hard_reject":
-            color = _COLOR_HARD
-        x, y, w, h = det.bbox
-        cv2.rectangle(base, (x, y), (x + w, y + h), color, 1)
-        cx, cy = round(det.center[0]), round(det.center[1])
-        r = max(2, round(0.5 * max(w, h)))
-        cv2.circle(base, (cx, cy), r, color, 1)
-        if det.status != "accepted" and det.hard_reason:
-            cv2.putText(
-                base,
-                str(det.hard_reason)[:28],
-                (x, max(10, y - 2)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.35,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
-    return base
+from .bright_tophat_dog_parts.module_state import (
+    _COLOR_ACCEPT,
+    _COLOR_SOFT,
+    _COLOR_HARD,
+    _MATCHED_PCT_OFFSET,
+    _RADIAL_SMOOTH_SIGMA,
+)
+from .bright_tophat_dog_parts.center_distance_index import (
+    _clip01,
+    _CenterDistanceIndex,
+)
+from .bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig
+from .bright_tophat_dog_parts.bright_via_detection import (
+    BrightViaDetection,
+    BrightViaDetectionResult,
+    BrightViaPreparedCandidates,
+    _CandidateDebugMaps,
+    _RawStage1,
+    detect_bright_vias,
+)
+from .bright_tophat_dog_parts.detect_binary_vias import _detect_binary_vias
+from .bright_tophat_dog_parts.prepare_bright_via_candidates import prepare_bright_via_candidates
+from .bright_tophat_dog_parts.score_bright_via_candidates import score_bright_via_candidates
+from .bright_tophat_dog_parts.refine_center_bright_core import (
+    _stage1_raw_candidates,
+    _contours_from_mask,
+    _raw_from_contour,
+    _raw_from_peak,
+    _contour_center_from_rect,
+    _contour_geometry_center,
+    _refine_center_on_bright_core,
+    _fixed_size_bbox,
+)
+from .bright_tophat_dog_parts.local_maxima_points import (
+    _local_maxima_points,
+    _raw_nms,
+    _passes_brightness_gate,
+    _brightness_gate_reason,
+)
+from .bright_tophat_dog_parts.score_one_candidate import _score_one_candidate
+from .bright_tophat_dog_parts.hard import _hard
+from .bright_tophat_dog_parts.composite_final import _composite_final_0_100
+from .bright_tophat_dog_parts.via_matched_filter_kernel import (
+    radial_symmetry_score,
+    _radial_symmetry_score_f32,
+    edge_likeness_score,
+    _edge_likeness_score_f32,
+    line_likeness_score,
+    _line_likeness_score_f32,
+    bright_center_score,
+    _bright_center_score_f32,
+    center_mean_score,
+    _center_mean_score_f32,
+    mask_fraction,
+    suppress_close_points,
+    _preprocess,
+    _white_tophat,
+    _dog_response,
+    _via_matched_filter_kernel,
+    _via_matched_filter_response,
+    _percentile_mask,
+)
+from .bright_tophat_dog_parts.build_isolation_map import (
+    _bright_local_peak_mask,
+    _tiled_percentile_mask,
+    _odd_kernel_size,
+    _build_isolation_map,
+    _isolation_score,
+    _nms_quality,
+    _raw_nms_rank,
+    _metal_mask,
+    _edge_distance_map,
+    _expanded_bbox,
+    _disk_mean,
+    _disk_mean_f32,
+    _local_patch,
+    _bilinear_sample,
+    _sample_is_inside,
+    _sample_distance,
+)
+from .bright_tophat_dog_parts.draw_overlay import (
+    _as_gray_f32,
+    _paint_score_disk,
+    _normalize_u8,
+    _normalize_response,
+    _normalize_metal_constraint_mode,
+    _draw_overlay,
+)
+
+# Imported so existing callers and tests can patch or import these names
+# from this module after the implementation moved into focused units.
+_FACADE_EXPORTS = (
+    _COLOR_ACCEPT,
+    _COLOR_SOFT,
+    _COLOR_HARD,
+    _MATCHED_PCT_OFFSET,
+    _RADIAL_SMOOTH_SIGMA,
+    _clip01,
+    _CenterDistanceIndex,
+    BrightViaDetectorConfig,
+    BrightViaDetection,
+    BrightViaDetectionResult,
+    BrightViaPreparedCandidates,
+    _CandidateDebugMaps,
+    _RawStage1,
+    detect_bright_vias,
+    _detect_binary_vias,
+    prepare_bright_via_candidates,
+    score_bright_via_candidates,
+    _stage1_raw_candidates,
+    _contours_from_mask,
+    _raw_from_contour,
+    _raw_from_peak,
+    _contour_center_from_rect,
+    _contour_geometry_center,
+    _refine_center_on_bright_core,
+    _fixed_size_bbox,
+    _local_maxima_points,
+    _raw_nms,
+    _passes_brightness_gate,
+    _brightness_gate_reason,
+    _score_one_candidate,
+    _hard,
+    _composite_final_0_100,
+    radial_symmetry_score,
+    _radial_symmetry_score_f32,
+    edge_likeness_score,
+    _edge_likeness_score_f32,
+    line_likeness_score,
+    _line_likeness_score_f32,
+    bright_center_score,
+    _bright_center_score_f32,
+    center_mean_score,
+    _center_mean_score_f32,
+    mask_fraction,
+    suppress_close_points,
+    _preprocess,
+    _white_tophat,
+    _dog_response,
+    _via_matched_filter_kernel,
+    _via_matched_filter_response,
+    _percentile_mask,
+    _bright_local_peak_mask,
+    _tiled_percentile_mask,
+    _odd_kernel_size,
+    _build_isolation_map,
+    _isolation_score,
+    _nms_quality,
+    _raw_nms_rank,
+    _metal_mask,
+    _edge_distance_map,
+    _expanded_bbox,
+    _disk_mean,
+    _disk_mean_f32,
+    _local_patch,
+    _bilinear_sample,
+    _sample_is_inside,
+    _sample_distance,
+    _as_gray_f32,
+    _paint_score_disk,
+    _normalize_u8,
+    _normalize_response,
+    _normalize_metal_constraint_mode,
+    _draw_overlay,
+)

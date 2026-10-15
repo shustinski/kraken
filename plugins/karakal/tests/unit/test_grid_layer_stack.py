@@ -41,6 +41,9 @@ def _dialog(tmp_path, qtbot, *, source: bool, confidence: bool, mask: np.ndarray
         grid_inspection_source_path=str(original) if source else str(mask_path),
     )
     qtbot.addWidget(dialog)
+    # The dialog loads the frame in the background; under load that finishes late and would
+    # replace the payload set below (and read the files again), so let it land first.
+    qtbot.waitUntil(lambda: not dialog._payload_loading, timeout=30000)
     dialog._payload["model_source_grays"] = {"model": mask_values.astype(np.float32) / 255.0}
     if confidence:
         dialog._payload["model_confidence_output_available"] = {"model": True}

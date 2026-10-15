@@ -29,14 +29,12 @@ def test_quick_setup_is_visible_and_advanced_controls_start_collapsed(tmp_path, 
     widget = KarakalWidget(settings=settings)
     qtbot.addWidget(widget)
 
-    profile_buttons = [
-        button
-        for button in widget.analysis_setup_panel.findChildren(QPushButton)
-        if bool(button.property("analysisProfile"))
+    mode_buttons = [
+        button for button in widget.analysis_setup_panel.findChildren(QPushButton) if button.property("appMode")
     ]
 
     assert widget.analysis_setup_panel.isVisibleTo(widget)
-    assert len(profile_buttons) == 4
+    assert [button.property("appMode") for button in mode_buttons] == ["validation", "grid_inspection"]
     assert not hasattr(widget, "folders_info_label")
     assert not hasattr(widget.analysis_setup_panel, "intro_label")
     assert not widget.pair_matrix_group.isChecked()

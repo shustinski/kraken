@@ -86,6 +86,28 @@ def analysis_profile_definition(value: AnalysisProfileKind | str | None) -> Anal
     return _PROFILE_BY_KEY.get(key, _PROFILE_BY_KEY[DEFAULT_ANALYSIS_PROFILE])
 
 
+def auto_validation_profile(
+    model_count: int,
+    confidence_count: int,
+    current: AnalysisProfileKind | str | None = None,
+) -> AnalysisProfileKind:
+    """Validation profile picked from the checked sources.
+
+    Two or more models are compared; one model with a confidence map is checked by
+    confidence, one without it gets the single-result risk. Without models the current
+    validation profile stays, so nothing jumps while sources are being added.
+    """
+
+    if model_count >= 2:
+        return AnalysisProfileKind.MODEL_COMPARISON
+    if model_count == 1:
+        if confidence_count >= 1:
+            return AnalysisProfileKind.CONFIDENCE_AUDIT
+        return AnalysisProfileKind.SINGLE_RESULT_RISK
+    definition = analysis_profile_definition(current)
+    return definition.key if definition.app_mode == "validation" else DEFAULT_ANALYSIS_PROFILE
+
+
 @dataclass(frozen=True, slots=True)
 class PreflightIssue:
     severity: PreflightSeverity
@@ -360,5 +382,6 @@ __all__ = [
     "PreflightSeverity",
     "SourceRoleStatus",
     "analysis_profile_definition",
+    "auto_validation_profile",
     "build_standalone_preflight",
 ]

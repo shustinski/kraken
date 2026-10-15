@@ -67,6 +67,7 @@ from ..core.analysis_profiles import (
     DEFAULT_ANALYSIS_PROFILE,
     AnalysisPreflightReport,
     analysis_profile_definition,
+    auto_validation_profile,
     build_standalone_preflight,
 )
 from ..core.features import (
@@ -325,6 +326,7 @@ class KarakalPresenter(QObject):
         self._histogram_update_generation = 0
         self._last_active_tab_state: ExtendMatrixTabState | None = None
         self._analysis_profile = DEFAULT_ANALYSIS_PROFILE
+        self._auto_profile_syncing = False
         self._preflight_signature: tuple[object, ...] | None = None
         self._preflight_report: AnalysisPreflightReport | None = None
         self._auto_compute_after_build = False
@@ -1565,6 +1567,8 @@ class KarakalPresenter(QObject):
         self._set_row_visible(getattr(self, "_matrix_total_frames_row", None), False)
         self._set_row_visible(getattr(self, "_matrix_rows_row", None), False)
         self._set_row_visible(getattr(self, "_matrix_columns_row", None), False)
+        # The analysis mode follows the profile; it is not chosen by hand.
+        self._set_row_visible(getattr(self, "_matrix_analysis_mode_row", None), False)
         self._set_row_visible(
             getattr(self, "_matrix_comparison_target_row", None), context.analysis_mode == INTER_MODEL_ANALYSIS_MODE
         )
@@ -5168,8 +5172,40 @@ class KarakalPresenter(QObject):
             return
         self._sync_action_buttons()
 
+    def _on_app_mode_requested(self, mode: str) -> None:
+        """The setup panel's switch: cell inspection has one analysis, validation picks it from the sources."""
+
+        if str(mode) == "grid_inspection":
+            profile = AnalysisProfileKind.GRID_DEFECTS
+        else:
+            profile = self._auto_validation_profile()
+        self._on_analysis_profile_changed(profile.value)
+
+    def _auto_validation_profile(self) -> AnalysisProfileKind:
+        specs = self._checked_model_specs()
+        confidence_count = sum(1 for spec in specs if spec.prob_folder is not None)
+        return auto_validation_profile(len(specs), confidence_count, self._analysis_profile)
+
+    def _sync_auto_validation_profile(self, is_busy: bool) -> None:
+        """Follow the checked sources while in validation; a running analysis keeps its profile."""
+
+        if is_busy or self._auto_profile_syncing or self._current_app_mode() != "validation":
+            return
+        profile = self._auto_validation_profile()
+        if profile == self._analysis_profile:
+            return
+        self._auto_profile_syncing = True
+        try:
+            self._on_analysis_profile_changed(profile.value)
+        finally:
+            self._auto_profile_syncing = False
+
     def _on_app_mode_changed(self) -> None:
         mode = self._current_app_mode()
+        if analysis_profile_definition(self._analysis_profile).app_mode != mode:
+            # The mode was set directly (restore, tests): bring the profile in line with it.
+            self._on_app_mode_requested(mode)
+            return
         self._app_mode_refresh_generation += 1
         refresh_generation = int(self._app_mode_refresh_generation)
         if hasattr(self._view, "_set_app_mode"):
@@ -8993,6 +9029,7 @@ class KarakalPresenter(QObject):
             self.btn_export_layer.setEnabled(
                 current_state is not None and bool(getattr(current_state.build_result, "records", ())) and not is_busy
             )
+        self._sync_auto_validation_profile(is_busy)
         report = self._refresh_analysis_preflight()
         if hasattr(self._view, "set_analysis_profile_availability"):
             self._view.set_analysis_profile_availability(self._analysis_profile_availability())
@@ -9198,6 +9235,12 @@ class KarakalPresenter(QObject):
         self._restore_folder_manager_state()
         self._restore_build_settings()
         self._refresh_pair_matrix()
+        # The saved profile carries its mode: reopen where the user left off.
+        mode_index = self.app_mode_combo.findData(analysis_profile_definition(self._analysis_profile).app_mode)
+        if mode_index >= 0:
+            blocker = QSignalBlocker(self.app_mode_combo)
+            self.app_mode_combo.setCurrentIndex(mode_index)
+            del blocker
         self._on_app_mode_changed()
 
     def _restore_folder_manager_state(self) -> None:

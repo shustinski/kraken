@@ -8,8 +8,8 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
-    QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 
 from kraken_core.analysis_protocol import AnalysisProfileKind, AnalysisSourceRole
 
-from ..core.analysis_profiles import ANALYSIS_PROFILES, AnalysisPreflightReport, PreflightSeverity
+from ..core.analysis_profiles import AnalysisPreflightReport, PreflightSeverity, analysis_profile_definition
 
 
 Translate = Callable[..., str]
@@ -42,15 +42,28 @@ _ISSUE_ROLES = {
 }
 
 
-class AnalysisSetupPanel(QGroupBox):
-    """Analysis goal and the check of its sources; the run itself is the toolbar's main button."""
+# The two application modes and their switch labels.
+APP_MODES: tuple[tuple[str, str], ...] = (
+    ("validation", "app_mode.validation"),
+    ("grid_inspection", "grid_inspection.mode"),
+)
 
-    profileChanged = pyqtSignal(str)
+
+class AnalysisSetupPanel(QGroupBox):
+    """Mode switch and the check of its sources; the run itself is the toolbar's main button.
+
+    Validation picks its analysis from the checked sources, so the panel only shows which
+    one it is; cell inspection has a single analysis.
+    """
+
+    modeChanged = pyqtSignal(str)
 
     def __init__(self, translate: Translate, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._t = translate
-        self._profile_buttons: dict[AnalysisProfileKind, QPushButton] = {}
+        self._mode_buttons: dict[str, QPushButton] = {}
+        self._profile = AnalysisProfileKind.MODEL_COMPARISON
+        self._unavailable_reason = ""
         self._button_group = QButtonGroup(self)
         self._button_group.setExclusive(True)
         self._role_rows = {
@@ -63,22 +76,22 @@ class AnalysisSetupPanel(QGroupBox):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        profile_host = QWidget(self)
-        profile_layout = QGridLayout(profile_host)
-        profile_layout.setContentsMargins(0, 0, 0, 0)
-        profile_layout.setHorizontalSpacing(6)
-        profile_layout.setVerticalSpacing(6)
-        for index, profile in enumerate(ANALYSIS_PROFILES):
-            button = QPushButton(profile_host)
+        self.mode_host = QWidget(self)
+        mode_layout = QHBoxLayout(self.mode_host)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(6)
+        for mode, _label_key in APP_MODES:
+            button = QPushButton(self.mode_host)
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setMinimumHeight(58)
-            button.setProperty("analysisProfile", True)
-            button.clicked.connect(lambda checked, key=profile.key: self._profile_clicked(key, checked))
-            self._profile_buttons[profile.key] = button
+            button.setMinimumHeight(40)
+            button.setProperty("appMode", mode)
+            button.clicked.connect(lambda checked, value=mode: self._mode_clicked(value, checked))
+            self._mode_buttons[mode] = button
             self._button_group.addButton(button)
-            profile_layout.addWidget(button, index // 2, index % 2)
-        layout.addWidget(profile_host)
+            mode_layout.addWidget(button, 1)
+        self._mode_buttons["validation"].setChecked(True)
+        layout.addWidget(self.mode_host)
         self.profile_description_label = QLabel(self)
         self.profile_description_label.setWordWrap(True)
         self.profile_description_label.setStyleSheet("color: #aebdce; padding: 2px 4px;")
@@ -114,40 +127,51 @@ class AnalysisSetupPanel(QGroupBox):
                 self.role_table.setItem(row, 1, QTableWidgetItem(self._t("setup.not_configured")))
             if self.role_table.item(row, 2) is None:
                 self.role_table.setItem(row, 2, QTableWidgetItem(self._t("workflow.state.pending")))
-        for profile in ANALYSIS_PROFILES:
-            button = self._profile_buttons[profile.key]
-            title = self._t(profile.title_key)
-            description = self._t(profile.description_key)
-            button.setText(title)
-            button.setToolTip(description)
-            if button.isChecked():
-                self.profile_description_label.setText(description)
+        for mode, label_key in APP_MODES:
+            self._mode_buttons[mode].setText(self._t(label_key))
+        self._mode_buttons["validation"].setToolTip(self._t("app_mode.validation.description"))
+        self._mode_buttons["grid_inspection"].setToolTip(
+            self._t(analysis_profile_definition(AnalysisProfileKind.GRID_DEFECTS).description_key)
+        )
+        self._refresh_description()
         self.set_preflight(self._report)
 
-    def _profile_clicked(self, key: AnalysisProfileKind, checked: bool) -> None:
+    def current_mode(self) -> str:
+        return analysis_profile_definition(self._profile).app_mode
+
+    def _mode_clicked(self, mode: str, checked: bool) -> None:
         if checked:
-            profile = next(candidate for candidate in ANALYSIS_PROFILES if candidate.key == key)
-            self.profile_description_label.setText(self._t(profile.description_key))
-            self.profileChanged.emit(key.value)
+            self.modeChanged.emit(mode)
+
+    def _refresh_description(self) -> None:
+        profile = analysis_profile_definition(self._profile)
+        description = self._t(profile.description_key)
+        if profile.app_mode == "validation":
+            text = self._t("setup.auto_profile", title=self._t(profile.title_key), description=description)
+            tooltip = self._t("setup.auto_profile.hint")
+        else:
+            text, tooltip = description, ""
+        if self._unavailable_reason:
+            text = f"{text}\n{self._unavailable_reason}"
+        self.profile_description_label.setText(text)
+        self.profile_description_label.setToolTip(tooltip)
 
     def set_profile(self, value: AnalysisProfileKind | str) -> None:
-        key = AnalysisProfileKind(str(value))
-        self._profile_buttons[key].setChecked(True)
-        profile = next(candidate for candidate in ANALYSIS_PROFILES if candidate.key == key)
-        self.profile_description_label.setText(self._t(profile.description_key))
+        """Show the active analysis: its mode button and, for validation, which check was picked."""
+
+        self._profile = analysis_profile_definition(value).key
+        button = self._mode_buttons.get(self.current_mode())
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
+        self._refresh_description()
 
     def set_profile_availability(
         self,
         availability: Mapping[AnalysisProfileKind, tuple[bool, str]],
     ) -> None:
-        for key, button in self._profile_buttons.items():
-            available, reason = availability.get(key, (True, ""))
-            button.setProperty("profileAvailable", available)
-            description_key = next(profile.description_key for profile in ANALYSIS_PROFILES if profile.key == key)
-            base_tooltip = self._t(description_key)
-            button.setToolTip(base_tooltip if available or not reason else f"{base_tooltip}\n\n{reason}")
-            button.style().unpolish(button)
-            button.style().polish(button)
+        available, reason = availability.get(self._profile, (True, ""))
+        self._unavailable_reason = "" if available else str(reason or "")
+        self._refresh_description()
 
     def issue_text(self, issue) -> str:
         message = self._t(issue.message_key, count=issue.detail)
@@ -210,8 +234,8 @@ class AnalysisSetupPanel(QGroupBox):
             self.role_table.setItem(row, 2, status_item)
 
     def set_busy(self, busy: bool) -> None:
-        for button in self._profile_buttons.values():
+        for button in self._mode_buttons.values():
             button.setEnabled(not busy)
 
 
-__all__ = ["AnalysisSetupPanel"]
+__all__ = ["APP_MODES", "AnalysisSetupPanel"]

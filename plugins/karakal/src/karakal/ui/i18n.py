@@ -604,7 +604,7 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'details.tab.layers': 'Layers and overlays',
         'run_history.group': 'Analysis runs',
         'empty_matrix.title': 'No analysis run yet',
-        'empty_matrix.text': 'Choose a profile on the left, assign the required sources and start the analysis. The recommended matrix and distribution views will open here.',
+        'empty_matrix.text': 'Add model outputs on the left (the analysis is picked from them) and start the analysis. The recommended matrix and distribution views will open here.',
         'profile.model_comparison.title': 'Model comparison',
         'profile.model_comparison.description': 'Compare model outputs',
         'profile.confidence.title': 'Confidence check',
@@ -613,6 +613,12 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'profile.grid_defects.description': 'Cell defects of the memory matrix and the memory map: what is written in every cell',
         'profile.single_result_risk.title': 'Single result risk',
         'profile.single_result_risk.description': 'Rank one binary model output by anomaly risk',
+        'app_mode.validation.description': 'Check model outputs frame by frame; the analysis is picked from the sources',
+        'setup.auto_profile': 'Analysis: {title}. {description}',
+        'setup.auto_profile.hint': (
+            'Picked from the checked sources: two or more models are compared, one model with '
+            'confidence is checked by confidence, one model without it gets the single-result risk.'
+        ),
         'preflight.pending': 'Configure sources to see the coverage check.',
         'preflight.blocked': 'Cannot start until the following problems are fixed:',
         'preflight.ready': 'Ready: {matched} of {total} frames are matched.',
@@ -1573,7 +1579,7 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'details.tab.layers': 'Слои и наложения',
         'run_history.group': 'Запуски анализа',
         'empty_matrix.title': 'Анализ ещё не запускался',
-        'empty_matrix.text': 'Выберите профиль слева, назначьте необходимые источники и запустите анализ. Здесь откроются рекомендуемые матрица и распределение.',
+        'empty_matrix.text': 'Добавьте выходы моделей слева (анализ подберётся по ним) и запустите анализ. Здесь откроются рекомендуемые матрица и распределение.',
         'profile.model_comparison.title': 'Сравнение моделей',
         'profile.model_comparison.description': 'Сравнить выходы моделей',
         'profile.confidence.title': 'Проверка уверенности',
@@ -1582,6 +1588,12 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'profile.grid_defects.description': 'Дефекты ячеек матрицы памяти и карта памяти: что записано в каждой ячейке',
         'profile.single_result_risk.title': 'Риск одного результата',
         'profile.single_result_risk.description': 'Оценить риск аномалии одного выхода модели',
+        'app_mode.validation.description': 'Проверка выходов моделей по кадрам; анализ подбирается по источникам',
+        'setup.auto_profile': 'Анализ: {title}. {description}',
+        'setup.auto_profile.hint': (
+            'Подбирается по отмеченным источникам: две модели и больше — сравнение моделей, '
+            'одна модель с confidence — проверка уверенности, одна модель без confidence — риск одного результата.'
+        ),
         'preflight.pending': 'Настройте источники, чтобы увидеть проверку покрытия.',
         'preflight.blocked': 'Запуск невозможен, пока не исправлены проблемы:',
         'preflight.ready': 'Готово: сопоставлено {matched} из {total} кадров.',

@@ -64,9 +64,9 @@ def test_setup_panel_has_no_banner_and_no_run_button(tmp_path, qtbot) -> None:
     assert not hasattr(panel, "preflight_label")
     assert not hasattr(panel, "workflow_label")
     assert widget.folders_group.title() == ""
-    titles = [button.text() for button in panel._profile_buttons.values()]
-    assert widget._t("profile.grid_defects.title") in titles
-    assert widget._t("profile.grid_defects.title") in ("Работа с памятью", "Memory work")
+    titles = [button.text() for button in panel._mode_buttons.values()]
+    assert titles == [widget._t("app_mode.validation"), widget._t("grid_inspection.mode")]
+    assert widget._t("grid_inspection.mode") in ("Проверка ячеек", "Cell inspection")
 
 
 def test_not_ready_run_explains_why(tmp_path, qtbot, monkeypatch) -> None:

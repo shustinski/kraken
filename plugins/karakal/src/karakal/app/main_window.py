@@ -69,7 +69,7 @@ from ..core.features import (
 )
 from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
-from ..ui.analysis_setup import AnalysisSetupPanel
+from ..ui.analysis_setup import APP_MODES, AnalysisSetupPanel
 from ..ui.debris_min_area_control import DebrisMinAreaControl
 from ..ui.frame_sets_panel import FrameSetsViewBadge
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
@@ -680,15 +680,10 @@ class KarakalWidget(QWidget):
         self._populate_metric_combo(DEFAULT_MATRIX_METRIC_KEY)
         self.frame_type_filter_combo = _NoWheelComboBox(self)
         self._populate_frame_type_filter_combo('all')
+        # Holds the current mode for the presenter; the user switches it on the setup panel.
         self.app_mode_combo = _NoWheelComboBox(self)
+        self.app_mode_combo.hide()
         self._populate_app_mode_combo("validation")
-
-        self.mode_group = QGroupBox(self._t("app_mode.group"), control_host)
-        mode_layout = QVBoxLayout(self.mode_group)
-        mode_layout.setContentsMargins(6, 6, 6, 6)
-        self._mode_row = self._build_setting_row(self._t("app_mode.current"), self.app_mode_combo)
-        mode_layout.addWidget(self._mode_row)
-        self.mode_group.setVisible(False)
 
         self.analysis_setup_panel = AnalysisSetupPanel(self._t, control_host)
         self.analysis_setup_panel.set_profile(DEFAULT_ANALYSIS_PROFILE)
@@ -891,17 +886,6 @@ class KarakalWidget(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes(list(CONTROL_PANEL_SPLITTER_SIZES))
 
-        self.mode_toggle_button = QToolButton(self._menu_bar)
-        self.mode_toggle_button.setAutoRaise(True)
-        self.mode_toggle_button.setObjectName("modeToggleButton")
-        self.mode_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.mode_toggle_button.setText("⋯")
-        self.mode_toggle_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.mode_toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self._mode_menu = QMenu(self.mode_toggle_button)
-        self.mode_toggle_button.setMenu(self._mode_menu)
-        self._mode_menu.triggered.connect(self._on_mode_menu_triggered)
-
         self.update_tool_button = QToolButton(self._menu_bar)
         self.update_tool_button.setAutoRaise(True)
         self.update_tool_button.setObjectName("updateToolButton")
@@ -924,12 +908,9 @@ class KarakalWidget(QWidget):
         self.kraken_publish_button.setToolTip("Доступно в управляемом запуске из Kraken")
         self.kraken_publish_button.clicked.connect(self._publish_quality_to_kraken)
         top_corner_layout.addWidget(self.kraken_publish_button)
-        top_corner_layout.addWidget(self.mode_toggle_button)
         top_corner_layout.addWidget(self.update_tool_button)
         top_corner_layout.addWidget(self.language_toggle_button)
         self._update_language_toggle_button()
-        self._rebuild_mode_menu()
-        self._update_mode_toggle_button()
 
     def set_kraken_publish_available(self, available: bool) -> None:
         self.kraken_publish_button.setEnabled(bool(available))
@@ -1232,31 +1213,6 @@ class KarakalWidget(QWidget):
         if hasattr(self, "_analysis_task_group"):
             self._analysis_task_group.setVisible(not is_grid_inspection)
 
-        if hasattr(self, "_mode_menu"):
-            self._update_mode_toggle_button()
-
-    def _rebuild_mode_menu(self) -> None:
-        self._mode_menu.clear()
-        current = str(self.app_mode_combo.currentData() or "validation")
-        for index in range(self.app_mode_combo.count()):
-            action = self._mode_menu.addAction(self.app_mode_combo.itemText(index))
-            action.setData(str(self.app_mode_combo.itemData(index)))
-            action.setCheckable(True)
-            action.setChecked(str(action.data()) == current)
-
-    def _update_mode_toggle_button(self) -> None:
-        current = self.app_mode_combo.currentText().strip()
-        self.mode_toggle_button.setText(current or "⋯")
-        self.mode_toggle_button.setToolTip(self._t("management.current_mode"))
-
-    def _on_mode_menu_triggered(self, action) -> None:
-        index = self.app_mode_combo.findData(str(action.data() or "validation"))
-        if index >= 0:
-            self.app_mode_combo.setCurrentIndex(index)
-        self._rebuild_mode_menu()
-        self._update_mode_toggle_button()
-
-
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
         view_menu = self._menu_bar.addMenu(self._t("menu.view"))
@@ -1484,48 +1440,15 @@ class KarakalWidget(QWidget):
             if self._update_manager is not None:
                 self._update_manager.check(manual=False)
 
-    def _rebuild_mode_menu(self) -> None:
-        self._mode_menu.clear()
-        self._mode_action_group = QActionGroup(self._mode_menu)
-        self._mode_action_group.setExclusive(True)
-        for label_key, mode_key in (
-            ("app_mode.validation", "validation"),
-            ("grid_inspection.mode", "grid_inspection"),
-        ):
-            action = self._mode_menu.addAction(self._t(label_key))
-            action.setData(mode_key)
-            action.setCheckable(True)
-            self._mode_action_group.addAction(action)
-            action.setChecked(str(self.app_mode_combo.currentData() or "validation") == mode_key)
-
-    def _on_mode_menu_triggered(self, action) -> None:
-        mode = str(action.data() or "validation")
-        index = self.app_mode_combo.findData(mode)
-        if index >= 0:
-            self.app_mode_combo.setCurrentIndex(index)
-
-    def _update_mode_toggle_button(self) -> None:
-        current_mode = str(self.app_mode_combo.currentData() or "validation")
-        current_label = {
-            "validation": self._t("app_mode.validation"),
-            "grid_inspection": self._t("grid_inspection.mode"),
-        }.get(current_mode, self._t("app_mode.validation"))
-        self.mode_toggle_button.setToolTip(f"{self._t('app_mode.group')}: {current_label}")
-        for action in self._mode_menu.actions():
-            action.setChecked(str(action.data() or "") == current_mode)
-
     def _populate_app_mode_combo(self, selected_mode: str | None) -> None:
         current = str(selected_mode or "validation")
         self.app_mode_combo.blockSignals(True)
         self.app_mode_combo.clear()
-        self.app_mode_combo.addItem(self._t("app_mode.validation"), "validation")
-        self.app_mode_combo.addItem(self._t("grid_inspection.mode"), "grid_inspection")
+        for mode, label_key in APP_MODES:
+            self.app_mode_combo.addItem(self._t(label_key), mode)
         index = self.app_mode_combo.findData(current)
         self.app_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.app_mode_combo.blockSignals(False)
-        if hasattr(self, "_mode_menu"):
-            self._rebuild_mode_menu()
-            self._update_mode_toggle_button()
 
     def _populate_layout_mode_combo(self, selected_mode: str | None) -> None:
         current = str(selected_mode or DEFAULT_MATRIX_LAYOUT_MODE)
@@ -1913,11 +1836,6 @@ class KarakalWidget(QWidget):
         self._t = self._i18n.tr
         self._setup_menu_bar()
         self._update_language_toggle_button()
-        self._update_mode_toggle_button()
-        self.mode_group.setTitle(self._t("app_mode.group"))
-        mode_row_label = getattr(getattr(self, "_mode_row", None), "_title_label", None)
-        if mode_row_label is not None:
-            mode_row_label.setText(self._t("app_mode.current"))
         self._populate_app_mode_combo(self.app_mode_combo.currentData())
         self.analysis_settings_group.setTitle(self._t("ui.analysis_setup"))
         self.metric_settings_group.setTitle(self._t("ui.metric_focus"))
@@ -2143,18 +2061,10 @@ class KarakalWidget(QWidget):
     def _apply_build_profile(self) -> None:
         if show_other_analysis_profiles():
             return
-        from kraken_core.analysis_protocol import AnalysisProfileKind
-
         panel = self.analysis_setup_panel
-        for key, button in panel._profile_buttons.items():
-            button.setVisible(key == AnalysisProfileKind.GRID_DEFECTS)
-        host = next(iter(panel._profile_buttons.values())).parentWidget()
-        if host is not None:
-            host.hide()
         panel.setTitle(self._t("profile.grid_defects.title"))
-        if not show_app_mode_switch() and hasattr(self, "mode_toggle_button"):
-            self.mode_toggle_button.hide()
-        self.mode_group.hide()
+        if not show_app_mode_switch():
+            panel.mode_host.hide()
         if not show_pair_matrices():
             self.pair_matrix_group.hide()
         if not show_reference_frame():
@@ -2471,7 +2381,7 @@ class KarakalWidget(QWidget):
 
         self.matrix_score_view_combo.currentIndexChanged.connect(self._presenter._on_matrix_score_view_changed)
         self.matrix_gradient_combo.currentIndexChanged.connect(self._presenter._on_matrix_gradient_changed)
-        self.analysis_setup_panel.profileChanged.connect(self._presenter._on_analysis_profile_changed)
+        self.analysis_setup_panel.modeChanged.connect(self._presenter._on_app_mode_requested)
         self.persistent_history_button.clicked.connect(self._open_persistent_analysis_history)
         self.run_history_list.itemClicked.connect(self._presenter._on_run_history_selected)
         self.thumbnail_size_spin.valueChanged.connect(self._presenter._on_matrix_visual_parameter_changed)

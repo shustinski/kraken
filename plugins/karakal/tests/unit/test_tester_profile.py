@@ -31,17 +31,13 @@ def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) 
     widget = KarakalWidget(settings=QSettings(str(tmp_path / "karakal.ini"), QSettings.Format.IniFormat))
     qtbot.addWidget(widget)
 
-    profile_buttons = [
-        button
-        for button in widget.analysis_setup_panel.findChildren(QPushButton)
-        if bool(button.property("analysisProfile"))
+    mode_buttons = [
+        button for button in widget.analysis_setup_panel.findChildren(QPushButton) if button.property("appMode")
     ]
-    visible_profiles = [button for button in profile_buttons if button.isVisibleTo(widget)]
-    assert len(profile_buttons) == 4
-    assert visible_profiles == []
+    assert len(mode_buttons) == 2
+    assert not any(button.isVisibleTo(widget) for button in mode_buttons)
     assert widget._presenter._analysis_profile == AnalysisProfileKind.GRID_DEFECTS
     assert widget.app_mode_combo.currentData() == "grid_inspection"
-    assert not widget.mode_toggle_button.isVisibleTo(widget)
     assert not widget.pair_matrix_group.isVisibleTo(widget)
     # Reference frames give the layer cell template; testers pick them too.
     assert not widget._grid_reference_frame_row.isHidden()

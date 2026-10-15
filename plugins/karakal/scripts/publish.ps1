@@ -62,9 +62,9 @@ $VersionFile = Join-Path $PluginRoot "src\karakal\version.py"
 $env:PYTHONIOENCODING = "utf-8"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Build profile per channel. The release interface is not ready yet, so stable is built
-# with the tester interface too; switch "stable" to "dev" (or a release profile) here.
-$ChannelProfiles = @{ beta = "tester"; stable = "tester" }
+# Build profile per channel: betas and stables carry the full interface ("release").
+# "tester" is the older cell-inspection-only build.
+$ChannelProfiles = @{ beta = "release"; stable = "release" }
 
 function Get-Iscc {
     param([string]$Hint)
@@ -291,7 +291,7 @@ try {
         try {
             & (Get-PyInstaller) --noconfirm karakal.spec
             if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
-            $builtName = if ($buildProfile -eq "tester") { "karakal-$Version" } else { "karakal" }
+            $builtName = if ($buildProfile -ne "dev") { "karakal-$Version" } else { "karakal" }
             $built = Join-Path $PluginRoot "dist\$builtName"
             if (-not (Test-Path -LiteralPath $built)) { throw "PyInstaller output not found: $built" }
             $stage = Join-Path $PluginRoot "dist\windows\karakal"

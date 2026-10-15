@@ -10,7 +10,7 @@ sys.path.insert(0, str(_HERE / "src"))
 from karakal.version import APP_VERSION as _default_version  # noqa: E402
 
 _profile = os.environ.get("KARAKAL_BUILD_PROFILE", "dev").strip().lower()
-_tester = _profile == "tester"
+_released = _profile in {"tester", "release"}
 _version = os.environ.get("KARAKAL_VERSION", _default_version).strip() or _default_version
 _profile_file = Path(os.environ.get("TEMP", ".")) / "build_profile.txt"
 _datas = [
@@ -27,9 +27,9 @@ _datas = [
 ]
 # Every build carries its profile and version: the window title, "What's new" and the
 # updater read the version from here.
-_profile_file.write_text(f"{'tester' if _tester else 'dev'}\n{_version}\n", encoding="utf-8")
+_profile_file.write_text(f"{_profile if _released else 'dev'}\n{_version}\n", encoding="utf-8")
 _datas.append((str(_profile_file), "resources"))
-_exe_name = f"karakal-{_version}" if _tester else "karakal"
+_exe_name = f"karakal-{_version}" if _released else "karakal"
 
 a = Analysis(
     ['src\\karakal\\__main__.py'],

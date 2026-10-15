@@ -154,3 +154,21 @@ def test_small_artifact_has_no_separate_inaccuracy_checkbox(tmp_path, qtbot) -> 
     )
     assert "Возможная неточность" not in visible_text
     assert dialog.grid_error_type_checks["small_artifact"].toolTip().startswith("Кусок маски")
+
+
+def test_release_profile_has_the_full_interface_and_behaves_as_published(tmp_path, qtbot, monkeypatch) -> None:
+    from karakal.app.main_window import KarakalMainWindow
+    from karakal.core.features import display_version, released_build, show_pair_matrices
+
+    monkeypatch.setenv("KARAKAL_BUILD_PROFILE", "release")
+    assert released_build() and not profile_is_tester()
+    assert show_pair_matrices()
+    window = KarakalMainWindow(settings=QSettings(str(tmp_path / "karakal.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(window)
+    widget = window._widget
+    panel = widget.analysis_setup_panel
+    assert panel.mode_host.isVisibleTo(widget)
+    assert set(panel._mode_buttons) == {"validation", "grid_inspection"}
+    assert widget._presenter._analysis_profile != AnalysisProfileKind.GRID_DEFECTS
+    assert display_version() in window.windowTitle()
+    assert widget._i18n.language == "ru"

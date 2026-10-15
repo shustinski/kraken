@@ -65,7 +65,7 @@ from ..core.features import (
     show_other_mode_export,
     show_pair_matrices,
     show_reference_frame,
-    tester_build,
+    released_build,
 )
 from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
@@ -467,7 +467,7 @@ class KarakalWidget(QWidget):
         self._settings_service = KarakalSettingsService(settings or default_settings())
         self._performance_config = self._settings_service.load_performance_config()
         language = self._settings_service.load_language()
-        if tester_build() and not language:
+        if released_build() and not language:
             language = "ru"
         set_current_language(language)
         self._i18n = Translator(language)
@@ -2054,7 +2054,7 @@ class KarakalWidget(QWidget):
         window = self.window()
         if isinstance(window, QMainWindow):
             title = self._t("window.title")
-            if tester_build():
+            if released_build():
                 title = f"{title} {display_version()}"
             window.setWindowTitle(title)
 
@@ -2544,7 +2544,7 @@ class KarakalMainWindow(QMainWindow):
         apply_karakal_icon(self)
         self._widget = KarakalWidget(self, settings=settings)
         title = self._widget._t("window.title")
-        if tester_build():
+        if released_build():
             title = f"{title} {display_version()}"
         self.setWindowTitle(title)
         self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)

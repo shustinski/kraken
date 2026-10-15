@@ -215,12 +215,12 @@ def check_update_now(timeout_ms: int = STARTUP_CHECK_TIMEOUT_MS) -> UpdateInfo |
 def startup_translator() -> Callable[..., str]:
     """Texts in the language the main window will use (settings, tester builds default to Russian)."""
 
-    from ..core.features import tester_build
+    from ..core.features import released_build
     from ..infra.services import KarakalSettingsService, default_settings
     from ..ui.i18n import Translator
 
     language = KarakalSettingsService(default_settings()).load_language()
-    if tester_build() and not language:
+    if released_build() and not language:
         language = "ru"
     return Translator(language).tr
 

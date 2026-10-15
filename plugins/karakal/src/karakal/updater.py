@@ -17,7 +17,7 @@ from updater.client import (
 )
 from updater.qt import QtUpdateController
 
-from .core.features import display_version, tester_build
+from .core.features import display_version, released_build
 from .version import APP_VERSION, __version__
 
 KARAKAL_UPDATE_APP_ID = "karakal"
@@ -102,7 +102,7 @@ def karakal_settings_ini_path() -> Path:
 
 
 def default_karakal_update_channel() -> str:
-    return "beta" if tester_build() else "stable"
+    return "beta" if released_build() else "stable"
 
 
 def _updater_qsettings():

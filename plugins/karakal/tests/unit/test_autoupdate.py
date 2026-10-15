@@ -118,6 +118,9 @@ def test_default_channel_by_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setenv("KARAKAL_BUILD_PROFILE", "tester")
     assert default_karakal_update_channel() == "beta"
 
+    monkeypatch.setenv("KARAKAL_BUILD_PROFILE", "release")
+    assert default_karakal_update_channel() == "beta"
+
     monkeypatch.setenv("KARAKAL_BUILD_PROFILE", "dev")
     assert default_karakal_update_channel() == "stable"
 

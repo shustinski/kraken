@@ -1,9 +1,11 @@
 """Build profile for Karakal.
 
 ``dev`` is the default: every feature stays available, including unfinished ones.
-``tester`` hides unfinished UI. From source it is selected with
-``KARAKAL_BUILD_PROFILE=tester``. A frozen tester build reads the profile file
-baked in at build time and ignores the environment variable.
+``release`` is what betas and stables are built with: the full interface, but it
+behaves as a published build (version in the title, Russian by default, beta
+updates). ``tester`` is the older published build with cell inspection only.
+From source a profile is selected with ``KARAKAL_BUILD_PROFILE``. A frozen build
+reads the profile file baked in at build time and ignores the environment variable.
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-_PROFILES = {"dev", "tester"}
+_PROFILES = {"dev", "release", "tester"}
 
 
 def _bundled_profile_text() -> str:
@@ -33,13 +35,21 @@ def build_profile() -> str:
     if getattr(sys, "frozen", False):
         lines = _bundled_profile_text().splitlines()
         name = (lines[0] if lines else "dev").strip().lower()
-        return "tester" if name == "tester" else "dev"
+        return name if name in _PROFILES else "dev"
     raw = os.environ.get("KARAKAL_BUILD_PROFILE", "dev").strip().lower()
     return raw if raw in _PROFILES else "dev"
 
 
 def tester_build() -> bool:
+    """Only cell inspection: the rest of the interface is hidden."""
+
     return build_profile() == "tester"
+
+
+def released_build() -> bool:
+    """A published build (beta or stable): version in the title, Russian first, beta updates by default."""
+
+    return build_profile() in {"tester", "release"}
 
 
 def display_version() -> str:

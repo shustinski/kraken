@@ -30,6 +30,8 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
        diagram window with seam histograms;
   18 = memory map by the grid of memory blocks (found in the bits), island placement labels,
        self-check against the grid, export «without the gaps between memory blocks»;
+  19 = the full interface in betas and stables (validation and cell inspection), one switch of the
+       two modes on the setup panel, validation analysis picked from the sources;
 - beta N counts tester builds with the same algorithm and interface (fixes only); scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -44,7 +46,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 18
+INTERFACE_NUMBER = 19
 BETA = 0
 
 

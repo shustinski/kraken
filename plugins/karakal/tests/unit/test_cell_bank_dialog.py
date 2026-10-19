@@ -94,6 +94,8 @@ def test_window_shows_the_bank_and_a_cell_next_to_it(tmp_path, qtbot) -> None:
     assert "1.0" not in dialog.width_title.text() and "px" in dialog.width_title.text()
     texts = [dialog.summary_form.itemAt(row, dialog.summary_form.ItemRole.FieldRole) for row in range(dialog.summary_form.rowCount())]
     assert any(item is not None and "every drawn cell is normal" in item.widget().text() for item in texts)
+    # The network's handwriting measured on the run's cells is shown with both units.
+    assert any(item is not None and "taken out of every distance" in item.widget().text() for item in texts)
 
     dialog.set_query(_query_of(_masks(1, start=40)[0]))
     assert dialog.query_group.isVisibleTo(dialog)

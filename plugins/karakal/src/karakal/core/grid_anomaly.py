@@ -1994,8 +1994,10 @@ def estimate_run_normal_profile(
     a run without a reliable normal cell still gets a profile, and its frames report
     ``insufficient_normal_model`` instead of guessed defects.
 
-    Operator masks come first: when they give a bank, the run is not sampled at all, and the
-    masks are analyzed with that bank to check that every drawn cell comes out normal. When they
+    Operator masks come first: when they give a bank, its cells are the only examples, the run's
+    sample only measures how far the network's cells usually are from them (the bank's
+    tolerance), and the masks are analyzed with that bank to check that every drawn cell comes
+    out normal. When they
     give none (too few cells), the run's bank is built as without them; ``markup_report`` says why.
     Cells added by hand go on top of whichever bank it is; ``base_bank`` keeps it without them.
     """
@@ -2016,6 +2018,11 @@ def estimate_run_normal_profile(
         bank = build_markup_bank(
             [extract_components(image) for _name, image in markup], frame_names=[name for name, _image in markup]
         )
+        if bank.ready:
+            from .normal_bank import calibrate_markup_tolerance
+
+            sample = [_load_cv2_grayscale_image(path) for path in _sample_mask_paths(mask_paths, sample_limit)]
+            bank = calibrate_markup_tolerance(bank, [extract_components(image) for image in sample if image is not None])
         markup_report = {
             "used": bool(bank.ready),
             "reason": "" if bank.ready else (bank.reason if markup else "no_masks"),

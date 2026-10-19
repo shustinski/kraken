@@ -738,6 +738,11 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'cell_bank.usual_cell_value': '{w} × {h} px, area {area} px',
         'cell_bank.shape_limit': 'Shape limit',
         'cell_bank.shape_limit_value': 'distance up to {limit} (geometry slider {slider})',
+        'cell_bank.network_tolerance': 'Network handwriting',
+        'cell_bank.network_tolerance_value': (
+            'network cells differ from the drawn ones by {offset} on average; this is taken out of every '
+            'distance. Unit 1.0 = {unit} (the drawn cells alone: {drawn}), measured on {cells} cells of the run'
+        ),
         'cell_bank.shape_hint': 'Distance 1.0 is the usual spread of normal cells. A cell farther from the bank than the limit has a broken outline. Run examples: a cell is compared with its 4th nearest one; drawn cells: with the nearest one.',
         'cell_bank.markup_check': 'Markup check',
         'cell_bank.markup_clean': 'every drawn cell is normal',
@@ -1714,6 +1719,12 @@ _EXTEND_TRANSLATIONS: dict[str, dict[str, str]] = {'en': {'window.title': 'Valid
         'cell_bank.usual_cell_value': '{w} × {h} px, площадь {area} px',
         'cell_bank.shape_limit': 'Граница формы',
         'cell_bank.shape_limit_value': 'расстояние до {limit} (ползунок геометрии {slider})',
+        'cell_bank.network_tolerance': 'Почерк сети',
+        'cell_bank.network_tolerance_value': (
+            'ячейки сети в среднем отличаются от нарисованных на {offset}, это отличие вычитается из '
+            'каждого расстояния. Единица 1,0 = {unit} (у одной разметки — {drawn}), измерено по {cells} '
+            'ячейкам прогона'
+        ),
         'cell_bank.shape_hint': 'Расстояние 1,0 — обычный разброс нормальных ячеек. Ячейка дальше границы от банка — плохая геометрия. С образцами из прогона ячейка сравнивается по 4-му ближайшему, с нарисованными — по ближайшему.',
         'cell_bank.markup_check': 'Проверка разметки',
         'cell_bank.markup_clean': 'все нарисованные ячейки нормальные',

@@ -21,6 +21,11 @@ Operator masks are truth: every cell drawn there is normal, so nothing is trimme
 a shape is judged by the nearest drawn cell, and the drawn sizes are inside the size limits.
 Only cells cut by the frame edge are left out: they are not the whole cell shape.
 
+Drawn cells are cleaner than anything the network paints (straight sides, sharp corners), so
+how far network cells usually lie from them sets the tolerance of a markup bank
+(calibrate_markup_tolerance). The drawn cells stay the only examples of a normal cell; the
+network's cells only measure its usual handwriting around them.
+
 Cells the operator adds by hand (ManualCell) join the operator cells on top of any bank: their
 shape is normal, and their size too when the operator says so. They are kept with the layer,
 outside the bank, so a rebuilt bank gets them again.
@@ -55,6 +60,9 @@ SOURCE_REFERENCE = "reference"
 DESCRIPTOR_GRID = 16
 # Weight of each scalar shape feature next to the 16x16 silhouette.
 SCALAR_WEIGHT = 8.0
+# The network paints a drawn size a pixel or two off, so drawn sizes widen the limits by this much.
+OPERATOR_SIZE_MARGIN_PX = 2.0
+OPERATOR_SIZE_MARGIN_SHARE = 0.03
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +99,13 @@ class NormalBankConfig:
     min_distance_norm: float = 1.5
     # Operator cells kept as examples; beyond this a k-center subset that still covers every one.
     max_operator_exemplars: int = 8000
+    # A drawn cell this close to the frame edge was cut by it (an operator outlines a cut cell
+    # with a small gap), so it is neither a shape nor a size example.
+    markup_edge_margin_px: int = 4
+    # Tolerance of a markup bank: this quantile of the network cells' distances to the drawn cells.
+    markup_tolerance_quantile: float = 0.90
+    # Fewer measured network cells than this leave the tolerance of the drawn cells alone.
+    markup_tolerance_min_cells: int = 50
 
 
 def shape_descriptor(component: CellComponent, labels: np.ndarray) -> np.ndarray:
@@ -278,6 +293,12 @@ class NormalBank:
     normal_sizes: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float32))
     # Ids of the cells added by hand: the last of the operator examples, in this order.
     manual_ids: tuple[str, ...] = ()
+    # A markup bank measured on the network (calibrate_markup_tolerance): how far the network's
+    # cells usually are from the drawn ones (its handwriting, taken out of every distance to a
+    # drawn cell), the unit the drawn cells alone gave, and how many network cells were measured.
+    style_offset: float = 0.0
+    drawn_norm: float = 0.0
+    tolerance_cells: int = 0
 
     @property
     def ready(self) -> bool:
@@ -320,10 +341,16 @@ class NormalBank:
             return fraction * float(bounds[1]), float(bounds[1]) * (1.12 + 0.10 * looseness)
 
         def with_operator(pair: tuple[float, float], drawn: tuple[float, float]) -> tuple[float, float]:
-            # A size the operator drew is normal at any slider position.
+            # A size the operator drew is normal at any slider position, give or take how the
+            # network paints it.
             if drawn[1] <= 0.0:
                 return pair
-            return min(pair[0], float(drawn[0])), max(pair[1], float(drawn[1]))
+
+            def margin(value: float) -> float:
+                return max(OPERATOR_SIZE_MARGIN_PX, OPERATOR_SIZE_MARGIN_SHARE * float(value))
+
+            low, high = float(drawn[0]), float(drawn[1])
+            return min(pair[0], low - margin(low)), max(pair[1], high + margin(high))
 
         return (
             with_operator(
@@ -347,8 +374,20 @@ class NormalBank:
         if len(self.exemplars):
             best = _kth(_pairwise(values, self.exemplars), self.knn_k)
         if len(self.operator_exemplars):
-            best = np.minimum(best, _nearest(values, self.operator_exemplars))
+            best = np.minimum(best, self.drawn_distance(_nearest(values, self.operator_exemplars)))
         return best / max(self.distance_norm, 1.0e-6)
+
+    def drawn_distance(self, raw: np.ndarray) -> np.ndarray:
+        """Distance to the nearest drawn cell without the network's usual handwriting.
+
+        A network cell differs from a drawn one by its handwriting and by any real deviation,
+        roughly independently, so the squares add up; the handwriting part is taken out.
+        """
+
+        values = np.asarray(raw, dtype=np.float64)
+        if self.style_offset <= 0.0:
+            return values
+        return np.sqrt(np.maximum(values * values - float(self.style_offset) ** 2, 0.0))
 
     def _header(self) -> dict[str, Any]:
         header = {
@@ -376,6 +415,10 @@ class NormalBank:
         if len(self.operator_exemplars) or self.operator_width_range[1] > 0.0 or self.operator_height_range[1] > 0.0:
             header["operator_width_range"] = [round(float(value), 4) for value in self.operator_width_range]
             header["operator_height_range"] = [round(float(value), 4) for value in self.operator_height_range]
+        if self.tolerance_cells:
+            header["style_offset"] = round(float(self.style_offset), 6)
+            header["drawn_norm"] = round(float(self.drawn_norm), 6)
+            header["tolerance_cells"] = int(self.tolerance_cells)
         return header
 
     def to_payload(self) -> dict[str, Any]:
@@ -442,6 +485,9 @@ class NormalBank:
             operator_exemplars=_unpack_exemplars(payload.get("operator_exemplars")),
             operator_width_range=tuple(float(value) for value in payload.get("operator_width_range") or (0.0, 0.0)),
             operator_height_range=tuple(float(value) for value in payload.get("operator_height_range") or (0.0, 0.0)),
+            style_offset=float(payload.get("style_offset", 0.0)),
+            drawn_norm=float(payload.get("drawn_norm", 0.0)),
+            tolerance_cells=int(payload.get("tolerance_cells", 0)),
         )
 
     def save(self, path: Path | str) -> Path:
@@ -611,21 +657,29 @@ def build_markup_bank(
 ) -> NormalBank:
     """Bank from operator masks: every drawn cell is a normal example, none is trimmed.
 
-    Cells touching the frame edge are left out (a cut cell would make a half cell normal), and
-    so are crumbs below ``min_seed_area`` (JPEG specks, not drawn cells). The unit of distance is
-    how far a drawn cell usually is from its nearest other drawn cell, raised so that every drawn
-    cell stays within 1.0 of the kept examples.
+    Cells at the frame edge are left out (a cut cell would make a half cell normal): those
+    touching it and those within ``markup_edge_margin_px`` of it, which the operator outlined
+    with a small gap. So are crumbs below ``min_seed_area`` (JPEG specks, not drawn cells). The
+    unit of distance is how far a drawn cell usually is from its nearest other drawn cell,
+    raised so that every drawn cell stays within 1.0 of the kept examples.
     """
 
     cfg = config or NormalBankConfig()
     names = _frame_names(component_sets, frame_names)
     items: list[tuple[CellComponent, np.ndarray]] = []
     frames_used = 0
+    margin = max(0, int(cfg.markup_edge_margin_px))
     for components in component_sets:
+        rows, cols = components.labels.shape[:2]
+
+        def at_edge(item: CellComponent) -> bool:
+            x, y, w, h = item.bbox
+            return item.touches_border or x < margin or y < margin or x + w > cols - margin or y + h > rows - margin
+
         drawn = [
             (item, components.labels)
             for item in components.components
-            if not item.touches_border and item.area >= cfg.min_seed_area
+            if not at_edge(item) and item.area >= cfg.min_seed_area
         ]
         if drawn:
             frames_used += 1
@@ -682,6 +736,64 @@ def build_markup_bank(
     )
 
 
+def calibrate_markup_tolerance(
+    bank: NormalBank,
+    component_sets: Sequence[ComponentSet],
+    *,
+    config: NormalBankConfig | None = None,
+    conductor_config: ConductorConfig | None = None,
+) -> NormalBank:
+    """A markup bank whose tolerance is how far the network's cells usually are from the drawn ones.
+
+    The drawn cells are near-perfect rectangles, so their own spread is tiny, and every cell the
+    network paints (rounder corners, slightly sloped sides) would sit at the edge of normal. The
+    drawn cells stay the only examples; the network's clean, normal-sized cells from the run's
+    sample only measure how far they usually are from the nearest drawn cell. That usual
+    distance (the median) is the network's handwriting and is taken out of every distance to a
+    drawn cell (NormalBank.drawn_distance), so a bite keeps its full weight instead of drowning
+    in a wider scale. What is left of the network cells' distances sets the unit (a quantile
+    below the tail, so the network's own mistakes do not widen it), never below the drawn
+    cells' own unit. Too few measured cells leave the bank as it is.
+    """
+
+    cfg = config or NormalBankConfig()
+    if not bank.ready or not len(bank.operator_exemplars):
+        return bank
+    (w_lo, w_hi), (h_lo, h_hi) = bank.side_limits()
+    descriptors: list[np.ndarray] = []
+    for components in component_sets:
+        zones = preliminary_zones(components, cell_area=float(bank.cell_area) or None, config=conductor_config)
+        excluded = excluded_from_bank(components, zones)
+        cells = [
+            item
+            for item in components.components
+            if not item.touches_border
+            and item.area >= cfg.min_seed_area
+            and item.label not in excluded
+            and item.edge_softness < cfg.max_edge_softness
+            and item.solidity >= cfg.min_clean_solidity
+            and item.extent >= cfg.min_clean_extent
+            and w_lo <= item.width <= w_hi
+            and h_lo <= item.height <= h_hi
+        ]
+        if len(cells) > cfg.seeds_per_frame:
+            step = len(cells) / float(cfg.seeds_per_frame)
+            cells = [cells[int(index * step)] for index in range(cfg.seeds_per_frame)]
+        descriptors.extend(shape_descriptor(item, components.labels) for item in cells)
+    if len(descriptors) < max(1, int(cfg.markup_tolerance_min_cells)):
+        return bank
+    distances = _nearest(np.stack(descriptors), bank.operator_exemplars)
+    calibrated = replace(
+        bank,
+        style_offset=float(np.median(distances)),
+        drawn_norm=float(bank.distance_norm),
+        tolerance_cells=len(descriptors),
+    )
+    left = calibrated.drawn_distance(distances)
+    tolerance = float(np.quantile(left, cfg.markup_tolerance_quantile))
+    return replace(calibrated, distance_norm=max(float(bank.distance_norm), tolerance))
+
+
 ORIGIN_OPERATOR = "operator"
 ORIGIN_RUN = "run"
 
@@ -714,7 +826,11 @@ def nearest_exemplars(bank: NormalBank, descriptor: np.ndarray, count: int = 8) 
     found: list[tuple[str, int, float]] = []
     for origin, pool in ((ORIGIN_RUN, bank.exemplars), (ORIGIN_OPERATOR, bank.operator_exemplars)):
         if len(pool):
-            distances = _pairwise(query, pool)[0] / norm
+            distances = _pairwise(query, pool)[0]
+            if origin == ORIGIN_OPERATOR:
+                # Judged the way the bank judges it: without the network's handwriting.
+                distances = bank.drawn_distance(distances)
+            distances = distances / norm
             for index in np.argsort(distances)[:count]:
                 found.append((origin, int(index), float(distances[index])))
     found.sort(key=lambda entry: entry[2])

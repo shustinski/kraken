@@ -16,8 +16,10 @@ from karakal.core.normal_bank import (
     SOURCE_SESSION,
     STATUS_INSUFFICIENT,
     NormalBank,
+    NormalBankConfig,
     build_markup_bank,
     build_normal_bank,
+    calibrate_markup_tolerance,
 )
 from karakal.core.synthetic_masks import SyntheticLayout, normal_frame, synthetic_frame
 
@@ -55,9 +57,73 @@ def test_every_drawn_cell_is_normal_with_the_markup_bank() -> None:
 
 def test_cells_cut_by_the_frame_edge_are_not_examples() -> None:
     sets = [extract_components(mask) for mask in _normal_masks(2)]
-    inner = sum(1 for components in sets for item in components.components if not item.touches_border)
+    margin = NormalBankConfig().markup_edge_margin_px
+
+    def inner(item, shape) -> bool:
+        x, y, w, h = item.bbox
+        rows, cols = shape
+        return not item.touches_border and x >= margin and y >= margin and x + w <= cols - margin and y + h <= rows - margin
+
+    count = sum(1 for components in sets for item in components.components if inner(item, components.labels.shape))
     assert any(item.touches_border for components in sets for item in components.components)
-    assert build_markup_bank(sets).candidates == inner
+    assert build_markup_bank(sets).candidates == count
+
+
+def test_a_drawn_cell_a_few_pixels_from_the_edge_is_not_an_example() -> None:
+    # Operators outline a cell cut by the frame with a small gap: it does not touch the edge.
+    masks = _normal_masks(2)
+    cut = np.zeros_like(masks[0])
+    cut[2:20, 300:318] = 255  # half a cell, 2 px below the top edge
+    bank = build_markup_bank([extract_components(mask) for mask in [*masks, cut]])
+    assert bank.operator_height_range[0] > 20
+    assert bank.candidates == build_markup_bank([extract_components(mask) for mask in masks]).candidates
+
+
+def test_drawn_size_limits_leave_room_for_how_the_network_paints_them() -> None:
+    bank = build_markup_bank([extract_components(mask) for mask in _normal_masks(2)])
+    (w_lo, w_hi), (h_lo, h_hi) = bank.side_limits(100)
+    assert w_hi >= bank.operator_width_range[1] + 2 and w_lo <= bank.operator_width_range[0] - 2
+    assert h_hi >= bank.operator_height_range[1] + 2 and h_lo <= bank.operator_height_range[0] - 2
+
+
+def _network_style(mask: np.ndarray, sigma: float = 4.0) -> np.ndarray:
+    # Rounder corners than any drawn rectangle, the way the network paints cells.
+    soft = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigma)
+    return np.where(soft >= 127.5, 255, 0).astype(np.uint8)
+
+
+def test_markup_bank_takes_the_network_handwriting_out() -> None:
+    bank = build_markup_bank([extract_components(mask) for mask in _normal_masks(3)])
+    network = [extract_components(_network_style(mask)) for mask in _normal_masks(4, start=40)]
+    calibrated = calibrate_markup_tolerance(bank, network)
+
+    # The drawn cells stay the only examples; the network only measured its handwriting.
+    assert np.array_equal(calibrated.operator_exemplars, bank.operator_exemplars)
+    assert len(calibrated.exemplars) == 0
+    assert calibrated.style_offset > 0.0 and calibrated.tolerance_cells >= 50
+    assert calibrated.drawn_norm == bank.distance_norm
+    assert calibrated.distance_norm >= bank.distance_norm
+
+    probe = _network_style(_normal_masks(1, start=77)[0])
+    assert analyze_cell_errors(probe, bank).class_counts().get("bad_geometry", 0) > 10
+    assert analyze_cell_errors(probe, calibrated).class_counts().get("bad_geometry", 0) == 0
+    # A bite keeps its weight: cut corners of network-style cells are still broken.
+    cells = [item for item in extract_components(probe).components if not item.touches_border][:6]
+    bitten = probe.copy()
+    for item in cells:
+        x, y, w, h = item.bbox
+        bitten[y : y + h // 3, x : x + w // 2] = 0
+    assert analyze_cell_errors(bitten, calibrated).class_counts().get("bad_geometry", 0) == len(cells)
+
+
+def test_handwriting_needs_enough_cells_and_never_lowers_the_unit() -> None:
+    bank = build_markup_bank([extract_components(mask) for mask in _normal_masks(3)])
+    assert calibrate_markup_tolerance(bank, []).bank_id == bank.bank_id
+    same_style = calibrate_markup_tolerance(bank, [extract_components(mask) for mask in _normal_masks(4, start=40)])
+    assert same_style.distance_norm >= bank.distance_norm
+    restored = NormalBank.from_payload(same_style.to_payload())
+    assert restored.bank_id == same_style.bank_id
+    assert (restored.style_offset, restored.tolerance_cells) == (same_style.style_offset, same_style.tolerance_cells)
 
 
 def test_a_drawn_size_is_inside_the_size_limits() -> None:
@@ -89,6 +155,8 @@ def test_markup_comes_first_and_too_little_markup_falls_back_to_the_run(tmp_path
 
     profile = estimate_run_normal_profile(run, markup_paths=markup)
     assert profile.normal_bank.source == SOURCE_REFERENCE
+    # The run's sample measured the network's handwriting around the drawn cells.
+    assert profile.normal_bank.tolerance_cells > 0
     assert profile.markup_report["used"] and profile.markup_report["frames"] == 3
     assert profile.markup_report["flagged"] == []
 

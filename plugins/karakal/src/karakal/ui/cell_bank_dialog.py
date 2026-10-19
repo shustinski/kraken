@@ -449,6 +449,19 @@ class CellBankDialog(QDialog):
                 )
             )
             rows.append((self._t("cell_bank.shape_limit"), self._t("cell_bank.shape_limit_value", limit=f"{self._shape_limit:.2f}", slider=self._geometry)))
+            if bank.tolerance_cells:
+                rows.append(
+                    (
+                        self._t("cell_bank.network_tolerance"),
+                        self._t(
+                            "cell_bank.network_tolerance_value",
+                            offset=f"{bank.style_offset:.2f}",
+                            unit=f"{bank.distance_norm:.2f}",
+                            drawn=f"{bank.drawn_norm:.2f}",
+                            cells=int(bank.tolerance_cells),
+                        ),
+                    )
+                )
         report = getattr(profile, "markup_report", None)
         if report:
             if not report.get("used"):

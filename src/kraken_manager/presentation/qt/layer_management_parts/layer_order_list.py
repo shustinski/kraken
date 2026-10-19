@@ -71,6 +71,7 @@ class LayerOrderList(QListWidget):
         menu = QMenu(self)
         add_images = menu.addAction("Добавить слой изображений…")
         karakal = menu.addAction("Отправить слой в Karakal")
+        stitching = menu.addAction("Управление сшивкой…")
         menu.addSeparator()
         rename_layer = menu.addAction("Переименовать…")
         archive_layer = menu.addAction("Архивировать")
@@ -80,6 +81,7 @@ class LayerOrderList(QListWidget):
         by_action = {
             add_images: "add_image_representation",
             karakal: "karakal",
+            stitching: "manage_stitching",
             rename_layer: "rename_layer",
             archive_layer: "archive_layer",
             delete_layer: "delete_layer",

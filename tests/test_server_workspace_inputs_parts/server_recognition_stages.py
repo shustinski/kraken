@@ -21,7 +21,8 @@ def test_server_task_cancellation_does_not_start_local_agent():
     assert calls[0]["gateway"] is None
     assert calls[0]["job"] is job
 
-def test_server_recognition_stages_model_with_its_original_extension(tmp_path):
+@pytest.mark.parametrize("capability", ["frames.binary-segment.v2", "frames.confidence.v1"])
+def test_server_recognition_stages_model_with_its_original_extension(tmp_path, capability):
     import hashlib
     from kraken_agent.jobs import StagingWorkspace
     from kraken_agent.server_worker import ServerAgentWorker
@@ -42,7 +43,7 @@ def test_server_recognition_stages_model_with_its_original_extension(tmp_path):
     raw = lease["manifest"]
     model = tmp_path / "cached-model-without-extension"
     model.write_bytes(b"test-weights")
-    raw["capability"] = "frames.binary-segment.v2"
+    raw["capability"] = capability
     raw["parameters"] = {
         "execution_host": "desktop",
         "model_source_path": str(model),

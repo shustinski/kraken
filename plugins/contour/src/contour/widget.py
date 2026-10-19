@@ -9,10 +9,10 @@ from pathlib import Path
 import cv2 as cv2
 import numpy as np
 from PyQt6.QtCore import QEvent as QEvent
+from PyQt6.QtCore import QObject, QSize, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtCore import QPointF as QPointF
 from PyQt6.QtCore import QRectF as QRectF
 from PyQt6.QtCore import QSignalBlocker as QSignalBlocker
-from PyQt6.QtCore import QSize, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtCore import Qt as Qt
 from PyQt6.QtGui import QBrush as QBrush
 from PyQt6.QtGui import QCloseEvent, QIcon, QPixmap
@@ -501,6 +501,17 @@ class PolygonExtractionWidget(
         if event is None:
             return
         self._closing = True
+        self._preview_update_timer.stop()
+        self._preview_pending_request = None
+        self._prepared_image_pending_request = None
+        for cancel_name in (
+            "_preview_run_cancel", "_prepared_image_run_cancel",
+            "_antialias_cancel", "_fix_internal_contours_cancel",
+        ):
+            cancel = getattr(self, cancel_name, None)
+            if cancel is not None:
+                cancel.set()
+        self._batch_processor.stop()
         frame_switch_profile = getattr(self, "_frame_switch_profile", None)
         if frame_switch_profile is not None:
             frame_switch_profile.disable_main_profiler()
@@ -535,22 +546,13 @@ class PolygonExtractionWidget(
             self.thumbnail_grid.shutdownPyramidLoading()
         if hasattr(self, "_cancel_antialias_job"):
             self._cancel_antialias_job()
-        for pool_name in (
-            "_frame_load_thread_pool",
-            "_prefetch_thread_pool",
-            "_thumbnail_thread_pool",
-            "_neighbor_thread_pool",
-            "_editor_display_thread_pool",
-            "_antialias_thread_pool",
-        ):
-            pool = getattr(self, pool_name, None)
-            if pool is None:
-                continue
-            try:
-                pool.clear()
-                pool.waitForDone(3000)
-            except RuntimeError:
-                pass
+        # Workers retain Qt signal objects and image buffers owned by this
+        # widget. Keep their owners alive until every pool has finished,
+        # including preview, preparation, indexing and editor pyramid pools.
+        if not _background_pools_are_idle(self):
+            event.ignore()
+            QTimer.singleShot(50, self.close)
+            return
         with self._scene_source_image_cache_lock:
             self._scene_source_image_cache.clear()
             self._scene_source_image_cache_bytes = 0
@@ -558,3 +560,10 @@ class PolygonExtractionWidget(
         if hasattr(self, "_remove_wheel_value_app_filter"):
             self._remove_wheel_value_app_filter()
         super().closeEvent(event)
+
+
+def _background_pools_are_idle(owner: QObject) -> bool:
+    pools = owner.findChildren(QThreadPool)
+    for pool in pools:
+        pool.clear()
+    return all(pool.waitForDone(0) for pool in pools)

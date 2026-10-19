@@ -1,16 +1,15 @@
 """serializers: encode parent holes link."""
 from __future__ import annotations
-from typing import TYPE_CHECKING
+
 from time import perf_counter
+from typing import TYPE_CHECKING
+
 from contour.domain import PolygonData
-
 from contour.serializers_parts.boundary_vertices_by_distance import _rightmost_point_index
-
 from contour.serializers_parts.cv_object_polygon import (
     _note_cif_phase_timing,
     _note_cif_slit_target,
 )
-
 from contour.serializers_parts.select_vertex_slit_hole import (
     _edge_parameter,
     _ring_with_orientation,
@@ -18,6 +17,7 @@ from contour.serializers_parts.select_vertex_slit_hole import (
     _select_vertex_slit_for_hole,
     _trace_linked_hole_cycle,
 )
+
 
 def _encode_parent_with_holes_link_path(parent: PolygonData, holes: list[PolygonData]) -> list[tuple[float, float]]:
     encode_started_at = perf_counter()
@@ -36,7 +36,7 @@ def _encode_parent_with_holes_link_path(parent: PolygonData, holes: list[Polygon
         key=lambda item: -float(item[1][_rightmost_point_index(item[1])][0]),
     )
 
-    from shapely import make_valid
+    from shapely import make_valid, prepare
     from shapely.geometry import Polygon as ShapelyPolygon
 
     parent_solid = make_valid(
@@ -45,6 +45,7 @@ def _encode_parent_with_holes_link_path(parent: PolygonData, holes: list[Polygon
             holes=[points for _hole, points in encoded_holes],
         )
     )
+    prepare(parent_solid)
     detours_by_ring: dict[int, dict[int, list[_HoleLinkDetour]]] = {}
     linked_hole_indices: set[int] = set()
     for hole_index, (hole, hole_points) in enumerate(encoded_holes):

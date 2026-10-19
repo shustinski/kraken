@@ -55,11 +55,13 @@ class RunRemoteInteractiveJobMixin:
             "train": ("neuralimage", "dataset.model.train.v1", "interactive"),
             "recognize": ("neuralimage", "frames.binary-segment.v2", "headless"),
             "recognize_external": ("neuralimage", "frames.binary-segment.v2", "headless"),
+            "confidence": ("neuralimage", "frames.confidence.v1", "headless"),
             "karakal": ("karakal", "layer.confidence.analyze.v1", "interactive"),
         }.get(action, ("", "", ""))
 
     def _action_availability(self, action: str) -> tuple[bool, str]:
         if action in {
+            "manage_stitching",
             "add_external_vector",
             "add_image_representation",
             "archive_representation",

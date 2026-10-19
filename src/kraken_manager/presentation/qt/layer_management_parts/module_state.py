@@ -45,6 +45,7 @@ _EVENT_TYPE_LABELS: dict[str, str] = {
     "LayerPipelineActionRequested": "Запущено действие конвейера",
     "LayerPipelineActionRemoved": "Удалено действие конвейера",
     "KarakalAnalysisPublished": "Опубликован анализ Karakal",
+    "LayerStitchingStatusChangedV1": "Изменена отметка о сшивке",
 }
 
 _FIELD_LABELS: dict[str, str] = {

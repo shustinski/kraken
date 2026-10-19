@@ -4,6 +4,7 @@ import contextlib
 import logging
 import multiprocessing as mp
 import os
+from collections import deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import replace
@@ -181,9 +182,9 @@ class BatchQueueRunnable(QRunnable):
                 mp_context=context,
                 initializer=configure_worker_runtime,
             ) as executor:
-                pending_chunks = list(chunks)
+                pending_chunks = deque(chunks)
                 while pending_chunks and len(futures) < worker_count:
-                    request = pending_chunks.pop(0)
+                    request = pending_chunks.popleft()
                     future = executor.submit(
                         process_batch_chunk,
                         request,
@@ -246,7 +247,7 @@ class BatchQueueRunnable(QRunnable):
                             self.signals.diagnostics.emit(chunk_result.diagnostics)
                             self.signals.log.emit(_format_chunk_diagnostics(chunk_result.diagnostics))
                         if not self._cancel_event.is_set() and pending_chunks:
-                            request = pending_chunks.pop(0)
+                            request = pending_chunks.popleft()
                             next_future = executor.submit(
                                 process_batch_chunk,
                                 request,
@@ -273,11 +274,16 @@ class BatchQueueRunnable(QRunnable):
         settings_payload = self.contour_settings.to_dict()
         save_payload = self.save_options.to_dict()
         display_payload = self.display_settings.to_dict()
-        for chunk_id, start in enumerate(range(0, len(self.image_paths), self.chunk_size), start=1):
+        start = 0
+        while start < len(self.image_paths):
+            # Give the final frames to individual workers. A fixed final chunk
+            # otherwise leaves most processes idle behind one expensive frame.
+            remaining = len(self.image_paths) - start
+            size = 1 if remaining <= self.max_workers * self.chunk_size else self.chunk_size
             requests.append(
                 BatchChunkRequest(
-                    chunk_id=chunk_id,
-                    image_paths=tuple(self.image_paths[start : start + self.chunk_size]),
+                    chunk_id=len(requests) + 1,
+                    image_paths=tuple(self.image_paths[start : start + size]),
                     pipeline_config=dict(self.pipeline_config),
                     contour_settings=dict(settings_payload),
                     output_directory=self.output_directory,
@@ -286,6 +292,7 @@ class BatchQueueRunnable(QRunnable):
                     image_loader=self.image_loader,
                 )
             )
+            start += size
         return requests
 
     def _emit_summary(

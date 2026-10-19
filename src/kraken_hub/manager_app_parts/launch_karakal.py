@@ -15,6 +15,7 @@ class LaunchKarakalMixin:
             return
         try:
             from karakal.core.domain import FolderSpec
+            from karakal.app.presenter import FOLDER_CONFIDENCE_ROLE
             from karakal.plugin.plugin import KarakalPlugin
             from PyQt6.QtCore import QSettings, Qt, QUrl
             from PyQt6.QtGui import QDesktopServices
@@ -160,10 +161,24 @@ class LaunchKarakalMixin:
                 else None
             )
             if binary_path is not None:
-                widget._presenter._append_folder_item(
+                item = widget._presenter._append_folder_item(
                     binary_path,
                     checked=True,
                 )
+                matching_confidence = [
+                    value for value in representations
+                    if value.purpose is RepresentationPurpose.CONFIDENCE
+                    and value.source_image_representation_id == binary.source_image_representation_id
+                ]
+                matching_binaries = [
+                    value for value in representations
+                    if value.purpose is RepresentationPurpose.BINARY
+                    and value.source_image_representation_id == binary.source_image_representation_id
+                ]
+                if len(matching_confidence) == len(matching_binaries) == 1:
+                    confidence_path = representation_folder(matching_confidence[0])
+                    if confidence_path is not None:
+                        item.setData(FOLDER_CONFIDENCE_ROLE, str(confidence_path))
         widget._presenter._update_source_labels()
         widget._presenter._refresh_folder_rows()
         widget._presenter._sync_action_buttons()

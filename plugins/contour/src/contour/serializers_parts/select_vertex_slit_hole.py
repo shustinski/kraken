@@ -1,14 +1,19 @@
 """serializers: select vertex slit hole."""
 from __future__ import annotations
-from typing import TYPE_CHECKING
-from contour.domain import PolygonData
 
+from bisect import bisect_left
+from typing import TYPE_CHECKING
+
+import numpy as np
+
+from contour.domain import PolygonData
 from contour.serializers_parts.boundary_vertices_by_distance import (
-    _boundary_vertices_by_distance,
     _dedupe_closed_points,
     _point_distance_squared,
     _rightmost_point_index,
 )
+from contour.serializers_parts.module_state import _BOUNDARY_SNAP_NEIGHBOR_WINDOW
+
 
 def _select_vertex_slit_for_hole(
     hole_points: list[tuple[float, float]],
@@ -30,6 +35,17 @@ def _select_vertex_slit_for_hole(
     if linked_hole_rings:
         targets.extend(linked_hole_rings)
 
+    # Keep the legacy window-first tie order, but sort each ring by X only
+    # once. Distances and the current best radius eliminate irrelevant
+    # vertices before the expensive Python ranking and geometry predicates.
+    indexed_targets = []
+    for target_key, ring in targets:
+        if len(ring) < 3:
+            continue
+        coordinates = np.asarray(ring, dtype=np.float64)
+        x_order = sorted(range(len(ring)), key=lambda index: float(ring[index][0]))
+        indexed_targets.append((target_key, ring, coordinates, x_order, [float(ring[i][0]) for i in x_order]))
+
     best: tuple[float, int, tuple[float, float], int, int, list[tuple[float, float]]] | None = None
     anchor_index = _rightmost_point_index(hole_points)
     hole_vertex_indices = [anchor_index] + [
@@ -37,15 +53,29 @@ def _select_vertex_slit_for_hole(
     ]
     for hole_index in hole_vertex_indices:
         hole_anchor = hole_points[hole_index]
-        for target_key, target_ring in targets:
-            for target_anchor, insert_index in _boundary_vertices_by_distance(
-                target_ring,
-                hole_anchor,
-                prefer_same_x_side=False,
-            ):
+        for target_key, target_ring, coordinates, x_order, x_coords in indexed_targets:
+            dx = coordinates[:, 0] - float(hole_anchor[0])
+            dy = coordinates[:, 1] - float(hole_anchor[1])
+            distances = dx * dx + dy * dy
+            candidates = np.flatnonzero(distances < best[0]) if best is not None else np.arange(len(target_ring))
+            if not len(candidates):
+                continue
+            anchor = bisect_left(x_coords, float(hole_anchor[0]))
+            window = max(1, int(_BOUNDARY_SNAP_NEIGHBOR_WINDOW))
+            window_order = {index: rank for rank, index in enumerate(x_order[max(0, anchor - window):anchor + window + 1])}
+            ranked = sorted(
+                map(int, candidates),
+                key=lambda index: (
+                    float(distances[index]),
+                    0 if index in window_order else 1,
+                    window_order.get(index, index),
+                ),
+            )
+            for insert_index in ranked:
+                target_anchor = target_ring[insert_index]
                 distance_squared = _point_distance_squared(hole_anchor, target_anchor)
                 if best is not None and distance_squared >= best[0]:
-                    continue
+                    break
                 if not parent_solid.covers(LineString([target_anchor, hole_anchor])):
                     continue
                 best = (
@@ -56,6 +86,7 @@ def _select_vertex_slit_for_hole(
                     hole_index,
                     [target_anchor, hole_anchor],
                 )
+                break
     if best is None:
         return None
     _distance_squared, target_key, target_anchor, insert_index, hole_index, slit_path = best

@@ -1,7 +1,9 @@
 """processing_mixin: save current result."""
 from __future__ import annotations
+
 import os
 from typing import Any
+
 from contour.widget_parts._imports import (
     Path,
     PolygonData,
@@ -27,7 +29,12 @@ class SaveCurrentResultMixin:
         if not target_directory:
             self._append_log(self._tr("output_directory_not_set_log"))
             return {}
-        current_polygons = self.get_polygons() if polygons is None else [polygon.clone() for polygon in polygons]
+        if polygons is not None:
+            current_polygons = [polygon.clone() for polygon in polygons]
+        elif self._editor_polygons_are_current_frame():
+            current_polygons = self.get_polygons()
+        else:
+            current_polygons = [polygon.clone() for polygon in current_state.polygons]
         self._workspace.update_current_polygons(current_polygons)
         had_vector_edits = self._workspace.current_image_has_changes()
         contour_settings = self._current_contour_settings()

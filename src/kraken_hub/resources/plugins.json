@@ -30,6 +30,22 @@
           "maximum_batch_size": 10000
         },
         {
+          "operation": "frames.confidence.v1",
+          "modes": [
+            "headless"
+          ],
+          "input_media_types": [
+            "image/png",
+            "image/tiff",
+            "image/jpeg",
+            "application/x-pytorch"
+          ],
+          "output_media_types": [
+            "image/jpeg"
+          ],
+          "maximum_batch_size": 10000
+        },
+        {
           "operation": "dataset.model.train.v1",
           "modes": ["interactive"],
           "input_media_types": ["application/vnd.kraken.dataset+zip"],

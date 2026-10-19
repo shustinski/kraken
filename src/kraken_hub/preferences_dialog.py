@@ -214,8 +214,10 @@ class ProgramPreferencesDialog(QDialog):
         self._pages.setFixedWidth(220)
         storage_item = QTreeWidgetItem(["Хранение"])
         account_item = QTreeWidgetItem(["Учетная запись"])
+        theme_item = QTreeWidgetItem(["Тема"])
         self._pages.addTopLevelItem(storage_item)
         self._pages.addTopLevelItem(account_item)
+        self._pages.addTopLevelItem(theme_item)
         body.addWidget(self._pages)
 
         content = QVBoxLayout()
@@ -225,6 +227,7 @@ class ProgramPreferencesDialog(QDialog):
         self._stack = QStackedWidget(self)
         self._stack.addWidget(self._build_storage_page())
         self._stack.addWidget(self._build_account_page())
+        self._stack.addWidget(self._build_theme_page())
         content.addWidget(self._stack, 1)
         body.addLayout(content, 1)
         root.addLayout(body, 1)
@@ -244,6 +247,20 @@ class ProgramPreferencesDialog(QDialog):
         self._pages.currentItemChanged.connect(self._show_page)
         self._pages.setCurrentItem(storage_item)
         self._refresh_accounts()
+
+    def _build_theme_page(self) -> QWidget:
+        from kraken_core.theme import THEME_SYSTEM, normalize_theme
+
+        page = QWidget(self)
+        form = QFormLayout(page)
+        self._theme = QComboBox(page)
+        self._theme.setObjectName("preferenceTheme")
+        for label, value in (("Как в системе", "system"), ("Светлая", "light"), ("Темная", "dark")):
+            self._theme.addItem(label, value)
+        selected = normalize_theme(str(self._settings.value("appearance/theme", THEME_SYSTEM)))
+        self._theme.setCurrentIndex(self._theme.findData(selected))
+        form.addRow("Тема", self._theme)
+        return page
 
     def _build_storage_page(self) -> QWidget:
         page = QWidget(self)
@@ -363,6 +380,11 @@ class ProgramPreferencesDialog(QDialog):
             return False
         save_program_server_url(url, self._settings)
         save_program_accounts(self._accounts, self._settings)
+        from kraken_core.theme import apply_app_theme
+
+        theme = str(self._theme.currentData())
+        self._settings.setValue("appearance/theme", theme)
+        apply_app_theme(theme)
         self._accounts = load_program_accounts(self._settings)
         self._refresh_accounts()
         return True

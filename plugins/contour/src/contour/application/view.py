@@ -633,6 +633,8 @@ class ContourMainView(QMainWindow):
             return
         if not self._widget.close():
             event.ignore()
+            if getattr(self._widget, "_closing", False):
+                QTimer.singleShot(50, self.close)
             return
         self._save_window_layout()
         super().closeEvent(event)

@@ -7,7 +7,7 @@ from kraken_manager.domain.project import RepresentationKind
 
 from test_server_workspace_inputs_parts.server_layer import _server_layer
 
-@pytest.mark.parametrize("capability", ["frames.vectorize.v1", "frames.binary-segment.v2"])
+@pytest.mark.parametrize("capability", ["frames.vectorize.v1", "frames.binary-segment.v2", "frames.confidence.v1"])
 @pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("existing_target", ["missing", "linked", "unrelated"])
 def test_contour_launch_creates_or_reuses_empty_output(tmp_path, monkeypatch, remote, existing_target, capability):
@@ -16,7 +16,8 @@ def test_contour_launch_creates_or_reuses_empty_output(tmp_path, monkeypatch, re
 
     output_kind = RepresentationKind.VECTOR if capability == "frames.vectorize.v1" else RepresentationKind.IMAGE
     output_purpose = (
-        RepresentationPurpose.VECTOR if capability == "frames.vectorize.v1" else RepresentationPurpose.BINARY
+        RepresentationPurpose.VECTOR if capability == "frames.vectorize.v1"
+        else RepresentationPurpose.CONFIDENCE if capability == "frames.confidence.v1" else RepresentationPurpose.BINARY
     )
 
     server, local, session, project, layer, _binding, source, context = _server_layer(tmp_path)

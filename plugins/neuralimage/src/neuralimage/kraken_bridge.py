@@ -8,6 +8,7 @@ lossless one-channel PNG masks containing only values 0 and 255.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 from kraken_core.asset_source import ServerAssetSource
+
 
 from kraken_core.plugin_protocol import (
     PluginAsset,
@@ -54,6 +56,21 @@ _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 
 class KrakenBridgeError(RuntimeError):
     """Raised when a NeuralImage managed job is unsafe or malformed."""
+
+
+def _training_parameters(directory: Path) -> dict[str, object]:
+    """Read the snapshot written by the training task, not later UI edits."""
+    snapshots = tuple(directory.rglob("neuralimage_workflow.json"))
+    if not snapshots:
+        return {}
+    if len(snapshots) != 1:
+        raise KrakenBridgeError("Выберите каталог одного обучения с одним файлом neuralimage_workflow.json")
+    if snapshots[0].is_symlink() or snapshots[0].stat().st_size > _MAX_MANIFEST_BYTES:
+        raise KrakenBridgeError("Файл параметров обучения должен быть обычным JSON-файлом допустимого размера")
+    payload = json.loads(snapshots[0].read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise KrakenBridgeError("Параметры обучения должны содержать JSON-объект")
+    return payload
 
 
 def _sha256(path: Path) -> str:
@@ -192,6 +209,7 @@ class HeadlessOptions:
     tta: bool
     postprocess_enabled: bool
     postprocess_kernel_size: int
+    confidence_tta: bool = False
 
     @classmethod
     def from_session(cls, session: "NeuralImageKrakenSession") -> "HeadlessOptions":
@@ -239,10 +257,13 @@ class HeadlessOptions:
                 3,
                 maximum=255,
             ),
+            confidence_tta=_bool_parameter(parameters, "confidence_tta", False),
         )
 
     def provenance(self) -> dict[str, Any]:
         return {
+            "format": "neuralimage-inference-settings",
+            "version": 1,
             "model_sha256": self.model_sha256,
             "model_version": self.model_version,
             "patch_size": list(self.patch_size),
@@ -254,6 +275,7 @@ class HeadlessOptions:
             "postprocess_enabled": self.postprocess_enabled,
             "postprocess_kernel_size": self.postprocess_kernel_size,
             "lossless_binary_png": True,
+            "confidence_tta": self.confidence_tta,
         }
 
 
@@ -289,6 +311,7 @@ class NeuralImageKrakenSession:
         if manifest.operation not in {
             PluginOperation.BINARY_SEGMENT_FRAMES.value,
             PluginOperation.BINARY_SEGMENT_FRAMES_V2.value,
+            PluginOperation.GENERATE_FRAME_CONFIDENCE.value,
         }:
             raise KrakenBridgeError(f"NeuralImage does not support operation {manifest.operation!r}")
         frame_inputs = (
@@ -381,6 +404,8 @@ class NeuralImageKrakenSession:
             outputs, applied_threshold = _run_recognition(self, options)
             provenance = options.provenance()
             provenance["applied_threshold"] = applied_threshold
+            if self.manifest.operation == PluginOperation.GENERATE_FRAME_CONFIDENCE.value:
+                provenance["confidence_save_mode"] = "separate_grayscale"
             if isinstance(self.manifest, PluginJobManifestV2):
                 by_frame = {
                     str(item.frame_id): item
@@ -396,7 +421,7 @@ class NeuralImageKrakenSession:
                     outputs=tuple(
                         PluginAsset(
                             asset_id=output.output_id,
-                            role="binary",
+                            role="confidence" if output.role == "confidence" else "binary",
                             scope=PluginAssetScope.FRAME,
                             relative_path=output.relative_path,
                             sha256=output.sha256,
@@ -488,8 +513,8 @@ def _run_recognition(
         postprocess_enabled=options.postprocess_enabled,
         postprocess_kernel_size=options.postprocess_kernel_size,
         recognition_tta_enabled=options.tta,
-        confidence_tta_enabled=False,
-        confidence_save_mode="off",
+        confidence_tta_enabled=options.confidence_tta,
+        confidence_save_mode="separate_grayscale" if session.manifest.operation == PluginOperation.GENERATE_FRAME_CONFIDENCE.value else "off",
         lossless_binary_png=True,
     )
     remote_address = os.environ.get("NEURALIMAGE_SERVER_URL")
@@ -519,9 +544,24 @@ def _run_recognition(
         native = completed.get(source.resolve(strict=session.server_source is None))
         if native is None:
             raise KrakenBridgeError(f"Inference did not produce a result for frame {frame.frame_id}")
-        if native_directory not in native.parents:
+        confidence_output = session.manifest.operation == PluginOperation.GENERATE_FRAME_CONFIDENCE.value
+        if confidence_output:
+            from .model.NeuralNetwork.recognition_pipeline_parts.imgsew import _confidence_output_root
+
+            candidate = _confidence_output_root(native_directory) / source.with_suffix(".jpg").name
+            if not candidate.is_file():
+                raise KrakenBridgeError(f"Модель не создала confidence для кадра {frame.frame_id}")
+            native = _contained_file(session.staging_root, candidate.relative_to(session.staging_root).as_posix())
+        if session.output_directory not in native.parents:
             raise KrakenBridgeError("Inference returned an output outside its staging directory")
-        _validate_binary_png(native)
+        if not confidence_output:
+            _validate_binary_png(native)
+        else:
+            from PIL import Image
+
+            with Image.open(native) as confidence_image:
+                if confidence_image.format != "JPEG" or confidence_image.mode != "L":
+                    raise KrakenBridgeError("Confidence должен быть одноканальным изображением JPEG")
         try:
             position = int(frame_positions.get(frame.frame_id, index - 1))
         except (TypeError, ValueError):
@@ -531,18 +571,19 @@ def _run_recognition(
                 f"Frame {frame.frame_id} has an invalid negative filename position"
             )
         destination = session.output_directory / (
-            f"{index:06d}_{frame.x}_{frame.y}_{position}.png"
+            f"{index:06d}_{frame.x}_{frame.y}_{position}{'.jpg' if confidence_output else '.png'}"
         )
         _atomic_copy(native, destination)
-        _validate_binary_png(destination)
+        if not confidence_output:
+            _validate_binary_png(destination)
         outputs.append(
             PluginFrameOutput(
                 output_id=f"{session.manifest.job_id}:neuralimage:{index}",
                 frame_id=frame.frame_id,
                 relative_path=destination.relative_to(session.staging_root).as_posix(),
                 sha256=_sha256(destination),
-                media_type="image/png",
-                role="binary-image",
+                media_type="image/jpeg" if confidence_output else "image/png",
+                role="confidence" if confidence_output else "binary-image",
             )
         )
     return outputs, None if applied_threshold is None else float(applied_threshold)
@@ -631,6 +672,7 @@ class NeuralImageWorkspaceSession:
                     provenance={
                         "plugin_version": APP_VERSION,
                         "file_count": len(outputs),
+                        "parameters": _training_parameters(selected),
                     },
                 ).write(self.result_manifest_path)
             except Exception as exc:
@@ -707,6 +749,7 @@ class NeuralImageTrainSession:
             models = (selected,)
         if len(models) != 1:
             raise KrakenBridgeError("Select the model to return to Kraken")
+        parameters = _training_parameters(models[0].parent)
         frame_id = ""
         inputs = getattr(self.manifest, "inputs", ())
         if inputs:
@@ -731,6 +774,7 @@ class NeuralImageTrainSession:
                 plugin_id="neuralimage",
                 plugin_version=APP_VERSION,
                 final=True,
+                applied_parameters=parameters,
                 outputs=tuple(
                     PluginAsset(
                         asset_id=output.output_id,
@@ -753,6 +797,7 @@ class NeuralImageTrainSession:
                 plugin_id="neuralimage",
                 plugin_version=APP_VERSION,
                 outputs=outputs,
+                applied_parameters=parameters,
             )
         _atomic_text(self.result_manifest_path, result.to_json())
         return result

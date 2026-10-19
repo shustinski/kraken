@@ -38,6 +38,7 @@ class ExtendMatrixTabState:
     matrix_view: MatrixListWidget
     mini_map: MatrixMiniMapWidget
     build_result: BuildResult
+    parameter_settings: dict[str, object] = field(default_factory=dict, kw_only=True)
     legend: MatrixLegendWidget | None = None
     content_tabs: QTabWidget | None = None
     cell_size: int = DEFAULT_CELL_SIZE

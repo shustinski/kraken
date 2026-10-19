@@ -42,7 +42,8 @@ class ConstructionMixin:
             value_item.setToolTip(value_item.text())
             self.properties_table.setItem(row, 1, value_item)
         self.properties_table.resizeRowsToContents()
-        tabs.addTab(self.properties_table, "Свойства")
+        parameter_actions = tuple(action for action in snapshot.actions if action[0].startswith("Сохранить параметры"))
+        tabs.addTab(self._action_tab(self.properties_table, (), (), general_actions=parameter_actions), "Свойства")
 
         self.history_table = self._table(
             ("Дата и время", "Пользователь", "Событие", "Подробности")
@@ -85,7 +86,7 @@ class ConstructionMixin:
                 self.notes_table,
                 snapshot.notes,
                 (),
-                general_actions=snapshot.actions,
+                general_actions=tuple(action for action in snapshot.actions if action not in parameter_actions),
             ),
             f"Заметки ({len(snapshot.notes)})",
         )

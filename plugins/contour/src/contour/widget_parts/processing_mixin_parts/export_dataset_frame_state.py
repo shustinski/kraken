@@ -1,6 +1,8 @@
 """processing_mixin: export dataset frame state."""
 from __future__ import annotations
+
 from typing import Any
+
 from contour.widget_parts._imports import (
     ImageProcessingState,
     PolygonData,
@@ -53,8 +55,13 @@ class ExportDatasetFrameStateMixin:
         if current_state is None or current_image_path is None:
             self._append_log(self._tr("nothing_to_save_log"))
             return {}
-        current_polygons = self.get_polygons()
-        self._workspace.update_current_polygons(current_polygons)
+        if self._editor_polygons_are_current_frame():
+            current_polygons = self.get_polygons()
+            self._workspace.update_current_polygons(current_polygons)
+        else:
+            # A frame's data may arrive before its asynchronous pixmap. The
+            # editor still owns the previous frame until both layers swap.
+            current_polygons = [polygon.clone() for polygon in current_state.polygons]
         self._update_frame_item_status(current_image_path)
         return self._export_dataset_frame_for_state(
             current_image_path,

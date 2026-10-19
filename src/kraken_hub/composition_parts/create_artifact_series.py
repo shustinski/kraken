@@ -178,8 +178,11 @@ class CreateArtifactSeriesMixin:
         layer_id: LayerId | str | None = None,
         representation_id: RepresentationId | str | None = None,
         frame_id: str | None = None,
+        series_id: ArtifactSeriesId | str | None = None,
         idempotency_key: str,
     ) -> ArtifactSeries:
+        from kraken_manager.domain.common import new_uuid
+
         return CreateArtifactSeriesHandler(
             self._uow(str(project_id)),
             self.profiles,
@@ -200,6 +203,7 @@ class CreateArtifactSeriesMixin:
                     else RepresentationId(str(representation_id))
                 ),
                 frame_id=None if frame_id is None else FrameId(str(frame_id)),
+                series_id=ArtifactSeriesId(str(series_id)) if series_id is not None else ArtifactSeriesId(new_uuid()),
             )
         )
 

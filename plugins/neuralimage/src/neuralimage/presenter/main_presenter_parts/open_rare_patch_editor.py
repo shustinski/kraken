@@ -1,6 +1,8 @@
 """main_presenter: open rare patch editor."""
 from __future__ import annotations
 from pathlib import Path
+import json
+from dataclasses import replace
 from PyQt6 import QtCore
 from neuralimage.application.dto import (
     SettingsState,
@@ -205,7 +207,15 @@ class OpenRarePatchEditorMixin:
         if not path:
             return
         try:
-            main_state, settings_state = load_workflow_snapshot(path)
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and payload.get("format") == "neuralimage-inference-settings":
+                from neuralimage.application.services.inference_settings import restore_inference_settings
+                from neuralimage.lib.data_interfaces import WorkMode
+
+                settings_state = restore_inference_settings(payload, self.settings_state)
+                main_state = replace(self.main_window_state, work_mode=WorkMode.recognition_only.value)
+            else:
+                main_state, settings_state = load_workflow_snapshot(path)
         except (OSError, ValueError) as error:
             self.view.show_warning.emit(f'Не удалось загрузить параметры из файла: {error}')
             return

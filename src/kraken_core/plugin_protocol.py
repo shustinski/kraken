@@ -42,6 +42,7 @@ class PluginOperation(StrEnum):
     PREPARE_DATASET = "frames.dataset.prepare.v1"
     TRAIN_MODEL = "dataset.model.train.v1"
     BINARY_SEGMENT_FRAMES_V2 = "frames.binary-segment.v2"
+    GENERATE_FRAME_CONFIDENCE = "frames.confidence.v1"
     ANALYZE_LAYER_CONFIDENCE = "layer.confidence.analyze.v1"
 
 

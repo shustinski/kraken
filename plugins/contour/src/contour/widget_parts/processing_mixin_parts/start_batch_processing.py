@@ -1,6 +1,8 @@
 """processing_mixin: start batch processing."""
 from __future__ import annotations
+
 from typing import Any
+
 from contour.widget_parts._imports import (
     BatchStartRequest,
     PolygonData,
@@ -142,7 +144,7 @@ class StartBatchProcessingMixin:
                 display_settings=self._display_settings,
                 save_options=save_options,
                 output_directory=output_directory,
-                max_workers=mp.cpu_count(),
+                max_workers=mp.cpu_count() if max_workers is None else max(1, int(max_workers)),
                 chunk_size=max(1, int(getattr(self, "batch_chunk_size", 16))),
                 )
             )

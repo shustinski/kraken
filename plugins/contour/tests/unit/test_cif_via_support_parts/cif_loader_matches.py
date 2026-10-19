@@ -1,14 +1,16 @@
 """test_cif_via_support: test cif loader matches."""
 from __future__ import annotations
+
 from pathlib import Path
+
+from test_cif_via_support_parts.lib_open_cif import _rectangle_polygon
+
 from contour.domain import PolygonData
 from contour.serializers import (
     clear_cif_parse_cache,
     load_polygons_cif,
     save_polygons_cif,
 )
-
-from test_cif_via_support_parts.lib_open_cif import _rectangle_polygon
 
 
 class CifLoaderMatchesMixin:
@@ -91,7 +93,7 @@ class CifLoaderMatchesMixin:
             _stamp_cif_paint_ring_on_mask,
         )
 
-        cif_path = Path(__file__).parents[1] / "fixtures" / "authored_keyhole.cif"
+        cif_path = Path(__file__).parents[2] / "fixtures" / "authored_keyhole.cif"
 
         image_height = 100
         parsed = load_cif_primitives_klayout(cif_path)

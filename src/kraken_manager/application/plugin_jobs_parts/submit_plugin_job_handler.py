@@ -90,6 +90,7 @@ class SubmitPluginJobHandler:
                 "frames.vectorize.v1": RepresentationKind.VECTOR,
                 "frames.binary-segment.v1": RepresentationKind.IMAGE,
                 "frames.binary-segment.v2": RepresentationKind.IMAGE,
+                "frames.confidence.v1": RepresentationKind.IMAGE,
             }.get(command.capability)
             if required_kind is not None and target.kind is not required_kind:
                 raise ConflictError(f"Plugin capability requires a {required_kind.value} target representation")

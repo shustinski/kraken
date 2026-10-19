@@ -67,7 +67,7 @@ class AppendPipelineEventMixin:
         if layer is None or str(layer.project_id) != project_id:
             raise NotFoundError("Layer was not found")
         event_type = str(payload.get("event_type", ""))
-        if event_type not in {"LayerPipelineActionRequested", "LayerPipelineActionRemoved"}:
+        if event_type not in {"LayerPipelineActionRequested", "LayerPipelineActionRemoved", "LayerStitchingStatusChangedV1"}:
             raise ValidationError("Unsupported pipeline event type")
         if event_type == "LayerPipelineActionRemoved":
             if not isinstance(payload.get("remove_task", False), bool):

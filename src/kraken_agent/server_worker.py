@@ -181,6 +181,7 @@ class ServerAgentWorker:
             "dataset.model.train.v1",
             "frames.binary-segment.v1",
             "frames.binary-segment.v2",
+            "frames.confidence.v1",
         }:
             raise ValueError("This plugin operation does not support server input streams")
         coordinates = {

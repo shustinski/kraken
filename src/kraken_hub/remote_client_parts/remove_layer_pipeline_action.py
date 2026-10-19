@@ -118,6 +118,19 @@ class RemoveLayerPipelineActionMixin:
         )
         return _RemoteHistoryEvent(payload, project_id=str(project_id))
 
+    def set_layer_stitching_status(
+        self, *, principal, project_id, layer_id, kind: str, completed: bool, version_id: str = "",
+    ):
+        del principal
+        payload = self._call(
+            "POST", f"/api/v1/projects/{project_id}/pipeline-actions",
+            payload={"event_type": "LayerStitchingStatusChangedV1", "layer_id": str(layer_id),
+                "kind": kind, "completed": completed, "version_id": version_id},
+            idempotency_key=f"stitching:{uuid4()}",
+            if_match=self._stream_revision(project_id, f"layer-pipeline:{layer_id}"),
+        )
+        return _RemoteHistoryEvent(payload, project_id=str(project_id))
+
     def remove_layer_pipeline_action(
         self,
         *,

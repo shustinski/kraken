@@ -41,7 +41,7 @@ class AppendAuxiliaryEventMixin:
                 AuthorizationPolicy().require(
                     principal=actor,
                     storage=profile,
-                    permission=Permission.RUN_PLUGIN,
+                    permission=Permission.MANAGE_STRUCTURE if event_type == "LayerStitchingStatusChangedV1" else Permission.RUN_PLUGIN,
                     roles=uow.acl.roles_for(project.id, actor.id),
                     gitlab_identity_verified=True,
                 )
@@ -50,6 +50,21 @@ class AppendAuxiliaryEventMixin:
                 )
                 if prior:
                     return encode_model(prior[-1])
+                if event_type == "LayerStitchingStatusChangedV1":
+                    from kraken_manager.domain.common import ArtifactVersionId
+                    from kraken_manager.domain.stitching import StitchingKind, validate_stitching_file
+                    from kraken_server.services import ValidationError
+
+                    try:
+                        kind = StitchingKind(str(payload.get("kind", "")))
+                        if not isinstance(payload.get("completed"), bool):
+                            raise ValueError("completed must be a boolean")
+                        if payload["completed"]:
+                            version = uow.projections.get_artifact_version(ArtifactVersionId(str(payload.get("version_id", ""))))
+                            series = None if version is None else uow.projections.get_artifact_series(version.series_id)
+                            validate_stitching_file(project_id, payload["layer_id"], kind, version, series)
+                    except ValueError as exc:
+                        raise ValidationError(str(exc)) from exc
                 revision = uow.event_store.current_revision(stream_id)
                 if context.expected_revision != revision:
                     raise ApplicationConcurrencyError(

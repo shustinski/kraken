@@ -6,6 +6,18 @@ from kraken_manager.domain.project import RepresentationKind
 
 class LayerManagerLayerActionMixin:
     def _layer_manager_layer_action(self, _layer_id: str, action: str) -> None:
+        if action == "manage_stitching":
+            available, reason = self._action_availability(action)
+            if not available:
+                self._error(reason)
+                return
+            from kraken_hub.stitching_dialog import StitchingDialog
+
+            try:
+                StitchingDialog(self, str(_layer_id)).exec()
+            except Exception as exc:
+                self._error(str(exc))
+            return
         if action in {"rename_layer", "archive_layer"}:
             from PyQt6.QtWidgets import QInputDialog, QMessageBox
 

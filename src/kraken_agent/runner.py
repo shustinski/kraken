@@ -184,6 +184,9 @@ class SubprocessPluginRunner:
             elif manifest.operation == "frames.dataset.prepare.v1":
                 if output.role != "dataset" or output.media_type != "application/zip":
                     raise ValueError("Dataset preparation must return a dataset ZIP archive")
+            elif manifest.operation == "frames.confidence.v1":
+                if output.role != "confidence" or output.media_type != "image/jpeg":
+                    raise ValueError("Confidence generation must return grayscale confidence images")
         outcome = PluginJobOutcome(result.outcome)
         if outcome is PluginJobOutcome.SUCCEEDED and manifest.operation == "frames.dataset.prepare.v1":
             if len(result.outputs) != 1:

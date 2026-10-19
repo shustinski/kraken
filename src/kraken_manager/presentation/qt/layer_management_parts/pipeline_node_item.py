@@ -24,6 +24,8 @@ class PipelineNodeItem(QGraphicsRectItem):
         "blackbox": "#303430",
         "missing": "#303430",
         "karakal": "#3d718b",
+        "confidence": "#3d718b",
+        "stitching": "#73559b",
     }
 
     def __init__(
@@ -61,7 +63,8 @@ class PipelineNodeItem(QGraphicsRectItem):
             subtitle = QGraphicsSimpleTextItem(node.subtitle[:52], self)
             subtitle.setBrush(QColor("#c3c8c3"))
             subtitle.setPos(12, 38)
-        self.setToolTip("\n".join(f"{key}: {value}" for key, value in node.details.items()))
+        visible = {"время", "автор", "программа", "прогресс", "ошибка", "создан"}
+        self.setToolTip("\n".join(f"{key}: {value}" for key, value in node.details.items() if key in visible and value))
         port_color = QColor("#22d3ee" if node.kind in {"source", "binary"} else "#facc15")
         for x in (-5.0, 185.0):
             port = QGraphicsEllipseItem(x, 31.0, 10.0, 10.0, self)
@@ -91,6 +94,7 @@ class PipelineNodeItem(QGraphicsRectItem):
             "source": (
                 ("Подготовить выборку в Contour", "prepare_dataset"),
                 ("Распознать готовой моделью", "recognize_external"),
+                ("Получить уверенность модели", "confidence"),
                 ("Получить CIF в Contour", "vectorize"),
                 (
                     "Удалить слой изображений из проекта",
@@ -98,10 +102,11 @@ class PipelineNodeItem(QGraphicsRectItem):
                 ),
             ),
             "dataset": (("Обучить модель в NeuralImage", "train"),),
-            "model": (("Распознать исходники", "recognize"),),
+            "model": (("Распознать исходники", "recognize"), ("Получить уверенность модели", "confidence")),
             "binary": (("Получить CIF в Contour", "vectorize"),),
             "vector": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
             "missing": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
+            "stitching": (("Управление сшивкой…", "manage_stitching"),),
         }.get(self.node.kind, ())
         if bool(self.node.details.get("deletable", False)):
             actions = (*actions, ("Удалить шаг из pipeline", "delete_pipeline_step"))

@@ -4183,6 +4183,7 @@ class KarakalPresenter(QObject):
             single_result_sensitivity=self._selected_single_result_sensitivity(),
         )
         self._pending_build_snapshot = self._capture_view_snapshot()
+        self._pending_build_snapshot["parameter_settings"] = self._build_build_settings_payload()
         self._worker_kind = "build"
         self._worker_thread = QThread(self._view)
         self._worker = FrameIndexWorker(
@@ -4223,6 +4224,7 @@ class KarakalPresenter(QObject):
             self._apply_pending_display_controls(state)
         metric_key = str(state.metric_key or self.metric_combo.currentData() or DEFAULT_MATRIX_METRIC_KEY)
         request_signature = self._analytics_request_signature(state, metric_key)
+        state.parameter_settings = self._build_build_settings_payload()
         self._worker_kind = "analytics"
         self._active_compute_state = state
         self._worker_thread = QThread(self._view)
@@ -4571,6 +4573,7 @@ class KarakalPresenter(QObject):
             self.metric_combo.currentData() or self._default_metric_key_for_state(None, result)
         )
         state = self._create_matrix_tab(result, snapshot)
+        state.parameter_settings = dict(snapshot.get("parameter_settings", {}))
         self._last_active_tab_state = state
         self._connect_histogram_cards(state)
         ok = self._apply_tab_visual_settings(state, reset_view=True, update_histograms=False)

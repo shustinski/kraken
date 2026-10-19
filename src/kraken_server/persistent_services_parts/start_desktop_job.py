@@ -19,7 +19,7 @@ class StartDesktopJobMixin:
         job = self.projections.get_plugin_job(PluginJobId(job_id))
         if job is None:
             raise NotFoundError("Job was not found")
-        state = "running" if job.capability == "frames.binary-segment.v2" else "waiting_for_user"
+        state = "running" if job.capability in {"frames.binary-segment.v2", "frames.confidence.v1"} else "waiting_for_user"
         try:
             SynchronizePluginJobHandler(self.uow_factory, self.profiles, SystemClock())(
                 SynchronizePluginJobCommand(

@@ -1,9 +1,11 @@
 """manager_app: show node properties."""
 from __future__ import annotations
+from collections.abc import Mapping
 from kraken_manager.presentation.qt import (
     ObjectPropertiesSnapshot,
     PipelineNode,
 )
+
 
 from kraken_hub.manager_app_parts.event_matches_node import (
     _count_regular_files,
@@ -12,7 +14,20 @@ from kraken_hub.manager_app_parts.event_matches_node import (
     _event_payload,
     _history_entries,
     _nested_mapping,
+    _plain_value,
 )
+
+
+def _visible_parameters(value: object) -> object:
+    if isinstance(value, Mapping):
+        hidden = {"format", "version", "input_media_types", "execution_host", "input_transport", "model_version"}
+        return {
+            key: _visible_parameters(item) for key, item in value.items()
+            if not any(part in str(key).lower() for part in ("sha256", "fingerprint", "token")) and key not in hidden
+        }
+    if isinstance(value, (list, tuple)):
+        return [_visible_parameters(item) for item in value]
+    return value
 
 
 class ShowNodePropertiesMixin:
@@ -103,6 +118,8 @@ class ShowNodePropertiesMixin:
             "model": "Модель",
             "job": "Задание",
             "karakal": "Публикация Karakal",
+            "confidence": "Уверенность модели",
+            "stitching": "Сшивка слоя",
             "missing": "Отсутствующий результат",
         }
         path: object = None
@@ -115,6 +132,8 @@ class ShowNodePropertiesMixin:
             ("Идентификатор слоя", str(layer_id)),
             ("Состояние", node.state or node.subtitle),
         ]
+        if node.kind == "stitching":
+            properties.extend((("Основной файл", node.details.get("файл")), ("Слой сшит", node.details.get("сшит"))))
         if representation is not None:
             path = representation.source
             note = representation.note
@@ -150,9 +169,9 @@ class ShowNodePropertiesMixin:
                     ("Тип результата", derived_run.kind.value),
                     ("Состояние запуска", derived_run.state.value),
                     ("Плагин", derived_run.plugin_id),
-                    ("Операция", derived_run.operation),
+                    ("Операция", node.title),
                     ("Дата запуска", derived_run.created_at),
-                    ("Provenance", derived_run.provenance),
+                    ("Параметры", derived_run.provenance.get("parameters", {})),
                 )
             )
         else:
@@ -208,9 +227,8 @@ class ShowNodePropertiesMixin:
                             or job.get("id")
                             or node.details.get("job_id"),
                         ),
-                        ("Capability", manifest.get("capability") or node.details.get("capability")),
                         ("Плагин", manifest.get("plugin_name") or node.details.get("программа")),
-                        ("Параметры", manifest.get("parameters") or node.details.get("параметры")),
+                        ("Параметры", node.details.get("параметры") or manifest.get("parameters")),
                         ("Прогресс", job.get("progress") or node.details.get("прогресс")),
                         ("Ошибка", job.get("error") or node.details.get("ошибка")),
                     )
@@ -220,7 +238,6 @@ class ShowNodePropertiesMixin:
                     (
                         ("Событие создания", getattr(creation, "event_type", "")),
                         ("Плагин", creation_payload.get("plugin_id")),
-                        ("Capability", creation_payload.get("capability")),
                         ("Режим", creation_payload.get("mode")),
                         ("Параметры", creation_payload.get("parameters")),
                         ("Параметры события", creation_payload),
@@ -233,14 +250,34 @@ class ShowNodePropertiesMixin:
                 ("Количество файлов", file_count),
                 ("Кто добавил", actor),
                 ("Когда добавлен", created_at),
-                ("Дополнительные свойства", node.details),
+                ("Дополнительные свойства", {
+                    key: value for key, value in node.details.items()
+                    if key in {"время", "автор", "программа", "прогресс", "ошибка", "версия"}
+                }),
             )
         )
+        parameter_payload = node.details.get("параметры")
+        actions = ()
+        if parameter_payload:
+            def export_parameters() -> None:
+                import json
+                from pathlib import Path
+                from PyQt6.QtWidgets import QFileDialog
+
+                destination, _ = QFileDialog.getSaveFileName(self.shell, "Сохранить параметры", "parameters.json", "JSON (*.json)")
+                if destination:
+                    try:
+                        Path(destination).write_text(json.dumps(_plain_value(parameter_payload), ensure_ascii=False, indent=2), encoding="utf-8")
+                    except (OSError, TypeError, ValueError) as exc:
+                        self._error(f"Не удалось сохранить параметры: {exc}")
+
+            actions = (("Сохранить параметры в JSON…", export_parameters),)
         self._open_properties(
             ObjectPropertiesSnapshot(
                 title=node.title,
                 object_kind=node.kind,
-                properties=tuple(properties),
+                properties=tuple((name, _visible_parameters(value) if name == "Параметры" else value) for name, value in properties),
                 history=_history_entries(events),
+                actions=actions,
             )
         )

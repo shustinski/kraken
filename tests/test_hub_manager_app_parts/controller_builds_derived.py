@@ -124,7 +124,8 @@ def test_controller_builds_derived_job_karakal_and_virtual_properties(tmp_path: 
     assert dict(snapshots[-1].properties)["Примечание"] == "Готово"
 
     controller._show_node_properties("layer-1", job)
-    assert dict(snapshots[-1].properties)["Capability"] == "dataset.model.train.v1"
+    assert "Capability" not in dict(snapshots[-1].properties)
+    assert dict(snapshots[-1].properties)["Параметры"] == {"epochs": 5}
 
     controller._show_node_properties("layer-1", karakal)
     assert snapshots[-1].history[0].event_type == "KarakalAnalysisPublished"

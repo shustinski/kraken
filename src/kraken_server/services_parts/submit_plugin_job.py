@@ -62,7 +62,7 @@ class SubmitPluginJobMixin:
             job = self._plugin_jobs.get(job_id)
             if job is None or str(job.get("project_id")) != project_id:
                 raise NotFoundError("Job was not found")
-            job["state"] = "running" if job["capability"] == "frames.binary-segment.v2" else "waiting_for_user"
+            job["state"] = "running" if job["capability"] in {"frames.binary-segment.v2", "frames.confidence.v1"} else "waiting_for_user"
             job["revision"] = int(job["revision"]) + 1
 
     def submit_plugin_job(

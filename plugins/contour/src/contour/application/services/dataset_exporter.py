@@ -6,6 +6,7 @@ offload dataset-export work to a small service object with no Qt dependency.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...serializers import export_dataset_frame
+from .workspace_session import _polygons_equal
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,11 +52,28 @@ def export_frame_to_dataset(
         return DatasetExportResult(saved_files={}, message_key="dataset_directory_not_set_log")
     image_name = Path(image_path).name
     try:
+        options = {}
+        if (
+            state.loaded_cif_path and state.loaded_cif_sha256
+            and Path(state.loaded_cif_path).suffix.casefold() == ".cif"
+            and Path(state.loaded_cif_path).stem.casefold() == Path(image_path).stem.casefold()
+            and _polygons_equal(polygons, state.reference_polygons)
+        ):
+            # Keep the exact authored keyholes for unedited labels. Rebuilding
+            # thousands of hole bridges is expensive and adds no information.
+            try:
+                payload = Path(state.loaded_cif_path).read_bytes()
+            except OSError:
+                _LOGGER.warning("Original CIF is unavailable; encoding the loaded geometry for %s", image_path)
+            else:
+                if hashlib.sha256(payload).hexdigest() == state.loaded_cif_sha256:
+                    options["cif_payload"] = payload
         saved_files = export_dataset_frame(
             dataset_directory=directory,
             image_path=image_path,
             polygons=polygons,
             source_image=state.source_image,
+            **options,
         )
     except Exception as exc:  # pragma: no cover - surfaced to logs
         _LOGGER.exception("Dataset export failed for %s", image_path)

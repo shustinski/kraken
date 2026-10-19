@@ -23,7 +23,6 @@ from kraken_core.plugins import (
 )
 from kraken_core.qt import configure_application_identity
 from kraken_core.runtime import current_platform, workspace_root
-from kraken_core.styles import load_shared_stylesheet
 
 
 def bundled_catalog_path() -> Path:
@@ -202,7 +201,9 @@ def run_legacy_gui(items: list[PluginInventoryItem], *, update_url: str = "") ->
 
     app = QApplication(sys.argv)
     configure_application_identity(app, app_id="Kraken.Hub", icon_name="kraken")
-    app.setStyleSheet(load_shared_stylesheet("dark_modern.qss"))
+    from kraken_core.theme import THEME_SYSTEM, apply_app_theme
+
+    apply_app_theme(str(QSettings("Kraken", "KrakenHub").value("appearance/theme", THEME_SYSTEM)), app)
     window = QMainWindow()
     window.setWindowTitle("Kraken Hub")
     central = QWidget()

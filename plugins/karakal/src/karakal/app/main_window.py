@@ -1,5 +1,8 @@
 """Main window for the extended validation gradient widget."""
 from __future__ import annotations
+import json
+import math
+from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QPainter, QPen
@@ -10,6 +13,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFileDialog,
     QFrame,
     QGroupBox,
     QHeaderView,
@@ -49,11 +53,9 @@ from ..updater import (
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..core.domain import BuildResult
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
-from ..core.domain import BuildResult
 from ..core.performance import PerformanceConfig
 from ..ui.app_icon import apply_karakal_icon
 from ..version import __version__
-from ..ui.app_icon import apply_karakal_icon
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import AnalysisSetupPanel
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
@@ -476,6 +478,9 @@ class KarakalWidget(QWidget):
         root_layout.setSpacing(0)
 
         self._menu_bar = QMenuBar(self)
+        parameters_menu = self._menu_bar.addMenu("Параметры")
+        parameters_menu.addAction("Импортировать JSON…").triggered.connect(self._import_parameters)
+        parameters_menu.addAction("Экспортировать JSON…").triggered.connect(self._export_parameters)
         root_layout.addWidget(self._menu_bar)
 
         content = QWidget(self)
@@ -890,6 +895,77 @@ class KarakalWidget(QWidget):
         self._rebuild_mode_menu()
         self._update_mode_toggle_button()
 
+    def parameter_payload(self) -> dict[str, object]:
+        state = self._presenter._current_tab_state()
+        settings = state.parameter_settings if state is not None and state.parameter_settings else self._presenter._build_build_settings_payload()
+        return {"format": "karakal-analysis-settings", "version": 1, "settings": dict(settings)}
+
+    def load_parameter_file(self, path: str | Path) -> None:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("format") != "karakal-analysis-settings" or payload.get("version") != 1:
+            raise ValueError("Неподдерживаемый формат параметров Karakal")
+        settings = payload.get("settings")
+        if not isinstance(settings, dict):
+            raise ValueError("Параметры должны содержать объект settings")
+        current = self._presenter._build_build_settings_payload()
+
+        def validate(values, template):
+            for key, value in values.items():
+                if key not in template:
+                    raise ValueError(f"Неизвестный параметр: {key}")
+                expected = template[key]
+                if isinstance(expected, dict) and isinstance(value, dict):
+                    validate(value, expected)
+                elif type(value) is not type(expected):
+                    raise ValueError(f"Неверный тип параметра: {key}")
+                elif isinstance(value, float) and not math.isfinite(value):
+                    raise ValueError(f"Неверное числовое значение: {key}")
+        validate(settings, current)
+        combo_fields = {
+            "analysis_mode": self.analysis_mode_combo, "geometry_mode": self.geometry_mode_combo,
+            "gradient_name": self.matrix_gradient_combo, "comparison_target": self.comparison_target_combo,
+            "point_extraction_mode": self.point_extraction_mode_combo,
+            "polygon_confidence_summary": self.polygon_confidence_summary_combo,
+            "polygon_compare_profile": self.polygon_compare_profile_combo,
+            "single_result_sensitivity": self.single_result_sensitivity_combo,
+            "matrix_score_view_mode": self.matrix_score_view_combo,
+            "frame_type_filter": self.frame_type_filter_combo,
+        }
+        for key, combo in combo_fields.items():
+            if key in settings and combo.findData(settings[key]) < 0:
+                raise ValueError(f"Неизвестное значение параметра: {key}")
+        if "analysis_profile" in settings:
+            AnalysisProfileKind(settings["analysis_profile"])
+        for key, spin in {"frames_per_row": self.frames_per_row_spin, "point_match_radius": self.point_match_radius_spin,
+            "mask_threshold": self.mask_threshold_spin, "boundary_radius": self.boundary_radius_spin,
+            "point_confidence_radius": self.point_confidence_radius_spin}.items():
+            if key in settings and not spin.minimum() <= settings[key] <= spin.maximum():
+                raise ValueError(f"Параметр вне допустимого диапазона: {key}")
+        previous = self._settings_service.load_build_settings_payload()
+        try:
+            self._settings_service.save_build_settings_payload({**current, **settings})
+            self._presenter._restore_build_settings()
+        except Exception:
+            self._settings_service.save_build_settings_payload(previous)
+            self._presenter._restore_build_settings()
+            raise
+
+    def _import_parameters(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Параметры Karakal", "", "JSON (*.json)")
+        if path:
+            try:
+                self.load_parameter_file(path)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Не удалось импортировать параметры", str(exc))
+
+    def _export_parameters(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Параметры Karakal", "parameters.json", "JSON (*.json)")
+        if path:
+            try:
+                Path(path).write_text(json.dumps(self.parameter_payload(), ensure_ascii=False, indent=2), encoding="utf-8")
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Не удалось сохранить параметры", str(exc))
+
     def set_kraken_publish_available(self, available: bool) -> None:
         self.kraken_publish_button.setEnabled(bool(available))
         self.kraken_publish_button.setToolTip(
@@ -922,10 +998,7 @@ class KarakalWidget(QWidget):
             {
                 "metric": metric,
                 "frames": frames,
-                "parameters": {
-                    "geometry_mode": result.options.geometry_mode.value,
-                    "comparison_mode": result.options.comparison_mode.value,
-                },
+                "parameters": self.parameter_payload(),
             }
         )
 

@@ -110,6 +110,7 @@ class CallMixin:
                     "frames.vectorize.v1": ("application/x-cif", "vector"),
                     "frames.binary-segment.v1": ("image/png", "binary-image"),
                     "frames.binary-segment.v2": ("image/png", "binary-image"),
+                    "frames.confidence.v1": ("image/jpeg", "confidence"),
                     "frames.dataset.prepare.v1": ("application/zip", "dataset"),
                     "layer.confidence.analyze.v1": (
                         "application/vnd.kraken.confidence+json",

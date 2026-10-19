@@ -1,26 +1,29 @@
 """serializers: save svg preview."""
 from __future__ import annotations
+
 import shutil
 from pathlib import Path
 from xml.sax.saxutils import escape
+
 import numpy as np
-from ..application.processing import DisplaySettings, SaveOptions
+
 from contour.domain import PolygonData
 from contour.i18n import tr
-from contour.utils import draw_polygon_overlay, ensure_directory, imwrite_unicode_safe
-
 from contour.serializers_parts.cv_object_polygon import (
     _cv_coord,
+    invalidate_cif_parse_cache,
     save_polygons_json,
 )
-
 from contour.serializers_parts.cv_point_points import save_polygons_cv
-
 from contour.serializers_parts.save_polygons_cif import (
     save_polygons_cif,
     save_polygons_csv,
     save_polygons_txt,
 )
+from contour.utils import draw_polygon_overlay, ensure_directory, imwrite_unicode_safe
+
+from ..application.processing import DisplaySettings, SaveOptions
+
 
 def save_svg_preview(
     path: str | Path,
@@ -91,6 +94,8 @@ def export_dataset_frame(
     image_path: str,
     polygons: list[PolygonData],
     source_image: np.ndarray | None,
+    *,
+    cif_payload: bytes | None = None,
 ) -> dict[str, str]:
     root = ensure_directory(dataset_directory)
     images_root = ensure_directory(root / "images")
@@ -109,7 +114,12 @@ def export_dataset_frame(
         raise ValueError(tr("dataset_source_image_missing", path=image_path))
 
     saved_image = _copy_or_write_dataset_image(source_path, image_target, source_image)
-    saved_cif = save_polygons_cif(cif_target, str(saved_image), polygons, image_size=image_size)
+    if cif_payload is None:
+        saved_cif = save_polygons_cif(cif_target, str(saved_image), polygons, image_size=image_size)
+    else:
+        cif_target.write_bytes(cif_payload)
+        invalidate_cif_parse_cache([cif_target])
+        saved_cif = cif_target
     return {"image": str(saved_image), "cif": str(saved_cif)}
 
 def save_result_bundle(

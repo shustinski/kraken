@@ -302,7 +302,7 @@ class CreateRepresentationHandler(_ProjectHandler):
             source_image_id = command.source_image_representation_id
             has_image_parent = (
                 command.kind is RepresentationKind.VECTOR
-                or command.purpose is RepresentationPurpose.BINARY
+                or command.purpose in (RepresentationPurpose.BINARY, RepresentationPurpose.CONFIDENCE)
             )
             if has_image_parent:
                 if source_image_id is None:

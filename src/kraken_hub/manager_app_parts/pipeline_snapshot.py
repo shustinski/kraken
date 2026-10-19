@@ -7,6 +7,32 @@ from kraken_manager.presentation.qt import (
     PipelineNode,
 )
 from kraken_manager.workspace import DerivedRunKind
+from kraken_manager.domain.stitching import StitchingKind, stitching_series_id
+
+_OPERATION_TITLES = {
+    "prepare_dataset": "Создание выборки",
+    "frames.dataset.prepare.v1": "Создание выборки",
+    "vectorize": "Векторизация изображений",
+    "frames.vectorize.v1": "Векторизация изображений",
+    "train": "Обучение модели",
+    "dataset.model.train.v1": "Обучение модели",
+    "recognize": "Бинаризация моделью",
+    "recognize_external": "Бинаризация моделью",
+    "frames.binary-segment.v1": "Бинаризация моделью",
+    "frames.binary-segment.v2": "Бинаризация моделью",
+    "karakal": "Карта уверенности",
+    "layer.confidence.analyze.v1": "Карта уверенности",
+    "frames.confidence.v1": "Получение уверенности",
+}
+
+_STATE_TITLES = {
+    "queued": "В очереди", "running": "Выполняется", "launched": "Запущено",
+    "succeeded": "Завершено", "failed": "Ошибка", "cancelled": "Отменено",
+    "partial": "Частичный результат", "draft": "Подготовка",
+    "staging": "Подготовка файлов", "waiting_for_user": "Ожидает действий пользователя",
+    "importing": "Сохранение результата", "recovery_required": "Требуется восстановление",
+    "awaiting_authorization": "Ожидает разрешения",
+}
 
 
 class PipelineSnapshotMixin:
@@ -20,6 +46,7 @@ class PipelineSnapshotMixin:
             and str(event.payload.get("manifest", {}).get("layer_id", "")) == str(layer_id)
         ]
         latest_job_events = {}
+        applied_parameters = {}
         for event in project_history:
             job = event.payload.get("job", {})
             if not isinstance(job, dict) and not hasattr(job, "get"):
@@ -27,6 +54,13 @@ class PipelineSnapshotMixin:
             job_id = str(event.payload.get("plugin_job_id", job.get("id", "")))
             if job_id and str(job.get("layer_id", "")) == str(layer_id):
                 latest_job_events[job_id] = event
+                result = event.payload.get("result", {})
+                if result.get("parameters_applied"):
+                    applied_parameters[job_id] = dict(result["parameters_applied"])
+            if event.event_type == "ArtifactVersionCreated":
+                version_job = str(event.payload.get("plugin_job_id", ""))
+                if version_job and event.payload.get("parameters"):
+                    applied_parameters[version_job] = dict(event.payload["parameters"])
         removed_action_ids = {
             str(event.payload.get("action_event_id", ""))
             for event in project_history
@@ -59,9 +93,35 @@ class PipelineSnapshotMixin:
             value for value in representations
             if value.kind is RepresentationKind.IMAGE and value.purpose is RepresentationPurpose.BINARY
         ]
+        confidence_images = [
+            value for value in representations
+            if value.kind is RepresentationKind.IMAGE and value.purpose is RepresentationPurpose.CONFIDENCE
+        ]
         vectors = [value for value in representations if value.kind is RepresentationKind.VECTOR]
         karakal_run = self.service.latest_karakal_analysis(project_id, layer_id)
         workspace_runs = self.service.list_derived_runs(project_id, layer_id)
+        stitching_nodes = []
+        series_reader = getattr(self.service, "list_artifact_series", None)
+        series_items = () if not callable(series_reader) else series_reader(project_id, layer_id=layer_id)
+        if series_items:
+            by_id = {str(item.id): item for item in series_items if not item.archived}
+            statuses = {
+                str(event.payload.get("kind")): bool(event.payload.get("completed"))
+                for event in project_history if event.event_type == "LayerStitchingStatusChangedV1"
+                and str(event.payload.get("layer_id")) == str(layer_id)
+            }
+            for kind in StitchingKind:
+                series_id = stitching_series_id(layer_id, kind)
+                if str(series_id) not in by_id:
+                    continue
+                primary = self.service.active_artifact_version(project_id, series_id)
+                if primary is None:
+                    continue
+                stitching_nodes.append(PipelineNode(
+                    f"stitching:{kind.value}", kind.title, "stitching",
+                    "Слой сшит" if statuses.get(kind.value, False) else "Файл загружен",
+                    details={"файл": primary.filename, "сшит": statuses.get(kind.value, False)},
+                ))
         if not sources and binaries:
             sources = binaries[:1]
         lanes: list[PipelineLane] = []
@@ -85,6 +145,9 @@ class PipelineSnapshotMixin:
                 )
             ]
             lane_edges: list[tuple[str, str]] = []
+            if source is sources[0]:
+                lane_nodes.extend(stitching_nodes)
+                lane_edges.extend((str(source.id), node.node_id) for node in stitching_nodes)
             lane_binaries = [
                 value
                 for value in binaries
@@ -94,11 +157,15 @@ class PipelineSnapshotMixin:
                     and source is sources[0]
                 )
             ]
+            lane_confidence = [
+                value for value in confidence_images
+                if str(value.source_image_representation_id or "") == str(source.id)
+            ]
             lane_vectors = [
                 value for value in vectors
                 if str(value.source_image_representation_id or "") in {str(source.id), *(str(item.id) for item in lane_binaries)}
             ]
-            target_ids = {str(item.id) for item in (*lane_binaries, *lane_vectors)}
+            target_ids = {str(item.id) for item in (*lane_binaries, *lane_vectors, *lane_confidence)}
             for action_event in action_events:
                 action_payload = action_event.payload
                 action_parameters = dict(action_payload.get("parameters", {}))
@@ -115,9 +182,9 @@ class PipelineSnapshotMixin:
                 lane_nodes.append(
                     PipelineNode(
                         action_id,
-                        str(action_payload.get("action", "Действие")),
+                        _OPERATION_TITLES.get(str(action_payload.get("action", "")), "Обработка слоя"),
                         "job",
-                        str(action_payload.get("state", "launched")),
+                        _STATE_TITLES.get(str(action_payload.get("state", "launched")), "Запущено"),
                         state=str(action_payload.get("state", "")),
                         details={
                             "время": action_event.recorded_at.isoformat(),
@@ -138,9 +205,9 @@ class PipelineSnapshotMixin:
                     lane_nodes.append(
                         PipelineNode(
                             job_id,
-                            f"{run.plugin_id} · {run.operation}",
+                            _OPERATION_TITLES.get(run.operation, "Обработка слоя"),
                             "job",
-                            run.state.value,
+                            _STATE_TITLES.get(run.state.value, run.state.value),
                             state=run.state.value,
                             details={
                                 "run_id": run.run_id,
@@ -148,6 +215,7 @@ class PipelineSnapshotMixin:
                                 "operation": run.operation,
                                 "plugin": run.plugin_id,
                                 "создан": run.created_at,
+                                "параметры": run.provenance.get("parameters", {}),
                             },
                         )
                     )
@@ -194,6 +262,7 @@ class PipelineSnapshotMixin:
                 current_event = latest_job_events.get(job_id, event)
                 job = dict(current_event.payload.get("job", event.payload.get("job", {})))
                 capability = str(manifest.get("capability", "Задание"))
+                parameters = applied_parameters.get(job_id, parameters)
                 program = getattr(current_event, "program", None)
                 output_id = target_id
                 output_kind = ""
@@ -209,9 +278,9 @@ class PipelineSnapshotMixin:
                 lane_nodes.append(
                     PipelineNode(
                         job_id,
-                        capability,
+                        _OPERATION_TITLES.get(capability, "Обработка слоя"),
                         "job",
-                        str(job.get("state", "queued")),
+                        _STATE_TITLES.get(str(job.get("state", "queued")), str(job.get("state", "queued"))),
                         state=str(job.get("state", "")),
                         details={
                             "время": current_event.recorded_at.isoformat(),
@@ -271,12 +340,19 @@ class PipelineSnapshotMixin:
                 )
                 if not any(target == str(value.id) for _, target in lane_edges):
                     lane_edges.append((str(value.source_image_representation_id or source.id), str(value.id)))
+            for value in lane_confidence:
+                lane_nodes.append(PipelineNode(
+                    str(value.id), "Уверенность модели", "confidence", value.name,
+                    str(value.id), value.active, details={"создан": value.created_at.isoformat()},
+                ))
+                if not any(target == str(value.id) for _, target in lane_edges):
+                    lane_edges.append((str(source.id), str(value.id)))
             if karakal_run is not None and source is sources[0]:
                 karakal_id = f"karakal:{karakal_run.run_id}"
                 lane_nodes.append(
                     PipelineNode(
                         karakal_id,
-                        f"Karakal · публикация {karakal_run.publication_sequence}",
+                        "Карта уверенности",
                         "karakal",
                         f"{len(karakal_run.frame_confidence)} кадров",
                         details={

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import QApplication, QMainWindow, QMenu
 
@@ -9,6 +10,7 @@ from .styles import load_shared_stylesheet
 
 THEME_DARK = "dark"
 THEME_LIGHT = "light"
+THEME_SYSTEM = "system"
 THEME_STYLESHEETS = {
     THEME_DARK: "dark_modern.qss",
     THEME_LIGHT: "style.qss",
@@ -17,19 +19,33 @@ THEME_STYLESHEETS = {
 
 def normalize_theme(theme: str | None) -> str:
     value = str(theme or "").strip().lower()
+    if value == THEME_SYSTEM:
+        return THEME_SYSTEM
     if value in {"light", "светлая", "светлый"}:
         return THEME_LIGHT
     return THEME_DARK
 
 
 def shared_theme_stylesheet(theme: str | None) -> str:
-    return load_shared_stylesheet(THEME_STYLESHEETS[normalize_theme(theme)])
+    normalized = normalize_theme(theme)
+    if normalized == THEME_SYSTEM:
+        app = QApplication.instance()
+        dark = app is not None and app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        normalized = THEME_DARK if dark else THEME_LIGHT
+    return load_shared_stylesheet(THEME_STYLESHEETS[normalized])
 
 
 def apply_app_theme(theme: str | None, app: QApplication | None = None) -> str:
     normalized = normalize_theme(theme)
     target = app or QApplication.instance()
     if target is not None:
+        target.setProperty("krakenTheme", normalized)
+        if not target.property("krakenThemeListener"):
+            target.styleHints().colorSchemeChanged.connect(
+                lambda _scheme: apply_app_theme(THEME_SYSTEM, target)
+                if target.property("krakenTheme") == THEME_SYSTEM else None
+            )
+            target.setProperty("krakenThemeListener", True)
         target.setStyleSheet(shared_theme_stylesheet(normalized))
     return normalized
 

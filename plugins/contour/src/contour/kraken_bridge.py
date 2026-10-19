@@ -11,7 +11,7 @@ import hashlib
 import logging
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from kraken_core.asset_source import ServerAssetSource
@@ -36,6 +36,26 @@ JOB_ENV = "KRAKEN_JOB_MANIFEST"
 RESULT_ENV = "KRAKEN_RESULT_MANIFEST"
 STAGING_ENV = "KRAKEN_STAGING_ROOT"
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+
+
+def recognition_parameters(window: object) -> dict[str, object]:
+    """Use the native Contour JSON format so exports can be loaded unchanged."""
+    widget = window._widget
+    return {
+        "format": "contour-recognition-settings",
+        "version": 2,
+        "pipeline": widget.get_pipeline(),
+        "recognition_settings": widget._current_contour_settings().to_dict(),
+    }
+
+
+def _ensure_processing_finished(window: object) -> None:
+    widget = window._widget
+    if (
+        widget._batch_processor.is_running or getattr(widget, "_preview_running_request_id", None) is not None
+        or getattr(widget, "_antialias_running", False) or getattr(widget, "_fix_internal_contours_running", False)
+    ):
+        raise KrakenBridgeError("Дождитесь завершения обработки перед возвратом результатов в Kraken")
 
 
 class KrakenBridgeError(RuntimeError):
@@ -297,19 +317,22 @@ class ContourKrakenSession:
 
         if not isinstance(window, QMainWindow):
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
-        if self.server_source is not None:
+        # Staging names contain coordinates, not unique numeric frame suffixes.
+        # Always use the manifest identity, including for local Agent jobs.
+        if self.input_paths:
             from .infrastructure.image_source import AssetImageLoader
             from .infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
 
-            loader = AssetImageLoader(self.server_source, self.staging_root)
             widget = window._widget
-            widget._source_image_loader = loader
+            if self.server_source is not None:
+                loader = AssetImageLoader(self.server_source, self.staging_root)
+                widget._source_image_loader = loader
+                widget._batch_processor.image_loader = loader
             width = int(self.manifest.parameters.get("project_width") or max(item.x for item in self.manifest.inputs))
             widget._source_frame_numbers = {
                 str(path): (item.y - 1) * width + item.x - 1
                 for path, item in zip(self.input_paths, self.manifest.inputs, strict=True)
             }
-            widget._batch_processor.image_loader = loader
             widget.load_images([str(path) for path in self.input_paths], image_list_mode=IMAGE_LIST_MODE_EXPLICIT)
         menu_bar = window.menuBar()
         assert menu_bar is not None
@@ -320,7 +343,8 @@ class ContourKrakenSession:
 
         def return_results() -> None:
             try:
-                result = self.build_result()
+                _ensure_processing_finished(window)
+                result = replace(self.build_result(), applied_parameters=recognition_parameters(window))
                 if result.outcome == PluginJobOutcome.PARTIAL.value:
                     answer = QMessageBox.question(
                         window,
@@ -435,6 +459,7 @@ class ContourWorkspaceSession:
 
         def return_results() -> None:
             try:
+                _ensure_processing_finished(window)
                 output = self._selected_output_directory(window)
                 if self.context.operation == PluginOperation.PREPARE_DATASET.value:
                     outputs = tuple(
@@ -459,6 +484,7 @@ class ContourWorkspaceSession:
                     provenance={
                         "plugin_version": __version__,
                         "file_count": len(outputs),
+                        "parameters": recognition_parameters(window),
                     },
                 ).write(self.result_manifest_path)
             except Exception as exc:

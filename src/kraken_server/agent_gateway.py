@@ -16,7 +16,7 @@ from kraken_manager.infrastructure.filesystem._codec import decode_model, encode
 from .agent_auth import AgentIdentity, PostgresAgentTokenStore
 
 DESKTOP_CAPABILITIES = frozenset(
-    {"frames.vectorize.v1", "frames.dataset.prepare.v1", "dataset.model.train.v1", "frames.binary-segment.v2"}
+    {"frames.vectorize.v1", "frames.dataset.prepare.v1", "dataset.model.train.v1", "frames.binary-segment.v2", "frames.confidence.v1"}
 )
 
 

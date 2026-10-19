@@ -26,7 +26,7 @@ class SubmitAgentActionMixin:
         if is_remote and capability in {"frames.vectorize.v1", "frames.dataset.prepare.v1", "dataset.model.train.v1"}:
             interactive_registry = self.agent_runtime.interactive_registry(capability)
             parameters = {**parameters, "execution_host": "desktop", "input_transport": "server"}
-        elif is_remote and capability == "frames.binary-segment.v2":
+        elif is_remote and capability in {"frames.binary-segment.v2", "frames.confidence.v1"}:
             interactive_registry = self.agent_runtime.execution_registry(capability)
             parameters = {**parameters, "execution_host": "desktop", "input_transport": "server"}
         capabilities = frozenset()
@@ -52,14 +52,15 @@ class SubmitAgentActionMixin:
             str(project.frame_id_at(x, y)): (x, y)
             for x, y in coordinates
         }
-        if capability in {"frames.vectorize.v1", "frames.binary-segment.v2"}:
+        if capability in {"frames.vectorize.v1", "frames.binary-segment.v2", "frames.confidence.v1"}:
             vector_output = capability == "frames.vectorize.v1"
+            output_purpose = RepresentationPurpose.CONFIDENCE if capability == "frames.confidence.v1" else RepresentationPurpose.BINARY
             representations = self.service.list_representations(project.id, layer_id)
             targets = [
                 item
                 for item in representations
                 if item.kind is (RepresentationKind.VECTOR if vector_output else RepresentationKind.IMAGE)
-                and (vector_output or item.purpose is RepresentationPurpose.BINARY)
+                and (vector_output or item.purpose is output_purpose)
                 and str(item.source_image_representation_id or "") == source_representation_id
             ]
             selected_id = str(workspace.vector_representation_combo.currentData() or "") if vector_output else ""
@@ -82,9 +83,9 @@ class SubmitAgentActionMixin:
                     principal=self.session.principal,
                     project=project,
                     layer=layer,
-                    name=f"CIF — {source.name}" if vector_output else f"NeuralImage — {source.name}",
+                    name=f"CIF — {source.name}" if vector_output else f"{'Уверенность' if capability == 'frames.confidence.v1' else 'Бинаризация'} — {source.name}",
                     kind=RepresentationKind.VECTOR if vector_output else RepresentationKind.IMAGE,
-                    purpose=RepresentationPurpose.VECTOR if vector_output else RepresentationPurpose.BINARY,
+                    purpose=RepresentationPurpose.VECTOR if vector_output else output_purpose,
                     source_image_representation_id=source.id,
                     idempotency_key=str(uuid4()),
                     active=True,

@@ -50,6 +50,7 @@ class RepresentationPurpose(StrEnum):
 
     SOURCE = "source"
     BINARY = "binary"
+    CONFIDENCE = "confidence"
     VECTOR = "vector"
 
 

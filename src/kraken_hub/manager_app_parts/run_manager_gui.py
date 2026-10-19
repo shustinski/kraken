@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from kraken_core.plugins import PluginInventoryItem
 from kraken_core.qt import configure_application_identity
-from kraken_core.styles import load_shared_stylesheet
+from kraken_core.theme import THEME_SYSTEM, apply_app_theme
 from kraken_manager.presentation.qt import (
     ProjectManagerShell,
 )
@@ -41,7 +41,7 @@ def run_manager_gui(
 
     app = QApplication.instance() or QApplication([])
     configure_application_identity(app, app_id="Kraken.ProjectManager", icon_name="kraken")
-    app.setStyleSheet(load_shared_stylesheet("dark_modern.qss"))
+    apply_app_theme(str(QSettings("Kraken", "KrakenHub").value("appearance/theme", THEME_SYSTEM)), app)
     service = build_workspace_service()
     local = service.local if isinstance(service, DualCatalogService) else service
     session = _development_session(local) or _login(None, local)

@@ -11,6 +11,9 @@ from kraken_manager.presentation.qt import (
 
 class LayerManagerActionMixin:
     def _layer_manager_action(self, _layer_id: str, _node: PipelineNode, action: str) -> None:
+        if action == "manage_stitching":
+            self._layer_manager_layer_action(_layer_id, action)
+            return
         if action == "archive_representation":
             self._archive_layer_representation(_layer_id, _node)
             return
@@ -209,7 +212,7 @@ class LayerManagerActionMixin:
                 retry=lambda: self._layer_manager_action(_layer_id, _node, action),
             ):
                 return
-        if action in {"recognize", "recognize_external"}:
+        if action in {"recognize", "recognize_external", "confidence"}:
             from PyQt6.QtCore import QSettings
             from PyQt6.QtWidgets import QFileDialog
 
@@ -218,7 +221,7 @@ class LayerManagerActionMixin:
             key = f"{key_root}/path"
             model_path = ""
             model_filename = ""
-            if action == "recognize":
+            if action == "recognize" or (action == "confidence" and _node.kind == "model"):
                 version_ids = tuple(_node.details.get("artifact_version_ids", ()))
                 if version_ids:
                     model_version = self.service.artifact_version(self._project_id, version_ids[0])

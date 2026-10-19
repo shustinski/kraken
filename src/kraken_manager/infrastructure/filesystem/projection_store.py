@@ -355,6 +355,7 @@ class SQLiteProjectionStore:
         from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, NoteRevision
         from kraken_manager.domain.project import Layer, Project, Representation
         from kraken_manager.domain.workflows import PluginJob, ReviewBatch
+        from kraken_manager.domain.work_orders import WorkOrder
 
         classes = {
             "project": Project,
@@ -364,6 +365,7 @@ class SQLiteProjectionStore:
             "artifact_version": ArtifactVersion,
             "plugin_job": PluginJob,
             "review_batch": ReviewBatch,
+            "work_order": WorkOrder,
             "note": NoteRevision,
         }
         return classes[model_type]
@@ -679,6 +681,17 @@ class SQLiteProjectionStore:
                 as_of=as_of,
             )
             if layer_id is None or str(batch.layer_id) == str(layer_id)
+        )
+
+    def get_work_order(self, order_id: Any, *, as_of: datetime | None = None) -> Any | None:
+        return self._get_typed("work_order", order_id, as_of=as_of)
+
+    def save_work_order(self, order: Any) -> None:
+        self._save_typed("work_order", order)
+
+    def list_work_orders(self, project_id: Any, *, as_of: datetime | None = None) -> tuple[Any, ...]:
+        return self._list_typed(
+            "work_order", "project_id", project_id, include_archived=True, as_of=as_of
         )
 
     def get_note(self, note_id: str, *, as_of: datetime | None = None) -> Any | None:

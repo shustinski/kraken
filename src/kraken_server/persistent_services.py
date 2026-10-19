@@ -177,6 +177,7 @@ from .persistent_services_parts.matrix_viewport import MatrixViewportMixin
 from .persistent_services_parts.create_artifact_series import CreateArtifactSeriesMixin
 from .persistent_services_parts.mutate_artifact_series import MutateArtifactSeriesMixin
 from .persistent_services_parts.create_review_batch import CreateReviewBatchMixin
+from .persistent_services_parts.issue_work import IssueWorkMixin
 from .persistent_services_parts.mutate_review_batch import MutateReviewBatchMixin
 from .persistent_services_parts.start_desktop_job import StartDesktopJobMixin
 from .persistent_services_parts.submit_plugin_job import SubmitPluginJobMixin
@@ -211,6 +212,7 @@ class PostgresServerServices(
     CreateArtifactSeriesMixin,
     MutateArtifactSeriesMixin,
     CreateReviewBatchMixin,
+    IssueWorkMixin,
     MutateReviewBatchMixin,
     StartDesktopJobMixin,
     SubmitPluginJobMixin,

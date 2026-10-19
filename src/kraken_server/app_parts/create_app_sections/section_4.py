@@ -379,6 +379,49 @@ def _create_app_section_4(agent_gateway, blob_gateway, Depends, HTTPException, H
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
 
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/work-orders")
+    def list_work_orders(project_id: str, _: SessionPrincipal = Depends(project_reader)) -> dict[str, Any]:
+        return {"items": backend.list_work_orders(project_id)}
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/work-orders", status_code=201)
+    def issue_work_order(
+        project_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        return backend.issue_work_order(
+            project_id,
+            payload,
+            command_context(actor, idempotency_key, None, revision_required=False),
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/work-orders/{{order_id}}/cancel")
+    def cancel_work_order(
+        project_id: str,
+        order_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        return backend.cancel_work_order(
+            project_id,
+            order_id,
+            command_context(actor, idempotency_key, None, revision_required=False),
+        )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/work-orders/{{order_id}}/complete")
+    def complete_work_order(
+        project_id: str,
+        order_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        return backend.complete_work_order(
+            project_id,
+            order_id,
+            command_context(actor, idempotency_key, None, revision_required=False),
+        )
+
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/heartbeat")
     def heartbeat_agent_job(
         job_id: str,

@@ -20,7 +20,7 @@ class ShowMatrixContextMenuMixin:
             and getattr(self, "_project_id", None) is not None
             and self._has_permission(Permission.ASSIGN_WORK)
         ):
-            review_action = menu.addAction("Отправить выбранное на проверку…")
+            review_action = menu.addAction("Выдать работу…")
         vector_properties = None
         vector_file = None
         frame_properties = None

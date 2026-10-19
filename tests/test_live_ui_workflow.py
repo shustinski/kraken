@@ -521,7 +521,9 @@ def review_and_report(ui, qtbot, monkeypatch, project, layer, representation, bi
         )
 
         def issue(review_dialog):
-            combo = review_dialog.findChild(QComboBox)
+            combo = next(
+                item for item in review_dialog.findChildren(QComboBox) if item.findData(str(assignee.id)) >= 0
+            )
             combo.setCurrentIndex(combo.findData(str(assignee.id)))
             choose = next(button for button in review_dialog.findChildren(QPushButton) if button.text() == "Выбрать…")
             QTest.mouseClick(choose, Qt.MouseButton.LeftButton)
@@ -542,7 +544,7 @@ def review_and_report(ui, qtbot, monkeypatch, project, layer, representation, bi
                 if isinstance(menu, QMenu):
                     timer.stop()
                     action = next(
-                        action for action in menu.actions() if action.text() == "Отправить выбранное на проверку…"
+                        action for action in menu.actions() if action.text() == "Выдать работу…"
                     )
                     assert action.isEnabled()
                     QTest.mouseClick(menu, Qt.MouseButton.LeftButton, pos=menu.actionGeometry(action).center())

@@ -92,6 +92,7 @@ class PipelineNodeItem(QGraphicsRectItem):
     def contextMenuEvent(self, event) -> None:  # type: ignore[override]
         actions = {
             "source": (
+                ("Выдать работу…", "issue_work"),
                 ("Подготовить выборку в Contour", "prepare_dataset"),
                 ("Распознать готовой моделью", "recognize_external"),
                 ("Получить уверенность модели", "confidence"),
@@ -101,12 +102,21 @@ class PipelineNodeItem(QGraphicsRectItem):
                     "archive_representation",
                 ),
             ),
-            "dataset": (("Обучить модель в NeuralImage", "train"),),
+            "dataset": (
+                ("Выдать работу…", "issue_work"),
+                ("Обучить модель в NeuralImage", "train"),
+            ),
             "model": (("Распознать исходники", "recognize"), ("Получить уверенность модели", "confidence")),
             "binary": (("Получить CIF в Contour", "vectorize"),),
-            "vector": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
+            "vector": (
+                ("Выдать работу…", "issue_work"),
+                ("Добавить CIF из внешнего источника…", "add_external_vector"),
+            ),
             "missing": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
-            "stitching": (("Управление сшивкой…", "manage_stitching"),),
+            "stitching": (
+                ("Выдать работу…", "issue_work"),
+                ("Управление сшивкой…", "manage_stitching"),
+            ),
         }.get(self.node.kind, ())
         if bool(self.node.details.get("deletable", False)):
             actions = (*actions, ("Удалить шаг из pipeline", "delete_pipeline_step"))

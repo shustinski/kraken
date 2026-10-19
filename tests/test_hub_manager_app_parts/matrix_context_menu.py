@@ -109,7 +109,7 @@ def test_matrix_context_menu_preserves_review_action(qapp, monkeypatch) -> None:
         lambda menu, *_args: next(
             action
             for action in menu.actions()
-            if action.text().startswith("Отправить выбранное")
+            if action.text() == "Выдать работу…"
         ),
     )
 

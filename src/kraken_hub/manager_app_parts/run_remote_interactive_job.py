@@ -60,6 +60,10 @@ class RunRemoteInteractiveJobMixin:
         }.get(action, ("", "", ""))
 
     def _action_availability(self, action: str) -> tuple[bool, str]:
+        if action == "issue_work":
+            if not self._has_permission(Permission.ASSIGN_WORK):
+                return False, "Недостаточно прав для выдачи работы"
+            return True, ""
         if action in {
             "manage_stitching",
             "add_external_vector",

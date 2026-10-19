@@ -239,6 +239,7 @@ from .composition_parts.import_agent_result import ImportAgentResultMixin
 from .composition_parts.import_agent_publications import ImportAgentPublicationsMixin
 from .composition_parts.domain_selection import DomainSelectionMixin
 from .composition_parts.create_review_batch import CreateReviewBatchMixin
+from .composition_parts.issue_work import IssueWorkMixin
 from .composition_parts.review_return_preflight import ReviewReturnPreflightMixin
 from .composition_parts.import_backup import ImportBackupMixin
 from .composition_parts.frame_cell_snapshot import (
@@ -290,6 +291,7 @@ class EmbeddedProjectService(
     ImportAgentPublicationsMixin,
     DomainSelectionMixin,
     CreateReviewBatchMixin,
+    IssueWorkMixin,
     ReviewReturnPreflightMixin,
     ImportBackupMixin,
 ):

@@ -83,6 +83,7 @@ from .remote_client_parts.create_artifact_series import CreateArtifactSeriesMixi
 from .remote_client_parts.add_managed_artifact_version import AddManagedArtifactVersionMixin
 from .remote_client_parts.add_external_artifact_version import AddExternalArtifactVersionMixin
 from .remote_client_parts.create_review_batch import CreateReviewBatchMixin
+from .remote_client_parts.issue_work import IssueWorkMixin
 from .remote_client_parts.export_review_batch import ExportReviewBatchMixin
 from .remote_client_parts.submit_plugin_job import SubmitPluginJobMixin
 from .remote_client_parts.remove_layer_pipeline_action import RemoveLayerPipelineActionMixin
@@ -118,6 +119,7 @@ class RemoteServerProjectService(
     AddManagedArtifactVersionMixin,
     AddExternalArtifactVersionMixin,
     CreateReviewBatchMixin,
+    IssueWorkMixin,
     ExportReviewBatchMixin,
     SubmitPluginJobMixin,
     RemoveLayerPipelineActionMixin,

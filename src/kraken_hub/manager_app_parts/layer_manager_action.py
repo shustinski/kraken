@@ -14,6 +14,20 @@ class LayerManagerActionMixin:
         if action == "manage_stitching":
             self._layer_manager_layer_action(_layer_id, action)
             return
+        if action == "issue_work":
+            available, reason = self._action_availability(action)
+            if not available:
+                self._error(reason)
+                return
+            preset = {
+                "source": "vectorize",
+                "binary": "vectorize",
+                "dataset": "train",
+                "vector": "vector_review",
+                "stitching": "stitch",
+            }.get(_node.kind, "vectorize")
+            self.issue_work_dialog(preset_kind=preset, layer_id=str(_layer_id))
+            return
         if action == "archive_representation":
             self._archive_layer_representation(_layer_id, _node)
             return

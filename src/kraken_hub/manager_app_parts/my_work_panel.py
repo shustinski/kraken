@@ -230,7 +230,14 @@ def _my_work_panel(
         }
         batches = service.review_batches()
         jobs = service.plugin_jobs()
-        table.setRowCount(len(batches) + len(jobs))
+        orders = service.work_orders() if hasattr(service, "work_orders") else ()
+        work_states = {
+            "issued": "Выдано",
+            "running": "Выполняется",
+            "completed": "Завершено",
+            "cancelled": "Отменено",
+        }
+        table.setRowCount(len(batches) + len(jobs) + len(orders))
         for row, batch in enumerate(batches):
             values = (
                 "Проверка",
@@ -329,6 +336,35 @@ def _my_work_panel(
                 delete_button = QPushButton("Удалить", action_host)
                 delete_button.clicked.connect(lambda _checked=False, value=job: delete_job(value))
                 action_layout.addWidget(delete_button)
+            table.setCellWidget(offset, 7, action_host)
+        for offset, order in enumerate(orders, start=len(batches) + len(jobs)):
+            values = (
+                order.kind.title,
+                projects.get(str(order.project_id), str(order.project_id)),
+                layers.get(str(order.layer_id), str(order.layer_id)),
+                performers.get(str(order.assignee_id), str(order.assignee_id)),
+                work_states.get(order.state.value, order.state.value),
+                "" if order.due_at is None else order.due_at.astimezone().strftime("%d.%m.%Y %H:%M"),
+                str(order.frame_count),
+            )
+            for column, value in enumerate(values):
+                table.setItem(offset, column, QTableWidgetItem(value))
+            action_host = QWidget(table)
+            action_layout = QHBoxLayout(action_host)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            if order.state.value in {"issued", "running"}:
+                open_button = QPushButton("Открыть", action_host)
+                open_button.clicked.connect(lambda _checked=False, value=order: controller.open_issued_work(value))
+                action_layout.addWidget(open_button)
+                if order.kind.value != "vector_review" and order.transport != "http":
+                    finish_button = QPushButton("Завершить", action_host)
+                    finish_button.clicked.connect(
+                        lambda _checked=False, value=order: controller.complete_issued_work(value)
+                    )
+                    action_layout.addWidget(finish_button)
+                cancel_button = QPushButton("Отменить", action_host)
+                cancel_button.clicked.connect(lambda _checked=False, value=order: controller.cancel_issued_work(value))
+                action_layout.addWidget(cancel_button)
             table.setCellWidget(offset, 7, action_host)
 
     refresh_button.clicked.connect(refresh)

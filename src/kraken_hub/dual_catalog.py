@@ -624,6 +624,25 @@ class DualCatalogService:
         note = kwargs.get("note")
         return self._backend(note.project_id).revise_note(**kwargs)
 
+    def work_orders(self):
+        local_orders = list(self.local.work_orders())
+        remote_orders = [] if self.remote is None else list(self.remote.work_orders())
+        return tuple(
+            sorted((*local_orders, *remote_orders), key=lambda item: (item.updated_at, item.id), reverse=True)
+        )
+
+    def issue_work(self, **kwargs):
+        return self._backend(kwargs.get("project_id")).issue_work(**kwargs)
+
+    def mark_work_running(self, order, **kwargs):
+        return self._backend(order.project_id).mark_work_running(order, **kwargs)
+
+    def cancel_work_order(self, order, **kwargs):
+        return self._backend(order.project_id).cancel_work_order(order, **kwargs)
+
+    def complete_work_order(self, order, **kwargs):
+        return self._backend(order.project_id).complete_work_order(order, **kwargs)
+
     def review_batches(self):
         local_batches = list(self.local.review_batches())
         remote_batches = [] if self.remote is None else list(self.remote.review_batches())

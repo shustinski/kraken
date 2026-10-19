@@ -1,5 +1,6 @@
 """repository: split candidate by spanning."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
     PolygonConfidencePipelineConfig,
@@ -110,3 +111,6 @@ def _split_candidate_by_spanning_valleys(
         if component_candidate is not None:
             split_candidates.append(component_candidate)
     return tuple(split_candidates) if split_candidates else (candidate,)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

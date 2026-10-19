@@ -1,5 +1,6 @@
 """logic_functions: logic path output."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class LogicPathOutputMixin:
@@ -130,3 +131,6 @@ class LogicPathOutputMixin:
                 seen.add(nxt)
                 stack.append(nxt)
         return False
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

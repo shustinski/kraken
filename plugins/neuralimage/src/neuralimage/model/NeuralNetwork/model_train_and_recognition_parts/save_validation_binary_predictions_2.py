@@ -1,5 +1,6 @@
 """model_train_and_recognition: save validation binary predictions 2."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any, ContextManager
@@ -23,6 +24,8 @@ class SaveValidationBinaryPredictions2Mixin:
         threshold: float,
         export_cache: _ValidationExportCache | None = None,
     ) -> None:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import _cut_image_prepare, _gpu_predict, _sew
+
         if (not self._save_validation_binary_images) or self._val_dataloader is None:
             return
 
@@ -110,3 +113,6 @@ class SaveValidationBinaryPredictions2Mixin:
                 f'in {epoch_dir}.'
             ),
         ])
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validation_no_cut_frame import _ValidationExportCache

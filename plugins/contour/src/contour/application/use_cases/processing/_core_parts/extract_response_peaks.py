@@ -113,6 +113,8 @@ class _IsolationContext:
 
 def _build_isolation_context(intensity_mask: np.ndarray, gray: np.ndarray, *, bright: bool) -> _IsolationContext:
     """Compute connected-component labels for the bright/dark anchor mask."""
+    from contour.application.use_cases.processing._core import _EMPTY_ISOLATION
+
 
     if intensity_mask.size == 0:
         return _EMPTY_ISOLATION

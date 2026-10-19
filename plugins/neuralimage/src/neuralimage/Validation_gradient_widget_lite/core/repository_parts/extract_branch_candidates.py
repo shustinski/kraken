@@ -1,5 +1,7 @@
 """repository: extract branch candidates."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
+from collections.abc import Sequence
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.backend_constants import (
     POLYGON_CONFIDENCE_COMPLETION_MAJOR_SCALE,
@@ -183,3 +185,6 @@ def _axis_gap_close(first: _PolygonConfidenceCandidate, second: _PolygonConfiden
     if first_axis == "horizontal":
         return overlap_y > 0 and horizontal_gap <= major_gap
     return False
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

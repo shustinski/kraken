@@ -1,9 +1,9 @@
 """benchmark_metal_segmentation: markdown."""
 from __future__ import annotations
 
-from benchmark_metal_segmentation_parts.module_state import BORDER_AUDIT_FRAMES
+from .module_state import BORDER_AUDIT_FRAMES
 
-from benchmark_metal_segmentation_parts.write_csv import _format_metric
+from .write_csv import _format_metric
 
 def _markdown(report: dict[str, object]) -> str:
     aggregates = report["aggregates"]

@@ -1,5 +1,6 @@
 """composition: publish karakal analysis."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from kraken_manager.domain.common import (
     LayerId,
     ProjectId,
@@ -77,3 +78,6 @@ class PublishKarakalAnalysisMixin:
             store.append(stream_id, expected_revision=revision, events=(event,))
             prior = event
         return self._karakal_run_from_event(prior)
+
+if TYPE_CHECKING:
+    from kraken_hub.composition_parts.frame_cell_snapshot import KarakalAnalysisRun

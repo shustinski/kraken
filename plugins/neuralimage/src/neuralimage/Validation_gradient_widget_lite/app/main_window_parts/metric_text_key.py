@@ -1,5 +1,6 @@
 """main_window: metric text key."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QActionGroup
 from kraken_core.theme import apply_app_theme, normalize_theme
@@ -210,3 +211,6 @@ class MetricTextKeyMixin:
         index = self.point_extraction_mode_combo.findData(current)
         self.point_extraction_mode_combo.setCurrentIndex(index if index >= 0 else 0)
         self.point_extraction_mode_combo.blockSignals(False)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.domain import BuildResult

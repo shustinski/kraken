@@ -74,3 +74,4 @@ class RefreshPreviewMixin:
             self.status_label.setText(str(error))
         self.prev_button.setEnabled((not synthetic_enabled) and len(self._frame_plan) > 1)
         self.next_button.setEnabled((not synthetic_enabled) and len(self._frame_plan) > 1)
+        self.resample_button.setEnabled(True)

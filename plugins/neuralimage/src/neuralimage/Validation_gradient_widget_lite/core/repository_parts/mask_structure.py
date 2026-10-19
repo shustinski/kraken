@@ -23,6 +23,8 @@ def _mask_structure(
     include_skeleton: bool = True,
     include_boundary_distance: bool = False,
 ) -> dict[str, object]:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cv2, ndi
+
     mask_bool = np.asarray(mask, dtype=bool)
     labels, count = _label_components(mask_bool)
     boundary = _boundary_mask(mask_bool)

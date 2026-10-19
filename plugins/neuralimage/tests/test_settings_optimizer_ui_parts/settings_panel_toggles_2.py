@@ -15,7 +15,7 @@ def test_settings_panel_toggles_pcb_defect_controls(qapp):
     assert panel.synthetic_defect_generator_groupbox.isHidden() is False
     assert panel._field_rows[panel.pcb_defects_probability_spinbox].isEnabled() is False
     assert panel._field_rows[panel.pcb_defects_min_count_spinbox].isEnabled() is False
-    assert panel._field_rows[panel.pcb_defect_type_checkboxes['break']].isEnabled() is False
+    assert panel.pcb_defect_type_checkboxes['break'].isEnabled() is False
     assert panel._field_rows[panel.pcb_defect_type_spinboxes['break']].isEnabled() is False
 
     panel.synthetic_defect_generator_check_box.setChecked(True)
@@ -23,7 +23,7 @@ def test_settings_panel_toggles_pcb_defect_controls(qapp):
     assert panel.synthetic_defect_generator_groupbox.isHidden() is False
     assert panel._field_rows[panel.pcb_defects_probability_spinbox].isEnabled() is True
     assert panel._field_rows[panel.pcb_defects_max_count_spinbox].isEnabled() is True
-    assert panel._field_rows[panel.pcb_defect_type_checkboxes['via']].isEnabled() is True
+    assert panel.pcb_defect_type_checkboxes['via'].isEnabled() is True
     assert panel._field_rows[panel.pcb_defect_type_spinboxes['via']].isEnabled() is True
 
     panel.pcb_defect_type_checkboxes['via'].setChecked(False)
@@ -39,10 +39,10 @@ def test_settings_panel_shows_ic_synthetic_defect_controls(qapp):
     panel._sync_synthetic_domain_controls()
     panel._sync_synthetic_defect_generator_controls()
 
-    assert panel._field_rows[panel.ic_defect_type_checkboxes['line_break']].isHidden() is False
+    assert panel.ic_defect_type_checkboxes['line_break'].isHidden() is False
     assert panel._field_rows[panel.ic_defect_type_spinboxes['line_break']].isHidden() is False
-    assert panel._field_rows[panel.pcb_defect_type_checkboxes['break']].isHidden() is True
-    assert panel._field_rows[panel.ic_defect_type_checkboxes['line_break']].isEnabled() is True
+    assert panel.pcb_defect_type_checkboxes['break'].isHidden() is True
+    assert panel.ic_defect_type_checkboxes['line_break'].isEnabled() is True
     assert panel._field_rows[panel.ic_defect_type_spinboxes['line_break']].isEnabled() is True
 
 def test_settings_panel_saves_ic_synthetic_defect_toggles(qapp):

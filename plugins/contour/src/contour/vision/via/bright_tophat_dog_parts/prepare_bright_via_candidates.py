@@ -1,5 +1,6 @@
 """bright_tophat_dog: prepare bright via candidates."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from math import pi
 import cv2
 import numpy as np
@@ -133,3 +134,7 @@ def prepare_bright_via_candidates(image: np.ndarray, config: BrightViaDetectorCo
         metal_mode=metal_mode,
         isolation=isolation,
     )
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaPreparedCandidates
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

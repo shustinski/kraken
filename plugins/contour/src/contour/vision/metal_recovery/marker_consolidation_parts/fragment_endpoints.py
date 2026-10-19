@@ -1,5 +1,6 @@
 """marker_consolidation: fragment endpoints."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 
 from contour.vision.metal_recovery.marker_consolidation_parts.module_state import _SEARCH_RADIUS_PX
@@ -162,3 +163,6 @@ def _bucket_neighbors(
         for dx in (-1, 0, 1):
             found.extend(buckets.get((cell_col + dx, cell_row + dy), ()))
     return tuple(found)
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence, RidgeLink

@@ -1,5 +1,6 @@
 """repository: split polygon candidate by."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
     PolygonConfidencePipelineConfig,
@@ -29,6 +30,8 @@ def _split_polygon_candidate_by_barriers(
     include_debug: bool = False,
 ) -> tuple[tuple[_PolygonConfidenceCandidate, ...], dict[str, np.ndarray] | None]:
     """Split one candidate via thin barriers and bridge cuts, then grow from stable seed cores."""
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
 
     if not bool(config.enable_watershed) or ndi is None:
         return (candidate,), None
@@ -112,3 +115,6 @@ def _split_polygon_candidate_by_barriers(
         debug_payload["barrier_blocked"][roi_y0:roi_y1, roi_x0:roi_x1] = blocked_roi
         debug_payload["boundary_cues"][roi_y0:roi_y1, roi_x0:roi_x1] = boundary_cues_roi
     return tuple(split_candidates) if split_candidates else (candidate,), debug_payload
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

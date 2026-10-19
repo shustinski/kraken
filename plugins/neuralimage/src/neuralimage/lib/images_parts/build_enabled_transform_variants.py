@@ -56,6 +56,8 @@ def _load_sample_fast_cutter_getitem():
         return None, False
 
 def is_sample_fast_cutter_accelerated() -> bool:
+    from neuralimage.lib.images import _sample_fast_cutter_accelerated, _sample_fast_cutter_getitem
+
     return bool(_sample_fast_cutter_accelerated and _sample_fast_cutter_getitem is not None)
 
 def _resolve_crops_per_image(params: object) -> int:

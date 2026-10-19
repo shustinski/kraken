@@ -1,5 +1,6 @@
 """model_train_and_recognition: step epoch scheduler."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import math
 from collections.abc import Mapping
 from typing import Any
@@ -185,6 +186,8 @@ class StepEpochSchedulerMixin:
     @staticmethod
     def _is_finite_tensor(value: Any) -> bool:
         """Return whether every tensor contained in *value* is finite."""
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import ModelTrainer
+
         if torch.is_tensor(value):
             return bool(torch.isfinite(value).all())
         if isinstance(value, Mapping):
@@ -203,3 +206,6 @@ class StepEpochSchedulerMixin:
             if torch.is_tensor(primary):
                 return primary
         raise TypeError('Model must return a tensor or a non-empty sequence of tensors.')
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _RunContext

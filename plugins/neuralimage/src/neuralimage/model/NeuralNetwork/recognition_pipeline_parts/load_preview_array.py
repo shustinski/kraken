@@ -1,5 +1,6 @@
 """recognition_pipeline: load preview array."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import os
 from pathlib import Path
 from typing import Any
@@ -74,3 +75,6 @@ def _restore_payload_array_from_multiprocessing(payload: dict[str, Any], key: st
 
 def _should_use_torch_tensor_transport() -> bool:
     return os.name != 'nt'
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import Publisher

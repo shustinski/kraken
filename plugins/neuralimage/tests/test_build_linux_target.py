@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import tools.build_linux as build_linux
+import scripts.tools.build_linux as build_linux
 
 
 def test_build_linux_pyinstaller_args_uses_linux_dist_and_work_paths(tmp_path):

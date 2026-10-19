@@ -4,22 +4,23 @@ import argparse
 import json
 from pathlib import Path
 
-from benchmark_metal_segmentation_parts.module_state import (
+from .module_state import (
     EVALUATION_BORDER_CROP_PX,
+    REAL_DATASET_ROOT,
     STRATEGIES,
 )
 
-from benchmark_metal_segmentation_parts.build_benchmark_cases import build_benchmark_cases
+from .build_benchmark_cases import build_benchmark_cases
 
-from benchmark_metal_segmentation_parts.default_evaluation_border_crop import _default_evaluation_border_crop_px
+from .default_evaluation_border_crop import _default_evaluation_border_crop_px
 
-from benchmark_metal_segmentation_parts.markdown import _markdown
+from .markdown import _markdown
 
-from benchmark_metal_segmentation_parts.rasterize_polygon_labels import build_real_benchmark_cases
+from .rasterize_polygon_labels import build_real_benchmark_cases
 
-from benchmark_metal_segmentation_parts.run_benchmark import run_benchmark
+from .run_benchmark import run_benchmark
 
-from benchmark_metal_segmentation_parts.write_csv import _write_csv
+from .write_csv import _write_csv
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)

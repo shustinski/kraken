@@ -1,5 +1,6 @@
 """model_train_and_recognition: model recognizer."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import os
 import time
 import json
@@ -150,6 +151,8 @@ class ModelRecognizer(threading.Thread):
         return True
 
     def run(self):
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import RecognizerProcess
+
         recognition_process: Any = None
         try:
             self._load_or_reset_manifest()
@@ -197,3 +200,6 @@ class ModelRecognizer(threading.Thread):
         inline_recognizer = self._inline_recognizer
         if inline_recognizer is not None:
             inline_recognizer.stop()
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer

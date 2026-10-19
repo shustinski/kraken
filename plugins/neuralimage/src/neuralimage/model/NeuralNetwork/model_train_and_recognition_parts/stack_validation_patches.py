@@ -1,5 +1,6 @@
 """model_train_and_recognition: stack validation patches."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Mapping
 import numpy as np
 
@@ -29,3 +30,6 @@ class StackValidationPatchesMixin:
             if 0 <= int(location) < int(frame_cache.parts_count):
                 stacked[int(location)] = np.asarray(patch, dtype=np.float32)
         return stacked
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validation_no_cut_frame import _ValidationNoCutFrameExportCache

@@ -20,6 +20,7 @@ def _build_handler() -> GeneralNeuralHandler:
     handler.work_mode = 'train_only'
     handler._hard_mining_active = True
     handler._training_failed = False
+    handler._need_stop = False
     handler.current_thread = None
     handler._release_torch_memory = lambda: None
     handler._stop_training_callback = lambda: None

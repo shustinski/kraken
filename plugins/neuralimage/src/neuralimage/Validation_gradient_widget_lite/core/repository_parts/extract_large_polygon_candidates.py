@@ -1,5 +1,6 @@
 """repository: extract large polygon candidates."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
     PolygonConfidenceDebugCandidate,
@@ -73,3 +74,6 @@ def _extract_large_polygon_candidates(
             accepted_mask |= np.asarray(candidate.mask, dtype=bool)
         candidate_id += 1
     return accepted, accepted_mask, tuple(debug_rows), candidate_id
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

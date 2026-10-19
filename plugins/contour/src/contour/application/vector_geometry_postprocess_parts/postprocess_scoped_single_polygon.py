@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: postprocess scoped single polygon."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 
 from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import (
@@ -39,3 +40,6 @@ def _postprocess_scoped_single_polygon(
     if not scoped:
         return None
     return scoped[0]
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

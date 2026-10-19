@@ -1,5 +1,6 @@
 """model_train_and_recognition: recognizer process."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import os
 import sys
 import importlib.util
@@ -147,6 +148,8 @@ class RecognizerProcess(mp.Process):
         return watcher
 
     def run(self):
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer
+
         recognizer = NeuralRecognizer(
             self._recognition_parameters,
             message_bus=cast(AbstractMessageBus, _QueueMessageBus(self._bus)),
@@ -160,3 +163,6 @@ class RecognizerProcess(mp.Process):
             raise
         finally:
             recognizer.stop()
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer

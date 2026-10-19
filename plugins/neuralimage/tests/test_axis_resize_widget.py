@@ -190,7 +190,7 @@ def test_settings_panel_uses_axis_widget_and_preserves_control_aliases(qapp):
     assert panel.train_patch_size_groupbox.title().strip()
     assert panel.recognition_patch_size_groupbox.title().strip()
     assert isinstance(panel.recognition_tab_patch_size_widget, AxisResizeWidget)
-    assert panel.recognition_page_layout.indexOf(panel.recognition_tab_patch_size_groupbox) != -1
+    assert panel.recognition_page.isAncestorOf(panel.recognition_tab_patch_size_groupbox)
     assert panel.recognition_tab_patch_size_groupbox.isAncestorOf(
         panel.recognition_tab_patch_size_widget
     )

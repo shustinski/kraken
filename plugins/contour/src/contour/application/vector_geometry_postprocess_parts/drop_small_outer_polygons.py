@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: drop small outer polygons."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 
 from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import drop_orphan_holes
@@ -82,3 +83,6 @@ def drop_small_outer_polygons_scoped(
             continue
         survivors.append(polygon)
     return drop_orphan_holes(survivors)
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

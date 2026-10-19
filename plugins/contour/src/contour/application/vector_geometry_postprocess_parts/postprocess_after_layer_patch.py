@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: postprocess after layer patch."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 
 from contour.application.vector_geometry_postprocess_parts.apply_spike_removal_polygon import (
@@ -147,3 +148,6 @@ def postprocess_after_layer_patch(
     work = drop_orphan_holes(work)
     changed = len(work) != count_before or bool(affected_ids)
     return work, changed
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

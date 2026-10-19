@@ -11,6 +11,8 @@ from test_settings_optimizer_ui_parts.preprocessing_groupbox_controls import _im
 def test_main_presenter_applies_augmentation_preview_payload_to_settings_panel(qapp):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(presenter)
     presenter.settings_panel = SettingsPanel()
     presenter.settings_panel.connect_internal_signals()
     presenter.settings_state = SettingsState()
@@ -157,6 +159,8 @@ def test_main_presenter_applies_augmentation_preview_payload_to_settings_panel(q
 def test_main_presenter_updates_main_view_sample_count_when_calculated(qapp):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(presenter)
     presenter._sample_count_worker_thread = None
     presenter._sample_count_cache_path = None
     presenter._sample_count_cache_sizes = None

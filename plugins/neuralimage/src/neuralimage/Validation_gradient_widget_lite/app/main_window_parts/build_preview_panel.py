@@ -1,5 +1,6 @@
 """main_window: build preview panel."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -107,3 +108,6 @@ class BuildPreviewPanelMixin:
             score_cards=score_cards,
             histogram_cards={},
         )
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.domain import BuildResult

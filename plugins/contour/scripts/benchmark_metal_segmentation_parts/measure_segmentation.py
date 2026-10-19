@@ -2,11 +2,11 @@
 from __future__ import annotations
 import numpy as np
 
-from benchmark_metal_segmentation_parts.rasterize_polygon_labels import _boundary_f1
+from .rasterize_polygon_labels import _boundary_f1
 
-from benchmark_metal_segmentation_parts.render_sem import SegmentationMetrics
+from .render_sem import SegmentationMetrics
 
-from benchmark_metal_segmentation_parts.topology_errors import _topology_errors
+from .topology_errors import _topology_errors
 
 def measure_segmentation(
     predicted: np.ndarray,

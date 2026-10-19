@@ -1,5 +1,6 @@
 """model_train_and_recognition: log loss configuration."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any, ContextManager
@@ -169,3 +170,6 @@ class LogLossConfigurationMixin:
                 f'start_factor={float(self._warmup_params.start_factor):.4f}.'
             ),
         ])
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _ActiveTrainProfiler, _TrainLoopStrides

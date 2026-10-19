@@ -58,6 +58,8 @@ def run_manager_gui(
         session_summary = f"{session.principal.display_name}\nЛокальная сессия"
     shell = ProjectManagerShell()
     shell.set_session_summary(session_summary)
+    from kraken_hub.manager_app import DesktopController
+
     shell._desktop_controller = DesktopController(  # keep Qt slots alive
         shell,
         service,

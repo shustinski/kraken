@@ -1,5 +1,6 @@
 """marker_consolidation: consolidate wide fragments."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 
 from contour.vision.metal_recovery.marker_consolidation_parts.enclosed_conductor_basins import (
@@ -69,3 +70,6 @@ def _consolidate_wide_fragments(
     )
     logical = _remap_by_parent(wide_labels, parent)
     return logical, unions
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence

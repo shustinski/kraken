@@ -44,6 +44,8 @@ class WaitCurrentThreadMixin:
         self.message_bus.publish('logging', 'Обучение завершено')
 
     def _start_recognition(self):
+        from neuralimage.model.general_neural_handler import ModelRecognizer
+
         self.message_bus.publish('metrics', {'type': 'workflow_phase', 'phase': 'recognition'})
         self.current_thread = ModelRecognizer(
             self.recognition_parameters,

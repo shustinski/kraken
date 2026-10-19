@@ -1,5 +1,6 @@
 """scene_renderer: draw mos contrast overlay."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import math
 from PyQt6.QtGui import QBrush, QColor, QPen
 from krona.infrastructure.edif_parser import EdifTextParser
@@ -70,3 +71,6 @@ class DrawMosContrastOverlayMixin:
                 x, y = self._to_scene(p[0], p[1])
                 item = self._scene.addEllipse(x - 1.8, y - 1.8, 3.6, 3.6, light_pen, QBrush(light_pen.color()))
                 item.setZValue(905)
+
+if TYPE_CHECKING:
+    from krona.presentation.qt.scene_renderer_parts.affine2_d import Affine2D

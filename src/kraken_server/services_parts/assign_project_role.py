@@ -1,5 +1,6 @@
 """services: assign project role."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime
 from typing import Any, Protocol
@@ -210,3 +211,6 @@ class AssignProjectRoleMixin(Protocol):
     def fail_agent_job(self, job_id: str, error: str) -> dict[str, Any]: ...
 
     def import_agent_result(self, job_id: str, agent: Any) -> dict[str, Any]: ...
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

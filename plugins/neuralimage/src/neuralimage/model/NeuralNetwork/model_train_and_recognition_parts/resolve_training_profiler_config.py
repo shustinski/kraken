@@ -31,6 +31,8 @@ class ResolveTrainingProfilerConfigMixin:
             return max(minimum, int(default))
 
     def _resolve_training_profiler_config(self) -> _TrainingProfilerConfig:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import RANDOM_PATCH_PROFILE_BATCHES, RANDOM_PATCH_PROFILING_ENABLED, TRAINING_PROFILER_ENABLED
+
         random_patch_profile = bool(RANDOM_PATCH_PROFILING_ENABLED and self._uses_variable_patch_sizes())
         enabled = bool(TRAINING_PROFILER_ENABLED or random_patch_profile)
         max_batches = (
@@ -51,6 +53,8 @@ class ResolveTrainingProfilerConfigMixin:
         )
 
     def _random_patch_profiling_active(self) -> bool:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import RANDOM_PATCH_PROFILING_ENABLED
+
         return bool(RANDOM_PATCH_PROFILING_ENABLED and self._uses_variable_patch_sizes())
 
     def _profile_region(self, name: str) -> ContextManager[Any]:

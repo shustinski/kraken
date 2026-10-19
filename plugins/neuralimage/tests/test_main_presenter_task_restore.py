@@ -104,19 +104,10 @@ def qapp():
 
 
 def _import_main_presenter_with_stubs(monkeypatch):
-    nn_stub = types.ModuleType('model.NeuralNetwork')
-    nn_stub.get_registered_models = lambda: {'M 720k': object()}
-    nn_stub.get_registered_model_names_by_type = lambda: {'stable': ['M 720k']}
-    handler_stub = types.ModuleType('model.general_neural_handler')
-    handler_stub.GeneralNeuralHandler = _FakeGeneralNeuralHandler
-    images_stub = types.ModuleType('lib.images')
-    images_stub.SampleWorker = _FakeSampleWorker
-
-    monkeypatch.setitem(sys.modules, 'model.NeuralNetwork', nn_stub)
-    monkeypatch.setitem(sys.modules, 'model.general_neural_handler', handler_stub)
-    monkeypatch.setitem(sys.modules, 'lib.images', images_stub)
-    sys.modules.pop('presenter.main_presenter', None)
-    return importlib.import_module('presenter.main_presenter')
+    construction = importlib.import_module('neuralimage.presenter.main_presenter_parts.construction')
+    monkeypatch.setattr(construction, 'SampleWorker', _FakeSampleWorker)
+    monkeypatch.setattr(construction, 'get_registered_model_names_by_type', lambda: {'stable': ['M 720k']})
+    return importlib.import_module('neuralimage.presenter.main_presenter')
 
 
 @pytest.mark.parametrize('work_mode', ['recognition_only', 'train_only'])
@@ -217,8 +208,8 @@ def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeyp
         confidence_save_mode='separate_grayscale',
         deep_supervision=False,
     )
-    monkeypatch.setattr(module, '_tk_filedialog', lambda *_args, **_kwargs: 'workflow.json')
-    monkeypatch.setattr(module, 'load_workflow_snapshot', lambda *_args, **_kwargs: (restored_main, restored_settings))
+    monkeypatch.setattr('neuralimage.presenter.dialogs.choose_path_dialog', lambda *_args, **_kwargs: 'workflow.json')
+    monkeypatch.setattr('neuralimage.presenter.main_presenter_parts.open_rare_patch_editor.load_workflow_snapshot', lambda *_args, **_kwargs: (restored_main, restored_settings))
 
     presenter._on_open_config_requested()
     qapp.processEvents()
@@ -254,10 +245,9 @@ def test_main_presenter_shows_warning_for_invalid_workflow_snapshot(qapp, monkey
     presenter.view.show_warning.connect(warnings.append)
     presenter.view.set_jpg_path('before-open')
 
-    monkeypatch.setattr(module, '_tk_filedialog', lambda *_args, **_kwargs: 'broken.json')
+    monkeypatch.setattr('neuralimage.presenter.dialogs.choose_path_dialog', lambda *_args, **_kwargs: 'broken.json')
     monkeypatch.setattr(
-        module,
-        'load_workflow_snapshot',
+        'neuralimage.presenter.main_presenter_parts.open_rare_patch_editor.load_workflow_snapshot',
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError('bad payload')),
     )
 
@@ -283,7 +273,7 @@ def test_main_presenter_shows_warning_for_invalid_workflow_snapshot(qapp, monkey
 def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, monkeypatch, work_mode, should_save_snapshot, server_dataset):
     module = _import_main_presenter_with_stubs(monkeypatch)
     presenter = module.MainPresenter(_FakeStateStore())
-    monkeypatch.setattr(module, 'GeneralNeuralHandlerThread', _FakeHandlerThread)
+    monkeypatch.setattr('neuralimage.presenter.main_presenter_parts.shutdown.GeneralNeuralHandlerThread', _FakeHandlerThread)
 
     calls: list[tuple[MainWindowState, SettingsState, tuple[object, object, object]]] = []
 
@@ -291,7 +281,7 @@ def test_main_presenter_start_task_saves_snapshot_only_for_training_modes(qapp, 
         calls.append((main_state, settings_state, workflow_snapshot))
         return Path("snapshot.json")
 
-    monkeypatch.setattr(module, 'save_workflow_snapshot', _capture_snapshot)
+    monkeypatch.setattr('neuralimage.presenter.main_presenter_parts.shutdown.save_workflow_snapshot', _capture_snapshot)
 
     root = make_test_dir(f"presenter_start_task_{work_mode}")
     sample = root / "sample"
@@ -372,7 +362,7 @@ def test_main_presenter_keeps_selected_simple_profile_label_after_preset_load(qa
 
     restored_main = MainWindowState(work_mode='recognition_only', ui_mode='simple')
     restored_settings = SettingsState()
-    monkeypatch.setattr(module, 'load_workflow_snapshot', lambda *_args, **_kwargs: (restored_main, restored_settings))
+    monkeypatch.setattr('neuralimage.presenter.main_presenter_parts.shutdown.load_workflow_snapshot', lambda *_args, **_kwargs: (restored_main, restored_settings))
 
     presenter._on_simple_workflow_requested('contacts')
     qapp.processEvents()

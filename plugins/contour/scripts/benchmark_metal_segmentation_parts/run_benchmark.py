@@ -25,29 +25,29 @@ from contour.vision.preprocessing import (  # noqa: E402
     metal_preprocess_config_from_settings,
 )
 
-from benchmark_metal_segmentation_parts.module_state import (
+from .module_state import (
     BORDER_AUDIT_FRAMES,
     STRATEGIES,
 )
 
-from benchmark_metal_segmentation_parts.aggregate_strategy_metrics import _aggregate_strategy_metrics
+from .aggregate_strategy_metrics import _aggregate_strategy_metrics
 
-from benchmark_metal_segmentation_parts.build_benchmark_cases import build_benchmark_cases
+from .build_benchmark_cases import build_benchmark_cases
 
-from benchmark_metal_segmentation_parts.evaluation_record import _evaluation_record
+from .evaluation_record import _evaluation_record
 
-from benchmark_metal_segmentation_parts.measure_segmentation import measure_segmentation
+from .measure_segmentation import measure_segmentation
 
-from benchmark_metal_segmentation_parts.rasterize_polygon_labels import (
+from .rasterize_polygon_labels import (
     components_removed_by_crop,
     evaluation_crop_slices,
     labels_for_component_audit,
     prepare_evaluation_masks,
 )
 
-from benchmark_metal_segmentation_parts.seed_diagnostics import seed_diagnostics
+from .seed_diagnostics import seed_diagnostics
 
-from benchmark_metal_segmentation_parts.ui_recovery_config import (
+from .ui_recovery_config import (
     _rasterize_detected_polygons,
     _ui_recovery_config,
     _write_diagnostic_overlay,

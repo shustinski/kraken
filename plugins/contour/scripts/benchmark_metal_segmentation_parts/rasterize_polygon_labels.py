@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from pathlib import Path
 import cv2
 import numpy as np
+from .module_state import REAL_DATASET_ROOT
 from contour.application.processing import ContourExtractionSettings  # noqa: E402
 from contour.domain import PolygonData  # noqa: E402
 from contour.serializers import load_polygons_cif  # noqa: E402
@@ -12,7 +13,7 @@ from contour.vision.preprocessing import (  # noqa: E402
     preprocess_for_sem,
 )
 
-from benchmark_metal_segmentation_parts.render_sem import BenchmarkCase
+from .render_sem import BenchmarkCase
 
 def _preprocess_real_sem(gray: np.ndarray) -> np.ndarray:
     return preprocess_for_sem(gray, metal_preprocess_config_from_settings(ContourExtractionSettings()))

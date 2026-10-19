@@ -1,5 +1,6 @@
 """patterns: detect async controls."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from itertools import combinations, product
 from krona.analysis.structural.model import (
     ConditionalEdge,
@@ -188,3 +189,6 @@ class DetectAsyncControlsMixin:
                     }
                 )
         return features
+
+if TYPE_CHECKING:
+    from krona.analysis.structural.patterns_parts.storage_phase_profile import BistableCoreCandidate

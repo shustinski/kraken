@@ -1,5 +1,6 @@
 """qt: paint tile cells."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Mapping
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
@@ -106,3 +107,6 @@ class PaintTileCellsMixin:
                                 y,
                             )
                             continue
+
+if TYPE_CHECKING:
+    from kraken_core.frame_matrix.qt_parts.viewport_tile_item import _ViewportTileItem

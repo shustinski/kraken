@@ -1,5 +1,6 @@
 """patterns: classify bistable cores."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from krona.analysis.structural.model import (
     CompositeFeature,
     RecognizedCellKind,
@@ -89,3 +90,6 @@ class ClassifyBistableCoresMixin:
 
         recognized.extend(self._compose_master_slave_ffs(recognized, patterns))
         return recognized
+
+if TYPE_CHECKING:
+    from krona.analysis.structural.patterns_parts.storage_phase_profile import PatternDatabase

@@ -1,5 +1,6 @@
 """detector: detect metalization explicit."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from ....application.preview_cancellation import raise_if_preview_cancelled
@@ -173,3 +174,6 @@ def _detect_metalization_explicit(
         debug_images=dbg,
         params_snapshot=params_snapshot,
     )
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.detector_parts.metal_recovery_config import MetalRecoveryConfig

@@ -252,6 +252,11 @@ class CompactSemSectionEditor(QGroupBox):
             self.labels[key] = label
         if row_widget is not None:
             self._row_widgets.setdefault(key, row_widget)
+            error_label = QLabel(row_widget)
+            error_label.setObjectName(f'{key}Error')
+            error_label.setVisible(False)
+            row_widget.layout().addWidget(error_label)
+            self.error_labels[key] = error_label
 
     def _connect_value_signal(self, control: QWidget) -> None:
         if isinstance(control, QCheckBox):

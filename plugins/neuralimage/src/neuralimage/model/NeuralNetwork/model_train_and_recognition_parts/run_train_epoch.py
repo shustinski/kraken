@@ -1,5 +1,6 @@
 """model_train_and_recognition: run train epoch."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import time
 from typing import cast
 import torch
@@ -189,3 +190,6 @@ class RunTrainEpochMixin:
                 ),
             ])
         return epoch_stats
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _ActiveTrainProfiler, _RunContext

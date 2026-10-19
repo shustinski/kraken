@@ -1,5 +1,6 @@
 """pipeline_mixin: color selection entries."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class ColorSelectionEntriesMixin:
@@ -29,3 +30,6 @@ class ColorSelectionEntriesMixin:
             normalized.append({"rgb": parsed_rgb, "enabled": bool(entry.get("enabled", True))})
         self._pipeline.steps[row].parameters["selected_colors"] = normalized
         return normalized
+
+if TYPE_CHECKING:
+    from contour.widget_parts.pipeline_mixin_parts.color_selection_entry import ColorSelectionEntry

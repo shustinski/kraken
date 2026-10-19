@@ -9,7 +9,7 @@ from contour.vision.metal_recovery.gradient_watershed import (  # noqa: E402
     intensity_class_limits,
 )
 
-from benchmark_metal_segmentation_parts.render_sem import SeedDiagnostics
+from .render_sem import SeedDiagnostics
 
 def seed_diagnostics(
     image: np.ndarray,

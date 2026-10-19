@@ -131,6 +131,8 @@ class CreateSplitMuonAdamwMixin:
             return optim.AdamW(self._all_trainable_parameters(), **adamw_kwargs)
 
     def _create_adamw_muon_optimizer(self, params: OptimizerParameters):
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import resolve_muon_optimizer_class
+
         muon_cls = resolve_muon_optimizer_class()
         if muon_cls is None:
             raise MuonOptimizerUnavailableError(MUON_UNAVAILABLE_MESSAGE)

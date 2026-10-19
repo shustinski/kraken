@@ -50,6 +50,8 @@ class TaskQueueItemsMixin:
         return self.queue_list.currentRow()
 
     def set_task_queue_items(self, items: list, selected_row: int = -1):
+        from neuralimage.view.main_window import TaskQueueRowWidget
+
         previous_scroll_value = self.queue_list.verticalScrollBar().value()
         previous_selected_row = self.queue_list.currentRow()
         texts = self._main_texts()
@@ -100,6 +102,8 @@ class TaskQueueItemsMixin:
         total: int,
         progress_kind: str = '',
     ) -> None:
+        from neuralimage.view.main_window import TaskQueueRowWidget
+
         for row, item in enumerate(self._queue_items):
             if int(item.get('task_id', -1)) != int(task_id):
                 continue

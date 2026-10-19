@@ -1,5 +1,6 @@
 """matrix_view: construction."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections import OrderedDict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from PyQt6.QtCore import QPointF, Qt, QTimer
@@ -132,3 +133,7 @@ class ConstructionMixin:
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.horizontalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
         self.verticalScrollBar().valueChanged.connect(self._on_viewport_scroll_changed)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.matrix_cell_item import _MatrixCellItem
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.score_fill_color import MatrixTileSelection

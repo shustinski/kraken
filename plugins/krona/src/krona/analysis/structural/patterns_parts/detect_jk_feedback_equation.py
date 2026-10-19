@@ -1,5 +1,6 @@
 """patterns: detect jk feedback equation."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Iterable
 from krona.analysis.structural.model import (
     CircuitDevice,
@@ -182,3 +183,6 @@ class DetectJkFeedbackEquationMixin:
             by_key.values(),
             key=lambda item: (-item.confidence, item.kind.value, ",".join(sorted(item.storage_nodes))),
         )
+
+if TYPE_CHECKING:
+    from krona.analysis.structural.patterns_parts.storage_phase_profile import AsyncControlCandidate, BistableCoreCandidate, StoragePhaseProfile

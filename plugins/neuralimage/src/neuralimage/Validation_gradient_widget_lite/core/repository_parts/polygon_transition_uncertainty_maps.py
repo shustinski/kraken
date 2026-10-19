@@ -30,6 +30,8 @@ def _polygon_confidence_support_mask(
     return np.asarray(final_mask, dtype=bool)
 
 def _local_contrast_map(probability: np.ndarray, radius: int = 1) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     prob = np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0)
     local_radius = max(1, int(radius))
     if ndi is not None:
@@ -48,6 +50,8 @@ def _local_contrast_map(probability: np.ndarray, radius: int = 1) -> np.ndarray:
     return np.clip(local_max - local_min, 0.0, 1.0).astype(np.float32)
 
 def _local_mean_map(array: np.ndarray, radius: int = 1) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     values = np.asarray(array, dtype=np.float32)
     local_radius = max(1, int(radius))
     if ndi is not None:

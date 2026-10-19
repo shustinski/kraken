@@ -171,11 +171,11 @@ class UpdateMemoryRuntimeLabelMixin:
     def _set_preview_image(widget: QLabel, image_data):
         if not isinstance(image_data, np.ndarray) or image_data.size == 0:
             return
-        arr = image_data
+        arr = np.ascontiguousarray(image_data)
         if arr.ndim == 2:
-            qimg = QImage(arr.data, arr.shape[1], arr.shape[0], arr.strides[0], QImage.Format.Format_Grayscale8).copy()
+            qimg = QImage(arr.tobytes(), arr.shape[1], arr.shape[0], arr.strides[0], QImage.Format.Format_Grayscale8).copy()
         elif arr.ndim == 3 and arr.shape[2] == 3:
-            qimg = QImage(arr.data, arr.shape[1], arr.shape[0], arr.strides[0], QImage.Format.Format_RGB888).copy()
+            qimg = QImage(arr.tobytes(), arr.shape[1], arr.shape[0], arr.strides[0], QImage.Format.Format_RGB888).copy()
         else:
             return
         widget.setText("")

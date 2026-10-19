@@ -1,4 +1,8 @@
 from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import QSettings
 
 import configparser
 import json
@@ -988,3 +992,7 @@ def load_settings_state() -> SettingsState:
 
 def save_settings_state(state: SettingsState) -> None:
     create_state_store().save_settings_state(state)
+
+if TYPE_CHECKING:
+    from neuralimage.application.dto.window_state import MainWindowState, SettingsState
+    from neuralimage.application.ports.state_store import StateStore

@@ -21,6 +21,8 @@ def _snap_elongated_candidate_boundaries(
     """Refine large elongated candidates by snapping the minor-axis boundaries to local profiles."""
 
     def _smooth_trace(values: np.ndarray, valid_mask: np.ndarray, window: int) -> np.ndarray:
+        from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
         result = np.asarray(values, dtype=np.float32).copy()
         valid = np.asarray(valid_mask, dtype=bool)
         if not np.any(valid):

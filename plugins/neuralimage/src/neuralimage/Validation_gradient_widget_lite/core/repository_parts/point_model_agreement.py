@@ -76,6 +76,8 @@ def _prepare_mask_pairwise_descriptors(
     model_structures: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, dict[str, object]]:
     """Precompute reusable per-model structures for symmetric mask agreement metrics."""
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cv2, ndi
+
 
     descriptors: dict[str, dict[str, object]] = {}
     for model_id, probability in probabilities_by_model.items():

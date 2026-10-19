@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: patch polygons needing repair."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 
 from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import (
@@ -60,3 +61,6 @@ def patch_polygons_needing_repair(
         added_or_changed,
     )
     return apply_overlap_repair_patch(reasons_by_id, polygons, overlap_check_roots)
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

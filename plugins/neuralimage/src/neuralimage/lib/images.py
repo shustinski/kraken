@@ -34,6 +34,9 @@ from .images_parts.save_color import (
     save_binary,
 )
 
+_sample_fast_cutter_getitem, _sample_fast_cutter_accelerated = _load_sample_fast_cutter_getitem()
+
+
 class SampleFastCutter(ConstructionMixin, BuildPartsListMixin, SizedItemMixin, ApplyAdditionalAugmentationMixin):
     """
     Рассчитывет число образцов в кадре и возвращет необходимый кусочк по методу __getitem__

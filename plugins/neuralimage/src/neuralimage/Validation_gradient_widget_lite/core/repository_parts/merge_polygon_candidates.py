@@ -1,5 +1,6 @@
 """repository: merge polygon candidates."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
     PolygonConfidencePipelineConfig,
@@ -25,3 +26,6 @@ def _merge_polygon_candidates(
         if len(next_candidates) == len(merged):
             return merged
         merged = next_candidates
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

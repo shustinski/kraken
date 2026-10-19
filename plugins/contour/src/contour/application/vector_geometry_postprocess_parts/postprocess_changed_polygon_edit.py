@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: postprocess changed polygon edit."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from math import hypot
 from contour.domain import PolygonData
 
@@ -115,3 +116,6 @@ def postprocess_changed_polygon_only(
     work = drop_orphan_holes(work)
     changed = before_signature != _single_polygon_topo_signature(replacement)
     return work, changed
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

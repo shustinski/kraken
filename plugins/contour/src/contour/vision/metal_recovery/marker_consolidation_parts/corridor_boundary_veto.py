@@ -1,5 +1,6 @@
 """marker_consolidation: corridor boundary veto."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass
 import numpy as np
 from contour.vision.metal_recovery.conductor_bands import (
@@ -36,3 +37,6 @@ class _CorridorSample:
     center_interior: np.ndarray
     edge: np.ndarray
     interior: np.ndarray
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence, _Endpoint

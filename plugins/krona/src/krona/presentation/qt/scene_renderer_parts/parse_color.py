@@ -130,6 +130,8 @@ class ParseColorMixin:
 
     @staticmethod
     def _transform_from_block(block: str) -> Affine2D:
+        from krona.presentation.qt.scene_renderer import EdifSceneRenderer
+
         transform_block = EdifTextParser.first_direct_or_none(block, "(transform")
         if not transform_block:
             return Affine2D()

@@ -1,5 +1,6 @@
 """remote_client: extract review archive."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import shutil
 import stat
 import tempfile
@@ -129,3 +130,6 @@ class RemoteServerError(RuntimeError):
 class RemoteAuth:
     access_token: str
     principal: Principal
+
+if TYPE_CHECKING:
+    from kraken_hub.remote_client import RemoteServerProjectService

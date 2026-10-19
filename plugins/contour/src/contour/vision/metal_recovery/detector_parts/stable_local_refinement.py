@@ -1,5 +1,6 @@
 """detector: stable local refinement."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import replace
 from math import ceil
 import numpy as np
@@ -73,3 +74,7 @@ def _stable_local_refinement(
             return None, None, [item[2] for item in variants]
         return previous[1], previous[0], [item[2] for item in variants]
     return None, None, [item[2] for item in variants]
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.detector_parts.contour_extraction_settings_metal import MetalDetectionResult
+    from contour.vision.metal_recovery.detector_parts.metal_recovery_config import MetalRecoveryConfig

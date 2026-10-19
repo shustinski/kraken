@@ -1,5 +1,6 @@
 """logic_functions: detect tristate cmos inverters."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class DetectTristateCmosInvertersMixin:
@@ -122,3 +123,6 @@ class DetectTristateCmosInvertersMixin:
                 self._natural_key(str(item.get("phase", {}).get("net", ""))),
             ),
         )
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

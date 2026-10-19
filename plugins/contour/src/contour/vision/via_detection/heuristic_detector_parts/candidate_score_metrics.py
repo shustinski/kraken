@@ -1,5 +1,6 @@
 """heuristic_detector: candidate score metrics."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.vision.via_detection.config import HeuristicViaDetectorConfig
 
 from contour.vision.via_detection.heuristic_detector_parts.final_candidate_score import _scale01
@@ -74,3 +75,6 @@ def _candidate_score_metrics(
         "raw_score": float(raw),
         "final_score": max(0.0, min(100.0, float(raw))),
     }
+
+if TYPE_CHECKING:
+    from contour.vision.via_detection.heuristic_detector_parts.candidate_features import CandidateFeatures

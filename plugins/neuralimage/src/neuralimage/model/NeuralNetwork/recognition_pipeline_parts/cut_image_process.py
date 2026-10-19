@@ -1,5 +1,6 @@
 """recognition_pipeline: cut image process."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import multiprocessing as mp
 from pathlib import Path
 from typing import cast
@@ -40,6 +41,10 @@ def cut_image_process(
     preprocessing: PreprocessingConfig | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import _try_get_queue_item
+
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import cut_image_prepare
+
     while not stop_event.is_set():
         image_path = _try_get_queue_item(cut_queue, timeout=0.2)
         if image_path is _QUEUE_EMPTY:
@@ -76,3 +81,6 @@ def _apply_preprocessing_to_channel_first(
         return np.expand_dims(processed, axis=0).astype(np.float32, copy=False)
     processed_planes = [pipeline.apply(plane) for plane in work_image]
     return np.stack(processed_planes, axis=0).astype(np.float32, copy=False)
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import MemoryMetricsCollector, Publisher

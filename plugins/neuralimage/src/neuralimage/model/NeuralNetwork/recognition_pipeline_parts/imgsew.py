@@ -34,6 +34,8 @@ def imgsew(
     active_learning_metadata: dict[str, object] | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import _try_get_queue_item, sew
+
     while not stop_event.is_set():
         item = _try_get_queue_item(sew_queue, timeout=0.2)
         if item is _QUEUE_EMPTY:
@@ -73,6 +75,8 @@ def sew_from_queue(
     active_learning: ActiveLearningConfig | None = None,
     active_learning_metadata: dict[str, object] | None = None,
 ) -> None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import _try_get_queue_item, sew
+
     item = _try_get_queue_item(sew_queue, timeout=0.2)
     if item is _QUEUE_EMPTY:
         return

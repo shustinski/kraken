@@ -10,6 +10,8 @@ def _assign_candidate_region_to_seeds(
     blocked_mask: np.ndarray,
 ) -> np.ndarray:
     """Assign candidate pixels to seed instances while respecting blocked barriers."""
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
 
     candidate_bool = np.asarray(candidate_region, dtype=bool)
     labels = np.asarray(seed_labels, dtype=np.int32)

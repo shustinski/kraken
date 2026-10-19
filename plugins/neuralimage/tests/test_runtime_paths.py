@@ -31,7 +31,7 @@ def test_resolve_resource_path_uses_internal_bundle_in_frozen_mode(tmp_path, mon
 
 def test_main_module_does_not_import_controller_at_module_import_time(monkeypatch):
     module_name = '_test_main_lazy_import'
-    main_path = Path(__file__).resolve().parent.parent / 'main.py'
+    main_path = Path(__file__).resolve().parent.parent / 'src' / 'neuralimage' / 'main.py'
     dummy_controller = types.ModuleType('controller')
 
     monkeypatch.setitem(sys.modules, 'controller', dummy_controller)
@@ -48,7 +48,7 @@ def test_main_module_does_not_import_controller_at_module_import_time(monkeypatc
 
 def test_main_module_restores_missing_standard_streams(monkeypatch):
     module_name = '_test_main_streams'
-    main_path = Path(__file__).resolve().parent.parent / 'main.py'
+    main_path = Path(__file__).resolve().parent.parent / 'src' / 'neuralimage' / 'main.py'
 
     monkeypatch.setattr(sys, 'stdout', None, raising=False)
     monkeypatch.setattr(sys, 'stderr', None, raising=False)

@@ -1,5 +1,6 @@
 """repository: polygon confidence pipeline."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from time import perf_counter
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
@@ -342,3 +343,6 @@ def _polygon_confidence_pipeline(
         )
 
     return np.asarray(final_mask, dtype=bool), tuple(final_candidates), debug_data
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

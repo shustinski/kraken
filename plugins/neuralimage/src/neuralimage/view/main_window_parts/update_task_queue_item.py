@@ -76,6 +76,8 @@ class UpdateTaskQueueItemMixin:
         validation_current: int | None = None,
         validation_total: int | None = None,
     ) -> None:
+        from neuralimage.view.main_window import TaskQueueRowWidget
+
         for row, item in enumerate(self._queue_items):
             if int(item.get('task_id', -1)) != int(task_id):
                 continue

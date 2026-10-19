@@ -1,5 +1,6 @@
 """scene_renderer: draw container."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import math
 from PyQt6.QtGui import QBrush, QColor
 from krona.application.ports import SceneData
@@ -115,3 +116,6 @@ class DrawContainerMixin:
                     depth + 1,
                     click_owner_instance=click_owner_instance,
                 )
+
+if TYPE_CHECKING:
+    from krona.presentation.qt.scene_renderer_parts.affine2_d import Affine2D

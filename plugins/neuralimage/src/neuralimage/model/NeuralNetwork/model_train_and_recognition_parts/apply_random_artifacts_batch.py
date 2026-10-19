@@ -7,6 +7,8 @@ from neuralimage.lib.random_artifacts import generate_random_artifact_patch
 
 class ApplyRandomArtifactsBatchMixin:
     def _apply_random_artifacts_to_batch(self, image: torch.Tensor) -> torch.Tensor:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import generate_random_artifact_patch
+
         enabled, probability, count, size_ratio, artifact_types = self._resolved_random_artifact_parameters()
         if (not enabled) or probability <= 0.0 or size_ratio <= 0.0 or not artifact_types:
             return image

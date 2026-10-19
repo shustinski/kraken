@@ -1,5 +1,6 @@
 """matrix_view: subpixel grid record."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtCore import QPointF
 from ...core.domain import FrameRecord
 from ...core.domain import ComparisonMode
@@ -220,3 +221,6 @@ class SubpixelGridRecordMixin:
         except Exception:
             pass
         return grid
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.score_fill_color import MatrixLayoutConfig

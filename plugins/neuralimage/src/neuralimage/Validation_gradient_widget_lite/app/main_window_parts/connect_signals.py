@@ -1,5 +1,6 @@
 """main_window: connect signals."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -99,3 +100,6 @@ class ConnectSignalsMixin:
         self.language_toggle_button.clicked.connect(self._toggle_language)
         self.matrix_tabs.currentChanged.connect(self._presenter._on_current_tab_changed)
         self.matrix_tabs.tabCloseRequested.connect(self._presenter._close_matrix_tab)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.domain import BuildResult

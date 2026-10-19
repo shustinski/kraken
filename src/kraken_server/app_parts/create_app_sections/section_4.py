@@ -1,5 +1,4 @@
 """create_app section 4."""
-from __future__ import annotations
 import asyncio
 import os
 import re
@@ -28,6 +27,10 @@ from kraken_server.app_parts.module_state import API_PREFIX
 from kraken_server.app_parts.session_principal import SessionPrincipal
 
 def _create_app_section_4(agent_gateway, blob_gateway, Depends, HTTPException, Header, Request, StreamingResponse, agent_identity, app, backend, command_context, desktop_identity, extract_review_archive, heavy_operations, project_reader, run_in_threadpool, shared_mutation_actor, transfer_identity, transfer_payload, transfer_ticket_context):
+    @app.post(
+        f"{API_PREFIX}/projects/{{project_id}}/artifacts/{{series_id}}/uploads/complete",
+        status_code=201,
+    )
     def complete_artifact_upload(
         project_id: str,
         series_id: str,

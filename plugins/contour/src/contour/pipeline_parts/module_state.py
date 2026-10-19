@@ -1,5 +1,6 @@
 """pipeline: module state."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Callable
 from typing import Any
 import numpy as np
@@ -17,3 +18,6 @@ _COMBINED_PRESETS: dict[str, tuple[str, ...]] = {
     "illumination_invariant": ("phase_congruency", "log"),
     "all_classical": ("sobel", "scharr", "laplacian", "log", "auto_canny"),
 }
+
+if TYPE_CHECKING:
+    from contour.pipeline_parts.operation_descriptor import OperationDescriptor

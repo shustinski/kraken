@@ -1,5 +1,6 @@
 """qt: viewport tile item."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -109,3 +110,6 @@ class _ViewportTileItem(QGraphicsItem):
             self.owner._paint_overview_tile(painter, self)
             return
         self.owner._paint_tile_cells(painter, self, lod)
+
+if TYPE_CHECKING:
+    from kraken_core.frame_matrix.qt import FrameMatrixView

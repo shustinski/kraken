@@ -16,14 +16,29 @@ CONFIG_MODULES = (
 )
 
 
+def _type_name(cls: type) -> str:
+    for module in CONFIG_MODULES:
+        if getattr(importlib.import_module(module), cls.__name__, None) is cls:
+            return module + ":" + cls.__name__
+    raise TypeError(f"Unsupported configuration type: {cls.__name__}")
+
+
+def _configuration_class(module: str, name: str) -> type:
+    for public_module in CONFIG_MODULES:
+        cls = getattr(importlib.import_module(public_module), name, None)
+        if isinstance(cls, type) and module in {public_module, cls.__module__}:
+            return cls
+    raise ValueError("Unknown configuration type")
+
+
 def encode(value):
     if dataclasses.is_dataclass(value):
         return {
-            "$type": type(value).__module__ + ":" + type(value).__name__,
+            "$type": _type_name(type(value)),
             "fields": {f.name: encode(getattr(value, f.name)) for f in dataclasses.fields(value)},
         }
     if isinstance(value, enum.Enum):
-        return {"$enum": type(value).__module__ + ":" + type(value).__name__, "value": value.value}
+        return {"$enum": _type_name(type(value)), "value": value.value}
     if isinstance(value, Path):
         return {"$path": str(value)}
     if isinstance(value, tuple):
@@ -44,9 +59,7 @@ def decode(value):
         return value
     if "$type" in value or "$enum" in value:
         module, name = value.get("$type", value.get("$enum")).split(":")
-        if module not in CONFIG_MODULES:
-            raise ValueError("Unknown configuration type")
-        cls = getattr(importlib.import_module(module), name)
+        cls = _configuration_class(module, name)
         if "$enum" in value and isinstance(cls, type) and issubclass(cls, enum.Enum):
             return cls(value["value"])
         if "$type" in value and isinstance(cls, type) and dataclasses.is_dataclass(cls):

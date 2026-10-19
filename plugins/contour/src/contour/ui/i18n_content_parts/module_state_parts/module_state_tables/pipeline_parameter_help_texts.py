@@ -1,5 +1,6 @@
 """PIPELINE_PARAMETER_HELP_TEXTS."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.graphics_view import EditorTool
 
 PIPELINE_PARAMETER_HELP_TEXTS: LocalizedTextMap = {
@@ -156,3 +157,6 @@ PIPELINE_PARAMETER_HELP_TEXTS: LocalizedTextMap = {
         "Search area size for similar patches during denoising.",
     ),
 }
+
+if TYPE_CHECKING:
+    from contour.ui.i18n_content_parts.module_state_parts.module_state import LocalizedTextMap

@@ -1,5 +1,6 @@
 """recognition_pipeline: run."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import multiprocessing as mp
 import torch
 from multiprocessing.synchronize import Event as MpEvent
@@ -179,3 +180,7 @@ class RunMixin:
             return torch.device('cpu')
         device_index = min(worker_index, len(devices) - 1)
         return devices[device_index]
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import Publisher
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.recognition_workload import RuntimeWorkerConfig

@@ -1,5 +1,6 @@
 """model_train_and_recognition: construction 2."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -138,3 +139,6 @@ class Construction2Mixin:
             self._checkpoint_path(),
             logger=self._bus.log,
         )
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.random_artifact_bank import _RandomArtifactBank

@@ -1,5 +1,6 @@
 """model_train_and_recognition: filter uniform batch samples."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Mapping
 from typing import Any
 import torch
@@ -164,3 +165,6 @@ class FilterUniformBatchSamplesMixin:
             return sample_indices[permutation.detach().to(device=sample_indices.device)]
         sample_indices_tensor = torch.as_tensor(sample_indices, dtype=torch.long)
         return sample_indices_tensor[permutation.detach().to(device='cpu')]
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _RunContext

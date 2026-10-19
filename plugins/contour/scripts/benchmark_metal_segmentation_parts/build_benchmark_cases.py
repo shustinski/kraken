@@ -2,7 +2,7 @@
 from __future__ import annotations
 import numpy as np
 
-from benchmark_metal_segmentation_parts.render_sem import (
+from .render_sem import (
     BenchmarkCase,
     _draw_line,
     _draw_rect,

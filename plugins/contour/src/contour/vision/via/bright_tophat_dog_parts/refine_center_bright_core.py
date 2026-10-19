@@ -1,5 +1,6 @@
 """bright_tophat_dog: refine center bright core."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from math import pi
 import cv2
 import numpy as np
@@ -194,3 +195,7 @@ def _fixed_size_bbox(center: tuple[float, float], diameter: float, shape: tuple[
         x = min(max(0, x), max_x)
         y = min(max(0, y), max_y)
     return (x, y, side, side)
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import _RawStage1
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

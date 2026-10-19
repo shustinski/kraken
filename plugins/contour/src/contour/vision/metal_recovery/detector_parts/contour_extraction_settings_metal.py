@@ -1,5 +1,6 @@
 """detector: contour extraction settings metal."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass, field
 from typing import Any
 import numpy as np
@@ -173,3 +174,6 @@ def _passes_trace_geometry(polygon: PolygonData, config: MetalRecoveryConfig) ->
     if config.max_width_px is None or config.max_width_px <= 0.0:
         return True
     return _trace_width_px(polygon) <= float(config.max_width_px)
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.detector_parts.metal_recovery_config import MetalRecoveryConfig

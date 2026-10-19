@@ -1,5 +1,6 @@
 """bright_tophat_dog: detect binary vias."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from ...via_detection.binary_mask import detect_binary_components
 
@@ -71,3 +72,7 @@ def _detect_binary_vias(gray: np.ndarray, cfg: BrightViaDetectorConfig) -> Brigh
             "final_overlay": overlay,
         },
     )
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaDetectionResult
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

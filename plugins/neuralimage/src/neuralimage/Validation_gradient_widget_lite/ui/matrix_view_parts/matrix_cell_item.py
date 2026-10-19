@@ -1,5 +1,6 @@
 """matrix_view: matrix cell item."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
@@ -183,3 +184,6 @@ class _MatrixCellItem(QGraphicsRectItem):
         self._tile_rect_cache_key = cache_key
         self._tile_rect_cache = rects
         return rects
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.score_fill_color import MatrixTileSelection

@@ -1,5 +1,6 @@
 """scene_renderer: draw instance hitbox."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtGui import QBrush, QColor, QPen
 from PyQt6.QtCore import Qt
 from krona.infrastructure.edif_parser import EdifTextParser
@@ -94,3 +95,6 @@ class DrawInstanceHitboxMixin:
             item.setPen(pen)
         item.setData(1, instance_name)
         item.setZValue(6000)
+
+if TYPE_CHECKING:
+    from krona.presentation.qt.scene_renderer_parts.affine2_d import Affine2D

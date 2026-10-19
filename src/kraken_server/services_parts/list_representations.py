@@ -1,5 +1,6 @@
 """services: list representations."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any
 
 from kraken_server.services_parts.command_context import NotFoundError
@@ -28,3 +29,6 @@ class ListRepresentationsMixin:
                 for item in self._representations[layer_id]
                 if include_archived or item["state"] != "archived"
             ]
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

@@ -1,5 +1,6 @@
 """main_presenter: construction."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import multiprocessing as mp
 import threading
 from PyQt6 import QtCore
@@ -26,6 +27,8 @@ from neuralimage.presenter.main_presenter_parts.rare_patch_editor_preparation im
 
 class ConstructionMixin:
     def __init__(self, state_store: StateStore):
+        from neuralimage.presenter.main_presenter import SampleWorker
+
         super().__init__()
         self._state_store = state_store
 
@@ -98,3 +101,8 @@ class ConstructionMixin:
         QtCore.QTimer.singleShot(0, self._calculate_expected_samples)
         if _should_schedule_startup_update_check():
             QtCore.QTimer.singleShot(0, self._start_update_check)
+
+if TYPE_CHECKING:
+    from neuralimage.presenter.main_presenter_parts.app_update_download_thread import AppUpdateCheckThread, AppUpdateDownloadThread
+    from neuralimage.presenter.main_presenter_parts.general_neural_handler_thread import GeneralNeuralHandlerThread
+    from neuralimage.presenter.main_presenter_parts.rare_patch_editor_preparation import RarePatchEditorPreparationThread, _ValidationGradientPluginWindow

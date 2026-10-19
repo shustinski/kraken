@@ -50,6 +50,8 @@ class ApplyAdditionalAugmentationMixin:
 
     @staticmethod
     def _apply_gaussian_blur(image: np.ndarray, radius: float) -> np.ndarray:
+        from neuralimage.lib.images import SampleFastCutter
+
         if radius <= 0.0:
             return image.astype(np.float32, copy=False)
         pil_image = SampleFastCutter._array_to_pil_image(image)

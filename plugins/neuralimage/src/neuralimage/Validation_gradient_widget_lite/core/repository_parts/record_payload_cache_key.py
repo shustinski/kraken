@@ -1,5 +1,6 @@
 """repository: record payload cache key."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import hashlib
 import json
 import pickle
@@ -219,3 +220,6 @@ def _load_cached_record_payload(cache_key: str) -> dict[str, object] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.module_state import _FolderPathLookup

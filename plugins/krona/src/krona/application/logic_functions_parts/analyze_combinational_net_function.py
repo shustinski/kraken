@@ -1,5 +1,6 @@
 """logic_functions: analyze combinational net function."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from itertools import product
 
 
@@ -106,3 +107,6 @@ class AnalyzeCombinationalNetFunctionMixin:
         }
         cache[cache_key] = result
         return result
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

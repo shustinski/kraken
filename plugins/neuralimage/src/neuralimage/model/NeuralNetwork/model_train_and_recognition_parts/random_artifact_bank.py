@@ -157,6 +157,8 @@ class _RandomArtifactBank:
             return entry, nearest_bucket
 
     def _generate_bucket_entry(self, bucket: tuple[int, int]) -> tuple[torch.Tensor, torch.Tensor]:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import generate_random_artifact_patch
+
         return generate_random_artifact_patch(
             channels=int(self._channels),
             height=int(bucket[0]),

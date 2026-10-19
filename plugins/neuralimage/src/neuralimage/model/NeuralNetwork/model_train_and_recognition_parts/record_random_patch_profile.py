@@ -1,5 +1,6 @@
 """model_train_and_recognition: record random patch profile."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import torch
 
 from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.module_state import (
@@ -18,6 +19,8 @@ class RecordRandomPatchProfileMixin:
         step_result: _TrainStepResult,
         batch_total_ms: float,
     ) -> None:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import RANDOM_PATCH_PROFILE_BATCHES
+
         if not self._random_patch_profiling_active():
             return
         rows = self._random_patch_profile_rows
@@ -61,3 +64,6 @@ class RecordRandomPatchProfileMixin:
                 ),
             ])
             self._save_random_patch_profile_csv()
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _PreparedTrainBatch, _TrainStepResult

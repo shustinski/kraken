@@ -1,5 +1,6 @@
 """manager_app: my work panel."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from pathlib import Path
 from uuid import uuid4
 from kraken_manager.domain.identity import Permission
@@ -334,3 +335,6 @@ def _my_work_panel(
     controller.my_work_refresh = refresh
     refresh()
     return host
+
+if TYPE_CHECKING:
+    from kraken_hub.manager_app import DesktopController

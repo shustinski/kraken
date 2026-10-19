@@ -1,5 +1,6 @@
 """bright_tophat_dog: hard."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 def _hard(
     center: tuple[float, float],
@@ -25,3 +26,6 @@ def _hard(
         status="hard_reject",
         hard_reason=reason,
     )
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaDetection

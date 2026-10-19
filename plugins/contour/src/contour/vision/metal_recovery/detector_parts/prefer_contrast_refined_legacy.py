@@ -1,5 +1,6 @@
 """detector: prefer contrast refined legacy."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.utils import ensure_binary_mask
@@ -71,3 +72,7 @@ def _extended_separator_mask(gray: np.ndarray, config: MetalRecoveryConfig) -> n
         else vertical_kernel
     )
     return cv2.morphologyEx(seeds.groove_seeds, cv2.MORPH_CLOSE, kernel)
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.detector_parts.contour_extraction_settings_metal import MetalDetectionResult
+    from contour.vision.metal_recovery.detector_parts.metal_recovery_config import MetalRecoveryConfig

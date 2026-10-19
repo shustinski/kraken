@@ -1,5 +1,6 @@
 """structural_watershed: ridge markers."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
@@ -197,3 +198,7 @@ def _filter_short_components(mask: np.ndarray, *, min_area: int, min_length: int
         if area >= min_area and max(width, height) >= min_length:
             keep[index] = 1
     return np.where(keep[labels] > 0, 255, 0).astype(np.uint8)
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.structural_watershed_parts.clamped_structural_watershed_config import StructuralWatershedConfig
+    from contour.vision.metal_recovery.structural_watershed_parts.extract_structural_features import _StructuralFeatures

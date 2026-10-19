@@ -8,6 +8,8 @@ from test_settings_optimizer_ui_parts.preprocessing_groupbox_controls import _im
 def test_main_presenter_sample_count_includes_synthetic_frames(qapp):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(presenter)
     root = make_test_dir('presenter_sample_count_with_synthetic')
     sample_dir = root / 'samples'
     sample_dir.mkdir()
@@ -80,6 +82,8 @@ def test_main_presenter_sample_count_includes_synthetic_frames(qapp):
 def test_main_presenter_logs_background_sample_indexing_start(qapp, monkeypatch):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(presenter)
     presenter._sample_count_cache_path = None
     presenter._sample_count_cache_sizes = None
 

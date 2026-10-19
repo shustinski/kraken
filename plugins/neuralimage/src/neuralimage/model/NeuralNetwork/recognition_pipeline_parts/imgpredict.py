@@ -67,6 +67,8 @@ def imgpredict(
     uncertainty: UncertaintyConfig | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import _try_get_queue_item, gpu_predict
+
     model = load_model_artifact(model_path, map_location='cpu')
     model.eval()
     model.to(gpu)

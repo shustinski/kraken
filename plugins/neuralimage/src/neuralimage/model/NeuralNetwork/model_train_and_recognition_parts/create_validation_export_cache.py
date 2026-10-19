@@ -14,6 +14,8 @@ from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validatio
 
 class CreateValidationExportCacheMixin:
     def _create_validation_export_cache(self) -> _ValidationExportCache | None:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import ImagePreparator
+
         if (
             not self._save_validation_binary_images
             and not (self._advanced_validation_enabled() and self._advanced_validation_full_frame())

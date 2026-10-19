@@ -1,5 +1,6 @@
 """processing: dict 2."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any
 
 from contour.application.processing_parts.module_state import (
@@ -476,3 +477,6 @@ class Dict2Mixin:
             ),
             metal_edge_watershed_max_pixels=int(payload.get("metal_edge_watershed_max_pixels", 3_000_000) or 3_000_000),
         )
+
+if TYPE_CHECKING:
+    from contour.application.processing import ContourExtractionSettings

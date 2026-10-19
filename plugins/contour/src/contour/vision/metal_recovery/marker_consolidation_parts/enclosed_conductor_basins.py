@@ -1,5 +1,6 @@
 """marker_consolidation: enclosed conductor basins."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
@@ -56,3 +57,6 @@ def _basin_has_parallel_ridges(basin: np.ndarray, ridge_labels: np.ndarray) -> b
     inside = np.bincount(ridge_labels[interior].ravel(), minlength=ridge_max + 1)
     lives_inside = (inside[1:] * 2 >= total[1:]) & (inside[1:] > 0)
     return int(np.count_nonzero(lives_inside)) >= 2
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence

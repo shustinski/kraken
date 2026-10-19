@@ -21,6 +21,8 @@ from kraken_manager.presentation.qt.layer_management_parts.format_scalar import 
 
 class ActionTabMixin:
     def _open_temporal_state(self, row: int, _column: int) -> None:
+        from kraken_manager.presentation.qt.layer_management import ObjectPropertiesDialog
+
         loader = self.snapshot.temporal_loader
         if loader is None or not 0 <= row < len(self.snapshot.history):
             return

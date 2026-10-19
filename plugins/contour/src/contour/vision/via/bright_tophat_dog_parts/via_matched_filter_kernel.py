@@ -1,5 +1,6 @@
 """bright_tophat_dog: via matched filter kernel."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.vision.io_normalize import to_gray_u8
@@ -213,3 +214,7 @@ def _percentile_mask(response: np.ndarray, percentile: float) -> np.ndarray:
     # frame. Require a strictly positive response so the background is never a
     # candidate region.
     return np.where((response >= threshold) & (response > 0), 255, 0).astype(np.uint8)
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaDetection
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

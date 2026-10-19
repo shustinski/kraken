@@ -15,7 +15,7 @@ from contour.vision.metal_recovery.gradient_watershed import (  # noqa: E402
     build_conductor_seeds,
 )
 
-from benchmark_metal_segmentation_parts.rasterize_polygon_labels import _rasterize_polygon_labels
+from .rasterize_polygon_labels import _rasterize_polygon_labels
 
 def resolution_probe(source_width: int = 2000, working_width: int = 640) -> list[dict[str, float | int | str]]:
     results: list[dict[str, float | int | str]] = []

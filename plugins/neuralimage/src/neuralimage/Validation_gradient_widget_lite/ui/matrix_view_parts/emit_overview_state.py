@@ -1,5 +1,6 @@
 """matrix_view: emit overview state."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QImage, QPixmap, QTransform
@@ -210,3 +211,6 @@ class EmitOverviewStateMixin:
             f" | value {payload.subpixel_value:.4f}"
             f" | parent {payload.parent_value:.4f}"
         )
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.score_fill_color import MatrixTileSelection

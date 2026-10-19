@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: repair invalid polygon descriptions."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 from ...domain.polygon_ring import (
     TOPOLOGY_CHECK_MAX_VERTICES,
@@ -125,3 +126,6 @@ def _single_polygon_topo_signature(polygon: PolygonData) -> tuple[object, ...]:
 
 def _polygons_topo_signature(polygons: list[PolygonData]) -> tuple[tuple[object, ...], ...]:
     return tuple(_single_polygon_topo_signature(polygon) for polygon in sorted(polygons, key=lambda q: q.id))
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

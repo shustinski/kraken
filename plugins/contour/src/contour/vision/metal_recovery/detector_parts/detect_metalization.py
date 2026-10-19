@@ -1,5 +1,6 @@
 """detector: detect metalization."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import replace
 import cv2
 import numpy as np
@@ -167,3 +168,6 @@ def detect_metalization(
         "auto_local_objects": local_counts,
     }
     return selected
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.detector_parts.metal_recovery_config import MetalRecoveryConfig

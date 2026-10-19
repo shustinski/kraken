@@ -1,5 +1,6 @@
 """qt: cell visual color."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import math
 from collections.abc import Mapping
 from datetime import datetime
@@ -196,3 +197,6 @@ class CellVisualColorMixin:
                 event.accept()
                 return
         super().mouseDoubleClickEvent(event)
+
+if TYPE_CHECKING:
+    from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData

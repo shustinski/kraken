@@ -87,13 +87,9 @@ def test_desktop_controller_opens_local_project(qapp, tmp_path, monkeypatch) -> 
         derived_root=derived,
     )
     shell = ProjectManagerShell()
-    controller = DesktopController(
-        shell, service, session, thumbnail_store_uri="memory://", plugin_items=[]
-    )
+    controller = DesktopController(shell, service, session, thumbnail_store_uri="memory://", plugin_items=[])
     controller._agent_timer.stop()
-    controller.open_project(
-        ProjectListItem(str(project.id), project.name, project.width, project.height, "local")
-    )
+    controller.open_project(ProjectListItem(str(project.id), project.name, project.width, project.height, "local"))
     assert controller._workspace is not None
     qapp.processEvents()
 
@@ -105,16 +101,18 @@ def test_desktop_controller_opens_local_project(qapp, tmp_path, monkeypatch) -> 
     assert _statistics_panel(service) is not None
     assert _plugin_panel([]) is not None
 
-    DesktopController._map_not_configured(controller._workspace)
+    assert controller._workspace.matrix_view is not None
     controller._agent_timer.stop()
     controller._workspace = None
 
 
 def test_live_server_dual_catalog_smoke(tmp_path: Path) -> None:
+    base_url = os.environ.get("KRAKEN_SMOKE_SERVER_URL")
+    access_token = os.environ.get("KRAKEN_SMOKE_SERVER_TOKEN")
+    if not base_url or not access_token:
+        pytest.skip("Set KRAKEN_SMOKE_SERVER_URL and KRAKEN_SMOKE_SERVER_TOKEN for an isolated test server")
     try:
-        health = RemoteHttpClient("http://127.0.0.1:8080").request(
-            "GET", "/api/v1/health", token=""
-        )
+        health = RemoteHttpClient(base_url).request("GET", "/api/v1/health", token="")
     except Exception as exc:  # noqa: BLE001 - optional live dependency
         pytest.skip(f"kraken-server not available: {exc}")
     if health.get("status") != "ok":
@@ -124,8 +122,8 @@ def test_live_server_dual_catalog_smoke(tmp_path: Path) -> None:
     local.create_initial_account("admin", "Administrator", "")
     dual = DualCatalogService(local)
     dual.configure_remote(
-        base_url="http://127.0.0.1:8080",
-        access_token="smoke-dev-token",
+        base_url=base_url,
+        access_token=access_token,
         principal=Principal.local(subject="smoke", display_name="Smoke"),
     )
     created = dual.create_project(
@@ -144,10 +142,14 @@ def test_live_server_dual_catalog_smoke(tmp_path: Path) -> None:
 def test_live_agent_health_smoke() -> None:
     from urllib.request import Request, urlopen
 
+    base_url = os.environ.get("KRAKEN_SMOKE_AGENT_URL")
+    access_token = os.environ.get("KRAKEN_SMOKE_AGENT_TOKEN")
+    if not base_url or not access_token:
+        pytest.skip("Set KRAKEN_SMOKE_AGENT_URL and KRAKEN_SMOKE_AGENT_TOKEN for an isolated test agent")
     try:
         request = Request(
-            "http://127.0.0.1:8765/api/v1/health",
-            headers={"Authorization": "Bearer qa-agent-token"},
+            f"{base_url.rstrip('/')}/api/v1/health",
+            headers={"Authorization": f"Bearer {access_token}"},
         )
         with urlopen(request, timeout=2) as response:
             body = response.read().decode()

@@ -52,6 +52,8 @@ def _separation_core_mask(
     return np.isin(labels, valid_ids, assume_unique=True)
 
 def _max_filter_map(array: np.ndarray, radius: int) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     values = np.asarray(array, dtype=np.float32)
     local_radius = max(1, int(radius))
     if ndi is not None:

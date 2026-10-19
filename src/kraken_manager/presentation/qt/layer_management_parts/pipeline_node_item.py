@@ -1,5 +1,6 @@
 """layer_management: pipeline node item."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Callable
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPen
@@ -146,3 +147,6 @@ class PipelineNodeItem(QGraphicsRectItem):
                 self._collapse()
             else:
                 self._request_action(self.node, code)
+
+if TYPE_CHECKING:
+    from kraken_manager.presentation.qt.layer_management_parts.format_scalar import PipelineNode

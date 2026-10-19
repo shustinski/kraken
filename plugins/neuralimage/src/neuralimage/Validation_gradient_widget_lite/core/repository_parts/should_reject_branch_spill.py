@@ -1,5 +1,6 @@
 """repository: should reject branch spill."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
     PolygonConfidencePipelineConfig,
@@ -75,3 +76,6 @@ def _should_reject_branch_spill(
     if not reject:
         return False, ()
     return True, ('branch_spill_reject',)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

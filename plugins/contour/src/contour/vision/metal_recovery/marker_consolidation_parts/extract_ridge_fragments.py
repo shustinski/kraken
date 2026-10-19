@@ -1,5 +1,6 @@
 """marker_consolidation: extract ridge fragments."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
@@ -69,3 +70,6 @@ def _extract_ridge_fragments(
             )
         )
     return tuple(fragments)
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence

@@ -35,6 +35,8 @@ class WorkMode(enum.Enum):
     futher_training = 'further_training'
 
 def normalize_work_mode(value: str | WorkMode | None) -> str:
+    from neuralimage.lib.data_interfaces import _WORK_MODE_ALIASES
+
     if isinstance(value, WorkMode):
         return value.value
     normalized = str(value or '').strip()
@@ -70,6 +72,8 @@ class ConfidenceSaveMode(enum.Enum):
     separate_grayscale = 'separate_grayscale'
 
 def normalize_confidence_save_mode(value: str | ConfidenceSaveMode | None) -> str:
+    from neuralimage.lib.data_interfaces import _CONFIDENCE_SAVE_MODE_ALIASES
+
     if isinstance(value, ConfidenceSaveMode):
         return value.value
     raw = str(value or '').strip().lower()
@@ -97,6 +101,8 @@ class SchedulerName(enum.Enum):
     step_lr = 'step_lr'
 
 def normalize_scheduler_name(value: str | SchedulerName | None) -> str:
+    from neuralimage.lib.data_interfaces import _SCHEDULER_NAME_ALIASES
+
     if isinstance(value, SchedulerName):
         return value.value
     raw = str(value or '').strip().lower()
@@ -116,6 +122,8 @@ def normalize_multi_gpu_mode(
     *,
     use_multi_gpu_fallback: bool | None = None,
 ) -> str:
+    from neuralimage.lib.data_interfaces import _MULTI_GPU_MODE_ALIASES
+
     if isinstance(value, MultiGpuMode):
         return value.value
 
@@ -136,6 +144,8 @@ class PatchBatchSyncMode(enum.Enum):
     patch_and_batch = 'patch_and_batch'
 
 def normalize_patch_batch_sync_mode(value: str | PatchBatchSyncMode | None) -> str:
+    from neuralimage.lib.data_interfaces import _PATCH_BATCH_SYNC_MODE_ALIASES
+
     if isinstance(value, PatchBatchSyncMode):
         return value.value
     raw = str(value or '').strip().lower()

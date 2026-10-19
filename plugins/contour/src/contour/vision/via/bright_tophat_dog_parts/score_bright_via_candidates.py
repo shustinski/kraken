@@ -1,5 +1,6 @@
 """bright_tophat_dog: score bright via candidates."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from ....application.preview_cancellation import raise_if_preview_cancelled
@@ -92,3 +93,7 @@ def score_bright_via_candidates(
             "final_overlay": overlay,
         },
     )
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaDetection, BrightViaDetectionResult, BrightViaPreparedCandidates
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

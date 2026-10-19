@@ -1,5 +1,6 @@
 """services: create default profile."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.gamification.config import DEFAULT_GAMIFICATION_BALANCE, GamificationBalance
 from contour.gamification.models import (
     GamificationProfile,
@@ -72,3 +73,6 @@ class CreateDefaultProfileMixin:
 
     def save_profile(self, profile: GamificationProfile) -> None:
         self._store.save_payload(self.profile_to_payload(self.repair_profile(profile)))
+
+if TYPE_CHECKING:
+    from contour.gamification.services_parts.in_memory_gamification_payload import GamificationPayloadStore

@@ -1,5 +1,6 @@
 """matrix_view: build matrix layout."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import math
 from ...core.domain import FrameRecord
 from ...core.repository import natural_sort_key
@@ -78,3 +79,6 @@ def build_matrix_layout(records: list[FrameRecord], layout_config: MatrixLayoutC
         column = frame_index % columns
         placements.append((record, row, column))
     return placements, columns, rows
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.score_fill_color import MatrixLayoutConfig

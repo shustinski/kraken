@@ -1,5 +1,6 @@
 """marker_consolidation: local wide unions."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
@@ -75,3 +76,6 @@ def _local_wide_unions(
                     _union(parent, fragment_id, other)
                     unions += 1
     return unions
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence

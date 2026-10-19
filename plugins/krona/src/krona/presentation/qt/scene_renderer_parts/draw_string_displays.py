@@ -1,5 +1,6 @@
 """scene_renderer: draw string displays."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from krona.infrastructure.edif_parser import EdifTextParser
 
 
@@ -43,3 +44,6 @@ class DrawStringDisplaysMixin:
                 if library_name and (library_name, display_group) in self._fig_styles:
                     style.update(self._fig_styles[(library_name, display_group)])
             self._draw_text(value, x, y, justify, style["color"], style["text_height"], text_scale=text_scale)
+
+if TYPE_CHECKING:
+    from krona.presentation.qt.scene_renderer_parts.affine2_d import Affine2D

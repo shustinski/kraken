@@ -1,5 +1,6 @@
 """scene_renderer: draw port glyph at."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import re
 from PyQt6.QtGui import QColor, QPen
 from krona.infrastructure.edif_parser import EdifTextParser
@@ -174,3 +175,6 @@ class DrawPortGlyphAtMixin:
                 text_height=24,
                 text_scale=0.1,
             )
+
+if TYPE_CHECKING:
+    from krona.presentation.qt.scene_renderer_parts.affine2_d import Affine2D

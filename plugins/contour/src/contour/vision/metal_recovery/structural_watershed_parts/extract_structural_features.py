@@ -1,5 +1,6 @@
 """structural_watershed: extract structural features."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass
 import cv2
 import numpy as np
@@ -171,3 +172,6 @@ def _bright_rim_response(denoised: np.ndarray, magnitude: np.ndarray) -> np.ndar
 def _angles_aligned(first: np.ndarray, second: np.ndarray, *, max_delta: float) -> np.ndarray:
     delta = np.abs(np.mod(first - second + np.pi * 0.5, np.pi) - np.pi * 0.5)
     return delta <= max_delta
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.structural_watershed_parts.clamped_structural_watershed_config import StructuralWatershedConfig

@@ -37,6 +37,7 @@ class ConstructionMixin:
         self._parent_window = parent
         self._panel = settings_panel
         self._training_parameters = training_parameters
+        self._panel.set_synthetic_defect_generator_config(training_parameters.synthetic_defect_generator)
         self._texts = get_ui_section('augmentation_preview_dialog')
         self._settings_texts = get_ui_section('settings_panel')
         self._is_russian_ui = any('\u0400' <= char <= '\u04FF' for char in str(self._texts.get('window_title', '')))

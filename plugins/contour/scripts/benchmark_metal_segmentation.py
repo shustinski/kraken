@@ -15,6 +15,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+for import_root in (PLUGIN_ROOT, PLUGIN_ROOT / "src"):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
 import cv2
 import numpy as np
 from contour.application.processing import ContourExtractionSettings  # noqa: E402
@@ -44,12 +50,14 @@ from contour.vision.preprocessing import (  # noqa: E402
     preprocess_for_sem,
 )
 
-from benchmark_metal_segmentation_parts.module_state import (
+from scripts.benchmark_metal_segmentation_parts.module_state import (
+    REAL_DATASET_ROOT,
+    SOURCE_ROOT,
     STRATEGIES,
     EVALUATION_BORDER_CROP_PX,
     BORDER_AUDIT_FRAMES,
 )
-from benchmark_metal_segmentation_parts.render_sem import (
+from scripts.benchmark_metal_segmentation_parts.render_sem import (
     BenchmarkCase,
     SegmentationMetrics,
     SeedDiagnostics,
@@ -57,8 +65,8 @@ from benchmark_metal_segmentation_parts.render_sem import (
     _draw_rect,
     _render_sem,
 )
-from benchmark_metal_segmentation_parts.build_benchmark_cases import build_benchmark_cases
-from benchmark_metal_segmentation_parts.rasterize_polygon_labels import (
+from scripts.benchmark_metal_segmentation_parts.build_benchmark_cases import build_benchmark_cases
+from scripts.benchmark_metal_segmentation_parts.rasterize_polygon_labels import (
     _preprocess_real_sem,
     _rasterize_polygon_labels,
     _rasterize_reference_labels,
@@ -74,31 +82,26 @@ from benchmark_metal_segmentation_parts.rasterize_polygon_labels import (
     labels_for_component_audit,
     _boundary_f1,
 )
-from benchmark_metal_segmentation_parts.topology_errors import _topology_errors
-from benchmark_metal_segmentation_parts.measure_segmentation import measure_segmentation
-from benchmark_metal_segmentation_parts.seed_diagnostics import seed_diagnostics
-from benchmark_metal_segmentation_parts.ui_recovery_config import (
+from scripts.benchmark_metal_segmentation_parts.topology_errors import _topology_errors
+from scripts.benchmark_metal_segmentation_parts.measure_segmentation import measure_segmentation
+from scripts.benchmark_metal_segmentation_parts.seed_diagnostics import seed_diagnostics
+from scripts.benchmark_metal_segmentation_parts.ui_recovery_config import (
     resolution_probe,
     _write_diagnostic_overlay,
     _rasterize_detected_polygons,
     _ui_recovery_config,
 )
-from benchmark_metal_segmentation_parts.aggregate_strategy_metrics import _aggregate_strategy_metrics
-from benchmark_metal_segmentation_parts.evaluation_record import _evaluation_record
-from benchmark_metal_segmentation_parts.run_benchmark import run_benchmark
-from benchmark_metal_segmentation_parts.write_csv import (
+from scripts.benchmark_metal_segmentation_parts.aggregate_strategy_metrics import _aggregate_strategy_metrics
+from scripts.benchmark_metal_segmentation_parts.evaluation_record import _evaluation_record
+from scripts.benchmark_metal_segmentation_parts.run_benchmark import run_benchmark
+from scripts.benchmark_metal_segmentation_parts.write_csv import (
     _write_csv,
     _format_metric,
 )
-from benchmark_metal_segmentation_parts.markdown import _markdown
-from benchmark_metal_segmentation_parts.default_evaluation_border_crop import _default_evaluation_border_crop_px
-from benchmark_metal_segmentation_parts.main import main
+from scripts.benchmark_metal_segmentation_parts.markdown import _markdown
+from scripts.benchmark_metal_segmentation_parts.default_evaluation_border_crop import _default_evaluation_border_crop_px
+from scripts.benchmark_metal_segmentation_parts.main import main
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_ROOT = PLUGIN_ROOT / "src"
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
-REAL_DATASET_ROOT = PLUGIN_ROOT / "tests" / "test_metal"
 
 if __name__ == "__main__":
     raise SystemExit(main())

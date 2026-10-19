@@ -1,5 +1,6 @@
 """detector: refine local candidate."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.utils import ensure_uint8
@@ -66,3 +67,7 @@ def _refine_local_candidate(
         mask_override=refined_mask,
         include_axis_debug=False,
     )
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.detector_parts.contour_extraction_settings_metal import MetalDetectionResult
+    from contour.vision.metal_recovery.detector_parts.metal_recovery_config import MetalRecoveryConfig

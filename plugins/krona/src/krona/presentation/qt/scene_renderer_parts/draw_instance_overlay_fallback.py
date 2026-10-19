@@ -1,5 +1,6 @@
 """scene_renderer: draw instance overlay fallback."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtGui import QBrush, QColor, QFont, QPen
 from krona.infrastructure.edif_parser import EdifTextParser
 
@@ -95,3 +96,6 @@ class DrawInstanceOverlayFallbackMixin:
             color=(17, 24, 39),
             text_height=10,
         )
+
+if TYPE_CHECKING:
+    from krona.presentation.qt.scene_renderer_parts.affine2_d import Affine2D

@@ -1,5 +1,6 @@
 """services: selection service."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from random import Random
 from contour.gamification.config import DEFAULT_GAMIFICATION_BALANCE, GamificationBalance
 from contour.gamification.models import (
@@ -111,3 +112,6 @@ class GamificationService:
             results.append(skin_drop_result)
         self.profile_service.save_profile(profile)
         return results
+
+if TYPE_CHECKING:
+    from contour.gamification.services import GamificationProfileService

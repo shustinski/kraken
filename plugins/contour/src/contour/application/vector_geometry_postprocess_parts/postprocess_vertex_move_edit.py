@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: postprocess vertex move edit."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from math import hypot
 from contour.domain import PolygonData
 
@@ -82,3 +83,6 @@ def postprocess_vertex_move_edit(
 
     work = drop_orphan_holes(work)
     return work, True, resolve_focus_id_after_geometry_pass(polygons, polygon_id, work)
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

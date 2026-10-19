@@ -1,5 +1,6 @@
 """bright_tophat_dog: local maxima points."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
@@ -74,3 +75,7 @@ def _brightness_gate_reason(center_mean: float, cfg: BrightViaDetectorConfig) ->
             parts.append(f"dark={cfg.dark_range_min:.0f}-{cfg.dark_range_max:.0f}")
         return f"brightness_out_of_range (raw={center_mean:.1f}, {'; '.join(parts)})"
     return f"low_center (raw={center_mean:.1f} min={cfg.bright_center_min_score})"
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import _RawStage1
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

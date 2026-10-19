@@ -1,5 +1,6 @@
 """serializers: encode parent holes link."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from time import perf_counter
 from contour.domain import PolygonData
 
@@ -105,3 +106,6 @@ def _encode_parent_with_holes_link_path(parent: PolygonData, holes: list[Polygon
         path = _rotate_open_ring(open_path, canonical_start_index)
     _note_cif_phase_timing("cif_hole_link_encode", encode_started_at)
     return path
+
+if TYPE_CHECKING:
+    from contour.serializers_parts.module_state import _HoleLinkDetour

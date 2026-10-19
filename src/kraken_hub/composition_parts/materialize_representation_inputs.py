@@ -1,5 +1,6 @@
 """composition: materialize representation inputs."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from kraken_manager.application.imports import ImportMappingMode
 from kraken_manager.domain.identity import (
     Principal,
@@ -46,3 +47,6 @@ class MaterializeRepresentationInputsMixin:
             idempotency_key=f"agent-inputs:{representation.id}",
         )
         return self.frame_cells(project.id, layer.id, representation.id)
+
+if TYPE_CHECKING:
+    from kraken_hub.composition_parts.frame_cell_snapshot import FrameCellSnapshot

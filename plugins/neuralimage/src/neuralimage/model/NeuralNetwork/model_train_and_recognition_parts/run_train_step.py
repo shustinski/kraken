@@ -1,5 +1,6 @@
 """model_train_and_recognition: run train step."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import time
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -138,3 +139,6 @@ class RunTrainStepMixin:
             backward_ms=backward_ms,
             optimizer_ms=optimizer_ms,
         )
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _PreparedTrainBatch, _RunContext

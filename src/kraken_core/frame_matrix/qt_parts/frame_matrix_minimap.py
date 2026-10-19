@@ -1,5 +1,6 @@
 """qt: frame matrix minimap."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
@@ -119,3 +120,6 @@ class FrameMatrixMinimap(QWidget):
             event.accept()
             return
         super().mouseMoveEvent(event)
+
+if TYPE_CHECKING:
+    from kraken_core.frame_matrix.qt import FrameMatrixView

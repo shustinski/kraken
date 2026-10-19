@@ -173,6 +173,8 @@ class QSettingsStateStore:
         return QSettings(organization, application)
 
     def load_main_window_state(self) -> MainWindowState:
+        from .build_main_window_state import _build_main_window_state
+
         settings = self._settings(MAIN_WINDOW_ORG, MAIN_WINDOW_APP)
         state = _build_main_window_state(
             read_str=lambda key, default: settings.value(key, default, type=str),
@@ -182,6 +184,8 @@ class QSettingsStateStore:
         return state
 
     def save_main_window_state(self, state: MainWindowState) -> None:
+        from .build_main_window_state import _main_window_state_to_storage_dict
+
         settings = self._settings(MAIN_WINDOW_ORG, MAIN_WINDOW_APP)
         for key, value in _main_window_state_to_storage_dict(state).items():
             settings.setValue(key, value)

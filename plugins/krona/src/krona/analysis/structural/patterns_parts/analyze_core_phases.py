@@ -1,5 +1,6 @@
 """patterns: analyze core phases."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from krona.analysis.structural.phases import ClockChainAnalysis
 
 from krona.analysis.structural.patterns_parts.storage_phase_profile import StoragePhaseProfile
@@ -53,3 +54,6 @@ class AnalyzeCorePhasesMixin:
                 )
             )
         return profiles
+
+if TYPE_CHECKING:
+    from krona.analysis.structural.patterns_parts.storage_phase_profile import BistableCoreCandidate, InputMuxCandidate

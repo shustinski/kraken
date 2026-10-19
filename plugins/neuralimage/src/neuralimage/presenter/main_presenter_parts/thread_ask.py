@@ -108,6 +108,8 @@ class ThreadAskMixin:
         sample_counting.dispatch_sample_count_request(self)
 
     def _start_sample_count_request(self, request: tuple[int, str, CutSettings, object]) -> None:
+        from neuralimage.presenter.main_presenter import SampleWorker
+
         sample_counting.start_sample_count_request(
             self,
             request,
@@ -124,6 +126,8 @@ class ThreadAskMixin:
         cached_path: str | None,
         cached_sizes: list[tuple[int, int]] | None,
     ) -> None:
+        from neuralimage.presenter.main_presenter import SampleWorker
+
         sample_counting.run_sample_count_request(
             self,
             request_id,

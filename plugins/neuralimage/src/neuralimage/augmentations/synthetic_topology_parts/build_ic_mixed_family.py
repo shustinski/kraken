@@ -13,6 +13,8 @@ class BuildIcMixedFamilyMixin:
         width: int,
         rng: random.Random,
     ) -> tuple[np.ndarray, list[tuple[int, int]]]:
+        from neuralimage.augmentations.synthetic_topology import SyntheticTopologyGenerator
+
         combined_mask = np.zeros((height, width), dtype=np.uint8)
         combined_anchors: list[tuple[int, int]] = []
         family_specs = (

@@ -1,5 +1,6 @@
 """pipeline: operation descriptor."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass
 from typing import Any
 from ..application.processing import OperationParameterSpec
@@ -39,3 +40,6 @@ def get_parameter_display_label(spec: OperationParameterSpec, language: str | No
 
 def get_choice_display_label(parameter_name: str, value: str, language: str | None = None) -> str:
     return choice_label(parameter_name, value, default=value, language=language)
+
+if TYPE_CHECKING:
+    from contour.pipeline_parts.module_state import OperationCallable

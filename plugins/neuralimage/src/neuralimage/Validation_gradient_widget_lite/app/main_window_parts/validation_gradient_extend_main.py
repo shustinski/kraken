@@ -1,5 +1,6 @@
 """main_window: validation gradient extend main."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QMainWindow,
 )
@@ -12,6 +13,8 @@ class ValidationGradientExtendMainWindow(QMainWindow):
     """Standalone host window for the extended widget."""
 
     def __init__(self) -> None:
+        from neuralimage.Validation_gradient_widget_lite.app.main_window import ValidationGradientExtendWidget
+
         super().__init__()
         self._widget = ValidationGradientExtendWidget(self)
         self.setWindowTitle(self._widget._t("window.title"))
@@ -24,3 +27,6 @@ class ValidationGradientExtendMainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._widget.shutdown()
         super().closeEvent(event)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.app.main_window import ValidationGradientExtendWidget

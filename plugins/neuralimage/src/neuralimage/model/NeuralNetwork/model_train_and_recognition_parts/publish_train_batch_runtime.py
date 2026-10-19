@@ -1,5 +1,6 @@
 """model_train_and_recognition: publish train batch runtime."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any, cast
 import torch
 
@@ -75,3 +76,6 @@ class PublishTrainBatchRuntimeMixin:
                     'total': int(run_context.train_size),
                 },
             ])
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _PreparedTrainBatch, _RunContext, _TrainStepResult

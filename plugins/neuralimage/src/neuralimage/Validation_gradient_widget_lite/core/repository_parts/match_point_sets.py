@@ -22,6 +22,8 @@ def _point_match_threshold(point_a: object, point_b: object, base_radius: float)
     return float(max(0.0, float(base_radius)))
 
 def _match_point_sets(points_a: tuple[object, ...], points_b: tuple[object, ...], base_radius: float) -> tuple[list[float], set[int], set[int]]:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cKDTree
+
     candidate_pairs: list[tuple[float, int, int]] = []
     if cKDTree is not None and points_a and points_b:
         coords_a = _point_coordinates(points_a)

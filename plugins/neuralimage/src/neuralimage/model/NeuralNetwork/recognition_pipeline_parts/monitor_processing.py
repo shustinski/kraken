@@ -1,5 +1,6 @@
 """recognition_pipeline: monitor processing."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import multiprocessing as mp
 from typing import Iterable
 
@@ -57,6 +58,8 @@ class MonitorProcessingMixin:
             sew_queue.put(self._config.stop_token)
 
     def _consume_completed_frame(self, *, queues: PipelineQueues, completed: int) -> int:
+        from neuralimage.model.NeuralNetwork.recognition_pipeline import _try_get_queue_item
+
         completed_item = _try_get_queue_item(queues.sewed, timeout=0.2)
         if completed_item is _QUEUE_EMPTY:
             return completed
@@ -113,3 +116,6 @@ class MonitorProcessingMixin:
             if process.is_alive():
                 process.kill()
                 process.join(timeout=5)
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.recognition_workload import PipelineQueues, WorkerGroups

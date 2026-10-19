@@ -1,5 +1,6 @@
 """matrix_view: refresh scene."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from ...core.domain import FrameRecord
 
 from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.module_state import (
@@ -200,3 +201,6 @@ class RefreshSceneMixin:
             round(float(self._pan_bias[0]), 3),
             round(float(self._pan_bias[1]), 3),
         )
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.score_fill_color import MatrixTileSelection

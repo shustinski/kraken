@@ -153,6 +153,10 @@ def test_augmentation_preview_dialog_uses_runtime_spinbox_values(qapp):
     before = dialog._augmented_image_array.copy()
     panel.photometric_groupbox.setChecked(True)
     panel.augmentation_brightness_spinbox.setValue(1.0)
+    panel.brightness_augmentation_check_box.setChecked(True)
+    panel.augmentation_brightness_probability_spinbox.setValue(1.0)
+    panel.augmentation_multiplier_spinbox.setValue(0)
+    dialog.resample_button.click()
     qapp.processEvents()
 
     assert dialog._augmented_image_array is not None
@@ -235,6 +239,7 @@ def test_augmentation_preview_dialog_resamples_synthetic_topology(qapp):
     label_dir.mkdir()
 
     dialog, panel = _build_preview_dialog(_build_training_parameters(sample_dir, label_dir))
+    dialog.full_image_check_box.setChecked(True)
     dialog.show()
     qapp.processEvents()
 
@@ -418,6 +423,8 @@ def test_augmentation_preview_dialog_builds_apply_payload_from_current_preview_c
     panel.crops_per_image_spinbox.setValue(17)
     panel.photometric_groupbox.setChecked(True)
     panel.augmentation_brightness_spinbox.setValue(0.33)
+    panel.brightness_augmentation_check_box.setChecked(True)
+    panel.noise_augmentation_check_box.setChecked(True)
     panel.augmentation_noise_probability_spinbox.setValue(0.42)
     panel.augmentation_noise_sigma_spinbox.setValue(0.015)
     panel.synthetic_defect_generator_check_box.setChecked(True)

@@ -32,6 +32,8 @@ def cut_image_process(
     compression_factor: int = 1,
     source_root: Path | None = None,
 ):
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import _cut_image_process
+
     return _cut_image_process(
         cut_queue,
         cutted_queue,
@@ -59,6 +61,8 @@ def cut_image_prepare(
     compression_factor: int = 1,
     source_root: Path | None = None,
 ):
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import _cut_image_prepare
+
     return _cut_image_prepare(
         img_path,
         segment_size,
@@ -105,6 +109,8 @@ def gpu_predict(
     recognition_tta_enabled=False,
     confidence_tta_enabled=False,
 ):
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import _gpu_predict
+
     return _gpu_predict(
         img,
         model,
@@ -159,6 +165,8 @@ def sew_from_queue(
     )
 
 def sew(save_dir, item, jpeg_quality=95, *, threshold=None, postprocess_kernel_size=0, confidence_save_mode='off'):
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import _sew
+
     return _sew(
         save_dir,
         item,

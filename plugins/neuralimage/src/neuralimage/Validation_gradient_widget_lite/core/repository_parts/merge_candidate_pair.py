@@ -1,5 +1,6 @@
 """repository: merge candidate pair."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from functools import lru_cache
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.backend_constants import (
@@ -146,3 +147,6 @@ def _candidate_neighbor_pairs(
                     pairs.add(pair)
                 bins.setdefault(cell, []).append(index)
     return sorted(pairs)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

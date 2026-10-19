@@ -1,5 +1,6 @@
 """matrix_view: tile selection cell."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtCore import QRectF
 from PyQt6.QtGui import QColor, QPen
 from ...core.analysis_modes import metric_visual_ratio
@@ -226,3 +227,6 @@ class TileSelectionCellMixin:
             position = map_score_to_palette_position(score, self._auto_color_window_low, self._auto_color_window_high)
         position = enhance_palette_position(position)
         return interpolate_gradient_color(self._gradient_name, position)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.ui.matrix_view_parts.matrix_cell_item import _MatrixCellItem

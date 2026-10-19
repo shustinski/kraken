@@ -16,6 +16,8 @@ from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validatio
 
 class RunMixin:
     def run(self):
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import _is_debugger_attached
+
         training_process: Any = None
         try:
             if not self._validate_training_inputs():

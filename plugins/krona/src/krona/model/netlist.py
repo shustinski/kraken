@@ -76,6 +76,8 @@ class Net:
         :param text: Фрагмент edf файла, содержащий информацию о net
         :return:
         """
+        from krona.model.edif import EdifParser
+
         net_joined = EdifParser.find_classes(text, '(joined ')
 
     def append_connections(self, connections):

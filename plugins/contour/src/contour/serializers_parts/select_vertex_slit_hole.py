@@ -1,5 +1,6 @@
 """serializers: select vertex slit hole."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 
 from contour.serializers_parts.boundary_vertices_by_distance import (
@@ -133,3 +134,6 @@ def _edge_parameter(
     if abs(delta_y) > 1e-12:
         return (float(point[1]) - float(start[1])) / delta_y
     return 0.0
+
+if TYPE_CHECKING:
+    from contour.serializers_parts.module_state import _HoleLinkDetour

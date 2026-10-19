@@ -1,5 +1,6 @@
 """retranslate_ui: retranslate ui."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtCore import QSignalBlocker
 from ....vision.metal_recovery.strategy_registry import strategy_spec
 from contour.ui.bright_via_i18n import retranslate_bright_via_panel
@@ -23,3 +24,6 @@ def retranslate_ui(self: PolygonExtractionWidget) -> None:
     _retranslate_ui_section_2(self, index)
     tooltip_key, widget = _retranslate_ui_section_3(self, tooltip_key, widget)
     _retranslate_ui_section_4(self, selected_operation, selected_pipeline_row, tooltip, tooltip_key, widget)
+
+if TYPE_CHECKING:
+    from contour.widget import PolygonExtractionWidget

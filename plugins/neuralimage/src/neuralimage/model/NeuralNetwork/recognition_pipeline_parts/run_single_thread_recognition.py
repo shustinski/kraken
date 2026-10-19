@@ -1,5 +1,6 @@
 """recognition_pipeline: run single thread recognition."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from pathlib import Path
 from typing import Any
 import torch
@@ -55,6 +56,10 @@ def run_single_thread_recognition(
     uncertainty: UncertaintyConfig | None = None,
     asset_source: AssetSource | None = None,
 ) -> None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import gpu_predict, sew
+
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import cut_image_prepare
+
     model.eval()
     model.to(device)
     publish('logging', 'Recognition started in single-thread mode.')
@@ -185,3 +190,6 @@ def run_single_thread_recognition(
             'output_path': str(output_path),
         })
         _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import MemoryMetricsCollector, Publisher

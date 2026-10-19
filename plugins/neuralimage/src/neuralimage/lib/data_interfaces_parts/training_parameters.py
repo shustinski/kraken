@@ -1,5 +1,6 @@
 """data_interfaces: training parameters."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass, field
 from pathlib import Path
 from neuralimage.active_learning.config import ActiveLearningConfig
@@ -107,3 +108,7 @@ class TrainingParameters:
     topograph_debug_viz: bool = False
     topograph_num_processes: int = 1
     topograph_use_c: bool = False
+
+if TYPE_CHECKING:
+    from neuralimage.lib.data_interfaces_parts.random_patch_size_parameters import SampleCutMode
+    from neuralimage.lib.data_interfaces_parts.sample_generation_settings import SampleGenerationSettings, SamplePrepareSettings

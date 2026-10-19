@@ -14,6 +14,8 @@ from neuralimage.preprocessing.config import PreprocessingConfig, build_preproce
 
 class ResolveTrainingModelMixin:
     def _resolve_training_model(self):
+        from neuralimage.model.general_neural_handler import create_model, load_model_artifact
+
         artifact_dir = self._resolve_training_artifact_dir()
         if self.work_mode in (WorkMode.train_and_recognition, WorkMode.train_only):
             model_name = str(self.recognition_parameters.model)

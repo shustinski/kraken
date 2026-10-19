@@ -1,5 +1,6 @@
 """retranslate: retranslate strategy parameter pages."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtWidgets import QComboBox, QFormLayout, QGroupBox
 from ...vision.metal_recovery.strategy_registry import strategy_spec
 from contour.ui.metal_strategy_i18n import choice_label, parameter_label, parameter_tooltip
@@ -47,3 +48,6 @@ def _retranslate_strategy_parameter_pages(self: PolygonExtractionWidget) -> None
                 if language == "ru"
                 else ("Advanced" if advanced else "Basic")
             )
+
+if TYPE_CHECKING:
+    from contour.widget import PolygonExtractionWidget

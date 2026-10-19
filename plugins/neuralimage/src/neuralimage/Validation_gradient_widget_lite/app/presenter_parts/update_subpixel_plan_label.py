@@ -90,6 +90,8 @@ class UpdateSubpixelPlanLabelMixin:
 
     @staticmethod
     def _first_image_shape(folder_path: Path) -> tuple[int, int] | None:
+        from neuralimage.Validation_gradient_widget_lite.app.presenter import ValidationGradientExtendPresenter
+
         allowed = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
         try:
             if folder_path.is_file() and folder_path.suffix.lower() in allowed:

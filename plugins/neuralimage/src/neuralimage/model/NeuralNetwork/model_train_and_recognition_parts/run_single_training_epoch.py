@@ -1,5 +1,6 @@
 """model_train_and_recognition: run single training epoch."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import time
 from typing import cast
 import torch
@@ -130,3 +131,6 @@ class RunSingleTrainingEpochMixin:
             ])
 
         return None
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _TrainingRuntimeState

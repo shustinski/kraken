@@ -1,5 +1,6 @@
 """model_train_and_recognition: save validation binary predictions."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from pathlib import Path
 from typing import Any
 from neuralimage.model.NeuralNetwork.recognition_pipeline import (
@@ -15,6 +16,8 @@ class SaveValidationBinaryPredictionsMixin:
         threshold: float,
         export_cache: _ValidationExportCache | None,
     ) -> int | None:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import _sew
+
         if export_cache is None:
             return None
 
@@ -78,3 +81,6 @@ class SaveValidationBinaryPredictionsMixin:
                     pass
             return f'sample_{sample_index:06d}'
         return f'batch_{int(fallback_batch_index) + 1:06d}'
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validation_no_cut_frame import _ValidationExportCache

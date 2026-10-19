@@ -1,5 +1,6 @@
 """model_train_and_recognition: stop process descendants."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any, Protocol
 import torch
 
@@ -42,3 +43,6 @@ class _SupportsLossAwareSampling(Protocol):
 
     def resize(self, size: int, *, reset: bool = False) -> None:
         ...
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import TrainerProcess

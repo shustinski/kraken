@@ -1,5 +1,6 @@
 """repository: collect frame records modern."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from pathlib import Path
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
     BuildOptions,
@@ -162,3 +163,6 @@ def _collect_frame_records_modern(
         selected_metric_key="overall_frame_score",
         available_metric_keys=_available_metric_keys_for_models(model_specs),
     )
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.module_state import _FolderPathLookup

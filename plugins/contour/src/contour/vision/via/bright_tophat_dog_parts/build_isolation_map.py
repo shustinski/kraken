@@ -1,5 +1,6 @@
 """bright_tophat_dog: build isolation map."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.vision.io_normalize import to_gray_u8
@@ -199,3 +200,6 @@ def _sample_distance(distance_map: np.ndarray, center: tuple[float, float]) -> f
     if distance_map.size == 0:
         return 0.0
     return _bilinear_sample(distance_map, center[0], center[1])
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaDetection, _RawStage1

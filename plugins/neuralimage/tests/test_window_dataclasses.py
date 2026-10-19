@@ -36,7 +36,7 @@ def test_settings_state_defaults():
     assert state.confidence_save_mode == 'off'
     assert state.dice_loss_weight == 0.5
     assert state.iou_loss_weight == 0.5
-    assert state.mixed_precision == 'fp16'
+    assert state.mixed_precision == 'off'
     assert state.deep_supervision is False
     assert state.warmup_enabled is False
     assert state.scheduler_name == 'off'
@@ -46,7 +46,7 @@ def test_settings_state_defaults():
     assert state.scheduler_step_lr_gamma == 0.1
     assert state.hard_mining_enabled is False
     assert state.hard_mining_strength == 2.0
-    assert state.hard_mining_ema_alpha == 0.2
+    assert state.hard_mining_ema_alpha == 0.3
     assert state.hard_pixel_mining_enabled is False
     assert state.hard_pixel_mining_ratio == 0.25
     assert state.cutout_enabled is False
@@ -63,7 +63,7 @@ def test_settings_state_defaults():
     assert state.skip_uniform_labels is False
     assert state.rare_patch_oversampling_enabled is False
     assert state.rare_patch_oversampling_factor == 2
-    assert state.torch_compile_enabled is True
+    assert state.torch_compile_enabled is False
     assert state.early_stopping_enabled is False
     assert state.tech_aug == {}
     assert state.pcb_defects == {}

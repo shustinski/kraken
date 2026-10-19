@@ -1,5 +1,6 @@
 """logic_functions: detect async force controls."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class DetectAsyncForceControlsMixin:
@@ -137,3 +138,6 @@ class DetectAsyncForceControlsMixin:
             if not conflict:
                 final_controls.append(candidate)
         return final_controls
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

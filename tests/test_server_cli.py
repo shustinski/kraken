@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from kraken_server import cli
+from kraken_admin import cli
+from kraken_admin.cli_parts import api_request as project_commands
+from kraken_admin.cli_parts import initialize_local_server as local_setup
 from kraken_server.provisioning import (
     new_postgres_provisioning,
     provision_postgres,
@@ -112,28 +114,42 @@ def test_local_initialization_orchestrates_database_migrations_config_and_admin(
             str(config_path),
             "--blob-root",
             str(tmp_path / "blobs"),
+            "--source-root",
+            str(tmp_path / "source"),
+            "--derived-root",
+            str(tmp_path / "derived"),
             "--non-interactive",
         ]
     )
-    monkeypatch.setattr(cli, "_secret", lambda *_args, **_kwargs: "postgres password")
-    monkeypatch.setattr(cli, "_password", lambda *_args, **_kwargs: "admin password")
-    monkeypatch.setattr(cli, "provision_postgres", lambda request: calls.append(("provision", request)))
-    monkeypatch.setattr(cli, "run_migrations", lambda url: calls.append(("migrate", url)))
+    monkeypatch.setattr(local_setup, "_secret", lambda *_args, **_kwargs: "postgres password")
+    monkeypatch.setattr(local_setup, "_password", lambda *_args, **_kwargs: "admin password")
+    monkeypatch.setattr(local_setup, "provision_postgres", lambda request: calls.append(("provision", request)))
+    monkeypatch.setattr(local_setup, "run_migrations", lambda url: calls.append(("migrate", url)))
 
     def write(path, **kwargs):
         calls.append(("config", path, kwargs))
         return SimpleNamespace(path=path, database_url=kwargs["database_url"], host="127.0.0.1", port=8080)
 
-    monkeypatch.setattr(cli, "write_config", write)
-    monkeypatch.setattr(cli, "_postgres_store", lambda _url: object())
-    monkeypatch.setattr(cli, "_bootstrap", lambda *_args, **_kwargs: "account-id")
+    monkeypatch.setattr(local_setup, "write_config", write)
+    monkeypatch.setattr(local_setup, "_postgres_store", lambda _url: object())
+    monkeypatch.setattr(local_setup, "_bootstrap", lambda *_args, **_kwargs: "account-id")
 
     assert cli._execute(args) == 0
     assert [call[0] for call in calls] == ["provision", "migrate", "config"]
 
 
 def test_local_initialization_wizard_uses_entered_database_and_admin_credentials(monkeypatch, tmp_path: Path) -> None:
-    args = cli._parser().parse_args(["init", "--config", str(tmp_path / "server.toml")])
+    args = cli._parser().parse_args(
+        [
+            "init",
+            "--config",
+            str(tmp_path / "server.toml"),
+            "--source-root",
+            str(tmp_path / "source"),
+            "--derived-root",
+            str(tmp_path / "derived"),
+        ]
+    )
     answers = iter(
         [
             "db.example.test",
@@ -146,29 +162,29 @@ def test_local_initialization_wizard_uses_entered_database_and_admin_credentials
         ]
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-    monkeypatch.setattr(cli, "_secret", lambda *_args, **_kwargs: "postgres password")
+    monkeypatch.setattr(local_setup, "_secret", lambda *_args, **_kwargs: "postgres password")
     monkeypatch.setattr(
-        cli,
+        local_setup,
         "_password",
         lambda *_args, **kwargs: (
             "database password" if kwargs.get("environment") == "KRAKEN_DATABASE_PASSWORD" else "kraken password"
         ),
     )
     captured = {}
-    monkeypatch.setattr(cli, "provision_postgres", lambda request: captured.update(request=request))
-    monkeypatch.setattr(cli, "run_migrations", lambda _url: None)
+    monkeypatch.setattr(local_setup, "provision_postgres", lambda request: captured.update(request=request))
+    monkeypatch.setattr(local_setup, "run_migrations", lambda _url: None)
 
     def write(path, **kwargs):
         return SimpleNamespace(path=path, database_url=kwargs["database_url"], host="127.0.0.1", port=8080)
 
-    monkeypatch.setattr(cli, "write_config", write)
-    monkeypatch.setattr(cli, "_postgres_store", lambda _url: object())
+    monkeypatch.setattr(local_setup, "write_config", write)
+    monkeypatch.setattr(local_setup, "_postgres_store", lambda _url: object())
 
     def bootstrap(_store, username, display_name, *, password):
         captured.update(username=username, display_name=display_name, password=password)
         return "account-id"
 
-    monkeypatch.setattr(cli, "_bootstrap", bootstrap)
+    monkeypatch.setattr(local_setup, "_bootstrap", bootstrap)
 
     cli._execute(args)
 
@@ -189,12 +205,12 @@ def test_local_initialization_rolls_back_new_database_on_failure(monkeypatch, tm
         ["init-local-server", "--config", str(tmp_path / "server.toml"), "--non-interactive"]
     )
     calls = []
-    monkeypatch.setattr(cli, "_secret", lambda *_args, **_kwargs: "postgres password")
-    monkeypatch.setattr(cli, "_password", lambda *_args, **_kwargs: "admin password")
-    monkeypatch.setattr(cli, "provision_postgres", lambda request: calls.append(("provision", request)))
-    monkeypatch.setattr(cli, "remove_provisioned_postgres", lambda request: calls.append(("remove", request)))
+    monkeypatch.setattr(local_setup, "_secret", lambda *_args, **_kwargs: "postgres password")
+    monkeypatch.setattr(local_setup, "_password", lambda *_args, **_kwargs: "admin password")
+    monkeypatch.setattr(local_setup, "provision_postgres", lambda request: calls.append(("provision", request)))
+    monkeypatch.setattr(local_setup, "remove_provisioned_postgres", lambda request: calls.append(("remove", request)))
     monkeypatch.setattr(
-        cli,
+        local_setup,
         "run_migrations",
         lambda _url: (_ for _ in ()).throw(RuntimeError("migration failed")),
     )
@@ -207,14 +223,14 @@ def test_local_initialization_rolls_back_new_database_on_failure(monkeypatch, tm
 
 def test_project_create_is_scriptable(monkeypatch, capsys) -> None:
     args = cli._parser().parse_args(["project-create", "--name", "Demo", "--width", "10", "--height", "20", "--json"])
-    monkeypatch.setattr(cli, "_server_session", lambda _args: ("http://server", "token"))
+    monkeypatch.setattr(project_commands, "_server_session", lambda _args: ("http://server", "token"))
     captured = {}
 
     def request(server, method, path, **kwargs):
         captured.update(server=server, method=method, path=path, **kwargs)
         return {"project_id": "project-id", "name": "Demo"}
 
-    monkeypatch.setattr(cli, "_api_request", request)
+    monkeypatch.setattr(project_commands, "_api_request", request)
 
     cli._create_project(args)
 
@@ -229,7 +245,7 @@ def test_project_cli_requires_https_outside_loopback(monkeypatch) -> None:
         username="admin",
         non_interactive=False,
     )
-    monkeypatch.setattr(cli, "_secret", lambda *_args, **_kwargs: "password")
+    monkeypatch.setattr(project_commands, "_secret", lambda *_args, **_kwargs: "password")
 
     with pytest.raises(ValueError, match="HTTPS"):
         cli._server_session(args)

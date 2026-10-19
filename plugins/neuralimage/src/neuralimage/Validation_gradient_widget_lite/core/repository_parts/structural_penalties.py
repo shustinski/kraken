@@ -15,6 +15,8 @@ from neuralimage.Validation_gradient_widget_lite.core.repository_parts.mask_stru
 )
 
 def _nearest_distances_between_coordinate_sets(coords_a: np.ndarray, coords_b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cKDTree
+
     coords_a = np.asarray(coords_a, dtype=np.float32)
     coords_b = np.asarray(coords_b, dtype=np.float32)
     if coords_a.shape[0] == 0 or coords_b.shape[0] == 0:
@@ -46,6 +48,8 @@ def _hausdorff_distance(
     first_structure: dict[str, object] | None = None,
     second_structure: dict[str, object] | None = None,
 ) -> float:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cv2, ndi
+
     first_boundary = np.asarray((first_structure or {}).get("boundary"), dtype=bool) if (first_structure or {}).get("boundary") is not None else _boundary_mask(first)
     second_boundary = np.asarray((second_structure or {}).get("boundary"), dtype=bool) if (second_structure or {}).get("boundary") is not None else _boundary_mask(second)
     shape = tuple(int(v) for v in np.asarray(first_boundary).shape)

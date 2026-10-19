@@ -91,17 +91,17 @@ class OptionalConfigValueMixin:
     @staticmethod
     def _clone_plain_payload(value: Any) -> Any:
         if isinstance(value, Mapping):
-            return {str(key): SettingsPanel._clone_plain_payload(item) for key, item in value.items()}
+            return {str(key): OptionalConfigValueMixin._clone_plain_payload(item) for key, item in value.items()}
         if hasattr(value, '__dict__'):
             return {
-                str(key): SettingsPanel._clone_plain_payload(item)
+                str(key): OptionalConfigValueMixin._clone_plain_payload(item)
                 for key, item in vars(value).items()
                 if not str(key).startswith('_')
             }
         if isinstance(value, list):
-            return [SettingsPanel._clone_plain_payload(item) for item in value]
+            return [OptionalConfigValueMixin._clone_plain_payload(item) for item in value]
         if isinstance(value, tuple):
-            return [SettingsPanel._clone_plain_payload(item) for item in value]
+            return [OptionalConfigValueMixin._clone_plain_payload(item) for item in value]
         return deepcopy(value)
 
     @staticmethod
@@ -132,7 +132,7 @@ class OptionalConfigValueMixin:
             parents.append((node, key))
             node = nested
         leaf_key = path[-1]
-        if SettingsPanel._config_value_matches_default(value, default):
+        if OptionalConfigValueMixin._config_value_matches_default(value, default):
             node.pop(leaf_key, None)
         else:
             node[leaf_key] = value

@@ -1,5 +1,6 @@
 """marker_consolidation: render debug."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.utils import ensure_binary_mask, ensure_uint8
@@ -129,3 +130,6 @@ def _render_debug(
         "metal_structural_logical_wide": _label_overlay(wide_logical),
         "metal_structural_logical_markers": _label_overlay(combined),
     }
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import RidgeLink

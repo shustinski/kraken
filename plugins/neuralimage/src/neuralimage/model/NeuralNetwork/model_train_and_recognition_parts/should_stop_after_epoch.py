@@ -1,5 +1,6 @@
 """model_train_and_recognition: should stop after epoch."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import torch
 
 from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.collect_memory_metrics import _collect_memory_metrics
@@ -87,3 +88,6 @@ class ShouldStopAfterEpochMixin:
             self.callback()
         if is_main_process:
             print('Model saved successfully!')
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _TrainingRuntimeState

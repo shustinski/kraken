@@ -1,5 +1,6 @@
 """structural_watershed: debug images."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.utils import ensure_binary_mask, ensure_uint8
@@ -105,3 +106,6 @@ def _debug_images(
         "metal_structural_gy_f32": features.gradient_y,
         "metal_structural_instance_labels_i32": instance_labels.astype(np.int32, copy=False),
     }
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.structural_watershed_parts.extract_structural_features import _StructuralFeatures

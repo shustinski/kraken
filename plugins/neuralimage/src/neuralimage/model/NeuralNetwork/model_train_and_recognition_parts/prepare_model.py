@@ -1,5 +1,6 @@
 """model_train_and_recognition: prepare model."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import os
 import sys
 import hashlib
@@ -29,6 +30,8 @@ from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.recognize
 
 class PrepareModelMixin:
     def prepare_model(self):
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import load_model_artifact
+
         loaded_model: str | Path | nn.Module = self._parameters.model
         if isinstance(loaded_model, (str, Path)):
             loaded_model = load_model_artifact(loaded_model, map_location='cpu')
@@ -94,6 +97,8 @@ class PrepareModelMixin:
         self._parameters.preprocessing = artifact_config
 
     def run_multiprocessing(self, runtime_plan: RecognitionRuntimePlan | None = None):
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import run_multiprocessing_recognition
+
         if self.asset_source is not None:
             raise ValueError('Server streams require single-thread recognition')
         if runtime_plan is None:
@@ -144,6 +149,8 @@ class PrepareModelMixin:
         )
 
     def run_one_thread(self):
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import run_single_thread_recognition
+
         model = self.model
         if model is None:
             raise RuntimeError('Model is not prepared before recognition start.')
@@ -209,3 +216,6 @@ class PrepareModelMixin:
     def stop(self):
         self._thread_stop_event.set()
         self.stop_event.set()
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.recognizer_process import RecognitionRuntimePlan

@@ -1,5 +1,6 @@
 """qt: update visible tiles."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import math
 from PyQt6.QtCore import QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen
@@ -213,3 +214,6 @@ class UpdateVisibleTilesMixin:
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.drawRect(rect)
+
+if TYPE_CHECKING:
+    from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData

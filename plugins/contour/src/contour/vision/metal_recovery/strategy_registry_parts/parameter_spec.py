@@ -1,5 +1,6 @@
 """strategy_registry: parameter spec."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from importlib import import_module
@@ -149,3 +150,6 @@ def visible_strategy_specs() -> tuple[StrategySpec, ...]:
     from contour.vision.metal_recovery.strategy_registry import STRATEGY_REGISTRY
 
     return tuple(spec for spec in STRATEGY_REGISTRY.values() if spec.strategy_id != "ic_sem_expert")
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.strategy_registry_parts.module_state import ParameterKind, ParameterValue

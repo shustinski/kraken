@@ -1,5 +1,6 @@
 """model_train_and_recognition: publish validation metrics."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import torch
 import torch.distributed as dist
 
@@ -188,3 +189,6 @@ class PublishValidationMetricsMixin:
             early_stopping_config=early_stopping_config,
             active_profiler=active_profiler,
         )
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _EarlyStoppingConfig, _EarlyStoppingState, _RunContext

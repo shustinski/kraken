@@ -1,5 +1,6 @@
 """marker_consolidation: sample corridor."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 
 from contour.vision.metal_recovery.marker_consolidation_parts.module_state import _CORRIDOR_HALF_WIDTH_PX
@@ -66,3 +67,6 @@ def _sample_corridor(
         edge=edge,
         interior=interior,
     )
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence

@@ -1,5 +1,6 @@
 """structural_watershed: wide interior markers."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.utils import ensure_binary_mask
@@ -199,3 +200,7 @@ def _inter_ridge_valleys(
         min_area=max(2, int(config.min_marker_area) // 2),
         min_length=max(3, int(config.min_marker_length) // 2),
     )
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.structural_watershed_parts.clamped_structural_watershed_config import StructuralWatershedConfig
+    from contour.vision.metal_recovery.structural_watershed_parts.extract_structural_features import _StructuralFeatures

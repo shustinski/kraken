@@ -1,5 +1,6 @@
 """patterns: detect dynamic precharge evaluate."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from krona.analysis.structural.phases import ClockChainAnalysis
 
 
@@ -112,3 +113,6 @@ class DetectDynamicPrechargeEvaluateMixin:
                 }
             )
         return features
+
+if TYPE_CHECKING:
+    from krona.analysis.structural.patterns_parts.storage_phase_profile import BistableCoreCandidate

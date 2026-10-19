@@ -63,13 +63,15 @@ def test_settings_panel_toggles_augmentation_groupboxes(qapp):
     panel.sync_business_logic_controls(WorkMode.train_only.value)
     panel.expert_groupbox.setChecked(True)
 
-    assert panel.spatial_groupbox.isHidden() is False
+    assert panel._settings_cards['augmentation'].isAncestorOf(panel.training_augmentation_editor)
 
+    panel.brightness_augmentation_check_box.setChecked(False)
     panel.additional_augmentation_check_box.setChecked(False)
     panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
-    assert panel.photometric_groupbox.isHidden() is False
+    assert 'photometric' in panel.training_augmentation_editor.block_items
     assert panel._field_rows[panel.augmentation_brightness_spinbox].isEnabled() is False
 
+    panel.brightness_augmentation_check_box.setChecked(True)
     panel.additional_augmentation_check_box.setChecked(True)
     panel._sync_augmentation_controls(panel.additional_augmentation_check_box.isChecked())
     assert panel._field_rows[panel.augmentation_brightness_spinbox].isEnabled() is True
@@ -78,9 +80,9 @@ def test_settings_panel_toggles_augmentation_groupboxes(qapp):
     panel.random_artifacts_check_box.setChecked(False)
     panel.mixup_check_box.setChecked(False)
     panel._sync_training_augmentation_controls()
-    assert panel.cutout_groupbox.isHidden() is False
-    assert panel.random_artifacts_groupbox.isHidden() is False
-    assert panel.mixup_groupbox.isHidden() is False
+    assert 'cutout' in panel.training_augmentation_editor.row_items
+    assert 'random_artifacts' in panel.training_augmentation_editor.row_items
+    assert 'mixup' in panel.training_augmentation_editor.row_items
     assert panel._field_rows[panel.cutout_probability_spinbox].isEnabled() is False
     assert panel._field_rows[panel.random_artifacts_probability_spinbox].isEnabled() is False
     assert panel._field_rows[panel.mixup_probability_spinbox].isEnabled() is False
@@ -96,12 +98,12 @@ def test_settings_panel_toggles_augmentation_groupboxes(qapp):
 def test_settings_panel_uses_photometric_and_spatial_labels_and_shared_sampling_row(qapp):
     panel = SettingsPanel()
 
-    assert panel.additional_augmentation_check_box.title() == 'Фотометрическая аугументация'
+    assert panel.additional_augmentation_check_box.title() == 'Фотометрические аугментации'
     assert panel.spatial_groupbox.title() == 'Пространственные аугментации'
     assert panel.flip_x.text()
     assert panel.flip_y.text()
-    assert panel._field_rows[panel.shift_spinbox].parentWidget() is panel.spatial_sampling_row_widget
-    assert panel._field_rows[panel.crops_per_image_spinbox].parentWidget() is panel.spatial_sampling_row_widget
+    assert panel._settings_cards['sampling'].isAncestorOf(panel.shift_spinbox)
+    assert panel._settings_cards['sampling'].isAncestorOf(panel.crops_per_image_spinbox)
 
 def test_settings_panel_places_mixed_precision_in_runtime_and_rare_patch_on_training_tab(qapp):
     panel = SettingsPanel()

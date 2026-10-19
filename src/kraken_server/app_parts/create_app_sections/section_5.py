@@ -1,5 +1,4 @@
 """create_app section 5."""
-from __future__ import annotations
 import asyncio
 import os
 import re
@@ -28,6 +27,7 @@ from kraken_server.app_parts.module_state import API_PREFIX
 from kraken_server.app_parts.session_principal import SessionPrincipal
 
 def _create_app_section_5(account_store, session_resolver, development, agent_gateway, blob_gateway, Depends, HTTPException, Header, Request, StreamingResponse, WebSocket, WebSocketDisconnect, agent_identity, app, backend, has_project_access, hub, run_in_threadpool, transfer_identity):
+    @app.get(f"{API_PREFIX}/agent/jobs/{{job_id}}/inputs/{{version_id}}")
     def agent_job_input(
         job_id: str,
         version_id: str,

@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: postprocess polygons frame navigation."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from math import hypot
 from contour.domain import PolygonData, integer_point
 from ...domain.polygon_ring import (
@@ -97,3 +98,6 @@ def apply_edge_translation_to_clone(
     _invalidate_authored_cif_paint_for_edit(work, target)
     _refresh_metrics(target)
     return work
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

@@ -1,5 +1,6 @@
 """marker_consolidation: mutual best matches."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 from contour.vision.metal_recovery.marker_consolidation_parts.module_state import (
     _AMBIGUITY_RATIO,
@@ -75,3 +76,6 @@ def _mutual_best_matches(
         seen_pairs.add(fragment_pair)
 
     return tuple(accepted), tuple(rejected), reasons
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import RidgeLink

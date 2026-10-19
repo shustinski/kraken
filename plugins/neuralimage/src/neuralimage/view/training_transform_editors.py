@@ -281,6 +281,7 @@ class TrainingAugmentationEditor(QGroupBox):
                     for control in (row.probability, row.value):
                         if control is not None:
                             control.setEnabled(enabled)
+                            control.setVisible(enabled)
         finally:
             self._sync_guard = False
 

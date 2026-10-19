@@ -16,6 +16,8 @@ from neuralimage.model.general_neural_handler_parts.estimate_label_foreground_ra
 
 class ResolveDataloaderWorkersMixin:
     def _create_train_control_loader(self):
+        from neuralimage.model.general_neural_handler import DataLoader
+
         dataset = getattr(self, '_train_control_dataset', None)
         if dataset is None:
             return None
@@ -39,6 +41,8 @@ class ResolveDataloaderWorkersMixin:
         )
 
     def _resolve_dataloader_workers(self) -> int:
+        from neuralimage.model.general_neural_handler import _is_debugger_attached
+
         if _is_debugger_attached():
             return 0
         try:

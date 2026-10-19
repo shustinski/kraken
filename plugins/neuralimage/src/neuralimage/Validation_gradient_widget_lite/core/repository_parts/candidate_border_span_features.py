@@ -1,5 +1,6 @@
 """repository: candidate border span features."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.domain import (
     PolygonConfidencePipelineConfig,
@@ -192,3 +193,6 @@ def _local_prominence_map(probability: np.ndarray, radius: int) -> np.ndarray:
     local_mean = _local_mean_map(prob, radius=max(1, int(radius)))
     prominence = np.clip(prob - local_mean, 0.0, 1.0)
     return np.asarray(prominence, dtype=np.float32)
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

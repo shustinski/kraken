@@ -13,6 +13,7 @@ import torch.nn as nn
 
 from neuralimage.lib.file_retry import retry_file_read
 import neuralimage.model as model
+import neuralimage
 from . import CNN_Models, blocks, dual_scale_models, transformer_segmentation
 from .registrator import create_model, get_registered_models
 
@@ -25,12 +26,14 @@ _MAX_DYNAMIC_SAFE_GLOBAL_RETRIES = 32
 _UNSUPPORTED_GLOBAL_PATTERN = re.compile(r'Unsupported global: GLOBAL ([\w\.]+)')
 _DYNAMIC_SAFE_GLOBAL_PREFIXES = (
     'model.NeuralNetwork.',
+    'neuralimage.model.NeuralNetwork.',
     'torch.nn.',
     'collections.',
 )
 _SAFE_GLOBAL_ROOTS: dict[str, Any] = {
     'collections': collections,
     'model': model,
+    'neuralimage': neuralimage,
     'torch': torch,
 }
 
@@ -43,7 +46,7 @@ def _iter_internal_module_classes(module: Any) -> list[type[Any]]:
         if not issubclass(value, nn.Module):
             continue
         module_name = str(getattr(value, '__module__', ''))
-        if module_name.startswith('model.NeuralNetwork.'):
+        if module_name.startswith(('model.NeuralNetwork.', 'neuralimage.model.NeuralNetwork.')):
             classes.append(value)
     return classes
 

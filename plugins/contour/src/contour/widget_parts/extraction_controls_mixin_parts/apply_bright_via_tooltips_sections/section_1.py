@@ -1,7 +1,7 @@
 """_apply_bright_via_tooltips section 1."""
 from __future__ import annotations
 
-def __apply_bright_via_tooltips_section_1(self):
+def _apply_bright_via_tooltips_section_1(self):
     ru = self._ui_language == "ru"
 
     def tt(ru_text: str, en_text: str) -> str:

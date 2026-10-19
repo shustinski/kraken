@@ -115,7 +115,7 @@ def test_server_contour_actions_require_the_interactive_client_plugin(action):
 def test_pipeline_actions_accept_source_plugins_without_installed_distribution(action):
     from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_directory
 
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     plugin_id = "neuralimage" if action == "recognize_external" else "contour"
     plugin = load_plugin_metadata_from_directory(root / "plugins" / plugin_id)
     controller = object.__new__(DesktopController)

@@ -187,9 +187,14 @@ class GenerationSettingsCutterMixin:
         return True
 
     def _photometric_effect_enabled(self, spinbox: QWidget) -> bool:
-        if not self._panel.photometric_groupbox.isChecked():
-            return False
-        return float(spinbox.value()) > 0.0
+        controls = {
+            self._panel.augmentation_brightness_spinbox: self._panel.brightness_augmentation_check_box,
+            self._panel.augmentation_contrast_spinbox: self._panel.contrast_augmentation_check_box,
+            self._panel.augmentation_gamma_spinbox: self._panel.gamma_augmentation_check_box,
+            self._panel.augmentation_noise_probability_spinbox: self._panel.noise_augmentation_check_box,
+            self._panel.augmentation_blur_probability_spinbox: self._panel.blur_augmentation_check_box,
+        }
+        return controls[spinbox].isChecked() and float(spinbox.value()) > 0.0
 
     def _tech_effect_enabled(self, spinbox: QWidget) -> bool:
         if not self._panel.tech_augmentation_check_box.isChecked():

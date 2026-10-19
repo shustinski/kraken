@@ -1,7 +1,7 @@
 """_apply_bright_via_tooltips section 3."""
 from __future__ import annotations
 
-def __apply_bright_via_tooltips_section_3(self, label_widget, tt):
+def _apply_bright_via_tooltips_section_3(self, label_widget, tt):
     if getattr(self, "metal_gap_bridge_spin", None) is not None:
         self.metal_gap_bridge_spin.setToolTip(
             tt(

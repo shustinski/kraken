@@ -17,6 +17,8 @@ def _resize_like(array: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray
     return np.asarray(resize_grayscale_image(np.asarray(array, dtype=np.uint8), target_shape))
 
 def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cv2, ndi
+
     mask_bool = np.asarray(mask, dtype=bool)
     if mask_bool.size == 0 or not np.any(mask_bool):
         return np.zeros_like(mask_bool, dtype=np.int32), 0
@@ -47,6 +49,8 @@ def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
     return labels, next_label - 1
 
 def _binary_erode(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     mask_bool = np.asarray(mask, dtype=bool)
     if radius <= 0:
         return mask_bool.copy()
@@ -61,6 +65,8 @@ def _binary_erode(mask: np.ndarray, radius: int = 1) -> np.ndarray:
     return result
 
 def _binary_dilate(mask: np.ndarray, radius: int = 1) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     mask_bool = np.asarray(mask, dtype=bool)
     if radius <= 0:
         return mask_bool.copy()
@@ -75,6 +81,8 @@ def _binary_dilate(mask: np.ndarray, radius: int = 1) -> np.ndarray:
     return result
 
 def _binary_dilate_rect(mask: np.ndarray, radius_y: int = 1, radius_x: int = 1) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     mask_bool = np.asarray(mask, dtype=bool)
     ry = max(0, int(radius_y))
     rx = max(0, int(radius_x))
@@ -118,6 +126,8 @@ def _boundary_mask(mask: np.ndarray) -> np.ndarray:
     return center & np.logical_not(interior)
 
 def _distance_transform(mask: np.ndarray) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cv2, ndi
+
     mask_bool = np.asarray(mask, dtype=bool)
     if ndi is not None:
         return np.asarray(ndi.distance_transform_edt(mask_bool), dtype=np.float32)
@@ -127,6 +137,8 @@ def _distance_transform(mask: np.ndarray) -> np.ndarray:
     raise RuntimeError("Distance transform backend is unavailable")
 
 def _neighbor_count(mask: np.ndarray) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import cv2
+
     image = np.asarray(mask, dtype=np.uint8)
     if cv2 is not None:
         kernel = np.ones((3, 3), dtype=np.uint8)

@@ -1,5 +1,6 @@
 """recognition_pipeline: recognition workload."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import os
 import multiprocessing as mp
 import traceback
@@ -178,3 +179,6 @@ def _report_worker_exception(error_queue: mp.Queue | None, worker_name: str) -> 
         )
     except Exception:
         pass
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import Publisher

@@ -1,5 +1,6 @@
 """bright_tophat_dog: draw overlay."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any
 import cv2
 import numpy as np
@@ -93,3 +94,7 @@ def _draw_overlay(
                 cv2.LINE_AA,
             )
     return base
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaDetection
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

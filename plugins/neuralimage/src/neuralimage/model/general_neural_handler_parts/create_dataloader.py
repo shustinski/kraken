@@ -19,6 +19,8 @@ from neuralimage.model.general_neural_handler_parts.random_patch_batch_sampler i
 
 class CreateDataloaderMixin:
     def _create_dataloader(self, train_dataset, val_dataset):
+        from neuralimage.model.general_neural_handler import DataLoader
+
         self._hard_mining_active = False
         if self._need_stop or train_dataset is None:
             return

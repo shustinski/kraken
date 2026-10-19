@@ -1,5 +1,6 @@
 """model_train_and_recognition: collect validation export batch."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any
 import numpy as np
 import torch
@@ -68,3 +69,6 @@ class CollectValidationExportBatchMixin:
                 frame_cache.confidence_patches[int(location)] = np.ascontiguousarray(
                     confidence[batch_offset].detach().cpu().to(dtype=torch.float16).numpy()
                 )
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validation_no_cut_frame import _ValidationExportCache

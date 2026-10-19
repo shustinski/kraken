@@ -1,5 +1,6 @@
 """structural_watershed: structural watershed config object."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass, field
 import numpy as np
 from contour.vision.metal_recovery.gradient_watershed import (
@@ -71,3 +72,6 @@ def structural_watershed_mask(
         structural_config,
         check_presence=check_presence,
     ).mask
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.structural_watershed_parts.clamped_structural_watershed_config import StructuralWatershedConfig

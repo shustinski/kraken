@@ -136,6 +136,8 @@ def _drain_process_queue(
         publish_message(queued_message)
 
 def _join_process_with_escalation(process: Any, *, join_timeout: float = 5.0) -> None:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import _stop_process_descendants
+
     if process is None:
         return
     try:

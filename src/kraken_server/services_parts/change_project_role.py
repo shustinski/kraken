@@ -1,5 +1,6 @@
 """services: change project role."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -98,3 +99,6 @@ class ChangeProjectRoleMixin:
             )
             self._idempotency[idempotency] = result
             return dict(result)
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

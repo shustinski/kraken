@@ -13,6 +13,8 @@ from neuralimage.view.settings_panel import SettingsPanel
 
 
 def _field_is_hidden(panel: SettingsPanel, field) -> bool:
+    if panel.training_augmentation_editor.isAncestorOf(field):
+        return field.isHidden()
     return panel._field_rows.get(field, field).isHidden()
 
 

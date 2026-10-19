@@ -39,8 +39,8 @@ def test_run_uses_one_thread_on_small_workload(monkeypatch):
     recognizer.prepare_model = lambda: None
     recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
     recognizer.run_multiprocessing = lambda _runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
 
     recognizer.run(multithreading=True)
 
@@ -57,8 +57,8 @@ def test_run_uses_multiprocessing_for_two_or_more_source_images(monkeypatch):
     recognizer.prepare_model = lambda: None
     recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
     recognizer.run_multiprocessing = lambda _runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
 
     recognizer.run(multithreading=True)
 
@@ -126,8 +126,8 @@ def test_run_falls_back_to_one_thread_for_in_memory_model(monkeypatch):
     recognizer.prepare_model = lambda: None
     recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
     recognizer.run_multiprocessing = lambda _runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
 
     recognizer.run(multithreading=True)
 
@@ -146,8 +146,8 @@ def test_run_uses_parameter_flag_to_disable_multiprocessing(monkeypatch):
     recognizer.prepare_model = lambda: None
     recognizer.run_one_thread = lambda: calls.__setitem__("one", calls["one"] + 1)
     recognizer.run_multiprocessing = lambda runtime_plan=None: calls.__setitem__("multi", calls["multi"] + 1)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.mp.cpu_count", lambda: 64)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available", lambda: False)
 
     recognizer.run()
 
@@ -222,7 +222,7 @@ def test_prepare_model_resolves_recommended_threshold_from_artifact_metadata(mon
 
     monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
     monkeypatch.setattr(
-        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        "neuralimage.model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
         lambda **kwargs: captured.update(kwargs),
     )
 
@@ -276,7 +276,7 @@ def test_prepare_model_uses_manual_threshold_and_postprocess_settings(monkeypatc
 
     monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
     monkeypatch.setattr(
-        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        "neuralimage.model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
         lambda **kwargs: captured.update(kwargs),
     )
 
@@ -306,7 +306,7 @@ def test_prepare_model_disables_threshold_when_binarization_is_off(monkeypatch):
 
     monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
     monkeypatch.setattr(
-        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        "neuralimage.model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
         lambda **kwargs: captured.update(kwargs),
     )
 
@@ -334,7 +334,7 @@ def test_run_multiprocessing_propagates_disabled_binarization_as_none_threshold(
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
-        "model.NeuralNetwork.model_train_and_recognition.run_multiprocessing_recognition",
+        "neuralimage.model.NeuralNetwork.model_train_and_recognition.run_multiprocessing_recognition",
         lambda **kwargs: captured.update(kwargs),
     )
 
@@ -357,7 +357,7 @@ def test_run_one_thread_passes_source_root_only_for_recursive_search(tmp_path, m
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
+        "neuralimage.model.NeuralNetwork.model_train_and_recognition.run_single_thread_recognition",
         lambda **kwargs: captured.update(kwargs),
     )
 
@@ -399,7 +399,7 @@ def test_run_multiprocessing_passes_source_root_for_recursive_search(tmp_path, m
 
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "model.NeuralNetwork.model_train_and_recognition.run_multiprocessing_recognition",
+        "neuralimage.model.NeuralNetwork.model_train_and_recognition.run_multiprocessing_recognition",
         lambda **kwargs: captured.update(kwargs),
     )
 
@@ -445,8 +445,8 @@ def test_model_recognizer_does_not_disable_process_mode_under_debugger(monkeypat
         def join(self, timeout=None):
             return
 
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition._is_debugger_attached", lambda: True)
-    monkeypatch.setattr("model.NeuralNetwork.model_train_and_recognition.RecognizerProcess", _FakeProcess)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition._is_debugger_attached", lambda: True)
+    monkeypatch.setattr("neuralimage.model.NeuralNetwork.model_train_and_recognition.RecognizerProcess", _FakeProcess)
 
     recognizer = ModelRecognizer(params, bus, multithreading=True)
     recognizer.run()

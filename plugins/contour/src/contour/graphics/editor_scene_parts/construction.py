@@ -1,5 +1,6 @@
 """editor_scene: construction."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import (
@@ -213,3 +214,6 @@ class ConstructionMixin:
         self.addItem(self._measurement_label_item)
         self._measurement_label_item.hide()
         self.setSceneRect(QRectF(0, 0, 1, 1))
+
+if TYPE_CHECKING:
+    from contour.graphics.editor_scene_parts.gradient_arrows_path import _DeferredGeometryRepairRequest

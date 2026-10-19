@@ -1,5 +1,6 @@
 """model_train_and_recognition: publish epoch load breakdown."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class PublishEpochLoadBreakdownMixin:
@@ -92,3 +93,6 @@ class PublishEpochLoadBreakdownMixin:
                 'dominant_stage': dominant_name,
             },
         ])
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _EpochStats, _RunContext

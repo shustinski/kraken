@@ -1,5 +1,6 @@
 """model_train_and_recognition: update loss aware sampling."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Mapping
 from typing import Any, Iterator, cast
 import torch
@@ -113,3 +114,6 @@ class UpdateLossAwareSamplingMixin:
             if not self._is_finite_tensor(gradient):
                 return name, gradient
         return None
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _RunContext

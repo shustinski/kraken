@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: postprocess after vertex move."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 
 from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import (
@@ -38,3 +39,6 @@ def postprocess_after_vertex_move(
         if before_merge != _polygons_topo_signature(work):
             changed = True
     return work, changed
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

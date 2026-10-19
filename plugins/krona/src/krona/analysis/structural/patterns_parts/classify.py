@@ -1,5 +1,6 @@
 """patterns: classify."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from krona.analysis.structural.graphs import GraphBundle
 from krona.analysis.structural.model import (
     CircuitModel,
@@ -20,3 +21,6 @@ class ClassifyMixin:
         recognized.extend(self._classify_bistable_cores(patterns))
         recognized = self._upgrade_jk_t_counter(recognized, patterns)
         return self._dedupe_recognized(recognized)
+
+if TYPE_CHECKING:
+    from krona.analysis.structural.patterns_parts.storage_phase_profile import PatternDatabase

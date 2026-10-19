@@ -1,5 +1,6 @@
 """model_train_and_recognition: evaluate automatic stop metric."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any
 import torch
 from neuralimage.model.NeuralNetwork.early_stopping import (
@@ -39,3 +40,6 @@ class EvaluateAutomaticStopMetricMixin:
             ),
             autocast_ctx=run_context.autocast_ctx,
         )
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _RunContext

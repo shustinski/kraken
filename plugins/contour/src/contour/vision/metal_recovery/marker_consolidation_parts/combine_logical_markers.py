@@ -1,5 +1,6 @@
 """marker_consolidation: combine logical markers."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 from contour.vision.metal_recovery.conductor_bands import (
@@ -81,3 +82,6 @@ def _combine_logical_markers(
         next_id += 1
     combined[remaining > 0] = ridge_map[remaining[remaining > 0]]
     return combined, kept_multi, dropped_sep
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence

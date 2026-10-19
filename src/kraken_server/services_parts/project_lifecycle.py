@@ -1,5 +1,6 @@
 """services: project lifecycle."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import tempfile
 import threading
 from pathlib import Path
@@ -207,3 +208,6 @@ class ProjectLifecycleMixin:
 
     def archive_project(self, project_id: str, context: CommandContext) -> dict[str, Any]:
         return self._project_lifecycle(project_id, context, operation="archive")
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

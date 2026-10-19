@@ -1,5 +1,6 @@
 """patterns: upgrade jk t counter."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from krona.analysis.structural.model import (
     CompositeFeature,
     RecognizedCellKind,
@@ -63,3 +64,6 @@ class UpgradeJkTCounterMixin:
                 )
             )
         return upgraded
+
+if TYPE_CHECKING:
+    from krona.analysis.structural.patterns_parts.storage_phase_profile import PatternDatabase

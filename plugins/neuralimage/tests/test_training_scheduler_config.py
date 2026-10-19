@@ -77,6 +77,7 @@ def _build_trainer(
 ) -> TrainerProcess:
     trainer = TrainerProcess.__new__(TrainerProcess)
     trainer._model = model or torch.nn.Linear(4, 2)
+    trainer._loss_weighter = None
     trainer._optimizer_params = optimizer_params or OptimizerParameters()
     trainer._scheduler_params = scheduler_params or SchedulerParameters()
     trainer._warmup_params = warmup_params or WarmupParameters()

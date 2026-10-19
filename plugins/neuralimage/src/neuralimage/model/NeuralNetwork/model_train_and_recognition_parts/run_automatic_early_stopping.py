@@ -1,5 +1,6 @@
 """model_train_and_recognition: run automatic early stopping."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import torch
 
 
@@ -72,3 +73,6 @@ class RunAutomaticEarlyStoppingMixin:
             distributed=distributed,
             device=device,
         )
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _RunContext

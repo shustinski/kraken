@@ -1,5 +1,6 @@
 """GENERAL_CONTROL_TOOLTIPS."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.graphics_view import EditorTool
 
 GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
@@ -196,3 +197,6 @@ GENERAL_CONTROL_TOOLTIPS: LocalizedTextMap = {
         "Height of the contact placed by the Contact tool when clicking the image.",
     ),
 }
+
+if TYPE_CHECKING:
+    from contour.ui.i18n_content_parts.module_state_parts.module_state import LocalizedTextMap

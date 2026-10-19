@@ -1,5 +1,6 @@
 """frame_matrix_view: attach graphics group item."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QBrush, QColor, QGuiApplication, QPen
 from PyQt6.QtWidgets import (
@@ -16,6 +17,9 @@ from contour.ui.frame_matrix_view_parts.module_state import (
     _OPENGL_DISABLED_PLATFORMS,
     _OPENGL_VIEWPORT_ENABLED,
 )
+
+if TYPE_CHECKING:
+    from contour.ui.frame_matrix_view import FrameMatrixGraphicsView
 
 
 class AttachGraphicsGroupItemMixin:
@@ -130,6 +134,8 @@ class AttachGraphicsGroupItemMixin:
 
     @staticmethod
     def _graphics_item_is_valid(graphics_item: QGraphicsItem) -> bool:
+        from contour.ui.frame_matrix_view import shiboken6
+
         if shiboken6 is None:
             try:
                 graphics_item.scene()

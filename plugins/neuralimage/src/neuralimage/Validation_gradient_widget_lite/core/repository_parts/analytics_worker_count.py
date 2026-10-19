@@ -1,5 +1,6 @@
 """repository: analytics worker count."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -208,3 +209,6 @@ def build_folder_index(
     if progress_callback is not None:
         progress_callback(len(index), len(index), Path(folder).name)
     return index
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.module_state import _FolderPathLookup

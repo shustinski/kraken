@@ -1,5 +1,6 @@
 """model_train_and_recognition: save pause checkpoint."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class SavePauseCheckpointMixin:
@@ -33,3 +34,6 @@ class SavePauseCheckpointMixin:
             'epoch': int(epoch),
             'next_batch': int(next_batch),
         }])
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _EarlyStoppingState, _RunContext

@@ -1,5 +1,6 @@
 """services: layer lifecycle."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -181,3 +182,6 @@ class LayerLifecycleMixin:
                 "roles": sorted(self._acl.get(key, set())),
                 "revision": self._acl_revisions.get(key, 0),
             }
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

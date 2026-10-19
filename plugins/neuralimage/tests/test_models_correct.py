@@ -36,6 +36,11 @@ def test_model_correctness():
         with autocast():
             out = model_test(dummy)
 
+        out = extract_mask_outputs(out)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        assert isinstance(out, torch.Tensor)
+        assert tuple(out.shape[-2:]) == (32, 32)
         out = out.to('cpu')
         torch.cuda.empty_cache()
         print('output shape:', out.shape)

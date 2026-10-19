@@ -1,5 +1,6 @@
 """main_window: create matrix tab."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QSizePolicy,
@@ -76,3 +77,6 @@ class CreateMatrixTabMixin:
             matrix_view.tileActivated.connect(lambda selection, s=state: self._presenter._open_record_details(selection.record, s, tile_selection=selection))
         matrix_view.overviewChanged.connect(lambda image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position, s=state: self._presenter._on_matrix_overview_changed(s, image, visible_rect, selected_position, selected_blink_on, processing_positions, reference_position))
         return state
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.domain import BuildResult

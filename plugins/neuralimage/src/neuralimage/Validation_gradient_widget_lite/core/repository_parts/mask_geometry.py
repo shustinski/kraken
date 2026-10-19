@@ -15,6 +15,8 @@ def _normalize_probability_map(probability: np.ndarray) -> np.ndarray:
     return np.clip(np.asarray(probability, dtype=np.float32), 0.0, 1.0).astype(np.float32)
 
 def _smooth_probability_map(probability: np.ndarray, config: PolygonConfidencePipelineConfig) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     prob = _normalize_probability_map(probability)
     if ndi is None:
         return prob
@@ -48,6 +50,8 @@ def _preprocess_polygon_probability(probability: np.ndarray, config: PolygonConf
     return _normalize_probability_map(preprocessed), _normalize_probability_map(locally_normalized)
 
 def _binary_erode_rect(mask: np.ndarray, radius_y: int = 1, radius_x: int = 1) -> np.ndarray:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     mask_bool = np.asarray(mask, dtype=bool)
     ry = max(0, int(radius_y))
     rx = max(0, int(radius_x))

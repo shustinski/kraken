@@ -1,5 +1,6 @@
 """bright_tophat_dog: bright via detection."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass, field
 import numpy as np
 from contour.vision.io_normalize import to_gray_u8
@@ -93,3 +94,6 @@ def detect_bright_vias(image: np.ndarray, config: BrightViaDetectorConfig) -> Br
         return _detect_binary_vias(gray, cfg)
     prepared = prepare_bright_via_candidates(image, cfg)
     return score_bright_via_candidates(prepared, cfg)
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

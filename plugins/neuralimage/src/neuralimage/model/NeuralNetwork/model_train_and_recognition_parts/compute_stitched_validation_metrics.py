@@ -1,5 +1,6 @@
 """model_train_and_recognition: compute stitched validation metrics."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.model.NeuralNetwork.dataset import NoCutDataset
 from neuralimage.lib.image_processing import sew_image
@@ -95,3 +96,6 @@ class ComputeStitchedValidationMetricsMixin:
         for bin_name, bin_count in confidence_histogram.items():
             totals[f'confidence_histogram/{bin_name}'] = float(bin_count)
         return totals, frame_count
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.validation_no_cut_frame import _ValidationExportCache

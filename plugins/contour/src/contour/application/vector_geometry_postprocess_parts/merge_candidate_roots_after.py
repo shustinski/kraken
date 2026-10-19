@@ -1,5 +1,6 @@
 """vector_geometry_postprocess: merge candidate roots after."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from contour.domain import PolygonData
 
 from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import (
@@ -212,3 +213,6 @@ def apply_heavy_geometry_repair_after_edit(
         removed_ids=removed_ids,
         removed_polygons=removed_polygons,
     )
+
+if TYPE_CHECKING:
+    from contour.application.vector_geometry_postprocess_parts.collapse_redundant_vertices_polygon import VectorGeometrySettings

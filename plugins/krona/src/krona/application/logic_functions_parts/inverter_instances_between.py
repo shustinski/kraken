@@ -1,5 +1,6 @@
 """logic_functions: inverter instances between."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class InverterInstancesBetweenMixin:
@@ -26,3 +27,6 @@ class InverterInstancesBetweenMixin:
             for net in self._unique([transistor.source, transistor.drain]):
                 degree[net] = degree.get(net, 0) + 1
         return degree
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

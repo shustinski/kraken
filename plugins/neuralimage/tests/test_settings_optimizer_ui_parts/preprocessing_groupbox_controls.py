@@ -16,18 +16,7 @@ def qapp():
     return app
 
 def _import_main_presenter_with_stubs():
-    nn_stub = types.ModuleType('model.NeuralNetwork')
-    nn_stub.get_registered_models = lambda: {}
-    nn_stub.get_registered_model_names_by_type = lambda: {}
-    handler_stub = types.ModuleType('model.general_neural_handler')
-    handler_stub.GeneralNeuralHandler = object
-    images_stub = types.ModuleType('lib.images')
-    images_stub.SampleWorker = object
-
-    sys.modules['model.NeuralNetwork'] = nn_stub
-    sys.modules['model.general_neural_handler'] = handler_stub
-    sys.modules['lib.images'] = images_stub
-    return importlib.import_module('presenter.main_presenter')
+    return importlib.import_module('neuralimage.presenter.main_presenter')
 
 def test_settings_panel_round_trips_sem_topology_configuration(qapp):
     panel = SettingsPanel()
@@ -66,7 +55,7 @@ def test_settings_panel_merges_sem_fields_into_existing_groups_with_tooltips(qap
     groups = panel.sem_segmentation_section_groupboxes
     assert panel._settings_cards['preprocessing'].isAncestorOf(groups['preprocessing'])
     assert groups['preprocessing'].isCheckable()
-    assert panel.training_augmentation_editor.isAncestorOf(groups['augmentation'])
+    assert panel.training_augmentation_editor.isAncestorOf(panel.sem_segmentation_controls['aug_charging_strength'])
     assert panel.loss_advanced_form.indexOf(groups['losses']) >= 0
     assert panel.hard_mining_form.indexOf(groups['hard_mining']) >= 0
     assert panel._settings_cards['inference_uncertainty'].isAncestorOf(

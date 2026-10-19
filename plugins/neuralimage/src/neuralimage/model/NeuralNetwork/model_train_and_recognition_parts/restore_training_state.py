@@ -1,5 +1,6 @@
 """model_train_and_recognition: restore training state."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import math
 from collections.abc import Mapping, Sized
 from typing import cast
@@ -104,3 +105,6 @@ class RestoreTrainingStateMixin:
             ])
 
         return start_epoch, early_stopping_state, early_stopping_config
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _RunContext

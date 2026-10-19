@@ -13,6 +13,9 @@ from test_settings_optimizer_ui_parts.preprocessing_groupbox_controls import _im
 def test_main_presenter_opens_augmentation_preview_dialog(qapp):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(presenter)
+    presenter.settings_panel = object()
 
     sample_root = make_test_dir('augmentation_preview_presenter')
     sample_dir = sample_root / 'samples'
@@ -86,6 +89,9 @@ def test_main_presenter_opens_augmentation_preview_dialog(qapp):
 def test_main_presenter_leaves_cif_masks_for_lazy_augmentation_preview_loading(qapp):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(presenter)
+    presenter.settings_panel = object()
 
     sample_root = make_test_dir('augmentation_preview_presenter_cif')
     sample_dir = sample_root / 'samples'

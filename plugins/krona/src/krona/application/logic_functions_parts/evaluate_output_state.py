@@ -1,5 +1,6 @@
 """logic_functions: evaluate output state."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class EvaluateOutputStateMixin:
@@ -76,3 +77,6 @@ class EvaluateOutputStateMixin:
         if possible_pull_down and not possible_pull_up:
             return 0
         return None
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

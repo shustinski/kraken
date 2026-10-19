@@ -39,8 +39,14 @@ def test_cli_profiles_launch_through_first_event_loop(monkeypatch) -> None:
         def exec(self) -> None:
             return None
 
+        def sendPostedEvents(self, *_args) -> None:
+            return None
+
     class FakeWindow:
         def show(self) -> None:
+            return None
+
+        def deleteLater(self) -> None:
             return None
 
     reports: list[tuple[object, ...]] = []

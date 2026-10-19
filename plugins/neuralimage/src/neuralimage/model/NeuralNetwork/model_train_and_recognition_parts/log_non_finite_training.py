@@ -1,5 +1,6 @@
 """model_train_and_recognition: log non finite training."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Any
 
 
@@ -60,3 +61,6 @@ class LogNonFiniteTrainingMixin:
                 f'Training debug [{stage}]: first non-finite gradient "{grad_name}": '
                 f'{self._format_tensor_debug_stats(grad_tensor)}',
             ])
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _PreparedTrainBatch

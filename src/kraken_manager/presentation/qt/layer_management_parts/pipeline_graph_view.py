@@ -1,5 +1,6 @@
 """layer_management: pipeline graph view."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from typing import Callable
 from PyQt6.QtCore import QPointF, QSettings, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
@@ -158,3 +159,6 @@ class PipelineGraphView(QGraphicsView):
             event.accept()
             return
         super().wheelEvent(event)
+
+if TYPE_CHECKING:
+    from kraken_manager.presentation.qt.layer_management_parts.format_scalar import LayerPipelineSnapshot

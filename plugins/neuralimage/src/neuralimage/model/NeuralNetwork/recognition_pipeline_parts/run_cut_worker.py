@@ -1,5 +1,6 @@
 """recognition_pipeline: run cut worker."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import multiprocessing as mp
 from pathlib import Path
 import torch
@@ -38,6 +39,8 @@ def _run_cut_worker(
     preprocessing: PreprocessingConfig | None = None,
     stop_token: str = '__STOP__',
 ) -> None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import cut_image_process
+
     try:
         cut_image_process(
             cut_queue,
@@ -121,6 +124,8 @@ def _run_sew_worker(
         raise
 
 def _try_get_worker_error_message(error_queue: mp.Queue | None) -> str | None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import _try_get_queue_item
+
     payload = _try_get_queue_item(error_queue, timeout=0.0)
     if payload is _QUEUE_EMPTY or not isinstance(payload, dict):
         return None
@@ -140,6 +145,8 @@ def run_multiprocessing_recognition(
     publish: Publisher,
     stop_token: str,
 ) -> None:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline import MultiprocessingRecognitionRunner
+
     runner = MultiprocessingRecognitionRunner(
         config=RuntimeWorkerConfig(
             workload=workload,
@@ -150,3 +157,7 @@ def run_multiprocessing_recognition(
         publish=publish,
     )
     runner.run()
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import Publisher
+    from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.recognition_workload import RecognitionWorkload, WorkerCounts

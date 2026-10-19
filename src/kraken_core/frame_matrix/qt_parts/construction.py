@@ -1,5 +1,6 @@
 """qt: construction."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Iterable, Mapping
 from PyQt6.QtCore import QPoint, QPointF, QRectF
 from PyQt6.QtGui import QColor
@@ -224,3 +225,7 @@ class ConstructionMixin:
     def frame_at_viewport_pos(self, position: QPoint | QPointF) -> tuple[int, int] | None:
         point = position.toPoint() if isinstance(position, QPointF) else position
         return self.frame_at_scene_pos(self.mapToScene(point))
+
+if TYPE_CHECKING:
+    from kraken_core.frame_matrix.qt_parts.matrix_lod import MatrixLod
+    from kraken_core.frame_matrix.qt_parts.viewport_tile_item import _ViewportTileItem

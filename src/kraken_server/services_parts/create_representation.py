@@ -1,5 +1,6 @@
 """services: create representation."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -64,3 +65,6 @@ class CreateRepresentationMixin:
             layer["revision"] += 1
             self._idempotency[key] = representation
             return dict(representation)
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

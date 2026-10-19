@@ -1,7 +1,7 @@
 """_apply_bright_via_tooltips section 4."""
 from __future__ import annotations
 
-def __apply_bright_via_tooltips_section_4(self, tt):
+def _apply_bright_via_tooltips_section_4(self, tt):
     if getattr(self, "metal_approximation_checkbox", None) is not None:
         self.metal_approximation_checkbox.setToolTip(
             tt(

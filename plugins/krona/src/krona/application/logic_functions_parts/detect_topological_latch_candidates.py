@@ -1,5 +1,6 @@
 """logic_functions: detect topological latch candidates."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class DetectTopologicalLatchCandidatesMixin:
@@ -274,3 +275,6 @@ class DetectTopologicalLatchCandidatesMixin:
             )
 
         return latch_candidates
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

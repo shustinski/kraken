@@ -1,5 +1,6 @@
 """services: submit plugin job."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -166,3 +167,6 @@ class SubmitPluginJobMixin:
             updated["finished_at"] = now
             self._plugin_jobs[job_id] = updated
             return dict(updated)
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

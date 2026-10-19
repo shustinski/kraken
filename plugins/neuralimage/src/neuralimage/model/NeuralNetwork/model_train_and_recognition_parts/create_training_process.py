@@ -1,5 +1,6 @@
 """model_train_and_recognition: create training process."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import time
 from typing import Any, cast
 import torch.nn as nn
@@ -17,6 +18,8 @@ class CreateTrainingProcessMixin:
         return False
 
     def _create_training_process(self) -> 'TrainerProcess':
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import TrainerProcess
+
         train_dataloader = cast(DataLoader, self._train_dataloader)
         val_dataloader = cast(DataLoader | None, self._val_dataloader)
         model = cast(nn.Module, self._model)
@@ -105,3 +108,6 @@ class CreateTrainingProcessMixin:
             self.callback()
         print('Model saved successfully!')
         return True
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition import TrainerProcess

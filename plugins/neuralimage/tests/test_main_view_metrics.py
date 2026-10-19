@@ -558,8 +558,8 @@ def test_main_view_places_recursive_search_checkbox_next_to_source_path(qapp):
     assert view.is_recursive_file_search_enabled() is True
 
 
-def test_main_view_restores_ui_mode_from_persisted_settings(qapp, monkeypatch):
-    settings_dir = Path('d:/PyCharm/neuralimage-feature-no_cut_dataset/.test_runtime/ui_mode_persist')
+def test_main_view_restores_ui_mode_from_persisted_settings(qapp, monkeypatch, tmp_path):
+    settings_dir = tmp_path / 'ui_mode_persist'
     settings_dir.mkdir(parents=True, exist_ok=True)
     settings_file = settings_dir / 'NeuralImage_MainWindow.ini'
     if settings_file.exists():

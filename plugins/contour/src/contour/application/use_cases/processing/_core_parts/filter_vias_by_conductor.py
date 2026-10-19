@@ -1,5 +1,6 @@
 """_core: filter vias by conductor."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import replace
 import cv2
 import numpy as np
@@ -134,3 +135,6 @@ def _build_metalization_mask(gray: np.ndarray, settings: ContourExtractionSettin
     cfg = metal_recovery_config_from_settings(settings)
     mask, _dbg = build_metal_extraction_mask(gray, cfg)
     return mask
+
+if TYPE_CHECKING:
+    from contour.application.use_cases.processing._core_parts.build_via_vectorization_mask import _ViaCandidate

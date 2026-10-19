@@ -1,5 +1,6 @@
 """marker_consolidation: consolidate markers."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from contour.vision.metal_recovery.conductor_bands import (
     evidence_from_consolidation,
@@ -125,3 +126,6 @@ def consolidate_markers(
         stats=stats,
         debug_images=debug,
     )
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.marker_consolidation_parts.ridge_link import ConsolidationEvidence, RidgeLink

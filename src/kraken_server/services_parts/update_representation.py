@@ -1,5 +1,6 @@
 """services: update representation."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import base64
 import json
 from collections.abc import Iterable, Mapping
@@ -191,3 +192,6 @@ class UpdateRepresentationMixin:
             },
             context=context,
         )
+
+if TYPE_CHECKING:
+    from kraken_server.services_parts.command_context import CommandContext

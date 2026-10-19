@@ -1,5 +1,6 @@
 """structural_watershed: run structural watershed."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from contour.utils import ensure_binary_mask, ensure_uint8
 from contour.vision.metal_recovery.gradient_watershed import (
@@ -201,3 +202,7 @@ def run_structural_watershed(
         label_fragment_count=label_fragment_count,
         consolidation=consolidation,
     )
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.structural_watershed_parts.clamped_structural_watershed_config import StructuralWatershedConfig
+    from contour.vision.metal_recovery.structural_watershed_parts.structural_watershed_config_object import StructuralWatershedResult

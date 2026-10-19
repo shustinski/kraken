@@ -36,6 +36,8 @@ class SegmentsIntersectMixin:
         candidate_segment: tuple[tuple[int, int], tuple[int, int]],
         segments: list[tuple[tuple[int, int], tuple[int, int]]],
     ) -> bool:
+        from neuralimage.augmentations.synthetic_topology import SyntheticTopologyGenerator
+
         if not segments:
             return False
         candidate_start, candidate_end = candidate_segment

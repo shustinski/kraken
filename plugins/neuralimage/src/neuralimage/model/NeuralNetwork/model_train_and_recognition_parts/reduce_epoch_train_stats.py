@@ -1,5 +1,6 @@
 """model_train_and_recognition: reduce epoch train stats."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import torch
 import torch.distributed as dist
 
@@ -24,3 +25,6 @@ class ReduceEpochTrainStatsMixin:
         if loss_sum_tensor is not None:
             local_loss_sum = float(loss_sum_tensor.detach().to(device='cpu', dtype=torch.float64).item())
         return local_loss_sum, float(max(1, epoch_stats.train_samples_count))
+
+if TYPE_CHECKING:
+    from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.epoch_stats import _EpochStats

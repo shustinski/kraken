@@ -52,6 +52,8 @@ def _polygon_internal_confidence(
     include_debug: bool = False,
     config: PolygonConfidencePipelineConfig | None = None,
 ) -> PolygonConfidenceMetrics:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     prob = _internal_confidence_probability_map(probability, support_mask=np.asarray(mask, dtype=bool))
     pipeline_config = config or _polygon_confidence_config()
     mask_bool, final_candidates, debug_data = _polygon_confidence_pipeline(

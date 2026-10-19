@@ -145,6 +145,8 @@ class ResolveOutputThresholdMixin:
 
     @staticmethod
     def _extract_recommended_threshold(model: nn.Module) -> float | None:
+        from neuralimage.model.NeuralNetwork.model_train_and_recognition import NeuralRecognizer
+
         metadata = getattr(model, '_neuralimage_artifact_metadata', None)
         if not isinstance(metadata, dict):
             return None

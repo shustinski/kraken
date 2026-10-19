@@ -96,7 +96,7 @@ def test_training_parameters_default_optimizer():
     assert train.optimizer.name == OptimizerName.adam
     assert train.optimizer.learning_rate == 1e-3
     assert train.optimizer.weight_decay == 0.0
-    assert train.mixed_precision.value == 'fp16'
+    assert train.mixed_precision.value == 'off'
     assert train.warmup.enabled is False
     assert train.scheduler.name == SchedulerName.off
     assert train.scheduler.plateau_factor == 0.5

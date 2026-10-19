@@ -1,5 +1,6 @@
 """repository: complete polygon candidates."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from neuralimage.Validation_gradient_widget_lite.core.backend_constants import (
     POLYGON_CONFIDENCE_HYSTERESIS_FLOOR,
@@ -27,6 +28,8 @@ def _complete_polygon_candidates(
     weak_threshold: float,
     high_seed_mask: np.ndarray | None = None,
 ) -> list[_PolygonConfidenceCandidate]:
+    from neuralimage.Validation_gradient_widget_lite.core.repository import ndi
+
     if not candidates:
         return []
     completion_threshold = _polygon_confidence_completion_threshold(float(strong_threshold), float(weak_threshold))
@@ -84,3 +87,6 @@ def _complete_polygon_candidates(
         completed_candidate = _make_polygon_candidate(probability, grown_mask, candidate.source_branches)
         completed.append(completed_candidate if completed_candidate is not None else candidate)
     return completed
+
+if TYPE_CHECKING:
+    from neuralimage.Validation_gradient_widget_lite.core.repository_parts.polygon_confidence_config import _PolygonConfidenceCandidate

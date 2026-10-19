@@ -11,6 +11,8 @@ from test_settings_optimizer_ui_parts.preprocessing_groupbox_controls import _im
 def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     module = _import_main_presenter_with_stubs()
     presenter = module.MainPresenter.__new__(module.MainPresenter)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(presenter)
 
     panel = SettingsPanel()
     panel.model_type_init(['MockNet'])
@@ -213,8 +215,8 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.scheduler_step_lr_step_size_spinbox.value() == 5
     assert panel.scheduler_step_lr_gamma_spinbox.value() == pytest.approx(0.25)
     assert panel.hard_mining_check_box.isChecked() is True
-    assert panel.hard_mining_strength_spinbox.value() == pytest.approx(2.6)
-    assert panel.hard_mining_ema_alpha_spinbox.value() == pytest.approx(0.45)
+    assert presenter.settings_state.hard_mining_strength == pytest.approx(2.6)
+    assert presenter.settings_state.hard_mining_ema_alpha == pytest.approx(0.45)
     assert panel.hard_pixel_mining_check_box.isChecked() is True
     assert panel.hard_pixel_mining_ratio_spinbox.value() == pytest.approx(0.2)
     assert panel.cutout_check_box.isChecked() is True
@@ -252,9 +254,9 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert panel.get_confidence_save_mode_value() == 'separate_grayscale'
     assert panel.torch_compile_check_box.isChecked() is False
     assert panel.early_stopping_check_box.isChecked() is True
-    assert panel.early_stopping_patience_spinbox.value() == 6
-    assert panel.early_stopping_min_delta_spinbox.value() == pytest.approx(0.004)
-    assert panel.restore_best_weights_check_box.isChecked() is False
+    assert presenter.settings_state.early_stopping_patience == 6
+    assert presenter.settings_state.early_stopping_min_delta == pytest.approx(0.004)
+    assert presenter.settings_state.early_stopping_restore_best_weights is False
     assert presenter.view.is_batch_preview_enabled() is False
 
     panel.shuffle_frames_check_box.setChecked(True)
@@ -299,8 +301,6 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     panel.scheduler_one_cycle_final_div_factor_spinbox.setValue(500.0)
     panel.scheduler_one_cycle_three_phase_check_box.setChecked(True)
     panel.hard_mining_check_box.setChecked(True)
-    panel.hard_mining_strength_spinbox.setValue(3.4)
-    panel.hard_mining_ema_alpha_spinbox.setValue(0.25)
     panel.hard_pixel_mining_check_box.setChecked(True)
     panel.hard_pixel_mining_ratio_spinbox.setValue(0.35)
     panel.cutout_check_box.setChecked(True)
@@ -346,9 +346,6 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     panel.set_confidence_export_mode_value('tta')
     panel.torch_compile_check_box.setChecked(True)
     panel.early_stopping_check_box.setChecked(False)
-    panel.early_stopping_patience_spinbox.setValue(2)
-    panel.early_stopping_min_delta_spinbox.setValue(0.002)
-    panel.restore_best_weights_check_box.setChecked(True)
     presenter.view.set_batch_preview_enabled(True)
 
     module.MainPresenter._update_settings_window_state(presenter)
@@ -387,8 +384,8 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert presenter.settings_state.scheduler_one_cycle_final_div_factor == pytest.approx(500.0)
     assert presenter.settings_state.scheduler_one_cycle_three_phase is True
     assert presenter.settings_state.hard_mining_enabled is True
-    assert presenter.settings_state.hard_mining_strength == pytest.approx(3.4)
-    assert presenter.settings_state.hard_mining_ema_alpha == pytest.approx(0.25)
+    assert presenter.settings_state.hard_mining_strength == pytest.approx(2.6)
+    assert presenter.settings_state.hard_mining_ema_alpha == pytest.approx(0.45)
     assert presenter.settings_state.hard_pixel_mining_enabled is True
     assert presenter.settings_state.hard_pixel_mining_ratio == pytest.approx(0.35)
     assert presenter.settings_state.cutout_enabled is True
@@ -435,8 +432,8 @@ def test_main_presenter_applies_and_reads_optimizer_settings(qapp):
     assert presenter.settings_state.confidence_save_mode == 'separate_grayscale'
     assert presenter.settings_state.torch_compile_enabled is True
     assert presenter.settings_state.early_stopping_enabled is False
-    assert presenter.settings_state.early_stopping_patience == 2
-    assert presenter.settings_state.early_stopping_min_delta == pytest.approx(0.002)
-    assert presenter.settings_state.early_stopping_restore_best_weights is True
+    assert presenter.settings_state.early_stopping_patience == 6
+    assert presenter.settings_state.early_stopping_min_delta == pytest.approx(0.004)
+    assert presenter.settings_state.early_stopping_restore_best_weights is False
     assert presenter.settings_state.show_batch_preview is True
     assert presenter.settings_state.recursive_file_search is True

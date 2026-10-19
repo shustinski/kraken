@@ -1,5 +1,6 @@
 """bright_tophat_dog: score one candidate."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from math import pi
 import cv2
 import numpy as np
@@ -220,3 +221,7 @@ def _score_one_candidate(
         status=st,
         hard_reason="",
     )
+
+if TYPE_CHECKING:
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detection import BrightViaDetection, _CandidateDebugMaps, _RawStage1
+    from contour.vision.via.bright_tophat_dog_parts.bright_via_detector_config import BrightViaDetectorConfig

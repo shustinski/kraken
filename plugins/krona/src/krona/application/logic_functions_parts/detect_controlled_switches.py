@@ -1,5 +1,6 @@
 """logic_functions: detect controlled switches."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class DetectControlledSwitchesMixin:
@@ -127,3 +128,6 @@ class DetectControlledSwitchesMixin:
             )
 
         return sorted(switches, key=lambda item: (self._natural_key(item["nets"][0]), self._natural_key(item["nets"][1])))
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

@@ -1,5 +1,6 @@
 """layer_management: construction."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QDialogButtonBox,
     QTableWidgetItem,
@@ -137,3 +138,6 @@ class ConstructionMixin:
         layout = QVBoxLayout(self)
         layout.addWidget(tabs, 1)
         layout.addWidget(buttons)
+
+if TYPE_CHECKING:
+    from kraken_manager.presentation.qt.layer_management_parts.format_scalar import ObjectPropertiesSnapshot

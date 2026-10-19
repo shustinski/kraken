@@ -1,5 +1,6 @@
 """remote_client: register local."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from kraken_manager.application.ports import StorageProfile
@@ -21,6 +22,12 @@ from kraken_hub.remote_client_parts.extract_review_archive import (
 from kraken_hub.remote_client_parts.principal_server_payload import _principal_from_server_payload
 
 
+def _remote_http_client():
+    from kraken_hub.remote_client import RemoteHttpClient
+
+    return RemoteHttpClient
+
+
 class RegisterLocalMixin:
     def __init__(
         self,
@@ -35,7 +42,7 @@ class RegisterLocalMixin:
         self.data_dir = Path(data_dir or Path.home() / ".kraken").resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.profile = REMOTE_STORAGE_PROFILE
-        self._http = http or RemoteHttpClient(self.base_url)
+        self._http = http or _remote_http_client()(self.base_url)
         self._remote_ids: set[str] = set()
         self._sync: RemoteSyncClient | None = None
         self._wake_handlers: list[Callable[[ProjectEventWake], None]] = []
@@ -52,7 +59,7 @@ class RegisterLocalMixin:
         data_dir: Path | str | None = None,
         http: RemoteHttpClient | None = None,
     ) -> RemoteServerProjectService:
-        client = http or RemoteHttpClient(base_url)
+        client = http or _remote_http_client()(base_url)
         payload = client.request(
             "POST",
             "/api/v1/auth/sessions",
@@ -78,7 +85,7 @@ class RegisterLocalMixin:
         data_dir: Path | str | None = None,
         http: RemoteHttpClient | None = None,
     ) -> RemoteServerProjectService:
-        client = http or RemoteHttpClient(base_url)
+        client = http or _remote_http_client()(base_url)
         payload = client.request(
             "POST",
             "/api/v1/auth/accounts",
@@ -192,3 +199,7 @@ class RegisterLocalMixin:
 
     def add_status_handler(self, handler: Callable[[str], None]) -> None:
         self._status_handlers.append(handler)
+
+if TYPE_CHECKING:
+    from kraken_hub.remote_client import RemoteHttpClient, RemoteServerProjectService
+    from kraken_hub.remote_client_parts.remote_sync_client import RemoteSyncClient

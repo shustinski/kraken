@@ -1,5 +1,6 @@
 """logic_functions: sequential elements topology."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from krona.domain.netlist import TopLevelNetlist
 
 
@@ -139,3 +140,6 @@ class SequentialElementsTopologyMixin:
                 element["instance"] = f"{prefix}{idx}"
 
         return sorted(public_elements, key=lambda item: self._natural_key(str(item.get("instance", ""))))
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

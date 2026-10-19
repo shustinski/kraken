@@ -1,5 +1,6 @@
 """pipeline: preprocessing pipeline."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from time import perf_counter
 from typing import Any
 import numpy as np
@@ -97,3 +98,6 @@ class PreprocessingPipeline:
             enabled=True,
             parameters=descriptor.default_parameters(),
         )
+
+if TYPE_CHECKING:
+    from contour.pipeline_parts.module_state import OperationTimingCallback

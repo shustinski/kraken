@@ -1,5 +1,6 @@
 """processing: display settings."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -164,3 +165,6 @@ class BatchProcessingOptions:
 
 def base_name_from_path(path: str) -> str:
     return Path(path).stem
+
+if TYPE_CHECKING:
+    from contour.application.processing_parts.pipeline_step_config import ContourDebugCandidate

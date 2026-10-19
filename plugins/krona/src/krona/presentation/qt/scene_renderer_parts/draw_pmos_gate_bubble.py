@@ -1,5 +1,6 @@
 """scene_renderer: draw pmos gate bubble."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from PyQt6.QtGui import QBrush, QColor, QPen
 from krona.infrastructure.edif_parser import EdifTextParser
 
@@ -119,3 +120,6 @@ class DrawPmosGateBubbleMixin:
         self._tag_item(bubble, EdifTextParser.parse_header_name(instance_block, "instance"))
         bubble.setZValue(1000)
         self._stats.primitive_count += 1
+
+if TYPE_CHECKING:
+    from krona.presentation.qt.scene_renderer_parts.affine2_d import Affine2D

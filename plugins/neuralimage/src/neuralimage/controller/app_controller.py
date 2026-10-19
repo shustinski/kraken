@@ -12,11 +12,11 @@ _DLL_DIR_HANDLES: list[object] = []
 def format_backend_unavailable_message(error: Exception | str) -> str:
     technical_reason = str(error).strip() or 'Unknown backend initialization error.'
     return (
-        "РќРµ СѓРґР°Р»РѕСЃСЊ РёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°С‚СЊ РІС‹С‡РёСЃР»РёС‚РµР»СЊРЅС‹Р№ backend PyTorch.\n\n"
-        "РџСЂРёР»РѕР¶РµРЅРёРµ Р·Р°РїСѓС‰РµРЅРѕ С‚РѕР»СЊРєРѕ РІ СЂРµР¶РёРјРµ РёРЅС‚РµСЂС„РµР№СЃР°, РїРѕСЌС‚РѕРјСѓ РєРЅРѕРїРєР° 'Р—Р°РїСѓСЃРє' РЅРµРґРѕСЃС‚СѓРїРЅР°.\n\n"
-        "РџСЂРѕРІРµСЂСЊС‚Рµ РЅР°Р»РёС‡РёРµ Microsoft Visual C++ Redistributable, СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚СЊ torch/РґСЂР°Р№РІРµСЂРѕРІ "
-        "Рё С†РµР»РѕСЃС‚РЅРѕСЃС‚СЊ С„Р°Р№Р»РѕРІ РїСЂРёР»РѕР¶РµРЅРёСЏ.\n\n"
-        f"РўРµС…РЅРёС‡РµСЃРєР°СЏ РїСЂРёС‡РёРЅР°: {technical_reason}"
+        "Не удалось инициализировать вычислительный backend PyTorch.\n\n"
+        "Приложение запущено только в режиме интерфейса, поэтому кнопка 'Запуск' недоступна.\n\n"
+        "Проверьте наличие Microsoft Visual C++ Redistributable, совместимость torch/драйверов "
+        "и целостность файлов приложения.\n\n"
+        f"Техническая причина: {technical_reason}"
     )
 
 
@@ -32,7 +32,7 @@ def apply_backend_unavailable_ui_state(window, message: str) -> None:
     log_signal = getattr(window, 'log_message', None)
     can_log = log_signal is not None and hasattr(log_signal, 'emit')
     if can_log:
-        log_signal.emit(f'Р—Р°РїСѓСЃРє РЅРµРґРѕСЃС‚СѓРїРµРЅ: {message}')
+        log_signal.emit(f'Запуск недоступен: {message}')
 
     warning_signal = getattr(window, 'show_warning', None)
     can_warn = warning_signal is not None and hasattr(warning_signal, 'emit')
@@ -55,7 +55,7 @@ def apply_backend_unavailable_ui_state(window, message: str) -> None:
                 if can_warn:
                     warning_signal.emit(message)
                 if can_log:
-                    log_signal.emit(f'Р—Р°РїСѓСЃРє РЅРµРґРѕСЃС‚СѓРїРµРЅ: {message}')
+                    log_signal.emit(f'Запуск недоступен: {message}')
 
             clicked_signal.connect(_show_backend_unavailable_reason)
             setattr(window, '_backend_unavailable_click_handler_installed', True)

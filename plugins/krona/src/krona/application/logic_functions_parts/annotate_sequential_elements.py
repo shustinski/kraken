@@ -1,5 +1,6 @@
 """logic_functions: annotate sequential elements."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class AnnotateSequentialElementsMixin:
@@ -146,3 +147,6 @@ class AnnotateSequentialElementsMixin:
                     }
                 )
             element["io_map"] = {"inputs": io_map_inputs, "outputs": io_map_outputs}
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

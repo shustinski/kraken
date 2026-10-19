@@ -1,7 +1,7 @@
 """_apply_bright_via_tooltips section 2."""
 from __future__ import annotations
 
-def __apply_bright_via_tooltips_section_2(self, tt):
+def _apply_bright_via_tooltips_section_2(self, tt):
     via_help: list[tuple[str, str, str]] = [
         (
             "heuristic_background_sigma_spin",

@@ -10,6 +10,8 @@ from neuralimage.model.NeuralNetwork.model_train_and_recognition import ModelTra
 
 class StartTrainingMixin:
     def _start_training(self, model, model_save_path: Path):
+        from neuralimage.model.general_neural_handler import ModelTrainer
+
         self.message_bus.publish('metrics', {'type': 'workflow_phase', 'phase': 'training'})
         self._write_training_manifest(model_save_path)
         resume_from_checkpoint = bool(

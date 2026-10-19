@@ -1,6 +1,7 @@
 """SQLite identity, performer and project-ACL adapter for local Desktop."""
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 import json
 import sqlite3
@@ -193,3 +194,6 @@ class LocalIdentityAclStore:
 
 
 __all__ = ["LocalIdentityAclStore"]
+
+if TYPE_CHECKING:
+    from kraken_manager.domain.identity import ProjectRole

@@ -1,5 +1,6 @@
 """detector: extract polygons per instance."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 import numpy as np
 from contour.contour_extractor import extract_polygons
 from contour.domain import PolygonData
@@ -87,3 +88,6 @@ def _extract_polygons_cached(mask: np.ndarray, config: MetalRecoveryConfig) -> l
         polygons=[polygon.clone() for polygon in polygons],
     )
     return polygons
+
+if TYPE_CHECKING:
+    from contour.vision.metal_recovery.detector_parts.metal_recovery_config import MetalRecoveryConfig

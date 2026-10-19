@@ -1,5 +1,6 @@
 """_core: verify peak."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 from dataclasses import replace
 import numpy as np
 
@@ -74,3 +75,6 @@ def _verify_peak(
         refined_cx, refined_cy = _refine_center(gray, cx, cy, winning_radius, bright=bright)
         best_candidate = replace(best_candidate, center_x=refined_cx, center_y=refined_cy)
     return best_candidate
+
+if TYPE_CHECKING:
+    from contour.application.use_cases.processing._core_parts.extract_response_peaks import _IsolationContext

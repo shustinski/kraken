@@ -1,5 +1,10 @@
 """benchmark_metal_segmentation: module state."""
 from __future__ import annotations
+from pathlib import Path
+
+PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+SOURCE_ROOT = PLUGIN_ROOT / "src"
+REAL_DATASET_ROOT = PLUGIN_ROOT / "tests" / "test_metal"
 
 STRATEGIES = (
     "auto",

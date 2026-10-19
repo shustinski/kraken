@@ -1,5 +1,4 @@
 """create_app section 3."""
-from __future__ import annotations
 import asyncio
 import os
 import re
@@ -28,6 +27,7 @@ from kraken_server.app_parts.module_state import API_PREFIX
 from kraken_server.app_parts.session_principal import SessionPrincipal
 
 def _create_app_section_3(blob_gateway, Depends, HTTPException, Header, Query, Request, app, backend, command_context, heavy_operations, project_reader, run_in_threadpool, shared_mutation_actor, transfer_identity, transfer_payload, transfer_ticket_context):
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/reorder")
     def reorder_layer(
         project_id: str,
         layer_id: str,

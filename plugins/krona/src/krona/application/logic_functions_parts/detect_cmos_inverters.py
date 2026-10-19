@@ -1,5 +1,6 @@
 """logic_functions: detect cmos inverters."""
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 
 class DetectCmosInvertersMixin:
@@ -93,3 +94,6 @@ class DetectCmosInvertersMixin:
                 "instances": self._unique(list(bucket["instances"])),
             }
         return out
+
+if TYPE_CHECKING:
+    from krona.application.logic_functions_parts.transistor import _Transistor

@@ -810,11 +810,11 @@ def test_via_preset_json_contains_full_snapshot_but_applies_only_expert_settings
         widget.recognition_mode_combo.setCurrentIndex(widget.recognition_mode_combo.findData("via"))
         widget.heuristic_w_contrast_spin.setValue(34.0)
         monkeypatch.setattr(
-            "contour.widget_parts.pipeline_mixin.QInputDialog.getText",
+            "PyQt6.QtWidgets.QInputDialog.getText",
             lambda *_args, **_kwargs: ("My expert", True),
         )
         monkeypatch.setattr(
-            "contour.widget_parts.pipeline_mixin.QFileDialog.getSaveFileName",
+            "PyQt6.QtWidgets.QFileDialog.getSaveFileName",
             lambda *_args, **_kwargs: (str(path), "JSON"),
         )
 
@@ -866,7 +866,7 @@ def test_metal_preset_export_import_roundtrip(
         widget.metal_preset_combo.setCurrentIndex(widget.metal_preset_combo.findText("My metal"))
 
         monkeypatch.setattr(
-            "contour.widget_parts.pipeline_mixin.QFileDialog.getSaveFileName",
+            "PyQt6.QtWidgets.QFileDialog.getSaveFileName",
             lambda *_args, **_kwargs: (str(path), "JSON"),
         )
         widget._export_selected_metal_preset()
@@ -882,7 +882,7 @@ def test_metal_preset_export_import_roundtrip(
         widget._user_metal_presets = {}
         widget._refresh_metal_preset_combo()
         monkeypatch.setattr(
-            "contour.widget_parts.pipeline_mixin.QFileDialog.getOpenFileName",
+            "PyQt6.QtWidgets.QFileDialog.getOpenFileName",
             lambda *_args, **_kwargs: (str(path), "JSON"),
         )
         widget._import_metal_preset()

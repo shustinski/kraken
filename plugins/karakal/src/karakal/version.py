@@ -32,6 +32,9 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
        self-check against the grid, export «without the gaps between memory blocks»;
   19 = the full interface in betas and stables (validation and cell inspection), one switch of the
        two modes on the setup panel, validation analysis picked from the sources;
+  20 = dirty regions of a frame from the mask and confidence map: settings and «Find dirt» in the
+       cell check, corner marks on the matrix, the «Dirt» layer of the frame window, the «Dirty
+       regions» item of the frame set export (JSON, label image, picture, CSV);
 - beta N counts tester builds with the same algorithm and interface (fixes only); scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -46,7 +49,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 19
+INTERFACE_NUMBER = 20
 BETA = 0
 
 

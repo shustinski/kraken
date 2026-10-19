@@ -1991,6 +1991,17 @@ class MatrixListWidget(QGraphicsView):
         record.subpixel_grid = grid
         return grid
 
+    def set_dirt_marks(self, marks: dict[str, QColor] | None) -> None:
+        """Corner marks on frames with dirty regions, colored by the frame's dirtiest region."""
+
+        previous = dict(getattr(self, "_dirt_marks", {}) or {})
+        self._dirt_marks = {str(key): QColor(color) for key, color in dict(marks or {}).items()}
+        for key in set(previous) | set(self._dirt_marks):
+            item = self._item_by_key.get(str(key))
+            if item is not None:
+                self._apply_item_style(item, sync_tile_state=False)
+        self.viewport().update()
+
     def set_processing_keys(self, processing_keys) -> None:
         previous = set(self._processing_keys)
         self._processing_keys = {str(key) for key in processing_keys}
@@ -3932,6 +3943,10 @@ class MatrixListWidget(QGraphicsView):
             pen = QPen(DEFAULT_BORDER, MATRIX_DEFAULT_PEN_WIDTH)
         brush_color = self._background_color_for_record(item.record)
         item.set_excluded(excluded)
+        dirt_color = (getattr(self, "_dirt_marks", None) or {}).get(str(item.record.key))
+        if dirt_color is not None:
+            marker_kind = "dirt"
+            marker_color = dirt_color
         if excluded:
             marker_kind = None
             marker_color = None

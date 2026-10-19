@@ -71,6 +71,7 @@ from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import APP_MODES, AnalysisSetupPanel
 from ..ui.debris_min_area_control import DebrisMinAreaControl
+from ..ui.dirt_controls import DirtControls
 from ..ui.frame_sets_panel import FrameSetsViewBadge
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.profiling_dialog import ProfilingDialog
@@ -1793,6 +1794,9 @@ class KarakalWidget(QWidget):
             self.grid_conflict_min_share_spin,
         )
         grid_tuning_layout.addWidget(self._grid_conflict_min_share_row)
+        # Dirty regions: found from the masks and confidence maps alone, after the cell check or on demand.
+        self.dirt_controls = DirtControls(self._t, self._grid_inspection_tuning_group)
+        grid_tuning_layout.addWidget(self.dirt_controls)
         layout.addWidget(self._matrix_view_group)
         layout.addWidget(self._grid_inspection_tuning_group)
         layout.addWidget(self._analysis_task_group)
@@ -1843,6 +1847,8 @@ class KarakalWidget(QWidget):
         self._matrix_view_group.setTitle(self._t("ui.matrix_view"))
         if hasattr(self, "_grid_inspection_tuning_group"):
             self._grid_inspection_tuning_group.setTitle(self._t("grid_tuning.group"))
+            if hasattr(self, "dirt_controls"):
+                self.dirt_controls.retranslate(self._t)
             if hasattr(self, "_grid_error_type_checks_title"):
                 self._grid_error_type_checks_title.setText(self._t("grid_tuning.enabled_errors"))
             if hasattr(self, "_grid_layer_compute_title"):

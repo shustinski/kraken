@@ -15,6 +15,10 @@ Layout of one export::
                                     (uint8, 255 = IGNORE), <frame>_score.png (uint16),
                                     <frame>_instance.png (uint16), <frame>_preview.png and
                                     <frame>_manifest.json; whole objects, not boxes
+        Грязь/<model>/              dirty regions per frame: <frame>.dirt.json (boxes and outlines
+                                    in frame pixels), <frame>.dirt.png (region id per pixel),
+                                    <frame>.dirt_view.jpg (a picture for people)
+        Грязь/dirt_regions.csv      every dirty region of the set, one row each
         холст.png                   the whole set as one picture
         результаты.csv              one row per frame
 
@@ -39,7 +43,8 @@ ITEM_CONFIDENCE = "confidence"
 ITEM_ERRORS = "errors"
 ITEM_ERRORS_OVER_MASK = "errors_over_mask"
 ITEM_ERROR_MAPS = "error_maps"
-FRAME_ITEMS = (ITEM_SOURCE, ITEM_MASK, ITEM_CONFIDENCE, ITEM_ERRORS, ITEM_ERRORS_OVER_MASK, ITEM_ERROR_MAPS)
+ITEM_DIRT = "dirt"
+FRAME_ITEMS = (ITEM_SOURCE, ITEM_MASK, ITEM_CONFIDENCE, ITEM_ERRORS, ITEM_ERRORS_OVER_MASK, ITEM_ERROR_MAPS, ITEM_DIRT)
 
 ITEM_FOLDERS = {
     ITEM_SOURCE: "Исходные снимки",
@@ -48,11 +53,15 @@ ITEM_FOLDERS = {
     ITEM_ERRORS: "Ошибки",
     ITEM_ERRORS_OVER_MASK: "Ошибки на маске",
     ITEM_ERROR_MAPS: "Карты ошибок",
+    ITEM_DIRT: "Грязь",
 }
 # Files written per frame and model for the machine maps.
 _MAP_FILES_PER_FRAME = 5
 _MAPS_BYTES_PER_PIXEL = 0.05
+_DIRT_FILES_PER_FRAME = 3
+_DIRT_BYTES_PER_PIXEL = 0.08
 CANVAS_FILE = "холст.png"
+DIRT_CSV_FILE = "dirt_regions.csv"
 CSV_FILE = "результаты.csv"
 CANVAS_TILE_PX = 12
 CANVAS_MAX_SIDE_PX = 8000
@@ -104,6 +113,9 @@ class FrameSetExportPlan:
     normal_profiles: dict[str, object] = field(default_factory=dict)
     analysis_config: object | None = None
     calibration_fingerprint: str = ""
+    # Dirty regions per model and frame key (FrameDirtResult), with the settings they were found with.
+    dirt_results: dict[str, dict[str, object]] = field(default_factory=dict)
+    dirt_config: object | None = None
 
 
 @dataclass(slots=True)
@@ -188,6 +200,11 @@ def _count_and_size(plan: FrameSetExportPlan, item: str, model_id: str | None) -
         paths = [getattr(frame, source).get(str(model_id), "") for frame in frames]
         paths = [path for path in paths if path]
         return len(paths), _sample_size(paths) * len(paths)
+    if item == ITEM_DIRT:
+        found = plan.dirt_results.get(str(model_id), {})
+        with_dirt = [found[frame.key] for frame in frames if frame.key in found]
+        pixels = int(getattr(with_dirt[0], "width", 0)) * int(getattr(with_dirt[0], "height", 0)) if with_dirt else 0
+        return len(with_dirt) * _DIRT_FILES_PER_FRAME, int(pixels * _DIRT_BYTES_PER_PIXEL) * len(with_dirt)
     if item == ITEM_ERROR_MAPS:
         with_mask = [frame for frame in frames if frame.mask_paths.get(str(model_id))]
         pixels = _image_pixels(with_mask[0]) if with_mask else 0
@@ -266,6 +283,9 @@ def preview_frame_set_export(
             rows.append((f"        {model_folders[model.model_id]}\\", files_text(item, count, size)))
             total_files += count
             total_bytes += size
+    if ITEM_DIRT in plan.items:
+        rows.append((f"      {ITEM_FOLDERS[ITEM_DIRT]}\\{DIRT_CSV_FILE}", "1 файл"))
+        total_files += 1
     if plan.canvas:
         rows.append((f"      {CANVAS_FILE}", "1 файл"))
         total_files += 1
@@ -405,6 +425,7 @@ def export_frame_set(
     written = 0
     fill_frames = plan.fill_frames if ITEM_ERRORS in plan.items else ()
     total = len(plan.frames) + len(fill_frames)
+    dirt_rows: list[dict] = []
     for index, frame in enumerate(plan.frames):
         if cancelled is not None and cancelled():
             report.cancelled = True
@@ -457,6 +478,23 @@ def export_frame_set(
                     written += count
                 else:
                     frame_missing = True
+            if ITEM_DIRT in plan.items:
+                dirt = plan.dirt_results.get(model.model_id, {}).get(frame.key)
+                if dirt is None or getattr(dirt, "error", ""):
+                    frame_missing = True
+                else:
+                    from .dirt_export import csv_rows, write_frame_dirt_files
+
+                    written += len(
+                        write_frame_dirt_files(
+                            dirt,
+                            set_dir / ITEM_FOLDERS[ITEM_DIRT] / model_dir,
+                            stem,
+                            layer=model.title,
+                            config=plan.dirt_config,
+                        )
+                    )
+                    dirt_rows.extend(csv_rows(dirt, frame=stem, layer=model.title))
         if frame_missing:
             missing.append(frame.name)
         if progress is not None:
@@ -476,6 +514,16 @@ def export_frame_set(
                 written += 1
             if progress is not None:
                 progress(index + 1, total, frame.name)
+    if ITEM_DIRT in plan.items and not report.cancelled:
+        from .dirt_export import CSV_FIELDS
+
+        dirt_dir = set_dir / ITEM_FOLDERS[ITEM_DIRT]
+        dirt_dir.mkdir(parents=True, exist_ok=True)
+        with (dirt_dir / DIRT_CSV_FILE).open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(CSV_FIELDS))
+            writer.writeheader()
+            writer.writerows(dirt_rows)
+        written += 1
     if plan.canvas and not report.cancelled:
         _write_image(set_dir / CANVAS_FILE, render_canvas(plan), "png")
         written += 1

@@ -343,6 +343,11 @@ class KarakalPresenter(QObject):
             from .memory_map_controller import MemoryMapController
 
             self._memory_map_controller = MemoryMapController(self, view.memory_map_panel)
+        self._dirt_controller = None
+        if getattr(view, "dirt_controls", None) is not None:
+            from .dirt_controller import DirtController
+
+            self._dirt_controller = DirtController(self, view.dirt_controls)
             view.grid_inspection_content_tabs.currentChanged.connect(self._on_grid_content_tab_changed)
 
     def __getattr__(self, name: str):
@@ -795,6 +800,9 @@ class KarakalPresenter(QObject):
         if not selection or selection == getattr(state, "grid_inspection_matrix_selection", ""):
             return
         state.grid_inspection_matrix_selection = selection
+        dirt = getattr(self, "_dirt_controller", None)
+        if dirt is not None:
+            dirt.refresh_views()
         pair = self._grid_pair(selection)
         if pair is None:
             state.grid_inspection_model_id = selection
@@ -6353,6 +6361,9 @@ class KarakalPresenter(QObject):
     def _on_details_grid_frame_changed(self, dialog) -> None:
         state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
         self._sync_class_conflict_for_dialog(dialog, state)
+        dirt = getattr(self, "_dirt_controller", None)
+        if dirt is not None:
+            dirt.update_dialog(dialog)
         record = getattr(dialog, "_record", None)
         if state is None or record is None:
             return
@@ -7375,6 +7386,10 @@ class KarakalPresenter(QObject):
         if controller is not None:
             # «Full memory analysis» goes on with the map once the defects are found.
             self._later(0, controller.analysis_finished)
+        dirt = getattr(self, "_dirt_controller", None)
+        if dirt is not None:
+            # Dirty regions are looked for after the cell check when the operator asked for it.
+            self._later(0, dirt.analysis_finished)
 
     def _finish_grid_inspection_summary_refresh(self, state: ExtendMatrixTabState) -> None:
         try:
@@ -8210,6 +8225,9 @@ class KarakalPresenter(QObject):
         dialog._on_grid_examples_changed = lambda examples, key=record_key, details=dialog: self._sync_grid_examples(key, examples, details)
         dialog.destroyed.connect(lambda *_args, dialog=dialog: self._forget_details_dialog(dialog))
         self._details_dialogs.append(dialog)
+        dirt = getattr(self, "_dirt_controller", None)
+        if dirt is not None and is_grid_inspection_details:
+            dirt.update_dialog(dialog)
         dialog.show()
         if pending_grid_analyze:
             self._start_grid_details_analyze(dialog, record, state, grid_focus=grid_focus)
@@ -9328,6 +9346,9 @@ class KarakalPresenter(QObject):
                 self.polygon_confidence_summary_combo.currentData() or DEFAULT_POLYGON_CONFIDENCE_SUMMARY
             ),
             "grid_inspection_config": self._grid_inspection_config_payload(),
+            "dirt_settings": (
+                self._dirt_controller.settings_payload() if getattr(self, "_dirt_controller", None) is not None else {}
+            ),
             "layout_mode": "indexed_grid",
             "total_frames": int(DEFAULT_TOTAL_FRAMES),
             "frames_per_row": int(self.frames_per_row_spin.value()),
@@ -9529,6 +9550,8 @@ class KarakalPresenter(QObject):
             polygon_summary_index if polygon_summary_index >= 0 else 0
         )
         self._set_grid_inspection_config_controls(dict(payload.get("grid_inspection_config") or {}))
+        if getattr(self, "_dirt_controller", None) is not None:
+            self._dirt_controller.apply_settings(dict(payload.get("dirt_settings") or {}))
         layout_index = self.layout_mode_combo.findData("indexed_grid")
         self.layout_mode_combo.setCurrentIndex(layout_index if layout_index >= 0 else 0)
         self.total_frames_spin.setValue(int(DEFAULT_TOTAL_FRAMES))
@@ -9585,6 +9608,8 @@ class KarakalPresenter(QObject):
     def shutdown(self) -> None:
         if getattr(self, "_memory_map_controller", None) is not None:
             self._memory_map_controller.shutdown()
+        if getattr(self, "_dirt_controller", None) is not None:
+            self._dirt_controller.shutdown()
         # Pending setting refreshes must not reach a closed window.
         self._grid_debris_refresh_timer.stop()
         self._grid_types_refresh_timer.stop()

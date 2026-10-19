@@ -642,6 +642,7 @@ class FrameSetsController(QObject):
         error_types = tuple(
             value for value in self._p._selected_grid_error_types() if value not in _DEFECT_FILTER_SKIP
         )
+        dirt = getattr(self._p, "_dirt_controller", None)
         canvas_colors = {}
         if self._export_canvas:
             for frame in frames:
@@ -673,6 +674,12 @@ class FrameSetsController(QObject):
             calibration_fingerprint=str(
                 (getattr(state, "grid_inspection_config_payload", {}) or {}).get("calibration_fingerprint") or ""
             ),
+            dirt_results={
+                model_id: dirt.results_for(self._mask_model_id(model_id)) for model_id, _title in models
+            }
+            if dirt is not None
+            else {},
+            dirt_config=dirt.config() if dirt is not None else None,
         )
 
     def _browse_output_dir(self) -> None:

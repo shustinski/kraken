@@ -71,6 +71,7 @@ from ..core.confidence_maps import (
 )
 from ..core.workers import AttentionIssuesWorker, DetailConfidenceWorker, DetailPayloadWorker
 from ..ui.debris_min_area_control import DebrisMinAreaControl
+from ..ui.dirt_overlay import DirtOverlay
 from ..ui.i18n import Translator
 from ..ui.ui_constants import (
     GRID_INSPECTION_DEFAULT_ERROR_TYPES,
@@ -437,6 +438,14 @@ class ExtendFrameDetailsDialog(QDialog):
             self.hold_preview_item,
         ):
             pixmap_item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
+        # Dirty regions of the frame (cell check), above the cell marks; the presenter hands the result.
+        self.dirt_overlay = DirtOverlay(scene, self._t, self)
+        dirt_form = self.grid_normal_visible.parentWidget().layout() if self.grid_normal_visible.parentWidget() else None
+        if isinstance(dirt_form, QFormLayout):
+            dirt_form.addRow(self.dirt_overlay.widget)
+        grid_now = self._selected_result_kind() == "grid_cell_defects"
+        self.dirt_overlay.widget.setVisible(grid_now)
+        self.dirt_overlay.set_active(grid_now)
         self._connect_signals()
         self._create_navigation_shortcuts()
         self._restore_view_settings()
@@ -3213,6 +3222,13 @@ class ExtendFrameDetailsDialog(QDialog):
         self._derived_cache[cache_key] = values
         return values
 
+    def set_dirt_result(self, result, *, known: bool = True, config=None) -> None:
+        """Dirty regions of the shown frame (None: not looked for)."""
+
+        overlay = getattr(self, "dirt_overlay", None)
+        if overlay is not None:
+            overlay.set_result(result, known=known, config=config)
+
     def set_grid_pair_partner(self, model_id: str | None, name: str = "") -> None:
         """Show the mask of the second network of a ones/zeros pair over the first one (None hides it)."""
 
@@ -4016,6 +4032,10 @@ class ExtendFrameDetailsDialog(QDialog):
         )
 
     def _set_grid_layer_controls_visible(self, visible: bool) -> None:
+        overlay = getattr(self, "dirt_overlay", None)
+        if overlay is not None:
+            overlay.widget.setVisible(bool(visible))
+            overlay.set_active(bool(visible))
         layout = (
             self.grid_normal_visible.parentWidget().layout()
             if self.grid_normal_visible.parentWidget() is not None
@@ -4909,6 +4929,9 @@ class ExtendFrameDetailsDialog(QDialog):
         scene = self.overlay_view.scene()
         assert scene is not None
         scene.setSceneRect(0.0, 0.0, float(width), float(height))
+        overlay = getattr(self, "dirt_overlay", None)
+        if overlay is not None:
+            overlay.rebuild()
         base_pixmap_key = (
             (
                 "grid_base_pixmap",

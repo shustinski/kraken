@@ -165,6 +165,22 @@ class DirtLayers:
     density: np.ndarray
 
 
+def level_at_least(level: str, minimum: str) -> bool:
+    """Whether ``level`` is ``minimum`` or dirtier (light < medium < heavy)."""
+
+    if level not in LEVELS or minimum not in LEVELS:
+        return False
+    return LEVELS.index(level) >= LEVELS.index(minimum)
+
+
+def worst_level(result: "FrameDirtResult | None") -> str:
+    """Level of the frame's dirtiest region; empty for a clean or unknown frame."""
+
+    if result is None or not result.regions:
+        return ""
+    return level_of(max(region.dirtiness for region in result.regions))
+
+
 def level_of(dirtiness: float) -> str:
     if dirtiness >= HEAVY_FROM:
         return LEVEL_HEAVY

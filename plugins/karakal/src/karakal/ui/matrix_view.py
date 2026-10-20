@@ -2260,6 +2260,15 @@ class MatrixListWidget(QGraphicsView):
             self.refresh_scene()
             self.colorScaleChanged.emit(self.color_scale_info())
 
+    def set_dirt_filter_keys(self, keys) -> None:
+        """Only these frames bright (the frames with dirt); None shows every frame again."""
+
+        normalized = None if keys is None else {str(key) for key in keys}
+        if normalized == getattr(self, "_dirt_filter_keys", None):
+            return
+        self._dirt_filter_keys = normalized
+        self.refresh_scene()
+
     def set_participating_keys(self, keys) -> None:
         """Show only these frames at full strength; the rest keep their colour but fade."""
 
@@ -2321,6 +2330,9 @@ class MatrixListWidget(QGraphicsView):
                 return blend_colors(color, MATRIX_BACKGROUND_ALT, 1.0 - NON_PARTICIPATING_OPACITY)
             return color
         if self._participating_keys is not None and key not in self._participating_keys:
+            return blend_colors(color, MATRIX_BACKGROUND_ALT, 1.0 - NON_PARTICIPATING_OPACITY)
+        dirt_keys = getattr(self, "_dirt_filter_keys", None)
+        if dirt_keys is not None and key not in dirt_keys:
             return blend_colors(color, MATRIX_BACKGROUND_ALT, 1.0 - NON_PARTICIPATING_OPACITY)
         return color
 

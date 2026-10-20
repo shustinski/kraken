@@ -27,6 +27,7 @@ from ..core.frame_set_export import (
 from ..core.grid_error_export import unique_run_dir
 from ..core.pair_conflict import parse_pair_key
 from ..core.frame_sets import (
+    RULE_DIRT,
     USER_SET_PREFIX,
     VIEW_ALL,
     VIEW_DROPPED,
@@ -121,6 +122,7 @@ class FrameSetsController(QObject):
         self.legend.expandToggled.connect(lambda _expanded: self.refresh())
         self.slider.valueChanged.connect(lambda _value: self._refresh_threshold())
         panel.applyRequested.connect(self._apply_rule)
+        panel.dirtDropRequested.connect(self._apply_dirt_rule)
         panel.invertRequested.connect(self._toggle_invert)
         panel.ruleToggled.connect(self._on_rule_toggled)
         panel.ruleRemoved.connect(self._on_rule_removed)
@@ -185,6 +187,7 @@ class FrameSetsController(QObject):
                 self.badge.clear()
             return
         model = self._model(state)
+        model.dirt_levels = self._dirt_levels()
         qualities = self._qualities()
         if not model.has_filter():
             model.frozen_window = None
@@ -257,10 +260,16 @@ class FrameSetsController(QObject):
         self.panel.set_inverted(model.inverted, can_invert=bool(dropped))
         self.panel.set_rules(
             [
-                (rule.rule_id, self._rule_label(rule), len(frames_below(qualities, rule.cutoff)), rule.enabled)
+                (rule.rule_id, self._rule_label(rule), len(model.rule_dropped_keys(rule, qualities)), rule.enabled)
                 for rule in model.rules
             ],
             len(model.manual_dropped),
+        )
+        dirt = getattr(self._p, "_dirt_controller", None)
+        self.panel.set_dirt_counts(
+            {level: len(model.dirty_keys(level)) for level in ("light", "medium", "heavy")}
+            if dirt is not None and dirt.has_results()
+            else None
         )
         self.panel.set_sets(self._set_rows(state, qualities, all_keys, selected, removable=True), model.view_id)
         self.panel.set_view_note(self._view_note(model.participating_keys(all_keys, qualities, selected), all_keys))
@@ -300,7 +309,14 @@ class FrameSetsController(QObject):
         self.panel.set_pending_count(len(pending))
         return dropped
 
+    def _dirt_levels(self) -> dict[str, str]:
+        dirt = getattr(self._p, "_dirt_controller", None)
+        return dirt.frame_levels() if dirt is not None else {}
+
     def _rule_label(self, rule) -> str:
+        if rule.kind == RULE_DIRT:
+            label = self._t("frame_sets.rule.dirt", level=self._t(f"frame_sets.dirt.level.{rule.level}"))
+            return f"{label} · {rule.layer_label}" if rule.layer_label else label
         label = self._t("frame_sets.rule.scale", quality=_percent(rule.cutoff))
         return f"{label} · {rule.layer_label}" if rule.layer_label else label
 
@@ -339,6 +355,19 @@ class FrameSetsController(QObject):
         model = self._model(state)
         self._ensure_frozen(model)
         model.add_rule(float(self.slider.value()), float(cutoff), self._layer_title())
+        self._show_kept_after_drop(model)
+        self.refresh()
+
+    def _apply_dirt_rule(self, level: str) -> None:
+        state = self._state()
+        if state is None:
+            return
+        model = self._model(state)
+        model.dirt_levels = self._dirt_levels()
+        if not model.dirty_keys(level):
+            return
+        self._ensure_frozen(model)
+        model.add_dirt_rule(level, self._layer_title())
         self._show_kept_after_drop(model)
         self.refresh()
 

@@ -141,6 +141,8 @@ class FrameSetsPanel(QWidget):
 
     applyRequested = pyqtSignal()
     invertRequested = pyqtSignal()
+    # Drop the frames whose dirt is at least this level (light, medium, heavy).
+    dirtDropRequested = pyqtSignal(str)
     ruleToggled = pyqtSignal(int, bool)
     ruleRemoved = pyqtSignal(int)
     manualCleared = pyqtSignal()
@@ -211,6 +213,25 @@ class FrameSetsPanel(QWidget):
         rules_layout.addWidget(_heading(self._t("frame_sets.rules.title"), rules_column))
         self.rules_box = _count_grid()
         rules_layout.addLayout(self.rules_box)
+        # Drop by dirt: shown once dirt has been looked for in the run.
+        self.dirt_drop_row = QWidget(rules_column)
+        dirt_row = QHBoxLayout(self.dirt_drop_row)
+        dirt_row.setContentsMargins(0, 4, 0, 0)
+        dirt_row.setSpacing(6)
+        self.dirt_level_combo = QComboBox(self.dirt_drop_row)
+        for level in ("light", "medium", "heavy"):
+            self.dirt_level_combo.addItem(self._t(f"frame_sets.dirt.level.{level}"), level)
+        self.dirt_drop_button = QPushButton(self.dirt_drop_row)
+        self.dirt_drop_button.setToolTip(self._t("frame_sets.dirt.hint"))
+        dirt_row.addWidget(self.dirt_level_combo, 1)
+        dirt_row.addWidget(self.dirt_drop_button)
+        rules_layout.addWidget(self.dirt_drop_row)
+        self._dirt_counts: dict[str, int] = {}
+        self.dirt_level_combo.currentIndexChanged.connect(lambda _index: self._sync_dirt_button())
+        self.dirt_drop_button.clicked.connect(
+            lambda: self.dirtDropRequested.emit(str(self.dirt_level_combo.currentData() or "light"))
+        )
+        self.set_dirt_counts(None)
         rules_layout.addStretch(1)
 
         sets_column, sets_layout = self._column(page)
@@ -377,6 +398,18 @@ class FrameSetsPanel(QWidget):
         self.inverted_label.setVisible(bool(inverted))
 
     # Rules -------------------------------------------------------------------
+
+    def set_dirt_counts(self, counts: dict[str, int] | None) -> None:
+        """Dirty frames at each level or dirtier; None hides the dirt drop (dirt not looked for)."""
+
+        self._dirt_counts = dict(counts or {})
+        self.dirt_drop_row.setVisible(counts is not None)
+        self._sync_dirt_button()
+
+    def _sync_dirt_button(self) -> None:
+        count = int(self._dirt_counts.get(str(self.dirt_level_combo.currentData() or "light"), 0))
+        self.dirt_drop_button.setText(self._t("frame_sets.dirt.apply", count=count))
+        self.dirt_drop_button.setEnabled(count > 0)
 
     def set_rules(self, rows: list[tuple[int, str, int, bool]], manual_count: int) -> None:
         """``rows``: (rule id, label, dropped frame count, enabled)."""

@@ -13,7 +13,15 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QColor
 
 from ..core.dirt_batch import DirtCancelled, DirtFrame, analyze_dirt_frames
-from ..core.dirt_regions import LEVEL_HEAVY, LEVEL_LIGHT, LEVEL_MEDIUM, DirtConfig, FrameDirtResult
+from ..core.dirt_regions import (
+    LEVEL_HEAVY,
+    LEVEL_LIGHT,
+    LEVEL_MEDIUM,
+    DirtConfig,
+    FrameDirtResult,
+    level_at_least,
+    worst_level,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,6 +85,9 @@ class DirtController(QObject):
         controls.runRequested.connect(self.run)
         controls.cancelRequested.connect(self.cancel)
         controls.settingsChanged.connect(self._settings_changed)
+        controls.filterChanged.connect(self._filter_changed)
+        controls.frameChosen.connect(self.choose_frame)
+        controls.frameOpened.connect(self.open_frame)
 
     # Settings ---------------------------------------------------------------------------------
 
@@ -95,6 +106,10 @@ class DirtController(QObject):
     def _settings_changed(self) -> None:
         if self._results and self.config().signature() != self._result_signature:
             self._controls.set_status("dirt.stale")
+        self._presenter._persist_state()
+
+    def _filter_changed(self) -> None:
+        self.refresh_views()
         self._presenter._persist_state()
 
     # Running ----------------------------------------------------------------------------------
@@ -237,6 +252,61 @@ class DirtController(QObject):
             light=levels[LEVEL_LIGHT],
         )
 
+    def frame_levels(self, model_id: str | None = None) -> dict[str, str]:
+        """Worst dirt level of every dirty frame of the layer (the shown one by default)."""
+
+        chosen = self.shown_model_id() if model_id is None else model_id
+        levels = {}
+        for key, result in self.results_for(chosen).items():
+            level = worst_level(result)
+            if level:
+                levels[key] = level
+        return levels
+
+    def listed_frames(self) -> list[tuple[str, FrameDirtResult]]:
+        """Dirty frames of the shown layer at the chosen level or dirtier, dirtiest first."""
+
+        minimum = self._controls.filter_level()
+        rows = [
+            (key, result)
+            for key, result in self.results_for(self.shown_model_id()).items()
+            if level_at_least(worst_level(result), minimum)
+        ]
+        rows.sort(key=lambda row: (-row[1].max_dirtiness, -len(row[1].regions), row[0]))
+        return rows
+
+    def _list_text(self, key: str, result: FrameDirtResult) -> str:
+        level = worst_level(result)
+        return self._presenter._t(
+            "dirt.list_row",
+            frame=key,
+            level=self._presenter._t(f"dirt.level.{level}"),
+            dirtiness=int(round(result.max_dirtiness * 100)),
+            count=len(result.regions),
+        )
+
+    def _record(self, key: str):
+        state = self._presenter._current_tab_state()
+        if state is None:
+            return None, None
+        record = next((entry for entry in state.build_result.records if str(entry.key) == str(key)), None)
+        return state, record
+
+    def choose_frame(self, key: str) -> None:
+        """Show the frame on the matrix (selected and scrolled to)."""
+
+        _state, record = self._record(key)
+        view = getattr(self._presenter, "grid_inspection_matrix_view", None)
+        if record is not None and view is not None:
+            view.select_record_by_key(record.key, ensure_visible=True)
+
+    def open_frame(self, key: str) -> None:
+        state, record = self._record(key)
+        if record is None:
+            return
+        self.choose_frame(key)
+        self._presenter._open_record_details(record, state)
+
     def frame_marks(self, model_id: str | None) -> dict[str, QColor]:
         marks: dict[str, QColor] = {}
         for key, result in self.results_for(model_id).items():
@@ -253,10 +323,19 @@ class DirtController(QObject):
             self._show_summary()
         model_id = self.shown_model_id()
         marks = self.frame_marks(model_id)
+        listed = self.listed_frames()
+        self._controls.set_frames([(key, self._list_text(key, result)) for key, result in listed])
+        shown = {key for key, _result in listed} if self._controls.filter_on() and self._results else None
         for view in self._presenter._grid_inspection_views().values():
             setter = getattr(view, "set_dirt_marks", None)
             if callable(setter):
                 setter(marks)
+            filter_setter = getattr(view, "set_dirt_filter_keys", None)
+            if callable(filter_setter):
+                filter_setter(shown)
+        frame_sets = getattr(self._presenter, "_frame_sets_controller", None)
+        if frame_sets is not None:
+            frame_sets.schedule_refresh()
         for dialog in list(getattr(self._presenter, "_details_dialogs", ()) or ()):
             self.update_dialog(dialog)
 

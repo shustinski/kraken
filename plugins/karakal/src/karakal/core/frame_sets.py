@@ -8,6 +8,9 @@ viewing and export.
 
 Scores here are frame qualities in 0..1, higher is better (the same value the
 matrix colours by). A rule drops every frame whose quality is below its cutoff.
+A dirt rule drops every frame whose dirtiest region is at least its level
+(``dirt_levels``: the worst dirt level of every dirty frame, kept up to date by
+the app).
 """
 
 from __future__ import annotations
@@ -18,18 +21,22 @@ VIEW_ALL = "all"
 VIEW_KEPT = "kept"
 VIEW_DROPPED = "dropped"
 VIEW_SELECTED = "selected"
+RULE_QUALITY = "quality"
+RULE_DIRT = "dirt"
 USER_SET_PREFIX = "set:"
 
 
 @dataclass(slots=True)
 class FrameFilterRule:
-    """Drop frames whose quality is below ``cutoff``."""
+    """Drop frames whose quality is below ``cutoff`` (a dirt rule: whose dirt is at least ``level``)."""
 
     rule_id: int
     position: float
     cutoff: float
     layer_label: str = ""
     enabled: bool = True
+    kind: str = RULE_QUALITY
+    level: str = ""
 
 
 @dataclass(slots=True)
@@ -58,6 +65,8 @@ class FrameSetModel:
     # Colour window of the matrix at the moment of the first drop.
     frozen_window: tuple[float, float] | None = None
     next_id: int = 1
+    # Worst dirt level of every dirty frame of the shown layer (dirt rules read it).
+    dirt_levels: dict[str, str] = field(default_factory=dict)
 
     def _take_id(self) -> int:
         value = self.next_id
@@ -71,6 +80,16 @@ class FrameSetModel:
         self.rules.append(rule)
         return rule
 
+    def add_dirt_rule(self, level: str, layer_label: str = "") -> FrameFilterRule:
+        rule = FrameFilterRule(self._take_id(), 0.0, 0.0, str(layer_label), kind=RULE_DIRT, level=str(level))
+        self.rules.append(rule)
+        return rule
+
+    def dirty_keys(self, level: str) -> set[str]:
+        from .dirt_regions import level_at_least
+
+        return {key for key, worst in self.dirt_levels.items() if level_at_least(worst, level)}
+
     def remove_rule(self, rule_id: int) -> None:
         self.rules = [rule for rule in self.rules if rule.rule_id != int(rule_id)]
 
@@ -80,6 +99,8 @@ class FrameSetModel:
                 rule.enabled = bool(enabled)
 
     def rule_dropped_keys(self, rule: FrameFilterRule, qualities: dict[str, float]) -> set[str]:
+        if rule.kind == RULE_DIRT:
+            return self.dirty_keys(rule.level)
         return frames_below(qualities, rule.cutoff)
 
     def drop_frame(self, key: str) -> None:
@@ -103,13 +124,13 @@ class FrameSetModel:
         dropped: set[str] = set()
         for rule in self.rules:
             if rule.enabled:
-                dropped |= frames_below(qualities, rule.cutoff)
+                dropped |= self.rule_dropped_keys(rule, qualities)
         return dropped
 
     def dropped_keys(self, qualities: dict[str, float]) -> set[str]:
         """Frames removed by enabled rules or by hand (before inversion)."""
 
-        known = set(qualities)
+        known = set(qualities) | set(self.dirt_levels)
         dropped = (self._rule_dropped(qualities) - self.manual_returned) | (self.manual_dropped & known)
         return dropped
 

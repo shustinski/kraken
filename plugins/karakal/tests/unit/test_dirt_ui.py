@@ -96,7 +96,7 @@ def test_dirt_settings_are_kept_with_the_build_settings(tmp_path, qtbot) -> None
     controls.merge_gap_spin.setValue(5.0)
     controls.sensitivity_spin.setValue(1.5)
     payload = presenter._build_build_settings_payload()["dirt_settings"]
-    assert payload == {"enabled": True, "merge_gap_cells": 5.0, "sensitivity": 1.5}
+    assert payload == {"enabled": True, "merge_gap_cells": 5.0, "sensitivity": 1.5, "filter_level": "light"}
     assert controller.config() == DirtConfig(merge_gap_cells=5.0, sensitivity=1.5)
     controls.apply_settings({"enabled": False, "merge_gap_cells": 1.0, "sensitivity": 2.0})
     assert not controls.enabled() and controller.config().merge_gap_cells == 1.0
@@ -191,3 +191,72 @@ def test_frame_window_shows_the_dirt_of_its_frame(tmp_path, qtbot) -> None:
     # Another frame in the same window: its own dirt (none here).
     dialog.set_dirt_result(controller.result_for(_model_id, "F_002"))
     assert overlay.items() == () and overlay.status.text() == widget._t("dirt.frame_none")
+
+
+def test_dirt_rule_of_the_frame_set_model() -> None:
+    from karakal.core.frame_sets import RULE_DIRT, VIEW_DROPPED, FrameSetModel
+
+    model = FrameSetModel(dirt_levels={"A": "heavy", "B": "medium", "C": "light"})
+    keys = {"A", "B", "C", "D"}
+    qualities = {key: 0.9 for key in keys}
+    assert model.dirty_keys("medium") == {"A", "B"}
+    rule = model.add_dirt_rule("medium", "Нули")
+    assert rule.kind == RULE_DIRT and model.has_filter()
+    assert model.kept_keys(keys, qualities) == {"C", "D"}
+    assert model.set_keys(VIEW_DROPPED, keys, qualities) == {"A", "B"}
+    # Inverted, only the dirty frames take part.
+    model.inverted = True
+    assert model.kept_keys(keys, qualities) == {"A", "B"}
+    model.inverted = False
+    model.set_rule_enabled(rule.rule_id, False)
+    assert model.kept_keys(keys, qualities) == keys
+    model.set_rule_enabled(rule.rule_id, True)
+    # The rule follows the dirt found last.
+    model.dirt_levels = {"D": "heavy"}
+    assert model.kept_keys(keys, qualities) == {"A", "B", "C"}
+    model.remove_rule(rule.rule_id)
+    assert not model.has_filter()
+
+
+def test_filter_list_and_drop_find_the_dirty_frames(tmp_path, qtbot) -> None:
+    widget, presenter, controller, _model_id = _widget_with_run(tmp_path, qtbot)
+    controls = widget.dirt_controls
+    assert not controls.frames_list.isVisibleTo(widget)
+    controls.run_button.click()
+    qtbot.waitUntil(lambda: controller.has_results() and not controller.is_running(), timeout=30000)
+
+    # The list: only the dirty frame, with its level and dirtiness.
+    assert controls.frames_list.count() == 1
+    item = controls.frames_list.item(0)
+    assert item.text().startswith("F_001 — ")
+    views = presenter._grid_inspection_views().values()
+    assert all(getattr(view, "_dirt_filter_keys", None) is None for view in views)
+
+    # The matrix filter fades every other frame.
+    controls.filter_check.setChecked(True)
+    assert all(view._dirt_filter_keys == {"F_001"} for view in views)
+    level = controller.frame_levels()["F_001"]
+    stricter = {"light": "medium", "medium": "heavy"}.get(level)
+    if stricter is not None:
+        controls.level_combo.setCurrentIndex(controls.level_combo.findData(stricter))
+        assert all(view._dirt_filter_keys == set() for view in views) and controls.frames_list.count() == 0
+        controls.level_combo.setCurrentIndex(controls.level_combo.findData("light"))
+    controls.filter_check.setChecked(False)
+    assert all(view._dirt_filter_keys is None for view in views)
+
+    # Next / click: the frame is chosen on the matrix.
+    chosen = []
+    controls.frameChosen.connect(chosen.append)
+    controls.next_button.click()
+    assert chosen == ["F_001"]
+    assert str(presenter.grid_inspection_matrix_view.current_record().key) == "F_001"
+
+    # The drop panel offers «Drop dirty» and the rule drops the dirty frame.
+    frame_sets = presenter._frame_sets_controller
+    frame_sets.refresh()
+    state = presenter._current_tab_state()
+    model = state.frame_sets
+    assert model.dirt_levels == {"F_001": level}
+    frame_sets.panel.dirtDropRequested.emit("light")
+    assert any(rule.kind == "dirt" for rule in model.rules)
+    assert model.kept_keys({"F_001", "F_002"}, {}) == {"F_002"}

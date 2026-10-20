@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "last_completed_file": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\dataset\\images\\0099.jpg",
+  "completed": [
+    {
+      "source_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\dataset\\images\\0000.jpg",
+      "output_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\binary\\0000.jpg"
+    },
+    {
+      "source_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\dataset\\images\\0001.jpg",
+      "output_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\binary\\0001.jpg"
+    },
+    {
+      "source_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\dataset\\images\\0098.jpg",
+      "output_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\binary\\0098.jpg"
+    },
+    {
+      "source_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\dataset\\images\\0099.jpg",
+      "output_path": "D:\\code\\kraken\\tests\\test2\\new_test\\cycle\\binary\\0099.jpg"
+    }
+  ]
+}

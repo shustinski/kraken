@@ -107,9 +107,21 @@ class PostgresAgentGateway:
             )
 
     def cancel(self, job_id: object) -> None:
+        """Stop a queued or leased agent, and ignore a queue row that is already finished.
+
+        Domain jobs can stay open after the worker publishes a partial result and
+        the queue row moves to completed, failed, or cancelled. Cancelling that
+        domain job must not fail just because there is nothing left to stop.
+        """
         import sqlalchemy as sa
 
+        terminal = {"cancelled", "completed", "failed"}
         with self.engine.begin() as connection:
+            state = connection.execute(
+                sa.select(self.jobs.c.state).where(self.jobs.c.job_id == str(job_id))
+            ).scalar_one_or_none()
+            if state is None or state in terminal:
+                return
             result = connection.execute(
                 sa.update(self.jobs)
                 .where(
@@ -123,8 +135,14 @@ class PostgresAgentGateway:
                     updated_at=datetime.now(UTC),
                 )
             )
-        if result.rowcount != 1:
-            raise RuntimeError("Agent job is not cancellable")
+            if result.rowcount == 1:
+                return
+            state = connection.execute(
+                sa.select(self.jobs.c.state).where(self.jobs.c.job_id == str(job_id))
+            ).scalar_one_or_none()
+        if state is None or state in terminal:
+            return
+        raise RuntimeError("Agent job is not cancellable")
 
     def lease(self, agent: AgentIdentity, *, seconds: int = 60, job_id: str | None = None) -> dict[str, Any] | None:
         import sqlalchemy as sa

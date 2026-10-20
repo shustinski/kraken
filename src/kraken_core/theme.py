@@ -26,13 +26,54 @@ def normalize_theme(theme: str | None) -> str:
     return THEME_DARK
 
 
-def shared_theme_stylesheet(theme: str | None) -> str:
+def active_theme(theme: str | None = None) -> str:
+    """Return dark or light, resolving the system choice and the saved application theme."""
+
+    if theme is None:
+        app = QApplication.instance()
+        theme = None if app is None else str(app.property("krakenTheme") or "")
     normalized = normalize_theme(theme)
     if normalized == THEME_SYSTEM:
         app = QApplication.instance()
         dark = app is not None and app.styleHints().colorScheme() == Qt.ColorScheme.Dark
-        normalized = THEME_DARK if dark else THEME_LIGHT
-    return load_shared_stylesheet(THEME_STYLESHEETS[normalized])
+        return THEME_DARK if dark else THEME_LIGHT
+    return normalized
+
+
+_SCENE_COLORS = {
+    THEME_DARK: {
+        "matrix": "#0b1120",
+        "pipeline": "#1b1d1b",
+        "grid_minor": "#272a27",
+        "grid_major": "#343834",
+        "empty": "#1f2937",
+        "selection": "#f8fafc",
+        "label": "#f8fafc",
+        "minimap": "#0b1120",
+        "minimap_matrix": "#1e293b",
+        "minimap_border": "#475569",
+    },
+    THEME_LIGHT: {
+        "matrix": "#f4f6f8",
+        "pipeline": "#f7f8f6",
+        "grid_minor": "#e6e8e6",
+        "grid_major": "#d5d8d5",
+        "empty": "#e8edf2",
+        "selection": "#0f172a",
+        "label": "#111827",
+        "minimap": "#f8fafc",
+        "minimap_matrix": "#e8eef5",
+        "minimap_border": "#94a3b8",
+    },
+}
+
+
+def scene_color(name: str, theme: str | None = None) -> str:
+    return _SCENE_COLORS[active_theme(theme)][name]
+
+
+def shared_theme_stylesheet(theme: str | None) -> str:
+    return load_shared_stylesheet(THEME_STYLESHEETS[active_theme(theme)])
 
 
 def apply_app_theme(theme: str | None, app: QApplication | None = None) -> str:
@@ -47,6 +88,10 @@ def apply_app_theme(theme: str | None, app: QApplication | None = None) -> str:
             )
             target.setProperty("krakenThemeListener", True)
         target.setStyleSheet(shared_theme_stylesheet(normalized))
+        for widget in target.allWidgets():
+            refresh = getattr(widget, "apply_kraken_scene_theme", None)
+            if callable(refresh):
+                refresh()
     return normalized
 
 

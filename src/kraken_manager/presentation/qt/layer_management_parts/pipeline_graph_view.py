@@ -41,6 +41,9 @@ class PipelineGraphView(QGraphicsView):
         self._items: dict[str, PipelineNodeItem] = {}
         self._edges: list[tuple[QGraphicsPathItem, PipelineNodeItem, PipelineNodeItem]] = []
 
+    def apply_kraken_scene_theme(self) -> None:
+        self.viewport().update()
+
     def set_snapshot(self, snapshot: LayerPipelineSnapshot) -> None:
         self.save_layout()
         self._snapshot = snapshot

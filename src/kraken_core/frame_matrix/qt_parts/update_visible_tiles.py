@@ -207,9 +207,11 @@ class UpdateVisibleTilesMixin:
                     highest_priority = priority
         rect = tile.boundingRect().adjusted(0.8, 0.8, -1.2, -1.2)
         painter.fillRect(rect, self._status_color(highest_status))
+        from kraken_core.theme import scene_color
+
         border = QColor("#475569")
         if any(rectangle.intersects(tile_frames) for rectangle in self._selection.rectangles):
-            border = QColor("#f8fafc")
+            border = QColor(scene_color("selection"))
         pen = QPen(border, max(1.0, 1.5 / max(self.zoom_factor(), self.MIN_ZOOM)))
         pen.setCosmetic(True)
         painter.setPen(pen)

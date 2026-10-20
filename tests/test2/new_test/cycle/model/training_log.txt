@@ -1,0 +1,36 @@
+[2026-10-19 12:54:10] Режим multi GPU отключен в настройках.
+[2026-10-19 12:54:10] torch.compile disabled by NEURALIMAGE_TORCH_COMPILE=0.
+[2026-10-19 12:54:10] Training device detected: cuda
+[2026-10-19 12:54:10] Preparing data and starting the training loop
+[2026-10-19 12:54:10] Mixed precision mode: off.
+[2026-10-19 12:54:10] Loss formula: Loss = 1.00*bce
+[2026-10-19 12:54:10] Loss term: 1.00 * bce.
+[2026-10-19 12:54:10] Loss normalization: per-sample mean (batch-size invariant).
+[2026-10-19 12:54:10] Начало эпохи [1/1]
+[2026-10-19 12:54:10] Текущий learning rate: 0.00100000
+[2026-10-19 12:54:10]  
+[2026-10-19 12:54:28] Loss components: BCE=0.7545 Dice=0.0000 Topograph=0.0000 Total=0.8251
+[2026-10-19 12:54:28] Loss components: BCE=0.6646 Dice=0.0000 Topograph=0.0000 Total=0.7346
+[2026-10-19 12:54:28] Loss components: BCE=0.6746 Dice=0.0000 Topograph=0.0000 Total=0.7441
+[2026-10-19 12:54:28] Loss components: BCE=0.6148 Dice=0.0000 Topograph=0.0000 Total=0.6841
+[2026-10-19 12:54:28] Loss components: BCE=0.7389 Dice=0.0000 Topograph=0.0000 Total=0.8084
+[2026-10-19 12:54:28] Loss components: BCE=0.5480 Dice=0.0000 Topograph=0.0000 Total=0.6169
+[2026-10-19 12:54:28] Loss components: BCE=0.8047 Dice=0.0000 Topograph=0.0000 Total=0.8770
+[2026-10-19 12:54:28] Loss components: BCE=0.8092 Dice=0.0000 Topograph=0.0000 Total=0.8811
+[2026-10-19 12:54:28] Loss components: BCE=0.5502 Dice=0.0000 Topograph=0.0000 Total=0.6165
+[2026-10-19 12:54:28] Loss components: BCE=0.6010 Dice=0.0000 Topograph=0.0000 Total=0.6690
+[2026-10-19 12:54:28] Loss components: BCE=1.0105 Dice=0.0000 Topograph=0.0000 Total=1.0857
+[2026-10-19 12:54:28] Loss components: BCE=0.5715 Dice=0.0000 Topograph=0.0000 Total=0.6346
+[2026-10-19 12:54:28] Loss components: BCE=0.6870 Dice=0.0000 Topograph=0.0000 Total=0.7561
+[2026-10-19 12:54:28] Loss components: BCE=0.6835 Dice=0.0000 Topograph=0.0000 Total=0.7539
+[2026-10-19 12:54:28] Loss components: BCE=0.5109 Dice=0.0000 Topograph=0.0000 Total=0.5739
+[2026-10-19 12:54:28] Loss components: BCE=0.4768 Dice=0.0000 Topograph=0.0000 Total=0.5396
+[2026-10-19 12:54:28] Loss components: BCE=0.4983 Dice=0.0000 Topograph=0.0000 Total=0.5621
+[2026-10-19 12:54:28] Loss components: BCE=0.5106 Dice=0.0000 Topograph=0.0000 Total=0.5733
+[2026-10-19 12:54:28] Loss components: BCE=0.5764 Dice=0.0000 Topograph=0.0000 Total=0.6422
+[2026-10-19 12:54:29] Loss components: BCE=0.4276 Dice=0.0000 Topograph=0.0000 Total=0.4877
+[2026-10-19 12:54:29] Best checkpoint saved at global batch 20 (loss=0.70329924).
+[2026-10-19 12:54:29] Профилирование по времени, эпоха 1: data_wait: 0.48s (2.7%) | augmentation: 0.00s (0.0%) | forward: 12.34s (68.1%) | backward: 0.93s (5.1%) | optimizer: 0.04s (0.2%) | validation: 0.02s (0.1%) | checkpoint: 0.05s (0.3%). Наибольшая нагрузка: forward (12.34s).
+[2026-10-19 12:54:29] Epoch [1/1] completed in 00:00:18.
+[2026-10-19 12:54:29] Best checkpoint restored from global batch 20 (loss=0.70329924).
+[2026-10-19 12:54:29] Training log saved: D:\code\kraken\tests\test2\new_test\cycle\model\training_log.txt

@@ -141,3 +141,48 @@ def test_desktop_lease_is_limited_to_its_initiator_and_job(tmp_path, acting_role
     assert cancelled.status_code == 200
     assert cancelled.json()["state"] == "cancelled"
     assert client.post(f"/api/v1/agent/jobs/{job['id']}/heartbeat", headers=headers, json={}).status_code == 403
+
+
+def test_agent_queue_cancel_ignores_a_missing_job(tmp_path):
+    import sqlalchemy as sa
+    from kraken_server.agent_gateway import PostgresAgentGateway
+
+    engine = sa.create_engine(f"sqlite:///{tmp_path / 'queue.sqlite3'}")
+    gateway = PostgresAgentGateway(engine, tokens=None, blobs=None)
+    gateway.metadata.create_all(engine)
+    gateway.cancel("11111111-1111-1111-1111-111111111111")
+
+
+def test_cancel_succeeds_when_the_agent_queue_is_already_finished(tmp_path):
+    import sqlalchemy as sa
+
+    server, local, session, project, _layer, _target, gateway, job = _desktop_job(tmp_path, "frames.vectorize.v1")
+    app = create_app(
+        services=server,
+        session_resolver=lambda token: SessionPrincipal(str(session.principal.id), "local", token),
+        agent_gateway=gateway,
+    )
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer owner"}
+    leased = client.post(
+        f"/api/v1/projects/{project.id}/jobs/{job['id']}/desktop-lease",
+        headers=headers,
+    )
+    assert leased.status_code == 200
+    with gateway.engine.begin() as connection:
+        connection.execute(
+            sa.update(gateway.jobs)
+            .where(gateway.jobs.c.job_id == job["id"])
+            .values(state="completed", lease_owner=None, lease_until=None)
+        )
+    from kraken_manager.application.plugin_jobs import CancelPluginJobHandler
+
+    server._cancel_plugin_job = CancelPluginJobHandler(server.uow_factory, server.profiles, local.clock, gateway)
+    current = local.plugin_jobs()[0]
+    cancelled = client.post(
+        f"/api/v1/projects/{project.id}/jobs/{job['id']}/cancel",
+        json={},
+        headers={**headers, "Idempotency-Key": "cancel-finished", "If-Match": str(current.revision)},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["state"] == "cancelled"

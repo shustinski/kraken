@@ -44,7 +44,6 @@ class ConstructionMixin:
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setMouseTracking(True)
-        self.setBackgroundBrush(QColor("#0b1120"))
 
         self.matrix_width = 1
         self.matrix_height = 1
@@ -68,7 +67,18 @@ class ConstructionMixin:
 
         self.horizontalScrollBar().valueChanged.connect(self._schedule_visible_update)
         self.verticalScrollBar().valueChanged.connect(self._schedule_visible_update)
+        self.apply_kraken_scene_theme()
         self.set_matrix_size(width, height, orientation)
+
+    def apply_kraken_scene_theme(self) -> None:
+        from kraken_core.theme import scene_color
+
+        self.setBackgroundBrush(QColor(scene_color("matrix")))
+        self._status_colors["empty"] = scene_color("empty")
+        if getattr(self, "_visible_tiles", None):
+            self._invalidate_tiles()
+        elif self.viewport() is not None:
+            self.viewport().update()
 
     @staticmethod
     def _coerce_orientation(value: GridOrientation | str) -> GridOrientation:

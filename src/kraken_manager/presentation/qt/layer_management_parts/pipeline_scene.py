@@ -8,9 +8,11 @@ from PyQt6.QtWidgets import (
 
 class PipelineScene(QGraphicsScene):
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:  # type: ignore[override]
-        painter.fillRect(rect, QColor("#1b1d1b"))
+        from kraken_core.theme import scene_color
+
+        painter.fillRect(rect, QColor(scene_color("pipeline")))
         minor, major = 20, 100
-        for spacing, color in ((minor, "#272a27"), (major, "#343834")):
+        for spacing, color in ((minor, scene_color("grid_minor")), (major, scene_color("grid_major"))):
             pen = QPen(QColor(color), 0)
             painter.setPen(pen)
             left = int(rect.left()) - (int(rect.left()) % spacing)

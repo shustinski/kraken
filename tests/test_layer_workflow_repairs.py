@@ -320,6 +320,43 @@ def test_theme_preferences_apply_and_restore_all_choices(tmp_path, monkeypatch, 
         apply_app_theme(previous, app)
 
 
+def test_light_theme_repaints_graphics_scenes(app):
+    from PyQt6.QtCore import QRectF
+    from PyQt6.QtGui import QColor, QImage, QPainter
+
+    from kraken_core.frame_matrix.qt import FrameMatrixView
+    from kraken_core.theme import apply_app_theme, scene_color
+    from kraken_manager.presentation.qt.layer_management_parts.pipeline_scene import PipelineScene
+    from kraken_manager.presentation.qt.role_management import RoleGraphView
+
+    previous = app.property("krakenTheme") or "dark"
+    matrix = FrameMatrixView()
+    pipeline = PipelineScene()
+    roles = RoleGraphView()
+    try:
+        apply_app_theme("light", app)
+        assert matrix.backgroundBrush().color().name().lower() == QColor(scene_color("matrix")).name().lower()
+        assert matrix._status_colors["empty"] == scene_color("empty")
+        for surface in (pipeline, roles):
+            image = QImage(8, 8, QImage.Format.Format_ARGB32)
+            image.fill(0)
+            painter = QPainter(image)
+            surface.drawBackground(painter, QRectF(0, 0, 8, 8))
+            painter.end()
+            assert image.pixelColor(3, 3).name().lower() == QColor(scene_color("pipeline")).name().lower()
+        apply_app_theme("dark", app)
+        assert matrix.backgroundBrush().color().name().lower() == "#0b1120"
+        image = QImage(8, 8, QImage.Format.Format_ARGB32)
+        painter = QPainter(image)
+        pipeline.drawBackground(painter, QRectF(0, 0, 8, 8))
+        painter.end()
+        assert image.pixelColor(3, 3).name().lower() == "#1b1d1b"
+    finally:
+        apply_app_theme(previous, app)
+        matrix.deleteLater()
+        roles.deleteLater()
+
+
 def test_theme_cancel_does_not_apply(tmp_path, monkeypatch, app):
     from kraken_hub import preferences_dialog as preferences
 

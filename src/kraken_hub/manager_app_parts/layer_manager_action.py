@@ -170,7 +170,7 @@ class LayerManagerActionMixin:
                     layer_id=_layer_id,
                     action_event_id=action_event_id,
                 )
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, RuntimeError) as exc:
                 self._error(str(exc))
                 return
             if self._layer_dialog is not None:

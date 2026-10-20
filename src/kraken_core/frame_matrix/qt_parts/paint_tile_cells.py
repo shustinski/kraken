@@ -21,9 +21,11 @@ class PaintTileCellsMixin:
         start_row = tile.tile_y * tile.tile_cells
         end_column = min(self.matrix_width, start_column + tile.tile_cells)
         end_row = min(self.matrix_height, start_row + tile.tile_cells)
+        from kraken_core.theme import scene_color
+
         base_pen = QPen(QColor("#475569"), 1.0)
         base_pen.setCosmetic(True)
-        selection_pen = QPen(QColor("#f8fafc"), 2.2)
+        selection_pen = QPen(QColor(scene_color("selection")), 2.2)
         selection_pen.setCosmetic(True)
         for row in range(start_row, end_row):
             y = self._y_for_row(row)
@@ -60,7 +62,7 @@ class PaintTileCellsMixin:
                     painter.drawRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5))
 
                 if lod is MatrixLod.DETAILS:
-                    painter.setPen(QColor("#f8fafc"))
+                    painter.setPen(QColor(scene_color("label")))
                     frame_number = (y - 1) * self.matrix_width + x
                     coordinate_text = cell.label or f"{frame_number:04d}"
                     painter.drawText(

@@ -11,9 +11,8 @@ from kraken_manager.application.dto import (
     CommandContext as ApplicationCommandContext,
 )
 from kraken_manager.application.errors import (
+    ApplicationError,
     AuthorizationError as ApplicationAuthorizationError,
-)
-from kraken_manager.application.errors import (
     NotFoundError as ApplicationNotFoundError,
 )
 from kraken_manager.application.plugin_jobs import (
@@ -59,6 +58,8 @@ class ImportAgentResultMixin:
             )
             return encode_model(value)
         except Exception as exc:
+            if isinstance(exc, RuntimeError) and not isinstance(exc, ApplicationError):
+                raise ConflictError(str(exc)) from exc
             self._translate_lifecycle_error(exc)
             raise AssertionError("unreachable")
 

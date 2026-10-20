@@ -119,12 +119,20 @@ class RoleGraphView(QGraphicsView):
         self.refresh_edges()
         self.graph_scene.setSceneRect(self.graph_scene.itemsBoundingRect().adjusted(-80, -40, 80, 80))
 
+    def apply_kraken_scene_theme(self) -> None:
+        self._paint_grid()
+        self.viewport().update()
+
     def _paint_grid(self) -> None:
-        self.graph_scene.setBackgroundBrush(QColor("#1b1d1b"))
+        from kraken_core.theme import scene_color
+
+        self.graph_scene.setBackgroundBrush(QColor(scene_color("pipeline")))
 
     def drawBackground(self, painter: QPainter, rect) -> None:  # type: ignore[no-untyped-def]
-        painter.fillRect(rect, QColor("#1b1d1b"))
-        for spacing, color in ((20, "#272a27"), (100, "#343834")):
+        from kraken_core.theme import scene_color
+
+        painter.fillRect(rect, QColor(scene_color("pipeline")))
+        for spacing, color in ((20, scene_color("grid_minor")), (100, scene_color("grid_major"))):
             pen = QPen(QColor(color), 0)
             painter.setPen(pen)
             left = int(rect.left()) - (int(rect.left()) % spacing)

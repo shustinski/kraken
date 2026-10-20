@@ -28,6 +28,9 @@ class FrameMatrixMinimap(QWidget):
         self.show()
         self.raise_()
 
+    def apply_kraken_scene_theme(self) -> None:
+        self.update()
+
     def _viewport_changed(self, _visible_rect: QRectF) -> None:
         self._reposition()
         self.update()
@@ -79,13 +82,17 @@ class FrameMatrixMinimap(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#475569"), 1.0))
-        painter.setBrush(QColor(11, 17, 32, 225))
+        from kraken_core.theme import scene_color
+
+        panel = QColor(scene_color("minimap"))
+        panel.setAlpha(225)
+        painter.setPen(QPen(QColor(scene_color("minimap_border")), 1.0))
+        painter.setBrush(panel)
         painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6)
 
         matrix = self._matrix_rect()
-        painter.setPen(QPen(QColor("#64748b"), 1.0))
-        painter.setBrush(QColor("#1e293b"))
+        painter.setPen(QPen(QColor(scene_color("minimap_border")), 1.0))
+        painter.setBrush(QColor(scene_color("minimap_matrix")))
         painter.drawRect(matrix)
 
         visible = self._map_scene_rect(self._matrix_view.visible_scene_rect())

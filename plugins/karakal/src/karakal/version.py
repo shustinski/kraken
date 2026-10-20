@@ -35,6 +35,8 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   20 = dirty regions of a frame from the mask and confidence map: settings and «Find dirt» in the
        cell check, corner marks on the matrix, the «Dirt» layer of the frame window, the «Dirty
        regions» item of the frame set export (JSON, label image, picture, CSV);
+  21 = dirty frames on a big matrix: «Show only frames with dirt» filter by level, the list of dirty
+       frames (to the frame / its window, previous and next), the «Drop dirty» rule of the drop panel;
 - beta N counts tester builds with the same algorithm and interface (fixes only); scripts/publish.ps1
   picks the next free N from the update folder and writes it back here.
 
@@ -49,7 +51,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.3"
-INTERFACE_NUMBER = 20
+INTERFACE_NUMBER = 21
 BETA = 0
 
 

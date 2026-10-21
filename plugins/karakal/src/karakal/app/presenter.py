@@ -5250,7 +5250,8 @@ class KarakalPresenter(QObject):
         views = self._grid_inspection_views()
         self._sync_grid_inspection_matrix_selector(state)
         # When we already have multi-model payloads stored, re-project them for the active selection.
-        if getattr(state, "grid_inspection_payloads_by_model", None):
+        projected = bool(getattr(state, "grid_inspection_payloads_by_model", None))
+        if projected:
             self._apply_grid_inspection_active_layer_view(state, streaming=False)
         self._sync_grid_inspection_layer_tabs(state)
         state.matrix_layer_signature = self._matrix_layer_signature(state)
@@ -5282,14 +5283,19 @@ class KarakalPresenter(QObject):
         records = list(self._display_records_for_state(state))
         highlight_keys = self._matrix_highlight_keys_for_state(state)
         for layer_key, view in views.items():
-            payloads = (
-                dict(layer_payloads.get(layer_key, {}) or {})
-                if bool(getattr(state, "grid_inspection_results_ready", False))
-                else {}
-            )
-            view.set_grid_inspection_payloads(payloads, enabled=True)
+            if not projected:
+                payloads = (
+                    dict(layer_payloads.get(layer_key, {}) or {})
+                    if bool(getattr(state, "grid_inspection_results_ready", False))
+                    else {}
+                )
+                view.set_grid_inspection_payloads(payloads, enabled=True)
+            # Projected results stay: the «unified» matrix has no layer of its own to take them from
+            # (it showed grey after a mode switch or an opened project).
             view.set_highlighted_record_keys(highlight_keys)
             view.set_records(records, sort_mode="name", reset_view=True)
+            if projected:
+                view.finalize_grid_inspection_payloads()
         self._sync_grid_reference_controls(state)
         self._update_grid_calibration_status()
         self._later(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))

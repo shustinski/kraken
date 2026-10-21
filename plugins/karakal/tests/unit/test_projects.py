@@ -277,3 +277,25 @@ def test_a_save_waited_for_during_another_save_is_on_disk_when_it_returns(tmp_pa
     # The first save's own «finished» arrives later and must not touch anything.
     qtbot.wait(200)
     assert projects._thread is None
+
+
+def _matrix_results(presenter) -> int:
+    return len(presenter._grid_inspection_views()["unified"]._grid_inspection_payload_by_key)
+
+
+def test_an_opened_project_colours_the_matrix(tmp_path, qtbot) -> None:
+    widget, presenter, state, _model_id = _run(tmp_path, qtbot, tmp_path / "data")
+    assert _matrix_results(presenter) == 2
+    projects = presenter._project_controller
+    folder = projects.save(state, wait=True)
+    _other, reopened = _widget(tmp_path, qtbot, "second")
+    assert reopened._project_controller.open(folder)
+    # Every frame of the run is coloured at once (it was grey: nothing reached the matrix).
+    assert _matrix_results(reopened) == 2
+
+
+def test_a_mode_switch_keeps_the_matrix_coloured(tmp_path, qtbot) -> None:
+    widget, presenter, _state, _model_id = _run(tmp_path, qtbot, tmp_path / "data")
+    widget.app_mode_combo.setCurrentIndex(widget.app_mode_combo.findData("validation"))
+    widget.app_mode_combo.setCurrentIndex(widget.app_mode_combo.findData("grid_inspection"))
+    assert _matrix_results(presenter) == 2

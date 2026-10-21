@@ -88,7 +88,8 @@ def test_the_tab_builds_the_map_of_the_shown_ones_layer(tmp_path, qtbot, monkeyp
     monkeypatch.setattr(mm, "MemoryMapConfig", lambda: CFG)
     widget, presenter, controller, memory, positions, records = _widget_with_run(tmp_path, qtbot, zeros=False)
     panel = widget.memory_map_panel
-    assert widget.grid_inspection_content_tabs.tabText(2) == presenter._t("tab.memory_map")
+    tabs = widget.grid_inspection_content_tabs
+    assert tabs.tabText(tabs.indexOf(panel)) == presenter._t("tab.memory_map")
     assert presenter._t("profile.grid_defects.title") in ("Memory work", "Работа с памятью")
     sources = controller.sources(presenter._current_tab_state())
     assert sources["mode"] == MODE_ONES and sources["per_row"] == 4 and sources["with_masks"] == 12

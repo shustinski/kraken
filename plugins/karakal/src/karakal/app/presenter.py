@@ -343,12 +343,16 @@ class KarakalPresenter(QObject):
             from .memory_map_controller import MemoryMapController
 
             self._memory_map_controller = MemoryMapController(self, view.memory_map_panel)
+            view.grid_inspection_content_tabs.currentChanged.connect(self._on_grid_content_tab_changed)
         self._dirt_controller = None
         if getattr(view, "dirt_controls", None) is not None:
             from .dirt_controller import DirtController
 
             self._dirt_controller = DirtController(self, view.dirt_controls)
-            view.grid_inspection_content_tabs.currentChanged.connect(self._on_grid_content_tab_changed)
+        from .project_controller import ProjectController
+
+        # Computed runs saved as projects and opened again without recomputing.
+        self._project_controller = ProjectController(self)
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)
@@ -1747,18 +1751,9 @@ class KarakalPresenter(QObject):
     def _stable_model_id_for_folders(self, mask_folder: Path | None, confidence_folder: Path | None = None) -> str:
         """Stable id from absolute folder paths (not from editable labels)."""
 
-        seed = ""
-        if mask_folder is not None:
-            seed = str(Path(mask_folder).resolve())
-        elif confidence_folder is not None:
-            seed = str(Path(confidence_folder).resolve())
-        seed = seed.strip().lower().replace("\\", "/")
-        if not seed:
-            return ""
-        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
-        leaf = Path(seed).name
-        leaf = re.sub(r"[^a-zA-Z0-9_]+", "_", leaf).strip("_") or "model"
-        return f"{leaf}_{digest}"
+        from ..core.project_store import stable_model_id
+
+        return stable_model_id(mask_folder, confidence_folder)
 
     def _analysis_preflight_signature_value(self) -> tuple[object, ...]:
         specs = self._checked_model_specs()
@@ -6176,6 +6171,10 @@ class KarakalPresenter(QObject):
                 performance_config=self._view.performance_config,
             )
         self._launch_grid_inspection_worker(state)
+        dirt = getattr(self, "_dirt_controller", None)
+        if dirt is not None:
+            # Dirt needs no cells: it is looked for while the cells are checked.
+            dirt.analysis_started()
 
     def _start_grid_pair_conflict_pass(self, state: ExtendMatrixTabState, pairs: tuple[GridConflictPair, ...]) -> None:
         """Conflicts of pairs whose layers are already analysed: no layer is analysed again."""
@@ -7390,6 +7389,10 @@ class KarakalPresenter(QObject):
         if dirt is not None:
             # Dirty regions are looked for after the cell check when the operator asked for it.
             self._later(0, dirt.analysis_finished)
+        project = getattr(self, "_project_controller", None)
+        if project is not None:
+            # The run is saved as (or into) its project.
+            self._later(0, project.results_changed)
 
     def _finish_grid_inspection_summary_refresh(self, state: ExtendMatrixTabState) -> None:
         try:
@@ -8159,6 +8162,12 @@ class KarakalPresenter(QObject):
         if is_grid_inspection_details:
             grid_inspection_source_path = self._grid_inspection_display_source_path_for_record(record)
             grid_inspection_result = self._reusable_grid_matrix_result(state, record)
+            from ..core.project_store import is_slim
+
+            if grid_inspection_result is not None and shown_pair is None and is_slim(grid_inspection_result):
+                # A frame of an opened project keeps only its defects: the window analyses it again
+                # (from the cache when the masks are there) to show every cell.
+                grid_inspection_result = None
             if grid_inspection_result is None and shown_pair is not None:
                 grid_detail_message = self._t("pairs.frame_not_computed")
             elif grid_inspection_result is None:
@@ -9265,6 +9274,12 @@ class KarakalPresenter(QObject):
         payload = self._settings_service.load_folder_manager_payload()
         if not payload:
             return
+        self._apply_folder_manager_payload(payload)
+
+    def _apply_folder_manager_payload(self, payload: dict, *, keep_missing: bool = False) -> None:
+        """Layers of the folder list from a saved payload. A project keeps layers whose folders are not
+        reachable on this machine (``keep_missing``): its results still show."""
+
         self.folder_list.blockSignals(True)
         try:
             for folder_entry in payload.get("folders", []):
@@ -9272,22 +9287,22 @@ class KarakalPresenter(QObject):
                 if not path:
                     continue
                 folder_path = Path(path)
-                if not folder_path.exists():
+                if not folder_path.exists() and not keep_missing:
                     continue
                 item = self._append_folder_item(folder_path, checked=bool(folder_entry.get("checked", False)))
                 item.setData(FOLDER_LABEL_ROLE, str(folder_entry.get("label") or folder_path.name))
                 confidence_path = folder_entry.get("confidence_path")
-                if confidence_path and Path(confidence_path).exists():
+                if confidence_path and (keep_missing or Path(confidence_path).exists()):
                     item.setData(FOLDER_CONFIDENCE_ROLE, str(confidence_path))
                 item.setData(FOLDER_CONFIDENCE_EXPANDED_ROLE, bool(folder_entry.get("confidence_expanded", False)))
                 original_path = folder_entry.get("original_path")
-                if original_path and Path(original_path).exists():
+                if original_path and (keep_missing or Path(original_path).exists()):
                     item.setData(FOLDER_ORIGINAL_ROLE, str(original_path))
                 item.setData(FOLDER_FRAMES_PER_ROW_ROLE, max(0, int(folder_entry.get("frames_per_row") or 0)))
                 cell_class = str(folder_entry.get("cell_class") or "")
                 item.setData(FOLDER_CELL_CLASS_ROLE, cell_class if cell_class in {"ones", "zeros"} else "")
                 markup_path = folder_entry.get("markup_path")
-                if markup_path and Path(markup_path).exists():
+                if markup_path and (keep_missing or Path(markup_path).exists()):
                     item.setData(FOLDER_MARKUP_ROLE, str(markup_path))
                 manual_cells = folder_entry.get("manual_cells")
                 item.setData(
@@ -9449,6 +9464,11 @@ class KarakalPresenter(QObject):
                     "single_result_sensitivity",
                     profile_parameters.get("single_result_sensitivity", DEFAULT_SINGLE_RESULT_SENSITIVITY),
                 )
+        self._apply_build_settings_payload(payload)
+
+    def _apply_build_settings_payload(self, payload: dict) -> None:
+        """Settings of the panels from a saved payload (the app's settings or a project)."""
+
         blockers = [
             QSignalBlocker(self.thumbnail_size_spin),
             QSignalBlocker(self.matrix_score_view_combo),
@@ -9610,6 +9630,8 @@ class KarakalPresenter(QObject):
             self._memory_map_controller.shutdown()
         if getattr(self, "_dirt_controller", None) is not None:
             self._dirt_controller.shutdown()
+        if getattr(self, "_project_controller", None) is not None:
+            self._project_controller.shutdown()
         # Pending setting refreshes must not reach a closed window.
         self._grid_debris_refresh_timer.stop()
         self._grid_types_refresh_timer.stop()

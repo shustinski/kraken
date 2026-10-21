@@ -17,7 +17,8 @@ Layout of one export::
                                     <frame>_manifest.json; whole objects, not boxes
         Грязь/<model>/              dirty regions per frame: <frame>.dirt.json (boxes and outlines
                                     in frame pixels), <frame>.dirt.png (region id per pixel),
-                                    <frame>.dirt_view.jpg (a picture for people)
+                                    <frame>.dirt_view.jpg (a picture for people, frames with
+                                    dirt only)
         Грязь/dirt_regions.csv      every dirty region of the set, one row each
         холст.png                   the whole set as one picture
         результаты.csv              one row per frame
@@ -28,7 +29,9 @@ The model folder level is left out when only one model is exported.
 from __future__ import annotations
 
 import csv
+import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -201,10 +204,17 @@ def _count_and_size(plan: FrameSetExportPlan, item: str, model_id: str | None) -
         paths = [path for path in paths if path]
         return len(paths), _sample_size(paths) * len(paths)
     if item == ITEM_DIRT:
+        # Frames the app has dirt for, and frames with a mask (their dirt is found while exporting).
         found = plan.dirt_results.get(str(model_id), {})
-        with_dirt = [found[frame.key] for frame in frames if frame.key in found]
-        pixels = int(getattr(with_dirt[0], "width", 0)) * int(getattr(with_dirt[0], "height", 0)) if with_dirt else 0
-        return len(with_dirt) * _DIRT_FILES_PER_FRAME, int(pixels * _DIRT_BYTES_PER_PIXEL) * len(with_dirt)
+        frames_with = [frame for frame in frames if frame.key in found or frame.mask_paths.get(str(model_id))]
+        sized = next((found[frame.key] for frame in frames_with if frame.key in found), None)
+        pixels = int(getattr(sized, "width", 0)) * int(getattr(sized, "height", 0)) if sized is not None else 0
+        if not pixels and frames_with:
+            pixels = _image_pixels(frames_with[0])
+        # JSON and label image for every frame, the picture for frames with dirt (known ones).
+        pictures = sum(1 for frame in frames_with if getattr(found.get(frame.key), "regions", ()))
+        count = 2 * len(frames_with) + pictures
+        return count, int(pixels * _DIRT_BYTES_PER_PIXEL) * count // _DIRT_FILES_PER_FRAME
     if item == ITEM_ERROR_MAPS:
         with_mask = [frame for frame in frames if frame.mask_paths.get(str(model_id))]
         pixels = _image_pixels(with_mask[0]) if with_mask else 0
@@ -406,6 +416,36 @@ def _write_error_maps(plan: FrameSetExportPlan, frame: FrameSetExportFrame, mode
     return len(written)
 
 
+def _complete_dirt(plan: FrameSetExportPlan, progress=None, cancelled=None) -> dict[str, dict[str, object]]:
+    """Dirt of every exported frame: what the app found, and for frames it has not looked at yet
+    (the search was not run, or had not finished) found now from the frame's mask and confidence map
+    (from the dirt cache when it was found before)."""
+
+    from .dirt_batch import DirtCancelled, DirtFrame, analyze_dirt_frames
+    from .dirt_regions import DirtConfig
+
+    config = plan.dirt_config if isinstance(plan.dirt_config, DirtConfig) else DirtConfig()
+    complete: dict[str, dict[str, object]] = {}
+    for model in plan.models:
+        found = dict(plan.dirt_results.get(model.model_id, {}) or {})
+        todo = [
+            DirtFrame(frame.key, frame.mask_paths.get(model.model_id, ""), frame.confidence_paths.get(model.model_id, ""))
+            for frame in plan.frames
+            if frame.key not in found and frame.mask_paths.get(model.model_id, "")
+        ]
+        if todo:
+            def report(done: int, total: int, title=model.title) -> None:
+                if progress is not None:
+                    progress(0, max(1, len(plan.frames)), f"{ITEM_FOLDERS[ITEM_DIRT]} · {title}: {done}/{total}")
+
+            try:
+                found.update(analyze_dirt_frames(todo, config, progress=report, cancelled=cancelled))
+            except DirtCancelled:
+                pass
+        complete[model.model_id] = found
+    return complete
+
+
 def export_frame_set(
     plan: FrameSetExportPlan,
     output_dir: Path | str,
@@ -426,6 +466,9 @@ def export_frame_set(
     fill_frames = plan.fill_frames if ITEM_ERRORS in plan.items else ()
     total = len(plan.frames) + len(fill_frames)
     dirt_rows: list[dict] = []
+    dirt_results = _complete_dirt(plan, progress, cancelled) if ITEM_DIRT in plan.items else {}
+    dirt_jobs: list = []
+    dirt_pool = ThreadPoolExecutor(max_workers=max(2, min(8, os.cpu_count() or 4)))
     for index, frame in enumerate(plan.frames):
         if cancelled is not None and cancelled():
             report.cancelled = True
@@ -479,21 +522,26 @@ def export_frame_set(
                 else:
                     frame_missing = True
             if ITEM_DIRT in plan.items:
-                dirt = plan.dirt_results.get(model.model_id, {}).get(frame.key)
+                dirt = dirt_results.get(model.model_id, {}).get(frame.key)
                 if dirt is None or getattr(dirt, "error", ""):
                     frame_missing = True
                 else:
                     from .dirt_export import csv_rows, write_frame_dirt_files
 
-                    written += len(
-                        write_frame_dirt_files(
+                    # Files are written by a few threads; the picture only for frames with dirt.
+                    dirt_jobs.append(
+                        dirt_pool.submit(
+                            write_frame_dirt_files,
                             dirt,
                             set_dir / ITEM_FOLDERS[ITEM_DIRT] / model_dir,
                             stem,
                             layer=model.title,
                             config=plan.dirt_config,
+                            write_view=bool(getattr(dirt, "regions", ())),
                         )
                     )
+                    while len(dirt_jobs) > 32:
+                        written += len(dirt_jobs.pop(0).result())
                     dirt_rows.extend(csv_rows(dirt, frame=stem, layer=model.title))
         if frame_missing:
             missing.append(frame.name)
@@ -514,6 +562,9 @@ def export_frame_set(
                 written += 1
             if progress is not None:
                 progress(index + 1, total, frame.name)
+    for job in dirt_jobs:
+        written += len(job.result())
+    dirt_pool.shutdown(wait=True)
     if ITEM_DIRT in plan.items and not report.cancelled:
         from .dirt_export import CSV_FIELDS
 

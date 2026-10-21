@@ -40,6 +40,8 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 [Dirs]
 ; Runtime data created by the app — keep across updates/uninstall of app files.
 Name: "{app}\logs"; Flags: uninsneveruninstall
+; Projects saved by the app (computed runs) — kept across updates and uninstall.
+Name: "{app}\projects"; Flags: uninsneveruninstall
 
 [Files]
 ; settings.ini and logs\ are created at runtime and are NOT in the build tree,

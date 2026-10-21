@@ -221,14 +221,15 @@ def test_dirt_rule_of_the_frame_set_model() -> None:
 def test_filter_list_and_drop_find_the_dirty_frames(tmp_path, qtbot) -> None:
     widget, presenter, controller, _model_id = _widget_with_run(tmp_path, qtbot)
     controls = widget.dirt_controls
-    assert not controls.frames_list.isVisibleTo(widget)
+    assert controls.frames_table.rowCount() == 0
     controls.run_button.click()
     qtbot.waitUntil(lambda: controller.has_results() and not controller.is_running(), timeout=30000)
 
-    # The list: only the dirty frame, with its level and dirtiness.
-    assert controls.frames_list.count() == 1
-    item = controls.frames_list.item(0)
-    assert item.text().startswith("F_001 — ")
+    # The table: only the dirty frame, with its level, dirtiness and regions.
+    assert controls.frames_table.rowCount() == 1
+    assert controls.frames_table.item(0, 0).text() == "F_001"
+    assert controls.frames_table.item(0, 2).text().endswith("%")
+    assert controls.frames_table.item(0, 3).text() == "1"
     views = presenter._grid_inspection_views().values()
     assert all(getattr(view, "_dirt_filter_keys", None) is None for view in views)
 
@@ -239,7 +240,7 @@ def test_filter_list_and_drop_find_the_dirty_frames(tmp_path, qtbot) -> None:
     stricter = {"light": "medium", "medium": "heavy"}.get(level)
     if stricter is not None:
         controls.level_combo.setCurrentIndex(controls.level_combo.findData(stricter))
-        assert all(view._dirt_filter_keys == set() for view in views) and controls.frames_list.count() == 0
+        assert all(view._dirt_filter_keys == set() for view in views) and controls.frames_table.rowCount() == 0
         controls.level_combo.setCurrentIndex(controls.level_combo.findData("light"))
     controls.filter_check.setChecked(False)
     assert all(view._dirt_filter_keys is None for view in views)
@@ -260,3 +261,104 @@ def test_filter_list_and_drop_find_the_dirty_frames(tmp_path, qtbot) -> None:
     frame_sets.panel.dirtDropRequested.emit("light")
     assert any(rule.kind == "dirt" for rule in model.rules)
     assert model.kept_keys({"F_001", "F_002"}, {}) == {"F_002"}
+
+
+def test_frame_set_export_finds_dirt_the_app_has_not_looked_for(tmp_path) -> None:
+    from karakal.core.frame_set_export import (
+        ITEM_DIRT,
+        FrameSetExportFrame,
+        FrameSetExportModel,
+        FrameSetExportPlan,
+        export_frame_set,
+        preview_frame_set_export,
+    )
+
+    folder = tmp_path / "zeros"
+    folder.mkdir()
+    dirty = smear(lattice(), 380, 350, 70, 90)
+    frames = []
+    for name, mask in (("F_001", dirty), ("F_002", lattice())):
+        frames.append(
+            FrameSetExportFrame(
+                key=name,
+                name=f"{name}.png",
+                mask_paths={"zeros": _write(folder / f"{name}.png", mask)},
+                confidence_paths={"zeros": _write(folder / f"{name}_confidence.png", sure(mask))},
+            )
+        )
+    # The dirt search never ran (or had not finished): no results at all.
+    plan = FrameSetExportPlan(
+        set_name="Весь прогон",
+        layer_title="Нули",
+        frames=tuple(frames),
+        models=(FrameSetExportModel("zeros", "Нули"),),
+        items=frozenset({ITEM_DIRT}),
+    )
+    preview = preview_frame_set_export(plan, tmp_path / "out")
+    # JSON and label per frame (pictures only for frames found dirty) and the CSV.
+    assert preview.file_count == 2 * 2 + 1
+    report = export_frame_set(plan, tmp_path / "out", run_name="run")
+    folder_out = report.set_dir / "Грязь"
+    assert report.missing == ()
+    assert (folder_out / "F_001.dirt.json").is_file() and (folder_out / "F_002.dirt.json").is_file()
+    assert (folder_out / "F_001.dirt_view.jpg").is_file() and not (folder_out / "F_002.dirt_view.jpg").exists()
+    with (folder_out / "dirt_regions.csv").open(encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["frame"] for row in rows] == ["F_001"]
+
+
+
+def test_dirt_tab_title_preview_and_back_to_the_matrix(tmp_path, qtbot) -> None:
+    widget, presenter, controller, _model_id = _widget_with_run(tmp_path, qtbot)
+    tabs = widget.grid_inspection_content_tabs
+    tab = widget.dirt_controls
+    index = tabs.indexOf(tab)
+    assert index == 1 and tabs.tabText(index) == widget._t("dirt.tab")
+    tab.run_button.click()
+    qtbot.waitUntil(lambda: controller.has_results() and not controller.is_running(), timeout=30000)
+    assert tabs.tabText(index) == widget._t("dirt.tab_count", count=1)
+
+    # A frame chosen in the table: its picture in the preview, selected on the matrix.
+    tabs.setCurrentIndex(index)
+    tab.frames_table.selectRow(0)
+    assert tab.preview.picture() is not None and "F_001" in tab.preview_caption.text()
+    assert str(presenter.grid_inspection_matrix_view.current_record().key) == "F_001"
+
+    # «Show on the matrix»: back to the matrix, only dirty frames bright.
+    tab.show_button.click()
+    assert tabs.currentIndex() == 0 and tab.filter_check.isChecked()
+    assert all(view._dirt_filter_keys == {"F_001"} for view in presenter._grid_inspection_views().values())
+
+
+def test_frames_show_up_while_the_search_runs(tmp_path, qtbot) -> None:
+    from karakal.core.dirt_regions import FrameDirtResult
+
+    widget, presenter, controller, model_id = _widget_with_run(tmp_path, qtbot)
+    # A batch of found frames before the search ends: shown on the next refresh.
+    found = FrameDirtResult("F_002", "", "", 10, 10, False)
+    controller._partial(model_id, {"F_002": found})
+    assert controller.result_for(model_id, "F_002") is found
+    qtbot.waitUntil(lambda: not controller._partial_timer.isActive(), timeout=5000)
+
+    # The title follows the progress while searching.
+    controller._thread = object()
+    controller._progress = (25, 100)
+    controller._update_title()
+    tabs = widget.grid_inspection_content_tabs
+    assert tabs.tabText(tabs.indexOf(widget.dirt_controls)) == widget._t("dirt.tab_running", percent=25)
+    controller._thread = None
+
+
+def test_dirt_starts_with_the_cell_check_and_not_again_after_it(tmp_path, qtbot, monkeypatch) -> None:
+    widget, presenter, controller, _model_id = _widget_with_run(tmp_path, qtbot)
+    runs = []
+    monkeypatch.setattr(controller, "run", lambda workers=None: runs.append(workers) or True)
+    controller.analysis_started()
+    controller.analysis_finished()
+    assert len(runs) == 1 and runs[0] >= 1
+    # Without a search at the start (e.g. it was switched off then), the end of the check runs it.
+    widget.dirt_controls.enabled_check.setChecked(False)
+    controller.analysis_started()
+    widget.dirt_controls.enabled_check.setChecked(True)
+    controller.analysis_finished()
+    assert runs[1:] == [None]

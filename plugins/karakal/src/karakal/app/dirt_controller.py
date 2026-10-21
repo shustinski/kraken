@@ -1,16 +1,19 @@
 """Dirty regions in the cell check: which layers, looking for dirt in a thread, the results by
-layer and frame, the matrix marks and the frame windows.
+layer and frame, the «Dirt» tab, the matrix marks and the frame windows.
 
-Dirt is read from each layer's masks and confidence maps alone, so it runs on its own: after the
-cell check when «Find dirt after the cell check» is on, or on «Find dirt» at any time.
+Dirt is read from each layer's masks and confidence maps alone, so it runs on its own: together
+with the cell check when «Find dirt with the cell check» is on, or on «Find dirt» at any time.
+Frames show up in the tab and on the matrix as they are found, not only at the end.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
+import numpy as np
+from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPixmap
 
 from ..core.dirt_batch import DirtCancelled, DirtFrame, analyze_dirt_frames
 from ..core.dirt_regions import (
@@ -19,7 +22,10 @@ from ..core.dirt_regions import (
     LEVEL_MEDIUM,
     DirtConfig,
     FrameDirtResult,
+    dirt_layers,
     level_at_least,
+    read_gray,
+    render_dirt_view,
     worst_level,
 )
 
@@ -33,17 +39,31 @@ LEVEL_COLORS = {
 }
 
 
+# Frames found while the search runs are shown at most this often (ms).
+PARTIAL_REFRESH_MS = 1200
+PREVIEW_SIDE_PX = 900
+
+
 class _DirtThread(QThread):
     progressed = pyqtSignal(int, int)
+    partial = pyqtSignal(str, object)
     found = pyqtSignal(object)
     failed = pyqtSignal(str)
     stopped = pyqtSignal()
 
-    def __init__(self, frames_by_model: dict[str, list[DirtFrame]], config: DirtConfig, use_processes: bool, parent=None) -> None:
+    def __init__(
+        self,
+        frames_by_model: dict[str, list[DirtFrame]],
+        config: DirtConfig,
+        use_processes: bool,
+        workers: int | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self._frames_by_model = frames_by_model
         self._config = config
         self._use_processes = use_processes
+        self._workers = workers
         self.cancel = False
 
     def run(self) -> None:
@@ -59,6 +79,8 @@ class _DirtThread(QThread):
                     progress=lambda done, _count, offset=offset: self.progressed.emit(offset + int(done), total),
                     cancelled=lambda: self.cancel,
                     use_processes=self._use_processes,
+                    workers=self._workers,
+                    partial=lambda found, model_id=model_id: self.partial.emit(model_id, found),
                     # Inside the app a process pool that does not start soon is given up for threads.
                     startup_timeout=45.0,
                 )
@@ -81,13 +103,25 @@ class DirtController(QObject):
         self._thread: _DirtThread | None = None
         self._results: dict[str, dict[str, FrameDirtResult]] = {}
         self._result_signature: tuple = ()
-        self.use_processes = True
-        controls.runRequested.connect(self.run)
+        self._progress = (0, 0)
+        # The search started with the cell check of this run (not again when the check finishes).
+        self._started_with_run = False
+        # KARAKAL_DIRT_PROCESSES=0 keeps the work in threads (tests: no process pools after every run).
+        self.use_processes = os.environ.get("KARAKAL_DIRT_PROCESSES", "1") != "0"
+        self._partial_timer = QTimer(self)
+        self._partial_timer.setSingleShot(True)
+        self._partial_timer.setInterval(PARTIAL_REFRESH_MS)
+        self._partial_timer.timeout.connect(self.refresh_views)
+        controls.runRequested.connect(lambda: self.run())
         controls.cancelRequested.connect(self.cancel)
         controls.settingsChanged.connect(self._settings_changed)
         controls.filterChanged.connect(self._filter_changed)
         controls.frameChosen.connect(self.choose_frame)
         controls.frameOpened.connect(self.open_frame)
+        show = getattr(controls, "showOnMatrixRequested", None)
+        if show is not None:
+            show.connect(self.show_on_matrix)
+        self._update_title()
 
     # Settings ---------------------------------------------------------------------------------
 
@@ -146,35 +180,62 @@ class DirtController(QObject):
                 frames_by_model[model_id] = frames
         return frames_by_model
 
-    def analysis_finished(self) -> None:
-        """The cell check is done: look for dirt too when the operator asked for it."""
+    def analysis_started(self) -> None:
+        """The cell check starts: dirt is looked for at the same time (it does not need the cells),
+        with half the cores, so both finish sooner than one after the other."""
 
-        if self.enabled():
+        self._started_with_run = False
+        if self.enabled() and self._thread is None:
+            self._started_with_run = self.run(workers=max(1, (os.cpu_count() or 2) // 2))
+
+    def analysis_finished(self) -> None:
+        """The cell check is done: dirt too, unless it was already looked for along with it."""
+
+        started, self._started_with_run = self._started_with_run, False
+        if self.enabled() and not started and self._thread is None:
             self.run()
 
-    def run(self) -> None:
+    def run(self, workers: int | None = None) -> bool:
         if self._thread is not None:
-            return
+            return False
         state = self._presenter._current_tab_state()
         if state is None:
             self._controls.set_status("dirt.no_masks")
-            return
+            return False
         frames_by_model = self.frames(state)
         if not frames_by_model:
             self._controls.set_status("dirt.no_masks")
-            return
+            return False
         config = self.config()
         total = sum(len(frames) for frames in frames_by_model.values())
+        if config.signature() != self._result_signature:
+            # Other settings: the regions found before are not these; frames come in as found.
+            self._results = {}
+        self._result_signature = config.signature()
+        self._progress = (0, total)
         self._controls.set_running(True)
         self._controls.set_status("dirt.running", done=0, total=total)
-        thread = _DirtThread(frames_by_model, config, self.use_processes, self)
-        thread.progressed.connect(lambda done, count: self._controls.set_status("dirt.running", done=done, total=count))
+        thread = _DirtThread(frames_by_model, config, self.use_processes, workers, self)
+        thread.progressed.connect(self._progressed)
+        thread.partial.connect(self._partial)
         thread.found.connect(lambda results, signature=config.signature(): self._found(results, signature))
         thread.failed.connect(lambda message: self._controls.set_status("dirt.failed", error=message))
         thread.stopped.connect(lambda: self._controls.set_status("dirt.cancelled"))
         thread.finished.connect(self._thread_done)
         self._thread = thread
+        self._update_title()
         thread.start()
+        return True
+
+    def _progressed(self, done: int, total: int) -> None:
+        self._progress = (int(done), int(total))
+        self._controls.set_status("dirt.running", done=done, total=total)
+        self._update_title()
+
+    def _partial(self, model_id: str, found: dict) -> None:
+        self._results.setdefault(str(model_id), {}).update(found)
+        if not self._partial_timer.isActive():
+            self._partial_timer.start()
 
     def cancel(self) -> None:
         if self._thread is not None:
@@ -184,13 +245,36 @@ class DirtController(QObject):
         thread = self._thread
         self._thread = None
         self._controls.set_running(False)
+        self._partial_timer.stop()
+        self._update_title()
         if thread is not None:
             thread.deleteLater()
 
     def _found(self, results: dict, signature: tuple) -> None:
         self._results = {str(model_id): dict(frames) for model_id, frames in dict(results).items()}
         self._result_signature = signature
+        self._partial_timer.stop()
         self._show_summary()
+        self.refresh_views()
+        self.resultsChanged.emit()
+        project = getattr(self._presenter, "_project_controller", None)
+        if project is not None:
+            project.results_changed()
+
+    def export_state(self) -> dict:
+        """What a project keeps: the regions by layer and frame, and the settings they were found with."""
+
+        return {"results": {model_id: dict(frames) for model_id, frames in self._results.items()}, "signature": self._result_signature}
+
+    def import_state(self, payload: dict) -> None:
+        """Regions of an opened project, shown as if just found."""
+
+        self._results = {str(model_id): dict(frames) for model_id, frames in dict(payload.get("results") or {}).items()}
+        self._result_signature = tuple(payload.get("signature") or ())
+        if self._results:
+            self._show_summary()
+        else:
+            self._controls.set_status("dirt.summary_empty")
         self.refresh_views()
         self.resultsChanged.emit()
 
@@ -199,7 +283,7 @@ class DirtController(QObject):
         if thread is None:
             return
         thread.cancel = True
-        for signal in (thread.found, thread.failed, thread.stopped, thread.progressed):
+        for signal in (thread.found, thread.failed, thread.stopped, thread.progressed, thread.partial):
             try:
                 signal.disconnect()
             except TypeError:
@@ -275,15 +359,20 @@ class DirtController(QObject):
         rows.sort(key=lambda row: (-row[1].max_dirtiness, -len(row[1].regions), row[0]))
         return rows
 
-    def _list_text(self, key: str, result: FrameDirtResult) -> str:
-        level = worst_level(result)
-        return self._presenter._t(
-            "dirt.list_row",
-            frame=key,
-            level=self._presenter._t(f"dirt.level.{level}"),
-            dirtiness=int(round(result.max_dirtiness * 100)),
-            count=len(result.regions),
-        )
+    def _update_title(self) -> None:
+        """Name of the «Dirt» tab: the search's progress, else how many frames are listed."""
+
+        t = self._presenter._t
+        if self._thread is not None:
+            done, total = self._progress
+            title = t("dirt.tab_running", percent=int(100 * done / total) if total else 0)
+        elif self._results:
+            title = t("dirt.tab_count", count=len(self.listed_frames()))
+        else:
+            title = t("dirt.tab")
+        setter = getattr(self._controls, "set_title", None)
+        if callable(setter):
+            setter(title)
 
     def _record(self, key: str):
         state = self._presenter._current_tab_state()
@@ -293,12 +382,61 @@ class DirtController(QObject):
         return state, record
 
     def choose_frame(self, key: str) -> None:
-        """Show the frame on the matrix (selected and scrolled to)."""
+        """The frame chosen in the tab: its picture in the preview, and selected on the matrix."""
 
         _state, record = self._record(key)
         view = getattr(self._presenter, "grid_inspection_matrix_view", None)
         if record is not None and view is not None:
             view.select_record_by_key(record.key, ensure_visible=True)
+        self._show_preview(key)
+
+    def _show_preview(self, key: str) -> None:
+        setter = getattr(self._controls, "set_preview", None)
+        if not callable(setter):
+            return
+        result = self.result_for(self.shown_model_id(), key)
+        if result is None or not result.mask_path:
+            setter(None, "")
+            return
+        mask = read_gray(result.mask_path)
+        if mask is None:
+            setter(None, self._presenter._t("dirt.preview_missing"))
+            return
+        confidence = read_gray(result.confidence_path) if result.used_confidence else None
+        if confidence is not None and confidence.shape != mask.shape:
+            confidence = None
+        view = render_dirt_view(mask, result, dirt_layers(mask, confidence, self.config()))
+        scale = min(1.0, PREVIEW_SIDE_PX / float(max(view.shape[:2])))
+        if scale < 1.0:
+            import cv2
+
+            view = cv2.resize(view, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        rgb = np.ascontiguousarray(view[:, :, ::-1])
+        image = QImage(rgb.data, rgb.shape[1], rgb.shape[0], int(rgb.strides[0]), QImage.Format.Format_RGB888).copy()
+        level = worst_level(result)
+        caption = self._presenter._t(
+            "dirt.preview_caption",
+            frame=key,
+            level=self._presenter._t(f"dirt.level.{level}") if level else "",
+            dirtiness=int(round(result.max_dirtiness * 100)),
+            count=len(result.regions),
+        )
+        setter(QPixmap.fromImage(image), caption)
+
+    def show_on_matrix(self, key: str) -> None:
+        """Back to the matrix with only the dirty frames bright, the chosen one selected."""
+
+        check = getattr(self._controls, "filter_check", None)
+        if check is not None and not check.isChecked():
+            check.setChecked(True)
+        tabs = getattr(self._presenter._view, "grid_inspection_content_tabs", None)
+        if tabs is not None:
+            tabs.setCurrentIndex(0)
+        if key:
+            _state, record = self._record(key)
+            view = getattr(self._presenter, "grid_inspection_matrix_view", None)
+            if record is not None and view is not None:
+                view.select_record_by_key(record.key, ensure_visible=True)
 
     def open_frame(self, key: str) -> None:
         state, record = self._record(key)
@@ -324,7 +462,13 @@ class DirtController(QObject):
         model_id = self.shown_model_id()
         marks = self.frame_marks(model_id)
         listed = self.listed_frames()
-        self._controls.set_frames([(key, self._list_text(key, result)) for key, result in listed])
+        self._controls.set_frames(
+            [
+                {"key": key, "level": worst_level(result), "dirtiness": result.max_dirtiness, "regions": len(result.regions)}
+                for key, result in listed
+            ]
+        )
+        self._update_title()
         shown = {key for key, _result in listed} if self._controls.filter_on() and self._results else None
         for view in self._presenter._grid_inspection_views().values():
             setter = getattr(view, "set_dirt_marks", None)

@@ -4213,11 +4213,18 @@ class MatrixListWidget(QGraphicsView):
                 f"Cell defects: {bad_cells}",
                 score_line,
             ]
-            confidences = [
-                float(cell.mean_confidence)
-                for cell in getattr(result, "per_cell_results", ()) or ()
-                if getattr(cell, "mean_confidence", None) is not None
-            ]
+            from ..core.project_store import is_slim
+
+            # A frame of an opened project keeps only its defects: no uncertainty of the whole frame.
+            confidences = (
+                []
+                if is_slim(result)
+                else [
+                    float(cell.mean_confidence)
+                    for cell in getattr(result, "per_cell_results", ()) or ()
+                    if getattr(cell, "mean_confidence", None) is not None
+                ]
+            )
             if confidences:
                 uncertain = sum(
                     1

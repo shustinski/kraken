@@ -396,6 +396,8 @@ class GridFrameAnalysisResult:
     debug: GridDebugPayload | None = None
     zone_skipped_components: int = 0
     model_file_status: str = ""
+    # Saved in a project with its normal cells left out (the counts still tell of them).
+    cells_trimmed: bool = False
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
         return (
@@ -427,6 +429,7 @@ class GridFrameAnalysisResult:
                 self.debug,
                 self.zone_skipped_components,
                 self.model_file_status,
+                self.cells_trimmed,
             ),
         )
 

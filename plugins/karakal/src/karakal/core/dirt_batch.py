@@ -90,9 +90,11 @@ def analyze_dirt_frames(
     use_processes: bool = True,
     cache_dir: Path | str | None = "default",
     startup_timeout: float = 120.0,
+    partial: Callable[[dict[str, FrameDirtResult]], None] | None = None,
 ) -> dict[str, FrameDirtResult]:
-    """Regions of every frame by key. progress(done, total) is called as frames finish; cancelled()
-    returning True stops the run (DirtCancelled)."""
+    """Regions of every frame by key. progress(done, total) is called as frames finish, partial(results)
+    with the frames finished since the last call (the cached ones first); cancelled() returning True
+    stops the run (DirtCancelled)."""
 
     cfg = (config or DirtConfig()).normalized()
     total = len(frames)
@@ -121,7 +123,13 @@ def analyze_dirt_frames(
                     results[index] = None
     todo = [(index, frame) for index, frame in enumerate(frames) if results[index] is None]
     done = total - len(todo)
+    if partial is not None and done:
+        partial({frame.key: result for frame, result in zip(frames, results) if result is not None})
     report(done)
+
+    def hand_over(batch_result: list[tuple[int, FrameDirtResult]]) -> None:
+        if partial is not None and batch_result:
+            partial({frames[index].key: result for index, result in batch_result})
 
     def store(index: int, result: FrameDirtResult) -> None:
         results[index] = result
@@ -159,8 +167,10 @@ def analyze_dirt_frames(
                         raise TimeoutError("dirt workers did not start")
                     first = False
                     for future in finished:
-                        for index, result in future.result():
+                        batch_result = future.result()
+                        for index, result in batch_result:
                             store(index, result)
+                        hand_over(batch_result)
                         remaining.remove(futures[future])
                         done += len(futures[future])
                         report(done)
@@ -179,6 +189,7 @@ def analyze_dirt_frames(
                     for index, result in batch_result:
                         store(index, result)
                         done += 1
+                    hand_over(batch_result)
                     report(done)
         if cache_path is not None:
             from .cache_utils import trim_directory_by_bytes

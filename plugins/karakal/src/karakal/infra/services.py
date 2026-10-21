@@ -153,6 +153,15 @@ class KarakalSettingsService:
             {"mask_suffix": normalized.mask_suffix, "confidence_suffix": normalized.confidence_suffix},
         )
 
+    def load_recent_projects(self) -> list[str]:
+        """Project folders opened or saved last, newest first."""
+
+        paths = self._load_payload("ui/recent_projects").get("projects", [])
+        return [str(path) for path in paths if isinstance(path, str) and path] if isinstance(paths, list) else []
+
+    def save_recent_projects(self, paths: list[str]) -> None:
+        self._save_payload("ui/recent_projects", {"projects": [str(path) for path in paths]})
+
     def sync(self) -> None:
         self._settings.sync()
 

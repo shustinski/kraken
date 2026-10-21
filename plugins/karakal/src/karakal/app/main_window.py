@@ -1,6 +1,7 @@
 """Main window for the extended validation gradient widget."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -71,7 +72,8 @@ from ..version import __version__
 from ..ui.i18n import Translator, set_current_language
 from ..ui.analysis_setup import APP_MODES, AnalysisSetupPanel
 from ..ui.debris_min_area_control import DebrisMinAreaControl
-from ..ui.dirt_controls import DirtControls
+from ..ui.dirt_tab import DirtTab
+from ..ui.home_page import HomePage
 from ..ui.frame_sets_panel import FrameSetsViewBadge
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.profiling_dialog import ProfilingDialog
@@ -482,6 +484,7 @@ class KarakalWidget(QWidget):
 
         self._presenter = KarakalPresenter(self, self._settings_service)
         self._connect_signals()
+        self._connect_projects()
         self._presenter._restore_persisted_state()
         self._apply_build_profile()
         self._presenter._refresh_folder_rows()
@@ -511,11 +514,17 @@ class KarakalWidget(QWidget):
         self.sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._menu_bar.setCornerWidget(self.sidebar_toggle_button, Qt.Corner.TopLeftCorner)
 
-        content = QWidget(self)
+        # Home page (recent projects) first, the workspace behind it.
+        self.root_stack = QStackedWidget(self)
+        self.home_page = HomePage(self._t, self.root_stack)
+        self.root_stack.addWidget(self.home_page)
+        content = QWidget(self.root_stack)
         content_layout = QHBoxLayout(content)
         content_layout.setContentsMargins(8, 6, 8, 8)
         content_layout.setSpacing(6)
-        root_layout.addWidget(content, stretch=1)
+        self.workspace = content
+        self.root_stack.addWidget(content)
+        root_layout.addWidget(self.root_stack, stretch=1)
 
         # Collapsed left panel: a narrow rail with expand, add folder, run and pause.
         self.side_rail = QWidget(content)
@@ -908,6 +917,9 @@ class KarakalWidget(QWidget):
         self.kraken_publish_button.setEnabled(False)
         self.kraken_publish_button.setToolTip("Доступно в управляемом запуске из Kraken")
         self.kraken_publish_button.clicked.connect(self._publish_quality_to_kraken)
+        self.project_status_label = QLabel("", self._top_corner_widget)
+        self.project_status_label.setStyleSheet("color: #8a94a3; padding-right: 8px;")
+        top_corner_layout.addWidget(self.project_status_label)
         top_corner_layout.addWidget(self.kraken_publish_button)
         top_corner_layout.addWidget(self.update_tool_button)
         top_corner_layout.addWidget(self.language_toggle_button)
@@ -1153,7 +1165,16 @@ class KarakalWidget(QWidget):
             None,
         )
         self.grid_inspection_content_tabs.addTab(grid_matrix_page, self._t("tab.matrix"))
+        # Dirty regions: found from the masks and confidence maps alone, with the cell check or on demand.
+        self.dirt_controls = DirtTab(self._t, self.grid_inspection_content_tabs)
+        self.grid_inspection_content_tabs.addTab(self.dirt_controls, self._t("dirt.tab"))
+        self.dirt_controls.titleChanged.connect(
+            lambda text: self.grid_inspection_content_tabs.setTabText(
+                self.grid_inspection_content_tabs.indexOf(self.dirt_controls), text
+            )
+        )
         self.grid_inspection_content_tabs.addTab(grid_percentiles_page, self._t("tab.percentiles"))
+        self.grid_percentiles_page = grid_percentiles_page
         from ..ui.memory_map_panel import MemoryMapPanel
 
         self.memory_map_panel = MemoryMapPanel(self._t, self.grid_inspection_content_tabs)
@@ -1216,6 +1237,19 @@ class KarakalWidget(QWidget):
 
     def _setup_menu_bar(self) -> None:
         self._menu_bar.clear()
+        project_menu = self._menu_bar.addMenu(self._t("menu.project"))
+        for label_key, shortcut, slot in (
+            ("menu.project.home", "", self.show_home_page),
+            ("menu.project.open", "Ctrl+O", lambda: self._project_call("open_dialog")),
+            ("menu.project.save", "Ctrl+S", lambda: self._project_call("save_current")),
+            ("menu.project.save_as", "Ctrl+Shift+S", lambda: self._project_call("save_as")),
+            ("menu.project.folder", "", lambda: self._project_call("open_projects_folder")),
+        ):
+            action = QAction(self._t(label_key), project_menu)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+            action.triggered.connect(lambda _checked=False, slot=slot: slot())
+            project_menu.addAction(action)
         view_menu = self._menu_bar.addMenu(self._t("menu.view"))
         attention_menu = view_menu.addMenu(self._t("menu.attention_compute"))
         self._attention_compute_action_group = QActionGroup(attention_menu)
@@ -1251,6 +1285,57 @@ class KarakalWidget(QWidget):
         self._setup_help_menu()
         self._menu_bar.setCornerWidget(self._top_corner_widget, Qt.Corner.TopRightCorner)
         self._sync_update_button()
+
+    # Projects and the home page ----------------------------------------------------------------
+
+    def _project_controller(self):
+        presenter = getattr(self, "_presenter", None)
+        return getattr(presenter, "_project_controller", None) if presenter is not None else None
+
+    def _project_call(self, name: str):
+        controller = self._project_controller()
+        if controller is None:
+            return None
+        result = getattr(controller, name)()
+        if name == "open_dialog" and result:
+            self.show_workspace()
+        return result
+
+    def _connect_projects(self) -> None:
+        controller = self._project_controller()
+        home = self.home_page
+        home.newRunRequested.connect(self.show_workspace)
+        home.openRequested.connect(self._open_project_from_home)
+        home.browseRequested.connect(lambda: self._project_call("open_dialog"))
+        home.projectsFolderRequested.connect(lambda: self._project_call("open_projects_folder"))
+        if controller is None:
+            return
+        home.forgetRequested.connect(lambda path: (controller.forget(path), self._refresh_home()))
+        controller.recentChanged.connect(self._refresh_home)
+        controller.statusChanged.connect(self.project_status_label.setText)
+        self._refresh_home()
+        # Tests and scripts that drive the workspace start without the home page.
+        if os.environ.get("KARAKAL_HOME_PAGE", "1") != "0":
+            self.show_home_page()
+        else:
+            self.show_workspace()
+
+    def _refresh_home(self) -> None:
+        controller = self._project_controller()
+        if controller is not None:
+            self.home_page.set_entries(controller.entries())
+
+    def _open_project_from_home(self, path: str) -> None:
+        controller = self._project_controller()
+        if controller is not None and controller.open(path):
+            self.show_workspace()
+
+    def show_home_page(self) -> None:
+        self._refresh_home()
+        self.root_stack.setCurrentWidget(self.home_page)
+
+    def show_workspace(self) -> None:
+        self.root_stack.setCurrentWidget(self.workspace)
 
     def _show_file_naming_dialog(self) -> None:
         from ..ui.file_naming_dialog import FileNamingDialog
@@ -1794,9 +1879,6 @@ class KarakalWidget(QWidget):
             self.grid_conflict_min_share_spin,
         )
         grid_tuning_layout.addWidget(self._grid_conflict_min_share_row)
-        # Dirty regions: found from the masks and confidence maps alone, after the cell check or on demand.
-        self.dirt_controls = DirtControls(self._t, self._grid_inspection_tuning_group)
-        grid_tuning_layout.addWidget(self.dirt_controls)
         layout.addWidget(self._matrix_view_group)
         layout.addWidget(self._grid_inspection_tuning_group)
         layout.addWidget(self._analysis_task_group)
@@ -1839,6 +1921,8 @@ class KarakalWidget(QWidget):
     def retranslate_ui(self) -> None:
         self._t = self._i18n.tr
         self._setup_menu_bar()
+        if hasattr(self, "home_page"):
+            self.home_page.retranslate(self._t)
         self._update_language_toggle_button()
         self._populate_app_mode_combo(self.app_mode_combo.currentData())
         self.analysis_settings_group.setTitle(self._t("ui.analysis_setup"))
@@ -1847,8 +1931,6 @@ class KarakalWidget(QWidget):
         self._matrix_view_group.setTitle(self._t("ui.matrix_view"))
         if hasattr(self, "_grid_inspection_tuning_group"):
             self._grid_inspection_tuning_group.setTitle(self._t("grid_tuning.group"))
-            if hasattr(self, "dirt_controls"):
-                self.dirt_controls.retranslate(self._t)
             if hasattr(self, "_grid_error_type_checks_title"):
                 self._grid_error_type_checks_title.setText(self._t("grid_tuning.enabled_errors"))
             if hasattr(self, "_grid_layer_compute_title"):
@@ -2028,9 +2110,13 @@ class KarakalWidget(QWidget):
             if state.repeated_good_column is not None:
                 state.repeated_good_column.header_button.setText(self._t("correlation.good"))
         if hasattr(self, "grid_inspection_content_tabs"):
-            self.grid_inspection_content_tabs.setTabText(0, self._t("tab.matrix"))
-            self.grid_inspection_content_tabs.setTabText(1, self._t("tab.percentiles"))
-            self.grid_inspection_content_tabs.setTabText(2, self._t("tab.memory_map"))
+            tabs = self.grid_inspection_content_tabs
+            tabs.setTabText(0, self._t("tab.matrix"))
+            if hasattr(self, "grid_percentiles_page"):
+                tabs.setTabText(tabs.indexOf(self.grid_percentiles_page), self._t("tab.percentiles"))
+            tabs.setTabText(tabs.indexOf(self.memory_map_panel), self._t("tab.memory_map"))
+            if hasattr(self, "dirt_controls"):
+                self.dirt_controls.retranslate(self._t)
         if hasattr(self, "grid_inspection_layer_tabs"):
             self.grid_inspection_layer_tabs.setTabText(0, self._t("grid_layer.confidence"))
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))

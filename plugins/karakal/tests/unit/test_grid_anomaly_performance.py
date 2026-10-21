@@ -73,6 +73,8 @@ def _result_digest(result) -> str:
     payload.pop("frame_path")
     payload.pop("debug")
     payload.pop("feature_clusters", None)
+    # How a project stored the result, not what the analysis found.
+    payload.pop("cells_trimmed", None)
     for cell in payload.get("per_cell_results", ()) or ():
         cell.pop("feature_cluster_id", None)
         cell.pop("feature_cluster_label", None)

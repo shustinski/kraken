@@ -325,6 +325,9 @@ class MemoryMapController(QObject):
             message += " " + self._t("memory_map.per_row_found", count=mmap.per_row)
         self._panel.set_map(mmap)
         self._finish(message)
+        project = getattr(self._presenter, "_project_controller", None)
+        if project is not None:
+            project.results_changed()
 
     def _finish(self, message: str) -> None:
         self._panel.set_idle(message)

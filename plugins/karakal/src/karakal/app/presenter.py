@@ -353,6 +353,12 @@ class KarakalPresenter(QObject):
 
         # Computed runs saved as projects and opened again without recomputing.
         self._project_controller = ProjectController(self)
+        self._batch_controller = None
+        if getattr(view, "batch_page", None) is not None:
+            from .batch_controller import BatchController
+
+            # «Compute and export» without the matrix.
+            self._batch_controller = BatchController(self, view.batch_page)
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)
@@ -9636,6 +9642,8 @@ class KarakalPresenter(QObject):
             self._memory_map_controller.shutdown()
         if getattr(self, "_dirt_controller", None) is not None:
             self._dirt_controller.shutdown()
+        if getattr(self, "_batch_controller", None) is not None:
+            self._batch_controller.shutdown()
         if getattr(self, "_project_controller", None) is not None:
             self._project_controller.shutdown()
         # Pending setting refreshes must not reach a closed window.

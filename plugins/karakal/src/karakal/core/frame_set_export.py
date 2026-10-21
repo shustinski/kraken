@@ -119,6 +119,8 @@ class FrameSetExportPlan:
     # Dirty regions per model and frame key (FrameDirtResult), with the settings they were found with.
     dirt_results: dict[str, dict[str, object]] = field(default_factory=dict)
     dirt_config: object | None = None
+    # File format of the error pictures (png, jpg, bmp, tif); the other pictures stay PNG.
+    errors_format: str = "png"
 
 
 @dataclass(slots=True)
@@ -505,7 +507,7 @@ def export_frame_set(
                 if errors_bgr is None:
                     frame_missing = True
                 else:
-                    _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", errors_bgr, "png")
+                    _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", errors_bgr, plan.errors_format)
                     written += 1
             if ITEM_ERRORS_OVER_MASK in plan.items:
                 mask = _read_gray(mask_path) if mask_path else None
@@ -558,7 +560,7 @@ def export_frame_set(
             stem = Path(frame.name).stem or frame.key
             for model in plan.models:
                 model_dir = model_folders.get(model.model_id, "")
-                _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", black, "png")
+                _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", black, plan.errors_format)
                 written += 1
             if progress is not None:
                 progress(index + 1, total, frame.name)

@@ -411,6 +411,9 @@ class ProjectController(QObject):
             if name in VIEW_FIELDS:
                 setattr(state, name, value)
         self._folders[state.widget] = folder
+        if not getattr(state, "grid_inspection_markup_signature", ()):
+            # A project made by «Compute and export» has no markup: the layers' signature as they are.
+            state.grid_inspection_markup_signature = p._grid_markup_signature()
         p._refresh_grid_inspection_mode_view()
         if dirt is not None:
             dirt.import_state(dict(results.get("dirt") or {}))

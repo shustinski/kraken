@@ -33,6 +33,7 @@ class HomePage(QWidget):
     openRequested = pyqtSignal(str)
     browseRequested = pyqtSignal()
     newRunRequested = pyqtSignal()
+    batchRequested = pyqtSignal()
     forgetRequested = pyqtSignal(str)
     projectsFolderRequested = pyqtSignal()
 
@@ -54,9 +55,11 @@ class HomePage(QWidget):
         buttons.setSpacing(8)
         self.new_button = QPushButton(self)
         self.new_button.setStyleSheet("font-weight: 700;")
+        self.batch_button = QPushButton(self)
+        self.batch_button.setStyleSheet("font-weight: 700;")
         self.browse_button = QPushButton(self)
         self.folder_button = QPushButton(self)
-        for button in (self.new_button, self.browse_button, self.folder_button):
+        for button in (self.new_button, self.batch_button, self.browse_button, self.folder_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         root.addLayout(buttons)
@@ -80,6 +83,7 @@ class HomePage(QWidget):
         root.addLayout(actions)
 
         self.new_button.clicked.connect(self.newRunRequested)
+        self.batch_button.clicked.connect(self.batchRequested)
         self.browse_button.clicked.connect(self.browseRequested)
         self.folder_button.clicked.connect(self.projectsFolderRequested)
         self.open_button.clicked.connect(self._open_current)
@@ -95,6 +99,8 @@ class HomePage(QWidget):
         self.title.setText(self._t("home.title"))
         self.subtitle.setText(self._t("home.subtitle"))
         self.new_button.setText(self._t("home.new_run"))
+        self.batch_button.setText(self._t("home.batch"))
+        self.batch_button.setToolTip(self._t("home.batch_hint"))
         self.browse_button.setText(self._t("home.open_other"))
         self.folder_button.setText(self._t("home.projects_folder"))
         self.recent_title.setText(self._t("home.recent"))

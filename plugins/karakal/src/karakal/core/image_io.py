@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from .mask_primitives import (
     _boundary_mask,
@@ -64,7 +65,18 @@ def build_frame_identity(key: str, fallback_frame_id: int) -> FrameIdentity:
     )
 
 
-_FolderPathLookup = tuple[dict[str, Path], dict[str, Path], dict[str, Path]]
+_FolderPathLookup = tuple[dict[str, Path], dict[str, Path], dict[str, Path], dict[str, Path]]
+
+_INV_MARK = re.compile(r"(?i)(?:^inv_|_inv(?=_|$))")
+
+
+def pair_free_stem(stem: str) -> str:
+    """A frame's name without the «_inv» mark of the zeros network: TEST_inv_00038 -> TEST_00038.
+
+    The ones and zeros networks of a pair name the same frame with and without the mark; frames of
+    the two layers are matched on this name when their own names differ."""
+
+    return _INV_MARK.sub("", str(stem))
 
 
 def _unique_path_lookup(index: dict[str, Path], key_fn) -> dict[str, Path]:
@@ -87,11 +99,13 @@ def _build_folder_path_lookup(index: dict[str, Path]) -> _FolderPathLookup:
         index,
         _unique_path_lookup(index, lambda path: Path(path).name),
         _unique_path_lookup(index, lambda path: Path(path).stem),
+        _unique_path_lookup(index, lambda path: pair_free_stem(Path(path).stem)),
     )
 
 
 def _resolve_aux_path_from_lookup(key: str, lookup: _FolderPathLookup) -> Path | None:
-    index, name_lookup, stem_lookup = lookup
+    index, name_lookup, stem_lookup = lookup[:3]
+    pair_lookup = lookup[3] if len(lookup) > 3 else {}
     exact = index.get(key)
     if exact is not None:
         return exact
@@ -103,6 +117,10 @@ def _resolve_aux_path_from_lookup(key: str, lookup: _FolderPathLookup) -> Path |
     stem_match = stem_lookup.get(stem)
     if stem_match is not None:
         return stem_match
+    # The other network of a ones/zeros pair: the same frame with or without «_inv».
+    pair_match = pair_lookup.get(pair_free_stem(stem).lower())
+    if pair_match is not None:
+        return pair_match
     return None
 
 

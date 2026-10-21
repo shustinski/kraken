@@ -1423,8 +1423,12 @@ def _collect_frame_records_modern(
         confidence_lookups[cache_key] = lookup
         return lookup
 
-    def _confidence_path(spec: ModelSpec, key: str) -> str:
-        found = _confidence_lookup_for(spec).get(frame_lookup_key(key, naming))
+    def _confidence_path(spec: ModelSpec, key: str, mask_path: Path | None = None) -> str:
+        lookup = _confidence_lookup_for(spec)
+        found = lookup.get(frame_lookup_key(key, naming))
+        if found is None and mask_path is not None:
+            # The layer's own name of the frame (zeros masks of a pair are named TEST_inv_00038).
+            found = lookup.get(frame_lookup_key(Path(mask_path).name, naming))
         return str(found) if found is not None else ""
 
     # Masks of every layer by frame name; confidence maps lying next to them are not frames.
@@ -1487,7 +1491,7 @@ def _collect_frame_records_modern(
                 missing_required_model = True
                 break
             model_mask_paths[spec.model_id] = str(resolved)
-            model_prob_paths[spec.model_id] = _confidence_path(spec, key)
+            model_prob_paths[spec.model_id] = _confidence_path(spec, key, resolved)
             original_lookup = original_lookups.get(spec.model_id)
             if original_lookup is not None:
                 original_found = _resolve_aux_path_from_lookup(key, original_lookup)

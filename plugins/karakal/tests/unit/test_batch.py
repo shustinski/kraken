@@ -101,3 +101,54 @@ def test_compute_and_export_writes_error_maps_and_a_project(tmp_path, qtbot, fmt
         assert any("_inv_" in path for path in record.model_prob_paths.values())
     assert len(presenter._grid_inspection_views()["unified"]._grid_inspection_payload_by_key) == 3
     assert presenter._project_controller.recent()[0] == report.project
+
+
+def _page_run(tmp_path, qtbot, snapshot):
+    from karakal.app.main_window import KarakalWidget
+
+    widget = KarakalWidget(settings=QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(widget)
+    controller = widget._presenter._batch_controller
+    controller.choose_snapshot(str(snapshot))
+    widget.batch_page.set_output_dir(str(tmp_path / "out"))
+    finished = []
+    controller.finished.connect(finished.append)
+    return widget, controller, finished
+
+
+def test_the_page_shows_every_stage_the_total_and_frames_with_problems(tmp_path, qtbot) -> None:
+    snapshot = _snapshot(tmp_path / "snap")
+    # The zeros network has no mask of frame 3: a frame with a problem.
+    (snapshot / "binary_cif_inv" / "TEST_inv_00003.png").unlink()
+    widget, controller, finished = _page_run(tmp_path, qtbot, snapshot)
+    page = widget.batch_page
+    page.run_button.click()
+    assert page.run_button.property("runState") == "stop" and page.pause_button.isVisibleTo(page)
+    qtbot.waitUntil(lambda: bool(finished) and not controller.is_running(), timeout=120000)
+    qtbot.wait(50)
+    titles = [row[1].text() for row in page._stage_rows.values()]
+    assert titles[0] == widget._t("batch.stage_title.index")
+    assert any("binary_cif_inv" in title for title in titles)
+    assert all(row[0].text() == "✓" for row in page._stage_rows.values())
+    assert page.total_label.text().startswith(widget._t("batch.total_done", elapsed="")[:6])
+    assert page.run_button.property("runState") == "go" and not page.pause_button.isVisibleTo(page)
+    # Frame 3: no zeros mask.
+    assert page.problems_button.isVisibleTo(page)
+    assert page.problems_button.text() == widget._t("batch.problems", count=1)
+    page.problems_button.click()
+    assert page.problems_list.count() == 1 and "TEST_00003" in page.problems_list.item(0).text()
+    assert finished[0].problems and finished[0].problems[0][1] == "binary_cif_inv"
+
+
+def test_pause_holds_the_run_and_resume_finishes_it(tmp_path, qtbot) -> None:
+    widget, controller, finished = _page_run(tmp_path, qtbot, _snapshot(tmp_path / "snap"))
+    page = widget.batch_page
+    page.run_button.click()
+    page.pause_button.click()
+    assert controller._thread.paused and page.pause_button.text() == widget._t("run.resume")
+    qtbot.wait(400)
+    assert not finished
+    page.pause_button.click()
+    assert not controller._thread.paused
+    qtbot.waitUntil(lambda: bool(finished) and not controller.is_running(), timeout=120000)
+    assert finished[0].frames == 3

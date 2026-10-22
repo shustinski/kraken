@@ -10,6 +10,8 @@ recomputing.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +20,7 @@ from PyQt6.QtCore import QObject, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QFileDialog
 
+from ..core.batch_progress import BatchProgress
 from ..core.domain import BuildOptions, ModelSpec
 from ..core.frame_set_export import (
     ITEM_ERRORS,
@@ -76,6 +79,8 @@ class BatchReport:
     written: int = 0
     missing: tuple[str, ...] = ()
     errors: dict[str, str] = field(default_factory=dict)
+    # Frames that could not be checked or written: (frame, layer, why).
+    problems: tuple[tuple[str, str, str], ...] = ()
 
 
 class BatchCancelled(Exception):
@@ -83,26 +88,85 @@ class BatchCancelled(Exception):
 
 
 class _BatchThread(QThread):
-    stage = pyqtSignal(str, int, int)
+    """The run in its own thread: every stage reported as it goes, pausable, stoppable."""
+
+    progressed = pyqtSignal(object)
+    problems = pyqtSignal(object)
     done = pyqtSignal(object)
     failed = pyqtSignal(str)
     stopped = pyqtSignal()
 
-    def __init__(self, job: BatchJob, parent=None) -> None:
+    def __init__(self, job: BatchJob, titles, problem_text, parent=None) -> None:
         super().__init__(parent)
         self._job = job
+        self._titles = titles
+        self._problem_text = problem_text
         self.cancel = False
         self._worker = None
+        self._resume = threading.Event()
+        self._resume.set()
+        self._progress: BatchProgress | None = None
+        self._last_emit = 0.0
+        self._problems: list[tuple[str, str, str]] = []
+
+    # Control ------------------------------------------------------------------------------------
 
     def request_cancel(self) -> None:
         self.cancel = True
+        self._resume.set()
         worker = self._worker
         if worker is not None:
             worker.request_cancel()
 
+    @property
+    def paused(self) -> bool:
+        return not self._resume.is_set()
+
+    def set_paused(self, paused: bool) -> None:
+        worker = self._worker
+        progress = self._progress
+        if paused:
+            self._resume.clear()
+            if worker is not None:
+                worker.request_pause()
+            if progress is not None:
+                progress.pause()
+        else:
+            if progress is not None:
+                progress.resume()
+            self._resume.set()
+            if worker is not None:
+                worker.request_resume()
+        self._emit(force=True)
+
+    def _checkpoint(self) -> bool:
+        """Waits here while paused; True when the run is stopped."""
+
+        while not self._resume.wait(0.1):
+            if self.cancel:
+                break
+        return self.cancel
+
     def _check(self) -> None:
-        if self.cancel:
+        if self._checkpoint():
             raise BatchCancelled()
+
+    # Reporting ----------------------------------------------------------------------------------
+
+    def _emit(self, *, force: bool = False) -> None:
+        progress = self._progress
+        if progress is None:
+            return
+        now = time.monotonic()
+        if force or now - self._last_emit >= 0.25:
+            self._last_emit = now
+            self.progressed.emit(progress.view())
+
+    def _problem(self, frame: str, layer: str, reason: str) -> None:
+        self._problems.append((str(frame), str(layer), str(reason)))
+        self.problems.emit(list(self._problems))
+
+    # The run ------------------------------------------------------------------------------------
 
     def run(self) -> None:
         try:
@@ -118,26 +182,57 @@ class _BatchThread(QThread):
         from ..core.workers import MultiModelGridInspectionWorker
 
         job = self._job
+        names = {spec.model_id: spec.display_name for spec in job.specs}
+        ones = next((spec.model_id for spec in job.specs if job.cell_classes.get(spec.model_id) == "ones"), "")
+        zeros = next((spec.model_id for spec in job.specs if job.cell_classes.get(spec.model_id) == "zeros"), "")
+        pairs = ((pair_key(ones, zeros), ones, zeros),) if ones and zeros else ()
+        counts = {spec.model_id: layer.mask_count for spec, layer in zip(job.specs, job.layout.layers)}
+        progress = BatchProgress.plan(
+            [(spec.model_id, spec.display_name, counts.get(spec.model_id, 0)) for spec in job.specs],
+            [(key, f"{names[a]} ↔ {names[b]}", min(counts.get(a, 0), counts.get(b, 0))) for key, a, b in pairs],
+            titles=self._titles,
+        )
+        self._progress = progress
         # 1. Frames of the snapshot, matched across the layers.
-        self.stage.emit("index", 0, 1)
+        progress.start("index")
+        self._emit(force=True)
+
+        def index_progress(done, total, key) -> None:
+            progress.update("index", int(done), int(total), Path(str(key).split(":", 1)[-1]).name)
+            self._emit()
+
         build = collect_frame_records(
             job.specs,
             job.options,
-            cancel_check=lambda: self.cancel,
-            progress_callback=lambda done, total, _key: self.stage.emit("index", int(done), int(total)),
+            cancel_check=self._checkpoint,
+            progress_callback=index_progress,
         )
         self._check()
         records = tuple(build.records)
+        progress.finish("index")
         model_ids = tuple(spec.model_id for spec in job.specs)
+        frames_of = {model_id: sum(1 for record in records if record.model_mask_paths.get(model_id)) for model_id in model_ids}
+        for model_id in model_ids:
+            stage = progress.stage(f"cells:{model_id}")
+            if stage is not None:
+                stage.total = frames_of[model_id]
+        for key, a, b in pairs:
+            stage = progress.stage(f"pair:{key}")
+            if stage is not None:
+                stage.total = sum(1 for record in records if record.model_mask_paths.get(a) and record.model_mask_paths.get(b))
+        # A pair's frame with no mask of one network is a frame the check misses.
+        for key, a, b in pairs:
+            for record in records:
+                for model_id in (a, b):
+                    if not record.model_mask_paths.get(model_id):
+                        self._problem(record.display_name, names[model_id], self._problem_text("no_mask"))
+        self._emit(force=True)
         # 2. Cells of every layer, then the conflicts of the pair: the matrix's own worker.
         requests = {}
         for model_id in model_ids:
             paths = tuple(str(record.model_mask_paths.get(model_id)) for record in records if record.model_mask_paths.get(model_id))
             if paths:
                 requests[model_id] = RunProfileRequest(paths, sample_limit=32, frame_id=f"run:{model_id}", min_frames=1)
-        ones = next((spec.model_id for spec in job.specs if job.cell_classes.get(spec.model_id) == "ones"), "")
-        zeros = next((spec.model_id for spec in job.specs if job.cell_classes.get(spec.model_id) == "zeros"), "")
-        pairs = ((pair_key(ones, zeros), ones, zeros),) if ones and zeros else ()
         worker = MultiModelGridInspectionWorker(
             records,
             model_ids,
@@ -147,11 +242,51 @@ class _BatchThread(QThread):
             requested_layers=job.requested_layers,
             conflict_pairs=pairs,
         )
+        if self.paused:
+            worker.request_pause()
         self._worker = worker
+        # The worker counts every (layer, frame) and then (pair, frame) item in one run.
+        offsets: dict[str, int] = {}
+        running_total = 0
+        for model_id in model_ids:
+            offsets[model_id] = running_total
+            running_total += frames_of[model_id]
+        for key, _a, _b in pairs:
+            offsets[key] = running_total
+            stage = progress.stage(f"pair:{key}")
+            running_total += stage.total if stage is not None else 0
+        current = {"key": ""}
+
+        def started(key: str, _step: int, _total: int) -> None:
+            current["key"] = str(key)
+            progress.start(f"pair:{key}" if str(key) in offsets and str(key) not in frames_of else f"bank:{key}")
+            self._emit(force=True)
+
+        def worker_progress(done: int, _total: int, key: str) -> None:
+            stage_key = current["key"]
+            if not stage_key:
+                return
+            local = int(done) - offsets.get(stage_key, 0)
+            if local <= 0:
+                return
+            name = Path(str(key)).name if key else ""
+            if stage_key in frames_of:
+                progress.update(f"cells:{stage_key}", local, frames_of[stage_key], name)
+            else:
+                progress.update(f"pair:{stage_key}", local, None, name)
+            self._emit()
+
+        def errors(found: dict) -> None:
+            layer = names.get(current["key"], current["key"])
+            for frame, message in dict(found or {}).items():
+                self._problem(Path(str(frame)).name, layer, str(message))
+
         payloads: dict = {}
         profiles: dict = {}
         outcome = {"failed": "", "cancelled": False}
-        worker.progress.connect(lambda done, total, _key: self.stage.emit("cells", int(done), int(total)))
+        worker.modelStarted.connect(started)
+        worker.progress.connect(worker_progress)
+        worker.analysisErrors.connect(errors)
         worker.finished.connect(lambda result: payloads.update(dict(result or {})))
         worker.referenceProfileReady.connect(lambda model_id, profile: profiles.__setitem__(str(model_id), profile))
         worker.failed.connect(lambda message: outcome.__setitem__("failed", str(message)))
@@ -162,8 +297,15 @@ class _BatchThread(QThread):
             raise BatchCancelled()
         if outcome["failed"]:
             raise RuntimeError(outcome["failed"])
+        for model_id in model_ids:
+            progress.finish(f"bank:{model_id}")
+            progress.finish(f"cells:{model_id}")
+        for key, _a, _b in pairs:
+            progress.finish(f"pair:{key}")
         by_model, by_pair = split_payloads(payloads)
         # 3. Error maps of every frame and layer, as the matrix shows them.
+        progress.start("export")
+        self._emit(force=True)
         layer_results = {
             model_id: export_results(by_model.get(model_id, {}), by_pair, job, model_id, pairs) for model_id in model_ids
         }
@@ -189,24 +331,34 @@ class _BatchThread(QThread):
             errors_format=job.errors_format,
         )
         self._check()
-        export = export_frame_set(
-            plan,
-            job.output_dir,
-            progress=lambda done, total, _name: self.stage.emit("export", int(done), int(total)),
-            cancelled=lambda: self.cancel,
-        )
+        written_per_frame = max(1, len(model_ids))
+
+        def export_progress(done: int, total: int, name: str) -> None:
+            progress.update("export", int(done) * written_per_frame, int(total) * written_per_frame, str(name))
+            self._emit()
+
+        export = export_frame_set(plan, job.output_dir, progress=export_progress, cancelled=self._checkpoint)
         if export.cancelled:
             raise BatchCancelled()
+        known = {frame for frame, _layer, _why in self._problems}
+        for name in export.missing:
+            # A frame already told (e.g. no mask of one network) is not told again.
+            if name not in known:
+                self._problem(name, "", self._problem_text("no_result"))
+        progress.finish("export")
         # 4. The run as a project, to open in the matrix without recomputing.
-        self.stage.emit("project", 0, 1)
+        progress.start("project")
+        self._emit(force=True)
         project = write_batch_project(job, build, by_model, by_pair, profiles)
-        self.stage.emit("project", 1, 1)
+        progress.finish_all()
+        self._emit(force=True)
         return BatchReport(
             output_dir=export.run_dir,
             project=project,
             frames=len(records),
             written=export.written,
             missing=tuple(export.missing),
+            problems=tuple(self._problems),
         )
 
 
@@ -330,6 +482,7 @@ class BatchController(QObject):
         page.outputBrowseRequested.connect(self.browse_output)
         page.runRequested.connect(self.run)
         page.cancelRequested.connect(self.cancel)
+        page.pauseRequested.connect(self.toggle_pause)
         page.openFolderRequested.connect(self.open_output)
         page.openProjectRequested.connect(self.open_project)
 
@@ -432,9 +585,16 @@ class BatchController(QObject):
             return False
         self._report = None
         self._page.set_running(True)
-        self._page.set_status("batch.stage.index", done=0, total=0)
-        thread = _BatchThread(job, self)
-        thread.stage.connect(lambda stage, done, total: self._page.set_status(f"batch.stage.{stage}", done=done, total=total))
+        self._page.set_status("batch.running")
+        t = self._p._t
+        thread = _BatchThread(
+            job,
+            lambda kind, name: t(f"batch.stage_title.{kind}", name=name),
+            lambda kind: t(f"batch.problem.{kind}"),
+            self,
+        )
+        thread.progressed.connect(self._page.set_progress)
+        thread.problems.connect(self._page.set_problems)
         thread.done.connect(self._done)
         thread.failed.connect(lambda message: self._page.set_status("batch.failed", error=message))
         thread.stopped.connect(lambda: self._page.set_status("batch.stopped"))
@@ -446,6 +606,13 @@ class BatchController(QObject):
     def cancel(self) -> None:
         if self._thread is not None:
             self._thread.request_cancel()
+
+    def toggle_pause(self) -> None:
+        thread = self._thread
+        if thread is None:
+            return
+        thread.set_paused(not thread.paused)
+        self._page.set_paused(thread.paused)
 
     def _thread_done(self) -> None:
         thread = self._thread

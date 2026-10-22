@@ -354,11 +354,11 @@ class KarakalPresenter(QObject):
         # Computed runs saved as projects and opened again without recomputing.
         self._project_controller = ProjectController(self)
         self._batch_controller = None
-        if getattr(view, "batch_page", None) is not None:
+        if getattr(view, "home_page", None) is not None:
             from .batch_controller import BatchController
 
-            # «Compute and export» without the matrix.
-            self._batch_controller = BatchController(self, view.batch_page)
+            # The home page: compute and export, the matrix of a snapshot, recent selections.
+            self._batch_controller = BatchController(self, view.home_page)
 
     def __getattr__(self, name: str):
         return getattr(self._view, name)

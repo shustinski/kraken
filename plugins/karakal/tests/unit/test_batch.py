@@ -63,35 +63,60 @@ def test_snapshot_layout_single_network_and_shared_confidence(tmp_path) -> None:
     assert discover_snapshot(tmp_path / "nothing").notes == ("missing",)
 
 
-@pytest.mark.parametrize("fmt", ["jpg", "png"])
-def test_compute_and_export_writes_error_maps_and_a_project(tmp_path, qtbot, fmt) -> None:
+
+
+def _home(tmp_path, qtbot, settings: str = "k"):
     from karakal.app.main_window import KarakalWidget
 
-    snapshot = _snapshot(tmp_path / "snapshot_4")
-    widget = KarakalWidget(settings=QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat))
+    widget = KarakalWidget(settings=QSettings(str(tmp_path / f"{settings}.ini"), QSettings.Format.IniFormat))
     qtbot.addWidget(widget)
-    presenter = widget._presenter
-    controller = presenter._batch_controller
-    page = widget.batch_page
-    layout = controller.choose_snapshot(str(snapshot))
-    assert page.layers_table.rowCount() == 2 and page.run_button.isEnabled()
-    page.format_combo.setCurrentIndex(page.format_combo.findData(fmt))
-    page.set_output_dir(str(tmp_path / "out"))
+    return widget, widget._presenter._batch_controller, widget.home_page
+
+
+def _run_home(qtbot, controller, page) -> list:
     finished = []
     controller.finished.connect(finished.append)
     page.run_button.click()
     qtbot.waitUntil(lambda: bool(finished) and not controller.is_running(), timeout=120000)
+    return finished
+
+
+@pytest.mark.parametrize("fmt", ["jpg", "png"])
+def test_compute_and_export_from_the_home_page_and_open_the_matrix(tmp_path, qtbot, fmt) -> None:
+    from karakal.core.recent_selections import MATRIX_NONE, MATRIX_READY, RUN_DONE
+
+    snapshot = _snapshot(tmp_path / "snapshot_4")
+    widget, controller, page = _home(tmp_path, qtbot)
+    presenter = widget._presenter
+    # Dropped on the page: the layers are read, the run can start.
+    page.drop_zone.folderDropped.emit(str(snapshot))
+    layout = controller._layout
+    assert page.snapshot_edit.text() == str(snapshot) and page.layers_table.rowCount() == 2
+    assert page.run_button.isEnabled() and not page.layers_table.isVisibleTo(page)
+    assert widget._t("batch.class.ones") in page.summary.text()
+    page.details_button.click()
+    assert page.layers_table.isVisibleTo(page)
+    assert page.matrix_button.state == MATRIX_NONE
+    page.format_buttons[fmt].click()
+    page.set_output_dir(str(tmp_path / "out"))
+    finished = _run_home(qtbot, controller, page)
     report = finished[0]
     assert report.frames == 3 and report.missing == ()
     errors = report.output_dir / "Весь прогон" / "Ошибки"
     for layer in layout.layers:
         written = sorted(path.name for path in (errors / layer.label).iterdir())
         assert len(written) == 3 and all(name.endswith(f".{fmt}") for name in written)
-    assert page.open_folder_button.isVisibleTo(page) and page.open_project_button.isVisibleTo(page)
-
-    # «Open in the matrix»: the run at once, coloured, no recomputing.
+    assert page.open_folder_button.isVisibleTo(page)
+    qtbot.wait(50)
+    # The matrix button: green, what the run found, opens the project at once.
+    assert page.matrix_button.state == MATRIX_READY and page.matrix_button.share == 1.0
+    assert any(widget._t("home.m.frames", count=3) in line.text() for line in page.matrix_button.lines)
+    selection = controller.current()
+    assert selection.run == RUN_DONE and selection.errors_format == fmt and selection.defects >= 1
+    assert page.selections.count() == 1 and page.selections.item(0).text().startswith("snapshot_4")
     presenter._start_compute_grid_inspection = lambda *_args, **_kwargs: pytest.fail("recomputed")
-    page.open_project_button.click()
+    page.matrix_button.click()
+    assert widget.root_stack.currentWidget() is widget.workspace
     state = presenter._current_tab_state()
     assert state is not None and state.grid_inspection_results_ready
     assert len(state.build_result.records) == 3
@@ -103,34 +128,35 @@ def test_compute_and_export_writes_error_maps_and_a_project(tmp_path, qtbot, fmt
     assert presenter._project_controller.recent()[0] == report.project
 
 
-def _page_run(tmp_path, qtbot, snapshot):
-    from karakal.app.main_window import KarakalWidget
+def test_the_run_fills_its_button_and_the_matrix_button_tells_the_stage(tmp_path, qtbot) -> None:
+    from karakal.core.recent_selections import MATRIX_RUNNING
 
-    widget = KarakalWidget(settings=QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat))
-    qtbot.addWidget(widget)
-    controller = widget._presenter._batch_controller
-    controller.choose_snapshot(str(snapshot))
-    widget.batch_page.set_output_dir(str(tmp_path / "out"))
-    finished = []
-    controller.finished.connect(finished.append)
-    return widget, controller, finished
-
-
-def test_the_page_shows_every_stage_the_total_and_frames_with_problems(tmp_path, qtbot) -> None:
     snapshot = _snapshot(tmp_path / "snap")
     # The zeros network has no mask of frame 3: a frame with a problem.
     (snapshot / "binary_cif_inv" / "TEST_inv_00003.png").unlink()
-    widget, controller, finished = _page_run(tmp_path, qtbot, snapshot)
-    page = widget.batch_page
+    widget, controller, page = _home(tmp_path, qtbot)
+    controller.choose_snapshot(str(snapshot))
+    page.set_output_dir(str(tmp_path / "out"))
+    seen = []
     page.run_button.click()
     assert page.run_button.property("runState") == "stop" and page.pause_button.isVisibleTo(page)
+    assert page.matrix_button.state == MATRIX_RUNNING
+    original = page.set_progress
+
+    def watch(view) -> None:
+        original(view)
+        seen.append((page.run_button.styleSheet(), [line.text() for line in page.matrix_button.lines]))
+
+    controller._thread.progressed.disconnect()
+    controller._thread.progressed.connect(lambda view: (controller.__setattr__("_last_view", view), watch(view)))
+    finished = []
+    controller.finished.connect(finished.append)
     qtbot.waitUntil(lambda: bool(finished) and not controller.is_running(), timeout=120000)
-    qtbot.wait(50)
-    titles = [row[1].text() for row in page._stage_rows.values()]
-    assert titles[0] == widget._t("batch.stage_title.index")
-    assert any("binary_cif_inv" in title for title in titles)
-    assert all(row[0].text() == "✓" for row in page._stage_rows.values())
-    assert page.total_label.text().startswith(widget._t("batch.total_done", elapsed="")[:6])
+    assert seen
+    # Part way the run button fills from the left; the matrix button tells the stage.
+    assert any("qlineargradient" in style for style, _lines in seen)
+    stage_line = widget._t("home.m.stage", index=1, count=99, title="")[:4]
+    assert any(lines and lines[0].startswith(stage_line) for _style, lines in seen)
     assert page.run_button.property("runState") == "go" and not page.pause_button.isVisibleTo(page)
     # Frame 3: no zeros mask.
     assert page.problems_button.isVisibleTo(page)
@@ -138,11 +164,16 @@ def test_the_page_shows_every_stage_the_total_and_frames_with_problems(tmp_path,
     page.problems_button.click()
     assert page.problems_list.count() == 1 and "TEST_00003" in page.problems_list.item(0).text()
     assert finished[0].problems and finished[0].problems[0][1] == "binary_cif_inv"
+    assert controller.current().problems == 1
+    assert any(widget._t("home.m.problems", count=1) == line.text() for line in page.matrix_button.lines)
 
 
 def test_pause_holds_the_run_and_resume_finishes_it(tmp_path, qtbot) -> None:
-    widget, controller, finished = _page_run(tmp_path, qtbot, _snapshot(tmp_path / "snap"))
-    page = widget.batch_page
+    widget, controller, page = _home(tmp_path, qtbot)
+    controller.choose_snapshot(str(_snapshot(tmp_path / "snap")))
+    page.set_output_dir(str(tmp_path / "out"))
+    finished = []
+    controller.finished.connect(finished.append)
     page.run_button.click()
     page.pause_button.click()
     assert controller._thread.paused and page.pause_button.text() == widget._t("run.resume")
@@ -152,3 +183,62 @@ def test_pause_holds_the_run_and_resume_finishes_it(tmp_path, qtbot) -> None:
     assert not controller._thread.paused
     qtbot.waitUntil(lambda: bool(finished) and not controller.is_running(), timeout=120000)
     assert finished[0].frames == 3
+
+
+def test_a_stopped_run_is_part_computed_and_the_matrix_computes_the_rest(tmp_path, qtbot) -> None:
+    from karakal.core.recent_selections import MATRIX_PARTIAL, RUN_STOPPED
+
+    widget, controller, page = _home(tmp_path, qtbot)
+    controller.choose_snapshot(str(_snapshot(tmp_path / "snap", frames=4)))
+    page.set_output_dir(str(tmp_path / "out"))
+    page.run_button.click()
+    qtbot.waitUntil(lambda: controller._last_view is not None and controller._last_view.share > 0.05, timeout=60000)
+    page.pause_button.click()
+    page.run_button.click()
+    qtbot.waitUntil(lambda: not controller.is_running(), timeout=60000)
+    qtbot.wait(50)
+    selection = controller.current()
+    assert selection.run == RUN_STOPPED and 0 < selection.share < 1 and selection.stage
+    assert page.matrix_button.state == MATRIX_PARTIAL
+    assert page.status.text() == widget._t("batch.stopped")
+    started = []
+    presenter = widget._presenter
+    presenter._on_primary_run_requested = lambda: started.append(True)
+    page.matrix_button.click()
+    assert started and widget.root_stack.currentWidget() is widget.workspace
+    assert presenter.folder_list.count() == 2
+
+
+def test_recent_selections_put_their_paths_back_and_stay_after_a_restart(tmp_path, qtbot) -> None:
+    first = _snapshot(tmp_path / "first", frames=1)
+    second = _snapshot(tmp_path / "second", pair=False, frames=1)
+    widget, controller, page = _home(tmp_path, qtbot)
+    controller.choose_snapshot(str(first))
+    page.format_buttons["jpg"].click()
+    page.set_output_dir(str(tmp_path / "maps"))
+    page.output_edit.editingFinished.emit()
+    # A path typed in: Enter reads it.
+    page.snapshot_edit.setText(str(second))
+    page.snapshot_edit.returnPressed.emit()
+    assert controller._layout.root == second and page.errors_format() == "jpg"
+    assert page.output_dir() == str(second)
+    assert [page.selections.item(row).text().splitlines()[0] for row in range(page.selections.count())] == ["second", "first"]
+    page.selections.itemClicked.emit(page.selections.item(1))
+    assert page.snapshot_dir() == str(first) and page.errors_format() == "jpg"
+    assert page.output_dir() == str(tmp_path / "maps")
+    assert page.selections.currentRow() == 0
+    # After a restart the list is there; removing one forgets it.
+    _other, again, again_page = _home(tmp_path, qtbot)
+    assert [selection.name for selection in again.selections()] == ["first", "second"]
+    again_page.selections.setCurrentRow(1)
+    again_page.forget_button.click()
+    assert [selection.name for selection in again.selections()] == ["first"]
+
+
+def test_the_matrix_button_with_no_snapshot_opens_an_empty_matrix(tmp_path, qtbot) -> None:
+    from karakal.core.recent_selections import MATRIX_EMPTY
+
+    widget, controller, page = _home(tmp_path, qtbot)
+    assert page.matrix_button.state == MATRIX_EMPTY and not page.run_button.isEnabled()
+    page.matrix_button.click()
+    assert widget.root_stack.currentWidget() is widget.workspace

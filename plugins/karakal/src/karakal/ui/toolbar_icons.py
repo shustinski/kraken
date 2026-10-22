@@ -25,7 +25,7 @@ def _pen(color: str) -> QPen:
 def _draw(name: str, painter: QPainter, color: str) -> None:
     painter.setPen(_pen(color))
     painter.setBrush(Qt.BrushStyle.NoBrush)
-    if name == "folder_add":
+    if name in ("folder_add", "folder"):
         path = QPainterPath()
         path.moveTo(8, 18)
         path.lineTo(24, 18)
@@ -35,8 +35,13 @@ def _draw(name: str, painter: QPainter, color: str) -> None:
         path.lineTo(8, 52)
         path.closeSubpath()
         painter.drawPath(path)
-        painter.drawLine(QPointF(32, 31), QPointF(32, 45))
-        painter.drawLine(QPointF(25, 38), QPointF(39, 38))
+        if name == "folder_add":
+            painter.drawLine(QPointF(32, 31), QPointF(32, 45))
+            painter.drawLine(QPointF(25, 38), QPointF(39, 38))
+    elif name == "grid":
+        for row in range(3):
+            for column in range(3):
+                painter.drawRoundedRect(QRectF(10 + column * 16, 10 + row * 16, 12, 12), 2, 2)
     elif name == "clear":
         painter.drawLine(QPointF(18, 18), QPointF(46, 46))
         painter.drawLine(QPointF(46, 18), QPointF(18, 46))
@@ -127,7 +132,7 @@ def save_icon_png(name: str, path, size: int = 24, color: str = ICON_COLOR) -> N
 
 @lru_cache(maxsize=None)
 def toolbar_icon(name: str, color: str = ICON_COLOR) -> QIcon:
-    """Toolbar: ``folder_add``, ``clear``, ``export``, ``search``, ``play``, ``stop``, ``pause``, ``refresh``.
+    """Toolbar: ``folder_add``, ``folder``, ``grid``, ``clear``, ``export``, ``search``, ``play``, ``stop``, ``pause``, ``refresh``.
 
     Layer rows: ``grip``, ``settings``, ``trash``. Sections and the side panel: ``chevron_right``,
     ``chevron_down``, ``sidebar_collapse``, ``sidebar_expand``.

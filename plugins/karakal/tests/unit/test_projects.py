@@ -170,7 +170,9 @@ def test_a_moved_project_finds_its_folders_and_renames_layers(tmp_path, qtbot) -
     assert Path(reopened.folder_list.item(0).data(256)) == tmp_path / "moved" / "zeros"
 
 
-def test_home_page_lists_projects_and_opens_one(tmp_path, qtbot, monkeypatch) -> None:
+def test_a_project_of_the_matrix_is_a_recent_selection_that_opens_at_once(tmp_path, qtbot, monkeypatch) -> None:
+    from karakal.core.recent_selections import MATRIX_READY
+
     widget, presenter, state, _model_id = _run(tmp_path, qtbot, tmp_path / "data")
     projects = presenter._project_controller
     folder = projects.save(state, wait=True)
@@ -180,17 +182,19 @@ def test_home_page_lists_projects_and_opens_one(tmp_path, qtbot, monkeypatch) ->
     other, reopened = _widget(tmp_path, qtbot, "first")
     assert other.root_stack.currentWidget() is other.home_page
     home = other.home_page
-    names = [home.projects.item(row).text().splitlines()[0] for row in range(home.projects.count())]
-    assert folder.name[: -len(PROJECT_SUFFIX)] in names
-    row = names.index(folder.name[: -len(PROJECT_SUFFIX)])
-    assert "2" in home.projects.item(row).text().splitlines()[1]
-    home.projects.setCurrentRow(row)
-    home.open_button.click()
+    names = [home.selections.item(row).text().splitlines()[0] for row in range(home.selections.count())]
+    assert names[0] == "data"
+    # Picked: its snapshot is read, the matrix button is green and opens the project at once.
+    home.selections.itemClicked.emit(home.selections.item(0))
+    assert home.snapshot_dir() == str(tmp_path / "data")
+    assert home.matrix_button.state == MATRIX_READY
+    assert reopened._batch_controller.current().project == str(folder)
+    reopened._start_compute_grid_inspection = lambda *_args, **_kwargs: pytest.fail("recomputed")
+    home.matrix_button.click()
     assert other.root_stack.currentWidget() is other.workspace
     assert reopened._current_tab_state().grid_inspection_results_ready
     other.show_home_page()
-    home.new_button.click()
-    assert other.root_stack.currentWidget() is other.workspace
+    assert other.root_stack.currentWidget() is other.home_page
 
 
 def _frame_with_cells(frame_id: str = "F"):

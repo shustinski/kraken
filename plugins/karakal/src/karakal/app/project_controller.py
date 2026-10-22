@@ -108,6 +108,8 @@ class _SaveThread(QThread):
 class ProjectController(QObject):
     recentChanged = pyqtSignal()
     statusChanged = pyqtSignal(str)
+    # A project saved or opened: the home page makes its snapshot a recent selection.
+    projectStored = pyqtSignal(str)
 
     def __init__(self, presenter) -> None:
         super().__init__(presenter)
@@ -268,6 +270,7 @@ class ProjectController(QObject):
     def _saved(self, folder: str) -> None:
         path = Path(folder)
         self._remember(path)
+        self.projectStored.emit(str(path))
         self.statusChanged.emit(
             self._t("project.saved", name=path.name[: -len(PROJECT_SUFFIX)], time=datetime.now().strftime("%H:%M"))
         )
@@ -359,6 +362,7 @@ class ProjectController(QObject):
         finally:
             QApplication.restoreOverrideCursor()
         self._remember(folder)
+        self.projectStored.emit(str(folder))
         self.statusChanged.emit(self._t("project.opened", name=folder.name[: -len(PROJECT_SUFFIX)]))
         return True
 

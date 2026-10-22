@@ -1,10 +1,14 @@
-"""«Compute and export»: a snapshot checked and its error maps written, with no matrix.
+"""Compute and export from the home page: a snapshot checked and its error maps written, with no
+matrix; the matrix of it opened from the same page.
 
 The snapshot folder is read for its layers (core.snapshot_layout); the frames are indexed, every
 layer is checked by the same worker the matrix uses (the run's bank of normal cells, the conflicts
 of a ones/zeros pair) with the app's settings, and the error map of every frame is written in the
-chosen format. The run is saved as a project too: «Open in the matrix» shows it without
-recomputing.
+chosen format. The run is saved as a project too: the matrix button opens it without recomputing.
+A run stopped part way leaves its frames in the cell cache: the matrix computes only the rest.
+
+Every snapshot chosen is a recent selection (core.recent_selections) with its format, its export
+folder and what its last run left; a project saved from the matrix makes its snapshot one too.
 """
 
 from __future__ import annotations
@@ -18,9 +22,10 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QFileDialog
+from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
-from ..core.batch_progress import BatchProgress
+from ..core import recent_selections as selections
+from ..core.batch_progress import RUNNING, BatchProgress
 from ..core.domain import BuildOptions, ModelSpec
 from ..core.frame_set_export import (
     ITEM_ERRORS,
@@ -35,13 +40,16 @@ from ..core.pair_conflict import PAIR_CONFLICT_LAYER, filter_class_conflicts, pa
 from ..core.project_store import (
     VIEW_FILE,
     default_projects_dir,
+    is_project,
     project_folder,
+    read_manifest,
     relative_path,
     slim_results,
     stable_model_id,
     write_manifest,
     write_results,
 )
+from ..core.recent_selections import Selection
 from ..core.snapshot_layout import SnapshotLayout, discover_snapshot
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,6 +89,8 @@ class BatchReport:
     errors: dict[str, str] = field(default_factory=dict)
     # Frames that could not be checked or written: (frame, layer, why).
     problems: tuple[tuple[str, str, str], ...] = ()
+    # Defect cells of every layer, as the error maps show them.
+    defects: int = 0
 
 
 class BatchCancelled(Exception):
@@ -309,6 +319,13 @@ class _BatchThread(QThread):
         layer_results = {
             model_id: export_results(by_model.get(model_id, {}), by_pair, job, model_id, pairs) for model_id in model_ids
         }
+        defects = sum(
+            1
+            for results in layer_results.values()
+            for result in results.values()
+            for cell in getattr(result, "per_cell_results", ()) or ()
+            if str(getattr(cell, "status", "")) != "normal"
+        )
         frames = tuple(
             FrameSetExportFrame(
                 key=str(record.key),
@@ -359,6 +376,7 @@ class _BatchThread(QThread):
             written=export.written,
             missing=tuple(export.missing),
             problems=tuple(self._problems),
+            defects=defects,
         )
 
 
@@ -466,7 +484,7 @@ def write_batch_project(job: BatchJob, build, by_model: dict, by_pair: dict, pro
 
 
 class BatchController(QObject):
-    """The «Compute and export» page: snapshot, layers found, format, run, result."""
+    """The home page: snapshot, layers found, format, run, the matrix button, recent selections."""
 
     finished = pyqtSignal(object)
 
@@ -474,23 +492,136 @@ class BatchController(QObject):
         super().__init__(presenter)
         self._p = presenter
         self._page = page
+        self._settings = presenter._settings_service
         self._layout: SnapshotLayout | None = None
         self._thread: _BatchThread | None = None
         self._report: BatchReport | None = None
-        page.browseRequested.connect(self.browse_snapshot)
+        self._last_view = None
+        self._run_snapshot = ""
+        payload = self._settings.load_recent_selections()
+        self._selections: list[Selection] = selections.load(payload)
+        self._pace = float(payload.get("seconds_per_frame") or 0.0) if isinstance(payload, dict) else 0.0
+        page.snapshotBrowseRequested.connect(self.browse_snapshot)
         page.snapshotChosen.connect(self.choose_snapshot)
         page.outputBrowseRequested.connect(self.browse_output)
+        page.formatChanged.connect(lambda _value: self._keep_inputs())
+        page.output_edit.editingFinished.connect(self._keep_inputs)
         page.runRequested.connect(self.run)
         page.cancelRequested.connect(self.cancel)
         page.pauseRequested.connect(self.toggle_pause)
         page.openFolderRequested.connect(self.open_output)
-        page.openProjectRequested.connect(self.open_project)
+        page.matrixRequested.connect(self.open_matrix)
+        page.selectionPicked.connect(self.pick)
+        page.forgetRequested.connect(self.forget)
+        project = self._projects()
+        if project is not None:
+            project.projectStored.connect(self._project_stored)
+            if not self._selections:
+                # The projects of earlier versions become selections once.
+                for entry in reversed(project.entries()[: selections.RECENT_LIMIT]):
+                    if not entry.get("missing"):
+                        self._project_stored(str(entry["path"]), save=False)
+                if self._selections:
+                    self._save()
+        self._show()
+
+    def _projects(self):
+        return getattr(self._p, "_project_controller", None)
 
     def is_running(self) -> bool:
         return self._thread is not None
 
+    # Selections ---------------------------------------------------------------------------------
+
+    def selections(self) -> list[Selection]:
+        return list(self._selections)
+
+    def current(self) -> Selection | None:
+        return selections.find(self._selections, self._layout.root) if self._layout is not None else None
+
+    def _save(self) -> None:
+        self._settings.save_recent_selections(selections.dump(self._selections, self._pace))
+        self._settings.sync()
+
+    def _put(self, selection: Selection) -> None:
+        self._selections = selections.remember(self._selections, selection)
+        self._save()
+
+    def _keep_inputs(self) -> None:
+        """The format and the export folder are the chosen selection's."""
+
+        selection = self.current()
+        if selection is None or self._thread is not None:
+            return
+        selection.errors_format = self._page.errors_format()
+        selection.output_dir = self._page.output_dir()
+        self._save()
+        self._page.set_selections(self._selections, selection.snapshot)
+
+    def _show(self) -> None:
+        page = self._page
+        page.set_selections(self._selections, str(self._layout.root) if self._layout is not None else "")
+        selection = self.current()
+        project = Path(selection.project) if selection is not None and selection.project else None
+        state = selections.matrix_state(
+            selection if self._layout is not None else None,
+            running=self._thread is not None,
+            project_exists=project is not None and is_project(project),
+        )
+        if self._layout is not None and self._layout.layers and state == selections.MATRIX_EMPTY:
+            state = selections.MATRIX_NONE
+        per_row = 0
+        spin = getattr(self._p._view, "frames_per_row_spin", None)
+        if spin is not None:
+            per_row = int(spin.value())
+        page.set_matrix(state, selection, self._layout, self._pace, per_row)
+
+    def _project_stored(self, folder: str, *, save: bool = True) -> None:
+        """A project saved or opened (in the matrix too): its snapshot is a done selection."""
+
+        try:
+            manifest = read_manifest(folder)
+        except (OSError, ValueError):
+            return
+        root = selections.snapshot_root([layer.get("path") or "" for layer in manifest.get("layers") or ()])
+        if root is None:
+            return
+        selection = selections.find(self._selections, root) or Selection(snapshot=str(root))
+        if not selections.same_folder(selection.project, folder):
+            # Another project: what the earlier one counted is not this one's.
+            selection.written = 0
+            selection.problems = 0
+            selection.defects = -1
+            selection.seconds = 0.0
+        selection.project = str(folder)
+        selection.run = selections.RUN_DONE
+        selection.share = 1.0
+        selection.stage = ""
+        selection.frames = int(manifest.get("frames") or 0)
+        selection.at = str(manifest.get("saved_at") or selections.now_text())
+        self._selections = selections.remember(self._selections, selection)
+        if save:
+            self._save()
+            self._show()
+
+    def pick(self, snapshot: str) -> None:
+        """A recent selection: its snapshot, format and export folder back on the page."""
+
+        selection = selections.find(self._selections, snapshot)
+        if selection is None or self._thread is not None:
+            return
+        self.choose_snapshot(selection.snapshot)
+
+    def forget(self, snapshot: str) -> None:
+        self._selections = selections.forget(self._selections, snapshot)
+        self._save()
+        self._show()
+
+    # Inputs -------------------------------------------------------------------------------------
+
     def browse_snapshot(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(self._page, self._p._t("batch.choose_snapshot"))
+        start = str(self._layout.root) if self._layout is not None else ""
+        chosen = QFileDialog.getExistingDirectory(self._page, self._p._t("batch.choose_snapshot"), start)
         if chosen:
             self.choose_snapshot(chosen)
 
@@ -498,13 +629,31 @@ class BatchController(QObject):
         chosen = QFileDialog.getExistingDirectory(self._page, self._p._t("batch.choose_output"), self._page.output_dir())
         if chosen:
             self._page.set_output_dir(chosen)
+            self._keep_inputs()
 
-    def choose_snapshot(self, path: str) -> SnapshotLayout:
+    def choose_snapshot(self, path: str) -> SnapshotLayout | None:
+        if self._thread is not None:
+            return self._layout
         layout = discover_snapshot(path)
         self._layout = layout
-        self._page.set_layout(layout)
-        if not self._page.output_dir():
-            self._page.set_output_dir(str(layout.root))
+        self._report = None
+        page = self._page
+        page.set_layout(layout)
+        if layout.layers:
+            selection = selections.find(self._selections, layout.root)
+            if selection is None:
+                previous = self._selections[0] if self._selections else None
+                selection = Selection(
+                    snapshot=str(layout.root),
+                    errors_format=previous.errors_format if previous is not None else page.errors_format(),
+                    output_dir=str(layout.root),
+                )
+            if not selection.output_dir:
+                selection.output_dir = str(layout.root)
+            page.set_errors_format(selection.errors_format)
+            page.set_output_dir(selection.output_dir)
+            self._put(selection)
+        self._show()
         return layout
 
     def _job(self) -> BatchJob | None:
@@ -576,16 +725,20 @@ class BatchController(QObject):
             "comparison_pair_defaults_initialized": True,
         }
 
+    # The run ------------------------------------------------------------------------------------
+
     def run(self) -> bool:
         if self._thread is not None:
             return False
         job = self._job()
         if job is None:
-            self._page.set_status("batch.no_layers")
+            self._page.show_message("batch.no_layers")
             return False
+        self._keep_inputs()
         self._report = None
+        self._last_view = None
+        self._run_snapshot = str(job.layout.root)
         self._page.set_running(True)
-        self._page.set_status("batch.running")
         t = self._p._t
         thread = _BatchThread(
             job,
@@ -593,15 +746,20 @@ class BatchController(QObject):
             lambda kind: t(f"batch.problem.{kind}"),
             self,
         )
-        thread.progressed.connect(self._page.set_progress)
+        thread.progressed.connect(self._progressed)
         thread.problems.connect(self._page.set_problems)
         thread.done.connect(self._done)
-        thread.failed.connect(lambda message: self._page.set_status("batch.failed", error=message))
-        thread.stopped.connect(lambda: self._page.set_status("batch.stopped"))
+        thread.failed.connect(self._failed)
+        thread.stopped.connect(self._stopped)
         thread.finished.connect(self._thread_done)
         self._thread = thread
+        self._show()
         thread.start()
         return True
+
+    def _progressed(self, view) -> None:
+        self._last_view = view
+        self._page.set_progress(view)
 
     def cancel(self) -> None:
         if self._thread is not None:
@@ -620,11 +778,54 @@ class BatchController(QObject):
         self._page.set_running(False)
         if thread is not None:
             thread.deleteLater()
+        self._show()
+
+    def _ended(self, run: str, **values) -> Selection:
+        selection = selections.find(self._selections, self._run_snapshot) or Selection(snapshot=self._run_snapshot)
+        selection.run = run
+        selection.at = selections.now_text()
+        for name, value in values.items():
+            setattr(selection, name, value)
+        self._put(selection)
+        return selection
+
+    def _where(self) -> tuple[float, str]:
+        """How far the run got and the stage it was at."""
+
+        view = self._last_view
+        if view is None:
+            return 0.0, ""
+        stage = next((item for item in view.stages if item.state == RUNNING), None)
+        return float(view.share), stage.title if stage is not None else ""
+
+    def _stopped(self) -> None:
+        share, stage = self._where()
+        self._ended(selections.RUN_STOPPED, share=share, stage=stage)
+        self._page.show_message("batch.stopped")
+
+    def _failed(self, message: str) -> None:
+        share, stage = self._where()
+        self._ended(selections.RUN_FAILED, share=share, stage=stage)
+        self._page.show_message("batch.failed", error=message)
 
     def _done(self, report: BatchReport) -> None:
         self._report = report
-        self._page.set_done(report)
-        project = getattr(self._p, "_project_controller", None)
+        seconds = float(self._last_view.elapsed) if self._last_view is not None else 0.0
+        if report.frames and seconds > 0:
+            self._pace = seconds / report.frames
+        self._ended(
+            selections.RUN_DONE,
+            share=1.0,
+            stage="",
+            project=str(report.project or ""),
+            frames=report.frames,
+            written=report.written,
+            problems=len({frame for frame, _layer, _why in report.problems}),
+            defects=report.defects,
+            seconds=seconds,
+        )
+        self._page.set_done(report, seconds)
+        project = self._projects()
         if project is not None and report.project is not None:
             project._remember(report.project)
         self.finished.emit(report)
@@ -633,17 +834,67 @@ class BatchController(QObject):
         if self._report is not None and self._report.output_dir is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._report.output_dir)))
 
-    def open_project(self) -> bool:
-        report = self._report
-        project = getattr(self._p, "_project_controller", None)
-        if report is None or report.project is None or project is None:
+    # The matrix ---------------------------------------------------------------------------------
+
+    def _show_workspace(self) -> None:
+        show = getattr(self._p._view, "show_workspace", None)
+        if callable(show):
+            show()
+
+    def open_matrix(self) -> bool:
+        """The matrix of the chosen snapshot: its project at once, else computed there (the frames a
+        stopped run checked come from the cell cache). A run going on stops and goes on there."""
+
+        thread = self._thread
+        if thread is not None:
+            answer = QMessageBox.question(
+                self._page,
+                self._p._t("home.matrix"),
+                self._p._t("home.m.move_run"),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
+            thread.request_cancel()
+            thread.wait()
+        layout = self._layout
+        if layout is None or not layout.layers:
+            self._show_workspace()
+            return True
+        selection = self.current()
+        if (
+            thread is None
+            and selection is not None
+            and selection.run == selections.RUN_DONE
+            and selection.project
+            and is_project(selection.project)
+        ):
+            project = self._projects()
+            if project is not None and project.open(selection.project):
+                self._show_workspace()
+                return True
             return False
-        opened = project.open(report.project)
-        if opened:
-            show = getattr(self._p._view, "show_workspace", None)
-            if callable(show):
-                show()
-        return opened
+        return self.compute_in_matrix(layout)
+
+    def compute_in_matrix(self, layout: SnapshotLayout) -> bool:
+        """The snapshot's layers put in the matrix and its run started there."""
+
+        p = self._p
+        if getattr(p, "_worker_thread", None) is not None:
+            QMessageBox.information(p._view, p._t("project.title"), p._t("project.busy"))
+            return False
+        p._clear_folders()
+        p._apply_folder_manager_payload(self._folder_payload(layout))
+        combo = getattr(p, "app_mode_combo", None)
+        if combo is not None:
+            index = combo.findData("grid_inspection")
+            if index >= 0 and combo.currentIndex() != index:
+                combo.setCurrentIndex(index)
+        p._refresh_folder_rows()
+        p._refresh_pair_matrix()
+        self._show_workspace()
+        p._on_primary_run_requested()
+        return True
 
     def shutdown(self) -> None:
         thread = self._thread

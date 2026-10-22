@@ -74,7 +74,6 @@ from ..ui.analysis_setup import APP_MODES, AnalysisSetupPanel
 from ..ui.debris_min_area_control import DebrisMinAreaControl
 from ..ui.dirt_tab import DirtTab
 from ..ui.home_page import HomePage
-from ..ui.batch_page import BatchPage
 from ..ui.frame_sets_panel import FrameSetsViewBadge
 from ..ui.matrix_view import MatrixLegendWidget, MatrixListWidget, MatrixMiniMapWidget
 from ..ui.profiling_dialog import ProfilingDialog
@@ -515,13 +514,11 @@ class KarakalWidget(QWidget):
         self.sidebar_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._menu_bar.setCornerWidget(self.sidebar_toggle_button, Qt.Corner.TopLeftCorner)
 
-        # Home page (recent projects) first, the workspace behind it.
+        # Home page (compute and export, the matrix of a snapshot, recent selections) first, the
+        # workspace behind it.
         self.root_stack = QStackedWidget(self)
         self.home_page = HomePage(self._t, self.root_stack)
         self.root_stack.addWidget(self.home_page)
-        # «Compute and export»: a snapshot checked and its error maps written, no matrix.
-        self.batch_page = BatchPage(self._t, self.root_stack)
-        self.root_stack.addWidget(self.batch_page)
         content = QWidget(self.root_stack)
         content_layout = QHBoxLayout(content)
         content_layout.setContentsMargins(8, 6, 8, 8)
@@ -1308,43 +1305,27 @@ class KarakalWidget(QWidget):
     def _connect_projects(self) -> None:
         controller = self._project_controller()
         home = self.home_page
-        home.newRunRequested.connect(self.show_workspace)
-        home.batchRequested.connect(self.show_batch_page)
-        self.batch_page.backRequested.connect(self.show_home_page)
-        home.openRequested.connect(self._open_project_from_home)
-        home.browseRequested.connect(lambda: self._project_call("open_dialog"))
+        home.otherProjectRequested.connect(lambda: self._project_call("open_dialog"))
         home.projectsFolderRequested.connect(lambda: self._project_call("open_projects_folder"))
         if controller is None:
             return
-        home.forgetRequested.connect(lambda path: (controller.forget(path), self._refresh_home()))
-        controller.recentChanged.connect(self._refresh_home)
         controller.statusChanged.connect(self.project_status_label.setText)
-        self._refresh_home()
         # Tests and scripts that drive the workspace start without the home page.
         if os.environ.get("KARAKAL_HOME_PAGE", "1") != "0":
             self.show_home_page()
         else:
             self.show_workspace()
 
-    def _refresh_home(self) -> None:
-        controller = self._project_controller()
-        if controller is not None:
-            self.home_page.set_entries(controller.entries())
-
-    def _open_project_from_home(self, path: str) -> None:
-        controller = self._project_controller()
-        if controller is not None and controller.open(path):
-            self.show_workspace()
-
     def show_home_page(self) -> None:
-        self._refresh_home()
+        presenter = getattr(self, "_presenter", None)
+        batch = getattr(presenter, "_batch_controller", None) if presenter is not None else None
+        if batch is not None:
+            # The matrix may have saved a project meanwhile; the frames per row may have changed.
+            batch._show()
         self.root_stack.setCurrentWidget(self.home_page)
 
     def show_workspace(self) -> None:
         self.root_stack.setCurrentWidget(self.workspace)
-
-    def show_batch_page(self) -> None:
-        self.root_stack.setCurrentWidget(self.batch_page)
 
     def _show_file_naming_dialog(self) -> None:
         from ..ui.file_naming_dialog import FileNamingDialog
@@ -1932,8 +1913,6 @@ class KarakalWidget(QWidget):
         self._setup_menu_bar()
         if hasattr(self, "home_page"):
             self.home_page.retranslate(self._t)
-        if hasattr(self, "batch_page"):
-            self.batch_page.retranslate(self._t)
         self._update_language_toggle_button()
         self._populate_app_mode_combo(self.app_mode_combo.currentData())
         self.analysis_settings_group.setTitle(self._t("ui.analysis_setup"))

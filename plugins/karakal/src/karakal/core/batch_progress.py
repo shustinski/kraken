@@ -39,6 +39,7 @@ class Stage:
     started_at: float = 0.0
     finished_at: float = 0.0
     paused_for: float = 0.0
+    name: str = ""  # the layer or pair of the stage, empty for the run's own stages
 
     def share(self) -> float:
         if self.state == DONE:
@@ -61,6 +62,7 @@ class StageView:
     seconds: float
     rate: float
     detail: str
+    name: str = ""
 
 
 @dataclass(slots=True)
@@ -97,10 +99,10 @@ class BatchProgress:
         frames = max((count for _id, _name, count in layers), default=0)
         stages = [Stage("index", titles("index", ""), WEIGHT_INDEX * frames)]
         for model_id, name, count in layers:
-            stages.append(Stage(f"bank:{model_id}", titles("bank", name), WEIGHT_BANK * count))
-            stages.append(Stage(f"cells:{model_id}", titles("cells", name), WEIGHT_CELLS * count, total=count))
+            stages.append(Stage(f"bank:{model_id}", titles("bank", name), WEIGHT_BANK * count, name=name))
+            stages.append(Stage(f"cells:{model_id}", titles("cells", name), WEIGHT_CELLS * count, total=count, name=name))
         for key, name, count in pairs:
-            stages.append(Stage(f"pair:{key}", titles("pair", name), WEIGHT_PAIR * count, total=count))
+            stages.append(Stage(f"pair:{key}", titles("pair", name), WEIGHT_PAIR * count, total=count, name=name))
         exported = sum(count for _id, _name, count in layers)
         stages.append(Stage("export", titles("export", ""), WEIGHT_EXPORT * exported, total=exported))
         stages.append(Stage("project", titles("project", ""), WEIGHT_PROJECT * frames))
@@ -205,7 +207,16 @@ class BatchProgress:
             rate = stage.done / seconds if stage.state == RUNNING and seconds > 0 and stage.done else 0.0
             stages.append(
                 StageView(
-                    stage.key, stage.title, stage.state, stage.done, stage.total, stage.share(), seconds, rate, stage.detail
+                    stage.key,
+                    stage.title,
+                    stage.state,
+                    stage.done,
+                    stage.total,
+                    stage.share(),
+                    seconds,
+                    rate,
+                    stage.detail,
+                    stage.name,
                 )
             )
         return ProgressView(tuple(stages), self.share(), self.elapsed(), self.eta(), bool(self.paused_since))

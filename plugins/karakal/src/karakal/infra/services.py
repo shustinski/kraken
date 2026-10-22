@@ -162,6 +162,14 @@ class KarakalSettingsService:
     def save_recent_projects(self, paths: list[str]) -> None:
         self._save_payload("ui/recent_projects", {"projects": [str(path) for path in paths]})
 
+    def load_recent_selections(self) -> dict:
+        """Snapshot folders of the home page (core.recent_selections), newest first."""
+
+        return self._load_payload("ui/recent_selections")
+
+    def save_recent_selections(self, payload: dict) -> None:
+        self._save_payload("ui/recent_selections", dict(payload))
+
     def sync(self) -> None:
         self._settings.sync()
 

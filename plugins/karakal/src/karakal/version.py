@@ -5,7 +5,13 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   (core/algorithm_version.py), so a build tells which analysis it runs;
 - the last two digits are the interface version: +1 per published build that changes the
   interface (several changes between two builds are one step), back to 01 with a new release
-  (01 = gradient panel with drop rules, frame sets and set export;
+  (release 0.4:
+  01 = the home page computes and exports: a snapshot dropped or chosen by its path, a run button
+       that fills as the run goes, the matrix button telling how ready the snapshot's matrix is
+       (stage and time left of a run, what a done run found), recent selections that put their
+       paths back; no separate «Compute and export» page;
+  releases 0.2 and 0.3:
+  01 = gradient panel with drop rules, frame sets and set export;
   02 = drop by the colour scale only, no defect sets, set note and badge above the matrix;
   03 = export only from the drop panel, numbers next to their names, black frames for the rest of the run;
   04 = update menu: channel, check and what's new only, no Help menu;
@@ -56,8 +62,8 @@ from __future__ import annotations
 
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
-RELEASE = "0.3"
-INTERFACE_NUMBER = 24
+RELEASE = "0.4"
+INTERFACE_NUMBER = 1
 BETA = 0
 
 

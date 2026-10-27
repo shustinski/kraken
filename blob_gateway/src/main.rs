@@ -1,7 +1,7 @@
 use std::{
     io,
     net::SocketAddr,
-    path::{Path as FsPath, PathBuf},
+    path::{Component, Path as FsPath, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -79,7 +79,7 @@ struct TransferLease(PathBuf);
 
 impl Drop for TransferLease {
     fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_file(&self.0) {
+        if let Err(error) = remove_regular_file(&self.0) {
             eprintln!("cannot release transfer lease {}: {error}", self.0.display());
         }
     }
@@ -96,20 +96,131 @@ fn transfer_lease(state: &AppState, claims: &TicketClaims) -> Result<Option<Tran
     let project = Uuid::parse_str(project)
         .map_err(|_| ApiError::new(StatusCode::FORBIDDEN, "invalid project context"))?
         .to_string();
+    regular_directories(&state.object_root, true).map_err(ApiError::io)?;
     let marker = state.object_root.join(".deleting").join(&project);
-    if marker.exists() {
+    if deletion_marked(&marker).map_err(ApiError::io)? {
         return Err(ApiError::new(StatusCode::CONFLICT, "project is being deleted"));
     }
     let directory = state.object_root.join(".transfers").join(project);
-    std::fs::create_dir_all(&directory).map_err(ApiError::io)?;
+    regular_directories(&directory, true).map_err(ApiError::io)?;
     let path = directory.join(Uuid::new_v4().to_string());
-    std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(ApiError::io)?;
+    create_regular_file(&path).map_err(ApiError::io)?;
     let lease = TransferLease(path);
     // Close the race with Admin marking deletion before it checks active leases.
-    if marker.exists() {
+    if deletion_marked(&marker).map_err(ApiError::io)? {
         return Err(ApiError::new(StatusCode::CONFLICT, "project is being deleted"));
     }
     Ok(Some(lease))
+}
+
+fn unsafe_path() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "blob path contains a link, reparse point or special file")
+}
+
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return true;
+        }
+    }
+    metadata.file_type().is_symlink()
+}
+
+// Do not canonicalize first: that would hide a junction at the root itself.
+// These checks constrain our own operations, not arbitrary same-user native
+// code. Portable path checks cannot atomically exclude every ancestor race.
+fn regular_directories(path: &FsPath, create: bool) -> io::Result<()> {
+    let absolute = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir()?.join(path) };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::ParentDir | Component::CurDir => return Err(unsafe_path()),
+            Component::Prefix(_) => { current.push(component); continue; }
+            _ => current.push(component),
+        }
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(value) => value,
+            Err(error) if create && error.kind() == io::ErrorKind::NotFound => {
+                match std::fs::create_dir(&current) {
+                    Ok(()) => {},
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {},
+                    Err(error) => return Err(error),
+                }
+                std::fs::symlink_metadata(&current)?
+            }
+            Err(error) => return Err(error),
+        };
+        if is_reparse(&metadata) || !metadata.is_dir() {
+            return Err(unsafe_path());
+        }
+    }
+    Ok(())
+}
+
+fn regular_file_metadata(path: &FsPath) -> io::Result<std::fs::Metadata> {
+    regular_directories(path.parent().ok_or_else(unsafe_path)?, false)?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if is_reparse(&metadata) || !metadata.is_file() {
+        return Err(unsafe_path());
+    }
+    Ok(metadata)
+}
+
+fn create_regular_file(path: &FsPath) -> io::Result<std::fs::File> {
+    regular_directories(path.parent().ok_or_else(unsafe_path)?, false)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let file = options.open(path)?;
+    regular_file_metadata(path)?;
+    if is_reparse(&file.metadata()?) || !file.metadata()?.is_file() {
+        return Err(unsafe_path());
+    }
+    Ok(file)
+}
+
+fn open_regular_file(path: &FsPath) -> io::Result<std::fs::File> {
+    regular_file_metadata(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000); // never follow a final reparse point
+    }
+    let file = options.open(path)?;
+    regular_file_metadata(path)?;
+    if is_reparse(&file.metadata()?) || !file.metadata()?.is_file() {
+        return Err(unsafe_path());
+    }
+    Ok(file)
+}
+
+fn remove_regular_file(path: &FsPath) -> io::Result<()> {
+    regular_file_metadata(path)?;
+    std::fs::remove_file(path)
+}
+
+fn deletion_marked(path: &FsPath) -> io::Result<bool> {
+    // An absent marker directory is normal; an existing junction is not.
+    let parent = path.parent().ok_or_else(unsafe_path)?;
+    regular_directories(parent.parent().ok_or_else(unsafe_path)?, false)?;
+    match std::fs::symlink_metadata(parent) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+        Ok(_) => regular_directories(parent, false)?,
+    }
+    match regular_file_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -166,11 +277,11 @@ async fn main() {
 
     let object_root = args.blob_root.clone();
     let staging_root = args.blob_root.join(".gateway-staging");
-    if let Err(error) = tokio::fs::create_dir_all(&object_root).await {
+    if let Err(error) = regular_directories(&object_root, true) {
         eprintln!("cannot create blob root {}: {error}", object_root.display());
         std::process::exit(2);
     }
-    if let Err(error) = tokio::fs::create_dir_all(&staging_root).await {
+    if let Err(error) = regular_directories(&staging_root, true) {
         eprintln!(
             "cannot create staging root {}: {error}",
             staging_root.display()
@@ -261,10 +372,11 @@ async fn shutdown_signal() {
 }
 
 async fn cleanup_staging(staging_root: &FsPath) -> io::Result<()> {
+    regular_directories(staging_root, false)?;
     let mut entries = tokio::fs::read_dir(staging_root).await?;
     while let Some(entry) = entries.next_entry().await? {
         let metadata = tokio::fs::symlink_metadata(entry.path()).await?;
-        if !metadata.file_type().is_file() {
+        if is_reparse(&metadata) || !metadata.file_type().is_file() {
             continue;
         }
         let stale = metadata
@@ -273,7 +385,7 @@ async fn cleanup_staging(staging_root: &FsPath) -> io::Result<()> {
             .and_then(|modified| SystemTime::now().duration_since(modified).ok())
             .is_some_and(|age| age >= std::time::Duration::from_secs(24 * 60 * 60));
         if stale {
-            let _ = tokio::fs::remove_file(entry.path()).await;
+            let _ = remove_regular_file(&entry.path());
         }
     }
     Ok(())
@@ -304,12 +416,7 @@ async fn put_blob(
     let temporary = state
         .staging_root
         .join(format!("{}.upload", Uuid::new_v4()));
-    let target = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .await
-        .map_err(ApiError::io)?;
+    let target = tokio::fs::File::from_std(create_regular_file(&temporary).map_err(ApiError::io)?);
     let mut target = BufWriter::with_capacity(4 * 1024 * 1024, target);
     let mut received = 0_u64;
     let mut hasher = Sha256::new();
@@ -355,7 +462,7 @@ async fn put_blob(
         })
     }
     .await;
-    let _ = tokio::fs::remove_file(&temporary).await;
+    let _ = remove_regular_file(&temporary);
     result.map(|value| (StatusCode::OK, Json(value)))
 }
 
@@ -385,13 +492,13 @@ async fn serve_blob(
     let claims = authorize(state, headers, "download", digest)?;
     let lease = transfer_lease(state, &claims)?;
     let path = blob_path(state, digest);
-    let mut file = tokio::fs::File::open(&path).await.map_err(|error| {
+    let mut file = tokio::fs::File::from_std(open_regular_file(&path).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             ApiError::new(StatusCode::NOT_FOUND, "blob was not found")
         } else {
             ApiError::io(error)
         }
-    })?;
+    })?);
     let metadata = file.metadata().await.map_err(ApiError::io)?;
     if !metadata.is_file() || metadata.len() != claims.size {
         return Err(ApiError::new(
@@ -527,13 +634,17 @@ async fn commit_blob(
     let parent = final_path
         .parent()
         .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "invalid blob path"))?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .map_err(ApiError::io)?;
+    regular_directories(parent, true).map_err(ApiError::io)?;
+    regular_file_metadata(temporary).map_err(ApiError::io)?;
+    match regular_file_metadata(&final_path) {
+        Ok(_) => {},
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+        Err(error) => return Err(ApiError::io(error)),
+    }
     match tokio::fs::hard_link(temporary, &final_path).await {
         Ok(()) => Ok(false),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            validate_existing(&final_path, size).await?;
+            validate_existing(&final_path, digest, size).await?;
             Ok(true)
         }
         Err(error) => {
@@ -549,14 +660,30 @@ async fn commit_blob(
     }
 }
 
-async fn validate_existing(path: &FsPath, size: u64) -> Result<(), ApiError> {
-    let metadata = tokio::fs::symlink_metadata(path)
-        .await
-        .map_err(ApiError::io)?;
+async fn validate_existing(path: &FsPath, expected_digest: &str, size: u64) -> Result<(), ApiError> {
+    let mut file = tokio::fs::File::from_std(open_regular_file(path).map_err(ApiError::io)?);
+    let metadata = file.metadata().await.map_err(ApiError::io)?;
     if !metadata.file_type().is_file() || metadata.len() != size {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "existing blob does not match uploaded size",
+        ));
+    }
+    // A same-size pre-existing object may be damaged. A verified incoming
+    // upload must not report successful deduplication against corrupt bytes.
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let count = file.read(&mut buffer).await.map_err(ApiError::io)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    if format!("{:x}", hasher.finalize()) != expected_digest {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "existing blob SHA-256 does not match its immutable identity",
         ));
     }
     Ok(())
@@ -619,6 +746,22 @@ fn parse_range(value: &str, size: u64) -> Result<(u64, u64), ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn same_size_corrupt_object_is_not_successful_deduplication() {
+        let root = std::env::temp_dir().join(format!("kraken-dedup-test-{}", Uuid::new_v4()));
+        tokio::fs::create_dir(&root).await.unwrap();
+        let path = root.join("object");
+        let expected = format!("{:x}", Sha256::digest(b"original"));
+        tokio::fs::write(&path, b"original").await.unwrap();
+        assert!(validate_existing(&path, &expected, 8).await.is_ok());
+        tokio::fs::write(&path, b"modified").await.unwrap();
+        let error = validate_existing(&path, &expected, 8).await.unwrap_err();
+        assert_eq!(error.status, StatusCode::CONFLICT);
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), b"modified");
+        tokio::fs::remove_file(&path).await.unwrap();
+        tokio::fs::remove_dir(&root).await.unwrap();
+    }
 
     #[test]
     fn transfer_lease_blocks_deleted_project_and_releases_on_drop() {

@@ -200,10 +200,23 @@ def test_blob_gateway_child_environment_omits_database_url(tmp_path: Path, monke
     assert environment["KRAKEN_BLOB_ROOT"] == str(tmp_path.resolve())
 
 
+def _built_gateway() -> Path:
+    explicit = os.environ.get("KRAKEN_BLOB_GATEWAY_TEST_EXE")
+    if explicit:
+        path = Path(explicit).resolve()
+        assert path.is_file(), "Configured Blob Gateway test executable does not exist"
+        return path
+    root = Path(__file__).parents[1] / "blob_gateway" / "target"
+    name = "kraken-blob-gateway.exe" if os.name == "nt" else "kraken-blob-gateway"
+    for profile in ("release", "debug"):
+        path = root / profile / name
+        if path.is_file():
+            return path
+    pytest.skip("Rust Blob Gateway executable is not built")
+
+
 def test_rust_gateway_streams_python_signed_upload_and_range_download(tmp_path: Path) -> None:
-    executable = Path(__file__).parents[1] / "blob_gateway" / "target" / "debug" / "kraken-blob-gateway.exe"
-    if not executable.is_file():
-        pytest.skip("Rust Blob Gateway debug executable is not built")
+    executable = _built_gateway()
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -260,6 +273,17 @@ def test_rust_gateway_streams_python_signed_upload_and_range_download(tmp_path: 
             assert response.status == 206
             assert response.headers["Content-Range"] == f"bytes 7-19/{len(content)}"
             assert response.read() == content[7:20]
+        # Successful deduplication verifies existing bytes as well as size.
+        repeated = urllib.request.Request(f"{base_url}/v1/blobs/{digest}", data=content, method="PUT",
+            headers={"Authorization": f"Bearer {upload}", "Content-Length": str(len(content))})
+        with urllib.request.urlopen(repeated, timeout=5) as response:
+            assert json.loads(response.read())["already_existed"] is True
+        target = tmp_path / "blobs" / digest[:2] / digest[2:4] / digest
+        target.write_bytes(b"x" * len(content))
+        with pytest.raises(urllib.error.HTTPError) as corrupted:
+            urllib.request.urlopen(repeated, timeout=5)
+        assert corrupted.value.code == 409
+        assert target.read_bytes() == b"x" * len(content)
     finally:
         process.terminate()
         try:
@@ -270,9 +294,7 @@ def test_rust_gateway_streams_python_signed_upload_and_range_download(tmp_path: 
 
 
 def test_blob_benchmark_runs_parallel_streams(tmp_path: Path) -> None:
-    executable = Path(__file__).parents[1] / "blob_gateway" / "target" / "debug" / "kraken-blob-gateway.exe"
-    if not executable.is_file():
-        pytest.skip("Rust Blob Gateway debug executable is not built")
+    executable = _built_gateway()
     from kraken_server.blob_benchmark import run_blob_benchmark
     from kraken_server.configuration import write_config
 

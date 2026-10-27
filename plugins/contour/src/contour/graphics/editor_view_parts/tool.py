@@ -7,7 +7,6 @@ from ...infrastructure.contact_placement_profiler import (
 )
 from ...infrastructure.profiling import (
     move_vertex_tool_profiling_enabled,
-    write_profile_report,
 )
 from contour.graphics.tool_mode_logic import (
     normalize_editor_tool,
@@ -17,6 +16,8 @@ from contour.graphics.tools import EditorTool
 
 class ToolMixin:
     def set_tool(self, tool: EditorTool) -> None:
+        from contour.graphics.editor_view import write_profile_report
+
         tool = normalize_editor_tool(tool)
         if tool not in self._available_tools:
             if self._tool in self._available_tools:

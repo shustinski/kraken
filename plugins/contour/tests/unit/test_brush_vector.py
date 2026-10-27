@@ -406,13 +406,14 @@ def test_invalid_boolean_result_keeps_polygon_unchanged() -> None:
 def test_normalized_keyhole_does_not_create_phantom_brush_metal() -> None:
     """A standard CIF cutline must expose its hole to brush hit testing."""
 
-    from pathlib import Path
 
     import pytest
 
     from contour.serializers import clear_cif_parse_cache, load_polygons_cif
 
-    cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0516.cif")
+    from reference_data import reference_cif
+
+    cif_path = reference_cif("0516.cif")
     if not cif_path.exists():
         pytest.skip("0516.cif sample is not available")
 

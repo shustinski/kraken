@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 from contour.widget_parts._imports import (
     Path,
-    save_polygons_vector,
 )
 
 from contour.widget_parts.processing_mixin_parts.module_state import _LOGGER
@@ -12,6 +11,7 @@ from contour.widget_parts.processing_mixin_parts.module_state import _LOGGER
 class PersistCurrentOverlayChangesMixin:
     def _persist_current_overlay_changes(self: Any) -> bool:
         """Persist editor polygons for the current frame (dataset export and/or linked CIF)."""
+        from contour.widget_parts.processing_mixin import save_polygons_vector
 
         self._last_vector_persist_error = None
         current_state = self._workspace.current_state

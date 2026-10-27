@@ -8,7 +8,7 @@ from ...application.vector_geometry_postprocess import (
 )
 from contour.domain import PolygonData
 from ...infrastructure.polygon_change_profiler import PolygonChangeProfile
-from ...infrastructure.profiling import polygon_change_profiling_enabled, write_profile_report
+from ...infrastructure.profiling import polygon_change_profiling_enabled
 from contour.graphics.brush_vector import (
     polygon_equivalent_preserved,
 )
@@ -222,6 +222,8 @@ class PolygonChangeProfileScopeMixin:
             profile.note_phase(name, started_at)
 
     def _emit_polygon_change_profile(self, profile: PolygonChangeProfile, *, status: str) -> None:
+        from contour.graphics.editor_scene import write_profile_report
+
         summary = profile.format_summary(status=status)
         stats = profile.format_stats()
         write_profile_report(summary, stats)

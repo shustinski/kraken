@@ -7,7 +7,6 @@ from contour.widget_parts._imports import (
     QTimer,
     ThumbnailLoadRunnable,
     WorkspaceLoadResult,
-    load_image_color,
 )
 
 
@@ -75,6 +74,8 @@ class QueueNeighborFrameLoadMixin:
         return 256
 
     def _load_scene_source_image_cached(self: Any, image_path: str):
+        from contour.widget_parts.processing_mixin import load_image_color
+
         normalized = str(Path(image_path))
         cache = self._scene_source_image_cache
         with self._scene_source_image_cache_lock:

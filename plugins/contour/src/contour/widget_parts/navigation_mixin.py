@@ -1,4 +1,5 @@
 from __future__ import annotations
+from PyQt6.QtWidgets import QFileDialog
 from .host_contract import WidgetMixinHost
 
 from .navigation_mixin_parts.module_state import _LOGGER
@@ -48,4 +49,5 @@ class WidgetNavigationMixin(
 # from this module after the implementation moved into focused units.
 _FACADE_EXPORTS = (
     _LOGGER,
+    QFileDialog,
 )

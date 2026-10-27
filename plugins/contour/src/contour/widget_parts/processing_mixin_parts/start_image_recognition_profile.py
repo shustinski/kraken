@@ -11,7 +11,6 @@ from ...infrastructure.profiling import (
     contact_paste_profiling_enabled,
     contact_redo_profiling_enabled,
     contact_undo_profiling_enabled,
-    image_recognition_profiling_enabled,
     write_profile_report,
 )
 from contour.widget_parts._imports import (
@@ -27,6 +26,8 @@ class StartImageRecognitionProfileMixin:
         self: Any,
         request: PreviewProcessingRequest,
     ) -> None:
+        from contour.widget_parts.processing_mixin import image_recognition_profiling_enabled, write_profile_report
+
         if not image_recognition_profiling_enabled():
             return
         recognition_mode = normalize_recognition_mode(
@@ -50,6 +51,8 @@ class StartImageRecognitionProfileMixin:
         )
 
     def _finish_image_recognition_profile(self: Any, status: str) -> None:
+        from contour.widget_parts.processing_mixin import write_profile_report
+
         session = getattr(self, "_image_recognition_profile", None)
         if session is None:
             return

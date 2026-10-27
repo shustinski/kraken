@@ -657,11 +657,12 @@ class PolygonOverlapPickTests(unittest.TestCase):
 
     def test_keyhole_frame_does_not_block_inner_conductor_pick(self) -> None:
         """Self-intersecting frame hull must not steal picks from nested conductors."""
-        from pathlib import Path
 
         from contour.serializers import clear_cif_parse_cache, load_polygons_cif
 
-        cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0516.cif")
+        from reference_data import reference_cif
+
+        cif_path = reference_cif("0516.cif")
         if not cif_path.exists():
             self.skipTest("0516.cif sample is not available")
         clear_cif_parse_cache()

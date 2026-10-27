@@ -62,7 +62,8 @@ class CifLoaderMatchesMixin:
         self.assertAlmostEqual(float(expected.symmetric_difference(actual).area), 0.0)
 
     def test_cif_loader_preserves_valid_multi_hole_frame_0518(self) -> None:
-        cif_path = Path(r"D:\OZI\Нейронка\cif_metal\0518.cif")
+        from reference_data import reference_cif
+        cif_path = reference_cif("0518.cif")
         if not cif_path.exists():
             self.skipTest("0518.cif fixture not available")
         from contour.application.vector_geometry_postprocess import repair_invalid_polygon_descriptions

@@ -13,7 +13,6 @@ from ...infrastructure.contact_placement_profiler import (
     SceneZoomProfile,
 )
 from ...infrastructure.profiling import (
-    scene_zoom_profiling_enabled,
     write_profile_report,
 )
 from contour.graphics.editor_hotkeys import event_matches_shortcut
@@ -197,6 +196,8 @@ class KeyReleaseEventMixin:
         initial_zoom: float,
         target_zoom: float,
     ) -> None:
+        from contour.graphics.editor_view import scene_zoom_profiling_enabled
+
         profile = self._scene_zoom_profile
         if profile is not None:
             profile.update_target(target_zoom)

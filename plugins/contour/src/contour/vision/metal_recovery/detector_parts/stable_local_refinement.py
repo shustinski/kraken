@@ -5,8 +5,6 @@ from dataclasses import replace
 from math import ceil
 import numpy as np
 
-from contour.vision.metal_recovery.detector_parts.detect_metalization_explicit import _detect_metalization_explicit
-
 from contour.vision.metal_recovery.detector_parts.prefer_contrast_refined_legacy import (
     _mask_iou,
     _non_hole_count,
@@ -20,6 +18,8 @@ def _stable_local_refinement(
     reference: MetalDetectionResult,
 ) -> tuple[MetalDetectionResult | None, float | None, list[int]]:
     """Find a source-filter-stable local mask that still agrees with Auto."""
+    # Keep the facade's documented injection point after splitting this module.
+    from contour.vision.metal_recovery.detector import _detect_metalization_explicit
     reference_count = _non_hole_count(reference)
     step = max(0.0, float(config.auto_source_contrast_step))
     if reference_count < 100 or step <= 0.0:

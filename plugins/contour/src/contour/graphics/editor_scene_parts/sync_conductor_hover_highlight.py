@@ -4,12 +4,13 @@ from time import perf_counter
 from PyQt6.QtCore import QPointF
 from contour.graphics.geometry import (
     resolve_conductor_hover_target_id,
-    resolve_hover_polygon_id,
 )
 
 
 class SyncConductorHoverHighlightMixin:
     def sync_conductor_hover_highlight(self, scene_pos: QPointF) -> None:
+        from contour.graphics.editor_scene import resolve_hover_polygon_id
+
         if not self._polygon_overlays_visible:
             self._set_hover_conductor_polygon_id(None)
             return

@@ -33,6 +33,8 @@ class CommitDeleteVerticesInMixin:
         self._finish_move_vertex_tool_profile("displayed")
 
     def _finish_move_vertex_tool_profile(self, status: str) -> None:
+        from contour.graphics.editor_view import write_profile_report
+
         profile = self._move_vertex_tool_profile
         if profile is None:
             return

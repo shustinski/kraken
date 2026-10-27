@@ -2,7 +2,7 @@
   "id": "contour",
   "display_name": "Contour",
   "description": "Polygon extraction and editing.",
-  "version": "0.5.0",
+  "version": "0.9.10",
   "protocol_version": "1.0",
   "enabled": true,
   "platforms": ["windows", "linux"],
@@ -15,7 +15,8 @@
   "capabilities": [
     {
       "operation": "frames.vectorize.v1",
-      "modes": ["interactive"],
+      "default_mode": "interactive",
+      "modes": ["interactive", "headless"],
       "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
       "output_media_types": ["application/x-cif"],
       "maximum_batch_size": 10000

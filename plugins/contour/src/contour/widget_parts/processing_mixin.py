@@ -1,5 +1,8 @@
 from __future__ import annotations
 from .host_contract import WidgetMixinHost
+from contour.infrastructure.profiling import image_recognition_profiling_enabled, write_profile_report
+from contour.utils import load_image_color
+from contour.serializers import save_polygons_vector
 
 from .processing_mixin_parts.module_state import _LOGGER
 from .processing_mixin_parts.start_image_recognition_profile import StartImageRecognitionProfileMixin
@@ -126,4 +129,8 @@ class WidgetProcessingMixin(
 # from this module after the implementation moved into focused units.
 _FACADE_EXPORTS = (
     _LOGGER,
+    image_recognition_profiling_enabled,
+    write_profile_report,
+    load_image_color,
+    save_polygons_vector,
 )

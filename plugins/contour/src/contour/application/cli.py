@@ -72,6 +72,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         else:
             kraken_session, args = startup_profile.measure("prepare_launch", lambda: prepare_contour_launch(args))
 
+        if kraken_session is not None and kraken_session.manifest.parameters.get("execution_mode") == "headless":
+            from ..worker import run
+
+            run(kraken_session.job_manifest_path, kraken_session.result_manifest_path, kraken_session.staging_root)
+            return
+
         import_started_at = perf_counter()
         from .bootstrap import build_application
 

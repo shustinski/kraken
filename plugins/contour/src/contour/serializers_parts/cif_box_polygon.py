@@ -9,18 +9,9 @@ from contour.serializers_parts.module_state import CIF_CUTOUT_DISPLAY_MARKER
 
 from contour.serializers_parts.cv_object_polygon import _pixel_box_bounds
 
-from contour.serializers_parts.cv_point_points import (
-    _cv_object_id,
-    save_polygons_cv,
-)
-
-from contour.serializers_parts.load_polygons_cif import load_polygons_cif
-
-from contour.serializers_parts.polygons_cv_object import _polygons_from_cv_object
-
-from contour.serializers_parts.save_polygons_cif import save_polygons_cif
-
 def load_polygons_cv(path: str | Path) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]]:
+    from contour.serializers_parts.cv_point_points import _cv_object_id
+    from contour.serializers_parts.polygons_cv_object import _polygons_from_cv_object
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("CV vector file must contain an object")
@@ -48,6 +39,7 @@ def load_polygons_cv(path: str | Path) -> tuple[str | None, tuple[int, int] | No
     return image_name, image_size, polygons
 
 def load_polygons_vector(path: str | Path) -> tuple[str | None, tuple[int, int] | None, list[PolygonData]]:
+    from contour.serializers_parts.load_polygons_cif import load_polygons_cif
     vector_path = Path(path)
     if vector_path.suffix.lower() == ".cv":
         return load_polygons_cv(vector_path)
@@ -64,6 +56,8 @@ def save_polygons_vector(
     *,
     cutout_display: bool = False,
 ) -> Path:
+    from contour.serializers_parts.cv_point_points import save_polygons_cv
+    from contour.serializers_parts.save_polygons_cif import save_polygons_cif
     vector_path = Path(path)
     if vector_path.suffix.lower() == ".cv":
         return save_polygons_cv(vector_path, image_path, polygons, image_size=image_size)

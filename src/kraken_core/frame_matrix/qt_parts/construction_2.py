@@ -1,6 +1,7 @@
 """qt: construction 2."""
 from __future__ import annotations
 import math
+import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
@@ -19,6 +20,7 @@ from kraken_core.frame_matrix.qt_renderers import DEFAULT_RENDERERS
 from kraken_core.frame_matrix.storage import StoreNamespace, StorePolicy, ThumbnailStore
 
 from kraken_core.frame_matrix.qt_parts.module_state import GridOrientation
+from kraken_core.frame_matrix.qt_parts.background_resources import MatrixBackgroundResources
 
 
 class Construction2Mixin:
@@ -41,6 +43,9 @@ class Construction2Mixin:
         self._thumbnail_cache: ThumbnailCacheCoordinator | None = None
         self._renderers: list[MatrixLayerRenderer] = [renderer() for renderer in DEFAULT_RENDERERS]
         self._viewport_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kraken-matrix-viewport")
+        self._background_resources = MatrixBackgroundResources(self._viewport_executor)
+        self.destroyed.connect(self._background_resources.close)
+        weakref.finalize(self, self._background_resources.close)
         self._viewport_future: Future[MatrixViewportResult] | None = None
         self._viewport_future_signature: tuple[object, ...] | None = None
         self._last_applied_signature: tuple[object, ...] | None = None
@@ -55,8 +60,8 @@ class Construction2Mixin:
         self._result_poll_timer = QTimer(self)
         self._result_poll_timer.setInterval(20)
         self._result_poll_timer.timeout.connect(self._poll_background_results)
-        self.viewportChanged.connect(lambda _rect: self._schedule_viewport_request())
-        self.lodChanged.connect(lambda _lod: self._schedule_viewport_request())
+        self.viewportChanged.connect(self._schedule_viewport_request)
+        self.lodChanged.connect(self._schedule_viewport_request)
 
     def set_data_source(
         self,
@@ -91,6 +96,7 @@ class Construction2Mixin:
         if self._thumbnail_cache is not None:
             self._thumbnail_cache.close()
             self._thumbnail_cache = None
+            self._background_resources.cache = None
         if self._thumbnail_store is not None:
             self._thumbnail_store.open(
                 StoreNamespace(
@@ -102,8 +108,9 @@ class Construction2Mixin:
             )
             self._thumbnail_cache = ThumbnailCacheCoordinator(
                 self._thumbnail_store,
-                error_handler=lambda error: self.errorOccurred.emit(str(error)),
+                error_handler=self._background_resources.errors.put,
             )
+            self._background_resources.cache = self._thumbnail_cache
         self.sessionChanged.emit(session)
         self._schedule_viewport_request(immediate=True)
 
@@ -144,8 +151,8 @@ class Construction2Mixin:
             return LodBand.DETAILS
         return LodBand.SUBCELLS
 
-    def _schedule_viewport_request(self, *, immediate: bool = False) -> None:
-        if self._data_source is None or self._matrix_session is None:
+    def _schedule_viewport_request(self, *_args: object, immediate: bool = False) -> None:
+        if self._background_resources.closed or self._data_source is None or self._matrix_session is None:
             return
         self._viewport_request_timer.start(0 if immediate else 60)
 
@@ -194,7 +201,7 @@ class Construction2Mixin:
         )
 
     def _request_visible_viewport(self) -> None:
-        if self._data_source is None or self._matrix_session is None:
+        if self._background_resources.closed or self._data_source is None or self._matrix_session is None:
             return
         request = self._current_viewport_request()
         signature = self._request_signature(request)

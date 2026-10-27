@@ -378,6 +378,8 @@ class AnalysisPartitionJobManifest:
     parameters: tuple[AnalysisParameter, ...] = ()
     protocol_version: str = ANALYSIS_PROTOCOL_VERSION
     schema: str = ANALYSIS_PARTITION_JOB_SCHEMA
+    require_worker_runtime: bool = False
+    expected_runtime: AnalysisRuntimeIdentity | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("job_id", "run_id", "partition_id", "project_id", "run_fingerprint"):
@@ -401,6 +403,8 @@ class AnalysisPartitionJobManifest:
                 raise ValueError(f"Frame {frame.frame_id} is missing bindings: {', '.join(missing)}")
         if self.protocol_version != ANALYSIS_PROTOCOL_VERSION or self.schema != ANALYSIS_PARTITION_JOB_SCHEMA:
             raise ValueError("Unsupported analysis partition job contract")
+        if not isinstance(self.require_worker_runtime, bool):
+            raise ValueError("require_worker_runtime must be boolean")
 
     @property
     def fingerprint(self) -> str:
@@ -423,6 +427,8 @@ class AnalysisPartitionJobManifest:
             "recipe": self.recipe.to_payload(),
             "frames": [frame.to_payload() for frame in self.frames],
             "parameters": [parameter.to_payload() for parameter in self.parameters],
+            **({"require_worker_runtime": True} if self.require_worker_runtime else {}),
+            **({} if self.expected_runtime is None else {"expected_runtime": self.expected_runtime.to_payload()}),
         }
 
     @classmethod
@@ -430,6 +436,9 @@ class AnalysisPartitionJobManifest:
         raw_recipe = payload.get("recipe")
         if not isinstance(raw_recipe, Mapping):
             raise ValueError("recipe must be an object")
+        expected = payload.get("expected_runtime")
+        if expected is not None and not isinstance(expected, Mapping):
+            raise ValueError("expected_runtime must be an object or null")
         return cls(
             schema=str(payload.get("schema", "")),
             protocol_version=str(payload.get("protocol_version", "")),
@@ -440,6 +449,8 @@ class AnalysisPartitionJobManifest:
             partition_index=int(payload.get("partition_index", -1)),
             partition_count=int(payload.get("partition_count", 0)),
             run_fingerprint=str(payload.get("run_fingerprint", "")),
+            require_worker_runtime=payload.get("require_worker_runtime", False),
+            expected_runtime=None if expected is None else AnalysisRuntimeIdentity.from_payload(expected),
             recipe=AnalysisRecipe.from_payload(raw_recipe),
             frames=tuple(
                 AnalysisFrameInput.from_payload(item)
@@ -508,6 +519,32 @@ class AnalysisRecordBundle:
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysisRenderedMap:
+    frame_id: str
+    relative_path: str
+    sha256: str
+    size_bytes: int
+
+    def __post_init__(self):
+        object.__setattr__(self, "frame_id", _required_text(self.frame_id, "map.frame_id"))
+        object.__setattr__(self, "relative_path", safe_relative_path(self.relative_path))
+        if not self.relative_path.startswith("outputs/"):
+            raise ValueError("Rendered map must be below outputs/")
+        if len(self.sha256) != 64 or any(value not in "0123456789abcdef" for value in self.sha256):
+            raise ValueError("Rendered map requires a lowercase SHA-256 digest")
+        if isinstance(self.size_bytes, bool) or not isinstance(self.size_bytes, int) or not 0 < self.size_bytes <= 256 * 1024 * 1024:
+            raise ValueError("Rendered map size must be within 1..256 MiB")
+
+    def to_payload(self):
+        return dict(frame_id=self.frame_id, relative_path=self.relative_path, sha256=self.sha256, size_bytes=self.size_bytes)
+
+    @classmethod
+    def from_payload(cls, payload):
+        return cls(frame_id=str(payload.get("frame_id", "")), relative_path=str(payload.get("relative_path", "")),
+                   sha256=str(payload.get("sha256", "")), size_bytes=payload.get("size_bytes", 0))
+
+
+@dataclass(frozen=True, slots=True)
 class AnalysisPartitionResultManifest:
     job_id: str
     run_id: str
@@ -518,6 +555,8 @@ class AnalysisPartitionResultManifest:
     message: str = ""
     protocol_version: str = ANALYSIS_PROTOCOL_VERSION
     schema: str = ANALYSIS_PARTITION_RESULT_SCHEMA
+    rendered_map: AnalysisRenderedMap | None = None
+    worker_runtime: AnalysisRuntimeIdentity | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("job_id", "run_id", "partition_id", "project_id"):
@@ -526,6 +565,8 @@ class AnalysisPartitionResultManifest:
             raise ValueError("Succeeded analysis partition requires a record bundle")
         if self.protocol_version != ANALYSIS_PROTOCOL_VERSION or self.schema != ANALYSIS_PARTITION_RESULT_SCHEMA:
             raise ValueError("Unsupported analysis partition result contract")
+        if self.rendered_map is not None and self.outcome != AnalysisOutcome.SUCCEEDED:
+            raise ValueError("Only a succeeded analysis may publish a rendered map")
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -538,6 +579,8 @@ class AnalysisPartitionResultManifest:
             "outcome": self.outcome.value,
             "bundle": None if self.bundle is None else self.bundle.to_payload(),
             "message": self.message,
+            **({} if self.rendered_map is None else {"rendered_map": self.rendered_map.to_payload()}),
+            **({} if self.worker_runtime is None else {"worker_runtime": self.worker_runtime.to_payload()}),
         }
 
     @classmethod
@@ -545,6 +588,12 @@ class AnalysisPartitionResultManifest:
         raw_bundle = payload.get("bundle")
         if raw_bundle is not None and not isinstance(raw_bundle, Mapping):
             raise ValueError("bundle must be an object or null")
+        raw_map = payload.get("rendered_map")
+        if raw_map is not None and not isinstance(raw_map, Mapping):
+            raise ValueError("rendered_map must be an object or null")
+        raw_runtime = payload.get("worker_runtime")
+        if raw_runtime is not None and not isinstance(raw_runtime, Mapping):
+            raise ValueError("worker_runtime must be an object or null")
         return cls(
             schema=str(payload.get("schema", "")),
             protocol_version=str(payload.get("protocol_version", "")),
@@ -555,6 +604,8 @@ class AnalysisPartitionResultManifest:
             outcome=AnalysisOutcome(str(payload.get("outcome", ""))),
             bundle=None if raw_bundle is None else AnalysisRecordBundle.from_payload(raw_bundle),
             message=str(payload.get("message", "")),
+            rendered_map=None if raw_map is None else AnalysisRenderedMap.from_payload(raw_map),
+            worker_runtime=None if raw_runtime is None else AnalysisRuntimeIdentity.from_payload(raw_runtime),
         )
 
     def write(self, path: Path) -> None:
@@ -580,6 +631,7 @@ __all__ = [
     "AnalysisPartitionResultManifest",
     "AnalysisRecipe",
     "AnalysisRecordBundle",
+    "AnalysisRenderedMap",
     "AnalysisRunManifest",
     "AnalysisRuntimeIdentity",
     "AnalysisSourceBinding",

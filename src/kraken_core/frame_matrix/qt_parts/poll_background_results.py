@@ -1,5 +1,6 @@
 """qt: poll background results."""
 from __future__ import annotations
+from queue import Empty
 from PyQt6.QtGui import QPixmap
 
 from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData
@@ -7,6 +8,14 @@ from kraken_core.frame_matrix.qt_parts.viewport_tile_item import FrameCellData
 
 class PollBackgroundResultsMixin:
     def _poll_background_results(self) -> None:
+        if self._background_resources.closed:
+            return
+        while True:
+            try:
+                error = self._background_resources.errors.get_nowait()
+            except Empty:
+                break
+            self.errorOccurred.emit(str(error))
         future = self._viewport_future
         if future is not None and future.done():
             self._viewport_future = None

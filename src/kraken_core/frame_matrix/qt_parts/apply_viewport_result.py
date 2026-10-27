@@ -34,6 +34,7 @@ class ApplyViewportResultMixin:
         self.set_aggregates(result.aggregates)
         if self._thumbnail_cache is None or self._asset_source is None:
             return
+        asset_source = self._asset_source
         for item in result.items:
             if item.asset is None:
                 continue
@@ -47,7 +48,7 @@ class ApplyViewportResultMixin:
             )
             future = self._thumbnail_cache.request(
                 key,
-                lambda reference=item.asset, request=result.request: self._asset_source.load_asset(
+                lambda reference=item.asset, request=result.request: asset_source.load_asset(
                     reference,
                     width=request.asset_width,
                     height=request.asset_height,
@@ -69,8 +70,8 @@ class ApplyViewportResultMixin:
         self._viewport_generation += 1
         self._viewport_request_timer.stop()
         self._result_poll_timer.stop()
-        if self._thumbnail_cache is not None:
-            self._thumbnail_cache.close()
-            self._thumbnail_cache = None
-        self._viewport_executor.shutdown(wait=False, cancel_futures=True)
+        self._background_resources.close()
+        self._thumbnail_cache = None
+        self._asset_futures.clear()
+        self._viewport_future = None
         super().closeEvent(event)

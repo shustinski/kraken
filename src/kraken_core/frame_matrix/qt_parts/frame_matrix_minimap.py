@@ -1,6 +1,7 @@
 """qt: frame matrix minimap."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
+import weakref
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
@@ -17,7 +18,7 @@ class FrameMatrixMinimap(QWidget):
 
     def __init__(self, matrix_view: FrameMatrixView) -> None:
         super().__init__(matrix_view.viewport())
-        self._matrix_view = matrix_view
+        self._matrix_view = weakref.proxy(matrix_view)
         self.setObjectName("matrixMinimap")
         self.setFixedSize(self.WIDTH, self.HEIGHT)
         self.setCursor(Qt.CursorShape.PointingHandCursor)

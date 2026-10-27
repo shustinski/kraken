@@ -22,7 +22,9 @@ _CTRL_CLOSE_EVENT = 2
 _CTRL_LOGOFF_EVENT = 5
 _CTRL_SHUTDOWN_EVENT = 6
 
-_ConsoleHandler = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+# The callback type is Windows-only, just like the guarded lifetime binding.
+# Creating it at import time breaks every POSIX CLI before argument parsing.
+_ConsoleHandler = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD) if os.name == "nt" else None
 _job_handle: int | None = None
 _console_handler: _ConsoleHandler | None = None
 _bound = False

@@ -34,6 +34,7 @@ FRAME_ROLE_DATASET = "dataset"
 FRAME_ROLE_CONFIDENCE = "confidence"
 DATASET_MEDIA_TYPE = "application/zip"
 CONFIDENCE_MEDIA_TYPE = "application/vnd.kraken.confidence+json"
+MOSAIC_MEDIA_TYPE = "application/vnd.kraken.mosaic+sqlite3"
 
 
 class PluginOperation(StrEnum):
@@ -44,6 +45,7 @@ class PluginOperation(StrEnum):
     BINARY_SEGMENT_FRAMES_V2 = "frames.binary-segment.v2"
     GENERATE_FRAME_CONFIDENCE = "frames.confidence.v1"
     ANALYZE_LAYER_CONFIDENCE = "layer.confidence.analyze.v1"
+    STITCH_LAYER = "layer.stitch.v1"
 
 
 class PluginRunMode(StrEnum):
@@ -103,11 +105,14 @@ class PluginCapability:
     input_media_types: tuple[str, ...] = ()
     output_media_types: tuple[str, ...] = ()
     maximum_batch_size: int | None = None
+    default_mode: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "operation", _required_text(self.operation, "operation"))
         if not self.modes:
             raise ValueError("At least one plugin mode is required")
+        if self.default_mode is not None and self.default_mode not in self.modes:
+            raise ValueError("Default plugin mode must be an advertised mode")
         if self.maximum_batch_size is not None and self.maximum_batch_size <= 0:
             raise ValueError("maximum_batch_size must be positive")
 
@@ -120,6 +125,8 @@ class PluginCapability:
         }
         if self.maximum_batch_size is not None:
             result["maximum_batch_size"] = self.maximum_batch_size
+        if self.default_mode is not None:
+            result["default_mode"] = self.default_mode
         return result
 
     @classmethod
@@ -131,6 +138,7 @@ class PluginCapability:
             input_media_types=tuple(str(item) for item in payload.get("input_media_types", ())),
             output_media_types=tuple(str(item) for item in payload.get("output_media_types", ())),
             maximum_batch_size=None if maximum is None else int(maximum),
+            default_mode=payload.get("default_mode"),
         )
 
 
@@ -399,10 +407,14 @@ class PluginJobManifestV2:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": self.schema, "protocol_version": self.protocol_version,
-            "job_id": self.job_id, "operation": self.operation,
-            "project_id": self.project_id, "layer_id": self.layer_id,
-            "actor_id": self.actor_id, "created_at": self.created_at,
+            "schema": self.schema,
+            "protocol_version": self.protocol_version,
+            "job_id": self.job_id,
+            "operation": self.operation,
+            "project_id": self.project_id,
+            "layer_id": self.layer_id,
+            "actor_id": self.actor_id,
+            "created_at": self.created_at,
             "parameters": dict(self.parameters),
             "target_representation_ids": list(self.target_representation_ids),
             "inputs": [item.to_dict() for item in self.inputs],
@@ -477,24 +489,24 @@ class PluginResultPublicationV2:
             if not isinstance(measurements, Mapping):
                 raise ValueError("frame_values entries must be objects")
             normalized_values[_required_text(frame_id, "frame_id")] = {
-                _required_text(name, "measurement"): float(value)
-                for name, value in measurements.items()
+                _required_text(name, "measurement"): float(value) for name, value in measurements.items()
             }
         object.__setattr__(self, "frame_values", normalized_values)
         object.__setattr__(self, "report", dict(self.report))
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": self.schema, "protocol_version": self.protocol_version,
-            "job_id": self.job_id, "publication_id": self.publication_id,
-            "sequence": self.sequence, "plugin_id": self.plugin_id,
-            "plugin_version": self.plugin_version, "outcome": self.outcome,
+            "schema": self.schema,
+            "protocol_version": self.protocol_version,
+            "job_id": self.job_id,
+            "publication_id": self.publication_id,
+            "sequence": self.sequence,
+            "plugin_id": self.plugin_id,
+            "plugin_version": self.plugin_version,
+            "outcome": self.outcome,
             "final": self.final,
             "applied_parameters": dict(self.applied_parameters),
-            "frame_values": {
-                frame_id: dict(measurements)
-                for frame_id, measurements in self.frame_values.items()
-            },
+            "frame_values": {frame_id: dict(measurements) for frame_id, measurements in self.frame_values.items()},
             "report": dict(self.report),
             "outputs": [item.to_dict() for item in self.outputs],
         }
@@ -529,11 +541,7 @@ class PluginResultPublicationV2:
                 if isinstance(measurements, Mapping)
             },
             report=dict(report),
-            outputs=tuple(
-                PluginAsset.from_dict(item)
-                for item in raw_outputs
-                if isinstance(item, Mapping)
-            ),
+            outputs=tuple(PluginAsset.from_dict(item) for item in raw_outputs if isinstance(item, Mapping)),
         )
 
     @classmethod
@@ -661,9 +669,7 @@ class WorkspacePluginContextV1:
         if self.schema != WORKSPACE_PLUGIN_CONTEXT_SCHEMA:
             raise ValueError(f"Unsupported workspace context schema: {self.schema}")
         directories = {
-            _required_text(name, "input directory role"): _absolute_directory_text(
-                value, f"input_directories.{name}"
-            )
+            _required_text(name, "input directory role"): _absolute_directory_text(value, f"input_directories.{name}")
             for name, value in self.input_directories.items()
         }
         if not directories:
@@ -677,9 +683,7 @@ class WorkspacePluginContextV1:
                 "proposed_output_directory",
             ),
         )
-        result_path = Path(
-            _required_text(self.result_manifest_path, "result_manifest_path")
-        ).expanduser()
+        result_path = Path(_required_text(self.result_manifest_path, "result_manifest_path")).expanduser()
         if not result_path.is_absolute():
             raise ValueError("result_manifest_path must be an absolute filesystem path")
         object.__setattr__(self, "result_manifest_path", str(result_path))
@@ -710,9 +714,7 @@ class WorkspacePluginContextV1:
     def write(self, path: str | os.PathLike[str]) -> Path:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(
-            f".{destination.name}.{os.getpid()}.tmp"
-        )
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
         try:
             with temporary.open("x", encoding="utf-8") as stream:
                 stream.write(self.to_json())
@@ -737,12 +739,8 @@ class WorkspacePluginContextV1:
             operation=str(payload.get("operation", "")),
             plugin_id=str(payload.get("plugin_id", "")),
             run_id=str(payload.get("run_id", "")),
-            input_directories={
-                str(name): str(value) for name, value in raw_inputs.items()
-            },
-            proposed_output_directory=str(
-                payload.get("proposed_output_directory", "")
-            ),
+            input_directories={str(name): str(value) for name, value in raw_inputs.items()},
+            proposed_output_directory=str(payload.get("proposed_output_directory", "")),
             result_manifest_path=str(payload.get("result_manifest_path", "")),
         )
 
@@ -819,9 +817,7 @@ class WorkspacePluginResultV1:
 
     def write(self, path: str | os.PathLike[str]) -> Path:
         destination = Path(path)
-        temporary = destination.with_name(
-            f".{destination.name}.{os.getpid()}.tmp"
-        )
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
         try:
             with temporary.open("x", encoding="utf-8") as stream:
                 stream.write(self.to_json())

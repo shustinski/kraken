@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
+import weakref
+from PyQt6 import sip
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QPainter, QPixmap
 from PyQt6.QtWidgets import (
@@ -83,7 +85,7 @@ class _ViewportTileItem(QGraphicsItem):
 
     def __init__(self, owner: FrameMatrixView, tile_x: int, tile_y: int, tile_cells: int) -> None:
         super().__init__()
-        self.owner = owner
+        self._owner = weakref.ref(owner)
         self.tile_x = tile_x
         self.tile_y = tile_y
         self.tile_cells = tile_cells
@@ -105,11 +107,14 @@ class _ViewportTileItem(QGraphicsItem):
         widget: QWidget | None = None,
     ) -> None:
         del option, widget
-        lod = self.owner.lod_level()
-        if lod is MatrixLod.OVERVIEW or self.tile_cells > self.owner.BASE_TILE_CELLS:
-            self.owner._paint_overview_tile(painter, self)
+        owner = self._owner()
+        if owner is None or sip.isdeleted(owner):
             return
-        self.owner._paint_tile_cells(painter, self, lod)
+        lod = owner.lod_level()
+        if lod is MatrixLod.OVERVIEW or self.tile_cells > owner.BASE_TILE_CELLS:
+            owner._paint_overview_tile(painter, self)
+            return
+        owner._paint_tile_cells(painter, self, lod)
 
 if TYPE_CHECKING:
     from kraken_core.frame_matrix.qt import FrameMatrixView

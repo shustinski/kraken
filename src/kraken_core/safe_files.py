@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import stat
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,11 +23,34 @@ class UnsafeFilesystemPath(ValueError):
     """Raised when a path contains a link, reparse point or special file."""
 
 
+def replace_atomic_with_retry(source: Path | str, destination: Path | str) -> None:
+    """Replace caller-owned staged bytes; tolerate brief Windows reader sharing.
+
+    Retry the rename only. Never expose a partial in-place write or remove the
+    old destination first. Persistent permissions and other I/O errors surface.
+    """
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            if os.name != "nt" or exc.winerror not in (5, 32, 33) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.025)
+
+
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _identity(value: os.stat_result) -> tuple[int, int]:
     return (value.st_dev, value.st_ino)
+
+
+def _validate_parts(parts: tuple[str, ...]) -> None:
+    for part in parts:
+        if not part or part in {".", ".."} or any(char in part for char in "/\\:\0"):
+            raise UnsafeFilesystemPath("Paths must contain only regular relative components")
 
 
 def is_link_or_reparse(path: Path | str) -> bool:
@@ -41,9 +65,8 @@ def is_link_or_reparse(path: Path | str) -> bool:
 def contained_path(root: Path | str, relative_parts: tuple[str, ...]) -> Path:
     """Build a contained path and reject links in every existing component."""
 
-    base = Path(root).resolve(strict=True)
-    if not base.is_dir() or is_link_or_reparse(base):
-        raise UnsafeFilesystemPath("Trusted root is not a regular directory")
+    _validate_parts(relative_parts)
+    base = ensure_regular_directory(root)
     candidate = base.joinpath(*relative_parts)
     try:
         candidate.relative_to(base)
@@ -87,6 +110,7 @@ def ensure_regular_directory(path: Path | str) -> Path:
 def make_contained_directories(root: Path | str, relative_parts: tuple[str, ...]) -> Path:
     """Create directories one component at a time, rejecting link substitution."""
 
+    _validate_parts(relative_parts)
     base = ensure_regular_directory(root)
     current = base
     for part in relative_parts:
@@ -176,6 +200,8 @@ def open_regular_append(path: Path | str, *, root: Path | str | None = None) -> 
     """Open/create a regular append-only file without following a final link."""
 
     candidate = Path(path)
+    base: Path | None = None
+    parts: tuple[str, ...] = ()
     if root is not None:
         base = ensure_regular_directory(root)
         try:
@@ -200,12 +226,17 @@ def open_regular_append(path: Path | str, *, root: Path | str | None = None) -> 
         | getattr(os, "O_NOFOLLOW", 0)
     )
     descriptor = os.open(candidate, flags, 0o600)
-    opened = os.fstat(descriptor)
-    if not stat.S_ISREG(opened.st_mode) or (
-        before is not None and _identity(before) != _identity(opened)
-    ):
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (
+            before is not None and _identity(before) != _identity(opened)
+        ):
+            raise UnsafeFilesystemPath(f"Path changed while opening for append: {candidate}")
+        if base is not None:
+            contained_path(base, parts)
+    except BaseException:
         os.close(descriptor)
-        raise UnsafeFilesystemPath(f"Path changed while opening for append: {candidate}")
+        raise
     return os.fdopen(descriptor, "ab", closefd=True)
 
 

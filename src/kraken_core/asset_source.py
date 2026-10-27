@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import urllib.request
 from collections.abc import Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
@@ -49,6 +50,7 @@ class ServerAssetSource:
     token: str = field(repr=False)
     timeout: float = 60
     maximum_input_bytes: int = 512 * 1024 * 1024
+    lease_claim: str | None = field(default_factory=lambda: os.environ.get("KRAKEN_ASSET_LEASE_CLAIM"), repr=False)
 
     def __post_init__(self) -> None:
         parsed = urlparse(self.base_url)
@@ -70,7 +72,10 @@ class ServerAssetSource:
             f"{self.base_url.rstrip('/')}/api/v1/agent/jobs/{quote(self.job_id, safe='')}"
             f"/inputs/{quote(version_id, safe='')}"
         )
-        request = urllib.request.Request(endpoint, headers={"Authorization": f"Bearer {self.token}"})
+        headers = {"Authorization": f"Bearer {self.token}"}
+        if self.lease_claim:
+            headers["X-Kraken-Lease-Claim"] = self.lease_claim
+        request = urllib.request.Request(endpoint, headers=headers)
         digest = hashlib.sha256()
         # Image decoders and archive readers need seek; this is a temporary
         # memory cache of one verified input, never a local project directory.

@@ -3,7 +3,7 @@ import pytest
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services.workflow_mapper import build_workflow_parameters, resolve_work_mode
 from neuralimage.configuration import get_sem_preset
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_resolve_work_mode_known_value():

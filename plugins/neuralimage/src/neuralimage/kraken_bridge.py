@@ -216,9 +216,7 @@ class HeadlessOptions:
         parameters = session.manifest.parameters
         relative_model = str(parameters.get("model_relative_path", "")).strip()
         if not relative_model:
-            raise KrakenBridgeError(
-                "model_relative_path is required; V1 does not read models outside Kraken staging"
-            )
+            raise KrakenBridgeError("model_relative_path is required; V1 does not read models outside Kraken staging")
         model = _contained_file(session.staging_root, relative_model)
         model_hash = _expected_sha256(parameters.get("model_sha256"), "model_sha256")
         if _sha256(model) != model_hash:
@@ -318,9 +316,7 @@ class NeuralImageKrakenSession:
             tuple(manifest.inputs)
             if isinstance(manifest, PluginJobManifest)
             else tuple(
-                item
-                for item in manifest.inputs
-                if item.scope is PluginAssetScope.FRAME and item.role == "source"
+                item for item in manifest.inputs if item.scope is PluginAssetScope.FRAME and item.role == "source"
             )
         )
         if not frame_inputs:
@@ -335,7 +331,11 @@ class NeuralImageKrakenSession:
         for item in frame_inputs:
             if item.media_type not in {"image/png", "image/tiff", "image/jpeg"}:
                 raise KrakenBridgeError(f"Unsupported NeuralImage input media type: {item.media_type}")
-            path = root / safe_relative_path(item.relative_path) if server_mode else _contained_file(root, item.relative_path)
+            path = (
+                root / safe_relative_path(item.relative_path)
+                if server_mode
+                else _contained_file(root, item.relative_path)
+            )
             if not server_mode and _sha256(path) != item.sha256:
                 raise KrakenBridgeError(f"Staged input checksum mismatch: {item.relative_path}")
             if path.stem.casefold() in stems:
@@ -354,7 +354,8 @@ class NeuralImageKrakenSession:
         server_source = None
         if server_mode and isinstance(manifest, PluginJobManifest):
             server_source = ServerAssetSource(
-                str(manifest.parameters.get("server_url", "")), manifest.job_id,
+                str(manifest.parameters.get("server_url", "")),
+                manifest.job_id,
                 {str(root / item.relative_path): item for item in manifest.inputs},
                 os.environ.get("KRAKEN_ASSET_TOKEN", ""),
             )
@@ -494,7 +495,7 @@ def _run_recognition(
         try:
             source = Path(str(payload["source_path"])).resolve(strict=session.server_source is None)
             output = Path(str(payload["output_path"])).resolve(strict=True)
-        except (KeyError, OSError):
+        except KeyError, OSError:
             return
         completed[source] = output
 
@@ -514,7 +515,9 @@ def _run_recognition(
         postprocess_kernel_size=options.postprocess_kernel_size,
         recognition_tta_enabled=options.tta,
         confidence_tta_enabled=options.confidence_tta,
-        confidence_save_mode="separate_grayscale" if session.manifest.operation == PluginOperation.GENERATE_FRAME_CONFIDENCE.value else "off",
+        confidence_save_mode="separate_grayscale"
+        if session.manifest.operation == PluginOperation.GENERATE_FRAME_CONFIDENCE.value
+        else "off",
         lossless_binary_png=True,
     )
     remote_address = os.environ.get("NEURALIMAGE_SERVER_URL")
@@ -564,12 +567,10 @@ def _run_recognition(
                     raise KrakenBridgeError("Confidence должен быть одноканальным изображением JPEG")
         try:
             position = int(frame_positions.get(frame.frame_id, index - 1))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             position = index - 1
         if position < 0:
-            raise KrakenBridgeError(
-                f"Frame {frame.frame_id} has an invalid negative filename position"
-            )
+            raise KrakenBridgeError(f"Frame {frame.frame_id} has an invalid negative filename position")
         destination = session.output_directory / (
             f"{index:06d}_{frame.x}_{frame.y}_{position}{'.jpg' if confidence_output else '.png'}"
         )
@@ -598,9 +599,7 @@ class NeuralImageWorkspaceSession:
     result_manifest_path: Path
 
     @classmethod
-    def load(
-        cls, context_path: str | os.PathLike[str]
-    ) -> "NeuralImageWorkspaceSession":
+    def load(cls, context_path: str | os.PathLike[str]) -> "NeuralImageWorkspaceSession":
         raw = Path(context_path)
         if raw.is_symlink():
             raise KrakenBridgeError("Workspace context must not be a symbolic link")
@@ -614,9 +613,7 @@ class NeuralImageWorkspaceSession:
         if context.plugin_id != "neuralimage":
             raise KrakenBridgeError("Workspace context is not intended for NeuralImage")
         if context.operation != PluginOperation.TRAIN_MODEL.value:
-            raise KrakenBridgeError(
-                f"Interactive NeuralImage does not support {context.operation!r}"
-            )
+            raise KrakenBridgeError(f"Interactive NeuralImage does not support {context.operation!r}")
         if not images.is_dir() or not cif.is_dir() or not output.is_dir():
             raise KrakenBridgeError("NeuralImage workspace directories are unavailable")
         result_path = Path(context.result_manifest_path).resolve(strict=False)
@@ -632,9 +629,7 @@ class NeuralImageWorkspaceSession:
         window = getattr(presenter, "view", None)
         state = getattr(presenter, "main_window_state", None)
         if not isinstance(window, QMainWindow) or state is None:
-            raise KrakenBridgeError(
-                "NeuralImage workspace mode requires the full desktop presenter"
-            )
+            raise KrakenBridgeError("NeuralImage workspace mode requires the full desktop presenter")
         window.set_jpg_path(str(self.images_directory))
         window.set_label_path(str(self.cif_directory))
         window.set_result_path(str(self.output_directory))
@@ -650,19 +645,11 @@ class NeuralImageWorkspaceSession:
                 selected_text = str(window.lbl_result.text()).strip()
                 selected = Path(selected_text).expanduser()
                 if not selected.is_absolute() or selected.is_symlink():
-                    raise KrakenBridgeError(
-                        "Папка результата должна быть абсолютным обычным каталогом"
-                    )
+                    raise KrakenBridgeError("Папка результата должна быть абсолютным обычным каталогом")
                 selected = selected.resolve(strict=True)
-                outputs = tuple(
-                    path
-                    for path in selected.rglob("*")
-                    if path.is_file() and not path.is_symlink()
-                )
+                outputs = tuple(path for path in selected.rglob("*") if path.is_file() and not path.is_symlink())
                 if not outputs:
-                    raise KrakenBridgeError(
-                        "В папке результата нет модели, checkpoint или отчёта"
-                    )
+                    raise KrakenBridgeError("В папке результата нет модели, checkpoint или отчёта")
                 WorkspacePluginResultV1(
                     run_id=self.context.run_id,
                     plugin_id="neuralimage",
@@ -802,9 +789,17 @@ class NeuralImageTrainSession:
         _atomic_text(self.result_manifest_path, result.to_json())
         return result
 
-    def prepare_dataset(self) -> tuple[Path, Path]:
+    def prepare_dataset(self, *, max_members=100000, max_unpacked_bytes=64 * 1024**3) -> tuple[Path, Path]:
+        from contextlib import ExitStack
         from zipfile import ZipFile
         import stat
+        from kraken_core.safe_files import (
+            contained_path,
+            ensure_regular_directory,
+            make_contained_directories,
+            open_exclusive_write,
+            open_regular_read,
+        )
 
         inputs = tuple(self.manifest.inputs)
         if len(inputs) != 1 or inputs[0].media_type != "application/zip":
@@ -816,39 +811,65 @@ class NeuralImageTrainSession:
             if not isinstance(self.manifest, PluginJobManifest):
                 raise KrakenBridgeError("Server dataset streams require the frame job protocol")
             source = ServerAssetSource(
-                str(self.manifest.parameters.get("server_url", "")), self.manifest.job_id,
-                {item.relative_path: item for item in inputs}, os.environ.get("KRAKEN_ASSET_TOKEN", ""),
+                str(self.manifest.parameters.get("server_url", "")),
+                self.manifest.job_id,
+                {item.relative_path: item for item in inputs},
+                os.environ.get("KRAKEN_ASSET_TOKEN", ""),
             )
-            self.dataset_source = DatasetStreamSource.load(source, inputs[0].relative_path, self.staging_root / "dataset")
+            self.dataset_source = DatasetStreamSource.load(
+                source, inputs[0].relative_path, self.staging_root / "dataset"
+            )
             for directory in (self.dataset_source.image_root, self.dataset_source.label_root):
                 directory.mkdir(parents=True, exist_ok=True)
             return self.dataset_source.image_root, self.dataset_source.label_root
         archive = _contained_file(self.staging_root, inputs[0].relative_path)
-        if _sha256(archive) != inputs[0].sha256:
-            raise KrakenBridgeError("Dataset checksum does not match the job")
         destination = self.staging_root / "dataset"
         destination.mkdir(exist_ok=False)
-        with ZipFile(archive) as stream:
+        ensure_regular_directory(destination)
+        with ExitStack() as stack:
+            archive_file = stack.enter_context(open_regular_read(archive, root=self.staging_root))
+            digest = hashlib.file_digest(archive_file, "sha256").hexdigest()
+            if digest != inputs[0].sha256:
+                raise KrakenBridgeError("Dataset checksum does not match the job")
+            archive_file.seek(0)
+            stream = stack.enter_context(ZipFile(archive_file))
             members = stream.infolist()
+            if len(members) > max_members or sum(member.file_size for member in members) > max_unpacked_bytes:
+                raise KrakenBridgeError(
+                    "Staged dataset exceeds member/expanded-byte limits; use partitioned or streamed inputs"
+                )
             names: set[str] = set()
+            files = set()
             for member in members:
                 name = safe_relative_path(member.filename.rstrip("/"))
                 if stat.S_ISLNK(member.external_attr >> 16) or name.casefold() in names:
                     raise KrakenBridgeError("Dataset contains symbolic links or duplicate paths")
                 names.add(name.casefold())
+                if not member.is_dir():
+                    files.add(name.casefold())
+            for name in names:
+                parts = name.split("/")
+                if any("/".join(parts[:index]) in files for index in range(1, len(parts))):
+                    raise KrakenBridgeError("Dataset file/directory paths conflict")
             for member in members:
-                target = destination / safe_relative_path(member.filename.rstrip("/"))
+                parts = tuple(safe_relative_path(member.filename.rstrip("/")).split("/"))
                 if member.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
+                    make_contained_directories(destination, parts)
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with stream.open(member) as source, target.open("xb") as output:
+                make_contained_directories(destination, parts[:-1])
+                target = contained_path(destination, parts)
+                with stream.open(member) as source, open_exclusive_write(target) as output:
                     shutil.copyfileobj(source, output, length=1024 * 1024)
         images, labels = destination / "images", destination / "cif"
         pairs = [(path, labels / f"{path.stem}.cif") for path in images.glob("*") if path.is_file()]
         if not pairs or any(not label.is_file() for _image, label in pairs):
             raise KrakenBridgeError("Dataset must contain images and matching CIF labels")
         return images, labels
+
+    def run_headless(self):
+        from neuralimage.managed_training import run_training
+
+        return run_training(self)
 
     def run_interactive(self) -> None:
         from neuralimage.controller import AppController

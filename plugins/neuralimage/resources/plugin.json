@@ -45,7 +45,8 @@
     },
     {
       "operation": "dataset.model.train.v1",
-      "modes": ["interactive"],
+      "modes": ["interactive", "headless"],
+      "default_mode": "interactive",
       "input_media_types": ["application/vnd.kraken.dataset+zip"],
       "output_media_types": ["application/x-pytorch", "application/json"]
     }

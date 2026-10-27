@@ -547,7 +547,11 @@ def _edge_falloff_mask(size: tuple[int, int], seed: int | None = None) -> np.nda
     )
     edge_noise = fractal_noise(size, octaves=4, persistence=0.60, seed=_spawn_subseed(rng))
     irregular_edge = distance_to_edge + ((edge_noise - 0.5) * feather_px * 0.7)
-    return _smoothstep01(irregular_edge / max(feather_px, 1e-6))
+    irregular = _smoothstep01(irregular_edge / max(feather_px, 1e-6))
+    # Shape noise may move the feather inward, but must not make the pasted
+    # rectangle's boundary opaque and introduce a synthetic straight seam.
+    envelope = _smoothstep01(distance_to_edge / max(feather_px, 1e-6))
+    return np.minimum(irregular, envelope)
 
 
 def _stable_exp_decay(distance: np.ndarray, scale: float) -> np.ndarray:

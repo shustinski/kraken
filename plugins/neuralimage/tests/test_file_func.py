@@ -1,5 +1,5 @@
 from neuralimage.lib.file_func import filter_files, filter_images
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_filter_files_filters_extensions_case_insensitive():
@@ -47,4 +47,3 @@ def test_filter_images_can_search_recursively():
 
     assert sorted(p.name for p in shallow) == ['root.png']
     assert sorted(p.relative_to(tmp_path).as_posix() for p in recursive) == ['nested/child.jpg', 'root.png']
-

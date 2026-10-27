@@ -5,7 +5,7 @@ pytest.importorskip('PyQt6')
 from PyQt6.QtWidgets import QApplication
 
 from neuralimage.infrastructure.config.state_store import load_settings_state, save_settings_state
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 from neuralimage.lib.data_interfaces import build_synthetic_defect_generator_parameters
 from neuralimage.view.settings_panel import SettingsPanel
 from neuralimage.view.window_dataclasses import SettingsState

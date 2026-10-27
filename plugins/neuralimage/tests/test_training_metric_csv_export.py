@@ -2,7 +2,7 @@ import csv
 import types
 
 import neuralimage.model.NeuralNetwork.model_train_and_recognition as target
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_save_metric_charts_exports_png_and_csv():

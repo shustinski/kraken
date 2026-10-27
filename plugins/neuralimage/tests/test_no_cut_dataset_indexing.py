@@ -12,7 +12,7 @@ from neuralimage.lib.data_interfaces import SampleCutMode, SampleGenerationSetti
 from neuralimage.lib.images import ImagePreparator, SampleFastCutter
 from neuralimage.lib.rare_patch_masks import save_rare_patch_mask
 from neuralimage.model.NeuralNetwork.dataset import NoCutDataset
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_no_cut_dataset_non_square_segments_do_not_overrun_parts_list(monkeypatch):
@@ -240,7 +240,7 @@ def test_no_cut_dataset_set_epoch_rebuilds_lookup_after_frame_shuffle(monkeypatc
     def reverse_in_place(items):
         items.reverse()
 
-    monkeypatch.setattr('model.NeuralNetwork.dataset.random.shuffle', reverse_in_place)
+    monkeypatch.setattr('neuralimage.model.NeuralNetwork.dataset.random.shuffle', reverse_in_place)
     monkeypatch.setattr(
         dataset,
         '_build_frame_cutter',

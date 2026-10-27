@@ -161,6 +161,7 @@ class ActiveLearningExporter:
         export_root.mkdir(parents=True, exist_ok=True)
         lock_path = export_root / '.manifest.lock'
         deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        access_error = None
         while time.monotonic() < deadline:
             try:
                 descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -174,6 +175,15 @@ class ActiveLearningExporter:
                 except OSError:
                     pass
                 time.sleep(0.01)
+            except PermissionError as exc:
+                # Windows can report EACCES while a competing lock file is
+                # pending deletion. It is transient contention, not ownership.
+                if os.name != 'nt':
+                    raise
+                access_error = exc
+                time.sleep(0.01)
+        if access_error is not None:
+            raise access_error
         return None
 
     @staticmethod

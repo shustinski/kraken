@@ -1,7 +1,7 @@
 from copy import deepcopy
 
 from neuralimage.lib.config import Config
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_config_set_get_data_roundtrip():
@@ -35,4 +35,3 @@ def test_config_open_creates_file_if_missing(monkeypatch):
     Config.open()
 
     assert (tmp_path / 'data.json').exists()
-

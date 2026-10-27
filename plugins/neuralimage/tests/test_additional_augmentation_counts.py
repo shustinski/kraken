@@ -159,7 +159,7 @@ def test_sample_worker_path_and_settings_updates_are_lazy(monkeypatch, tmp_path)
     def _unexpected_scan(*_args, **_kwargs):
         raise AssertionError('set_path/set_settings must not scan files synchronously')
 
-    monkeypatch.setattr('lib.images.filter_files', _unexpected_scan)
+    monkeypatch.setattr('neuralimage.lib.images.filter_files', _unexpected_scan)
 
     worker.set_path(tmp_path)
     worker.set_settings(

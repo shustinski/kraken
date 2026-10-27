@@ -1,5 +1,5 @@
 import neuralimage.model.NeuralNetwork.model_train_and_recognition as target
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_recording_queue_collects_logging_messages():

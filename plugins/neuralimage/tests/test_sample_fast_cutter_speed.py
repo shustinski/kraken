@@ -14,7 +14,7 @@ from neuralimage.lib.images import SampleFastCutter
 
 
 def _load_compiled_cython_class():
-    module = importlib.import_module('lib.sample_fast_cutter_pyx')
+    module = importlib.import_module('neuralimage.lib.sample_fast_cutter_pyx')
     cython_class = getattr(module, 'SampleFastCutterCython', None)
     if cython_class is None:
         pytest.skip('SampleFastCutterCython class is unavailable in lib.sample_fast_cutter_pyx')

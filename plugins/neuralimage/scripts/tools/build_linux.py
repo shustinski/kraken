@@ -8,7 +8,7 @@ from typing import Sequence
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def default_dist_path(root: Path | None = None) -> Path:
@@ -62,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--spec',
         type=Path,
-        default=project_root() / 'NeuralImage.spec',
+        default=project_root() / 'packaging' / 'NeuralImage.spec',
         help='Path to the shared PyInstaller spec file.',
     )
     return parser

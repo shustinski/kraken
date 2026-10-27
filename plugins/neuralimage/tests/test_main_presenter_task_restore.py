@@ -10,7 +10,7 @@ pytest.importorskip('PyQt6')
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from neuralimage.application.dto import MainWindowState, SettingsState
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 class _FakeSampleWorker:
@@ -180,7 +180,7 @@ def test_main_presenter_restores_task_state_to_main_window_and_settings(qapp, mo
     presenter.view.close()
 
 
-def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeypatch):
+def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeypatch, tmp_path):
     module = _import_main_presenter_with_stubs(monkeypatch)
     state_store = _FakeStateStore()
     presenter = module.MainPresenter(state_store)
@@ -208,7 +208,9 @@ def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeyp
         confidence_save_mode='separate_grayscale',
         deep_supervision=False,
     )
-    monkeypatch.setattr('neuralimage.presenter.dialogs.choose_path_dialog', lambda *_args, **_kwargs: 'workflow.json')
+    workflow = tmp_path / 'workflow.json'
+    workflow.write_text('{}', encoding='utf-8')
+    monkeypatch.setattr('neuralimage.presenter.dialogs.choose_path_dialog', lambda *_args, **_kwargs: str(workflow))
     monkeypatch.setattr('neuralimage.presenter.main_presenter_parts.open_rare_patch_editor.load_workflow_snapshot', lambda *_args, **_kwargs: (restored_main, restored_settings))
 
     presenter._on_open_config_requested()
@@ -238,14 +240,16 @@ def test_main_presenter_can_restore_ui_from_workflow_snapshot_file(qapp, monkeyp
     presenter.view.close()
 
 
-def test_main_presenter_shows_warning_for_invalid_workflow_snapshot(qapp, monkeypatch):
+def test_main_presenter_shows_warning_for_invalid_workflow_snapshot(qapp, monkeypatch, tmp_path):
     module = _import_main_presenter_with_stubs(monkeypatch)
     presenter = module.MainPresenter(_FakeStateStore())
     warnings: list[str] = []
     presenter.view.show_warning.connect(warnings.append)
     presenter.view.set_jpg_path('before-open')
 
-    monkeypatch.setattr('neuralimage.presenter.dialogs.choose_path_dialog', lambda *_args, **_kwargs: 'broken.json')
+    workflow = tmp_path / 'broken.json'
+    workflow.write_text('{}', encoding='utf-8')
+    monkeypatch.setattr('neuralimage.presenter.dialogs.choose_path_dialog', lambda *_args, **_kwargs: str(workflow))
     monkeypatch.setattr(
         'neuralimage.presenter.main_presenter_parts.open_rare_patch_editor.load_workflow_snapshot',
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError('bad payload')),

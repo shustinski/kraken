@@ -1,7 +1,7 @@
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services.training_artifacts import build_training_artifact_dir
 from neuralimage.lib.data_interfaces import WorkMode
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_build_training_artifact_dir_uses_model_name_and_creates_unique_folder():

@@ -6,7 +6,7 @@ from neuralimage.application.services.validation import (
 )
 import neuralimage.application.services.validation as validation_module
 from neuralimage.lib.optimizer_availability import MUON_UNAVAILABLE_MESSAGE
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_can_start_processing_train_and_recognition_requires_dataset():

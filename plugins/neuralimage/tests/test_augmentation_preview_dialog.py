@@ -15,7 +15,7 @@ from neuralimage.lib.data_interfaces import (
     SamplePrepareSettings,
     TrainingParameters,
 )
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 from neuralimage.view.augmentation_preview_dialog import AugmentationPreviewDialog
 from neuralimage.view.sem_compact_section_editor import CompactSemSectionEditor
 from neuralimage.view.settings_panel import SettingsPanel

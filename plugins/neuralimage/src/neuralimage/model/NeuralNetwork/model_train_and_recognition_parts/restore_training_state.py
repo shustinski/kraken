@@ -1,6 +1,7 @@
 """model_train_and_recognition: restore training state."""
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from dataclasses import replace
 import math
 from collections.abc import Mapping, Sized
 from typing import cast
@@ -50,6 +51,9 @@ class RestoreTrainingStateMixin:
                 train_size=train_size,
                 batches_per_epoch=batches_per_epoch,
             )
+            epoch_limit = getattr(self._early_stopping_params, 'max_epochs', None)
+            if epoch_limit is not None:
+                automatic_config = replace(automatic_config, max_epochs=min(automatic_config.max_epochs, epoch_limit))
             self._global_batch = max(0, int(checkpoint.get('global_batch', start_epoch * batches_per_epoch)))
             self._epochs = int(automatic_config.max_epochs)
             if self._val_dataloader is not None:

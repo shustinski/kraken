@@ -28,7 +28,8 @@ def test_sample_artifact_parameters_reject_unknown_type():
         _sample_artifact_parameters('unknown_artifact', 64.0)
 
 
-def test_generate_random_artifact_patch_fades_alpha_near_patch_edges():
+@pytest.mark.parametrize('seed', [0, 1, 7, 123])
+def test_generate_random_artifact_patch_fades_alpha_near_patch_edges(seed):
     np.random.seed(0)
     torch.manual_seed(0)
 
@@ -38,6 +39,7 @@ def test_generate_random_artifact_patch_fades_alpha_near_patch_edges():
         64,
         device=torch.device('cpu'),
         dtype=torch.float32,
+        seed=seed,
     )
 
     border = torch.cat(
@@ -52,6 +54,10 @@ def test_generate_random_artifact_patch_fades_alpha_near_patch_edges():
 
     assert float(border.max()) < 0.15
     assert float(border.mean()) < float(center.mean()) * 0.25
+    assert torch.count_nonzero(alpha[:, 0, :]) == 0
+    assert torch.count_nonzero(alpha[:, -1, :]) == 0
+    assert torch.count_nonzero(alpha[:, :, 0]) == 0
+    assert torch.count_nonzero(alpha[:, :, -1]) == 0
 
 
 def test_generate_random_artifact_patch_keeps_overlay_grayscale_for_rgb():

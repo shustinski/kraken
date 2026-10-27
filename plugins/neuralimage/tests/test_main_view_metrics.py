@@ -208,7 +208,7 @@ def test_main_view_recognition_speed_label_updates_and_resets(qapp, monkeypatch)
     view.connect_internal_signals()
 
     timestamps = iter([100.0, 102.0])
-    monkeypatch.setattr("view.main_window.time.perf_counter", lambda: next(timestamps))
+    monkeypatch.setattr("neuralimage.view.main_window.time.perf_counter", lambda: next(timestamps))
 
     view.metrics_message.emit({'type': 'recognition_progress', 'current': 0, 'total': 12})
     assert "—" in view.recognition_speed_label.text()
@@ -473,7 +473,7 @@ def test_main_view_queue_context_menu_emits_properties_signal(qapp, monkeypatch)
     view.queue_properties_requested.connect(captured_rows.append)
 
     monkeypatch.setattr(
-        'view.main_window.QMenu.exec',
+        'neuralimage.view.main_window.QMenu.exec',
         lambda menu, *_args, **_kwargs: menu.actions()[1],
     )
 

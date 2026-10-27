@@ -12,7 +12,7 @@ from neuralimage.model.NeuralNetwork import create_model
 from neuralimage.model.NeuralNetwork.dataset import NoCutDataset
 from neuralimage.model.NeuralNetwork.recognition_pipeline import cut_image_prepare, gpu_predict
 from neuralimage.model.general_neural_handler import GeneralNeuralHandler
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 class _Bus:

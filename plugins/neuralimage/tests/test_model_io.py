@@ -4,7 +4,7 @@ torch = pytest.importorskip('torch')
 
 from neuralimage.model.NeuralNetwork import create_model
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact, save_model_artifact
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def _first_parameter_tensor(model):

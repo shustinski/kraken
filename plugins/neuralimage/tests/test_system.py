@@ -7,10 +7,10 @@ torch = pytest.importorskip("torch")
 
 
 def _run_system_module(*, run_name: str | None = None):
-    sys.modules.pop("lib.System", None)
+    sys.modules.pop("neuralimage.lib.System", None)
     if run_name is None:
-        return runpy.run_module("lib.System")
-    return runpy.run_module("lib.System", run_name=run_name)
+        return runpy.run_module("neuralimage.lib.System")
+    return runpy.run_module("neuralimage.lib.System", run_name=run_name)
 
 
 def test_check_gpu_availability_returns_cuda_device_count(monkeypatch):

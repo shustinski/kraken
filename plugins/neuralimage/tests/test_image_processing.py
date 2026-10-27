@@ -6,7 +6,7 @@ pytest.importorskip('PIL')
 from PIL import Image
 
 from neuralimage.lib.image_processing import get_names_from_file, reshape_imgs, cut_image, img_crop_border, sew_image
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_get_names_from_file():
@@ -99,4 +99,3 @@ def test_img_crop_border_crops_to_black_frame():
     arr = np.array(cropped)
     assert arr[0, 0] == 0
     assert arr[2, 2] == 255
-

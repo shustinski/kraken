@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from neuralimage.lib.data_interfaces import WorkMode, build_synthetic_defect_generator_parameters
 from neuralimage.configuration import get_sem_preset
 from neuralimage.model.NeuralNetwork.registrator import ModelType
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 from neuralimage.view.settings_panel import SettingsPanel
 from neuralimage.view.window_dataclasses import SettingsState
 

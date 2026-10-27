@@ -13,7 +13,7 @@ from neuralimage.lib.rare_patch_masks import (
     prepare_label_folder_for_rare_patch_editor,
     resolve_rare_patch_mask_path,
 )
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 from neuralimage.view.rare_patch_editor_dialog import RarePatchCanvas, RarePatchEditorDialog
 
 

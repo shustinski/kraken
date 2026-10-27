@@ -1,4 +1,4 @@
-import main as main_module
+import neuralimage.main as main_module
 
 
 def test_configure_multiprocessing_start_method_prefers_spawn_on_linux(monkeypatch):

@@ -13,7 +13,7 @@ from neuralimage.model.general_neural_handler import (
     _estimate_label_foreground_ratio,
     _label_ratio_bucket,
 )
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 class _Bus:

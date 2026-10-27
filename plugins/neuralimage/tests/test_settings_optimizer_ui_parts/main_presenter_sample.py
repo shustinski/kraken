@@ -1,7 +1,7 @@
 """test_settings_optimizer_ui: test main presenter sample."""
 from __future__ import annotations
 import types
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 from test_settings_optimizer_ui_parts.preprocessing_groupbox_controls import _import_main_presenter_with_stubs
 

@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+import pytest
 
 from neuralimage.active_learning.config import ActiveLearningConfig
 from neuralimage.active_learning.export import ActiveLearningExporter
@@ -103,3 +104,26 @@ def test_active_learning_run_limit_does_not_cap_resumed_dataset(tmp_path):
 
     rows = (export_root / 'manifest.jsonl').read_text(encoding='utf-8').splitlines()
     assert len(rows) == 2
+
+
+def test_manifest_lock_retries_windows_delete_pending_access_error(tmp_path, monkeypatch):
+    import os
+    from neuralimage.active_learning import export as module
+
+    if os.name != 'nt':
+        pytest.skip('Windows pending-delete locking semantics')
+    original = module.os.open
+    attempts = []
+
+    def open_with_transient_error(path, flags, *args, **kwargs):
+        if str(path).endswith('.manifest.lock'):
+            attempts.append(path)
+            if len(attempts) == 1:
+                raise PermissionError('pending deletion')
+        return original(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, 'open', open_with_transient_error)
+    lock = ActiveLearningExporter._acquire_manifest_lock(tmp_path)
+    assert lock is not None and len(attempts) == 2
+    ActiveLearningExporter._release_manifest_lock(lock)
+    assert not (tmp_path / '.manifest.lock').exists()

@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-import scripts.tools.build_linux as build_linux
+import importlib.util
+
+_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location("neuralimage_build_linux", _PLUGIN_ROOT / "scripts/tools/build_linux.py")
+build_linux = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(build_linux)
 
 
 def test_build_linux_pyinstaller_args_uses_linux_dist_and_work_paths(tmp_path):
@@ -30,6 +35,14 @@ def test_build_linux_pyinstaller_args_uses_linux_dist_and_work_paths(tmp_path):
 def test_default_linux_paths_are_scoped_under_project_root(tmp_path):
     assert build_linux.default_dist_path(tmp_path) == Path(tmp_path) / 'dist' / 'linux'
     assert build_linux.default_work_path(tmp_path) == Path(tmp_path) / 'build' / 'linux'
+
+
+def test_linux_build_defaults_resolve_existing_plugin_spec():
+    assert build_linux.project_root() == _PLUGIN_ROOT
+    defaults = build_linux._build_parser().parse_args([])
+    assert defaults.spec == _PLUGIN_ROOT / "packaging" / "NeuralImage.spec"
+    assert defaults.spec.is_file()
+    assert defaults.dist_path == _PLUGIN_ROOT / "dist" / "linux"
 
 
 def test_linux_build_parser_has_no_web_ui_option():

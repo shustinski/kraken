@@ -6,7 +6,7 @@ nn = pytest.importorskip("torch.nn")
 
 from neuralimage.lib.data_interfaces import RecognitionParameters
 from neuralimage.model.NeuralNetwork.model_train_and_recognition import ModelRecognizer, NeuralRecognizer
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 class _StubBus:

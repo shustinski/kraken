@@ -3,7 +3,7 @@ from pathlib import Path
 
 from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services.workflow_mapper import build_workflow_parameters
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_workflow_mapper_applies_boolean_and_mode_combinations():

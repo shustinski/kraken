@@ -130,12 +130,24 @@ def test_remote_hub_does_not_create_local_analysis_store(monkeypatch):
     controller.service = SimpleNamespace(is_remote_project=lambda _id: True)
     callbacks = []
     workspace = SimpleNamespace(analysisRequested=SimpleNamespace(connect=callbacks.append))
+    remote_controllers = []
+
+    def remote_controller(parent, service, project_id, **options):
+        instance = SimpleNamespace(timer=object())
+        remote_controllers.append((parent, service, project_id, options, instance))
+        return instance
+
+    monkeypatch.setattr("kraken_hub.remote_analysis.RemoteAnalysisController", remote_controller)
     monkeypatch.setattr(
         manager_app, "FilesystemAnalysisStore", lambda *_args: pytest.fail("Local project store opened")
     )
     controller._configure_analysis(workspace, "server-project")
     assert workspace._analysis_store is None
-    assert workspace._analysis_coordinator is None
+    assert len(remote_controllers) == 1
+    parent, service, project_id, _options, instance = remote_controllers[0]
+    assert (parent, service, project_id) == (workspace, controller.service, "server-project")
+    assert workspace._analysis_coordinator is instance
+    assert workspace._analysis_timer is instance.timer
     assert len(callbacks) == 1
 
 

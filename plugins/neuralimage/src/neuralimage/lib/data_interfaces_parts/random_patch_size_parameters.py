@@ -167,6 +167,13 @@ class EarlyStoppingParameters:
     patience: int = 10
     min_delta: float = 0.0
     restore_best_weights: bool = True
+    max_epochs: int | None = None
+
+    def __post_init__(self):
+        if self.max_epochs is not None and (
+            isinstance(self.max_epochs, bool) or not isinstance(self.max_epochs, int) or self.max_epochs <= 0
+        ):
+            raise ValueError('early stopping max_epochs must be a positive integer')
 
 @dataclass(frozen=True)
 class RandomPatchSizeParameters:

@@ -5,7 +5,7 @@ import types
 import numpy as np
 from PIL import Image
 from neuralimage.lib.data_interfaces import WorkMode
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 from neuralimage.view.window_dataclasses import SettingsState
 
 from test_settings_optimizer_ui_parts.preprocessing_groupbox_controls import _import_main_presenter_with_stubs

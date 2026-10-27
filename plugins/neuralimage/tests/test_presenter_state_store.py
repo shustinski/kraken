@@ -18,7 +18,7 @@ from neuralimage.infrastructure.config.state_store import (
     save_settings_state,
     save_workflow_snapshot,
 )
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_create_state_store_defaults_to_qsettings(monkeypatch):

@@ -24,7 +24,7 @@ from neuralimage.lib.data_interfaces import (
     build_tech_augmentation_config,
 )
 from neuralimage.model.NeuralNetwork.dataset import NoCutDataset
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def _tech_aug_config(**overrides):

@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 from neuralimage.model.general_neural_handler import GeneralNeuralHandler
@@ -44,7 +43,7 @@ def _build_handler() -> GeneralNeuralHandler:
     return handler
 
 
-def test_start_training_preserves_distributed_mode_when_hard_mining_is_enabled(monkeypatch):
+def test_start_training_preserves_distributed_mode_when_hard_mining_is_enabled(monkeypatch, tmp_path):
     import neuralimage.model.general_neural_handler as target
     captured: dict[str, object] = {}
 
@@ -63,7 +62,7 @@ def test_start_training_preserves_distributed_mode_when_hard_mining_is_enabled(m
     monkeypatch.setattr(target, 'ModelTrainer', _FakeTrainer)
 
     handler = _build_handler()
-    target.GeneralNeuralHandler._start_training(handler, model=object(), model_save_path=Path('model.pth'))
+    target.GeneralNeuralHandler._start_training(handler, model=object(), model_save_path=tmp_path / 'model.pth')
 
     assert captured['multi_gpu_mode'] == 'distributeddataparallel'
     assert captured['use_multi_gpu'] is True

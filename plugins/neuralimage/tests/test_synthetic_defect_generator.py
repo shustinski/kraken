@@ -8,7 +8,7 @@ from neuralimage.application.dto import MainWindowState, SettingsState
 from neuralimage.application.services.workflow_mapper import build_workflow_parameters
 from neuralimage.lib.data_interfaces import SampleCutMode, SampleGenerationSettings, SamplePrepareSettings, TrainingParameters
 from neuralimage.model.NeuralNetwork.dataset import SyntheticDefectDataset
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 def test_build_workflow_parameters_maps_synthetic_defect_generator():
@@ -189,7 +189,7 @@ def test_synthetic_defect_dataset_skip_uniform_labels_filters_patches_before_bat
         return image, label
 
     monkeypatch.setattr(
-        'model.NeuralNetwork.dataset.SyntheticTopologyGenerator.generate',
+        'neuralimage.model.NeuralNetwork.dataset.SyntheticTopologyGenerator.generate',
         _fake_generate,
     )
 

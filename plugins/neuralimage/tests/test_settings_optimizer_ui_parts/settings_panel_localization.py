@@ -105,7 +105,7 @@ def test_settings_panel_localization_resources_cover_runtime_fallback_keys():
     }
 
     for path in ('resources/ui_texts_ru.json', 'resources/ui_texts_en.json'):
-        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        data = json.loads((Path(__file__).resolve().parents[2] / path).read_text(encoding='utf-8'))
         settings_panel = data.get('settings_panel', {})
         missing = sorted(required_keys - set(settings_panel))
         assert not missing, f'{path} missing keys: {missing}'

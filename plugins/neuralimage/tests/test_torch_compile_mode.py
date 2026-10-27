@@ -29,15 +29,15 @@ def test_resolve_torch_compile_mode_small_cuda_uses_reduce_overhead(monkeypatch)
         multi_processor_count = 16
 
     monkeypatch.setattr(
-        'model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available',
+        'neuralimage.model.NeuralNetwork.model_train_and_recognition.torch.cuda.is_available',
         lambda: True,
     )
     monkeypatch.setattr(
-        'model.NeuralNetwork.model_train_and_recognition.torch.cuda.current_device',
+        'neuralimage.model.NeuralNetwork.model_train_and_recognition.torch.cuda.current_device',
         lambda: 0,
     )
     monkeypatch.setattr(
-        'model.NeuralNetwork.model_train_and_recognition.torch.cuda.get_device_properties',
+        'neuralimage.model.NeuralNetwork.model_train_and_recognition.torch.cuda.get_device_properties',
         lambda _idx: _Props(),
     )
 

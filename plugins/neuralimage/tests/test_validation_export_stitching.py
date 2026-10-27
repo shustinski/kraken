@@ -7,7 +7,7 @@ from PIL import Image
 
 import neuralimage.model.NeuralNetwork.model_train_and_recognition as target
 from neuralimage.model.NeuralNetwork.dataset import NoCutDataset
-from tests.helpers import make_test_dir
+from neuralimage_test_helpers import make_test_dir
 
 
 class _Bus:

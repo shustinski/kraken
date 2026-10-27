@@ -634,6 +634,129 @@ class DualCatalogService:
     def issue_work(self, **kwargs):
         return self._backend(kwargs.get("project_id")).issue_work(**kwargs)
 
+    def get_layer_pipeline(self, project_id, layer_id):
+        return self._backend(project_id).get_layer_pipeline(project_id, layer_id)
+
+    def get_multilayer_model(self, project_id):
+        return self._backend(project_id).get_multilayer_model(project_id)
+
+    def mutate_multilayer_model(self, **kwargs):
+        return self._backend(kwargs["project_id"]).mutate_multilayer_model(**kwargs)
+
+    def dispatch_stitch(self, **kwargs):
+        return self._backend(kwargs["project_id"]).dispatch_stitch(**kwargs)
+
+    def export_stitch_vectors(self, **kwargs):
+        return self._backend(kwargs["project_id"]).export_stitch_vectors(**kwargs)
+
+    def refresh_stitch(self, **kwargs):
+        return self._backend(kwargs["project_id"]).refresh_stitch(**kwargs)
+
+    def get_electrical_model(self, project_id):
+        return self._backend(project_id).get_electrical_model(project_id)
+
+    def export_electrical_model(self, project_id):
+        return self._backend(project_id).export_electrical_model(project_id)
+
+    def mutate_electrical_model(self, **kwargs):
+        return self._backend(kwargs["project_id"]).mutate_electrical_model(**kwargs)
+
+    def define_layer_pipeline(self, **kwargs):
+        return self._backend(kwargs["project_id"]).define_layer_pipeline(**kwargs)
+
+    def command_layer_pipeline(self, **kwargs):
+        return self._backend(kwargs["project_id"]).command_layer_pipeline(**kwargs)
+
+    def tick_layer_pipeline(self, **kwargs):
+        return self._backend(kwargs["project_id"]).tick_layer_pipeline(**kwargs)
+
+    def list_work_plans(self, project_id):
+        return self._backend(project_id).list_work_plans(project_id)
+
+    def work_plan_analytics(self, project_id, **kwargs):
+        return self._backend(project_id).work_plan_analytics(project_id, **kwargs)
+
+    def list_quality_issues(self, project_id, **filters):
+        return self._backend(project_id).list_quality_issues(project_id, **filters)
+
+    def quality_analysis_runs(self, project_id):
+        return self._backend(project_id).quality_analysis_runs(project_id)
+
+    def server_analysis_runs(self, project_id):
+        return self._backend(project_id).server_analysis_runs(project_id)
+
+    def request_server_analysis_map(self, project_id, run_id, frame_id, **kwargs):
+        return self._backend(project_id).request_server_analysis_map(project_id, run_id, frame_id, **kwargs)
+
+    def server_analysis_map_bytes(self, project_id, run_id, frame_id):
+        return self._backend(project_id).server_analysis_map_bytes(project_id, run_id, frame_id)
+
+    def server_analysis_run(self, project_id, run_id):
+        return self._backend(project_id).server_analysis_run(project_id, run_id)
+
+    def server_analysis_frames(self, project_id, run_id, metric_key):
+        return self._backend(project_id).server_analysis_frames(project_id, run_id, metric_key)
+
+    def create_server_analysis(self, project_id, payload, **kwargs):
+        return self._backend(project_id).create_server_analysis(project_id, payload, **kwargs)
+
+    def command_server_analysis(self, project_id, run_id, operation, **kwargs):
+        return self._backend(project_id).command_server_analysis(project_id, run_id, operation, **kwargs)
+
+    def quality_analysis_readiness(self, project_id, run_id):
+        return self._backend(project_id).quality_analysis_readiness(project_id, run_id)
+
+    def create_quality_from_analysis(self, **kwargs):
+        backend = self._backend(kwargs["project_id"])
+        if backend is self.remote:
+            kwargs["principal"] = self.remote.auth.principal
+        return backend.create_quality_from_analysis(**kwargs)
+
+    def recheck_quality_from_analysis(self, **kwargs):
+        backend = self._backend(kwargs["project_id"])
+        if backend is self.remote:
+            kwargs["principal"] = self.remote.auth.principal
+        return backend.recheck_quality_from_analysis(**kwargs)
+
+    def quality_frame_versions(self, project_id, layer_id, x, y):
+        return self._backend(project_id).quality_frame_versions(project_id, layer_id, x, y)
+
+    def get_quality_issue(self, project_id, issue_id):
+        return self._backend(project_id).get_quality_issue(project_id, issue_id)
+
+    def quality_issue_history(self, project_id, issue_id):
+        return self._backend(project_id).quality_issue_history(project_id, issue_id)
+
+    def create_quality_issue(self, **kwargs):
+        backend = self._backend(kwargs["project_id"])
+        if backend is self.remote:
+            kwargs["principal"] = self.remote.auth.principal
+        return backend.create_quality_issue(**kwargs)
+
+    def mutate_quality_issue(self, **kwargs):
+        backend = self._backend(kwargs["project_id"])
+        if backend is self.remote:
+            kwargs["principal"] = self.remote.auth.principal
+        return backend.mutate_quality_issue(**kwargs)
+
+    def list_work_templates(self, project_id):
+        return self._backend(project_id).list_work_templates(project_id)
+
+    def get_work_template(self, project_id, template_id, *, version=None):
+        return self._backend(project_id).get_work_template(project_id, template_id, version=version)
+
+    def save_work_template(self, **kwargs):
+        return self._backend(kwargs["project_id"]).save_work_template(**kwargs)
+
+    def get_work_plan(self, project_id, plan_id):
+        return self._backend(project_id).get_work_plan(project_id, plan_id)
+
+    def create_work_plan(self, **kwargs):
+        return self._backend(kwargs["project_id"]).create_work_plan(**kwargs)
+
+    def mutate_work_plan(self, **kwargs):
+        return self._backend(kwargs["project_id"]).mutate_work_plan(**kwargs)
+
     def mark_work_running(self, order, **kwargs):
         return self._backend(order.project_id).mark_work_running(order, **kwargs)
 

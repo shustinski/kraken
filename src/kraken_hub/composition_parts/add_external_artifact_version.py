@@ -1,7 +1,7 @@
 """composition: add external artifact version."""
 from __future__ import annotations
 import hashlib
-import mimetypes
+from kraken_core.media_types import artifact_media_type
 from pathlib import Path
 from kraken_core.safe_files import open_regular_read
 from kraken_manager.application.dto import (
@@ -47,7 +47,7 @@ class AddExternalArtifactVersionMixin:
         idempotency_key: str,
     ) -> ArtifactVersion:
         path = Path(source).resolve(strict=True)
-        media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        media_type = artifact_media_type(path.name)
         with open_regular_read(path, root=path.parent) as stream:
             return AddArtifactVersionHandler(
                 self._uow(str(project_id)),
@@ -107,8 +107,7 @@ class AddExternalArtifactVersionMixin:
                 project_id=ProjectId(str(project_id)),
                 series_id=ArtifactSeriesId(str(series_id)),
                 filename=path.name,
-                media_type=mimetypes.guess_type(path.name)[0]
-                or "application/octet-stream",
+                media_type=artifact_media_type(path.name),
                 uri=path.as_uri(),
                 fingerprint_sha256=digest.hexdigest(),
                 observed_size_bytes=size,

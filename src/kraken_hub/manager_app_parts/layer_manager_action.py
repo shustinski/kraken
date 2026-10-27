@@ -226,7 +226,22 @@ class LayerManagerActionMixin:
                 retry=lambda: self._layer_manager_action(_layer_id, _node, action),
             ):
                 return
-        if action in {"recognize", "recognize_external", "confidence"}:
+        selected_legacy = False
+        if action in {"recognize", "confidence"}:
+            from kraken_hub.published_model_dialog import PublishedModelDialog
+            identifiers = tuple(_node.details.get("artifact_version_ids", ()))
+            selector = PublishedModelDialog(
+                self.service, self._project_id, _layer_id, source_representation_id=source_representation_id,
+                preferred_version_id=identifiers[0] if identifiers else None,
+                background_workers=getattr(self, "_background_workers", None), parent=self.shell,
+            )
+            if not selector.exec():
+                return
+            selected = selector.parameters()
+            selected_legacy = bool(selected.get("legacy_file"))
+            if not selected.get("legacy_file"):
+                parameters.update(selected)
+        if action in {"recognize", "recognize_external", "confidence"} and "model_version_id" not in parameters:
             from PyQt6.QtCore import QSettings
             from PyQt6.QtWidgets import QFileDialog
 
@@ -235,7 +250,7 @@ class LayerManagerActionMixin:
             key = f"{key_root}/path"
             model_path = ""
             model_filename = ""
-            if action == "recognize" or (action == "confidence" and _node.kind == "model"):
+            if not selected_legacy and (action == "recognize" or (action == "confidence" and _node.kind == "model")):
                 version_ids = tuple(_node.details.get("artifact_version_ids", ()))
                 if version_ids:
                     model_version = self.service.artifact_version(self._project_id, version_ids[0])

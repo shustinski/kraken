@@ -16,6 +16,8 @@ from kraken_manager.infrastructure.filesystem import (
     FilesystemEventStore,
 )
 from kraken_manager.infrastructure.blob.filesystem import FilesystemBlobStore
+from kraken_manager.infrastructure.filesystem.event_store import StoredEvent
+from kraken_manager.infrastructure.filesystem.history import GenericHistoryEvent
 from kraken_manager.infrastructure.reports import ActivityRecord
 
 
@@ -51,7 +53,9 @@ class PluginJobsMixin:
         events = []
         for stored in store.iter_project():
             event = store._decode(stored)
-            if as_of is None or getattr(event, "recorded_at", self.clock.now()) <= as_of:
+            if isinstance(event, StoredEvent):
+                event = GenericHistoryEvent.from_stored(event)
+            if as_of is None or event.recorded_at <= as_of:
                 events.append(event)
         return tuple(events)
 

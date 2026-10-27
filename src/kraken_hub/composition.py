@@ -240,6 +240,11 @@ from .composition_parts.import_agent_publications import ImportAgentPublications
 from .composition_parts.domain_selection import DomainSelectionMixin
 from .composition_parts.create_review_batch import CreateReviewBatchMixin
 from .composition_parts.issue_work import IssueWorkMixin
+from .composition_parts.work_planning import WorkPlanningMixin
+from .composition_parts.quality import QualityMixin
+from .composition_parts.pipeline_execution import PipelineExecutionMixin
+from .composition_parts.multilayer import MultilayerMixin
+from .composition_parts.electrical import ElectricalMixin
 from .composition_parts.review_return_preflight import ReviewReturnPreflightMixin
 from .composition_parts.import_backup import ImportBackupMixin
 from .composition_parts.frame_cell_snapshot import (
@@ -292,6 +297,11 @@ class EmbeddedProjectService(
     DomainSelectionMixin,
     CreateReviewBatchMixin,
     IssueWorkMixin,
+    WorkPlanningMixin,
+    QualityMixin,
+    PipelineExecutionMixin,
+    MultilayerMixin,
+    ElectricalMixin,
     ReviewReturnPreflightMixin,
     ImportBackupMixin,
 ):

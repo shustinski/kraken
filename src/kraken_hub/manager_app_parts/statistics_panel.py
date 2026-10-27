@@ -1,8 +1,10 @@
 """manager_app: statistics panel."""
+
 from __future__ import annotations
 from kraken_hub.composition import EmbeddedProjectService
 
-def _statistics_panel(service: EmbeddedProjectService):
+
+def _statistics_panel(service: EmbeddedProjectService, principal=None, *, background_workers=None, async_reads=False):
     from datetime import UTC, datetime
 
     from PyQt6.QtCore import QDateTime, Qt
@@ -40,8 +42,9 @@ def _statistics_panel(service: EmbeddedProjectService):
     project = QComboBox()
     project.setObjectName("statisticsProjectFilter")
     project.addItem("Все проекты", None)
+    initial_projects = () if async_reads else service.list_projects(include_archived=True)
     for item in sorted(
-        service.list_projects(include_archived=True),
+        initial_projects,
         key=lambda value: (value.name.casefold(), str(value.id)),
     ):
         archived = item.state.value == "archived"
@@ -110,6 +113,11 @@ def _statistics_panel(service: EmbeddedProjectService):
         tabs.addTab(scroll, title)
         charts[granularity] = granularity_charts
     layout.addWidget(tabs)
+    if principal is not None and hasattr(service, "work_plan_analytics"):
+        from kraken_hub.work_plan_board import WorkPlanBoardWidget
+
+        work_board = WorkPlanBoardWidget(service, principal, parent=host, background_workers=background_workers)
+        tabs.addTab(work_board, "Работы и аналитика")
     reports = ReportService()
     local_timezone = datetime.now().astimezone().tzinfo or UTC
 
@@ -126,16 +134,59 @@ def _statistics_panel(service: EmbeddedProjectService):
         project_ids = frozenset((str(selected_project),)) if selected_project else frozenset()
         return ReportFilters(start_at, end_at, project_ids=project_ids)
 
+    host._report_worker = None
+    host._project_catalog_loaded = not async_reads
+
+    def run(call, success, title):
+        if not async_reads:
+            try:
+                success(call())
+            except Exception as exc:
+                QMessageBox.warning(host, title, str(exc))
+            return
+        if host._report_worker is not None:
+            return
+        from kraken_hub.manager_app_parts.layer_create_thread import _BackgroundCallThread
+
+        worker = _BackgroundCallThread(call, parent=host)
+        host._report_worker = worker
+        for control in (refresh_button, csv_button, xlsx_button, project, start, end):
+            control.setEnabled(False)
+        if background_workers is not None:
+            background_workers.add(worker)
+
+        def loaded(value):
+            try:
+                success(value)
+            except Exception as exc:
+                QMessageBox.warning(host, title, str(exc))
+
+        worker.succeeded.connect(loaded)
+        worker.failed.connect(lambda message: QMessageBox.warning(host, title, message))
+
+        def finished():
+            if background_workers is not None:
+                background_workers.discard(worker)
+            host._report_worker = None
+            for control in (refresh_button, csv_button, xlsx_button, project, start, end):
+                control.setEnabled(True)
+
+        worker.finished.connect(finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
     def refresh() -> None:
         try:
             selected_filters = filters()
             selected_project = project.currentData()
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось рассчитать статистику", str(exc))
+            return
+
+        def calculate():
+            projects = tuple(service.list_projects(include_archived=True)) if not host._project_catalog_loaded else None
             server_statistics = getattr(service, "statistics", None)
-            if (
-                selected_project
-                and callable(server_statistics)
-                and service.is_remote_project(selected_project)
-            ):
+            if selected_project and callable(server_statistics) and service.is_remote_project(selected_project):
                 metrics, remote_series = server_statistics(
                     selected_project,
                     start=selected_filters.start,
@@ -143,8 +194,7 @@ def _statistics_panel(service: EmbeddedProjectService):
                     timezone=local_timezone,
                 )
                 series_by_granularity = {
-                    granularity: remote_series[granularity.value]
-                    for granularity, _title in granularities
+                    granularity: remote_series[granularity.value] for granularity, _title in granularities
                 }
             else:
                 records = service.activity_records()
@@ -158,9 +208,18 @@ def _statistics_panel(service: EmbeddedProjectService):
                     )
                     for granularity, _title in granularities
                 }
-        except Exception as exc:
-            QMessageBox.warning(host, "Не удалось рассчитать статистику", str(exc))
-            return
+            return metrics, series_by_granularity, projects
+
+        run(calculate, show_metrics, "Не удалось рассчитать статистику")
+
+    def show_metrics(result):
+        metrics, series_by_granularity, projects = result
+        if projects is not None:
+            for item in sorted(projects, key=lambda value: (value.name.casefold(), str(value.id))):
+                project.addItem(
+                    f"{item.name} (архивный)" if item.state.value == "archived" else item.name, str(item.id)
+                )
+            host._project_catalog_loaded = True
         presented = present_metrics(metrics.values)
         table.setRowCount(len(presented))
         for row, metric in enumerate(presented):
@@ -187,20 +246,26 @@ def _statistics_panel(service: EmbeddedProjectService):
         if not destination:
             return
         try:
+            selected_filters = filters()
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось экспортировать отчёт", str(exc))
+            return
+
+        def write():
             records = service.activity_records()
             if extension == "csv":
-                reports.write_csv(destination, records, filters(), assume_sorted=True)
+                return reports.write_csv(destination, records, selected_filters, assume_sorted=True)
             else:
-                reports.write_xlsx(
+                return reports.write_xlsx(
                     destination,
                     records,
-                    filters(),
+                    selected_filters,
                     assume_sorted=True,
                     include_series=True,
                     timezone=local_timezone,
                 )
-        except Exception as exc:
-            QMessageBox.warning(host, "Не удалось экспортировать отчёт", str(exc))
+
+        run(write, lambda result: None, "Не удалось экспортировать отчёт")
 
     refresh_button.clicked.connect(refresh)
     csv_button.clicked.connect(lambda: export("csv"))

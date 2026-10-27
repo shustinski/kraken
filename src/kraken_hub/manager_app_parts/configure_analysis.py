@@ -42,10 +42,15 @@ class ConfigureAnalysisMixin:
     def _configure_analysis(self, workspace, project_id) -> None:
         from kraken_hub.manager_app import FilesystemAnalysisStore
         from PyQt6.QtCore import QTimer
+        workspace._analysis_language = getattr(self, "language", "Русский")
 
         if getattr(self.service, "is_remote_project", lambda _id: False)(project_id):
+            from kraken_hub.remote_analysis import RemoteAnalysisController
             workspace._analysis_store = None
-            workspace._analysis_coordinator = None
+            workspace._analysis_coordinator = RemoteAnalysisController(
+                workspace, self.service, project_id, language=getattr(self, "language", "Русский"),
+                background_workers=getattr(self, "_background_workers", None))
+            workspace._analysis_timer = workspace._analysis_coordinator.timer
             workspace.analysisRequested.connect(
                 lambda configuration: self._start_analysis(workspace, project_id, configuration)
             )
@@ -82,6 +87,16 @@ class ConfigureAnalysisMixin:
         panel.renderMapRequested.connect(
             lambda run_id, frame_id: self._show_discrepancy_map(workspace, run_id, frame_id)
         )
+        if coordinator is not None:
+            from kraken_hub.local_analysis_maps import LocalAnalysisMapController
+            controller = LocalAnalysisMapController(
+                workspace, coordinator, language=getattr(self, "language", "Русский"),
+                background_workers=getattr(self, "_background_workers", None))
+            controller.updated.connect(lambda: self._refresh_analysis_panel(workspace))
+            workspace._analysis_map_controller = controller
+            workspace._analysis_timer = controller.timer
+            self._refresh_analysis_panel(workspace)
+            return
         timer = QTimer(workspace)
         timer.setInterval(750)
         timer.timeout.connect(lambda: self._poll_analysis(workspace))

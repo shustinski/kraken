@@ -17,6 +17,14 @@ class StartAnalysisMixin:
         from PyQt6.QtWidgets import QMessageBox
 
         coordinator = getattr(workspace, "_analysis_coordinator", None)
+        if getattr(self.service, "is_remote_project", lambda _id: False)(project_id) and coordinator is not None:
+            try:
+                coordinator.start(configuration, getattr(workspace, "_selected_layer_id", None),
+                                  workspace.matrix_view.selected_coordinates(maximum=100_000))
+                workspace.analysis_runs_panel.setVisible(True)
+            except Exception as exc:
+                QMessageBox.warning(workspace, "Karakal", str(exc))
+            return
         if coordinator is None:
             if getattr(self.service, "is_remote_project", lambda _id: False)(project_id):
                 QMessageBox.warning(workspace, "Karakal", "Серверный анализ Karakal пока не поддерживается.")
@@ -55,6 +63,10 @@ class StartAnalysisMixin:
         self._refresh_analysis_panel(workspace)
 
     def _poll_analysis(self, workspace) -> None:
+        map_controller = getattr(workspace, "_analysis_map_controller", None)
+        if map_controller is not None:
+            map_controller.refresh()
+            return
         coordinator = getattr(workspace, "_analysis_coordinator", None)
         store = getattr(workspace, "_analysis_store", None)
         if coordinator is None or store is None:
@@ -85,6 +97,8 @@ class StartAnalysisMixin:
                 ),
                 "recipe": canonical_json(run.manifest.recipe.expression.to_payload()),
                 "created_at": "",
+                "runtime_summary": (canonical_json(run.worker_runtime.to_payload()) if getattr(run, "worker_runtime", None) is not None
+                                    else "Worker runtime unverified"),
             }
             for run in runs
         )
@@ -111,6 +125,10 @@ class StartAnalysisMixin:
     def _analysis_action(self, workspace, action: str, run_id: str) -> None:
         from PyQt6.QtWidgets import QMessageBox
 
+        map_controller = getattr(workspace, "_analysis_map_controller", None)
+        if map_controller is not None:
+            map_controller.command(run_id, action)
+            return
         coordinator = getattr(workspace, "_analysis_coordinator", None)
         if coordinator is None or not run_id:
             return
@@ -160,24 +178,11 @@ class StartAnalysisMixin:
     def _show_discrepancy_map(workspace, run_id: str, frame_id: str) -> None:
         from PyQt6.QtWidgets import QMessageBox
 
-        store = getattr(workspace, "_analysis_store", None)
-        if store is None or not run_id or not frame_id:
-            QMessageBox.information(workspace, "Карта расхождений", "Выберите прогон и кадр анализа.")
+        controller = getattr(workspace, '_analysis_map_controller', None)
+        if controller is not None:
+            controller.render(run_id, frame_id)
             return
-        rows = store.metrics_for_frame(run_id, frame_id)
-        if not rows:
-            QMessageBox.information(
-                workspace,
-                "Карта расхождений",
-                "Для выбранного кадра ещё нет сохранённых метрик анализа.",
-            )
-            return
-        lines = [
-            f"{row['metric_key']}: goodness={row['goodness']}, raw={row['raw_value']}, percentile={row['percentile']}"
-            for row in rows
-        ]
-        QMessageBox.information(
-            workspace,
-            "Карта расхождений",
-            f"Кадр {frame_id}\n" + "\n".join(lines),
-        )
+        russian = getattr(workspace, "_analysis_language", "Русский").lower().startswith(("ru", "рус"))
+        message = ("Kraken Agent недоступен. Настройте локальный Agent для построения карты." if russian
+                   else "Kraken Agent is unavailable. Configure the local Agent to render a map.")
+        QMessageBox.information(workspace, "Karakal", message)

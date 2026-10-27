@@ -24,7 +24,7 @@ class RunRemoteInteractiveJobMixin:
             imported = result.get("imported", {})
             state = imported.get("job", {}).get("state", "")
             if state == "cancelled":
-                self.shell.statusBar().showMessage("??????? ????????.", 10000)
+                self.shell.statusBar().showMessage("Задание отменено.", 10000)
             elif state == "failed":
                 self._error(f"Contour завершил задание со статусом: {state}")
             elif imported.get("requires_partial_confirmation"):

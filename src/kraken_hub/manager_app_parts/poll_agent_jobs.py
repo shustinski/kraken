@@ -129,6 +129,9 @@ class PollAgentJobsMixin:
             )
 
     def _poll_agent_jobs(self) -> None:
+        schedule_pipeline = getattr(self, "_schedule_pipeline_cycle", None)
+        if callable(schedule_pipeline):
+            schedule_pipeline()
         gateway = self._agent_gateway
         if gateway is None:
             return

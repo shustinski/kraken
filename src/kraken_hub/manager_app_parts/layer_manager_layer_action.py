@@ -2,10 +2,14 @@
 from __future__ import annotations
 from uuid import uuid4
 from kraken_manager.domain.project import RepresentationKind
+from .pipeline_controller import PipelineControllerMixin
 
 
-class LayerManagerLayerActionMixin:
+class LayerManagerLayerActionMixin(PipelineControllerMixin):
     def _layer_manager_layer_action(self, _layer_id: str, action: str) -> None:
+        if action == "edit_workflow":
+            self.open_layer_pipeline(_layer_id)
+            return
         if action == "manage_stitching":
             available, reason = self._action_availability(action)
             if not available:

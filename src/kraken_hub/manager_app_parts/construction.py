@@ -16,6 +16,82 @@ from kraken_hub.manager_app_parts.event_matches_node import _RemoteSignalBridge
 
 
 class ConstructionMixin:
+    def open_electrical(self) -> None:
+        from kraken_hub.electrical_dialog import ElectricalDialog
+
+        if self._project_id is None:
+            self.shell.statusBar().showMessage("Откройте проект для проверки электрической связности", 6000)
+            return
+        current = getattr(self, "_electrical_dialog", None)
+        if current is not None:
+            if current._worker is not None:
+                current.show()
+                current.raise_()
+                return
+            current.close()
+        self._electrical_dialog = ElectricalDialog(
+            self.service, self.session.principal, str(self._project_id), self.shell,
+            background_workers=self._background_workers,
+        )
+        self._electrical_dialog.show()
+
+    def open_multilayer(self) -> None:
+        from kraken_hub.multilayer_dialog import MultilayerDialog
+
+        if self._project_id is None:
+            self.shell.statusBar().showMessage("Откройте проект для настройки физических слоёв", 6000)
+            return
+        current = getattr(self, "_multilayer_dialog", None)
+        if current is not None:
+            if current._worker is not None:
+                current.show()
+                current.raise_()
+                return
+            current.close()
+        self._multilayer_dialog = MultilayerDialog(
+            self.service, self.session.principal, str(self._project_id), self.shell,
+            background_workers=self._background_workers,
+        )
+        self._multilayer_dialog.show()
+
+    def open_quality(self) -> None:
+        from kraken_hub.quality_dialog import QualityDialog
+        if self._project_id is None:
+            self.shell.statusBar().showMessage("Откройте проект для контроля качества", 6000)
+            return
+        current = getattr(self, "_quality_dialog", None)
+        if current is not None:
+            if current._worker is not None:
+                current.show()
+                current.raise_()
+                return
+            current.close()
+        self._quality_dialog = QualityDialog(
+            self.service, self.session.principal, str(self._project_id), self.shell,
+            background_workers=self._background_workers,
+        )
+        self._quality_dialog.show()
+
+    def open_work_planning(self) -> None:
+        from kraken_hub.work_planning_dialog import WorkPlanningDialog
+
+        project_id = self._project_id
+        if project_id is None:
+            self.shell.statusBar().showMessage("Откройте проект для планирования работ", 6000)
+            return
+        dialog = getattr(self, "_work_planning_dialog", None)
+        if dialog is not None:
+            if dialog._worker is not None:
+                dialog.show()
+                dialog.raise_()
+                return
+            dialog.close()
+        self._work_planning_dialog = WorkPlanningDialog(
+            self.service, self.session.principal, str(project_id), self.shell,
+            background_workers=self._background_workers,
+        )
+        self._work_planning_dialog.show()
+
     def __init__(
         self,
         shell: ProjectManagerShell,
@@ -34,6 +110,7 @@ class ConstructionMixin:
         self.agent_runtime = LocalAgentRuntime(
             self.service.data_dir / "agent",
             tuple(plugin_items or ()),
+            builtin_stitching=True,
         )
         self._agent_gateway: AgentPluginGateway | None = None
         self._agent_poll_error = ""
@@ -70,6 +147,11 @@ class ConstructionMixin:
         self.catalog_page.propertiesRequested.connect(self.show_project_properties)
         self.catalog_page.selectionChanged.connect(self._sync_project_permissions)
         self.shell.layersRequested.connect(self.open_layer_manager)
+        self.shell.workPlanningRequested.connect(self.open_work_planning)
+        self.shell.multilayerRequested.connect(self.open_multilayer)
+        self.shell.electricalRequested.connect(self.open_electrical)
+        self.shell.qualityRequested.connect(self.open_quality)
+
         self.shell.preferencesRequested.connect(self.open_preferences)
         self.shell.cellVisualModeChanged.connect(self._set_matrix_visual_mode)
         self.shell.reviewReturnRequested.connect(self.load_review_return)

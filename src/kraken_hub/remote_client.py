@@ -84,6 +84,11 @@ from .remote_client_parts.add_managed_artifact_version import AddManagedArtifact
 from .remote_client_parts.add_external_artifact_version import AddExternalArtifactVersionMixin
 from .remote_client_parts.create_review_batch import CreateReviewBatchMixin
 from .remote_client_parts.issue_work import IssueWorkMixin
+from .remote_client_parts.work_planning import WorkPlanningMixin
+from .remote_client_parts.quality import QualityMixin
+from .remote_client_parts.pipeline_execution import PipelineExecutionMixin
+from .remote_client_parts.multilayer import MultilayerMixin
+from .remote_client_parts.electrical import ElectricalMixin
 from .remote_client_parts.export_review_batch import ExportReviewBatchMixin
 from .remote_client_parts.submit_plugin_job import SubmitPluginJobMixin
 from .remote_client_parts.remove_layer_pipeline_action import RemoveLayerPipelineActionMixin
@@ -99,6 +104,7 @@ from .remote_client_parts.extract_review_archive import (
 from .remote_client_parts.remote_sync_client import RemoteSyncClient
 from .remote_client_parts.principal_server_payload import _principal_from_server_payload
 from .remote_client_parts.remote_history_event import _RemoteHistoryEvent
+from .remote_client_parts.analysis_runs import ServerAnalysisMixin
 from .remote_client_parts.load_remote_auth_env import (
     load_remote_auth_from_env,
     build_remote_service,
@@ -108,6 +114,7 @@ class RemoteHttpClient(IterBytesMixin, RequestMixin, DownloadMixin):
     """Minimal stdlib HTTP client for `/api/v1`."""
 
 class RemoteServerProjectService(
+    ServerAnalysisMixin,
     RegisterLocalMixin,
     StartSyncMixin,
     CallMixin,
@@ -120,6 +127,11 @@ class RemoteServerProjectService(
     AddExternalArtifactVersionMixin,
     CreateReviewBatchMixin,
     IssueWorkMixin,
+    WorkPlanningMixin,
+    QualityMixin,
+    PipelineExecutionMixin,
+    MultilayerMixin,
+    ElectricalMixin,
     ExportReviewBatchMixin,
     SubmitPluginJobMixin,
     RemoveLayerPipelineActionMixin,

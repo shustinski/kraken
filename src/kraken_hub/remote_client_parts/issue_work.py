@@ -6,8 +6,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
-from kraken_manager.application.work_package import (
+from kraken_manager.infrastructure.work_package import (
     WorkIssueRequest,
+    external_package_directory,
     latest_dataset_version,
     place_work_order,
 )
@@ -72,6 +73,40 @@ class IssueWorkMixin:
         performer = next((item for item in self.list_performers() if str(item.id) == str(assignee_id)), None)
         if performer is None or not performer.active:
             raise ValueError("Исполнитель не найден или архивирован")
+        if WorkKind(kind) is WorkKind.VECTOR_REVIEW:
+            if destination_parent is None:
+                raise ValueError("Выберите каталог внешнего накопителя")
+            batch = self.create_review_batch(
+                principal=principal, project_id=project.id, layer_id=layer.id,
+                image_representation_id=image_representation_id,
+                vector_representation_id=vector_representation_id, coordinates=coordinates,
+                assignee_id=assignee_id, instructions=instructions, due_at=due_at,
+                idempotency_key=f"{idempotency_key}:review",
+            )
+            now = datetime.now(UTC)
+            destination = external_package_directory(
+                Path(destination_parent), project_name=project.name, kind=WorkKind.VECTOR_REVIEW, now=now,
+            )
+            destination.rmdir()  # The signed-package exporter owns destination creation.
+            issued = self.export_review_batch(
+                principal=principal, batch=batch, destination=destination,
+                idempotency_key=f"{idempotency_key}:export",
+            )
+            order = WorkOrder.create(
+                order_id=str(issued.id), project_id=project.id, layer_id=layer.id,
+                kind=WorkKind.VECTOR_REVIEW, placement=WorkPlacement.EXTERNAL,
+                assignee_id=str(assignee_id), created_by=principal.id, destination=str(destination),
+                frame_count=len(issued.items), selection=issued.selection, instructions=instructions,
+                due_at=due_at, transport="files", image_representation_id=image_representation_id,
+                vector_representation_id=vector_representation_id, capability="frames.vectorize.v1",
+                launch_mode="review-package", related_batch_id=str(issued.id),
+                idempotency_key=idempotency_key, created_at=now,
+            )
+            payload = self._call(
+                "POST", f"/api/v1/projects/{project_id}/work-orders",
+                payload={"record": encode_model(order)}, idempotency_key=idempotency_key,
+            )
+            return decode_model(WorkOrder, payload)
 
         def active_version(series_id):
             return self.active_artifact_version(project.id, series_id)
@@ -80,7 +115,7 @@ class IssueWorkMixin:
             version = self.artifact_version(project.id, version_id)
             if version is None or version.blob is None:
                 raise ValueError("Файл не сохранён в проекте")
-            return self.read_project_blob(project.id, version.sha256)
+            return self.read_project_blob(project.id, str(version.id))
 
         order = place_work_order(
             WorkIssueRequest(
@@ -117,28 +152,31 @@ class IssueWorkMixin:
         )
         return decode_model(WorkOrder, payload)
 
-    def mark_work_running(self, order: WorkOrder, *, job_id: str = "", idempotency_key: str) -> WorkOrder:
+    def mark_work_running(self, order: WorkOrder, *, job_id: str = "", idempotency_key: str, principal=None) -> WorkOrder:
         running = order.mark_running(job_id=job_id)
         payload = self._call(
             "POST",
             f"/api/v1/projects/{order.project_id}/work-orders",
             payload={"record": encode_model(running)},
             idempotency_key=idempotency_key,
+            if_match=order.revision,
         )
         return decode_model(WorkOrder, payload)
 
-    def cancel_work_order(self, order: WorkOrder, *, idempotency_key: str) -> WorkOrder:
+    def cancel_work_order(self, order: WorkOrder, *, idempotency_key: str, principal=None) -> WorkOrder:
         payload = self._call(
             "POST",
             f"/api/v1/projects/{order.project_id}/work-orders/{order.id}/cancel",
             idempotency_key=idempotency_key,
+            if_match=order.revision,
         )
         return decode_model(WorkOrder, payload)
 
-    def complete_work_order(self, order: WorkOrder, *, idempotency_key: str) -> WorkOrder:
+    def complete_work_order(self, order: WorkOrder, *, idempotency_key: str, principal=None) -> WorkOrder:
         payload = self._call(
             "POST",
             f"/api/v1/projects/{order.project_id}/work-orders/{order.id}/complete",
             idempotency_key=idempotency_key,
+            if_match=order.revision,
         )
         return decode_model(WorkOrder, payload)

@@ -1,7 +1,7 @@
 """remote_client: add managed artifact version."""
 from __future__ import annotations
 import hashlib
-import mimetypes
+from kraken_core.media_types import artifact_media_type
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,8 +41,7 @@ class AddManagedArtifactVersionMixin:
         query = urllib.parse.urlencode(
             {
                 "filename": path.name,
-                "media_type": mimetypes.guess_type(path.name)[0]
-                or "application/octet-stream",
+                "media_type": artifact_media_type(path.name),
                 "sha256": digest.hexdigest(),
                 **(
                     {}
@@ -111,7 +110,7 @@ class AddManagedArtifactVersionMixin:
         revision = self.artifact_stream_revision(project_id, series_id)
         artifact_payload: dict[str, object] = {
             "filename": path.name,
-            "media_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            "media_type": artifact_media_type(path.name),
             "sha256": digest.hexdigest(),
             "size_bytes": path.stat().st_size,
             **({} if parent_version_id is None else {"parent_version_id": str(parent_version_id)}),

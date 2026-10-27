@@ -363,6 +363,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--catalog", help="Path to plugins.json catalog.")
     parser.add_argument("--plugins-dir", help="Folder where Kraken plugins are stored.")
     parser.add_argument("--list", action="store_true", help="Print plugin catalog and exit.")
+    parser.add_argument("--self-test-dir", help="Run an isolated deployment probe and save JSON/screenshots in a new child directory.")
     parser.add_argument(
         "--update-url",
         help="URL or local path of the Kraken Hub update manifest (also KRAKEN_UPDATE_URL).",
@@ -373,6 +374,9 @@ def main(argv: list[str] | None = None) -> None:
         help="Thumbnail cache backend: sqlite:///path, files:///path or memory://.",
     )
     args = parser.parse_args(argv)
+    if args.self_test_dir:
+        from kraken_hub.self_test import run_self_test
+        raise SystemExit(run_self_test(args.self_test_dir))
     catalog = discover_catalog(args.catalog)
     plugins_dir = Path(args.plugins_dir).expanduser().resolve() if args.plugins_dir else default_plugins_dir()
     plugins = load_plugins(catalog, plugins_dir)

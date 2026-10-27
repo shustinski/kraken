@@ -7,6 +7,7 @@ import threading
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from kraken_core.safe_files import open_regular_read
 from urllib.parse import unquote, urlparse
 from kraken_manager.domain.artifacts import (
     ArtifactVersion,
@@ -27,7 +28,10 @@ class CreateReviewBatchMixin:
             raise ValueError("Для запуска нужны файлы, сохранённые в проекте")
         target = self.data_dir / "remote-cache" / str(project_id) / version.blob.sha256
         if target.is_file() and target.stat().st_size == version.blob.size_bytes:
-            return target
+            with open_regular_read(target, root=self.data_dir) as stream:
+                cached_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if cached_digest == version.blob.sha256:
+                return target
         target.unlink(missing_ok=True)
         temporary = target.with_name(f"{target.name}.part-{threading.get_ident()}")
         temporary.unlink(missing_ok=True)

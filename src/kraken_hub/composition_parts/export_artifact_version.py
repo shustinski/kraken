@@ -28,6 +28,17 @@ from kraken_manager.domain.identity import (
 from kraken_manager.infrastructure.blob.filesystem import FilesystemBlobStore
 
 
+def _cleanup_created_export(target: Path, created_identity: tuple[int, int] | None) -> None:
+    if created_identity is None:
+        return
+    try:
+        current = target.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == created_identity:
+        target.unlink(missing_ok=True)
+
+
 class ExportArtifactVersionMixin:
     def external_artifact_changed(self, version: ArtifactVersion) -> bool:
         if version.external is None:
@@ -65,8 +76,11 @@ class ExportArtifactVersionMixin:
             raise ValueError("The selected artifact version is external")
         target = Path(destination).resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
+        created_identity = None
         try:
             with target.open("xb") as stream:
+                created = os.fstat(stream.fileno())
+                created_identity = (created.st_dev, created.st_ino)
                 for chunk in FilesystemBlobStore.for_project(
                     self.catalog_root,
                     str(project_id),
@@ -75,7 +89,7 @@ class ExportArtifactVersionMixin:
                 stream.flush()
                 os.fsync(stream.fileno())
         except Exception:
-            target.unlink(missing_ok=True)
+            _cleanup_created_export(target, created_identity)
             raise
         return target
 
@@ -110,17 +124,20 @@ class ExportArtifactVersionMixin:
         source = source.resolve(strict=True)
         target = Path(destination).resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
+        created_identity = None
         try:
             with (
                 open_regular_read(source, root=source.parent) as input_stream,
                 target.open("xb") as output_stream,
             ):
+                created = os.fstat(output_stream.fileno())
+                created_identity = (created.st_dev, created.st_ino)
                 while chunk := input_stream.read(1024 * 1024):
                     output_stream.write(chunk)
                 output_stream.flush()
                 os.fsync(output_stream.fileno())
         except Exception:
-            target.unlink(missing_ok=True)
+            _cleanup_created_export(target, created_identity)
             raise
         return target
 

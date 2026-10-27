@@ -1,7 +1,7 @@
 """remote_client: add external artifact version."""
 from __future__ import annotations
 import hashlib
-import mimetypes
+from kraken_core.media_types import artifact_media_type
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,8 +44,7 @@ class AddExternalArtifactVersionMixin:
             f"/api/v1/projects/{project_id}/artifacts/{series_id}/external",
             payload={
                 "filename": path.name,
-                "media_type": mimetypes.guess_type(path.name)[0]
-                or "application/octet-stream",
+                "media_type": artifact_media_type(path.name),
                 "uri": path.as_uri(),
                 "sha256": digest.hexdigest(),
                 "size_bytes": size,

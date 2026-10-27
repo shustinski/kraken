@@ -184,7 +184,7 @@ class SendSelectionReviewMixin:
                     capability=order.capability,
                     parameters=parameters,
                 )
-                self.service.mark_work_running(order, job_id=str(job.id), idempotency_key=str(uuid4()))
+                self.service.mark_work_running(order, job_id=str(job.id), idempotency_key=str(uuid4()), principal=self.session.principal)
             except Exception as exc:
                 self._error(str(exc))
                 return
@@ -234,7 +234,7 @@ class SendSelectionReviewMixin:
         ):
             return
         try:
-            self.service.cancel_work_order(order, idempotency_key=str(uuid4()))
+            self.service.cancel_work_order(order, idempotency_key=str(uuid4()), principal=self.session.principal)
         except Exception as exc:
             self._error(str(exc))
             return
@@ -244,7 +244,7 @@ class SendSelectionReviewMixin:
 
     def complete_issued_work(self, order) -> None:
         try:
-            self.service.complete_work_order(order, idempotency_key=str(uuid4()))
+            self.service.complete_work_order(order, idempotency_key=str(uuid4()), principal=self.session.principal)
         except Exception as exc:
             self._error(str(exc))
             return

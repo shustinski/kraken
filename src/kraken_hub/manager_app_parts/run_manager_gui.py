@@ -1,4 +1,5 @@
 """manager_app: run manager gui."""
+
 from __future__ import annotations
 import os
 from kraken_core.plugins import PluginInventoryItem
@@ -26,6 +27,7 @@ from kraken_hub.manager_app_parts.performer_panel import _performer_panel
 
 from kraken_hub.manager_app_parts.statistics_panel import _statistics_panel
 
+
 def run_manager_gui(
     items: list[PluginInventoryItem],
     *,
@@ -50,10 +52,7 @@ def run_manager_gui(
     _connect_saved_server(None, service, session.principal)
     if isinstance(service, DualCatalogService) and service.remote is not None:
         # Shared mutations use the server principal carried by the remote client.
-        session_summary = (
-            f"{session.principal.display_name}\n"
-            f"Локальная сессия + сервер {service.remote.base_url}"
-        )
+        session_summary = f"{session.principal.display_name}\nЛокальная сессия + сервер {service.remote.base_url}"
     else:
         session_summary = f"{session.principal.display_name}\nЛокальная сессия"
     shell = ProjectManagerShell()
@@ -79,12 +78,14 @@ def run_manager_gui(
         my_work_page.set_content(_my_work_panel(service, session, controller))
     statistics_page = shell.page("statistics")
     if statistics_page is not None:
-        statistics_page.set_content(_statistics_panel(service))
+        statistics_page.set_content(
+            _statistics_panel(
+                service, session.principal, background_workers=controller._background_workers, async_reads=True
+            )
+        )
     _configure_administration_page(shell, service, session)
     settings = QSettings("Kraken", "KrakenHub")
-    configured_update_url = (
-        update_url or os.getenv("KRAKEN_UPDATE_URL", "") or str(settings.value("updates/url", ""))
-    )
+    configured_update_url = update_url or os.getenv("KRAKEN_UPDATE_URL", "") or str(settings.value("updates/url", ""))
     update_service = UpdateService(
         configured_update_url,
         current_version=application_version(),

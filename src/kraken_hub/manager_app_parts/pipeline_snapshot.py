@@ -370,4 +370,26 @@ class PipelineSnapshotMixin:
                 lane_nodes.append(PipelineNode(missing_id, "CIF не получен", "missing", "Результат отсутствует"))
                 lane_edges.append((str(source.id), missing_id))
             lanes.append(PipelineLane(str(source.id), source.name, tuple(lane_nodes), tuple(lane_edges)))
+        workflow_event = next((event for event in reversed(project_history)
+                               if event.event_type == "LayerPipelineWorkflowV1"
+                               and str(event.payload.get("workflow", {}).get("layer_id", "")) == str(layer_id)), None)
+        if workflow_event is not None:
+            workflow = workflow_event.payload["workflow"]
+            nodes, edges = [], []
+            for operation in workflow["definition"]["operations"]:
+                execution = workflow.get("nodes", {}).get(operation["id"], {})
+                attempts = execution.get("attempts", ())
+                latest = attempts[-1] if attempts else {}
+                status = execution.get("status", "draft")
+                nodes.append(PipelineNode(
+                    operation["id"], operation["title"], "operation", _STATE_TITLES.get(status, status),
+                    state=status, details={"workflow_operation": True, "capability": operation["capability"],
+                        "algorithm_version": operation["algorithm_version"], "attempts": len(attempts),
+                        "job_id": latest.get("job_id"), "error": latest.get("error") or execution.get("error"),
+                        "artifact_version_ids": latest.get("output_version_ids", ()),
+                        "workflow_revision": workflow_event.revision,
+                        "approval_required": operation["approval_required"] and not execution.get("approved", False)},
+                ))
+                edges.extend((dependency, operation["id"]) for dependency in operation["dependencies"])
+            lanes.append(PipelineLane(f"workflow:{layer_id}", "Технологический процесс", tuple(nodes), tuple(edges)))
         return LayerPipelineSnapshot(str(project_id), str(layer_id), tuple(lanes))

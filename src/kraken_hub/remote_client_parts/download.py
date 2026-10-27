@@ -1,6 +1,7 @@
 """remote_client: download."""
 from __future__ import annotations
 import json
+import os
 import shutil
 import urllib.error
 import urllib.parse
@@ -10,6 +11,17 @@ from pathlib import Path
 from typing import Any
 
 from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
+
+
+def _cleanup_partial_download(destination: Path, identity: tuple[int, int] | None) -> None:
+    if identity is None:
+        return
+    try:
+        current = destination.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == identity:
+        destination.unlink(missing_ok=True)
 
 
 class DownloadMixin:
@@ -97,14 +109,17 @@ class DownloadMixin:
             method=method,
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
+        created_identity = None
         try:
             with (
                 urllib.request.urlopen(request, timeout=self.timeout) as response,
                 destination.open("xb") as output,
             ):
+                created = os.fstat(output.fileno())
+                created_identity = (created.st_dev, created.st_ino)
                 shutil.copyfileobj(response, output, length=1024 * 1024)
         except urllib.error.HTTPError as exc:
-            destination.unlink(missing_ok=True)
+            _cleanup_partial_download(destination, created_identity)
             detail = exc.read().decode("utf-8", errors="replace")
             parsed: Mapping[str, object] | None = None
             message = detail
@@ -119,7 +134,7 @@ class DownloadMixin:
                 message, status=exc.code, body=detail, problem=parsed
             ) from exc
         except Exception:
-            destination.unlink(missing_ok=True)
+            _cleanup_partial_download(destination, created_identity)
             raise
         return destination
 
@@ -130,10 +145,13 @@ class DownloadMixin:
             method="GET",
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
+        created_identity = None
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response, destination.open("xb") as output:
+                created = os.fstat(output.fileno())
+                created_identity = (created.st_dev, created.st_ino)
                 shutil.copyfileobj(response, output, length=1024 * 1024)
         except Exception:
-            destination.unlink(missing_ok=True)
+            _cleanup_partial_download(destination, created_identity)
             raise
         return destination

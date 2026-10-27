@@ -7,20 +7,20 @@ from pathlib import Path
 
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.errors import AuthorizationError
-from kraken_manager.application.work_package import (
+from kraken_manager.application.work_order_lifecycle import record_work_order
+from kraken_manager.infrastructure.work_package import (
     WorkIssueRequest,
     latest_dataset_version,
     package_has_result,
     place_work_order,
     representation_of,
     selection_from_coordinates,
-    write_work_manifest,
 )
 from kraken_manager.domain.common import PerformerId, new_uuid
 from kraken_manager.domain.identity import Permission, Principal
 from kraken_manager.domain.project import RepresentationKind
-from kraken_manager.domain.selection import FrameSelectionV1
 from kraken_manager.domain.work_orders import WorkKind, WorkOrder, WorkOrderState, WorkPlacement
+from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model
 
 
 class IssueWorkMixin:
@@ -125,38 +125,63 @@ class IssueWorkMixin:
             read_bytes=read_bytes,
             dataset_version=dataset,
         )
-        self._projection(project.id).save_work_order(order)
-        return order
+        return self._record_work_order(principal, order, idempotency_key, "issue")
 
-    def mark_work_running(self, order: WorkOrder, *, job_id: str = "", idempotency_key: str) -> WorkOrder:
-        del idempotency_key
-        current = self._require_work_order(order)
-        running = current.mark_running(job_id=job_id, at=self.clock.now())
-        self._projection(current.project_id).save_work_order(running)
-        return running
+    def mark_work_running(self, order: WorkOrder, *, job_id: str = "", idempotency_key: str, principal=None) -> WorkOrder:
+        return self._mutate_work_order(
+            order, principal, idempotency_key, "start",
+            lambda current: current.mark_running(job_id=job_id, at=self.clock.now()),
+        )
 
-    def cancel_work_order(self, order: WorkOrder, *, idempotency_key: str) -> WorkOrder:
-        del idempotency_key
-        current = self._require_work_order(order)
-        cancelled = current.cancel(at=self.clock.now())
-        self._projection(current.project_id).save_work_order(cancelled)
-        return cancelled
+    def cancel_work_order(self, order: WorkOrder, *, idempotency_key: str, principal=None) -> WorkOrder:
+        return self._mutate_work_order(
+            order, principal, idempotency_key, "cancel", lambda current: current.cancel(at=self.clock.now()),
+        )
 
-    def complete_work_order(self, order: WorkOrder, *, idempotency_key: str) -> WorkOrder:
-        del idempotency_key
-        current = self._require_work_order(order)
-        if current.kind is WorkKind.VECTOR_REVIEW:
-            raise ValueError("Исправление векторов завершается принятием пакета проверки")
-        if current.transport == "http":
-            raise ValueError("Результат HTTP-задания возвращается из Contour в проект")
-        if not package_has_result(Path(current.destination), current.kind):
-            raise ValueError("В папке работы ещё нет файла результата")
-        completed = current.complete(at=self.clock.now())
-        self._projection(current.project_id).save_work_order(completed)
-        return completed
+    def complete_work_order(self, order: WorkOrder, *, idempotency_key: str, principal=None) -> WorkOrder:
+        def change(current):
+            if current.kind is WorkKind.VECTOR_REVIEW:
+                raise ValueError("Исправление векторов завершается принятием пакета проверки")
+            if current.transport == "http":
+                raise ValueError("Результат HTTP-задания возвращается из Contour в проект")
+            if not package_has_result(Path(current.destination), current.kind):
+                raise ValueError("В папке работы ещё нет файла результата")
+            return current.complete(at=self.clock.now())
+        return self._mutate_work_order(order, principal, idempotency_key, "complete", change)
+
+    def _record_work_order(self, principal, order, key, operation):
+        return record_work_order(
+            uow_factory=self._uow(str(order.project_id)), profiles=self.profiles, principal=principal,
+            project_id=order.project_id, idempotency_key=key, operation=f"{operation}:{order.id}",
+            command={"order_id": order.id},
+            change=lambda _projections: order, encode=encode_model, decode=decode_model,
+        )
+
+    def _mutate_work_order(self, order, principal, key, operation, change):
+        from kraken_manager.application.errors import ConcurrencyError
+        # Preserve the local Python API used before principals were explicit.
+        # Hub always passes the actual signed-in principal.
+        principal = principal or self.identities.get(order.created_by)
+        if principal is None:
+            raise ValueError("Учётная запись не найдена")
+        def checked(projections):
+            current = projections.get_work_order(order.id)
+            if current is None:
+                raise ValueError("Задание не найдено")
+            if current.revision != order.revision:
+                raise ConcurrencyError("Work order revision changed")
+            if current.state in {WorkOrderState.COMPLETED, WorkOrderState.CANCELLED}:
+                raise ValueError("Задание уже закрыто")
+            return change(current)
+        return record_work_order(
+            uow_factory=self._uow(str(order.project_id)), profiles=self.profiles, principal=principal,
+            project_id=order.project_id, idempotency_key=key, operation=f"{operation}:{order.id}",
+            command={"order_id": order.id, "revision": order.revision},
+            change=checked, encode=encode_model, decode=decode_model,
+        )
 
     def _issue_vector_review(self, **kwargs) -> WorkOrder:
-        from kraken_manager.application.work_package import external_package_directory
+        from kraken_manager.infrastructure.work_package import external_package_directory
 
         project = kwargs["project"]
         layer = kwargs["layer"]
@@ -214,9 +239,7 @@ class IssueWorkMixin:
             idempotency_key=kwargs["idempotency_key"],
             created_at=now,
         )
-        write_work_manifest(destination, order, ())
-        self._projection(project.id).save_work_order(order)
-        return order
+        return self._record_work_order(kwargs["principal"], order, kwargs["idempotency_key"], "issue")
 
     def _authorize_work(self, principal: Principal, project) -> None:
         with self._uow(str(project.id))() as unit:

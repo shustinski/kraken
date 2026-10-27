@@ -37,6 +37,11 @@ class StitchingDialog(QDialog):
         root = QVBoxLayout(self)
         self._status = QLabel(self)
         root.addWidget(self._status)
+        computed = QPushButton("Вычисляемая сшивка…", self)
+        computed.setObjectName("computedStitchButton")
+        computed.setEnabled(hasattr(controller, "agent_runtime"))
+        computed.clicked.connect(self._open_computed)
+        root.addWidget(computed)
         for kind in StitchingKind:
             group = QGroupBox(kind.title, self)
             layout = QVBoxLayout(group)
@@ -61,6 +66,11 @@ class StitchingDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
         self.refresh()
+
+    def _open_computed(self):
+        from kraken_hub.computed_stitch_dialog import ComputedStitchDialog
+        self._computed = ComputedStitchDialog(self._controller, self._layer_id, self)
+        self._computed.show()
 
     def refresh(self):
         service = self._controller.service

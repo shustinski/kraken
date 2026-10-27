@@ -168,10 +168,20 @@ def _install_service(server_executable: Path, config: Path, *, start: bool) -> N
         raise SystemExit("Windows Service installation is available only on Windows")
     executable = server_executable.resolve(strict=True)
     configuration = config.resolve(strict=True)
+    from kraken_admin.service_ownership import require_owned_service, service_image_path
+    require_owned_service(executable, image_path=service_image_path())
     if executable == Path(sys.executable).resolve() and not getattr(sys, "frozen", False):
         command = f'"{executable}" -m kraken_server --service --config "{configuration}"'
     else:
         command = f'"{executable}" --service --config "{configuration}"'
+    def require_matching_command(image_path: str | None) -> None:
+        if image_path is not None and image_path.strip().casefold() != command.casefold():
+            raise SystemExit(
+                "Existing KrakenServer service has different startup arguments or --config. "
+                "Explicitly reconfigure or uninstall the owned service before reinstalling."
+            )
+
+    require_matching_command(service_image_path())
     result = subprocess.run(
         [
             "sc.exe",
@@ -187,6 +197,11 @@ def _install_service(server_executable: Path, config: Path, *, start: bool) -> N
     )
     if result.returncode != 0 and "1073" not in (result.stdout + result.stderr):
         raise SystemExit((result.stdout + result.stderr).strip())
+    # Recheck the 1073 race before touching description/recovery settings.
+    current_command = service_image_path()
+    if not require_owned_service(executable, image_path=current_command):
+        raise RuntimeError("KrakenServer disappeared before its installation could be verified")
+    require_matching_command(current_command)
     subprocess.run(
         ["sc.exe", "description", "KrakenServer", "Kraken shared project server"],
         check=True,

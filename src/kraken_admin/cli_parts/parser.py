@@ -400,6 +400,8 @@ def _parser() -> argparse.ArgumentParser:
         description="Служба удаляется из SCM. Конфигурация и база сохраняются.",
         epilog="Пример:\n  KrakenAdmin uninstall-service",
     )
+    uninstall.add_argument('--server-executable', type=Path, default=_default_server_executable(),
+                           help='Executable that must own the service before removal')
     status = command(
         "service-status",
         help="Показать состояние Windows-службы Kraken Server",

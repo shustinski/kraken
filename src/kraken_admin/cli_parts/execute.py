@@ -121,7 +121,7 @@ def _execute(args: argparse.Namespace) -> int:
         _install_service(args.server_executable, args.config, start=not args.no_start)
         print("Kraken Server Windows service is installed")
     elif args.command == "uninstall-service":
-        _uninstall_service()
+        _uninstall_service(args.server_executable)
         print("Kraken Server Windows service is removed")
     elif args.command == "service-status":
         print(_service_status())

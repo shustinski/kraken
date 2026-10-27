@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
+import threading
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
@@ -50,6 +52,10 @@ class _ServiceTableEntry(ctypes.Structure):
 _status_handle: Any = None
 _server: Any = None
 _config_path: Path | None = None
+_service_exit_code = 0
+_status_checkpoint = 0
+_status_state: int | None = None
+_status_lock = threading.RLock()
 
 
 def _configure_advapi() -> object:
@@ -68,16 +74,25 @@ def _configure_advapi() -> object:
 
 
 def _set_status(state: int, *, exit_code: int = 0, wait_hint: int = 0) -> None:
+    with _status_lock:
+        _set_status_locked(state, exit_code=exit_code, wait_hint=wait_hint)
+
+
+def _set_status_locked(state: int, *, exit_code: int = 0, wait_hint: int = 0) -> None:
+    global _status_checkpoint, _status_state
     if not _status_handle:
         return
-    accepted = 0 if state == SERVICE_START_PENDING else SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
+    pending = state in {SERVICE_START_PENDING, SERVICE_STOP_PENDING}
+    _status_checkpoint = _status_checkpoint + 1 if pending and state == _status_state else int(pending)
+    _status_state = state
+    accepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN if state == SERVICE_RUNNING else 0
     status = _ServiceStatus(
         SERVICE_WIN32_OWN_PROCESS,
         state,
         accepted,
         exit_code,
         0,
-        0,
+        _status_checkpoint,
         wait_hint,
     )
     if not ctypes.windll.advapi32.SetServiceStatus(_status_handle, ctypes.byref(status)):
@@ -95,39 +110,79 @@ def _control_handler(control: int, _event_type: int, _event_data: object, _conte
 
 @_SERVICE_MAIN
 def _service_main(_argument_count: int, _arguments: object) -> None:
-    global _status_handle, _server
+    global _service_exit_code
+    try:
+        _run_service_main()
+    except BaseException:
+        # ctypes otherwise reports and discards callback exceptions. Preserve
+        # failures that occur even before a status handle can be registered.
+        _service_exit_code = 1
+        logging.getLogger(__name__).exception("Windows service callback failed")
+
+
+def _create_server(configuration: Any) -> Any:
+    import uvicorn
+
+    class ReadyServiceServer(uvicorn.Server):
+        async def startup(self, sockets=None):
+            await super().startup(sockets=sockets)
+            if not self.started or self.should_exit:
+                raise RuntimeError("Server startup did not complete")
+            # Uvicorn has completed ASGI lifespan startup and bound listeners.
+            _set_status(SERVICE_RUNNING)
+
+    return ReadyServiceServer(
+        uvicorn.Config(
+            "kraken_server.runtime:create_app_from_environment",
+            host=configuration.host,
+            port=configuration.port,
+            factory=True,
+            log_config=None,
+            ssl_certfile=(None if configuration.tls_cert_file is None else str(configuration.tls_cert_file)),
+            ssl_keyfile=(None if configuration.tls_key_file is None else str(configuration.tls_key_file)),
+        )
+    )
+
+
+def _run_service_main() -> None:
+    global _status_handle, _server, _service_exit_code
+    _service_exit_code = 0
     advapi32 = _configure_advapi()
     _status_handle = advapi32.RegisterServiceCtrlHandlerExW(SERVICE_NAME, _control_handler, None)
     if not _status_handle:
+        _service_exit_code = 1
         return
+    progress_done = threading.Event()
+
+    def report_progress():
+        while not progress_done.wait(5):
+            with _status_lock:
+                if _status_state == SERVICE_START_PENDING:
+                    _set_status(SERVICE_START_PENDING, wait_hint=30_000)
+
+    progress = threading.Thread(target=report_progress, name="kraken-service-startup", daemon=True)
     try:
         _set_status(SERVICE_START_PENDING, wait_hint=30_000)
+        progress.start()
         assert _config_path is not None
         os.environ["KRAKEN_SERVER_CONFIG"] = str(_config_path)
         from .configuration import ServerConfig
 
         configuration = ServerConfig.load(_config_path)
         configuration.apply_to_environment()
-        import uvicorn
-
-        _server = uvicorn.Server(
-            uvicorn.Config(
-                "kraken_server.runtime:create_app_from_environment",
-                host=configuration.host,
-                port=configuration.port,
-                factory=True,
-                log_config=None,
-                ssl_certfile=(None if configuration.tls_cert_file is None else str(configuration.tls_cert_file)),
-                ssl_keyfile=(None if configuration.tls_key_file is None else str(configuration.tls_key_file)),
-            )
-        )
-        _set_status(SERVICE_RUNNING)
+        _server = _create_server(configuration)
         _server.run()
+        if not _server.started:
+            raise RuntimeError("Server returned without completing startup")
         _set_status(SERVICE_STOPPED)
     except BaseException:
+        _service_exit_code = 1
         _set_status(SERVICE_STOPPED, exit_code=1)
-        raise
+        logging.getLogger(__name__).exception("Windows service startup/runtime failed")
     finally:
+        progress_done.set()
+        if progress.is_alive():
+            progress.join(timeout=2)
         _server = None
 
 
@@ -142,6 +197,8 @@ def run_windows_service(config_path: Path) -> None:
     table[0].lpServiceProc = _service_main
     if not advapi32.StartServiceCtrlDispatcherW(table):
         raise ctypes.WinError()
+    if _service_exit_code:
+        raise SystemExit(_service_exit_code)
 
 
 __all__ = ["SERVICE_NAME", "run_windows_service"]

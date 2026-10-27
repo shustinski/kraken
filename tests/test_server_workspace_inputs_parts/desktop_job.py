@@ -125,6 +125,7 @@ def test_desktop_lease_is_limited_to_its_initiator_and_job(tmp_path, acting_role
     response = client.post(endpoint, headers=headers)
     assert response.status_code == 200
     assert response.json()["job"]["job_id"] == job["id"]
+    headers["X-Kraken-Lease-Claim"] = response.json()["job"]["lease_claim"]
     assert client.post(endpoint, headers=headers).status_code == 409
     assert client.post("/api/v1/agent/lease", headers=headers, json={}).status_code == 401
     assert client.post(f"/api/v1/agent/jobs/{job['id']}/heartbeat", headers=headers, json={}).status_code == 200

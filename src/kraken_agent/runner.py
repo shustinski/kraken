@@ -6,7 +6,7 @@ import json
 import os
 import subprocess
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
 
@@ -35,10 +35,29 @@ class PluginProcessSpec:
     command: tuple[str, ...]
     working_directory: Path | None = None
     interactive: bool = False
+    modes: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         if not self.operation or not self.command:
             raise ValueError("Plugin process operation and command are required")
+        modes = (
+            frozenset(self.modes)
+            if self.modes is not None
+            else frozenset(("interactive" if self.interactive else "headless",))
+        )
+        if not modes or not modes <= {"interactive", "headless"}:
+            raise ValueError("Agent process modes must be interactive/headless")
+        if ("interactive" if self.interactive else "headless") not in modes:
+            raise ValueError("Agent process default mode must be supported")
+        object.__setattr__(self, "modes", modes)
+
+    def for_execution(self, parameters: Mapping[str, object]) -> PluginProcessSpec:
+        mode = parameters.get("execution_mode")
+        if mode is None:
+            return self
+        if not isinstance(mode, str) or mode not in self.modes:
+            raise ValueError("Requested execution mode is not supported by the registered process")
+        return replace(self, interactive=mode == "interactive")
 
 
 class PluginRegistry:
@@ -68,6 +87,7 @@ class PluginRegistry:
                 if item.get("working_directory") is None
                 else Path(str(item["working_directory"])).resolve(strict=True),
                 interactive=bool(item.get("interactive", False)),
+                modes=None if item.get("modes") is None else frozenset(item["modes"]),
             )
             if operation in specs:
                 raise ValueError(f"Duplicate agent operation: {operation}")
@@ -110,13 +130,21 @@ class SubprocessPluginRunner:
             "XDG_RUNTIME_DIR",
             "QT_PLUGIN_PATH",
             "QT_QPA_PLATFORM",
+            "CUDA_VISIBLE_DEVICES",
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
         }
     )
     _MAX_RESULT_MANIFEST_BYTES = 16 * 1024 * 1024
 
     def __init__(
-        self, store: DurableJobStore, staging_root: Path | str, registry: PluginRegistry,
-        *, environment: Mapping[str, str] | None = None,
+        self,
+        store: DurableJobStore,
+        staging_root: Path | str,
+        registry: PluginRegistry,
+        *,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         self.store = store
         self.staging_root = Path(staging_root).resolve()
@@ -157,13 +185,20 @@ class SubprocessPluginRunner:
                 if item.scope is PluginAssetScope.FRAME and item.frame_id is not None
             }
             for output in result.outputs:
-                if (
-                    output.scope is PluginAssetScope.FRAME
-                    and output.frame_id not in input_frames
-                ):
+                if output.scope is PluginAssetScope.FRAME and output.frame_id not in input_frames:
                     raise ValueError(f"Plugin returned an unknown frame: {output.frame_id}")
             if not result.final:
                 raise ValueError("A terminating V2 process must mark its publication final")
+            if result.outcome in {"failed", "cancelled"} and result.outputs:
+                raise ValueError("Failed or cancelled V2 results cannot publish outputs")
+            if manifest.operation == "layer.stitch.v1":
+                if result.outcome not in {"succeeded", "failed", "cancelled"}:
+                    raise ValueError("A mosaic cannot be partially published")
+                if result.outcome == "succeeded" and (len(result.outputs) != 1
+                        or result.outputs[0].scope is not PluginAssetScope.LAYER
+                        or result.outputs[0].role != "mosaic"
+                        or result.outputs[0].media_type != "application/vnd.kraken.mosaic+sqlite3"):
+                    raise ValueError("Stitching must return exactly one complete layer mosaic")
             return
         if not isinstance(result, PluginResultManifest):
             raise ValueError("A V1 job requires a V1 result manifest")
@@ -208,8 +243,16 @@ class SubprocessPluginRunner:
             raise ValueError("Karakal Worker returned a result for another analysis run")
         if result.partition_id != manifest.partition_id or result.project_id != manifest.project_id:
             raise ValueError("Karakal Worker returned a result for another partition")
+        from kraken_core.analysis_runtime import validate_worker_runtime
+        validate_worker_runtime(manifest, result)
         if result.bundle is not None and result.bundle.frame_count != len(manifest.frames):
             raise ValueError("Analysis result bundle must contain exactly the partition frames")
+        requested = next((p.value for p in manifest.parameters if p.key == "_render_frame_id"), None)
+        if result.rendered_map is not None and (requested != result.rendered_map.frame_id or len(manifest.frames) != 1
+                                                or requested != manifest.frames[0].frame_id):
+            raise ValueError("Worker returned an unrequested rendered map")
+        if requested is not None and result.outcome.value == "succeeded" and result.rendered_map is None:
+            raise ValueError("Worker did not return the requested rendered map")
 
     def _capture_progress(self, workspace: StagingWorkspace, job_id: str) -> None:
         progress_path = workspace.path / "progress.json"
@@ -220,16 +263,16 @@ class SubprocessPluginRunner:
                 payload = json.loads(stream.read(1024 * 1024).decode("utf-8"))
             if isinstance(payload, dict) and payload.get("job_id") == job_id:
                 self.store.record_progress(job_id, payload)
-        except (OSError, ValueError, json.JSONDecodeError):
+        except OSError, ValueError, json.JSONDecodeError:
             return
 
-    def run_once(self) -> bool:
-        jobs = self.store.list(states=(AgentJobState.QUEUED,), limit=1)
-        if not jobs:
+    def run_once(self, *, job_id: str | None = None, cancel_event: threading.Event | None = None) -> bool:
+        if self._stop.is_set() or (cancel_event is not None and cancel_event.is_set()):
             return False
-        job = jobs[0]
+        job = self.store.claim_next(job_id=job_id)
+        if job is None:
+            return False
         try:
-            job = self.store.transition(job.job_id, AgentJobState.STAGING, expected_revision=job.revision)
             manifest = job.manifest
             workspace = StagingWorkspace(self.staging_root, job.job_id)
             workspace.write_manifest(manifest)
@@ -240,8 +283,7 @@ class SubprocessPluginRunner:
                 input_artifacts = manifest.inputs
                 operation = manifest.operation
             stream_inputs = (
-                isinstance(manifest, PluginJobManifest)
-                and manifest.parameters.get("input_transport") == "server"
+                isinstance(manifest, PluginJobManifest) and manifest.parameters.get("input_transport") == "server"
             )
             if stream_inputs:
                 supported = operation in {
@@ -262,6 +304,8 @@ class SubprocessPluginRunner:
             spec = self.registry.get(operation)
             if spec is None:
                 raise ValueError(f"No plugin registered for {operation}")
+            if isinstance(manifest, (PluginJobManifest, PluginJobManifestV2)):
+                spec = spec.for_execution(manifest.parameters)
             job = self.store.transition(job.job_id, AgentJobState.RUNNING, expected_revision=job.revision)
             if spec.interactive:
                 job = self.store.transition(
@@ -295,10 +339,25 @@ class SubprocessPluginRunner:
                     self._capture_progress(workspace, job.job_id)
                     if self._stop.wait(0.25):
                         self._terminate(process)
+                        current = self.store.get(job.job_id)
+                        if current.state in {AgentJobState.RUNNING, AgentJobState.WAITING_FOR_USER}:
+                            self.store.transition(
+                                current.job_id,
+                                AgentJobState.RECOVERY_REQUIRED,
+                                expected_revision=current.revision,
+                                error="Agent stopped during plugin execution",
+                            )
                         return True
                     current = self.store.get(job.job_id)
-                    if current.state is AgentJobState.CANCELLED:
+                    if current.state is AgentJobState.CANCELLED or (cancel_event is not None and cancel_event.is_set()):
                         self._terminate(process)
+                        if current.state in {AgentJobState.RUNNING, AgentJobState.WAITING_FOR_USER}:
+                            self.store.transition(
+                                current.job_id,
+                                AgentJobState.CANCELLED,
+                                expected_revision=current.revision,
+                                error="Execution lease lost",
+                            )
                         return True
             self._capture_progress(workspace, job.job_id)
             allowed_return_codes = {0, 3, 130} if isinstance(manifest, AnalysisPartitionJobManifest) else {0}
@@ -318,18 +377,6 @@ class SubprocessPluginRunner:
             else:
                 self._validate_result_contract(manifest, result)
             workspace.verify_result(result, manifest)
-            current = self.store.get(job.job_id)
-            current, _ = self.store.record_result(
-                result,
-                callback_key=(
-                    f"publication:{result.publication_id}"
-                    if isinstance(result, PluginResultPublicationV2)
-                    else f"analysis:{result.partition_id}:{result.bundle.sha256 if result.bundle else result.outcome.value}"
-                    if isinstance(result, AnalysisPartitionResultManifest)
-                    else f"process:{result.completed_at}"
-                ),
-                expected_revision=current.revision,
-            )
             outcome_value = result.outcome.value if isinstance(result.outcome, AnalysisOutcome) else result.outcome
             if outcome_value == PluginJobOutcome.SUCCEEDED.value:
                 target = AgentJobState.IMPORTING
@@ -339,8 +386,21 @@ class SubprocessPluginRunner:
                 target = AgentJobState.CANCELLED
             else:
                 target = AgentJobState.FAILED
-            self.store.transition(current.job_id, target, expected_revision=current.revision)
-        except (JobStateError, KeyError):
+            current = self.store.get(job.job_id)
+            self.store.record_result(
+                result,
+                callback_key=(
+                    f"publication:{result.publication_id}"
+                    if isinstance(result, PluginResultPublicationV2)
+                    else f"analysis:{result.partition_id}:{result.bundle.sha256 if result.bundle else result.outcome.value}"
+                    if isinstance(result, AnalysisPartitionResultManifest)
+                    else f"process:{result.completed_at}"
+                ),
+                expected_revision=current.revision,
+                target_state=target,
+                allowed_states=(AgentJobState.RUNNING, AgentJobState.WAITING_FOR_USER),
+            )
+        except JobStateError, KeyError:
             return True
         except Exception as exc:
             current = self.store.get(job.job_id)

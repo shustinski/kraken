@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import sqlite3
+import time
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -92,15 +93,14 @@ _TRANSITIONS: dict[AgentJobState, frozenset[AgentJobState]] = {
     AgentJobState.IMPORTING: frozenset(
         {
             AgentJobState.SUCCEEDED,
+            AgentJobState.CANCELLED,
             AgentJobState.PARTIAL,
             AgentJobState.FAILED,
             AgentJobState.AWAITING_AUTHORIZATION,
             AgentJobState.RECOVERY_REQUIRED,
         }
     ),
-    AgentJobState.PARTIAL: frozenset(
-        {AgentJobState.IMPORTING, AgentJobState.CANCELLED, AgentJobState.FAILED}
-    ),
+    AgentJobState.PARTIAL: frozenset({AgentJobState.IMPORTING, AgentJobState.CANCELLED, AgentJobState.FAILED}),
     AgentJobState.AWAITING_AUTHORIZATION: frozenset(
         {AgentJobState.IMPORTING, AgentJobState.CANCELLED, AgentJobState.FAILED}
     ),
@@ -172,7 +172,20 @@ class DurableJobStore:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
+            # journal_mode can report SQLITE_BUSY immediately despite the busy
+            # handler when another process is performing its first WAL switch.
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    connection.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if (
+                        getattr(exc, "sqlite_errorcode", 0) & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                        or time.monotonic() >= deadline
+                    ):
+                        raise
+                    time.sleep(0.01)
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -204,11 +217,22 @@ class DurableJobStore:
                     PRIMARY KEY(job_id, publication_id),
                     UNIQUE(job_id, sequence)
                 );
+                CREATE TABLE IF NOT EXISTS job_attempts (
+                    job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+                    attempt_key TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    archived_at TEXT NOT NULL,
+                    PRIMARY KEY(job_id, attempt_key)
+                );
                 """
             )
+            connection.execute("BEGIN IMMEDIATE")
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(jobs)")}
             if "progress_json" not in columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN progress_json TEXT")
+            if "attempt_key" not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN attempt_key TEXT")
+            connection.commit()
 
     @staticmethod
     def _row(row: sqlite3.Row) -> AgentJob:
@@ -224,7 +248,11 @@ class DurableJobStore:
             progress_json=row["progress_json"],
         )
 
-    def enqueue(self, manifest: AgentManifest) -> AgentJob:
+    def enqueue(self, manifest: AgentManifest, *, attempt_key: str | None = None) -> AgentJob:
+        if attempt_key is not None and (
+            len(attempt_key) != 64 or any(c not in "0123456789abcdef" for c in attempt_key)
+        ):
+            raise ValueError("Attempt key must be a SHA-256 claim fingerprint")
         now = _utc_now()
         canonical = manifest_to_json(manifest)
         with self._lock, self._connect() as connection:
@@ -234,18 +262,65 @@ class DurableJobStore:
                 if existing["manifest_json"] != canonical:
                     connection.rollback()
                     raise DuplicateCallbackError(f"Job {manifest.job_id} already exists with another manifest")
+                if attempt_key is not None and attempt_key != existing["attempt_key"]:
+                    if connection.execute(
+                        "SELECT 1 FROM job_attempts WHERE job_id=? AND attempt_key=?", (manifest.job_id, attempt_key)
+                    ).fetchone():
+                        connection.rollback()
+                        raise JobStateError("This execution attempt has already been retired")
+                    if AgentJobState(existing["state"]) in {
+                        AgentJobState.STAGING,
+                        AgentJobState.RUNNING,
+                        AgentJobState.WAITING_FOR_USER,
+                    }:
+                        connection.rollback()
+                        raise JobStateError("The previous local execution attempt is still active")
+                    snapshot = dict(existing)
+                    snapshot["callbacks"] = [
+                        dict(row)
+                        for row in connection.execute("SELECT * FROM callbacks WHERE job_id=?", (manifest.job_id,))
+                    ]
+                    snapshot["publications"] = [
+                        dict(row)
+                        for row in connection.execute("SELECT * FROM publications WHERE job_id=?", (manifest.job_id,))
+                    ]
+                    connection.execute(
+                        "INSERT INTO job_attempts(job_id, attempt_key, snapshot_json, archived_at) VALUES (?, ?, ?, ?)",
+                        (
+                            manifest.job_id,
+                            existing["attempt_key"] or "legacy",
+                            json.dumps(snapshot, ensure_ascii=False),
+                            now,
+                        ),
+                    )
+                    connection.execute("DELETE FROM callbacks WHERE job_id=?", (manifest.job_id,))
+                    connection.execute("DELETE FROM publications WHERE job_id=?", (manifest.job_id,))
+                    connection.execute(
+                        "UPDATE jobs SET state=?, result_json=NULL, progress_json=NULL, error=NULL, "
+                        "updated_at=?, revision=revision+1, attempt_key=? WHERE job_id=?",
+                        (AgentJobState.QUEUED.value, now, attempt_key, manifest.job_id),
+                    )
+                    connection.commit()
+                    return self.get(manifest.job_id)
                 connection.commit()
                 return self._row(existing)
             connection.execute(
                 """
                 INSERT INTO jobs(
-                    job_id, state, manifest_json, result_json, created_at, updated_at, revision, error, progress_json
-                ) VALUES (?, ?, ?, NULL, ?, ?, 0, NULL, NULL)
+                    job_id, state, manifest_json, result_json, created_at, updated_at, revision, error, progress_json, attempt_key
+                ) VALUES (?, ?, ?, NULL, ?, ?, 0, NULL, NULL, ?)
                 """,
-                (manifest.job_id, AgentJobState.QUEUED.value, canonical, now, now),
+                (manifest.job_id, AgentJobState.QUEUED.value, canonical, now, now, attempt_key),
             )
             connection.commit()
         return self.get(manifest.job_id)
+
+    def attempt_history(self, job_id: str) -> tuple[dict[str, object], ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT snapshot_json FROM job_attempts WHERE job_id=? ORDER BY archived_at, attempt_key", (job_id,)
+            ).fetchall()
+        return tuple(json.loads(row["snapshot_json"]) for row in rows)
 
     def get(self, job_id: str) -> AgentJob:
         with self._connect() as connection:
@@ -299,12 +374,35 @@ class DurableJobStore:
             connection.commit()
         return self.get(job_id)
 
+    def claim_next(self, *, job_id: str | None = None) -> AgentJob | None:
+        """Atomically claim the oldest queued job, optionally a specific lease."""
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            query = "SELECT * FROM jobs WHERE state=?"
+            arguments: tuple[object, ...] = (AgentJobState.QUEUED.value,)
+            if job_id is not None:
+                query += " AND job_id=?"
+                arguments += (job_id,)
+            row = connection.execute(query + " ORDER BY created_at, rowid LIMIT 1", arguments).fetchone()
+            if row is None:
+                connection.commit()
+                return None
+            connection.execute(
+                "UPDATE jobs SET state=?, updated_at=?, revision=revision+1 WHERE job_id=?",
+                (AgentJobState.STAGING.value, _utc_now(), row["job_id"]),
+            )
+            claimed = connection.execute("SELECT * FROM jobs WHERE job_id=?", (row["job_id"],)).fetchone()
+            connection.commit()
+            return self._row(claimed)
+
     def record_result(
         self,
         result: AgentResult,
         *,
         callback_key: str,
         expected_revision: int,
+        target_state: AgentJobState | None = None,
+        allowed_states: Iterable[AgentJobState] | None = None,
     ) -> tuple[AgentJob, bool]:
         """Record a callback once; return ``(job, was_duplicate)``."""
 
@@ -329,6 +427,11 @@ class DurableJobStore:
             if int(row["revision"]) != expected_revision:
                 connection.rollback()
                 raise JobStateError(f"Expected revision {expected_revision}, found {row['revision']}")
+            current = AgentJobState(row["state"])
+            if current in TERMINAL_STATES or (allowed_states is not None and current not in allowed_states):
+                raise JobStateError(f"Job cannot publish from {current.value}")
+            if target_state is not None and target_state not in _TRANSITIONS[current]:
+                raise JobStateError(f"Cannot transition {current.value} to {target_state.value}")
             if isinstance(result, PluginResultPublicationV2):
                 existing_sequence = connection.execute(
                     "SELECT publication_id FROM publications WHERE job_id=? AND sequence=?",
@@ -336,9 +439,7 @@ class DurableJobStore:
                 ).fetchone()
                 if existing_sequence is not None:
                     connection.rollback()
-                    raise DuplicateCallbackError(
-                        "Publication sequence was reused with another publication ID"
-                    )
+                    raise DuplicateCallbackError("Publication sequence was reused with another publication ID")
             connection.execute(
                 "INSERT INTO callbacks VALUES (?, ?, ?, ?)",
                 (result.job_id, callback_key, payload_hash, _utc_now()),
@@ -355,8 +456,10 @@ class DurableJobStore:
                     ),
                 )
             connection.execute(
-                "UPDATE jobs SET result_json=?, updated_at=?, revision=revision+1 WHERE job_id=?",
-                (payload, _utc_now(), result.job_id),
+                "UPDATE jobs SET result_json=?, state=?, error=?, updated_at=?, revision=revision+1 WHERE job_id=?",
+                (payload, (target_state or current).value,
+                 (result.message or None) if isinstance(result, AnalysisPartitionResultManifest) else row["error"],
+                 _utc_now(), result.job_id),
             )
             connection.commit()
         return self.get(result.job_id), False
@@ -367,10 +470,7 @@ class DurableJobStore:
                 "SELECT payload_json FROM publications WHERE job_id=? ORDER BY sequence",
                 (job_id,),
             ).fetchall()
-        return tuple(
-            PluginResultPublicationV2.from_json(str(row["payload_json"]))
-            for row in rows
-        )
+        return tuple(PluginResultPublicationV2.from_json(str(row["payload_json"])) for row in rows)
 
     def record_progress(self, job_id: str, payload: dict[str, object]) -> None:
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -392,8 +492,7 @@ class DurableJobStore:
         with self._lock, self._connect() as connection:
             placeholders = ",".join("?" for _ in recoverable)
             cursor = connection.execute(
-                f"UPDATE jobs SET state=?, updated_at=?, revision=revision+1 "
-                f"WHERE state IN ({placeholders})",
+                f"UPDATE jobs SET state=?, updated_at=?, revision=revision+1 WHERE state IN ({placeholders})",
                 (AgentJobState.RECOVERY_REQUIRED.value, _utc_now(), *recoverable),
             )
             return cursor.rowcount
@@ -478,6 +577,12 @@ class StagingWorkspace:
         if isinstance(result, AnalysisPartitionResultManifest):
             if not isinstance(manifest, AnalysisPartitionJobManifest):
                 raise ValueError("Analysis result requires its partition job manifest")
+            if result.rendered_map is not None:
+                artifact = result.rendered_map
+                if self.digest(artifact.relative_path) != artifact.sha256:
+                    raise ValueError("Rendered map checksum mismatch")
+                if self.resolve(artifact.relative_path).stat().st_size != artifact.size_bytes:
+                    raise ValueError("Rendered map size mismatch")
             if result.bundle is None:
                 return
             normalized = safe_relative_path(result.bundle.relative_path)

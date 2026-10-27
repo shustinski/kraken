@@ -101,6 +101,10 @@ class AgentControlServer:
                 if path == f"/api/{AGENT_API_VERSION}/health":
                     self._send(HTTPStatus.OK, {"status": "ok", "api_version": AGENT_API_VERSION})
                     return
+                if path == f"/api/{AGENT_API_VERSION}/resources":
+                    from .telemetry import sample_host
+                    self._send(HTTPStatus.OK, sample_host())
+                    return
                 prefix = f"/api/{AGENT_API_VERSION}/jobs/"
                 if path.startswith(prefix):
                     relative = path.removeprefix(prefix)
@@ -114,7 +118,8 @@ class AgentControlServer:
                         if result is None:
                             self._send(HTTPStatus.NOT_FOUND, {"code": "agent.result_not_ready"})
                             return
-                        self._send(HTTPStatus.OK, result.to_dict())
+                        from kraken_agent.protocols import result_to_json
+                        self._send(HTTPStatus.OK, json.loads(result_to_json(result)))
                         return
                     if relative.endswith("/publications"):
                         job_id = relative.removesuffix("/publications")
@@ -168,19 +173,7 @@ class AgentControlServer:
                             if publication.job_id != job_id:
                                 raise ValueError("Publication belongs to another job")
                             current = store.get(job_id)
-                            if current.state not in {
-                                AgentJobState.RUNNING,
-                                AgentJobState.WAITING_FOR_USER,
-                                AgentJobState.PARTIAL,
-                            }:
-                                raise JobStateError(
-                                    f"Job cannot publish from {current.state.value}"
-                                )
-                            current, duplicate = store.record_result(
-                                publication,
-                                callback_key=f"publication:{publication.publication_id}",
-                                expected_revision=current.revision,
-                            )
+                            target = None
                             if publication.final:
                                 target = {
                                     "succeeded": AgentJobState.IMPORTING,
@@ -188,11 +181,17 @@ class AgentControlServer:
                                     "failed": AgentJobState.FAILED,
                                     "cancelled": AgentJobState.CANCELLED,
                                 }[publication.outcome]
-                                current = store.transition(
-                                    current.job_id,
-                                    target,
-                                    expected_revision=current.revision,
-                                )
+                            current, duplicate = store.record_result(
+                                publication,
+                                callback_key=f"publication:{publication.publication_id}",
+                                expected_revision=current.revision,
+                                target_state=target,
+                                allowed_states=(
+                                    AgentJobState.RUNNING,
+                                    AgentJobState.WAITING_FOR_USER,
+                                    AgentJobState.PARTIAL,
+                                ),
+                            )
                         except KeyError:
                             self._send(HTTPStatus.NOT_FOUND, {"code": "agent.job_not_found"})
                             return
@@ -231,7 +230,7 @@ class AgentControlServer:
                             except KeyError:
                                 self._send(HTTPStatus.NOT_FOUND, {"code": "agent.job_not_found"})
                                 return
-                            except (ValueError, JobStateError, json.JSONDecodeError) as exc:
+                            except (ValueError, TypeError, JobStateError, json.JSONDecodeError) as exc:
                                 self._send(
                                     HTTPStatus.CONFLICT,
                                     {"code": "agent.invalid_transition", "detail": str(exc)},
@@ -244,6 +243,9 @@ class AgentControlServer:
                 try:
                     manifest = parse_manifest_payload(self._body())
                     job = store.enqueue(manifest)
+                except DuplicateCallbackError as exc:
+                    self._send(HTTPStatus.CONFLICT, {"code": "agent.manifest_conflict", "detail": str(exc)})
+                    return
                 except (ValueError, TypeError, json.JSONDecodeError) as exc:
                     self._send(HTTPStatus.BAD_REQUEST, {"code": "agent.invalid_manifest", "detail": str(exc)})
                     return

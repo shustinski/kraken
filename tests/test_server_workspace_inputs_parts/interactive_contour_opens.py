@@ -14,6 +14,7 @@ from test_server_workspace_inputs_parts.desktop_job import _desktop_job
 @pytest.mark.parametrize("capability", ["frames.vectorize.v1", "frames.dataset.prepare.v1"])
 def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, monkeypatch, capability, transfer_mode):
     import os
+    import hashlib
     import socket
     import sys
     import threading
@@ -34,9 +35,13 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
     downloads = []
     input_tickets = []
     original_request = ServerAgentWorker._request
+    contour_job_id = str(payload["id"])
+    attempt_fingerprints = set()
 
-    def request_with_ticket_check(worker, method, path, payload=None):
-        response = original_request(worker, method, path, payload)
+    def request_with_ticket_check(worker, method, path, payload=None, **options):
+        response = original_request(worker, method, path, payload, **options)
+        if path.startswith(f"/api/v1/agent/jobs/{contour_job_id}/"):
+            attempt_fingerprints.add(hashlib.sha256(worker.headers["X-Kraken-Lease-Claim"].encode()).hexdigest())
         if path.endswith("/download-ticket"):
             version_id = path.split("/")[-2]
             metadata = server.get_artifact_version(str(project.id), version_id)
@@ -205,8 +210,10 @@ session.publish_model()
                 for cell in local.frame_cells(project.id, layer.id, target.id)
             )
 
+        assert len(attempt_fingerprints) == 1
         assert (
-            remote.data_dir / "desktop-jobs" / str(job.id) / "staging" / str(job.id) / "contour-window.png"
+            remote.data_dir / "desktop-jobs" / str(job.id) / "staging" / next(iter(attempt_fingerprints))
+            / str(job.id) / "contour-window.png"
         ).is_file()
     finally:
         http_server.should_exit = True

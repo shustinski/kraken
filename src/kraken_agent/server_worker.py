@@ -3,20 +3,29 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 import json
 import logging
 import mimetypes
 import os
-import shutil
 import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from urllib.parse import unquote, urlparse
 from pathlib import Path
+from datetime import UTC, datetime
+from time import monotonic
 from typing import Any
 
 from kraken_core.analysis_run_protocol import ANALYSIS_PARTITION_JOB_SCHEMA
+from kraken_core.model_input import PinnedModelInput
+from kraken_core.safe_files import (
+    contained_path,
+    make_contained_directories,
+    open_exclusive_write,
+    open_regular_read,
+)
 from kraken_core.plugin_protocol import (
     PLUGIN_JOB_SCHEMA,
     PLUGIN_JOB_SCHEMA_V2,
@@ -25,7 +34,7 @@ from kraken_core.plugin_protocol import (
 )
 from kraken_manager.domain.project import FrameCoordinate
 from kraken_manager.domain.workflows import PluginJobManifestV1
-from kraken_manager.infrastructure.filesystem._codec import decode_model
+from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model
 
 from .jobs import DurableJobStore, StagingWorkspace
 from .runner import PluginRegistry, SubprocessPluginRunner
@@ -62,12 +71,13 @@ class ServerAgentWorker:
             self.store, self.data_dir / "staging", registry, environment={"KRAKEN_ASSET_TOKEN": token}
         )
         self._stop = threading.Event()
+        self._lease_lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop.set()
         self.runner.stop()
 
-    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(self, method: str, path: str, payload: dict[str, Any] | None = None, *, timeout=30) -> dict[str, Any]:
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
             self.server_url + path,
@@ -80,11 +90,25 @@ class ServerAgentWorker:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
         return {} if not raw else json.loads(raw.decode("utf-8"))
 
-    def _download(self, path: str, destination: Path, *, expected_sha256: str) -> str:
+    def _download(
+        self,
+        path: str,
+        destination: Path,
+        *,
+        expected_sha256: str,
+        staging_root: Path | None = None,
+    ) -> str:
+        destination = destination.absolute()
+        root = staging_root if staging_root is not None else Path(destination.anchor)
+        parts = destination.relative_to(root).parts
+        if not parts or any(part in {"..", "."} for part in parts):
+            raise ValueError("Download target escapes staging")
+        make_contained_directories(root, parts[:-1])
+        destination = contained_path(root, parts)
         try:
             transfer = self._request("GET", path + "/download-ticket")
         except urllib.error.HTTPError as exc:
@@ -98,10 +122,27 @@ class ServerAgentWorker:
             url,
             headers={**({} if mode == "gateway" else self.headers), "Authorization": f"Bearer {token}"},
         )
-        destination.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
+        created_identity: tuple[int, int] | None = None
+
+        def remove_partial() -> None:
+            if created_identity is None:
+                return
+            # A failed exclusive create owns nothing. Also refuse cleanup if a
+            # plugin replaced an ancestor or the file after we created it.
+            try:
+                checked = contained_path(root, parts)
+                current = checked.lstat()
+                if (current.st_dev, current.st_ino) == created_identity:
+                    checked.unlink()
+            except OSError, ValueError:
+                LOGGER.warning("Could not safely remove partial input %s", destination)
+
         try:
-            with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as output:
+            with urllib.request.urlopen(request, timeout=60) as response, open_exclusive_write(destination) as output:
+                opened = os.fstat(output.fileno())
+                created_identity = (opened.st_dev, opened.st_ino)
+                contained_path(root, parts)
                 media_type = (
                     str(transfer.get("media_type") or response.headers.get_content_type())
                     .split(";", 1)[0]
@@ -111,12 +152,12 @@ class ServerAgentWorker:
                 while chunk := response.read(1024 * 1024):
                     output.write(chunk)
                     digest.update(chunk)
+                if digest.hexdigest() != expected_sha256:
+                    raise ValueError(f"Downloaded input hash mismatch: {destination.name}")
+                contained_path(root, parts)
         except Exception:  # noqa: BLE001 - remove a partially downloaded untrusted blob
-            destination.unlink(missing_ok=True)
+            remove_partial()
             raise
-        if digest.hexdigest() != expected_sha256:
-            destination.unlink(missing_ok=True)
-            raise ValueError(f"Downloaded input hash mismatch: {destination.name}")
         if media_type == "application/octet-stream":
             # Older gateways describe raw blob bytes rather than artifact types.
             # Frame staging preserves the original extension; hashes are checked
@@ -131,7 +172,13 @@ class ServerAgentWorker:
             }.get(destination.suffix.casefold(), media_type)
         return media_type
 
-    def _upload(self, path: str, source: Path) -> None:
+    def _upload(self, path: str, source: Path, *, staging_root: Path | None = None) -> None:
+        source = source.absolute()
+        root = staging_root if staging_root is not None else Path(source.anchor)
+        with open_regular_read(source, root=root) as stream:
+            self._upload_stream(path, stream)
+
+    def _upload_stream(self, path: str, stream: Any) -> None:
         parsed = urllib.parse.urlsplit(path)
         query = urllib.parse.parse_qs(parsed.query)
         digest = str(query.get("sha256", [""])[0])
@@ -140,35 +187,34 @@ class ServerAgentWorker:
             transfer = self._request(
                 "POST",
                 endpoint + "/upload-ticket",
-                {"sha256": digest, "size_bytes": source.stat().st_size},
+                {"sha256": digest, "size_bytes": os.fstat(stream.fileno()).st_size},
             )
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
                 raise
             transfer = {"mode": "proxy"}
         mode = str(transfer.get("mode", "proxy"))
-        with source.open("rb") as stream:
-            request = urllib.request.Request(
-                str(transfer["url"]) if mode == "gateway" else self.server_url + path,
-                data=stream,
-                method="PUT" if mode == "gateway" else "POST",
-                headers={
-                    **({} if mode == "gateway" else self.headers),
-                    "Authorization": f"Bearer {transfer['token'] if mode == 'gateway' else self.token}",
-                    "Accept": "application/json",
-                    "Content-Type": "application/octet-stream",
-                },
-            )
-            request.add_header("Content-Length", str(source.stat().st_size))
-            with urllib.request.urlopen(request, timeout=120) as response:
-                response.read()
+        request = urllib.request.Request(
+            str(transfer["url"]) if mode == "gateway" else self.server_url + path,
+            data=stream,
+            method="PUT" if mode == "gateway" else "POST",
+            headers={
+                **({} if mode == "gateway" else self.headers),
+                "Authorization": f"Bearer {transfer['token'] if mode == 'gateway' else self.token}",
+                "Accept": "application/json",
+                "Content-Type": "application/octet-stream",
+            },
+        )
+        request.add_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
+        with urllib.request.urlopen(request, timeout=120) as response:
+            response.read()
         if mode == "gateway":
             self._request(
                 "POST",
                 endpoint + "/upload-complete",
                 {
                     "sha256": digest,
-                    "size_bytes": source.stat().st_size,
+                    "size_bytes": os.fstat(stream.fileno()).st_size,
                     "upload_token": str(transfer["token"]),
                 },
             )
@@ -221,35 +267,22 @@ class ServerAgentWorker:
                     f"/api/v1/agent/jobs/{manifest.job_id}/inputs/{item.artifact_version_id}",
                     target,
                     expected_sha256=item.sha256,
+                    staging_root=workspace.path,
                 )
             else:
                 parsed = urlparse(item.external_uri)
                 if parsed.scheme != "file":
-                    raise ValueError(
-                        f"Unsupported external input URI: {item.external_uri}"
-                    )
-                source = Path(
-                    unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path)
-                )
+                    raise ValueError(f"Unsupported external input URI: {item.external_uri}")
+                source = Path(unquote(parsed.path.lstrip("/") if os.name == "nt" else parsed.path))
                 if os.name == "nt" and parsed.netloc:
-                    source = Path(
-                        f"//{parsed.netloc}/{unquote(parsed.path.lstrip('/'))}"
-                    )
+                    source = Path(f"//{parsed.netloc}/{unquote(parsed.path.lstrip('/'))}")
                 try:
                     source = source.resolve(strict=True)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(source, target)
+                    workspace.stage_file(source, item.relative_path, expected_sha256=item.sha256)
                 except OSError as exc:
                     raise FileNotFoundError(
                         f"External input is unavailable to the agent service account: {source}"
                     ) from exc
-                digest = hashlib.sha256()
-                with target.open("rb") as stream:
-                    while chunk := stream.read(1024 * 1024):
-                        digest.update(chunk)
-                if digest.hexdigest() != item.sha256:
-                    target.unlink(missing_ok=True)
-                    raise ValueError(f"External input hash mismatch: {source}")
                 media_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
             inputs.append(
                 PluginFrameInput(
@@ -262,7 +295,7 @@ class ServerAgentWorker:
                     relative_path=item.relative_path,
                 )
             )
-        parameters = dict(manifest.parameters)
+        parameters = encode_model(manifest.parameters)
         parameters.pop("input_media_types", None)
         if stream_inputs:
             parameters["server_url"] = self.server_url
@@ -270,6 +303,10 @@ class ServerAgentWorker:
             from kraken_manager.infrastructure.plugin.agent_gateway import _stage_model
 
             parameters = _stage_model(workspace, parameters)
+        try:
+            created_at = getattr(self.store.get(str(manifest.job_id)).manifest, "created_at", "")
+        except KeyError:
+            created_at = ""  # Domain V1 has no transport timestamp; do not invent one on each handoff.
         return PluginJobManifest(
             job_id=str(manifest.job_id),
             operation=manifest.capability,
@@ -280,28 +317,101 @@ class ServerAgentWorker:
             inputs=tuple(inputs),
             parameters=parameters,
             protocol_version=manifest.protocol_version,
+            created_at=created_at,
         )
 
-    def _heartbeat(self, job_id: str, done: threading.Event) -> None:
-        while not done.wait(max(10, self.lease_seconds // 3)):
+    def _stage_model_input(self, transport, workspace):
+        model = PinnedModelInput.from_parameters(getattr(transport, "parameters", {}))
+        if model is None:
+            return transport
+        destination = workspace.resolve(model.relative_path)
+        try:
+            if workspace.digest(model.relative_path) != model.sha256:
+                raise ValueError("Existing staged model does not match the pinned artifact")
+            media_type = "application/octet-stream"
+        except FileNotFoundError:
+            media_type = self._download(
+                f"/api/v1/agent/jobs/{transport.job_id}/inputs/{model.version_id}",
+                destination,
+                expected_sha256=model.sha256,
+                staging_root=workspace.path,
+            )
+        parameters = dict(transport.parameters, model_relative_path=model.relative_path)
+        if schema := getattr(transport, "schema", None):
+            if schema == PLUGIN_JOB_SCHEMA_V2:
+                from kraken_core.plugin_protocol import PluginAsset
+
+                existing = [item for item in transport.inputs if item.asset_id == model.version_id]
+                if existing:
+                    if (
+                        len(existing) != 1
+                        or existing[0].role != "model"
+                        or existing[0].scope != "layer"
+                        or existing[0].relative_path != model.relative_path
+                        or existing[0].sha256 != model.sha256
+                    ):
+                        raise ValueError("Conflicting V2 model asset binding")
+                    return replace(transport, parameters=parameters)
+                asset = PluginAsset(
+                    asset_id=model.version_id,
+                    role="model",
+                    scope="layer",
+                    relative_path=model.relative_path,
+                    sha256=model.sha256,
+                    media_type=media_type,
+                )
+                return replace(transport, parameters=parameters, inputs=(*transport.inputs, asset))
+        return replace(transport, parameters=parameters)
+
+    def _cancel_lost_lease(self, job_id: str, lost: threading.Event) -> None:
+        from kraken_agent.jobs import AgentJobState, JobStateError
+
+        lost.set()
+        try:
+            job = self.store.get(job_id)
+            self.store.transition(job_id, AgentJobState.CANCELLED, expected_revision=job.revision)
+        except KeyError:
+            # Staging can precede the local queue entry. The caller observes
+            # lost again after enqueue; keep the worker usable.
+            pass
+        except JobStateError:
+            LOGGER.info("Job %s already finished when its lease ended", job_id)
+
+    def _heartbeat(self, job_id: str, done: threading.Event, lost: threading.Event, deadline: float) -> None:
+        from .telemetry import sample_host
+
+        while not done.is_set():
+            if monotonic() >= deadline:
+                self._cancel_lost_lease(job_id, lost)
+                return
             try:
-                self._request("POST", f"/api/v1/agent/jobs/{job_id}/heartbeat", {"lease_seconds": self.lease_seconds})
+                telemetry = sample_host()
+                sent_at = monotonic()
+                if sent_at >= deadline:
+                    self._cancel_lost_lease(job_id, lost)
+                    return
+                self._request(
+                    "POST",
+                    f"/api/v1/agent/jobs/{job_id}/heartbeat",
+                    {
+                        "lease_seconds": self.lease_seconds,
+                        "telemetry": telemetry,
+                    },
+                    timeout=min(5, deadline - sent_at),
+                )
+                # Reserve from send time, not response time, so latency never
+                # extends the worker's local authority past its renewal budget.
+                deadline = sent_at + self.lease_seconds
             except urllib.error.HTTPError as exc:
                 if exc.code not in {403, 409}:
                     LOGGER.exception("Server heartbeat failed for job %s", job_id)
-                    continue
-                from kraken_agent.jobs import AgentJobState, JobStateError
-
-                try:
-                    job = self.store.get(job_id)
-                    self.store.transition(job_id, AgentJobState.CANCELLED, expected_revision=job.revision)
-                except KeyError:
-                    self.runner.stop()
-                except JobStateError:
-                    LOGGER.info("Job %s already finished when its lease ended", job_id)
-                return
+                else:
+                    self._cancel_lost_lease(job_id, lost)
+                    return
             except OSError, ValueError:
                 LOGGER.exception("Server heartbeat failed for job %s", job_id)
+            if done.wait(min(max(10, self.lease_seconds // 3), max(0, deadline - monotonic()))):
+                return
 
     def run_once(self) -> bool:
         lease = self._request(
@@ -322,10 +432,34 @@ class ServerAgentWorker:
 
     def run_leased_job(self, lease: dict[str, Any]) -> dict[str, Any]:
         """Execute a specific lease, including staging and result publication."""
+        with self._lease_lock:
+            if self._stop.is_set():
+                raise RuntimeError("Agent worker has stopped")
+            return self._run_leased_job(lease)
+
+    def _run_leased_job(self, lease: dict[str, Any]) -> dict[str, Any]:
         job_id = str(lease["job_id"])
+        claim = lease.get("lease_claim")
+        if not isinstance(claim, str) or not claim:
+            raise RuntimeError("Server lease has no claim token: update the Server and acquire a new lease")
+        remaining = float(self.lease_seconds)
+        if lease.get("lease_until") is not None:
+            expires = datetime.fromisoformat(str(lease["lease_until"]))
+            if expires.tzinfo is None:
+                raise ValueError("Server lease expiry requires a timezone")
+            remaining = max(0, min(remaining, (expires - datetime.now(UTC)).total_seconds()))
+        deadline = monotonic() + remaining
+        attempt_key = hashlib.sha256(claim.encode()).hexdigest()
+        previous_staging = self.runner.staging_root
+        self.runner.staging_root = self.data_dir / "staging" / attempt_key
+        previous_claim = self.headers.get("X-Kraken-Lease-Claim")
+        previous_environment_claim = self.runner.environment.get("KRAKEN_ASSET_LEASE_CLAIM")
+        self.headers["X-Kraken-Lease-Claim"] = claim
+        self.runner.environment["KRAKEN_ASSET_LEASE_CLAIM"] = claim
         self.runner.environment["KRAKEN_ASSET_TOKEN"] = self.token
         done = threading.Event()
-        heartbeat = threading.Thread(target=self._heartbeat, args=(job_id, done), daemon=True)
+        lost = threading.Event()
+        heartbeat = threading.Thread(target=self._heartbeat, args=(job_id, done, lost, deadline), daemon=True)
         try:
             heartbeat.start()
             raw_manifest = lease["manifest"]
@@ -334,24 +468,73 @@ class ServerAgentWorker:
                 from kraken_agent.protocols import parse_manifest_payload
 
                 transport = parse_manifest_payload(raw_manifest)
-                workspace = StagingWorkspace(self.data_dir / "staging", job_id)
+                workspace = StagingWorkspace(self.runner.staging_root, job_id)
                 workspace.create()
-                workspace.write_manifest(transport)
-                self.store.enqueue(transport)
+                if schema == ANALYSIS_PARTITION_JOB_SCHEMA:
+                    for frame in transport.frames:
+                        for artifact in frame.artifacts:
+                            destination = workspace.resolve(artifact.relative_path)
+                            try:
+                                if workspace.digest(artifact.relative_path) != artifact.sha256:
+                                    raise ValueError("Existing analysis input does not match the pinned version")
+                            except FileNotFoundError:
+                                self._download(
+                                    f"/api/v1/agent/jobs/{job_id}/inputs/{artifact.artifact_version_id}",
+                                    destination,
+                                    expected_sha256=artifact.sha256,
+                                    staging_root=workspace.path,
+                                )
+                elif schema == PLUGIN_JOB_SCHEMA_V2:
+                    for asset in transport.inputs:
+                        destination = workspace.resolve(asset.relative_path)
+                        try:
+                            if workspace.digest(asset.relative_path) != asset.sha256:
+                                raise ValueError("Existing V2 input does not match the pinned version")
+                        except FileNotFoundError:
+                            self._download(f"/api/v1/agent/jobs/{job_id}/inputs/{asset.asset_id}", destination,
+                                expected_sha256=asset.sha256, staging_root=workspace.path)
             else:
                 manifest = decode_model(PluginJobManifestV1, raw_manifest)
-                workspace = StagingWorkspace(self.data_dir / "staging", job_id)
+                workspace = StagingWorkspace(self.runner.staging_root, job_id)
                 workspace.create()
                 transport = self._transport_manifest(manifest, workspace)
-                workspace.write_manifest(transport)
-                self.store.enqueue(transport)
-            self.runner.run_once()
+            transport = self._stage_model_input(transport, workspace)
+            workspace.write_manifest(transport)
+            self.store.enqueue(transport, attempt_key=attempt_key)
+            if lost.is_set():
+                from kraken_agent.jobs import AgentJobState, JobStateError
+
+                job = self.store.get(job_id)
+                try:
+                    self.store.transition(job_id, AgentJobState.CANCELLED, expected_revision=job.revision)
+                except JobStateError:
+                    pass
+                return {"imported": {"job": {"state": "cancelled"}}}
+            self.runner.run_once(job_id=job_id, cancel_event=lost)
             job = self.store.get(job_id)
-            if job.state.value == "cancelled":
+            if lost.is_set() or job.state.value == "cancelled":
                 return {"imported": {"job": {"state": "cancelled"}}}
             if job.result is None:
                 raise RuntimeError(job.error or "Plugin finished without a result")
             result = job.result
+            from kraken_core.analysis_run_protocol import AnalysisPartitionResultManifest
+
+            if isinstance(result, AnalysisPartitionResultManifest):
+                if result.rendered_map is not None:
+                    self._upload(
+                        f"/api/v1/agent/jobs/{job_id}/outputs/analysis-map?"
+                        + urllib.parse.urlencode({"sha256": result.rendered_map.sha256}),
+                        workspace.resolve(result.rendered_map.relative_path), staging_root=workspace.path,
+                    )
+                if result.bundle is not None:
+                    self._upload(
+                        f"/api/v1/agent/jobs/{job_id}/outputs/analysis-bundle?"
+                        + urllib.parse.urlencode({"sha256": result.bundle.sha256}),
+                        workspace.resolve(result.bundle.relative_path),
+                        staging_root=workspace.path,
+                    )
+                self._request("POST", f"/api/v1/agent/jobs/{job_id}/publications", result.to_payload())
+                return self._request("POST", f"/api/v1/agent/jobs/{job_id}/complete", {})
             outputs = getattr(result, "outputs", getattr(result, "results", ()))
             for output in outputs:
                 relative_path = getattr(output, "relative_path", None)
@@ -362,6 +545,7 @@ class ServerAgentWorker:
                         f"/api/v1/agent/jobs/{job_id}/outputs/{output_id}?"
                         + urllib.parse.urlencode({"sha256": sha256}),
                         workspace.path / relative_path,
+                        staging_root=workspace.path,
                     )
             self._request(
                 "POST",
@@ -382,14 +566,26 @@ class ServerAgentWorker:
         finally:
             done.set()
             if heartbeat.is_alive():
-                heartbeat.join(timeout=5)
+                heartbeat.join(timeout=7)
+                if heartbeat.is_alive():
+                    LOGGER.error("Heartbeat did not stop; retire this worker before another lease")
+                    self.stop()
+            self.runner.staging_root = previous_staging
+            if previous_environment_claim is None:
+                self.runner.environment.pop("KRAKEN_ASSET_LEASE_CLAIM", None)
+            else:
+                self.runner.environment["KRAKEN_ASSET_LEASE_CLAIM"] = previous_environment_claim
+            if previous_claim is None:
+                self.headers.pop("X-Kraken-Lease-Claim", None)
+            else:
+                self.headers["X-Kraken-Lease-Claim"] = previous_claim
 
     def run_forever(self, *, idle_seconds: float = 2.0) -> None:
         self.store.recover_interrupted()
         while not self._stop.is_set():
             try:
                 worked = self.run_once()
-            except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
+            except OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError:
                 worked = False
             if not worked:
                 self._stop.wait(idle_seconds)

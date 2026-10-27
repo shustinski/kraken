@@ -217,4 +217,5 @@ def test_agent_lease_moves_a_queued_job_to_leased() -> None:
             )
         ).scalar_one()
     assert state == "leased"
-    gateway.heartbeat("11111111-1111-1111-1111-111111111111", agent, seconds=60)
+    from dataclasses import replace
+    gateway.heartbeat("11111111-1111-1111-1111-111111111111", replace(agent, lease_claim=leased["lease_claim"]), seconds=60)

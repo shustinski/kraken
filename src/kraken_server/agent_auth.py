@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -15,6 +15,7 @@ class AgentIdentity:
     token_id: str
     name: str
     capabilities: frozenset[str]
+    lease_claim: str | None = field(default=None, repr=False)
 
 
 class PostgresAgentTokenStore:

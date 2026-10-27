@@ -84,6 +84,7 @@ class _StagedProjectionStore:
         "artifact_version": "artifact_version",
         "plugin_job": "plugin_job",
         "review_batch": "review_batch",
+        "work_order": "work_order",
         "note": "note",
     }
 
@@ -229,6 +230,8 @@ class _StagedProjectionStore:
 
     def save_review_batch(self, batch: Any) -> None:
         self._save("review_batch", batch)
+        from kraken_manager.infrastructure.projections.review_work_orders import synchronize_review_work_orders
+        synchronize_review_work_orders(self, batch)
 
     def list_active_review_batches(
         self, project_id: Any, layer_id: Any, *, as_of: datetime | None = None
@@ -270,6 +273,19 @@ class _StagedProjectionStore:
 
     def get_note(self, note_id: str, *, as_of: datetime | None = None) -> Any | None:
         return self._get("note", note_id, as_of=as_of)
+
+    def get_work_order(self, order_id: Any, *, as_of: datetime | None = None) -> Any | None:
+        return self._get("work_order", order_id, as_of=as_of)
+
+    def save_work_order(self, order: Any) -> None:
+        self._save("work_order", order)
+
+    def list_work_orders(self, project_id: Any, *, as_of: datetime | None = None) -> tuple[Any, ...]:
+        return self._merge_list(
+            "work_order", self.backing.list_work_orders(project_id, as_of=as_of),
+            lambda model: str(model.project_id) == str(project_id),
+            include_archived=True, as_of=as_of,
+        )
 
     def list_notes(
         self,

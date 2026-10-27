@@ -165,6 +165,7 @@ class AnalysisRunsPanel(QFrame):
     repeatRequested = pyqtSignal(str)
     exportRequested = pyqtSignal(str)
     renderMapRequested = pyqtSignal(str, str)
+    runtimeRequested = pyqtSignal(str)
     metricChanged = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -198,12 +199,15 @@ class AnalysisRunsPanel(QFrame):
         self.repeat_button = QPushButton("Повторить запуск")
         self.map_button = QPushButton("Показать карту")
         self.export_button = QPushButton("Экспортировать")
+        self.runtime_button = QPushButton("Среда worker")
+        self.runtime_button.setObjectName("analysisRuntimeDetails")
         for button in (
             self.retry_button,
             self.cancel_button,
             self.repeat_button,
             self.map_button,
             self.export_button,
+            self.runtime_button,
         ):
             actions.addWidget(button)
         actions.addStretch(1)
@@ -215,6 +219,7 @@ class AnalysisRunsPanel(QFrame):
         self.cancel_button.clicked.connect(lambda: self.cancelRequested.emit(self.selected_run_id()))
         self.repeat_button.clicked.connect(lambda: self.repeatRequested.emit(self.selected_run_id()))
         self.export_button.clicked.connect(lambda: self.exportRequested.emit(self.selected_run_id()))
+        self.runtime_button.clicked.connect(lambda: self.runtimeRequested.emit(self.selected_run_id()))
         self.map_button.clicked.connect(
             lambda: self.renderMapRequested.emit(self.selected_run_id(), self.selected_frame_id())
         )
@@ -234,6 +239,8 @@ class AnalysisRunsPanel(QFrame):
         self.run_table.setRowCount(len(values))
         for row, run in enumerate(values):
             status = QTableWidgetItem(str(run.get("state", "")))
+            if run.get("runtime_summary"):
+                status.setToolTip(str(run["runtime_summary"]))
             status.setData(Qt.ItemDataRole.UserRole, str(run.get("run_id", "")))
             self.run_table.setItem(row, 0, status)
             self.run_table.setItem(row, 1, QTableWidgetItem(str(run.get("progress", ""))))

@@ -171,9 +171,7 @@ class ArtifactSeries:
 
     def rename(self, name: str, *, expected_revision: int | None = None) -> Self:
         if expected_revision is not None and expected_revision != self.revision:
-            raise DomainValidationError(
-                f"expected artifact series revision {expected_revision}, found {self.revision}"
-            )
+            raise DomainValidationError(f"expected artifact series revision {expected_revision}, found {self.revision}")
         return replace(
             self,
             name=require_non_empty(name, field="artifact_series.name", maximum=512),
@@ -184,9 +182,7 @@ class ArtifactSeries:
         if self.archived:
             return self
         if expected_revision is not None and expected_revision != self.revision:
-            raise DomainValidationError(
-                f"expected artifact series revision {expected_revision}, found {self.revision}"
-            )
+            raise DomainValidationError(f"expected artifact series revision {expected_revision}, found {self.revision}")
         return replace(self, archived=True, revision=self.revision + 1)
 
 
@@ -355,9 +351,7 @@ class NoteRevision:
         object.__setattr__(self, "note_id", validate_uuid(self.note_id, field="note.id"))
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 1:
             raise DomainValidationError("note.revision must start at 1")
-        object.__setattr__(
-            self, "project_id", ProjectId(validate_uuid(str(self.project_id), field="note.project_id"))
-        )
+        object.__setattr__(self, "project_id", ProjectId(validate_uuid(str(self.project_id), field="note.project_id")))
         object.__setattr__(
             self,
             "author_principal_id",
@@ -400,6 +394,29 @@ class Attachment:
             )
 
 
+def is_published_model_artifact(version: ArtifactVersion) -> bool:
+    """A declared managed model attachment, never a filename-only guess."""
+    parameters = version.parameters or {}
+    role = parameters.get("artifact_role", parameters.get("plugin_output_role"))
+    legacy = parameters.get("plugin_output_role")
+    return (version.blob is not None and role == "model" and (legacy is None or legacy == role)
+            and version.filename.rsplit(".", 1)[-1].casefold() in {"onnx", "pt", "pth", "h5", "keras"})
+
+
+def is_training_dataset_artifact(version: ArtifactVersion) -> bool:
+    """Classify audited dataset artifacts without inventing a plugin execution.
+
+    New manual publishers declare artifact_role. Older plugin results retain
+    plugin_output_role. Conflicting declarations fail closed. This classification
+    grants no permissions; callers must still check project/layer ownership and
+    the compute worker validates the immutable ZIP content and hash.
+    """
+    parameters = version.parameters or {}
+    role = parameters.get("artifact_role", parameters.get("plugin_output_role"))
+    legacy = parameters.get("plugin_output_role")
+    return version.media_type == "application/zip" and role == "dataset" and (legacy is None or legacy == role)
+
+
 __all__ = [
     "ArtifactScope",
     "ArtifactSeries",
@@ -410,4 +427,6 @@ __all__ = [
     "ExternalReference",
     "NoteRevision",
     "validate_sha256",
+    "is_training_dataset_artifact",
+    "is_published_model_artifact",
 ]

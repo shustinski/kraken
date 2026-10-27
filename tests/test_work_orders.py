@@ -13,7 +13,7 @@ from zipfile import ZipFile
 import pytest
 
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_manager.application.work_package import WorkIssueRequest, place_work_order
+from kraken_manager.infrastructure.work_package import WorkIssueRequest, place_work_order
 from kraken_manager.domain.common import LayerId, PerformerId, PrincipalId, ProjectId
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.domain.work_orders import WorkKind, WorkOrder, WorkPlacement

@@ -5,8 +5,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Iterator
+from types import SimpleNamespace
 
 from kraken_core.analysis_protocol import AnalysisFrameResult
+from kraken_core.analysis_runtime import measured_runtime, validate_worker_runtime
 from kraken_core.analysis_run_protocol import (
     AnalysisPartitionJobManifest,
     AnalysisPartitionResultManifest,
@@ -217,8 +219,19 @@ class PostgresAnalysisProjectionStore:
             ).mappings().one_or_none()
             if partition is None:
                 raise KeyError(result.partition_id)
+            job = AnalysisPartitionJobManifest.from_payload(partition["manifest"])
+            if (result.job_id, result.run_id, result.project_id) != (job.job_id, job.run_id, job.project_id):
+                raise ValueError("Analysis result belongs to another partition attempt")
+            connection.execute(sa.select(self.runs.c.run_id).where(self.runs.c.run_id == job.run_id).with_for_update()).one()
+            partition = connection.execute(sa.select(self.partitions).where(
+                self.partitions.c.partition_id == result.partition_id)).mappings().one()
+            if partition["manifest"] != job.to_payload():
+                raise ValueError("Analysis attempt changed while importing its result")
+            receipts = connection.execute(sa.select(self.partitions.c.result).where(
+                self.partitions.c.run_id == job.run_id, self.partitions.c.state == "imported")).scalars().all()
+            validate_worker_runtime(job, result, pinned=measured_runtime([r for r in receipts if r], require_all=False))
             if partition["state"] == "imported":
-                if partition["bundle_sha256"] != result.bundle.sha256:
+                if partition["bundle_sha256"] != result.bundle.sha256 or partition["result"] != result.to_payload():
                     raise ValueError("Imported partition was repeated with different content")
                 return False
             for frame in frames:
@@ -291,6 +304,64 @@ class PostgresAnalysisProjectionStore:
         with self._scope() as connection:
             row = connection.execute(sa.select(self.runs).where(self.runs.c.run_id == run_id)).mappings().one_or_none()
         return None if row is None else dict(row)
+
+    def get_run(self, run_id: str):
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            row = connection.execute(sa.select(self.runs).where(self.runs.c.run_id == run_id)).mappings().one_or_none()
+            if row is None:
+                return None
+            total, imported = connection.execute(sa.select(sa.func.count(), sa.func.count().filter(
+                self.partitions.c.state == "imported")).select_from(self.partitions).where(
+                    self.partitions.c.run_id == run_id)).one()
+        return SimpleNamespace(**{**dict(row), "manifest": AnalysisRunManifest.from_payload(row["manifest"]),
+                                  "total_partitions": int(total), "imported_partitions": int(imported),
+                                  "worker_runtime": self.worker_runtime(run_id)})
+
+    def worker_runtime(self, run_id):
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            rows = connection.execute(sa.select(self.partitions.c.result).where(
+                self.partitions.c.run_id == run_id, self.partitions.c.state == "imported")).scalars().all()
+        return measured_runtime([row or {} for row in rows])
+
+    pinned_runtime = worker_runtime
+
+    def list_runs(self):
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            identifiers = connection.execute(sa.select(self.runs.c.run_id).order_by(self.runs.c.created_at.desc())).scalars().all()
+        return tuple(self.get_run(identifier) for identifier in identifiers)
+
+    def list_runs_for_project(self, project_id):
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            identifiers = connection.execute(sa.select(self.runs.c.run_id).where(
+                self.runs.c.project_id == str(project_id)).order_by(self.runs.c.created_at.desc())).scalars().all()
+        return tuple(self.get_run(identifier) for identifier in identifiers)
+
+    def all_partitions(self, run_id: str):
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            payloads = connection.execute(sa.select(self.partitions.c.manifest).where(
+                self.partitions.c.run_id == run_id).order_by(self.partitions.c.partition_index)).scalars().all()
+        return tuple(AnalysisPartitionJobManifest.from_payload(payload) for payload in payloads)
+
+    def metric_keys(self, run_id: str):
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            return tuple(connection.execute(sa.select(self.metrics.c.metric_key).where(
+                self.metrics.c.run_id == run_id).distinct().order_by(self.metrics.c.metric_key)).scalars())
+
+    def frame_results(self, run_id: str, metric_key: str):
+        sa, _ = _sqlalchemy()
+        joined = self.frames.outerjoin(self.metrics, sa.and_(self.metrics.c.run_id == self.frames.c.run_id,
+            self.metrics.c.frame_id == self.frames.c.frame_id, self.metrics.c.metric_key == metric_key))
+        with self._scope() as connection:
+            return tuple(dict(row) for row in connection.execute(sa.select(self.frames.c.frame_id, self.frames.c.x,
+                self.frames.c.y, self.frames.c.status, self.frames.c.message, self.metrics.c.raw_value,
+                self.metrics.c.goodness, self.metrics.c.percentile).select_from(joined).where(
+                    self.frames.c.run_id == run_id).order_by(self.frames.c.y, self.frames.c.x)).mappings())
 
 
 __all__ = ["PostgresAnalysisProjectionStore"]

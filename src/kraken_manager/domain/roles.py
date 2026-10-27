@@ -238,6 +238,10 @@ _ACTION_TITLES = {
 
 
 def action_for_request(method: str, path: str) -> str:
+    if "/quality-issues" in path:
+        # These commands select their permission by operation inside the UoW,
+        # including the selected acting role, rather than by the shared URL.
+        return ""
     if method.upper() == "POST" and path.rstrip("/").endswith("/projects"):
         return ""
     rules = (

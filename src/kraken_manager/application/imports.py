@@ -21,12 +21,16 @@ class ImportSource:
     source_key: str
     display_name: str
     size_bytes: int
+    expected_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not self.source_key.strip() or not self.display_name.strip():
             raise ValueError("import source key and display name are required")
         if isinstance(self.size_bytes, bool) or self.size_bytes < 0:
             raise ValueError("import source size cannot be negative")
+        if self.expected_sha256 is not None:
+            from kraken_manager.domain.artifacts import validate_sha256
+            object.__setattr__(self, "expected_sha256", validate_sha256(self.expected_sha256))
 
 
 @dataclass(frozen=True, slots=True)

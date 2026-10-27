@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from datetime import datetime
 import os
 import tempfile
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
@@ -103,6 +105,15 @@ class ProjectionRebuilder:
     def apply(self, envelope: EventEnvelope) -> bool:
         event = self.upcasters.upcast(envelope)
         payload = dict(event.payload)
+        if event.event_type == "WorkOrderRecordedV1":
+            from kraken_manager.domain.work_orders import WorkOrder
+            from kraken_manager.infrastructure.filesystem._codec import decode_model
+
+            order = decode_model(WorkOrder, payload["work_order"])
+            if order.project_id != event.project_id or event.stream_id != f"work-order:{order.id}":
+                raise ValueError("work order event identity does not match its payload")
+            self._save("work_order", order, event)
+            return True
         if event.event_type == "ProjectCreated":
             project = Project(
                 id=ProjectId(str(payload["project_id"])),
@@ -271,16 +282,25 @@ class ProjectionRebuilder:
                 self._save("layer", replace(layer, revision=event.revision), event)
             return True
         if event.event_type == "ArtifactSeriesCreated":
+            # Older aggregate plugin imports serialized absent optional IDs as
+            # str(None). Interpret that exact legacy encoding only for attachment
+            # scope; frame-representation IDs must still be valid UUIDs.
+            attachment = str(payload["scope"]) in {"layer_attachment", "project_attachment"}
+
+            def optional_id(key, factory):
+                value = payload.get(key)
+                if value is None or (attachment and value == "None"):
+                    return None
+                return factory(str(value))
+
             series = ArtifactSeries(
                 id=ArtifactSeriesId(str(payload["artifact_series_id"])),
                 project_id=event.project_id,
                 scope=ArtifactScope(str(payload["scope"])),
                 name=str(payload["name"]),
-                layer_id=None if payload.get("layer_id") is None else LayerId(str(payload["layer_id"])),
-                representation_id=None
-                if payload.get("representation_id") is None
-                else RepresentationId(str(payload["representation_id"])),
-                frame_id=None if payload.get("frame_id") is None else FrameId(str(payload["frame_id"])),
+                layer_id=optional_id("layer_id", LayerId),
+                representation_id=optional_id("representation_id", RepresentationId),
+                frame_id=optional_id("frame_id", FrameId),
                 archived=bool(payload.get("archived", False)),
             )
             self._save("artifact_series", series, event)
@@ -481,6 +501,10 @@ class ProjectionRebuilder:
                 updated_at=self._time(payload, "updated_at", event.recorded_at),
             )
             self._save("review_batch", transitioned, event)
+            from kraken_manager.infrastructure.projections.review_work_orders import synchronize_review_work_orders
+            synchronize_review_work_orders(
+                self.store, transitioned, save=lambda order: self._save("work_order", order, event),
+            )
             return True
         return False
 
@@ -504,6 +528,17 @@ def rebuild_filesystem_index(
 
     index_path = Path(projection_store.path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
+    if index_path.exists():
+        with closing(sqlite3.connect(index_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            legacy_analysis = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_runs'"
+            ).fetchone()
+        if legacy_analysis is not None:
+            # Preserve/migrate old shared analysis projections before replacing
+            # the metadata cache. Reuse the caller's lock for safe reentrancy.
+            from kraken_manager.infrastructure.analysis.filesystem import FilesystemAnalysisStore
+            FilesystemAnalysisStore(projection_store.layout.catalog_root, projection_store.layout.project_id,
+                                    event_store=event_store)
     descriptor, temporary_name = tempfile.mkstemp(prefix="read-rebuild-", suffix=".sqlite3", dir=index_path.parent)
     os.close(descriptor)
     temporary = Path(temporary_name)

@@ -108,7 +108,12 @@ class WorkOrder:
         object.__setattr__(self, "updated_at", as_utc(self.updated_at, field="work_order.updated_at"))
         if self.updated_at < self.created_at:
             raise DomainValidationError("work_order.updated_at cannot precede creation")
-        object.__setattr__(self, "destination", require_non_empty(self.destination, field="work_order.destination"))
+        # A destination is a path/locator, not a 255-character display name.
+        # The filesystem adapter applies its actual platform/path permissions.
+        destination = require_non_empty(self.destination, field="work_order.destination", maximum=32767)
+        if '\x00' in destination:
+            raise DomainValidationError('work_order.destination must not contain NUL')
+        object.__setattr__(self, "destination", destination)
         if isinstance(self.frame_count, bool) or not isinstance(self.frame_count, int) or self.frame_count < 0:
             raise DomainValidationError("work_order.frame_count must not be negative")
         if self.kind is not WorkKind.TRAIN and self.frame_count < 1:

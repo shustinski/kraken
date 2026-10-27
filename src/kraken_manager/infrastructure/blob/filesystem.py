@@ -8,6 +8,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from kraken_core.safe_files import is_link_or_reparse
 from kraken_manager.application.dto import StoredContent
 from kraken_manager.domain.artifacts import BlobRef
 from kraken_manager.infrastructure.filesystem._atomic import fsync_directory
@@ -227,12 +228,12 @@ class FilesystemBlobStore:
 
     def iter_refs(self) -> Iterator[BlobRef]:
         for directory, names, files in os.walk(self.root, followlinks=False):
-            names[:] = [name for name in names if not (Path(directory) / name).is_symlink()]
+            names[:] = [name for name in names if not is_link_or_reparse(Path(directory) / name)]
             for name in sorted(files):
                 if not _SHA256.fullmatch(name):
                     continue
                 path = Path(directory) / name
-                if path.is_symlink() or path != self._path(name):
+                if is_link_or_reparse(path) or path != self._path(name):
                     continue
                 yield BlobRef(sha256=name, size_bytes=path.stat().st_size)
 

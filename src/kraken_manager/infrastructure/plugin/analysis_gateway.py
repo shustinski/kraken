@@ -15,6 +15,7 @@ from kraken_core.analysis_run_protocol import AnalysisPartitionJobManifest, Anal
 from kraken_manager.application.analysis_runs import AnalysisGatewayJob
 
 from .agent_gateway import AgentUnavailable
+from kraken_core.safe_files import open_regular_read
 
 
 class AgentAnalysisGateway:
@@ -88,7 +89,12 @@ class AgentAnalysisGateway:
         return self._job(self._request("POST", "/api/v1/jobs", manifest.to_payload()))
 
     def get(self, job_id: str) -> AnalysisGatewayJob:
-        return self._job(self._request("GET", f"/api/v1/jobs/{job_id}"))
+        try:
+            return self._job(self._request("GET", f"/api/v1/jobs/{job_id}"))
+        except AgentUnavailable as exc:
+            if isinstance(exc.__cause__, HTTPError) and exc.__cause__.code == 404:
+                raise KeyError(job_id) from exc
+            raise
 
     def result(self, manifest: AnalysisPartitionJobManifest) -> tuple[AnalysisPartitionResultManifest, Path]:
         workspace = StagingWorkspace(self.staging_root, manifest.job_id)
@@ -98,6 +104,25 @@ class AgentAnalysisGateway:
             raise ValueError("Agent did not publish a Karakal frame bundle")
         workspace.verify_result(parsed, manifest)
         return parsed, workspace.resolve(parsed.bundle.relative_path)
+
+    def map_result(self, manifest):
+        result, _bundle_path = self.result(manifest)
+        if result.rendered_map is None:
+            raise ValueError("Agent did not publish the requested map")
+        workspace = StagingWorkspace(self.staging_root, manifest.job_id)
+        with open_regular_read(workspace.resolve(result.rendered_map.relative_path), root=workspace.path) as stream:
+            data = stream.read(result.rendered_map.size_bytes + 1)
+        return result, data
+
+    def failure_result(self, manifest):
+        workspace = StagingWorkspace(self.staging_root, manifest.job_id)
+        with open_regular_read(workspace.resolve("result.json"), root=workspace.path) as stream:
+            result = parse_result_json(stream.read(4 * 1024 * 1024).decode("utf-8"))
+        if not isinstance(result, AnalysisPartitionResultManifest) or (
+                result.job_id, result.run_id, result.partition_id, result.project_id) != (
+                manifest.job_id, manifest.run_id, manifest.partition_id, manifest.project_id):
+            raise ValueError("Worker failure result belongs to another analysis attempt")
+        return result
 
     def _transition(self, job: AnalysisGatewayJob, suffix: str) -> AnalysisGatewayJob:
         return self._job(

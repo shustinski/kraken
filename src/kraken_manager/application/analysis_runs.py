@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Protocol
 from uuid import uuid4
+from .analysis_maps import AnalysisMapsCoordinatorMixin
 
 from kraken_core.analysis_protocol import AnalysisFrameInput, AnalysisParameter
 from kraken_core.analysis_run_protocol import (
@@ -63,6 +65,8 @@ class AnalysisRunStore(Protocol):
 
     def all_partitions(self, run_id: str) -> tuple[AnalysisPartitionJobManifest, ...]: ...
 
+    def queued_partitions(self, run_id: str) -> tuple[AnalysisPartitionJobManifest, ...]: ...
+
     def failed_partitions(self, run_id: str) -> tuple[AnalysisPartitionJobManifest, ...]: ...
 
     def requeue_partition(self, manifest: AnalysisPartitionJobManifest) -> None: ...
@@ -74,7 +78,7 @@ class AnalysisRunStore(Protocol):
     def mark_partition_state(self, partition_id: str, state: str, *, error: str = "") -> None: ...
 
 
-class AnalysisRunCoordinator:
+class AnalysisRunCoordinator(AnalysisMapsCoordinatorMixin):
     """Create reproducible runs, dispatch partitions and import completed bundles."""
 
     def __init__(
@@ -97,6 +101,7 @@ class AnalysisRunCoordinator:
         runtime: AnalysisRuntimeIdentity,
         parameters: tuple[AnalysisParameter, ...] = (),
         run_id: str | None = None,
+        expected_runtime: AnalysisRuntimeIdentity | None = None,
     ) -> tuple[AnalysisRunManifest, tuple[AnalysisPartitionJobManifest, ...]]:
         if not frames:
             raise ValueError("Analysis selection is empty")
@@ -127,6 +132,8 @@ class AnalysisRunCoordinator:
                 recipe=recipe,
                 frames=chunk,
                 parameters=parameters,
+                require_worker_runtime=True,
+                expected_runtime=expected_runtime,
             )
             for index, chunk in enumerate(chunks)
         )
@@ -149,6 +156,7 @@ class AnalysisRunCoordinator:
         recipe: AnalysisRecipe,
         runtime: AnalysisRuntimeIdentity,
         parameters: tuple[AnalysisParameter, ...] = (),
+        expected_runtime: AnalysisRuntimeIdentity | None = None,
     ) -> AnalysisRunManifest:
         run, partitions = self.build_contracts(
             project_id=project_id,
@@ -157,6 +165,7 @@ class AnalysisRunCoordinator:
             recipe=recipe,
             runtime=runtime,
             parameters=parameters,
+            expected_runtime=expected_runtime,
         )
         self.store.create_run(run, partitions)
         for partition in partitions:
@@ -169,7 +178,26 @@ class AnalysisRunCoordinator:
         return run
 
     def refresh(self, run_id: str) -> object | None:
+        self.repair_cancellations(run_id)
+        # Run creation persists all dispatch intents before contacting Agent.
+        # Repair only queued intents: cancelled/failed attempts require an
+        # explicit user retry and must never resurrect during polling.
+        queued = getattr(self.store, "queued_partitions", lambda _id: ())
+        for partition in queued(run_id):
+            try:
+                try:
+                    self.gateway.get(partition.job_id)
+                except KeyError:
+                    self.gateway.submit(partition, self._source_paths(partition))
+                self.store.mark_partition_state(partition.partition_id, "running")
+            except Exception:
+                # A transport outage is not proof of absence or job failure.
+                # Keep the exact immutable intent available for the next poll.
+                continue
+        still_queued = {item.partition_id for item in queued(run_id)}
         for partition in self.store.retryable_partitions(run_id):
+            if partition.partition_id in still_queued:
+                continue
             try:
                 job = self.gateway.get(partition.job_id)
                 if job.state in {"queued", "staging", "running"}:
@@ -182,35 +210,55 @@ class AnalysisRunCoordinator:
                     self.store.import_partition(result, bundle_path)
                     self.gateway.complete_import(job)
                 elif job.state in {"failed", "cancelled", "recovery_required"}:
+                    failure = None
+                    if job.state == "failed" and hasattr(self.gateway, "failure_result"):
+                        try:
+                            failure = self.gateway.failure_result(partition)
+                        except (OSError, ValueError):
+                            logging.getLogger(__name__).exception("Worker failure receipt unavailable: %s", job.job_id)
                     self.store.mark_partition_state(
                         partition.partition_id,
                         "cancelled" if job.state == "cancelled" else "failed",
                         error=job.error,
+                        **({} if failure is None else {"result": failure}),
                     )
             except Exception as exc:
                 self.store.mark_partition_state(partition.partition_id, "failed", error=str(exc))
         return self.store.get_run(run_id)
 
     def retry_failed(self, run_id: str) -> None:
+        pinned = getattr(self.store, "pinned_runtime", lambda _id: None)(run_id)
         for partition in self.store.failed_partitions(run_id):
-            replacement = replace(partition, job_id=str(uuid4()))
+            replacement = replace(partition, job_id=str(uuid4()), require_worker_runtime=True,
+                                  expected_runtime=pinned or partition.expected_runtime)
             self.store.requeue_partition(replacement)
             self.gateway.submit(replacement, self._source_paths(replacement))
             self.store.mark_partition_state(replacement.partition_id, "running")
 
     def cancel(self, run_id: str) -> None:
+        self.cancel_maps(run_id)
         for partition in self.store.retryable_partitions(run_id):
-            job = self.gateway.get(partition.job_id)
-            if job.state not in {"failed", "cancelled", "succeeded"}:
-                self.gateway.cancel(job)
-                self.store.mark_partition_state(partition.partition_id, "cancelled")
+            self.store.mark_partition_state(partition.partition_id, "cancelled")
+        self.repair_cancellations(run_id)
+
+    def repair_cancellations(self, run_id):
+        for partition in getattr(self.store, "cancelled_partitions", lambda _id: ())(run_id):
+            try:
+                job = self.gateway.get(partition.job_id)
+                if job.state not in {"failed", "cancelled", "succeeded", "recovery_required"}:
+                    self.gateway.cancel(job)
+            except KeyError:
+                continue
+            except (OSError, RuntimeError) as exc:
+                logging.getLogger(__name__).warning("Cancellation of analysis %s remains pending: %s", partition.job_id, exc)
 
     def repeat(self, run_id: str) -> AnalysisRunManifest:
         previous = self.store.get_run(run_id)
         if previous is None:
             raise KeyError(f"Unknown analysis run: {run_id}")
         manifest = previous.manifest
-        frames = tuple(frame for partition in self.store.all_partitions(run_id) for frame in partition.frames)
+        partitions = self.store.all_partitions(run_id)
+        frames = tuple(frame for partition in partitions for frame in partition.frames)
         return self.start(
             project_id=manifest.project_id,
             frames=frames,
@@ -218,6 +266,8 @@ class AnalysisRunCoordinator:
             recipe=manifest.recipe,
             runtime=manifest.runtime,
             parameters=manifest.parameters,
+            expected_runtime=(getattr(self.store, "pinned_runtime", lambda _id: None)(run_id)
+                              or (partitions[0].expected_runtime if partitions else None)),
         )
 
 

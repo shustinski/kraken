@@ -10,6 +10,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from kraken_agent.jobs import StagingWorkspace
+from kraken_core.safe_files import open_regular_read
+from kraken_core.model_input import PinnedModelInput
 from kraken_core.plugin_protocol import (
     FRAME_ROLE_MODEL,
     FRAME_ROLE_SOURCE,
@@ -21,6 +23,7 @@ from kraken_core.plugin_protocol import (
 )
 from kraken_manager.domain.common import ArtifactVersionId, FrameId, PluginJobId
 from kraken_manager.domain.workflows import PluginJobManifestV1
+from kraken_manager.infrastructure.filesystem._codec import encode_model
 
 
 class AgentUnavailable(RuntimeError):
@@ -97,6 +100,12 @@ class AgentPluginGateway:
             raise AgentUnavailable(f"Agent has no compatible capability {manifest.capability}")
         workspace = StagingWorkspace(self.staging_root, str(manifest.job_id))
         workspace.create()
+        created_at = ""
+        try:
+            with open_regular_read(workspace.resolve("job.json"), root=workspace.path) as stream:
+                created_at = str(json.load(stream).get("created_at", ""))
+        except FileNotFoundError:
+            pass
         inputs: list[PluginFrameInput] = []
         v2_inputs: list[PluginAsset] = []
         for item in manifest.inputs:
@@ -138,9 +147,20 @@ class AgentPluginGateway:
                 item.relative_path,
                 expected_sha256=item.sha256,
             )
-        parameters = _stage_model(workspace, dict(manifest.parameters))
+        parameters = encode_model(manifest.parameters)
+        model = PinnedModelInput.from_parameters(parameters)
+        if model is None:
+            parameters = _stage_model(workspace, parameters)
+        else:
+            workspace.stage_file(self.source_for_version(ArtifactVersionId(model.version_id)), model.relative_path,
+                                 expected_sha256=model.sha256)
+            parameters["model_relative_path"] = model.relative_path
+            v2_inputs.append(PluginAsset(asset_id=model.version_id, role=FRAME_ROLE_MODEL, scope="layer",
+                                        relative_path=model.relative_path, sha256=model.sha256,
+                                        media_type=self.media_type_for_version(ArtifactVersionId(model.version_id))))
         transport = (
             PluginJobManifestV2(
+                created_at=created_at,
                 job_id=str(manifest.job_id),
                 operation=manifest.capability,
                 project_id=str(manifest.project_id),
@@ -152,6 +172,7 @@ class AgentPluginGateway:
             )
             if manifest.capability in self.v2_capabilities
             else PluginJobManifest(
+                created_at=created_at,
                 job_id=str(manifest.job_id),
                 operation=manifest.capability,
                 project_id=str(manifest.project_id),

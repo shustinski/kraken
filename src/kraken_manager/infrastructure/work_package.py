@@ -5,14 +5,21 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import mimetypes
+from kraken_core.media_types import artifact_media_type
+import os
+import shutil
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from kraken_core.plugin_protocol import PluginFrameInput, PluginJobManifest
-from kraken_manager.domain.artifacts import deterministic_frame_series_id
+from kraken_core.plugin_protocol import PluginFrameInput, PluginJobManifest, safe_relative_path
+from kraken_core.safe_files import (
+    contained_path, ensure_regular_directory, make_contained_directories, open_exclusive_write,
+)
+from kraken_manager.infrastructure.review.package import ReviewPackageLimits, _zip_members
+from kraken_manager.domain.artifacts import deterministic_frame_series_id, is_training_dataset_artifact
 from kraken_manager.domain.common import PerformerId, new_uuid
 from kraken_manager.domain.project import RepresentationKind
 from kraken_manager.domain.selection import FrameRowRange, FrameSelectionV1
@@ -69,21 +76,49 @@ def write_json(path: Path, payload: object) -> None:
     write_exclusive(path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
-def extract_dataset_archive(content: bytes, destination: Path) -> None:
+def extract_dataset_archive(content: bytes, destination: Path, *, limits: ReviewPackageLimits | None = None) -> None:
+    limits = limits or ReviewPackageLimits()
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
-        for info in archive.infolist():
-            if info.is_dir():
-                continue
-            relative = Path(info.filename)
-            if relative.is_absolute() or ".." in relative.parts:
-                raise ValueError("Архив выборки содержит небезопасный путь")
-            write_exclusive(destination / relative, archive.read(info))
+        try:
+            members = _zip_members(archive, limits)
+        except ValueError as exc:
+            raise ValueError(f"Архив выборки содержит небезопасный путь или превышает ограничения: {exc}") from exc
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        parent = ensure_regular_directory(destination.parent)
+        if destination.exists() or destination.is_symlink():
+            raise FileExistsError(destination)
+        staging = Path(tempfile.mkdtemp(prefix=".dataset-", dir=parent))
+        try:
+            total = 0
+            for info, relative, directory in members:
+                parts = tuple(relative.split("/"))
+                if directory:
+                    make_contained_directories(staging, parts)
+                    continue
+                make_contained_directories(staging, parts[:-1])
+                output = contained_path(staging, parts)
+                size = 0
+                with archive.open(info) as source, open_exclusive_write(output) as sink:
+                    while chunk := source.read(1024 * 1024):
+                        size += len(chunk)
+                        total += len(chunk)
+                        if size > min(limits.max_file_bytes, info.file_size) or total > limits.max_total_bytes:
+                            raise ValueError("Архив выборки превышает ограничения размера")
+                        sink.write(chunk)
+                    if size != info.file_size:
+                        raise ValueError("Размер файла выборки не соответствует архиву")
+                    sink.flush()
+                    os.fsync(sink.fileno())
+            os.rename(staging, destination)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
 
 
 def media_type_for(filename: str, declared: str = "") -> str:
     if declared and declared != "application/octet-stream":
         return declared
-    return mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return artifact_media_type(filename)
 
 
 def selection_from_coordinates(coordinates: tuple[tuple[int, int], ...]) -> FrameSelectionV1:
@@ -111,6 +146,7 @@ def lookup_frame_files(
         if version is None:
             missing.append(f"({coordinate.x}, {coordinate.y})")
             continue
+        safe_relative_path(version.filename)
         suffix = Path(version.filename).suffix or (".cif" if role == "vector" else ".png")
         filename = f"{coordinate.x}_{coordinate.y}{suffix}"
         files.append(
@@ -280,8 +316,7 @@ def latest_dataset_version(series_list, versions_of):
     candidates = []
     for series in series_list:
         for version in versions_of(series.id):
-            parameters = version.parameters or {}
-            if version.media_type == "application/zip" and parameters.get("plugin_output_role") == "dataset":
+            if is_training_dataset_artifact(version):
                 candidates.append(version)
     if not candidates:
         return None
@@ -290,6 +325,24 @@ def latest_dataset_version(series_list, versions_of):
 
 def place_work_order(request: WorkIssueRequest, *, active_version, read_bytes, dataset_version) -> WorkOrder:
     """Create the package directory and the order describing it. Persistence is the caller's job."""
+
+    allocated: list[Path] = []
+    try:
+        return _place_work_order(
+            request, active_version=active_version, read_bytes=read_bytes,
+            dataset_version=dataset_version, allocated=allocated,
+        )
+    except Exception:
+        # These directories were created exclusively by this invocation. Never
+        # clean a caller's pre-existing destination or follow a substituted link.
+        for directory in allocated:
+            if directory.exists() and not directory.is_symlink():
+                ensure_regular_directory(directory)
+                shutil.rmtree(directory)
+        raise
+
+
+def _place_work_order(request, *, active_version, read_bytes, dataset_version, allocated):
 
     kind = WorkKind(request.kind)
     placement = WorkPlacement(request.placement)
@@ -318,6 +371,7 @@ def place_work_order(request: WorkIssueRequest, *, active_version, read_bytes, d
     else:
         destination = Path(request.server_directory_for(order_id))
         destination.mkdir(parents=True, exist_ok=False)
+    allocated.append(destination)
 
     image_frames: tuple[WorkFrameFile, ...] = ()
     vector_frames: tuple[WorkFrameFile, ...] = ()

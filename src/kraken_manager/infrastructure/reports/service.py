@@ -73,7 +73,7 @@ class ActivityRecord:
                 or representation_snapshot.get("id")
             ),
             frame_id=_optional_text(payload.get("frame_id")),
-            actor_id=str(event.actor.principal_id),
+            actor_id="" if getattr(event, "actor", None) is None else str(event.actor.principal_id),
             performer_id=_optional_text(getattr(event, "performer_id", None)),
             tool=(
                 _optional_text(getattr(program, "name", None))
@@ -611,6 +611,18 @@ def _first_vectorizations(records: Iterable[ActivityRecord]) -> dict[tuple[str, 
 
 
 class ReportService:
+    def aggregate_work_plans(self, events, **request):
+        from kraken_manager.application.work_plan_analytics import WorkPlanAnalytics
+        return WorkPlanAnalytics.report(events, **request)
+
+    def write_work_plan_csv(self, destination, report):
+        from .work_plans import write_csv
+        return write_csv(destination, report)
+
+    def write_work_plan_xlsx(self, destination, report):
+        from .work_plans import write_xlsx
+        return write_xlsx(destination, report)
+
     def iter_selected(self, records: Iterable[ActivityRecord], filters: ReportFilters) -> Iterator[ActivityRecord]:
         """Filter without buffering; callers supply canonical event order."""
 

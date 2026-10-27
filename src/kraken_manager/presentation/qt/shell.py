@@ -38,6 +38,10 @@ class ProjectManagerShell(QMainWindow):
     pageChanged = pyqtSignal(str)
     navigationRequested = pyqtSignal(str)
     layersRequested = pyqtSignal()
+    workPlanningRequested = pyqtSignal()
+    multilayerRequested = pyqtSignal()
+    electricalRequested = pyqtSignal()
+    qualityRequested = pyqtSignal()
     cellVisualModeChanged = pyqtSignal(str, str)
     preferencesRequested = pyqtSignal()
     reviewReturnRequested = pyqtSignal()
@@ -85,6 +89,18 @@ class ProjectManagerShell(QMainWindow):
         self.layers_action.setEnabled(False)
         self.layers_action.triggered.connect(self.layersRequested)
         management.addAction(self.layers_action)
+        self.work_planning_action = QAction("План восстановления…", self)
+        self.work_planning_action.triggered.connect(self.workPlanningRequested)
+        management.addAction(self.work_planning_action)
+        self.multilayer_action = QAction("Физические слои и контакты…", self)
+        self.multilayer_action.triggered.connect(self.multilayerRequested)
+        management.addAction(self.multilayer_action)
+        self.electrical_action = QAction("Электрическая связность…", self)
+        self.electrical_action.triggered.connect(self.electricalRequested)
+        management.addAction(self.electrical_action)
+        self.quality_action = QAction("Контроль качества…", self)
+        self.quality_action.triggered.connect(self.qualityRequested)
+        management.addAction(self.quality_action)
 
         self.actions_menu = self.menuBar().addMenu("Действия")
         self.actions_menu.setEnabled(False)
@@ -315,4 +331,3 @@ class ProjectManagerShell(QMainWindow):
 
 
 __all__ = ["ProjectManagerShell"]
-

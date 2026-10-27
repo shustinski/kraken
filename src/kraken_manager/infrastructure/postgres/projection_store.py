@@ -395,6 +395,8 @@ class PostgresProjectionStore:
 
     def save_review_batch(self, batch: Any) -> None:
         self._save("review_batch", batch)
+        from kraken_manager.infrastructure.projections.review_work_orders import synchronize_review_work_orders
+        synchronize_review_work_orders(self, batch)
 
     def list_active_review_batches(
         self, project_id: Any, layer_id: Any, *, as_of: datetime | None = None

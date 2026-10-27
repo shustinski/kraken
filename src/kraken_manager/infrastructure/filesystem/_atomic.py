@@ -6,6 +6,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from kraken_core.safe_files import replace_atomic_with_retry
+
 
 def fsync_directory(path: Path) -> None:
     """Best-effort directory sync.
@@ -37,18 +39,18 @@ def atomic_write_bytes(path: Path, data: bytes, *, overwrite: bool = True) -> No
             os.fsync(stream.fileno())
 
         if overwrite:
-            os.replace(temporary, path)
+            replace_atomic_with_retry(temporary, path)
         else:
             try:
                 os.link(temporary, path)
             except FileExistsError:
                 raise
             except OSError:
-                # ``rename`` does not replace an existing target on Windows.  On
-                # POSIX this fallback is only reached on filesystems without hard
-                # links, so check immediately before moving.
-                if path.exists():
-                    raise FileExistsError(path)
+                # Windows rename is atomically no-replace. POSIX rename would
+                # overwrite a concurrent publisher: fail closed when that
+                # filesystem cannot provide the required hard-link primitive.
+                if os.name != "nt":
+                    raise
                 os.rename(temporary, path)
         fsync_directory(path.parent)
     finally:
@@ -56,10 +58,13 @@ def atomic_write_bytes(path: Path, data: bytes, *, overwrite: bool = True) -> No
 
 
 def atomic_write_json(path: Path, value: Any, *, overwrite: bool = True) -> None:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8") + b"\n"
+    encoded = (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
     atomic_write_bytes(path, encoded, overwrite=overwrite)

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import dataclasses
+import copy
 import json
+import os
 import re
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -16,6 +20,36 @@ from .locking import ProjectFileLock
 
 
 _SEGMENT_NAME = re.compile(r"^(?P<first>[0-9]{20})-(?P<last>[0-9]{20})\.jsonl$")
+
+
+@dataclasses.dataclass
+class _VerifiedLog:
+    signatures: tuple[tuple[int, int, str, int, int, int, int, int], ...] = ()
+    events: list[StoredEvent] = dataclasses.field(default_factory=list)
+    streams: dict[str, list[StoredEvent]] = dataclasses.field(default_factory=dict)
+    keys: dict[str, list[StoredEvent]] = dataclasses.field(default_factory=dict)
+    ids: set[str] = dataclasses.field(default_factory=set)
+    revisions: dict[str, int] = dataclasses.field(default_factory=dict)
+
+
+# A disposable, process-local acceleration only. Each lock hold checks segment
+# identities once; changed/deleted segments force canonical validation. The budget
+# measures encoded log bytes, not a promise about Python object/RSS overhead.
+_READ_CACHE: OrderedDict[tuple[str, str], _VerifiedLog] = OrderedDict()
+_READ_CACHE_LOCK = threading.RLock()
+_READ_CACHE_BYTES = 128 * 1024 * 1024
+
+
+def _reset_inherited_read_cache() -> None:
+    global _READ_CACHE, _READ_CACHE_LOCK
+    # A vanished parent thread may own the inherited RLock. Cached object
+    # graphs and lock-hold memos are disposable; the child revalidates the log.
+    _READ_CACHE = OrderedDict()
+    _READ_CACHE_LOCK = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_inherited_read_cache)
 
 
 class EventStreamConflict(RuntimeError):
@@ -44,10 +78,7 @@ def _json_compatible(value: Any) -> Any:
     if isinstance(value, uuid.UUID):
         return str(value)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _json_compatible(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-        }
+        return {field.name: _json_compatible(getattr(value, field.name)) for field in dataclasses.fields(value)}
     if isinstance(value, Mapping):
         return {str(key): _json_compatible(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -185,6 +216,7 @@ class FilesystemEventStore:
         self._decode = decoder or decode_event_envelope
         self.lock_timeout = lock_timeout
         self.lock = ProjectFileLock(self.layout.lock_path)
+        self._verified_hold: tuple[str, _VerifiedLog] | None = None
 
     def append(
         self,
@@ -199,18 +231,15 @@ class FilesystemEventStore:
         batch = list(events)
 
         with self.lock.hold(self.lock_timeout):
-            existing = list(self._iter_stored_unlocked())
-            actual_revision = max(
-                (event.revision for event in existing if event.stream_id == stream_id),
-                default=0,
-            )
+            verified = self._verified_log()
+            actual_revision = verified.revisions.get(stream_id, 0)
             if actual_revision != expected_revision:
                 raise EventStreamConflict(stream_id, expected_revision, actual_revision)
             if not batch:
                 return actual_revision
 
-            known_event_ids = {event.event_id for event in existing}
-            next_position = existing[-1].global_position + 1 if existing else 1
+            known_event_ids = set()
+            next_position = len(verified.events) + 1
             records: list[dict[str, Any]] = []
             for offset, event in enumerate(batch, start=1):
                 value = dict(self._encode(event))
@@ -220,7 +249,7 @@ class FilesystemEventStore:
                 self._assert_or_set(value, "stream_id", stream_id)
                 self._assert_or_set(value, "revision", expected_revision + offset)
                 event_id = str(value.get("event_id") or uuid.uuid4())
-                if event_id in known_event_ids:
+                if event_id in known_event_ids or event_id in verified.ids:
                     raise ValueError(f"duplicate event_id {event_id!r}")
                 known_event_ids.add(event_id)
                 value["event_id"] = event_id
@@ -243,12 +272,10 @@ class FilesystemEventStore:
         if not batch:
             return self.last_global_position()
         with self.lock.hold(self.lock_timeout):
-            existing = list(self._iter_stored_unlocked())
-            next_position = existing[-1].global_position + 1 if existing else 1
-            known_event_ids = {event.event_id for event in existing}
+            verified = self._verified_log()
+            next_position = len(verified.events) + 1
+            known_event_ids = set()
             stream_revisions: dict[str, int] = {}
-            for event in existing:
-                stream_revisions[event.stream_id] = event.revision
 
             records: list[dict[str, Any]] = []
             for offset, event in enumerate(batch):
@@ -270,10 +297,10 @@ class FilesystemEventStore:
                 except (KeyError, TypeError, ValueError) as exc:
                     raise ValueError("migrated event has an incomplete envelope") from exc
                 _validate_stream_id(stream_id)
-                expected_revision = stream_revisions.get(stream_id, 0) + 1
+                expected_revision = stream_revisions.get(stream_id, verified.revisions.get(stream_id, 0)) + 1
                 if revision != expected_revision:
                     raise EventStreamConflict(stream_id, expected_revision - 1, revision - 1)
-                if event_id in known_event_ids:
+                if event_id in known_event_ids or event_id in verified.ids:
                     raise ValueError(f"duplicate event_id {event_id!r}")
                 known_event_ids.add(event_id)
                 stream_revisions[stream_id] = revision
@@ -284,11 +311,11 @@ class FilesystemEventStore:
             return next_position + len(records) - 1
 
     def _write_segment(self, records: Sequence[Mapping[str, Any]], first_position: int) -> None:
+        self._verified_hold = None
         last_position = first_position + len(records) - 1
         segment_path = self.layout.events_dir / f"{first_position:020d}-{last_position:020d}.jsonl"
         payload = b"".join(
-            json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            + b"\n"
+            json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
             for record in records
         )
         try:
@@ -311,40 +338,32 @@ class FilesystemEventStore:
     ) -> tuple[Any, ...]:
         _validate_stream_id(stream_id)
         result: list[Any] = []
-        for event in self.iter_project():
-            if event.stream_id != stream_id or event.revision <= after_revision:
+        for event in self._verified_log().streams.get(stream_id, ()):
+            if event.revision <= after_revision:
                 continue
             if as_of is not None:
                 recorded_at = event.data.get("recorded_at")
                 if recorded_at is None or _parse_datetime(recorded_at) > as_of:
                     continue
-            result.append(self._decode(event))
+            result.append(self._decode(copy.deepcopy(event)))
         return tuple(result)
 
     read_stream = load_stream
 
     def iter_project(self, *, after_global_position: int = 0) -> Iterator[StoredEvent]:
-        for event in self._iter_stored_unlocked():
-            if event.global_position > after_global_position:
-                yield event
+        for event in self._verified_log().events[max(0, after_global_position) :]:
+            yield copy.deepcopy(event)
 
     def current_revision(self, stream_id: str) -> int:
         _validate_stream_id(stream_id)
-        return max(
-            (event.revision for event in self._iter_stored_unlocked() if event.stream_id == stream_id),
-            default=0,
-        )
+        return self._verified_log().revisions.get(stream_id, 0)
 
     def find_by_idempotency_key(self, project_id: Any, idempotency_key: str) -> tuple[Any, ...]:
         if project_id is not None and str(project_id) != self.project_id:
             return ()
         if not isinstance(idempotency_key, str) or not idempotency_key:
             raise ValueError("idempotency_key must be non-empty")
-        return tuple(
-            self._decode(event)
-            for event in self.iter_project()
-            if event.data.get("idempotency_key") == idempotency_key
-        )
+        return tuple(self._decode(copy.deepcopy(event)) for event in self._verified_log().keys.get(idempotency_key, ()))
 
     def last_global_position(self) -> int:
         """Return the position encoded by the contiguous immutable segment names.
@@ -354,11 +373,19 @@ class FilesystemEventStore:
         """
 
         last_position = 0
-        for first, last, path in self._segment_paths():
+        ranges = []
+        with os.scandir(self.layout.events_dir) as directory:
+            for entry in directory:
+                if not entry.name.endswith(".jsonl"):
+                    continue
+                match = _SEGMENT_NAME.fullmatch(entry.name)
+                if match is None or int(match["last"]) < int(match["first"]):
+                    raise CorruptEventLogError(f"invalid event segment name/range: {entry.name}")
+                ranges.append((int(match["first"]), int(match["last"]), entry.name))
+        for first, last, name in sorted(ranges):
             if first != last_position + 1:
                 raise CorruptEventLogError(
-                    f"event position gap or overlap before {path.name}: "
-                    f"expected {last_position + 1}, found {first}"
+                    f"event position gap or overlap before {name}: expected {last_position + 1}, found {first}"
                 )
             last_position = last
         return last_position
@@ -377,12 +404,82 @@ class FilesystemEventStore:
         result.sort(key=lambda item: item[0])
         return result
 
-    def _iter_stored_unlocked(self) -> Iterator[StoredEvent]:
-        expected_position = 1
-        seen_event_ids: set[str] = set()
-        stream_revisions: dict[str, int] = {}
+    def _verified_log(self) -> _VerifiedLog:
+        held_token = self.lock.held_token
+        if held_token and self._verified_hold and self._verified_hold[0] == held_token:
+            return self._verified_hold[1]
+        key = (str(self.layout.events_dir), self.project_id)
+        with _READ_CACHE_LOCK:
+            paths = []
+            with os.scandir(self.layout.events_dir) as directory:
+                for entry in directory:
+                    if not entry.name.endswith(".jsonl"):
+                        continue
+                    match = _SEGMENT_NAME.fullmatch(entry.name)
+                    if match is None or entry.is_symlink() or not entry.is_file():
+                        raise CorruptEventLogError(f"invalid event segment: {entry.name}")
+                    if int(match["last"]) < int(match["first"]):
+                        raise CorruptEventLogError(f"invalid event segment range: {entry.name}")
+                    stat = entry.stat()
+                    paths.append(
+                        (
+                            int(match["first"]),
+                            int(match["last"]),
+                            entry.name,
+                            stat.st_size,
+                            stat.st_mtime_ns,
+                            stat.st_ctime_ns,
+                            stat.st_dev,
+                            stat.st_ino,
+                        )
+                    )
+            paths.sort(key=lambda item: item[0])
+            signatures = tuple(paths)
+            cached = _READ_CACHE.pop(key, None)
+            if cached is None or signatures[: len(cached.signatures)] != cached.signatures:
+                cached = _VerifiedLog()
+            # Pop-before-validation ensures a partial/failed tail cannot remain
+            # cached. An explicit verify() always rereads the entire canonical log.
+            tail = [
+                (first, last, self.layout.events_dir / name)
+                for first, last, name, *_ in paths[len(cached.signatures) :]
+            ]
+            for event in self._iter_stored_unlocked(
+                segments=tail,
+                expected_position=len(cached.events) + 1,
+                seen_event_ids=cached.ids,
+                stream_revisions=cached.revisions,
+            ):
+                cached.events.append(event)
+                cached.streams.setdefault(event.stream_id, []).append(event)
+                identity = event.data.get("idempotency_key")
+                if isinstance(identity, str) and identity:
+                    cached.keys.setdefault(identity, []).append(event)
+            cached.signatures = signatures
+            if sum(item[3] for item in signatures) <= _READ_CACHE_BYTES:
+                _READ_CACHE[key] = cached
+                while (
+                    len(_READ_CACHE) > 4
+                    or sum(sum(item[3] for item in value.signatures) for value in _READ_CACHE.values())
+                    > _READ_CACHE_BYTES
+                ):
+                    _READ_CACHE.popitem(last=False)
+            if held_token:
+                self._verified_hold = (held_token, cached)
+            return cached
 
-        for first, last, path in self._segment_paths():
+    def _iter_stored_unlocked(
+        self,
+        *,
+        segments: Sequence[tuple[int, int, Path]] | None = None,
+        expected_position: int = 1,
+        seen_event_ids: set[str] | None = None,
+        stream_revisions: dict[str, int] | None = None,
+    ) -> Iterator[StoredEvent]:
+        seen_event_ids = set() if seen_event_ids is None else seen_event_ids
+        stream_revisions = {} if stream_revisions is None else stream_revisions
+
+        for first, last, path in self._segment_paths() if segments is None else segments:
             if first != expected_position:
                 raise CorruptEventLogError(
                     f"event position gap or overlap before {path.name}: expected {expected_position}, found {first}"
@@ -412,9 +509,13 @@ class FilesystemEventStore:
                             revision = int(record["revision"])
                             event_id = str(record["event_id"])
                         except (KeyError, TypeError, ValueError) as exc:
-                            raise CorruptEventLogError(f"incomplete event envelope in {path.name}:{line_number}") from exc
+                            raise CorruptEventLogError(
+                                f"incomplete event envelope in {path.name}:{line_number}"
+                            ) from exc
                         if project_id != self.project_id:
-                            raise CorruptEventLogError(f"event belongs to project {project_id!r}, not {self.project_id!r}")
+                            raise CorruptEventLogError(
+                                f"event belongs to project {project_id!r}, not {self.project_id!r}"
+                            )
                         expected_revision = stream_revisions.get(stream_id, 0) + 1
                         if revision != expected_revision:
                             raise CorruptEventLogError(

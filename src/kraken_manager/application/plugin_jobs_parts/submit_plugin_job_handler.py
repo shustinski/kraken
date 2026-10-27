@@ -14,6 +14,7 @@ from kraken_manager.application.ports import (
 )
 from kraken_manager.domain.artifacts import (
     ArtifactScope,
+    is_training_dataset_artifact,
 )
 from kraken_manager.domain.common import PluginJobId
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope
@@ -95,6 +96,15 @@ class SubmitPluginJobHandler:
             if required_kind is not None and target.kind is not required_kind:
                 raise ConflictError(f"Plugin capability requires a {required_kind.value} target representation")
             command.selection.validate_bounds(width=project.width, height=project.height)
+            parameters = dict(command.parameters)
+            if "model_version_id" in parameters:
+                from kraken_manager.application.model_inputs import resolve_model_input
+                from kraken_manager.application.quality import QualityService
+                if command.capability not in {"frames.binary-segment.v2", "frames.confidence.v1"}:
+                    raise ConflictError("This capability has no managed model input port")
+                model, _, metadata = resolve_model_input(uow.projections, project.id, layer.id, parameters)
+                QualityService.require_clear_inputs(uow.event_store, project.id, (model.id,), projections=uow.projections)
+                parameters.update(metadata)
             manifest = PluginJobManifestV1(
                 job_id=command.job_id,
                 project_id=project.id,
@@ -104,7 +114,7 @@ class SubmitPluginJobHandler:
                 actor_principal_id=command.context.actor.id,
                 capability=command.capability,
                 inputs=command.inputs,
-                parameters=command.parameters,
+                parameters=parameters,
                 protocol_version=command.protocol_version,
             )
             if manifest.selection.cardinality() != len(manifest.inputs):
@@ -131,8 +141,7 @@ class SubmitPluginJobHandler:
                         and not (
                             command.capability == "dataset.model.train.v1"
                             and series.scope is ArtifactScope.LAYER_ATTACHMENT
-                            and version.media_type == "application/zip"
-                            and version.parameters.get("plugin_output_role") == "dataset"
+                            and is_training_dataset_artifact(version)
                         )
                     )
                 ):

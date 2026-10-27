@@ -293,7 +293,8 @@ class CallMixin:
                         tuple(item.artifact_version_id for item in original.inputs)
                         if aggregate_output
                         else (input_item.artifact_version_id,)
-                    ),
+                    ) + (() if not original.parameters.get("model_version_id") else
+                         (ArtifactVersionId(str(original.parameters["model_version_id"])),)),
                     tool_name=manifest.plugin_name,
                     tool_version=manifest.plugin_version,
                     parameters=parameters,
@@ -312,9 +313,9 @@ class CallMixin:
                                 "artifact_series_id": str(series.id),
                                 "scope": series.scope.value,
                                 "name": series.name,
-                                "layer_id": str(series.layer_id),
-                                "representation_id": str(series.representation_id),
-                                "frame_id": str(series.frame_id),
+                                "layer_id": None if series.layer_id is None else str(series.layer_id),
+                                "representation_id": None if series.representation_id is None else str(series.representation_id),
+                                "frame_id": None if series.frame_id is None else str(series.frame_id),
                                 "archived": False,
                             },
                             actor=ActorSnapshot.from_principal(command.context.actor),
@@ -333,9 +334,9 @@ class CallMixin:
                         payload={
                             "artifact_version_id": str(version.id),
                             "series_id": str(series.id),
-                            "layer_id": str(series.layer_id),
-                            "representation_id": str(series.representation_id),
-                            "frame_id": str(series.frame_id),
+                            "layer_id": None if series.layer_id is None else str(series.layer_id),
+                            "representation_id": None if series.representation_id is None else str(series.representation_id),
+                            "frame_id": None if series.frame_id is None else str(series.frame_id),
                             "sha256": version.sha256,
                             "size_bytes": version.size_bytes,
                             "media_type": version.media_type,

@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +22,9 @@ from kraken_core.analysis_run_protocol import (
 from kraken_manager.infrastructure.blob import FilesystemBlobStore
 from kraken_manager.infrastructure.filesystem.event_store import FilesystemEventStore
 from kraken_manager.infrastructure.filesystem.layout import FileProjectLayout
+from .map_store import AnalysisMapStoreMixin
+from kraken_core.analysis_runtime import measured_runtime, validate_worker_runtime
+from kraken_core.analysis_run_protocol import AnalysisRuntimeIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,7 @@ class KrakenAnalysisRun:
     imported_partitions: int
     total_partitions: int
     manifest: AnalysisRunManifest
+    worker_runtime: AnalysisRuntimeIdentity | None = None
 
 
 _SCHEMA = """
@@ -140,18 +144,71 @@ def _percentile(sorted_values: list[float], percentile: float) -> float:
     return sorted_values[lower] * (1.0 - fraction) + sorted_values[upper] * fraction
 
 
-class FilesystemAnalysisStore:
+class FilesystemAnalysisStore(AnalysisMapStoreMixin):
     """Canonical events + disposable SQLite projection + immutable result blobs."""
 
-    def __init__(self, catalog_root: str | Path, project_id: str) -> None:
+    def __init__(self, catalog_root: str | Path, project_id: str, *, event_store=None) -> None:
         self.catalog_root = Path(catalog_root).resolve()
         self.project_id = str(project_id)
         self.layout = FileProjectLayout(self.catalog_root, self.project_id)
         self.layout.ensure_directories()
-        self.events = FilesystemEventStore(self.catalog_root, self.project_id)
+        self.events = event_store or FilesystemEventStore(self.catalog_root, self.project_id)
+        if self.events.layout.project_dir != self.layout.project_dir:
+            raise ValueError("Analysis event store belongs to another project")
         self.blobs = FilesystemBlobStore.for_project(self.catalog_root, self.project_id)
-        self.database = self.layout.index_path
-        self._ensure_schema()
+        # Metadata rebuilds atomically replace read.sqlite3. Analysis has its
+        # own disposable projection so reading a project cannot erase imported
+        # measurements. Existing projects migrate by replaying canonical events.
+        self.database = self.layout.index_dir / "analysis.sqlite3"
+        with self.events.lock.hold(self.events.lock_timeout):
+            rebuild = not self.database.exists()
+            if rebuild:
+                self._check_legacy_migration()
+            self._ensure_schema()
+            if rebuild:
+                try:
+                    self.rebuild()
+                except BaseException:
+                    # Leave the old cache untouched and avoid presenting an
+                    # incomplete migration as a successfully opened analysis DB.
+                    self.database.unlink(missing_ok=True)
+                    raise
+
+    def _check_legacy_migration(self) -> None:
+        legacy = self.layout.index_path
+        if not legacy.exists():
+            return
+        with closing(sqlite3.connect(legacy.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_runs'").fetchone()
+            legacy_ids = set() if exists is None else {str(row[0]) for row in connection.execute("SELECT run_id FROM analysis_runs")}
+            partitions_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_partitions'").fetchone()
+            legacy_partitions = (() if partitions_table is None else tuple(connection.execute(
+                "SELECT partition_id, state, bundle_sha256 FROM analysis_partitions")))
+        canonical = set()
+        partition_states = {}
+        for event in self.events.iter_project():
+            kind, payload = event.data.get("event_type"), event.data.get("payload", {})
+            if kind == "analysis_run.created":
+                canonical.add(str(payload["manifest"]["run_id"]))
+                for partition in payload["partitions"]:
+                    partition_states.setdefault(str(partition["partition_id"]), ("queued", None))
+            elif kind == "analysis_partition.imported":
+                result = payload["result"]
+                partition_states[str(result["partition_id"])] = ("imported", result["bundle"]["sha256"])
+            elif kind in {"analysis_partition.state_changed", "analysis_partition.requeued"}:
+                identifier = str(payload["partition_id"])
+                if partition_states.get(identifier, (None,))[0] != "imported":
+                    partition_states[identifier] = (payload["state"] if kind.endswith("state_changed") else "queued", None)
+        missing = legacy_ids - canonical
+        if missing:
+            raise RuntimeError("Legacy analysis cache contains runs without canonical events; old cache preserved: "
+                               + ", ".join(sorted(missing)))
+        for identifier, state, digest in legacy_partitions:
+            expected = partition_states.get(str(identifier))
+            if expected is None or expected[0] != state or (state == "imported" and expected[1] != digest):
+                raise RuntimeError("Legacy analysis partition state/result lacks matching canonical events; old cache preserved: "
+                                   + str(identifier))
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -278,6 +335,10 @@ class FilesystemAnalysisStore:
             )
 
     def import_partition(self, result: AnalysisPartitionResultManifest, bundle_path: str | Path) -> bool:
+        with self.events.lock.hold(self.events.lock_timeout):
+            return self._import_partition_locked(result, bundle_path)
+
+    def _import_partition_locked(self, result, bundle_path):
         with self._connect() as connection:
             partition = connection.execute(
                 "SELECT * FROM analysis_partitions WHERE partition_id=?", (result.partition_id,)
@@ -289,10 +350,13 @@ class FilesystemAnalysisStore:
             raise ValueError("Analysis partition result does not match its submitted job")
         if result.bundle is None:
             raise ValueError("Kraken can only import an analysis result that contains frame records")
+        validate_worker_runtime(job, result, pinned=self.pinned_runtime(result.run_id))
         if partition["state"] == "imported":
-            if partition["bundle_sha256"] != result.bundle.sha256:
+            if partition["bundle_sha256"] != result.bundle.sha256 or json.loads(partition["result_json"]) != result.to_payload():
                 raise ValueError("Imported partition was repeated with different content")
             return False
+        if partition["state"] not in {"queued", "running"}:
+            raise ValueError("Cancelled or failed analysis cannot import a late result")
 
         stored = self.blobs.put_file(bundle_path, expected_sha256=result.bundle.sha256)
         with self.blobs.open(stored.blob) as stream:
@@ -315,8 +379,12 @@ class FilesystemAnalysisStore:
         self._project_partition_imported(result, stored.blob.sha256, frames)
         return True
 
-    def mark_partition_state(self, partition_id: str, state: str, *, error: str = "") -> None:
+    def mark_partition_state(self, partition_id: str, state: str, *, error: str = "", result=None) -> None:
         """Project an Agent lifecycle state while keeping imported data immutable."""
+        with self.events.lock.hold(self.events.lock_timeout):
+            return self._mark_partition_state_locked(partition_id, state, error=error, result=result)
+
+    def _mark_partition_state_locked(self, partition_id, state, *, error="", result=None):
 
         allowed = {"queued", "running", "failed", "cancelled"}
         if state not in allowed:
@@ -337,6 +405,7 @@ class FilesystemAnalysisStore:
             "partition_id": partition_id,
             "state": state,
             "error": str(error)[:10_000],
+            **({} if result is None else {"worker_result": result.to_payload()}),
         }
         self._append_event(str(row["run_id"]), "analysis_partition.state_changed", payload)
         self._project_partition_state(partition_id, state)
@@ -532,7 +601,41 @@ class FilesystemAnalysisStore:
             imported_partitions=int(row["imported_partitions"] or 0),
             total_partitions=int(row["total_partitions"] or 0),
             manifest=AnalysisRunManifest.from_payload(json.loads(row["manifest_json"])),
+            worker_runtime=self.worker_runtime(run_id),
         )
+
+    def pinned_runtime(self, run_id):
+        receipts = [event.data["payload"]["result"] for event in self.events.load_stream(f"analysis-run:{run_id}")
+                    if event.data.get("event_type") == "analysis_partition.imported"]
+        return measured_runtime(receipts, require_all=False)
+
+    def worker_runtime(self, run_id):
+        with self._connect() as connection:
+            rows = connection.execute("SELECT result_json FROM analysis_partitions WHERE run_id=? AND state='imported'", (run_id,)).fetchall()
+        actual = measured_runtime([json.loads(row[0]) if row[0] else {} for row in rows])
+        pinned = self.pinned_runtime(run_id)
+        if actual is not None and pinned != actual:
+            raise ValueError("Analysis projection runtime differs from its canonical receipts")
+        return actual
+
+    def runtime_details(self, run_id):
+        with self.events.lock.hold(self.events.lock_timeout):
+            run = self.get_run(run_id)
+            if run is None:
+                raise KeyError(run_id)
+            diagnostics = {}
+            for event in self.events.load_stream(f"analysis-run:{run_id}"):
+                payload = event.data.get("payload", {})
+                result = payload.get("worker_result") or payload.get("result")
+                if result and result.get("job_id"):
+                    diagnostics[result["job_id"]] = (result, payload.get("error", ""))
+            parts = []
+            for part in self.all_partitions(run_id):
+                result, error = diagnostics.get(part.job_id, ({}, ""))
+                parts.append({"job_id": part.job_id, "expected_runtime": None if part.expected_runtime is None else part.expected_runtime.to_payload(),
+                              "reported_runtime": result.get("worker_runtime"), "error": error})
+            return {"run_id": run_id, "state": run.state, "declared_runtime": run.manifest.runtime.to_payload(),
+                    "worker_runtime": None if run.worker_runtime is None else run.worker_runtime.to_payload(), "partitions": parts}
 
     def list_runs(self) -> tuple[KrakenAnalysisRun, ...]:
         with self._connect() as connection:
@@ -553,6 +656,12 @@ class FilesystemAnalysisStore:
                 ).fetchall()
             )
 
+    def metric_keys(self, run_id: str) -> tuple[str, ...]:
+        with self._connect() as connection:
+            return tuple(str(row[0]) for row in connection.execute(
+                "SELECT DISTINCT metric_key FROM analysis_metric_values WHERE run_id=? ORDER BY metric_key", (run_id,),
+            ))
+
     def frame_results(self, run_id: str, metric_key: str) -> tuple[sqlite3.Row, ...]:
         with self._connect() as connection:
             return tuple(
@@ -569,12 +678,28 @@ class FilesystemAnalysisStore:
                 ).fetchall()
             )
 
+    def queued_partitions(self, run_id: str) -> tuple[AnalysisPartitionJobManifest, ...]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT manifest_json FROM analysis_partitions WHERE run_id=? AND state='queued' ORDER BY partition_index",
+                (run_id,),
+            ).fetchall()
+        return tuple(AnalysisPartitionJobManifest.from_payload(json.loads(row[0])) for row in rows)
+
+    def cancelled_partitions(self, run_id):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT manifest_json FROM analysis_partitions WHERE run_id=? AND state='cancelled' ORDER BY partition_index",
+                (run_id,),
+            ).fetchall()
+        return tuple(AnalysisPartitionJobManifest.from_payload(json.loads(row[0])) for row in rows)
+
     def retryable_partitions(self, run_id: str) -> tuple[AnalysisPartitionJobManifest, ...]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT manifest_json FROM analysis_partitions
-                WHERE run_id=? AND state!='imported' ORDER BY partition_index
+                WHERE run_id=? AND state IN ('queued', 'running') ORDER BY partition_index
                 """,
                 (run_id,),
             ).fetchall()
@@ -680,6 +805,7 @@ class FilesystemAnalysisStore:
                 if row is None or result.bundle is None:
                     continue
                 job = AnalysisPartitionJobManifest.from_payload(json.loads(row[0]))
+                validate_worker_runtime(job, result, pinned=self.pinned_runtime(result.run_id))
                 with self.blobs.open(blob_sha256) as stream:
                     frames = tuple(
                         stream_bundle_records(

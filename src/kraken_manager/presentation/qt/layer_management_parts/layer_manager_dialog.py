@@ -52,6 +52,14 @@ class LayerManagerDialog(QDialog):
         self.add_layer_button.setToolTip("Создать слой из папки или подключить внешние каталоги")
         layer_layout.addWidget(self.layer_list, 1)
         layer_layout.addWidget(self.add_layer_button)
+        self.workflow_button = QPushButton("Технологический процесс… / Workflow…", layer_panel)
+        self.workflow_button.setObjectName("layerWorkflow")
+        layer_layout.addWidget(self.workflow_button)
+        def open_workflow():
+            item = self.layer_list.currentItem()
+            if item is not None:
+                self.layerActionRequested.emit(str(item.data(Qt.ItemDataRole.UserRole)), "edit_workflow")
+        self.workflow_button.clicked.connect(open_workflow)
         self.graph = PipelineGraphView(self.settings, action_availability=action_availability)
         splitter.addWidget(layer_panel)
         splitter.addWidget(self.graph)

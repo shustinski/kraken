@@ -68,13 +68,13 @@ The active plugin package names are `neuralimage`, `contour`, `krona`,
 Install only the profiles needed on a workstation:
 
 ```powershell
-uv sync --extra desktop
+uv sync --extra desktop --extra agent --extra registration --extra electrical
 ```
 
 For a server with PostgreSQL and reports:
 
 ```powershell
-uv sync --extra server --extra postgres --extra reports --extra packages
+uv sync --extra server --extra postgres --extra reports --extra packages --extra agent --extra registration --extra electrical
 ```
 
 Install root development tools (this also includes the Desktop test runtime):
@@ -231,4 +231,18 @@ Each plugin owns its build scripts:
 
 ```bash
 ./plugins/contour/scripts/build_linux.sh
+```
+
+## Work planning and verification
+
+Hub: open a project and choose **?????????? ? ???? ???????????????** (English: restoration work plan).
+Plans retain scoped tasks, assignments, dependencies, progress, acceptance evidence and baselines
+in the existing event store. Persistent servers expose `/api/v1/projects/{project_id}/work-plans`;
+updates require `If-Match` and `Idempotency-Key`. See the
+[requirements matrix and verification limits](docs/audits/2026-10-23-production-readiness.md).
+
+To run test modules in separate processes and retain logs, JUnit XML and JSON results:
+
+```powershell
+.venv/Scripts/python.exe tools/verify_repository.py tests --jobs 2 --report .test_runtime/verification
 ```

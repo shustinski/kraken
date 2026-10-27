@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from PyQt6 import QtGui, QtWidgets
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import QThread, Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -107,6 +107,8 @@ class CSliserWindow(QMainWindow):
         self._worker_thread: QThread | None = None
         self._current_operation = FileOperation.COPY
         self._busy = False
+        self._pending_result = None
+        self._close_when_finished = False
         self._theme = "dark"
         self._dynamic_extensions = False
         self._update_controller: QtUpdateController | None = None
@@ -123,6 +125,11 @@ class CSliserWindow(QMainWindow):
         self._refresh_state()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._worker_thread is not None:
+            self._close_when_finished = True
+            self._cancel_worker()
+            event.ignore()
+            return
         self._save_settings()
         super().closeEvent(event)
 
@@ -536,7 +543,7 @@ class CSliserWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "В папке уже есть файлы",
-                f"В папке {destination} уже есть файлы. Продолжить?",
+                f"В папке {destination} уже есть файлы. Совпадающие имена не заменяются и будут отмечены как ошибки. Продолжить?",
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return False
@@ -579,6 +586,10 @@ class CSliserWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _start_worker(self, plan: OperationPlan) -> None:
+        if self._worker_thread is not None:
+            return
+        self._pending_result = None
+        self._close_when_finished = False
         self.progress.setRange(0, len(plan.operations))
         self.progress.setValue(0)
         self._busy = True
@@ -591,16 +602,25 @@ class CSliserWindow(QMainWindow):
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
         self._worker.progress_changed.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.finished.connect(self._worker_thread.quit)
+        self._worker.finished.connect(self._capture_transfer_result)
+        self._worker.finished.connect(self._worker_thread.quit, Qt.ConnectionType.DirectConnection)
         self._worker.finished.connect(self._worker.deleteLater)
+        self._worker_thread.finished.connect(self._transfer_thread_stopped)
         self._worker_thread.finished.connect(self._worker_thread.deleteLater)
         self._worker_thread.start()
 
     def _cancel_worker(self) -> None:
         if self._worker is not None:
             self._worker.cancel()
-            self.label_info.setText("Останавливаю после текущего файла...")
+            self.label_info.setText("Останавливаю передачу…")
+
+    def _capture_transfer_result(self, result):
+        self._pending_result = result
+
+    def _transfer_thread_stopped(self):
+        result = self._pending_result
+        self._last_result = result
+        self._on_finished(result)
 
     def _on_progress(self, current: int, total: int, path: str) -> None:
         self.progress.setRange(0, total)
@@ -616,6 +636,11 @@ class CSliserWindow(QMainWindow):
         self._change_enabling(True)
         self.progress.setValue(0)
         self.label_info.setText(_IDLE_TEXT)
+
+        if self._close_when_finished:
+            self._close_when_finished = False
+            self.close()
+            return
 
         if result.errors:
             details = "\n".join(f"{error.source}: {error.message}" for error in result.errors[:100])

@@ -16,6 +16,7 @@ from csliser.domain.models import (
     ProcessingConfig,
 )
 from csliser.domain.planner import build_operation_plan
+from .file_transfer import copy_verified, move_verified, remove_verified_source, safe_parent, TransferCancelled
 
 ProgressCallback = Callable[[int, int, str], None]
 CancelPredicate = Callable[[], bool]
@@ -32,10 +33,11 @@ class TransferExecutionOptions:
 class _TaskOutcome:
     operation: PlannedOperation
     error: OperationError | None = None
+    cancelled: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.error is None
+        return self.error is None and not self.cancelled
 
 
 class BuildTransferPlan:
@@ -115,12 +117,15 @@ def _execute_sync(
         if _is_cancelled(cancelled):
             cancelled_requested = True
             break
-        outcome = _execute_one(plan.config.operation, item, copy_metadata=options.copy_metadata)
+        outcome = _execute_one(plan.config.operation, item, copy_metadata=options.copy_metadata, cancelled=cancelled)
         processed += 1
         if outcome.ok:
             completed += 1
         elif outcome.error is not None:
             errors.append(outcome.error)
+        if outcome.cancelled:
+            cancelled_requested = True
+            break
         _maybe_emit_progress(
             progress,
             processed=processed,
@@ -159,7 +164,7 @@ def _execute_parallel(
         pending: dict[Future[_TaskOutcome], PlannedOperation] = {}
         while next_index < total and len(pending) < workers and not _is_cancelled(cancelled):
             item = plan.operations[next_index]
-            pending[_submit(executor, plan.config.operation, item, options)] = item
+            pending[_submit(executor, plan.config.operation, item, options, cancelled)] = item
             next_index += 1
 
         while pending:
@@ -171,6 +176,8 @@ def _execute_parallel(
                     completed += 1
                 elif outcome.error is not None:
                     errors.append(outcome.error)
+                if outcome.cancelled:
+                    cancelled_requested = True
 
                 _maybe_emit_progress(
                     progress,
@@ -185,7 +192,7 @@ def _execute_parallel(
                     cancelled_requested = True
                 while next_index < total and len(pending) < workers and not cancelled_requested:
                     next_item = plan.operations[next_index]
-                    pending[_submit(executor, plan.config.operation, next_item, options)] = next_item
+                    pending[_submit(executor, plan.config.operation, next_item, options, cancelled)] = next_item
                     next_index += 1
                 break
 
@@ -206,26 +213,28 @@ def _submit(
     operation: FileOperation,
     item: PlannedOperation,
     options: TransferExecutionOptions,
+    cancelled: CancelPredicate | None,
 ) -> Future[_TaskOutcome]:
-    return executor.submit(_execute_one, operation, item, copy_metadata=options.copy_metadata)
+    return executor.submit(_execute_one, operation, item, copy_metadata=options.copy_metadata, cancelled=cancelled)
 
 
-def _execute_one(operation: FileOperation, item: PlannedOperation, *, copy_metadata: bool) -> _TaskOutcome:
+def _execute_one(operation: FileOperation, item: PlannedOperation, *, copy_metadata: bool, cancelled=None) -> _TaskOutcome:
     try:
         if operation == FileOperation.COPY:
             assert item.destination is not None
-            if copy_metadata:
-                shutil.copy2(item.source, item.destination)
-            else:
-                shutil.copyfile(item.source, item.destination)
+            copy_verified(item, copy_metadata=copy_metadata, cancelled=cancelled)
         elif operation == FileOperation.MOVE:
             assert item.destination is not None
-            shutil.move(str(item.source), str(item.destination))
+            move_verified(item, cancelled=cancelled)
         elif operation == FileOperation.DELETE:
-            os.remove(item.source)
+            if _is_cancelled(cancelled):
+                raise TransferCancelled()
+            remove_verified_source(item)
         else:
             raise ValueError(f"Unsupported operation: {operation}")
-    except (OSError, shutil.Error) as exc:
+    except TransferCancelled:
+        return _TaskOutcome(item, cancelled=True)
+    except (OSError, shutil.Error, ValueError) as exc:
         return _TaskOutcome(item, OperationError(item.source, item.destination, str(exc)))
     return _TaskOutcome(item)
 
@@ -237,8 +246,8 @@ def _prepare_destination_dirs(plan: OperationPlan) -> list[OperationError]:
     errors: list[OperationError] = []
     for parent in sorted(parents):
         try:
-            parent.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
+            safe_parent(parent / ".csliser-parent-check")
+        except (OSError, ValueError) as exc:
             errors.append(OperationError(Path(), parent, str(exc)))
     return errors
 

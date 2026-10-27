@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import re
+import os
+import stat
 from collections.abc import Iterable
 from pathlib import Path
 
-from .models import FileOperation, MissingFrameSet, OperationPlan, PlannedOperation, ProcessingConfig
+from kraken_core.safe_files import ensure_regular_directory
+
+from .models import FileOperation, MissingFrameSet, OperationPlan, PlannedOperation, ProcessingConfig, SourceFileSnapshot
 from .ranges import expand_frames, parse_frame_ranges
 
-_FRAME_SUFFIX = re.compile(r"^(?P<prefix>.+_)(?P<frame>\d+)$")
+_FRAME_SUFFIX = re.compile(r"^(?:.+_)?(?P<frame>\d+)$")
 
 
 class PlanningError(ValueError):
@@ -34,11 +38,16 @@ def build_operation_plan(config: ProcessingConfig) -> OperationPlan:
     frames = expand_frames(frame_ranges, mode=config.selection_mode, frames_per_row=config.frames_per_row)
     plan = OperationPlan(config=config)
     requested_frames = set(frames)
+    destinations = set()
 
     for source in config.sources:
+        try:
+            source_root = ensure_regular_directory(source.path.absolute())
+        except (OSError, ValueError) as exc:
+            raise PlanningError(str(exc)) from exc
         for extension in source.extensions:
             normalized_extension = normalize_extension(extension)
-            index = _index_files_by_frame(source.path, normalized_extension)
+            index = _index_files_by_frame(source_root, normalized_extension, requested_frames)
             available_frames = requested_frames.intersection(index)
             if not available_frames:
                 plan.skipped_sources.append((source.path, normalized_extension))
@@ -55,19 +64,24 @@ def build_operation_plan(config: ProcessingConfig) -> OperationPlan:
                 if source_file is None:
                     continue
                 destination = _destination_for(config, source.path, source_file, normalized_extension)
+                if destination is not None:
+                    destination = destination.absolute()
+                    key = os.path.normcase(str(destination))
+                    if key in destinations:
+                        raise PlanningError(f"Destination collision in this plan: {destination}")
+                    destinations.add(key)
+                snapshot = SourceFileSnapshot.from_stat(source_file.stat(follow_symlinks=False))
                 plan.operations.append(
                     PlannedOperation(
                         source=source_file,
                         destination=destination,
                         frame=frame,
                         extension=normalized_extension,
-                        source_folder=source.path,
+                        source_folder=source_root,
+                        source_snapshot=snapshot,
                     )
                 )
-                try:
-                    plan.total_bytes += source_file.stat().st_size
-                except OSError:
-                    pass
+                plan.total_bytes += snapshot.size_bytes
 
     return plan
 
@@ -87,16 +101,25 @@ def validate_processing_config(config: ProcessingConfig) -> None:
             raise PlanningError(f"Destination is not a folder: {config.destination}")
 
 
-def _index_files_by_frame(folder: Path, extension: str) -> dict[int, Path]:
+def _index_files_by_frame(folder: Path, extension: str, selected: set[int]) -> dict[int, Path]:
     index: dict[int, Path] = {}
     for path in sorted(folder.iterdir(), key=lambda item: item.name.lower()):
-        if not path.is_file() or path.suffix.lower() != extension:
+        if path.suffix.lower() != extension:
             continue
         match = _FRAME_SUFFIX.match(path.stem)
         if match is None:
             continue
         frame = int(match.group("frame"))
-        index.setdefault(frame, path)
+        if frame not in selected:
+            continue
+        value = path.stat(follow_symlinks=False)
+        if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+            raise PlanningError(f"Selected source is a link or reparse point: {path}")
+        if not stat.S_ISREG(value.st_mode):
+            continue
+        if frame in index:
+            raise PlanningError(f"Ambiguous frame {frame}: {index[frame].name}, {path.name}")
+        index[frame] = path
     return index
 
 

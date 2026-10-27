@@ -40,12 +40,25 @@ class ProcessingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceFileSnapshot:
+    device: int
+    inode: int
+    size_bytes: int
+    modified_ns: int
+
+    @classmethod
+    def from_stat(cls, value):
+        return cls(value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+
+
+@dataclass(frozen=True, slots=True)
 class PlannedOperation:
     source: Path
     destination: Path | None
     frame: int
     extension: str
     source_folder: Path
+    source_snapshot: SourceFileSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +95,8 @@ class OperationResult:
     skipped: int
     errors: tuple[OperationError, ...] = ()
     cancelled: bool = False
+    outcome_unknown: bool = False
 
     @property
     def ok(self) -> bool:
-        return not self.cancelled and not self.errors
+        return not self.cancelled and not self.errors and not self.outcome_unknown

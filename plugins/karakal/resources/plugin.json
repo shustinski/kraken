@@ -2,7 +2,7 @@
   "id": "karakal",
   "display_name": "Karakal",
   "description": "Validation gradient matrix viewer and metrics explorer.",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "protocol_version": "2.0",
   "analysis_protocol_version": "1.0",
   "analysis_capabilities": [

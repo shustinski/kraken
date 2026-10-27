@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -15,10 +16,12 @@ from kraken_core.analysis_run_protocol import (
     AnalysisPartitionJobManifest,
     AnalysisPartitionResultManifest,
     AnalysisRecordBundle,
+    AnalysisRenderedMap,
     canonical_json,
 )
 
 from .core.headless import run_analysis
+from .runtime_identity import worker_runtime_identity
 
 
 def _atomic_json(path: Path, payload: dict[str, object]) -> None:
@@ -67,6 +70,14 @@ def execute(
 ) -> AnalysisPartitionResultManifest:
     job = AnalysisPartitionJobManifest.read(job_path)
     output_dir = workspace / "outputs"
+    runtime = worker_runtime_identity(sys.modules[__name__])
+    if job.expected_runtime is not None and job.expected_runtime != runtime:
+        result = AnalysisPartitionResultManifest(
+            job_id=job.job_id, run_id=job.run_id, partition_id=job.partition_id, project_id=job.project_id,
+            outcome=AnalysisOutcome.FAILED, bundle=None, message="Worker runtime differs from the pinned requested runtime",
+            worker_runtime=runtime)
+        _atomic_json(result_path, result.to_payload())
+        return result
 
     def progress(completed: int, total: int, frame_id: str) -> None:
         _atomic_json(
@@ -84,6 +95,16 @@ def execute(
     bundle = None
     if execution.frames:
         bundle = _write_bundle(output_dir / "frames.jsonl.gz", execution.frames)
+    rendered_map = None
+    requested_frame = next((parameter.value for parameter in job.parameters if parameter.key == "_render_frame_id"), None)
+    if requested_frame is not None and execution.outcome == AnalysisOutcome.SUCCEEDED:
+        if len(job.frames) != 1 or requested_frame != job.frames[0].frame_id:
+            raise ValueError("A map request must contain exactly its requested frame")
+        from .core.headless import render_analysis_map
+
+        path = render_analysis_map(job, requested_frame, workspace, output_dir)
+        rendered_map = AnalysisRenderedMap(str(requested_frame), path.relative_to(workspace).as_posix(),
+                                          hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_size)
     result = AnalysisPartitionResultManifest(
         job_id=job.job_id,
         run_id=job.run_id,
@@ -92,6 +113,8 @@ def execute(
         outcome=execution.outcome,
         bundle=bundle,
         message=execution.message,
+        rendered_map=rendered_map,
+        worker_runtime=runtime,
     )
     _atomic_json(result_path, result.to_payload())
     return result

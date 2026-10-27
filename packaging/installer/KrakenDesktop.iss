@@ -1,8 +1,15 @@
 #define AppVersion "0.1.0"
 #define RepoRoot AddBackslash(SourcePath) + "..\.."
+#ifndef BuildRoot
+  #define BuildRoot RepoRoot + "\dist\windows"
+#endif
 
 [Setup]
+#ifdef AuditAppId
+AppId={#AuditAppId}
+#else
 AppId={{37BAF0D8-1958-4926-A447-E7CE42D8E4A5}
+#endif
 AppName=Kraken Desktop
 AppVersion={#AppVersion}
 DefaultDirName={autopf}\Kraken Desktop
@@ -17,11 +24,15 @@ SolidCompression=yes
 UninstallDisplayIcon={app}\KrakenDesktop.exe
 
 [Files]
-Source: "{#RepoRoot}\dist\windows\KrakenDesktop\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#BuildRoot}\KrakenDesktop\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
+#ifdef AuditAppId
+Name: "{autoprograms}\{#AuditAppId}"; Filename: "{app}\KrakenDesktop.exe"
+#else
 Name: "{autoprograms}\Kraken Desktop"; Filename: "{app}\KrakenDesktop.exe"
 Name: "{autodesktop}\Kraken Desktop"; Filename: "{app}\KrakenDesktop.exe"; Tasks: desktopicon
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"

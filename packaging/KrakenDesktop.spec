@@ -7,16 +7,27 @@ analysis = Analysis(
     ["entries/desktop_entry.py"],
     pathex=[".."],
     binaries=[],
-    datas=collect_data_files("kraken_core") + collect_data_files("kraken_hub"),
+    datas=(collect_data_files("kraken_core") + collect_data_files("kraken_hub") + collect_data_files("kraken_manager")
+           + collect_data_files("contour", includes=["resources/ui_texts_*.json"])),
     hiddenimports=(
         collect_submodules("kraken_core")
         + collect_submodules("kraken_hub")
         + collect_submodules("kraken_manager")
-        + ["keyring.backends.Windows"]
+        + collect_submodules("kraken_agent")
+        + ["keyring.backends.Windows", "contour.resources"]
     ),
     hookspath=[],
     runtime_hooks=[],
-    excludes=["fastapi", "uvicorn", "alembic", "sqlalchemy", "psycopg"],
+    # Plugin computations run in their own installed applications/Agent jobs.
+    # Contour's reachable CIF codec is required by the native stitch worker;
+    # exclude its UI/entry points rather than removing that shared reader.
+    # Installed training packages must not pull multi-gigabyte CUDA runtimes
+    # into the Desktop simply because they share the build environment.
+    excludes=["fastapi", "uvicorn", "alembic", "sqlalchemy", "psycopg",
+              "torch", "torchvision", "timm", "tensorflow", "jax", "jaxlib",
+              "cv2", "matplotlib", "pandas", "sklearn",
+              "neuralimage", "karakal", "krona", "csliser", "kategb",
+              "contour.widget", "contour.application", "contour.view", "contour.presentation"],
     noarchive=False,
 )
 pyz = PYZ(analysis.pure)

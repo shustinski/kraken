@@ -3,7 +3,7 @@
 import shutil
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 common_hidden = (
     collect_submodules("kraken_server")
@@ -12,8 +12,15 @@ common_hidden = (
     + collect_submodules("sqlalchemy.dialects.postgresql")
     + collect_submodules("psycopg")
     + collect_submodules("alembic")
+    + ["contour.resources"]
 )
-common_datas = [("../migrations", "migrations")]
+common_datas = [("../migrations", "migrations")] + collect_data_files("kraken_core") + collect_data_files("kraken_manager") + collect_data_files("kraken_admin")
+common_datas += collect_data_files("contour", includes=["resources/ui_texts_*.json"])
+# Keep the reachable headless Contour CIF codec for native vector stitching.
+worker_packages = ["torch", "torchvision", "timm", "tensorflow", "jax", "jaxlib",
+                   "cv2", "matplotlib", "pandas", "sklearn",
+                   "neuralimage", "karakal", "krona", "csliser", "kategb",
+                   "contour.widget", "contour.application", "contour.view", "contour.presentation"]
 
 server_analysis = Analysis(
     ["entries/server_entry.py"],
@@ -23,7 +30,7 @@ server_analysis = Analysis(
     hiddenimports=common_hidden,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["PyQt6"],
+    excludes=["PyQt6", *worker_packages],
     noarchive=False,
 )
 server_pyz = PYZ(server_analysis.pure)
@@ -48,7 +55,9 @@ admin_analysis = Analysis(
     hiddenimports=common_hidden,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["PyQt6"],
+    # The local administrator opens its Qt application when no CLI command is
+    # supplied. Its UI must ship even though the Server process is headless.
+    excludes=worker_packages,
     noarchive=False,
 )
 admin_pyz = PYZ(admin_analysis.pure)

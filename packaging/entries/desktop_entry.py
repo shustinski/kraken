@@ -1,3 +1,5 @@
-from kraken_hub.app import main
+import multiprocessing
+from kraken_hub.frozen_entry import main
 
-main()
+multiprocessing.freeze_support()
+raise SystemExit(main())

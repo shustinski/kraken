@@ -1,0 +1,26 @@
+(edif EXPLICIT_INVERTER
+  (edifVersion 2 0 0)
+  (edifLevel 0)
+  (keywordMap (keywordLevel 0))
+  (library PRIMITIVES
+    (cell NMOS (view SYMBOL (viewType NETLIST)
+      (interface (port GATE (direction INPUT)) (port SOURCE (direction INOUT)) (port DRAIN (direction INOUT)))))
+    (cell PMOS (view SYMBOL (viewType NETLIST)
+      (interface (port GATE (direction INPUT)) (port SOURCE (direction INOUT)) (port DRAIN (direction INOUT))))))
+  (library CIRCUITS
+    (cell INV
+      (view NETLIST
+        (viewType NETLIST)
+        (interface
+          (port A (direction INPUT))
+          (port Y (direction OUTPUT))
+          (port VDD (direction INOUT))
+          (port GND (direction INOUT)))
+        (contents
+          (instance P1 (viewRef SYMBOL (cellRef PMOS (libraryRef PRIMITIVES))))
+          (instance N1 (viewRef SYMBOL (cellRef NMOS (libraryRef PRIMITIVES))))
+          (net INPUT (joined (portRef A) (portRef GATE (instanceRef P1)) (portRef GATE (instanceRef N1))))
+          (net OUTPUT (joined (portRef Y) (portRef DRAIN (instanceRef P1)) (portRef DRAIN (instanceRef N1))))
+          (net HIGH (joined (portRef VDD) (portRef SOURCE (instanceRef P1))))
+          (net LOW (joined (portRef GND) (portRef SOURCE (instanceRef N1))))))))
+  (design EXPLICIT_INVERTER (cellRef INV (libraryRef CIRCUITS))))

@@ -7,7 +7,7 @@ from krona.infrastructure.edif_repository import EdifRepository
 
 
 def test_parse_to_dict_returns_top_level_data():
-    result = parse_to_dict(Path("resources/test_edifs/e1_model.EDF"))
+    result = parse_to_dict(Path(Path(__file__).resolve().parents[1] / "resources/test_edifs/e1_model.EDF"))
     assert result["design"] == "SCHEMATIC1"
     assert result["library"] == "CRPROJECT"
     assert result["cell"] == "SCHEMATIC1"
@@ -16,77 +16,70 @@ def test_parse_to_dict_returns_top_level_data():
     assert len(result["nets"]) > 0
 
 
-def test_logic_functions_extraction_returns_output_functions():
-    result = logic_functions_to_dict(Path("resources/test_edifs/e1_model.EDF"))
-    assert len(result["inputs"]) > 0
-    assert "OUT1" in result["outputs"]
-    assert "sequential_elements" in result
-    assert isinstance(result["sequential_elements"], list)
-    assert "sequential_count" in result.get("meta", {})
-    out1 = result["outputs"]["OUT1"]
-    assert out1["net"]
-    assert len(out1["truth_table"]) == 2 ** len(result["inputs"])
+def test_logic_functions_extraction_returns_explicit_output_functions():
+    result = logic_functions_to_dict(Path(__file__).resolve().parents[1] / "resources/test_edifs/explicit_cmos_inverter.edf")
+    assert result["inputs"] == ["A"]
+    output = result["outputs"]["Y"]
+    assert output["net"] == "OUTPUT"
+    assert [row["value"] for row in output["truth_table"]] == [1, 0]
+    assert output["simplified_expression"] == "!A"
+    assert result["meta"]["transistor_count"] == 2
 
 
-def test_logic_function_fixture_e129_matches_expected_expression():
-    result = logic_functions_to_dict(Path("resources/test_edifs/e129_model_logic.EDF"))
+def test_legacy_e129_does_not_invent_formula_from_conflicting_nets():
+    result = logic_functions_to_dict(Path(__file__).resolve().parents[1] / "resources/test_edifs/e129_model_logic.EDF")
     assert result["inputs"] == ["IN1", "IN2", "IN3"]
-    out1 = result["outputs"]["OUT1"]
-    assert all(row["value"] in {0, 1} for row in out1["truth_table"])
-    assert out1["simplified_expression"] == "!(IN1 & IN3 | IN2)"
+    assert result["outputs"] == {}
+    conflicts = result["meta"]["connectivity"]["issues"]
+    assert any(i["code"] == "conflicting_port_nets" and i.get("instance") == "INS9" for i in conflicts)
+    assert result["meta"]["logic_status"] == "unknown_incomplete_netlist"
+    assert all(name == alias for name, alias in result["meta"]["net_aliases"].items())
 
 
-def test_input_detection_fixture_e140_detects_inputs():
-    result = logic_functions_to_dict(Path("resources/test_edifs/e140_report.EDF"))
-    assert len(result["inputs"]) > 0
-    assert all(name.startswith("IN") for name in result["inputs"])
+def test_geometric_input_symbols_in_e140_do_not_become_connected_inputs():
+    result = logic_functions_to_dict(Path(__file__).resolve().parents[1] / "resources/test_edifs/e140_report.EDF")
+    assert result["inputs"] == []
+    assert result["meta"]["unresolved_ports"]
+    assert result["meta"]["geometry_used_for_connectivity"] is False
 
 
-def test_output_with_unknown_truth_rows_has_no_printed_function():
-    result = logic_functions_to_dict(Path("resources/test_edifs/e1_model.EDF"))
-    out1 = result["outputs"]["OUT1"]
-    assert any(row["value"] is None for row in out1["truth_table"])
-    assert out1["sum_of_products"] is None
-    assert out1["simplified_expression"] is None
+def test_output_with_incomplete_explicit_transistor_has_no_printed_function(tmp_path):
+    source = Path(__file__).resolve().parents[1] / "resources/test_edifs/explicit_cmos_inverter.edf"
+    path = tmp_path / "missing_gate.edf"
+    path.write_text(source.read_text().replace("(portRef GATE (instanceRef N1))", ""))
+    result = logic_functions_to_dict(path)
+    output = result["outputs"]["Y"]
+    assert [row["value"] for row in output["truth_table"]] == [None, None]
+    assert output["sum_of_products"] is None
+    assert output["simplified_expression"] is None
+    assert result["meta"]["unresolved_instances"] == ["N1"]
 
 
-def test_e1_fixture_topologically_detects_d_flip_flop():
-    result = logic_functions_to_dict(Path("resources/test_edifs/e1_model.EDF"))
+def test_legacy_e1_e2_conflicting_memberships_do_not_prove_flip_flops():
+    for name in ("e1_model.EDF", "e2_model.EDF"):
+        result = logic_functions_to_dict(Path(__file__).resolve().parents[1] / "resources/test_edifs" / name)
+        assert result["outputs"] == {}
+        assert result["sequential_elements"] == []
+        assert any(i["code"] == "conflicting_port_nets" for i in result["meta"]["connectivity"]["issues"])
+        assert result["meta"]["unresolved_ports"]
 
-    sequential = result.get("sequential_elements", [])
-    flip_flops = [item for item in sequential if item.get("kind") == "flip_flop"]
+
+def test_explicit_master_slave_netlist_topologically_detects_d_flip_flop():
+    result = logic_functions_to_dict(Path(__file__).resolve().parents[1] / "resources/test_edifs/explicit_master_slave_dff.edf")
+    assert result["meta"]["connectivity"]["issues"] == []
+    assert result["meta"]["transistor_count"] == 18
+    flip_flops = [item for item in result["sequential_elements"] if item["kind"] == "flip_flop"]
     assert flip_flops
     ff = flip_flops[0]
-    assert ff.get("subtype") == "D"
-    triggering = ff.get("triggering", {})
-    assert triggering.get("mode") == "edge"
-    assert triggering.get("edge") in {"rising", "falling"}
-    assert triggering.get("net") == result.get("meta", {}).get("input_nets", {}).get("IN1")
-    data_inputs = list(ff.get("data_inputs", []))
-    assert data_inputs
-    data_fn = data_inputs[0].get("function", {})
-    assert data_fn.get("depends_on") == ["IN2", "IN3"]
-    assert data_fn.get("mux", {}).get("kind") == "mux2"
-    assert data_fn.get("mux", {}).get("select") in {"IN2", "IN3"}
-
-
-def test_e2_fixture_topologically_detects_pulse_triggered_d_flip_flop():
-    result = logic_functions_to_dict(Path("resources/test_edifs/e2_model.EDF"))
-
-    sequential = result.get("sequential_elements", [])
-    flip_flops = [item for item in sequential if item.get("kind") == "flip_flop"]
-    assert flip_flops
-    ff = flip_flops[0]
-    assert ff.get("subtype") == "D"
-    triggering = ff.get("triggering", {})
-    assert triggering.get("mode") == "edge"
-    assert triggering.get("net") == result.get("meta", {}).get("input_nets", {}).get("IN3")
-    assert triggering.get("edge") == "falling"
-    assert ff.get("topology", {}).get("kind") == "pulse_triggered_single_latch"
+    assert ff["subtype"] == "D"
+    assert ff["triggering"]["mode"] == "edge"
+    assert ff["triggering"]["edge"] == "rising"
+    assert ff["triggering"]["net"] == "CLK"
+    assert any(output.get("net") == "S_B" for output in ff["outputs"])
 
 
 def test_scene_data_contains_parser_diagnostics():
-    scene_data = LoadSceneData(EdifRepository()).execute(Path("resources/test_edifs/e1_model.EDF"))
+    scene_data = LoadSceneData(EdifRepository()).execute(Path(Path(__file__).resolve().parents[1] / "resources/test_edifs/e1_model.EDF"))
     assert isinstance(scene_data.diagnostics, list)
     assert len(scene_data.diagnostics) > 0
     assert all(hasattr(item, "severity") and hasattr(item, "message") for item in scene_data.diagnostics)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 import re
 from krona.domain.netlist import Instance, TopLevelNetlist
-from krona.infrastructure.edif_parser import EdifTextParser
 
 
 class BuildNetAliasMapMixin:
@@ -13,56 +12,16 @@ class BuildNetAliasMapMixin:
     @staticmethod
     def _instance_kind(instance: Instance) -> str | None:
         payload = " ".join(filter(None, [instance.name, instance.cell, instance.view, instance.library])).upper()
-        if "NMOS" in payload:
+        if "NMOS" in payload and "PMOS" not in payload:
             return "nmos"
-        if "PMOS" in payload:
+        if "PMOS" in payload and "NMOS" not in payload:
             return "pmos"
         return None
 
     def _build_net_alias_map(self, netlist: TopLevelNetlist) -> dict[str, str]:
-        parent: dict[str, str] = {net.name: net.name for net in netlist.nets}
-
-        def find(name: str) -> str:
-            while parent[name] != name:
-                parent[name] = parent[parent[name]]
-                name = parent[name]
-            return name
-
-        def union(left: str, right: str) -> None:
-            root_left = find(left)
-            root_right = find(right)
-            if root_left == root_right:
-                return
-            if root_left < root_right:
-                parent[root_right] = root_left
-            else:
-                parent[root_left] = root_right
-
-        # Nets that share the same explicit wire point represent one electrical node.
-        point_to_nets: dict[tuple[int, int], set[str]] = {}
-        for net in netlist.nets:
-            for wire in net.wires:
-                for point in wire.points:
-                    point_to_nets.setdefault((point.x, point.y), set()).add(net.name)
-        for nets in point_to_nets.values():
-            names = list(nets)
-            for idx in range(1, len(names)):
-                union(names[0], names[idx])
-
-        # If same instance pin appears in multiple net names, treat them as aliases.
-        pin_to_nets: dict[tuple[str, str], set[str]] = {}
-        for net in netlist.nets:
-            for connection in net.connections:
-                if not connection.instance:
-                    continue
-                key = (connection.instance, connection.port.upper())
-                pin_to_nets.setdefault(key, set()).add(net.name)
-        for nets in pin_to_nets.values():
-            names = list(nets)
-            for idx in range(1, len(names)):
-                union(names[0], names[idx])
-
-        return {name: find(name) for name in parent}
+        # Each declared net remains its own identity. Repeated pin membership
+        # is reported as a conflict by ExplicitConnectivity, never an alias.
+        return {net.name: net.name for net in netlist.nets}
 
     @staticmethod
     def _canonicalize_dict_values(values: dict[str, str], alias_map: dict[str, str]) -> dict[str, str]:
@@ -88,74 +47,32 @@ class BuildNetAliasMapMixin:
         return a * x + b * y + tx, c * x + d * y + ty
 
     def _input_nets(self, top_page: str, netlist: TopLevelNetlist) -> dict[str, str]:
-        result: dict[str, str] = {}
+        from krona.domain.connectivity import ExplicitConnectivity
 
-        # 1) Explicit stimulus instances (INSINx) used by some generated EDF files.
-        for net in netlist.nets:
-            for connection in net.connections:
-                if not connection.instance:
-                    continue
-                match = re.fullmatch(r"INSIN(\d+)", connection.instance.upper())
-                if not match:
-                    continue
-                if connection.port.upper() not in {"VPULSECR", "IN", "INPUT"}:
-                    continue
-                result[f"IN{match.group(1)}"] = net.name
-
-        # 2) Top-level module ports (INx) represented via portImplementation blocks.
-        point_to_nets: dict[tuple[int, int], set[str]] = {}
-        for net in netlist.nets:
-            for wire in net.wires:
-                for point in wire.points:
-                    point_to_nets.setdefault((point.x, point.y), set()).add(net.name)
-
-        for port_impl in EdifTextParser.find_direct_classes(top_page, "(portImplementation"):
-            name_block = EdifTextParser.first_direct_or_none(port_impl, "(name ")
-            if name_block:
-                port_name = EdifTextParser.parse_header_name(name_block, "name")
-            else:
-                port_name = EdifTextParser.parse_header_name(port_impl, "portImplementation")
-            upper_name = port_name.upper()
-            if not re.fullmatch(r"IN\d+", upper_name):
+        connectivity = ExplicitConnectivity.from_netlist(netlist)
+        result = connectivity.ports_with_direction("input")
+        for port, net in connectivity.top_ports.items():
+            if port not in connectivity.directions and re.fullmatch(r"IN\d+", port):
+                result[port] = net
+        # Explicit stimulus terminal membership is retained for legacy EDIF
+        # generators. Merely drawing an input symbol at a point adds no link.
+        for instance, pins in connectivity.pins.items():
+            match = re.fullmatch(r"INSIN(\d+)", instance.upper())
+            if not match or instance in connectivity.invalid_instances:
                 continue
-
-            connect_location = EdifTextParser.first_any_or_none(port_impl, "(connectLocation")
-            points = EdifTextParser.parse_points(connect_location) if connect_location else []
-            if not points:
-                continue
-            nets = point_to_nets.get((points[0].x, points[0].y))
-            if not nets:
-                continue
-            result[upper_name] = sorted(nets, key=self._natural_key)[0]
+            names = {pins[p] for p in ("VPULSECR", "IN", "INPUT") if p in pins}
+            if len(names) == 1:
+                result.setdefault(f"IN{match.group(1)}", next(iter(names)))
         return result
 
     def _output_nets(self, top_page: str, netlist: TopLevelNetlist) -> dict[str, str]:
-        point_to_nets: dict[tuple[int, int], set[str]] = {}
-        for net in netlist.nets:
-            for wire in net.wires:
-                for point in wire.points:
-                    key = (point.x, point.y)
-                    point_to_nets.setdefault(key, set()).add(net.name)
+        from krona.domain.connectivity import ExplicitConnectivity
 
-        outputs: dict[str, str] = {}
-        for port_impl in EdifTextParser.find_direct_classes(top_page, "(portImplementation"):
-            name_block = EdifTextParser.first_direct_or_none(port_impl, "(name ")
-            if name_block:
-                port_name = EdifTextParser.parse_header_name(name_block, "name")
-            else:
-                port_name = EdifTextParser.parse_header_name(port_impl, "portImplementation")
-            if not re.fullmatch(r"OUT\d+", port_name.upper()):
-                continue
-            connect_location = EdifTextParser.first_any_or_none(port_impl, "(connectLocation")
-            if not connect_location:
-                continue
-            points = EdifTextParser.parse_points(connect_location)
-            if not points:
-                continue
-            nets = point_to_nets.get((points[0].x, points[0].y))
-            if not nets:
-                continue
-            outputs[port_name] = sorted(nets, key=self._natural_key)[0]
+        connectivity = ExplicitConnectivity.from_netlist(netlist)
+        outputs = connectivity.ports_with_direction("output")
+        for port, net in connectivity.top_ports.items():
+            if port not in connectivity.directions and re.fullmatch(r"OUT\d+", port):
+                outputs[port] = net
         return outputs
 
     def _build_net_geometry(self, netlist: TopLevelNetlist) -> tuple[dict[tuple[int, int], set[str]], dict[str, list[tuple[int, int, int, int]]]]:

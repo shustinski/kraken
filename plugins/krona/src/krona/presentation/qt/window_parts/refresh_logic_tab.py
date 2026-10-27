@@ -7,6 +7,23 @@ from PyQt6.QtWidgets import (
 
 
 class RefreshLogicTabMixin:
+    def _append_connectivity_status(self):
+        meta = (self._logic_data or {}).get("meta", {})
+        if meta.get("electrical_connectivity") == "unverified":
+            self.logic_status_label.setText(
+                self.logic_status_label.text() + " — " + self._t(
+                    "logic.status.unverified", "Declared netlist; physical connectivity unverified.",
+                )
+            )
+        errors = sum(issue.get("severity") == "error" for issue in meta.get("connectivity", {}).get("issues", []))
+        unresolved = (len(meta.get("unresolved_instances", [])) + len(meta.get("unresolved_ports", []))
+                      + len(meta.get("unsupported_instances", [])))
+        if errors or unresolved:
+            self.logic_status_label.setText(self.logic_status_label.text() + " · " + self._t(
+                "logic.status.incomplete", "Conflicts: {errors}; unresolved references: {unresolved}",
+                errors=errors, unresolved=unresolved,
+            ))
+
     def refresh_logic_tab(self) -> None:
         self._logic_highlight_targets = {}
         self.logic_highlight_combo.blockSignals(True)
@@ -35,6 +52,7 @@ class RefreshLogicTabMixin:
                     "No outputs or sequential elements detected for current file.",
                 )
             )
+            self._append_connectivity_status()
             self.logic_simplified_label.setText(
                 self._t("logic.label.simplified.prefix", "Simplified: ") + self._t("logic.label.none", "-")
             )
@@ -58,6 +76,7 @@ class RefreshLogicTabMixin:
                 transistor_count=meta.get("transistor_count", 0),
             )
         )
+        self._append_connectivity_status()
         input_names = self._logic_data.get("inputs", [])
         output_names = list(outputs.keys())
         for output_name in output_names:

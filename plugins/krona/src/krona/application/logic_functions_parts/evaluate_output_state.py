@@ -14,13 +14,21 @@ class EvaluateOutputStateMixin:
         transistors: list[_Transistor],
     ) -> int | None:
         net_values: dict[str, bool | None] = {}
+        driven_levels: dict[str, set[bool]] = {}
+
+        def drive(net, level):
+            driven_levels.setdefault(net, set()).add(level)
+            net_values[net] = level
+
         for variable, bit in assignment.items():
             input_net = input_net_by_var[variable]
-            net_values[input_net] = bool(bit)
+            drive(input_net, bool(bit))
         for net in power_nets:
-            net_values[net] = True
+            drive(net, True)
         for net in ground_nets:
-            net_values[net] = False
+            drive(net, False)
+        if any(len(levels) > 1 for levels in driven_levels.values()):
+            return None
 
         # Fixed-point propagation of known levels through currently-on transistor network.
         changed = True
@@ -53,13 +61,29 @@ class EvaluateOutputStateMixin:
                             net_values[node] = target
                             changed = True
 
-        output_value = net_values.get(output_net)
-        if output_value is True:
-            return 1
-        if output_value is False:
-            return 0
-
         graph = self._build_active_graph(transistors, net_values)
+        # A previously propagated level must not hide a newly activated short.
+        component = {output_net}
+        pending = [output_net]
+        while pending:
+            node = pending.pop()
+            for neighbor in graph.get(node, set()):
+                if neighbor not in component:
+                    component.add(neighbor)
+                    pending.append(neighbor)
+        levels = {net_values[node] for node in component if net_values.get(node) is not None}
+        if len(levels) > 1:
+            return None
+        output_value = net_values.get(output_net)
+        if output_value is not None:
+            # A known pull-up cannot prove HIGH when a floating gate may
+            # enable a competing pull-down (and conversely for LOW).
+            possible = self._build_possible_graph(transistors, net_values)
+            opposite_drivers = {net for net, levels in driven_levels.items() if (not output_value) in levels}
+            if self._is_reachable(possible, output_net, opposite_drivers):
+                return None
+            return int(output_value)
+
         pull_down = self._is_reachable(graph, output_net, ground_nets)
         pull_up = self._is_reachable(graph, output_net, power_nets)
         if pull_down and not pull_up:
@@ -67,15 +91,7 @@ class EvaluateOutputStateMixin:
         if pull_up and not pull_down:
             return 1
 
-        # Fallback for partially-connected or under-specified EDF netlists:
-        # infer from possible (not guaranteed) paths.
-        possible_graph = self._build_possible_graph(transistors, net_values)
-        possible_pull_down = self._is_reachable(possible_graph, output_net, ground_nets)
-        possible_pull_up = self._is_reachable(possible_graph, output_net, power_nets)
-        if possible_pull_up and not possible_pull_down:
-            return 1
-        if possible_pull_down and not possible_pull_up:
-            return 0
+        # A possible path through an unknown gate does not prove conduction.
         return None
 
 if TYPE_CHECKING:

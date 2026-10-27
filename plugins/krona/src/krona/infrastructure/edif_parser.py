@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from krona.application.ports import DiagnosticItem
-from krona.domain.netlist import Connection, Instance, Net, Point, TopLevelNetlist, Wire
+from krona.domain.netlist import Connection, Instance, Net, Point, Port, TopLevelNetlist, Wire
 
 
 @dataclass(frozen=True)
@@ -261,6 +261,13 @@ class EdifTextParser:
 
     def parse_top_level_netlist(self) -> TopLevelNetlist:
         ctx = self._build_top_context()
+        top_view = self.build_view_index().get((ctx.library_name, ctx.cell_name, ctx.view_name), "")
+        interface = self.first_direct_or_none(top_view, "(interface") if top_view else None
+        ports = []
+        for block in self.find_direct_classes(interface, "(port") if interface else []:
+            name = self.parse_header_name(block, "port")
+            direction = self.first_direct_or_none(block, "(direction")
+            ports.append(Port(name, self.parse_header_name(direction, "direction").lower() if direction else None))
         instances: list[Instance] = []
         for instance_block in self.find_direct_classes(ctx.top_page_block, "(instance "):
             name = self.parse_header_name(instance_block, "instance")
@@ -311,6 +318,7 @@ class EdifTextParser:
             view=ctx.view_name,
             instances=instances,
             nets=nets,
+            ports=ports,
         )
 
     def collect_diagnostics(self) -> list[DiagnosticItem]:
@@ -320,6 +328,14 @@ class EdifTextParser:
             diagnostics.append(DiagnosticItem(severity=severity, message=message))
 
         netlist = self.parse_top_level_netlist()
+        from krona.domain.connectivity import ExplicitConnectivity
+
+        connectivity = ExplicitConnectivity.from_netlist(netlist)
+        for issue in connectivity.issues:
+            add(issue["severity"], f"Explicit EDIF connectivity: {issue}")
+        for port in netlist.ports:
+            if port.direction and port.name.upper() not in connectivity.top_ports:
+                add("warning", f"Interface port '{port.name}' has no unambiguous joined/portRef net; geometry is ignored.")
         top_page = self.get_top_page_block()
         view_index = self.build_view_index()
 
@@ -341,8 +357,8 @@ class EdifTextParser:
                     break
 
         port_impl_blocks = self.find_direct_classes(top_page, "(portImplementation")
-        input_port_count = 0
-        output_port_count = 0
+        input_port_count = len(connectivity.ports_with_direction("input"))
+        output_port_count = len(connectivity.ports_with_direction("output"))
         for port_impl in port_impl_blocks:
             name_block = self.first_direct_or_none(port_impl, "(name ")
             if name_block:
@@ -350,9 +366,9 @@ class EdifTextParser:
             else:
                 port_name = self.parse_header_name(port_impl, "portImplementation")
             upper_name = port_name.upper()
-            if re.fullmatch(r"IN\d+", upper_name) or re.fullmatch(r"INSIN\d+", upper_name):
+            if upper_name in connectivity.top_ports and re.fullmatch(r"IN\d+", upper_name):
                 input_port_count += 1
-            if re.fullmatch(r"OUT\d+", upper_name):
+            if upper_name in connectivity.top_ports and re.fullmatch(r"OUT\d+", upper_name):
                 output_port_count += 1
             if not self.first_any_or_none(port_impl, "(connectLocation"):
                 add("warning", f"Port '{port_name}' has no connectLocation block.")

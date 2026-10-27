@@ -1,4 +1,6 @@
 {
+  "logic.status.unverified": "Связи заданы в netlist; физическая связность не подтверждена.",
+  "logic.status.incomplete": "Конфликты: {errors}; неразрешённые ссылки: {unresolved}",
   "window.title": "Просмотрщик EDF-схем",
   "path.no_file": "EDF файл не загружен",
   "button.open_edf": "Открыть EDF",

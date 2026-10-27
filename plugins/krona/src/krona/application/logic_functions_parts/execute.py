@@ -1,13 +1,18 @@
 """logic_functions: execute."""
 from __future__ import annotations
 from itertools import product
+from hashlib import sha256
 from pathlib import Path
+import re
+from krona.domain.connectivity import ExplicitConnectivity
 
 
 class ExecuteMixin:
     def execute(self, path: str | Path) -> dict:
         source_path = Path(path)
+        source_digest = sha256(source_path.read_bytes()).hexdigest()
         netlist = self._repository.read_top_level_netlist(source_path)
+        connectivity = ExplicitConnectivity.from_netlist(netlist)
         top_page = self._repository.read_top_page_block(source_path)
         view_index = self._repository.read_view_index(source_path)
         alias_map = self._build_net_alias_map(netlist)
@@ -30,6 +35,19 @@ class ExecuteMixin:
             segments_by_net=segments_by_net,
             alias_map=alias_map,
         )
+        modeled_instances = {transistor.instance_name for transistor in transistors}
+        unresolved_instances = sorted(
+            instance.name for instance in netlist.instances
+            if self._instance_kind(instance) is not None and instance.name not in modeled_instances
+        )
+        unsupported_instances = sorted(
+            instance.name for instance in netlist.instances
+            if self._instance_kind(instance) is None
+            and connectivity.pins.get(instance.name)
+            and not re.fullmatch(r"INSIN\d+", instance.name.upper())
+        )
+        incomplete = bool(unresolved_instances or unsupported_instances
+                          or any(issue["severity"] == "error" for issue in connectivity.issues))
 
         inputs = sorted(input_net_by_var.keys(), key=self._natural_key)
         nets_by_canonical: dict[str, list[str]] = {}
@@ -55,7 +73,7 @@ class ExecuteMixin:
             rows = []
             for bits in product([0, 1], repeat=len(inputs)):
                 assignment = dict(zip(inputs, bits))
-                state = self._evaluate_output_state(
+                state = None if incomplete else self._evaluate_output_state(
                     output_net=output_net,
                     assignment=assignment,
                     input_net_by_var=input_net_by_var,
@@ -81,11 +99,28 @@ class ExecuteMixin:
                 },
             }
 
+        if sha256(source_path.read_bytes()).hexdigest() != source_digest:
+            raise ValueError("EDIF source changed during logic analysis; retry using a stable artifact revision")
+
         return {
             "inputs": inputs,
             "outputs": outputs,
             "sequential_elements": sequential_elements,
             "meta": {
+                # EDIF declarations are netlist evidence, not verification of
+                # the physical chip or acceptance by an engineer.
+                "analysis_basis": "explicit_edif_joined",
+                "electrical_connectivity": "unverified",
+                "geometry_used_for_connectivity": False,
+                "unresolved_instances": unresolved_instances,
+                "unsupported_instances": unsupported_instances,
+                "logic_status": "unknown_incomplete_netlist" if incomplete else "evaluated_explicit_netlist",
+                "connectivity": connectivity.provenance(),
+                "unresolved_ports": sorted(set(connectivity.directions) - set(connectivity.top_ports)),
+                "rail_role_basis": "explicit_port_or_exact_net_name_convention",
+                "source_artifact": str(source_path.resolve()),
+                "source_sha256": source_digest,
+                "net_aliases": dict(alias_map),
                 "input_nets": input_net_by_var,
                 "power_nets": sorted(power_nets, key=self._natural_key),
                 "ground_nets": sorted(ground_nets, key=self._natural_key),

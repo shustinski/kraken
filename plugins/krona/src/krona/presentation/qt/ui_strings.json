@@ -1,4 +1,6 @@
 {
+  "logic.status.unverified": "Declared netlist; physical connectivity unverified.",
+  "logic.status.incomplete": "Conflicts: {errors}; unresolved references: {unresolved}",
   "window.title": "EDF Netlist Viewer",
   "path.no_file": "No EDF file loaded",
   "button.open_edf": "Open EDF",

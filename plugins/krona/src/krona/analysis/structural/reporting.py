@@ -30,6 +30,8 @@ class ReportingLayer:
 
         features = self._aggregate_feature_summary(patterns, recognized)
         diagnostics = [*patterns.diagnostics]
+        for issue in (metadata or {}).get("connectivity", {}).get("issues", []):
+            diagnostics.append(f"Explicit EDIF connectivity: {issue}")
 
         return StructuralAnalysisReport(
             design_name=design_name,
@@ -68,7 +70,7 @@ class ReportingLayer:
         return [
             "Структурный анализ опирается на эвристику имен пинов/ячеек и может терять точность на экзотических библиотеках без стандартных обозначений.",
             "Анализ устойчивых состояний SCC реализован как приближенная проверка по безусловным ребрам известной полярности; сложные многовходовые функции требуют SAT/символьного решателя.",
-            "Для EDIF с неполными joined-связями восстановление пинов выполняется по symbol/geometry и зависит от качества графической аннотации.",
+            "Используются только явные joined/portRef связи EDIF. Геометрия не восполняет отсутствующие пины; конфликтующие ссылки остаются неопределёнными.",
             "Фазовый анализ ограничен перебором релевантных clock/reset сигналов и намеренно ограничивает число комбинаций для производительности.",
             "Детекторы dynamic/keeper/counter используют структурные признаки и не моделируют аналоговые эффекты, утечки и временныe параметры.",
         ]

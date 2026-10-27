@@ -1,4 +1,4 @@
-from krona.model.edif import *
+from krona.model.edif import EdifParser, find_net_name, remove_edif_header
 from pathlib import Path
 
 def test_find_classes():
@@ -76,7 +76,7 @@ def test_find_net_name():
     assert real_result == expected_result
 
 def test_extract_top_level_netlist():
-    edif_path = Path("resources/test_edifs/e1_model.EDF")
+    edif_path = Path(Path(__file__).resolve().parents[1] / "resources/test_edifs/e1_model.EDF")
     parser = EdifParser(edif_path)
     netlist = parser.extract_top_level_netlist()
 

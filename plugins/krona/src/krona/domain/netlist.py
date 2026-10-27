@@ -40,6 +40,12 @@ class Instance:
 
 
 @dataclass(frozen=True)
+class Port:
+    name: str
+    direction: str | None = None
+
+
+@dataclass(frozen=True)
 class TopLevelNetlist:
     design: str
     library: str
@@ -47,3 +53,4 @@ class TopLevelNetlist:
     view: str
     instances: list[Instance]
     nets: list[Net]
+    ports: list[Port] = field(default_factory=list)

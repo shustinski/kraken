@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
 
 from krona.application.ports import DiagnosticItem
 from krona.domain.netlist import TopLevelNetlist
@@ -9,15 +10,18 @@ from krona.infrastructure.edif_parser import EdifTextParser
 
 class EdifRepository:
     def __init__(self):
-        self._parser_cache: dict[Path, EdifTextParser] = {}
+        self._parser_cache: dict[Path, tuple[bytes, EdifTextParser]] = {}
 
     def _parser_for(self, path: Path) -> EdifTextParser:
         key = path.resolve()
-        parser = self._parser_cache.get(key)
-        if parser is None:
+        # Size and mtime alone miss rewrites by editors and restored revisions.
+        digest = sha256(key.read_bytes()).digest()
+        cached = self._parser_cache.get(key)
+        if cached is None or cached[0] != digest:
             parser = EdifTextParser(key)
-            self._parser_cache[key] = parser
-        return parser
+            self._parser_cache[key] = (digest, parser)
+            return parser
+        return cached[1]
 
     def read_top_level_netlist(self, path: Path) -> TopLevelNetlist:
         return self._parser_for(path).parse_top_level_netlist()

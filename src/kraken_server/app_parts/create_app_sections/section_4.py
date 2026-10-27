@@ -402,11 +402,12 @@ def _create_app_section_4(agent_gateway, blob_gateway, Depends, HTTPException, H
         order_id: str,
         actor: SessionPrincipal = Depends(shared_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:
         return backend.cancel_work_order(
             project_id,
             order_id,
-            command_context(actor, idempotency_key, None, revision_required=False),
+            command_context(actor, idempotency_key, if_match, revision_required=False),
         )
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/work-orders/{{order_id}}/complete")
@@ -415,11 +416,12 @@ def _create_app_section_4(agent_gateway, blob_gateway, Depends, HTTPException, H
         order_id: str,
         actor: SessionPrincipal = Depends(shared_mutation_actor),
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
     ) -> dict[str, Any]:
         return backend.complete_work_order(
             project_id,
             order_id,
-            command_context(actor, idempotency_key, None, revision_required=False),
+            command_context(actor, idempotency_key, if_match, revision_required=False),
         )
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/heartbeat")
@@ -430,4 +432,6 @@ def _create_app_section_4(agent_gateway, blob_gateway, Depends, HTTPException, H
     ) -> dict[str, Any]:
         if agent_gateway is None:
             raise HTTPException(status_code=503, detail="Server agent queue is not configured")
-        return {"lease_until": agent_gateway.heartbeat(job_id, agent, seconds=int(payload.get("lease_seconds", 60)))}
+        return {"lease_until": agent_gateway.heartbeat(
+            job_id, agent, seconds=int(payload.get("lease_seconds", 60)), telemetry=payload.get("telemetry"),
+        )}

@@ -17,7 +17,7 @@ from kraken_manager.domain.common import (
     RepresentationId,
     validate_uuid,
 )
-from kraken_manager.domain.artifacts import deterministic_frame_series_id
+from kraken_manager.domain.artifacts import deterministic_frame_series_id, is_training_dataset_artifact
 from kraken_manager.domain.selection import FrameRowRange, FrameSelectionV1
 from kraken_manager.domain.workflows import (
     PluginInputV1,
@@ -103,8 +103,7 @@ class SubmitPluginJobMixin:
                     or series is None
                     or series.project_id != project.id
                     or str(series.layer_id) != str(layer_id)
-                    or version.media_type != "application/zip"
-                    or version.parameters.get("plugin_output_role") != "dataset"
+                    or not is_training_dataset_artifact(version)
                 ):
                     raise ValueError("Select a published dataset from this layer")
                 coordinate = next(selection.iter_coordinates())

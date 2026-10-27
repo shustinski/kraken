@@ -54,4 +54,16 @@ def create_app(
     _create_app_section_3(blob_gateway, Depends, HTTPException, Header, Query, Request, app, backend, command_context, heavy_operations, project_reader, run_in_threadpool, shared_mutation_actor, transfer_identity, transfer_payload, transfer_ticket_context)
     _create_app_section_4(agent_gateway, blob_gateway, Depends, HTTPException, Header, Request, StreamingResponse, agent_identity, app, backend, command_context, desktop_identity, extract_review_archive, heavy_operations, project_reader, run_in_threadpool, shared_mutation_actor, transfer_identity, transfer_payload, transfer_ticket_context)
     _create_app_section_5(account_store, session_resolver, development, agent_gateway, blob_gateway, Depends, HTTPException, Header, Request, StreamingResponse, WebSocket, WebSocketDisconnect, agent_identity, app, backend, has_project_access, hub, run_in_threadpool, transfer_identity)
+    from kraken_server.work_planning_routes import register_work_planning_routes
+    register_work_planning_routes(app, backend, project_reader, shared_mutation_actor, command_context)
+    from kraken_server.quality_routes import register_quality_routes
+    register_quality_routes(app, backend, project_reader, shared_mutation_actor, command_context)
+    from kraken_server.analysis_routes import register_analysis_routes
+    register_analysis_routes(app, backend, project_reader, shared_mutation_actor, command_context)
+    from kraken_server.pipeline_routes import register_pipeline_routes
+    register_pipeline_routes(app, backend, project_reader, shared_mutation_actor, command_context)
+    from kraken_server.multilayer_routes import register_multilayer_routes
+    register_multilayer_routes(app, backend, project_reader, shared_mutation_actor, command_context)
+    from kraken_server.electrical_routes import register_electrical_routes
+    register_electrical_routes(app, backend, project_reader, shared_mutation_actor, command_context)
     return app

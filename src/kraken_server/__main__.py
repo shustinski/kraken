@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from contextlib import ExitStack
 from pathlib import Path
 
 from .configuration import ServerConfig, default_config_path
@@ -18,6 +19,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--reload", action="store_true")
     parser.add_argument("--admin-control", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--diagnostic-trace", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, help="Path to packaged server.toml")
     parser.add_argument("--service", action="store_true", help="Run under Windows Service Control Manager")
     parser.add_argument(
@@ -56,22 +58,30 @@ def main() -> int:
         def run(*values, **options):
             run_controlled(uvicorn.Config(*values, **options))
 
-    run(
-        "kraken_server.runtime:create_app_from_environment",
-        host=configuration.host if configuration is not None else args.host,
-        port=configuration.port if configuration is not None else args.port,
-        reload=args.reload,
-        access_log=False,
-        factory=True,
-        ssl_certfile=(
-            None if configuration is None or configuration.tls_cert_file is None
-            else str(configuration.tls_cert_file)
-        ),
-        ssl_keyfile=(
-            None if configuration is None or configuration.tls_key_file is None
-            else str(configuration.tls_key_file)
-        ),
-    )
+    with ExitStack() as diagnostics:
+        if args.diagnostic_trace is not None:
+            import faulthandler
+
+            args.diagnostic_trace.parent.mkdir(parents=True, exist_ok=True)
+            trace = diagnostics.enter_context(args.diagnostic_trace.open("w", encoding="utf-8"))
+            faulthandler.dump_traceback_later(5, repeat=True, file=trace)
+            diagnostics.callback(faulthandler.cancel_dump_traceback_later)
+        run(
+            "kraken_server.runtime:create_app_from_environment",
+            host=configuration.host if configuration is not None else args.host,
+            port=configuration.port if configuration is not None else args.port,
+            reload=args.reload,
+            access_log=False,
+            factory=True,
+            ssl_certfile=(
+                None
+                if configuration is None or configuration.tls_cert_file is None
+                else str(configuration.tls_cert_file)
+            ),
+            ssl_keyfile=(
+                None if configuration is None or configuration.tls_key_file is None else str(configuration.tls_key_file)
+            ),
+        )
     return 0
 
 

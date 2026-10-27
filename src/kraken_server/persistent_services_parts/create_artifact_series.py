@@ -21,7 +21,7 @@ from kraken_manager.domain.common import (
     validate_uuid,
 )
 from kraken_manager.infrastructure.filesystem._codec import encode_model
-from kraken_server.services import CommandContext, NotFoundError
+from kraken_server.services import CommandContext, NotFoundError, ValidationError
 
 from kraken_server.persistent_services_parts.layer_source_scan import _project_id
 
@@ -79,9 +79,11 @@ class CreateArtifactSeriesMixin:
 
     def get_artifact_version(self, project_id: str, version_id: str) -> dict[str, Any]:
         self.get_project(project_id)
-        version = self.projections.get_artifact_version(
-            ArtifactVersionId(validate_uuid(version_id, field="version_id"))
-        )
+        try:
+            identifier = ArtifactVersionId(validate_uuid(version_id, field="version_id"))
+        except (ValueError, TypeError) as exc:
+            raise ValidationError("version_id must be a valid UUID") from exc
+        version = self.projections.get_artifact_version(identifier)
         if version is None:
             raise NotFoundError("Artifact version was not found")
         series = self.projections.get_artifact_series(version.series_id)
@@ -194,6 +196,9 @@ class CreateArtifactSeriesMixin:
         payload: Mapping[str, Any],
         context: CommandContext,
     ) -> AddArtifactVersionCommand:
+        parameters = payload.get("parameters", {})
+        if not isinstance(parameters, Mapping):
+            raise ValueError("Artifact parameters must be an object")
         return AddArtifactVersionCommand(
             context=self._application_context(context),
             project_id=_project_id(project_id),
@@ -207,4 +212,5 @@ class CreateArtifactSeriesMixin:
                 else ArtifactVersionId(validate_uuid(str(payload["parent_version_id"]), field="parent_version_id"))
             ),
             expected_sha256=(None if payload.get("sha256") is None else str(payload["sha256"])),
+            parameters=dict(parameters),
         )

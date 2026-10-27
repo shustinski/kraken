@@ -185,6 +185,13 @@ from .persistent_services_parts.import_agent_result import ImportAgentResultMixi
 from .persistent_services_parts.statistics import StatisticsMixin
 from .persistent_services_parts.append_auxiliary_event import AppendAuxiliaryEventMixin
 from .persistent_services_parts.append_pipeline_event import AppendPipelineEventMixin
+from .persistent_services_parts.work_planning import WorkPlanningMixin
+from .persistent_services_parts.quality import QualityMixin
+from .persistent_services_parts.pipeline_execution import PipelineExecutionMixin
+from .persistent_services_parts.multilayer import MultilayerMixin
+from .persistent_services_parts.electrical import ElectricalMixin
+from .persistent_services_parts.analysis_runs import AnalysisRunsMixin
+from .persistent_services_parts.analysis_maps import AnalysisMapsMixin
 from .persistent_services_parts.layer_source_scan import (
     SystemClock,
     _AgentBlobResultReader,
@@ -220,6 +227,13 @@ class PostgresServerServices(
     StatisticsMixin,
     AppendAuxiliaryEventMixin,
     AppendPipelineEventMixin,
+    WorkPlanningMixin,
+    QualityMixin,
+    PipelineExecutionMixin,
+    MultilayerMixin,
+    ElectricalMixin,
+    AnalysisRunsMixin,
+    AnalysisMapsMixin,
 ):
     """Thin transport facade; mutations execute application command handlers."""
 

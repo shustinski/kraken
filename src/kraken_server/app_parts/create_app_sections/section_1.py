@@ -60,9 +60,32 @@ def _create_app_section_1(services, account_store, session_resolver, live_gitlab
             outbox_publisher.start()
         if blob_gateway is not None:
             await run_in_threadpool(blob_gateway.start)
+        pipeline_stop = asyncio.Event()
+
+        async def pipeline_loop():
+            import logging
+            while not pipeline_stop.is_set():
+                try:
+                    await run_in_threadpool(backend.run_pipeline_cycle)
+                    if hasattr(backend, "run_analysis_cycle"):
+                        await run_in_threadpool(backend.run_analysis_cycle)
+                    if hasattr(backend, "run_stitch_cycle"):
+                        await run_in_threadpool(backend.run_stitch_cycle)
+                except Exception:
+                    logging.getLogger(__name__).exception("Pipeline scheduler cycle failed")
+                try:
+                    await asyncio.wait_for(pipeline_stop.wait(), timeout=1.0)
+                except TimeoutError:
+                    pass
+
+        pipeline_task = (asyncio.create_task(pipeline_loop())
+                         if hasattr(backend, "run_pipeline_cycle") else None)
         try:
             yield
         finally:
+            pipeline_stop.set()
+            if pipeline_task is not None:
+                await pipeline_task
             if outbox_publisher is not None:
                 outbox_publisher.stop()
             if blob_gateway is not None:
@@ -299,6 +322,8 @@ def _create_app_section_1(services, account_store, session_resolver, live_gitlab
         if not has_project_access(project_id, subject):
             raise ForbiddenError("Project membership is required")
         backend.authorize_desktop_job(project_id, subject.principal_id)
+        from dataclasses import replace
+        identity = replace(identity, lease_claim=request.headers.get("X-Kraken-Lease-Claim"))
         return identity, project_id
 
     def agent_identity(request: Request, authorization: str | None = Header(default=None)) -> Any:
@@ -310,7 +335,8 @@ def _create_app_section_1(services, account_store, session_resolver, live_gitlab
             return desktop_identity(request, principal(authorization), str(request.path_params["job_id"]))[0]
         if identity is None:
             raise HTTPException(status_code=401, detail="Agent token is invalid or revoked")
-        return identity
+        from dataclasses import replace
+        return replace(identity, lease_claim=request.headers.get("X-Kraken-Lease-Claim"))
 
     @app.get(f"{API_PREFIX}/session")
     def current_session(subject: SessionPrincipal = Depends(principal)) -> dict[str, Any]:

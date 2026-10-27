@@ -53,7 +53,13 @@ class CreateProjectMixin:
                 connection.execute(text("SELECT 1")).scalar_one()
         except Exception as exc:
             return {"status": "degraded", "metadata": "unavailable", "detail": str(exc)[:500]}
-        return {"status": "ok", "metadata": "postgresql", "api_version": "v1"}
+        status = {"status": "ok", "metadata": "postgresql", "api_version": "v1"}
+        gateway = getattr(self, "agent_gateway", None)
+        if gateway is not None:
+            status["compute_admission"] = gateway.resource_status()
+        else:
+            status["compute_admission"] = {"state": "unavailable", "admission_ready": False}
+        return status
 
     def list_projects(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         return [

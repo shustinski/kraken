@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .blob_gateway import validate_public_gateway_url
+from .agent_resources import QueueResourceBudget
 
 
 def default_config_path() -> Path:
@@ -152,6 +153,7 @@ class ServerConfig:
     log_level: str = "none"
     db_pool_size: int = 10
     db_max_overflow: int = 10
+    queue_budget: QueueResourceBudget | None = None
 
     @classmethod
     def load(cls, path: Path | str) -> ServerConfig:
@@ -163,6 +165,15 @@ class ServerConfig:
         storage = document.get("storage", {})
         identity = document.get("identity", {})
         gateway = document.get("blob_gateway", {})
+        admission = document.get('compute_admission', {})
+        if not isinstance(admission, dict):
+            raise ValueError('compute_admission must be a TOML table')
+        budget_keys = {'max_active_jobs':'KRAKEN_QUEUE_MAX_JOBS', 'cpu':'KRAKEN_QUEUE_CPU',
+                       'gpu':'KRAKEN_QUEUE_GPU', 'memory_mb':'KRAKEN_QUEUE_MEMORY_MB'}
+        if set(admission) - budget_keys.keys():
+            raise ValueError('Unknown compute_admission fields')
+        queue_budget = QueueResourceBudget.from_environment(
+            {environment:admission[key] for key,environment in budget_keys.items() if key in admission})
 
         def resolve(value: object, *, required: bool = True) -> Path | None:
             text = str(value or "").strip()
@@ -226,6 +237,7 @@ class ServerConfig:
             log_level=log_level,
             db_pool_size=pool_size,
             db_max_overflow=max_overflow,
+            queue_budget=queue_budget,
         )
 
     @property
@@ -237,6 +249,11 @@ class ServerConfig:
         return None if self.blob_gateway_secret is None else unprotect_secret(self.blob_gateway_secret)
 
     def apply_to_environment(self) -> None:
+        if self.queue_budget is not None:
+            values=self.queue_budget.to_dict()
+            for field,name in {'max_active_jobs':'KRAKEN_QUEUE_MAX_JOBS', 'cpu':'KRAKEN_QUEUE_CPU',
+                               'gpu':'KRAKEN_QUEUE_GPU', 'memory_mb':'KRAKEN_QUEUE_MEMORY_MB'}.items():
+                os.environ[name]=str(values[field])
         os.environ["KRAKEN_SERVER_COMPOSITION"] = "kraken_server.composition:postgresql_composition"
         os.environ["KRAKEN_DATABASE_URL"] = self.database_url
         os.environ["KRAKEN_DB_POOL_SIZE"] = str(self.db_pool_size)
@@ -304,11 +321,14 @@ def write_config(
     blob_gateway_bind: str = "127.0.0.1:8081",
     blob_gateway_executable: Path | None = None,
     blob_ticket_lifetime_seconds: int = 900,
+    queue_budget: QueueResourceBudget | None = None,
 ) -> ServerConfig:
     import json
 
     from .operation_log import parse_log_level
 
+    if queue_budget is not None and not isinstance(queue_budget, QueueResourceBudget):
+        raise ValueError('queue_budget must be a validated QueueResourceBudget')
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     log_level = parse_log_level(log_level)
@@ -377,6 +397,12 @@ def write_config(
             f"derived_root = {json.dumps(str(derived_root))}",
             "",
     ]
+    if queue_budget is not None:
+        if not isinstance(queue_budget,QueueResourceBudget):
+            raise ValueError('queue_budget must be a validated QueueResourceBudget')
+        sections.extend(['[compute_admission]',
+            '# Logical global queue reservations; not per-host hardware or OS limits.',
+            *(f'{key} = {value}' for key,value in queue_budget.to_dict().items()),''])
     sections.extend(
         (
             "[blob_gateway]",

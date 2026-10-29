@@ -18,6 +18,20 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 
+def artifact_parameters_digest(parameters: object) -> str:
+    """Bind optional artifact metadata without enlarging signed ticket claims."""
+    if not isinstance(parameters, dict):
+        raise ValueError("Artifact parameters must be an object")
+    try:
+        encoded = json.dumps(parameters, sort_keys=True, ensure_ascii=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError("Artifact parameters must be finite JSON values") from exc
+    if len(encoded) > 64 * 1024:
+        raise ValueError("Artifact parameters exceed 64 KiB")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 

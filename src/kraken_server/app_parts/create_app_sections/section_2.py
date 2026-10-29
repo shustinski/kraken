@@ -34,6 +34,8 @@ def _create_app_section_2(account_store, development, blob_gateway, Body, Depend
         payload: dict[str, Any],
         idempotency_key: str,
     ) -> dict[str, str]:
+        from kraken_server.blob_gateway import artifact_parameters_digest
+
         return {
             "actor": actor.principal_id,
             "project": project_id,
@@ -42,6 +44,8 @@ def _create_app_section_2(account_store, development, blob_gateway, Body, Depend
             "filename": str(payload["filename"]),
             "media_type": str(payload["media_type"]),
             "parent_version_id": str(payload.get("parent_version_id") or ""),
+            **({"parameters_sha256": artifact_parameters_digest(payload["parameters"])}
+               if payload.get("parameters") else {}),
         }
 
     def extract_review_archive(archive: Path, destination: Path) -> None:

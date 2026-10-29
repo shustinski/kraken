@@ -398,11 +398,19 @@ def _create_app_section_1(services, account_store, session_resolver, live_gitlab
         return digest, size_bytes
 
     def transfer_payload(payload: dict[str, Any], *, digest: str, size_bytes: int) -> dict[str, Any]:
+        from kraken_server.blob_gateway import artifact_parameters_digest
+
+        parameters = payload.get("parameters", {})
+        try:
+            artifact_parameters_digest(parameters)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         return {
             "filename": str(payload.get("filename", "")),
             "media_type": str(payload.get("media_type", "application/octet-stream")),
             "sha256": digest,
             "size_bytes": size_bytes,
             "parent_version_id": payload.get("parent_version_id"),
+            **({"parameters": parameters} if parameters else {}),
         }
     return Body, Depends, HTTPException, Header, Query, Request, StreamingResponse, WebSocket, WebSocketDisconnect, access_mode, agent_identity, app, backend, command_context, desktop_identity, has_project_access, heavy_operations, hub, principal, problem, project_reader, run_in_threadpool, shared_mutation_actor, transfer_identity, transfer_payload

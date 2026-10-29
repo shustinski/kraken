@@ -4,7 +4,8 @@ import os
 import sys
 from kraken_hub.infrastructure.credentials import windows as windows_credentials
 from kraken_hub.presentation.qt import windows_hello
-from kraken_hub.composition import DesktopSession, EmbeddedProjectService
+from kraken_manager.application.results import UserSession as DesktopSession
+from kraken_hub.application.workspace import ProjectWorkspaceService
 
 def _remember_credentials(username: str, password: str, *, data_directory=None) -> None:
     import logging
@@ -31,7 +32,7 @@ def _autofill_credentials(dialog, username, password, *, data_directory=None) ->
     username.setText(remembered[0])
     password.setText(remembered[1])
 
-def _development_session(service: EmbeddedProjectService) -> DesktopSession | None:
+def _development_session(service: ProjectWorkspaceService) -> DesktopSession | None:
     """Return the explicit VS Code development session without showing login UI."""
     if getattr(sys, "frozen", False) or os.environ.get("KRAKEN_DEV_AUTO_LOGIN") != "1":
         return None

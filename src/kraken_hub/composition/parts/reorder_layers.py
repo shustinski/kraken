@@ -7,9 +7,6 @@ from kraken_manager.application.dto import (
     CommandContext,
     ReorderLayersCommand,
 )
-from kraken_manager.application.lifecycle import (
-    ReorderLayersHandler,
-)
 from kraken_manager.domain.common import (
     LayerId,
 )
@@ -40,7 +37,7 @@ class ReorderLayersMixin:
         idempotency_key: str,
     ) -> tuple[Layer, ...]:
         current = tuple(layers)
-        return ReorderLayersHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             ReorderLayersCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project_id=project.id,

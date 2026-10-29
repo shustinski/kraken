@@ -1,5 +1,6 @@
 """manager_app: launch karakal."""
 from __future__ import annotations
+from kraken_manager.domain.ordering import natural_name_key
 import logging
 import shutil
 from pathlib import Path
@@ -39,7 +40,7 @@ class LaunchKarakalMixin:
                         for path in Path(representation.source).iterdir()
                         if path.is_file()
                     ),
-                    key=self.service._natural_path_key,
+                    key=lambda path: natural_name_key(path.name),
                 )
                 for index, path in enumerate(paths[: project.width * project.height]):
                     frame_id = str(

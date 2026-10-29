@@ -16,17 +16,6 @@ from kraken_manager.application.imports import ImportMappingMode, ImportPlan, Im
 from kraken_manager.workspace import (
     DerivedRun,
 )
-from kraken_manager.application.use_cases import (
-    CreateLayerHandler,
-    CreateRepresentationHandler,
-)
-from kraken_manager.application.representation_lifecycle import (
-    ActivateRepresentationHandler,
-    ArchiveRepresentationHandler,
-    DeactivateRepresentationHandler,
-    RenameRepresentationHandler,
-    UpdateRepresentationNoteHandler,
-)
 from kraken_manager.domain.common import (
     LayerId,
     ProjectId,
@@ -97,7 +86,7 @@ class CreateRepresentationMixin:
             expected_project_revision=project.revision,
             layer_id=LayerId(str(layer_id)) if layer_id is not None else LayerId(new_uuid()),
         )
-        return CreateLayerHandler(self._uow(str(project.id)), self.profiles, self.clock)(command)
+        return self._commands(str(project.id)).execute(command)
 
     def create_representation(
         self,
@@ -130,13 +119,13 @@ class CreateRepresentationMixin:
             active=active,
             purpose=purpose,
         )
-        return CreateRepresentationHandler(self._uow(str(project.id)), self.profiles, self.clock)(command)
+        return self._commands(str(project.id)).execute(command)
 
     def rename_representation(
         self, *, principal: Principal, project: Project, layer: Layer,
         representation: Representation, name: str, idempotency_key: str
     ) -> Representation:
-        return RenameRepresentationHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             RenameRepresentationCommand(
                 CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project.id, layer.id, representation.id, name, layer.revision, representation.revision,
@@ -147,7 +136,7 @@ class CreateRepresentationMixin:
         self, *, principal: Principal, project: Project, layer: Layer,
         representation: Representation, note: str, idempotency_key: str
     ) -> Representation:
-        return UpdateRepresentationNoteHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             UpdateRepresentationNoteCommand(
                 CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project.id, layer.id, representation.id, note, layer.revision, representation.revision,
@@ -158,7 +147,7 @@ class CreateRepresentationMixin:
         self, *, principal: Principal, project: Project, layer: Layer,
         representation: Representation, idempotency_key: str
     ) -> Representation:
-        return ActivateRepresentationHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             ActivateRepresentationCommand(
                 CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project.id, layer.id, representation.id, layer.revision, representation.revision,
@@ -169,9 +158,7 @@ class CreateRepresentationMixin:
         self, *, principal: Principal, project: Project, layer: Layer,
         representation: Representation, idempotency_key: str
     ) -> Representation:
-        return DeactivateRepresentationHandler(
-            self._uow(str(project.id)), self.profiles, self.clock
-        )(
+        return self._commands(str(project.id)).execute(
             DeactivateRepresentationCommand(
                 CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project.id,
@@ -186,7 +173,7 @@ class CreateRepresentationMixin:
         self, *, principal: Principal, project: Project, layer: Layer,
         representation: Representation, idempotency_key: str
     ) -> Representation:
-        return ArchiveRepresentationHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             ArchiveRepresentationCommand(
                 CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project.id, layer.id, representation.id, layer.revision, representation.revision,

@@ -89,6 +89,7 @@ def test_external_layer_uses_numbered_positions_and_delete_keeps_source(
 
     latest_project = service.get_project(project.id)
     assert latest_project is not None
+    layer = next(item for item in service.list_layers(project.id) if item.id == layer.id)
     service.delete_layer(
         principal=session.principal,
         project=latest_project,
@@ -161,8 +162,8 @@ def test_project_rename_rolls_back_both_workspace_roots_on_domain_failure(
             raise RuntimeError("forced domain failure")
 
     monkeypatch.setattr(
-        "kraken_hub.composition.RenameProjectHandler",
-        FailingRenameHandler,
+        service, "_commands",
+        lambda _project_id: SimpleNamespace(execute=FailingRenameHandler()),
     )
 
     try:
@@ -216,8 +217,8 @@ def test_managed_layer_rename_rolls_back_files_and_registry_on_domain_failure(
             raise RuntimeError("forced layer failure")
 
     monkeypatch.setattr(
-        "kraken_hub.composition.RenameLayerHandler",
-        FailingRenameHandler,
+        service, "_commands",
+        lambda _project_id: SimpleNamespace(execute=FailingRenameHandler()),
     )
     try:
         service.rename_layer(
@@ -271,6 +272,16 @@ def test_managed_layer_mutations_are_blocked_by_active_agent_job(tmp_path: Path)
         ),
     )
 
+    layer = next(item for item in service.list_layers(project.id) if item.id == layer.id)
+    original_uow = service._uow
+    def with_active_jobs(project_id):
+        factory = original_uow(project_id)
+        def open_unit():
+            unit = factory()
+            unit.projections.list_plugin_jobs = lambda _id: service.plugin_jobs()
+            return unit
+        return open_unit
+    service._uow = with_active_jobs
     try:
         service.rename_layer(
             principal=session.principal,

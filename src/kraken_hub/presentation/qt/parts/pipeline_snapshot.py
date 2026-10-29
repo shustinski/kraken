@@ -141,6 +141,7 @@ class PipelineSnapshotMixin:
                             else source.source
                         ),
                         "создан": source.created_at.isoformat(),
+                        "note": source.note,
                     },
                 )
             ]
@@ -330,7 +331,7 @@ class PipelineSnapshotMixin:
                 lane_nodes.append(
                     PipelineNode(
                         str(value.id), value.name, "binary", "Бинарные изображения",
-                        str(value.id), value.active, details={"создан": value.created_at.isoformat()},
+                        str(value.id), value.active, details={"создан": value.created_at.isoformat(), "note": value.note},
                     )
                 )
                 if not any(target == str(value.id) for _, target in lane_edges):
@@ -339,7 +340,7 @@ class PipelineSnapshotMixin:
                 lane_nodes.append(
                     PipelineNode(
                         str(value.id), value.name, "vector", "CIF",
-                        str(value.id), value.active, details={"создан": value.created_at.isoformat()},
+                        str(value.id), value.active, details={"создан": value.created_at.isoformat(), "note": value.note},
                     )
                 )
                 if not any(target == str(value.id) for _, target in lane_edges):
@@ -347,7 +348,7 @@ class PipelineSnapshotMixin:
             for value in lane_confidence:
                 lane_nodes.append(PipelineNode(
                     str(value.id), "Уверенность модели", "confidence", value.name,
-                    str(value.id), value.active, details={"создан": value.created_at.isoformat()},
+                    str(value.id), value.active, details={"создан": value.created_at.isoformat(), "note": value.note},
                 ))
                 if not any(target == str(value.id) for _, target in lane_edges):
                     lane_edges.append((str(source.id), str(value.id)))

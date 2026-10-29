@@ -90,6 +90,8 @@ class RunRemoteInteractiveJobMixin:
             action = "vectorize"
         if not self._has_permission(Permission.RUN_PLUGIN):
             return False, "Недостаточно прав для запуска плагинов"
+        if action == "continue_pipeline_step":
+            return True, ""
         requirement = self._action_requirement(action)
         if not requirement[0]:
             return False, f"Неизвестное действие: {action}"

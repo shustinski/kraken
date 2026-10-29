@@ -50,8 +50,19 @@ class CreateReviewBatchMixin:
         temporary.replace(target)
         return target
 
-    def read_project_blob(self, project_id: object, source_key: str) -> bytes:
-        version = self.artifact_version(project_id, source_key)
+    def read_project_blob(self, project_id: object, sha256: str) -> bytes:
+        source_key = str(sha256)
+        if len(source_key) == 64 and all(char in "0123456789abcdefABCDEF" for char in source_key):
+            version = next((
+                item
+                for series in self.list_artifact_series(project_id, include_archived=True)
+                for item in self.artifact_versions(project_id, series.id)
+                if item.blob is not None and item.blob.sha256 == source_key.lower()
+            ), None)
+        else:
+            # Older matrix references contain a version ID. Keep reading those
+            # while also honoring the digest contract used by local projects.
+            version = self.artifact_version(project_id, source_key)
         if version is None or version.blob is None:
             raise ValueError("Для чтения нужны файлы, сохранённые на сервере")
         digest = hashlib.sha256()

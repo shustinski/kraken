@@ -1,12 +1,11 @@
 """manager_app: connect saved server."""
 from __future__ import annotations
-from kraken_hub.composition import DesktopSession
-from kraken_hub.composition.catalog import DualCatalogService
+from kraken_manager.application.results import UserSession as DesktopSession
 
 from kraken_hub.presentation.qt.parts.administration_panel import _administration_panel
 
 def _configure_administration_page(shell, service, session: DesktopSession) -> None:
-    local = service.local if isinstance(service, DualCatalogService) else service
+    local = service.local_administration
     page = shell.page("administration")
     shell.set_page_visible("administration", True)
     if page is not None:
@@ -54,7 +53,7 @@ def _connect_saved_server(parent, service, principal) -> None:
     from kraken_hub.presentation.qt.preferences_dialog import default_program_account, program_server_url
     from kraken_hub.application.remote_error import RemoteServerError
 
-    if not isinstance(service, DualCatalogService) or service.remote is not None:
+    if not service.supports_server_connection or service.server_connection is not None:
         return
     settings = QSettings("Kraken", "KrakenHub")
     account = default_program_account(settings)

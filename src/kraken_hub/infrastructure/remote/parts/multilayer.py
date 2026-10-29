@@ -5,6 +5,9 @@ from __future__ import annotations
 class MultilayerMixin:
     stitch_execution_remote = True
 
+    def stitch_block(self, project_id, job_id, column, row, *, coverage=False):
+        return self.remote_stitch_block(project_id, job_id, column, row, coverage=coverage)
+
     def get_multilayer_model(self, project_id):
         return self._call("GET", f"/api/v1/projects/{project_id}/multilayer")
 

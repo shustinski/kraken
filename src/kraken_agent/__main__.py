@@ -23,8 +23,8 @@ def _default_data_dir() -> Path:
 def main() -> int:
     from kraken_core.process_lifetime import bind_child_process_lifetime
 
-    bind_child_process_lifetime()
     parser = argparse.ArgumentParser(description="Kraken durable local plugin agent")
+    parser.add_argument("--independent", action="store_true", help="Keep working after Hub exits")
     parser.add_argument("--data-dir", type=Path, default=_default_data_dir())
     parser.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "::1"))
     parser.add_argument("--port", type=int, default=0)
@@ -35,6 +35,7 @@ def main() -> int:
     parser.add_argument("--server-token", help="Revocable machine token (or KRAKEN_AGENT_TOKEN)")
     parser.add_argument("--lease-seconds", type=int, default=60)
     args = parser.parse_args()
+    bind_child_process_lifetime(independent=args.independent)
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
     if args.server_url:
@@ -61,7 +62,7 @@ def main() -> int:
     control = AgentControlServer.create(args.data_dir / "jobs.sqlite3", token=args.token)
     control.host = args.host
     control.port = args.port
-    recovered = control.store.recover_interrupted()
+    recovered = control.store.resume_interrupted()
     httpd = control.build_http_server()
     runner = None
     runner_thread = None

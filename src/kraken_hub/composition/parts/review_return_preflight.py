@@ -12,12 +12,9 @@ from kraken_manager.application.dto import (
     RequestReviewChangesCommand,
 )
 from kraken_manager.application.review_workflow import (
-    AcceptReviewHandler,
-    CancelReviewBatchHandler,
     CommitReviewReturnHandler,
     DryRunReviewReturnHandler,
     ExportReviewPackageHandler,
-    RequestReviewChangesHandler,
 )
 from kraken_manager.domain.common import (
     ArtifactVersionId,
@@ -128,11 +125,7 @@ class ReviewReturnPreflightMixin:
         candidate_version_ids: Iterable[ArtifactVersionId | str],
         idempotency_key: str,
     ) -> ReviewBatch:
-        return AcceptReviewHandler(
-            self._uow(str(batch.project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(batch.project_id)).execute(
             AcceptReviewCommand(
                 context=CommandContext(
                     actor=principal,
@@ -156,11 +149,7 @@ class ReviewReturnPreflightMixin:
         reason: str,
         idempotency_key: str,
     ) -> ReviewBatch:
-        return RequestReviewChangesHandler(
-            self._uow(str(batch.project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(batch.project_id)).execute(
             RequestReviewChangesCommand(
                 context=CommandContext(
                     actor=principal,
@@ -180,11 +169,7 @@ class ReviewReturnPreflightMixin:
         batch: ReviewBatch,
         idempotency_key: str,
     ) -> ReviewBatch:
-        return CancelReviewBatchHandler(
-            self._uow(str(batch.project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(batch.project_id)).execute(
             CancelReviewBatchCommand(
                 context=CommandContext(
                     actor=principal,

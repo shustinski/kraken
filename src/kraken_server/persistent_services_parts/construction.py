@@ -1,50 +1,18 @@
 """persistent_services: construction."""
 from __future__ import annotations
 from typing import Any
-from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
-from kraken_manager.application.lifecycle import (
-    ArchiveLayerHandler,
-    ArchiveProjectHandler,
-    RenameLayerHandler,
-    RenameProjectHandler,
-    ReorderLayerHandler,
-    ReorderLayersHandler,
-    RestoreProjectHandler,
-)
-from kraken_manager.application.artifact_lifecycle import (
-    ActivateArtifactVersionHandler,
-    AddExternalArtifactVersionHandler,
-    ArchiveArtifactSeriesHandler,
-    CreateNoteHandler,
-    RenameArtifactSeriesHandler,
-    ReviseNoteHandler,
-)
+from kraken_manager.application.project_commands import ProjectCommandService
+from kraken_manager.infrastructure.workspace_rename import FilesystemWorkspaceRenameStorage
+from kraken_manager.infrastructure.layer_deletion import WorkspaceLayerDeletionStorage
 from kraken_manager.application.plugin_jobs import (
     CancelPluginJobHandler,
     SubmitPluginJobHandler,
 )
 from kraken_manager.application.review_workflow import (
-    AcceptReviewHandler,
-    CancelReviewBatchHandler,
     CreateReviewBatchHandler,
     CommitReviewReturnHandler,
     DryRunReviewReturnHandler,
     ExportReviewPackageHandler,
-    RequestReviewChangesHandler,
-)
-from kraken_manager.application.representation_lifecycle import (
-    ActivateRepresentationHandler,
-    ArchiveRepresentationHandler,
-    DeactivateRepresentationHandler,
-    RenameRepresentationHandler,
-    UpdateRepresentationNoteHandler,
-)
-from kraken_manager.application.use_cases import (
-    AddArtifactVersionHandler,
-    CreateArtifactSeriesHandler,
-    CreateLayerHandler,
-    CreateProjectHandler,
-    CreateRepresentationHandler,
 )
 from kraken_manager.infrastructure.postgres import PostgresEventStore, PostgresIdentityAclStore, PostgresProjectionStore
 from kraken_manager.infrastructure.review import ReviewPackageReader, ReviewPackageWriter
@@ -57,6 +25,19 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
 
 
 class ConstructionMixin:
+    def execute_project_command(self, project_id, payload, context):
+        from kraken_manager.infrastructure.project_command_codec import (
+            decode_user_project_command, encode_project_command_result,
+        )
+
+        try:
+            command = decode_user_project_command(project_id, payload, self._application_context(context))
+            result = self.commands.execute(command)
+            return encode_project_command_result(command, result)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
     def resolve_storage_path(self, value):
         return resolve_storage_path(self, value)
 
@@ -87,35 +68,43 @@ class ConstructionMixin:
         self.projections = PostgresProjectionStore(engine)
         self.events = PostgresEventStore(engine)
         self.identities = PostgresIdentityAclStore(engine)
-        self._create_project = CreateProjectHandler(uow_factory, self.profiles, SystemClock())
-        self._create_layer = CreateLayerHandler(uow_factory, self.profiles, SystemClock())
-        self._create_representation = CreateRepresentationHandler(uow_factory, self.profiles, SystemClock())
-        self._rename_project = RenameProjectHandler(uow_factory, self.profiles, SystemClock())
-        self._archive_project = ArchiveProjectHandler(uow_factory, self.profiles, SystemClock())
-        self._restore_project = RestoreProjectHandler(uow_factory, self.profiles, SystemClock())
-        self._rename_layer = RenameLayerHandler(uow_factory, self.profiles, SystemClock())
-        self._reorder_layer = ReorderLayerHandler(uow_factory, self.profiles, SystemClock())
-        self._reorder_layers = ReorderLayersHandler(uow_factory, self.profiles, SystemClock())
-        self._archive_layer = ArchiveLayerHandler(uow_factory, self.profiles, SystemClock())
-        self._assign_project_role = AssignProjectRoleHandler(uow_factory, self.profiles, SystemClock())
-        self._revoke_project_role = RevokeProjectRoleHandler(uow_factory, self.profiles, SystemClock())
-        self._activate_representation = ActivateRepresentationHandler(uow_factory, self.profiles, SystemClock())
-        self._deactivate_representation = DeactivateRepresentationHandler(
-            uow_factory,
-            self.profiles,
-            SystemClock(),
+        self.commands = ProjectCommandService(
+            uow_factory, self.profiles, SystemClock(),
+            rename_storage=FilesystemWorkspaceRenameStorage(
+                workspace_files,
+                project_changed=lambda project_id, binding: self.projections.record_project_directories(
+                    project_id, source_directory=binding.source_project_dir,
+                    derived_directory=binding.derived_project_dir,
+                ),
+            ),
+            deletion_storage=WorkspaceLayerDeletionStorage(workspace_files),
         )
-        self._archive_representation = ArchiveRepresentationHandler(uow_factory, self.profiles, SystemClock())
-        self._rename_representation = RenameRepresentationHandler(uow_factory, self.profiles, SystemClock())
-        self._update_representation_note = UpdateRepresentationNoteHandler(uow_factory, self.profiles, SystemClock())
-        self._create_artifact_series = CreateArtifactSeriesHandler(uow_factory, self.profiles, SystemClock())
-        self._add_artifact_version = AddArtifactVersionHandler(uow_factory, self.profiles, SystemClock())
-        self._rename_artifact_series = RenameArtifactSeriesHandler(uow_factory, self.profiles, SystemClock())
-        self._archive_artifact_series = ArchiveArtifactSeriesHandler(uow_factory, self.profiles, SystemClock())
-        self._activate_artifact_version = ActivateArtifactVersionHandler(uow_factory, self.profiles, SystemClock())
-        self._add_external_artifact_version = AddExternalArtifactVersionHandler(uow_factory, self.profiles, SystemClock())
-        self._create_note = CreateNoteHandler(uow_factory, self.profiles, SystemClock())
-        self._revise_note = ReviseNoteHandler(uow_factory, self.profiles, SystemClock())
+        self._create_project = self.commands.execute
+        self._create_layer = self.commands.execute
+        self._create_representation = self.commands.execute
+        self._rename_project = self.commands.execute
+        self._archive_project = self.commands.execute
+        self._restore_project = self.commands.execute
+        self._rename_layer = self.commands.execute
+        self._reorder_layer = self.commands.execute
+        self._reorder_layers = self.commands.execute
+        self._archive_layer = self.commands.execute
+        self._delete_layer = self.commands.execute
+        self._assign_project_role = self.commands.execute
+        self._revoke_project_role = self.commands.execute
+        self._activate_representation = self.commands.execute
+        self._deactivate_representation = self.commands.execute
+        self._archive_representation = self.commands.execute
+        self._rename_representation = self.commands.execute
+        self._update_representation_note = self.commands.execute
+        self._create_artifact_series = self.commands.execute
+        self._add_artifact_version = self.commands.execute
+        self._rename_artifact_series = self.commands.execute
+        self._archive_artifact_series = self.commands.execute
+        self._activate_artifact_version = self.commands.execute
+        self._add_external_artifact_version = self.commands.execute
+        self._create_note = self.commands.execute
+        self._revise_note = self.commands.execute
         self._create_review_batch = (
             None
             if performer_store is None
@@ -123,13 +112,9 @@ class ConstructionMixin:
                 uow_factory, self.profiles, SystemClock(), performer_store
             )
         )
-        self._accept_review = AcceptReviewHandler(uow_factory, self.profiles, SystemClock())
-        self._request_review_changes = RequestReviewChangesHandler(
-            uow_factory, self.profiles, SystemClock()
-        )
-        self._cancel_review_batch = CancelReviewBatchHandler(
-            uow_factory, self.profiles, SystemClock()
-        )
+        self._accept_review = self.commands.execute
+        self._request_review_changes = self.commands.execute
+        self._cancel_review_batch = self.commands.execute
         self._export_review_package = (
             None
             if review_key_pair is None

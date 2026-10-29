@@ -62,6 +62,7 @@ class IssueWorkMixin:
         destination_parent: Path | str | None = None,
         idempotency_key: str,
         transport: str | None = None,
+        companion_representations: tuple[tuple[str, str], ...] | None = None,
     ) -> WorkOrder:
         project = self.get_project(project_id)
         if project is None:
@@ -92,6 +93,7 @@ class IssueWorkMixin:
                 due_at=due_at,
                 destination_parent=None if destination_parent is None else Path(destination_parent),
                 idempotency_key=idempotency_key,
+                companion_representations=companion_representations,
             )
         representations = self.list_representations(project.id, layer.id)
         if work_kind is not WorkKind.TRAIN:
@@ -103,7 +105,7 @@ class IssueWorkMixin:
             project.id,
             vector_representation_id,
             image_representation_id,
-        )
+        ) if companion_representations is None else tuple(companion_representations)
 
         def active_version(series_id):
             return self._projection(project.id).get_active_artifact_version(series_id)
@@ -242,7 +244,7 @@ class IssueWorkMixin:
             project.id,
             kwargs["vector_representation_id"],
             kwargs["image_representation_id"],
-        )
+        ) if kwargs.get("companion_representations") is None else tuple(kwargs["companion_representations"])
         if companions:
             from kraken_manager.infrastructure.work_package import write_companion_images
 

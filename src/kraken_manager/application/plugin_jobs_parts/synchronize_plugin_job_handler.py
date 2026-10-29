@@ -57,11 +57,13 @@ class SynchronizePluginJobHandler:
             )
             if job.revision != command.expected_revision:
                 raise ConflictError("Plugin job revision changed")
-            if job.state is target:
+            if job.state is target and (command.progress is None or command.progress == job.progress):
                 return job
             now = self._clock.now()
             changed = job
-            if target in {PluginJobState.STAGING, PluginJobState.RUNNING}:
+            if job.state is target:
+                changed = replace(job, revision=job.revision + 1, updated_at=now)
+            elif target in {PluginJobState.STAGING, PluginJobState.RUNNING}:
                 if changed.state is PluginJobState.QUEUED:
                     changed = changed.transition(PluginJobState.STAGING, at=now)
                 if target is PluginJobState.RUNNING and changed.state is PluginJobState.STAGING:
@@ -84,6 +86,8 @@ class SynchronizePluginJobHandler:
                     at=now,
                     progress=command.progress,
                 )
+            if command.progress is not None:
+                changed = replace(changed, progress=max(changed.progress, command.progress))
             if command.error and target in {
                 PluginJobState.FAILED,
                 PluginJobState.RECOVERY_REQUIRED,

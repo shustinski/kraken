@@ -1,5 +1,6 @@
 """Server adapter for physical model commands and their transactional event stream."""
 from __future__ import annotations
+from kraken_core.safe_files import open_regular_read
 
 from kraken_manager.application.multilayer import MultilayerService
 from kraken_manager.infrastructure.registration import fit_affine
@@ -23,7 +24,7 @@ class MultilayerMixin(StitchExecutionMixin):
                 project = service._project(project_id)
                 model = import_stitch_result(unit, project_id=str(project_id), principal=actor,
                     storage=self.profiles.get(project.storage_profile), roles=unit.acl.roles_for(project.id, actor.id),
-                    publication=publication, source_path=source_path, validate_mosaic=validate, verified=True)
+                    publication=publication, source_path=source_path, validate_mosaic=validate, open_source=open_regular_read, verified=True)
                 unit.commit()
                 return service.describe(model)
         except Exception as exc:

@@ -62,7 +62,28 @@ def register(ctx: HttpContext) -> None:
         project_id: str,
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
-        return {"items": backend.list_plugin_jobs(project_id)}
+        items = backend.list_plugin_jobs(project_id)
+        if agent_gateway is not None:
+            from kraken_core.job_recovery import progress_fraction
+
+            snapshots = agent_gateway.project_execution_states(project_id)
+            for item in items:
+                snapshot = snapshots.get(str(item["id"]), {})
+                item["progress"] = max(float(item.get("progress", 0)),
+                                       progress_fraction(snapshot.get("progress")))
+        return {"items": items}
+
+    @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/execution-state")
+    def save_agent_execution_state(
+        job_id: str, payload: dict[str, Any], agent: Any = Depends(agent_identity),
+    ) -> dict[str, Any]:
+        if agent_gateway is None:
+            raise HTTPException(status_code=503, detail="Server agent queue is not configured")
+        try:
+            agent_gateway.save_execution_state(job_id, agent, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"saved": True}
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/jobs", status_code=202)
     def submit_project_job(
@@ -90,6 +111,20 @@ def register(ctx: HttpContext) -> None:
             job_id,
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/jobs/{{job_id}}/retry")
+    def retry_project_job(
+        project_id: str,
+        job_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        context = command_context(actor, idempotency_key, if_match, revision_required=True)
+        operation = getattr(backend, "retry_plugin_job", None)
+        if operation is None:
+            raise HTTPException(status_code=503, detail="Server job retry is unavailable")
+        return operation(project_id, job_id, context)
 
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/heartbeat")
     def heartbeat_agent_job(

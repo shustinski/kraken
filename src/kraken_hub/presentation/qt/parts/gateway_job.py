@@ -18,29 +18,8 @@ class GatewayJobMixin:
                 "Дождитесь окончания сохранения файлов. Выход отменён, чтобы данные не были повреждены.",
             )
             return False
-        active = tuple(
-            job
-            for job in self.service.plugin_jobs()
-            if job.state.value
-            in {"queued", "staging", "running", "waiting_for_user"}
-        )
-        if active:
-            QMessageBox.information(
-                self.shell,
-                "Есть активные задания",
-                "Дождитесь завершения заданий Kraken Agent или отмените их во вкладке «Моя работа». "
-                "Выход отменён.",
-            )
-            return False
-        try:
-            self.agent_runtime.shutdown()
-        except Exception as exc:
-            QMessageBox.warning(
-                self.shell,
-                "Kraken Agent",
-                f"Не удалось корректно остановить Agent: {exc}",
-            )
-            return False
+        # Jobs and results are durable. Reopening Hub reconnects to this Agent.
+        self.agent_runtime.detach()
         return True
 
     def _gateway_for_job(self, job) -> AgentPluginGateway:
@@ -117,7 +96,7 @@ class GatewayJobMixin:
             self.my_work_refresh()
 
     def retry_agent_job(self, job) -> None:
-        gateway = self._gateway_for_job(job)
+        gateway = None if self.service.is_remote_project(job.project_id) else self._gateway_for_job(job)
         self.service.retry_plugin_job(
             principal=self.session.principal,
             gateway=gateway,

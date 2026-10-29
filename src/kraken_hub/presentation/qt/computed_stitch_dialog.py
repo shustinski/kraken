@@ -181,7 +181,7 @@ class ComputedStitchDialog(_AsyncDialog):
     def __init__(self, controller, layer_id, parent=None):
         super().__init__(parent or controller.shell)
         service = controller.service
-        self.service = service._backend(controller._project_id) if hasattr(service, "_backend") else service
+        self.service = service
         self.project_id, self.layer_id = str(controller._project_id), str(layer_id)
         self.principal, self.runtime = controller.session.principal, controller.agent_runtime
         self._worker, self._background = None, getattr(controller, "_background_workers", None)
@@ -231,7 +231,7 @@ class ComputedStitchDialog(_AsyncDialog):
             return
         service, project_id, principal, runtime = self.service, self.project_id, self.principal, self.runtime
         gateway = self._gateway
-        remote = bool(getattr(service, "stitch_execution_remote", False))
+        remote = service.is_remote_project(project_id)
         if not remote and not hasattr(service, "refresh_stitch"):
             self.status.setText("Серверное выполнение сшивки ещё не подключено.")
             for button in (self.import_button, self.run_button, self.cancel_button, self.view_button):
@@ -360,16 +360,13 @@ class ComputedStitchDialog(_AsyncDialog):
         request = next((r for r in reversed(self.snapshot["model"].get("stitch_renders", []))
                         if (r["stitch_id"], r["stitch_revision"]) == key and r["state"] == "imported"), None)
         if request:
-            service, project_id, version = self.service, self.project_id, request["output"]["version_id"]
+            service, project_id = self.service, self.project_id
             job_id = request["job_id"]
             def exporter(destination, *, cancelled):
                 return service.export_stitch_vectors(project_id=project_id, job_id=job_id, destination=destination, cancelled=cancelled)
-            if getattr(service, "stitch_execution_remote", False):
-                def loader(column, row, coverage):
-                    return service.remote_stitch_block(project_id, job_id, column, row, coverage=coverage)
-                self._loaded(("remote_view", None, {"loader": loader, "exporter": exporter}))
-            else:
-                self._call(lambda: ("view", service.managed_artifact_path(project_id, version), {"exporter": exporter}))
+            def loader(column, row, coverage):
+                return service.stitch_block(project_id, job_id, column, row, coverage=coverage)
+            self._loaded(("remote_view", None, {"loader": loader, "exporter": exporter}))
 
     def reject(self):
         self.timer.stop()

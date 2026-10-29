@@ -10,16 +10,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 from kraken_manager.application.ports import StorageProfile
+from kraken_manager.application.backend_contract import validate_project_operations
+from kraken_manager.application.project_application import ProjectApplication
+from kraken_manager.application.project_operations import ProjectOperations
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.project import GridOrientation, Project
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
 
-from kraken_hub.domain.catalog_route import (
-    call_uses_remote_catalog,
-    project_id_from_call,
-    storage_label,
-)
+from kraken_hub.domain.catalog_route import storage_label
 
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerError, RemoteServerProjectService
@@ -28,14 +27,33 @@ from kraken_hub.application.workspace import REMOTE_STORAGE_PROFILE, ProjectEven
 LOGGER = logging.getLogger(__name__)
 
 
-class DualCatalogService:
+class DualCatalogService(ProjectApplication):
     """Route catalog/project operations to local or remote backends by ownership."""
+
+    @property
+    def local_administration(self):
+        return self.local
+
+    @property
+    def supports_server_connection(self) -> bool:
+        return True
+
+    @property
+    def server_connection(self):
+        from kraken_hub.application.workspace import ServerConnectionSummary
+
+        if self.remote is None:
+            return None
+        return ServerConnectionSummary(self.remote.base_url, self.remote.auth.principal.subject)
 
     def __init__(
         self,
         local: EmbeddedProjectService,
         remote: RemoteServerProjectService | None = None,
     ) -> None:
+        validate_project_operations(local)
+        if remote is not None:
+            validate_project_operations(remote)
         self.local = local
         self.remote = remote
         self.data_dir = local.data_dir
@@ -49,7 +67,7 @@ class DualCatalogService:
             try:
                 for project in remote.list_projects(include_archived=True):
                     self._remote_ids.add(str(project.id))
-            except (OSError, RemoteServerError, ValueError):
+            except OSError, RemoteServerError, ValueError:
                 # Server may be temporarily unreachable; catalog refresh will retry.
                 LOGGER.exception("Could not load the initial remote project catalog")
                 self._remote_ids = set()
@@ -113,10 +131,42 @@ class DualCatalogService:
     def project_storage_label(self, project_id: object) -> str:
         return storage_label(remote=self.is_remote_project(project_id))
 
-    def _backend(self, project_id: object) -> Any:
-        if self.is_remote_project(project_id) and self.remote is not None:
+    def _backend(self, project_id: object) -> ProjectOperations:
+        if self.is_remote_project(project_id):
+            if self.remote is None:
+                raise RemoteServerError("Kraken Server is not configured")
             return self.remote
         return self.local
+
+    def _project_operations(self, project_id: object) -> ProjectOperations:
+        return self._backend(project_id)
+
+    def _local_operations(self, project_id: object, operation: str):
+        if self.is_remote_project(project_id):
+            raise RemoteServerError(
+                f"Local catalog maintenance operation {operation!r} is unavailable for a server project"
+            )
+        return self.local
+
+    @property
+    def catalog_root(self):
+        return self.local.catalog_root
+
+    @property
+    def clock(self):
+        return self.local.clock
+
+    @property
+    def profiles(self):
+        return self.local.profiles
+
+    @property
+    def secrets(self):
+        return self.local.secrets
+
+    @property
+    def _natural_path_key(self):
+        return self.local._natural_path_key
 
     def list_projects(self, *, include_archived: bool = False) -> tuple[Project, ...]:
         local_projects = list(self.local.list_projects(include_archived=include_archived))
@@ -124,11 +174,8 @@ class DualCatalogService:
         if self.remote is not None:
             try:
                 remote_projects = list(self.remote.list_projects(include_archived=include_archived))
-                self._remote_ids = {
-                    str(project.id)
-                    for project in self.remote.list_projects(include_archived=True)
-                }
-            except (OSError, RemoteServerError, ValueError):
+                self._remote_ids = {str(project.id) for project in self.remote.list_projects(include_archived=True)}
+            except OSError, RemoteServerError, ValueError:
                 LOGGER.exception("Could not refresh the remote project catalog")
                 remote_projects = []
         merged = {str(project.id): project for project in local_projects}
@@ -142,8 +189,8 @@ class DualCatalogService:
         *,
         as_of: datetime | None = None,
     ) -> Project | None:
-        if self.is_remote_project(project_id) and self.remote is not None:
-            return self.remote.get_project(project_id, as_of=as_of)
+        if self.is_remote_project(project_id):
+            return self._project_operations(project_id).get_project(project_id, as_of=as_of)
         project = self.local.get_project(project_id, as_of=as_of)
         if project is not None:
             return project
@@ -184,6 +231,7 @@ class DualCatalogService:
                 orientation=orientation,
                 idempotency_key=idempotency_key,
                 storage_profile_id=profile_id,
+                layer_template=layer_template,
             )
             self._remote_ids.add(str(project.id))
             return project
@@ -198,11 +246,6 @@ class DualCatalogService:
             source_root=source_root,
             derived_root=derived_root,
         )
-
-    def project_workspace(self, project_id: object) -> object | None:
-        if self.is_remote_project(project_id) and self.remote is not None:
-            return self.remote.project_workspace(project_id)
-        return self.local.project_workspace(project_id)
 
     def start_sync(self) -> None:
         self._sync_requested = True
@@ -295,21 +338,16 @@ class DualCatalogService:
                 )
             except RemoteServerError as register_error:
                 if register_error.status == 401:
-                    raise ValueError(
-                        "Пароль не подходит к уже существующей учётной записи"
-                    ) from register_error
+                    raise ValueError("Пароль не подходит к уже существующей учётной записи") from register_error
                 raise
         return self._install_remote(candidate)
 
-    def _install_remote(
-        self, candidate: RemoteServerProjectService
-    ) -> RemoteServerProjectService:
+    def _install_remote(self, candidate: RemoteServerProjectService) -> RemoteServerProjectService:
+        validate_project_operations(candidate)
         authenticated = candidate.current_principal()
         if not authenticated.active:
             raise RemoteServerError("Серверная учётная запись отключена")
-        candidate.auth = RemoteAuth(
-            access_token=candidate.auth.access_token, principal=authenticated
-        )
+        candidate.auth = RemoteAuth(access_token=candidate.auth.access_token, principal=authenticated)
         projects = candidate.list_projects(include_archived=True)
 
         previous = self.remote
@@ -327,105 +365,11 @@ class DualCatalogService:
             candidate.start_sync()
         return candidate
 
-    def rename_project(self, **kwargs):
-        project = kwargs.get("project")
-        if project is not None and self.is_remote_project(project.id) and self.remote is not None:
-            return self.remote.rename_project(**kwargs)
-        return self.local.rename_project(**kwargs)
-
-    def archive_project(self, **kwargs):
-        project = kwargs.get("project")
-        if project is not None and self.is_remote_project(project.id) and self.remote is not None:
-            return self.remote.archive_project(**kwargs)
-        return self.local.archive_project(**kwargs)
-
-    def restore_project(self, **kwargs):
-        project = kwargs.get("project")
-        if project is not None and self.is_remote_project(project.id) and self.remote is not None:
-            return self.remote.restore_project(**kwargs)
-        return self.local.restore_project(**kwargs)
-
-    def list_layers(self, project_id, *, include_archived: bool = False):
-        return self._backend(project_id).list_layers(project_id, include_archived=include_archived)
-
-    def create_layer(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).create_layer(**kwargs)
-
-    def create_external_layer(self, **kwargs):
-        project = kwargs.get("project")
-        if project is not None and self.is_remote_project(project.id) and self.remote is not None:
-            return self.remote.create_external_layer(**kwargs)
-        return self.local.create_external_layer(**kwargs)
-
-    def create_layer_from_disk(self, **kwargs):
-        project = kwargs.get("project")
-        if project is not None and self.is_remote_project(project.id) and self.remote is not None:
-            return self.remote.create_layer_from_disk(**kwargs)
-        return self.local.create_layer_from_disk(**kwargs)
-
-    def layer_file_binding(self, project_id, layer_id):
-        if self.is_remote_project(project_id) and self.remote is not None:
-            return self.remote.layer_file_binding(project_id, layer_id)
-        return self.local.layer_file_binding(project_id, layer_id)
-
-    def rename_layer(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).rename_layer(**kwargs)
-
-    def reorder_layers(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).reorder_layers(**kwargs)
-
-    def archive_layer(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).archive_layer(**kwargs)
-
-    def list_representations(
-        self,
-        project_id,
-        layer_id,
-        *,
-        include_archived: bool = False,
-    ):
-        return self._backend(project_id).list_representations(
-            project_id,
-            layer_id,
-            include_archived=include_archived,
-        )
-
-    def create_representation(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).create_representation(**kwargs)
-
-    def rename_representation(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).rename_representation(**kwargs)
-
-    def update_representation_note(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).update_representation_note(**kwargs)
-
-    def activate_representation(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).activate_representation(**kwargs)
-
-    def deactivate_representation(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).deactivate_representation(**kwargs)
-
-    def archive_representation(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).archive_representation(**kwargs)
-
     def project_permissions(self, project_id, principal):
         backend = self._backend(project_id)
         if backend is self.remote and self.remote is not None:
             return self.remote.project_permissions(project_id, self.remote.auth.principal)
         return self.local.project_permissions(project_id, principal)
-
-    def project_roles(self, project_id, principal_id):
-        return self._backend(project_id).project_roles(project_id, principal_id)
 
     def list_project_principals(
         self,
@@ -442,45 +386,25 @@ class DualCatalogService:
             )
         return backend.list_principals(include_inactive=include_inactive)
 
+    def list_principals(self, *, include_inactive: bool = False):
+        people = self.local.list_principals(include_inactive=include_inactive)
+        if self.remote is not None:
+            people = (*people, *self.remote.list_principals(include_inactive=include_inactive))
+        merged = {str(person.id): person for person in people}
+        return tuple(sorted(merged.values(), key=lambda person: (person.display_name.casefold(), str(person.id))))
+
     def list_role_candidates(self, project_id: ProjectId | str) -> tuple[Principal, ...]:
         """Role assignment includes users who do not yet belong to the project."""
         return self._backend(project_id).list_principals()
 
     def list_performers(self, *, include_archived: bool = False):
         local = self.local.list_performers(include_archived=include_archived)
-        remote = (
-            ()
-            if self.remote is None
-            else self.remote.list_performers(include_archived=include_archived)
-        )
+        remote = () if self.remote is None else self.remote.list_performers(include_archived=include_archived)
         merged = {str(item.id): item for item in (*local, *remote)}
-        return tuple(
-            sorted(merged.values(), key=lambda item: (item.name.casefold(), str(item.id)))
-        )
+        return tuple(sorted(merged.values(), key=lambda item: (item.name.casefold(), str(item.id))))
 
-    def list_project_performers(
-        self, project_id, *, include_archived: bool = False
-    ):
-        return self._backend(project_id).list_performers(
-            include_archived=include_archived
-        )
-
-    def project_role_revision(self, project_id, principal_id):
-        return self._backend(project_id).project_role_revision(
-            project_id,
-            principal_id,
-        )
-
-    def assign_project_role(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).assign_project_role(**kwargs)
-
-    def revoke_project_role(self, **kwargs):
-        project = kwargs.get("project")
-        return self._backend(project.id).revoke_project_role(**kwargs)
-
-    def history(self, project_id, *, as_of=None):
-        return self._backend(project_id).history(project_id, as_of=as_of)
+    def list_project_performers(self, project_id, *, include_archived: bool = False):
+        return self._backend(project_id).list_performers(include_archived=include_archived)
 
     def run_interactive_job(self, project_id, job_id, *, registry):
         return self._backend(project_id).run_interactive_job(project_id, job_id, registry=registry)
@@ -498,7 +422,7 @@ class DualCatalogService:
     def statistics(self, project_id, **kwargs):
         if self.is_remote_project(project_id) and self.remote is not None:
             return self.remote.statistics(project_id, **kwargs)
-        from kraken_manager.infrastructure.reports import (
+        from kraken_manager.application.reporting import (
             ReportFilters,
             ReportGranularity,
             ReportService,
@@ -512,25 +436,9 @@ class DualCatalogService:
         )
         reports = ReportService()
         return reports.aggregate(records, filters), {
-            granularity.value: reports.aggregate_series(
-                records, filters, granularity, timezone=kwargs["timezone"]
-            )
+            granularity.value: reports.aggregate_series(records, filters, granularity, timezone=kwargs["timezone"])
             for granularity in ReportGranularity
         }
-
-    def latest_karakal_analysis(self, project_id, layer_id, **kwargs):
-        return self._backend(project_id).latest_karakal_analysis(
-            project_id, layer_id, **kwargs
-        )
-
-    def publish_karakal_analysis(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).publish_karakal_analysis(**kwargs)
-
-    def record_layer_pipeline_action(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).record_layer_pipeline_action(**kwargs)
-
-    def remove_layer_pipeline_action(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).remove_layer_pipeline_action(**kwargs)
 
     def list_derived_runs(self, project_id, layer_id=""):
         if self.is_remote_project(project_id):
@@ -538,54 +446,6 @@ class DualCatalogService:
             # workstation derived-run folders are deliberately local-only.
             return ()
         return self.local.list_derived_runs(project_id, layer_id)
-
-    def list_artifact_series(self, project_id, **kwargs):
-        return self._backend(project_id).list_artifact_series(project_id, **kwargs)
-
-    def create_artifact_series(self, **kwargs):
-        project_id = kwargs.get("project_id")
-        return self._backend(project_id).create_artifact_series(**kwargs)
-
-    def artifact_stream_revision(self, project_id, series_id):
-        return self._backend(project_id).artifact_stream_revision(project_id, series_id)
-
-    def artifact_versions(self, project_id, series_id):
-        return self._backend(project_id).artifact_versions(project_id, series_id)
-
-    def active_artifact_version(self, project_id, series_id):
-        return self._backend(project_id).active_artifact_version(project_id, series_id)
-
-    def artifact_version(self, project_id, version_id):
-        return self._backend(project_id).artifact_version(project_id, version_id)
-
-    def add_managed_artifact_version(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).add_managed_artifact_version(**kwargs)
-
-    def add_external_artifact_version(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).add_external_artifact_version(**kwargs)
-
-    def rename_artifact_series(self, **kwargs):
-        series = kwargs.get("series")
-        return self._backend(series.project_id).rename_artifact_series(**kwargs)
-
-    def archive_artifact_series(self, **kwargs):
-        series = kwargs.get("series")
-        return self._backend(series.project_id).archive_artifact_series(**kwargs)
-
-    def activate_artifact_version(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).activate_artifact_version(**kwargs)
-
-    def export_managed_artifact(self, project_id, version, destination):
-        return self._backend(project_id).export_managed_artifact(project_id, version, destination)
-
-    def export_artifact_version(self, project_id, version, destination):
-        return self._backend(project_id).export_artifact_version(project_id, version, destination)
-
-    def managed_artifact_path(self, project_id, version_id):
-        return self._backend(project_id).managed_artifact_path(project_id, version_id)
-
-    def read_project_blob(self, project_id, source_key):
-        return self._backend(project_id).read_project_blob(project_id, source_key)
 
     def external_artifact_changed(self, version):
         series = None
@@ -598,73 +458,19 @@ class DualCatalogService:
             raise ValueError("Artifact version was not found")
         return self._backend(series).external_artifact_changed(version)
 
-    def list_notes(self, project_id, **kwargs):
-        return self._backend(project_id).list_notes(project_id, **kwargs)
-
-    def create_note(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).create_note(**kwargs)
-
-    def revise_note(self, **kwargs):
-        note = kwargs.get("note")
-        return self._backend(note.project_id).revise_note(**kwargs)
-
     def work_orders(self):
         local_orders = list(self.local.work_orders())
         remote_orders = [] if self.remote is None else list(self.remote.work_orders())
-        return tuple(
-            sorted((*local_orders, *remote_orders), key=lambda item: (item.updated_at, item.id), reverse=True)
-        )
-
-    def issue_work(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).issue_work(**kwargs)
-
-    def get_layer_pipeline(self, project_id, layer_id):
-        return self._backend(project_id).get_layer_pipeline(project_id, layer_id)
-
-    def get_multilayer_model(self, project_id):
-        return self._backend(project_id).get_multilayer_model(project_id)
-
-    def mutate_multilayer_model(self, **kwargs):
-        return self._backend(kwargs["project_id"]).mutate_multilayer_model(**kwargs)
+        return tuple(sorted((*local_orders, *remote_orders), key=lambda item: (item.updated_at, item.id), reverse=True))
 
     def dispatch_stitch(self, **kwargs):
         return self._backend(kwargs["project_id"]).dispatch_stitch(**kwargs)
 
-    def export_stitch_vectors(self, **kwargs):
-        return self._backend(kwargs["project_id"]).export_stitch_vectors(**kwargs)
-
     def refresh_stitch(self, **kwargs):
         return self._backend(kwargs["project_id"]).refresh_stitch(**kwargs)
 
-    def get_electrical_model(self, project_id):
-        return self._backend(project_id).get_electrical_model(project_id)
-
-    def export_electrical_model(self, project_id):
-        return self._backend(project_id).export_electrical_model(project_id)
-
-    def mutate_electrical_model(self, **kwargs):
-        return self._backend(kwargs["project_id"]).mutate_electrical_model(**kwargs)
-
-    def define_layer_pipeline(self, **kwargs):
-        return self._backend(kwargs["project_id"]).define_layer_pipeline(**kwargs)
-
-    def command_layer_pipeline(self, **kwargs):
-        return self._backend(kwargs["project_id"]).command_layer_pipeline(**kwargs)
-
     def tick_layer_pipeline(self, **kwargs):
         return self._backend(kwargs["project_id"]).tick_layer_pipeline(**kwargs)
-
-    def list_work_plans(self, project_id):
-        return self._backend(project_id).list_work_plans(project_id)
-
-    def work_plan_analytics(self, project_id, **kwargs):
-        return self._backend(project_id).work_plan_analytics(project_id, **kwargs)
-
-    def list_quality_issues(self, project_id, **filters):
-        return self._backend(project_id).list_quality_issues(project_id, **filters)
-
-    def quality_analysis_runs(self, project_id):
-        return self._backend(project_id).quality_analysis_runs(project_id)
 
     def server_analysis_runs(self, project_id):
         return self._backend(project_id).server_analysis_runs(project_id)
@@ -687,9 +493,6 @@ class DualCatalogService:
     def command_server_analysis(self, project_id, run_id, operation, **kwargs):
         return self._backend(project_id).command_server_analysis(project_id, run_id, operation, **kwargs)
 
-    def quality_analysis_readiness(self, project_id, run_id):
-        return self._backend(project_id).quality_analysis_readiness(project_id, run_id)
-
     def create_quality_from_analysis(self, **kwargs):
         backend = self._backend(kwargs["project_id"])
         if backend is self.remote:
@@ -702,15 +505,6 @@ class DualCatalogService:
             kwargs["principal"] = self.remote.auth.principal
         return backend.recheck_quality_from_analysis(**kwargs)
 
-    def quality_frame_versions(self, project_id, layer_id, x, y):
-        return self._backend(project_id).quality_frame_versions(project_id, layer_id, x, y)
-
-    def get_quality_issue(self, project_id, issue_id):
-        return self._backend(project_id).get_quality_issue(project_id, issue_id)
-
-    def quality_issue_history(self, project_id, issue_id):
-        return self._backend(project_id).quality_issue_history(project_id, issue_id)
-
     def create_quality_issue(self, **kwargs):
         backend = self._backend(kwargs["project_id"])
         if backend is self.remote:
@@ -722,33 +516,6 @@ class DualCatalogService:
         if backend is self.remote:
             kwargs["principal"] = self.remote.auth.principal
         return backend.mutate_quality_issue(**kwargs)
-
-    def list_work_templates(self, project_id):
-        return self._backend(project_id).list_work_templates(project_id)
-
-    def get_work_template(self, project_id, template_id, *, version=None):
-        return self._backend(project_id).get_work_template(project_id, template_id, version=version)
-
-    def save_work_template(self, **kwargs):
-        return self._backend(kwargs["project_id"]).save_work_template(**kwargs)
-
-    def get_work_plan(self, project_id, plan_id):
-        return self._backend(project_id).get_work_plan(project_id, plan_id)
-
-    def create_work_plan(self, **kwargs):
-        return self._backend(kwargs["project_id"]).create_work_plan(**kwargs)
-
-    def mutate_work_plan(self, **kwargs):
-        return self._backend(kwargs["project_id"]).mutate_work_plan(**kwargs)
-
-    def mark_work_running(self, order, **kwargs):
-        return self._backend(order.project_id).mark_work_running(order, **kwargs)
-
-    def cancel_work_order(self, order, **kwargs):
-        return self._backend(order.project_id).cancel_work_order(order, **kwargs)
-
-    def complete_work_order(self, order, **kwargs):
-        return self._backend(order.project_id).complete_work_order(order, **kwargs)
 
     def review_batches(self):
         local_batches = list(self.local.review_batches())
@@ -763,9 +530,7 @@ class DualCatalogService:
 
     def active_review_batches(self):
         local_batches = list(self.local.active_review_batches())
-        remote_batches = (
-            [] if self.remote is None else list(self.remote.active_review_batches())
-        )
+        remote_batches = [] if self.remote is None else list(self.remote.active_review_batches())
         return tuple(
             sorted(
                 (*local_batches, *remote_batches),
@@ -773,28 +538,6 @@ class DualCatalogService:
                 reverse=True,
             )
         )
-
-    def create_review_batch(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).create_review_batch(**kwargs)
-
-    def accept_review(self, **kwargs):
-        batch = kwargs.get("batch")
-        return self._backend(batch.project_id).accept_review(**kwargs)
-
-    def request_review_changes(self, **kwargs):
-        batch = kwargs.get("batch")
-        return self._backend(batch.project_id).request_review_changes(**kwargs)
-
-    def cancel_review_batch(self, **kwargs):
-        batch = kwargs.get("batch")
-        return self._backend(batch.project_id).cancel_review_batch(**kwargs)
-
-    def review_candidate_version_ids(self, batch):
-        return self._backend(batch.project_id).review_candidate_version_ids(batch)
-
-    def export_review_batch(self, **kwargs):
-        batch = kwargs.get("batch")
-        return self._backend(batch.project_id).export_review_batch(**kwargs)
 
     def review_return_preflight(self, **kwargs):
         source = Path(kwargs["source"]).resolve(strict=True)
@@ -808,10 +551,6 @@ class DualCatalogService:
             return self.remote.review_return_preflight(**kwargs)
         return self.local.review_return_preflight(**kwargs)
 
-    def commit_review_return(self, **kwargs):
-        batch = kwargs.get("batch")
-        return self._backend(batch.project_id).commit_review_return(**kwargs)
-
     def plugin_jobs(self):
         local_jobs = list(self.local.plugin_jobs())
         remote_jobs = [] if self.remote is None else list(self.remote.plugin_jobs())
@@ -823,44 +562,10 @@ class DualCatalogService:
             )
         )
 
-    def submit_plugin_job(self, **kwargs):
-        return self._backend(kwargs.get("project_id")).submit_plugin_job(**kwargs)
-
-    def cancel_plugin_job(self, **kwargs):
-        job = kwargs.get("job")
-        return self._backend(job.project_id).cancel_plugin_job(**kwargs)
-
     def synchronize_plugin_jobs(self, **kwargs):
         local_jobs = self.local.synchronize_plugin_jobs(**kwargs)
         remote_jobs = () if self.remote is None else self.remote.synchronize_plugin_jobs(**kwargs)
         return (*local_jobs, *remote_jobs)
-
-    def matrix_viewport(self, project_id, **kwargs):
-        backend = self._backend(project_id)
-        if backend is self.remote and self.remote is not None:
-            return self.remote.matrix_viewport(
-                project_id,
-                layer_id=kwargs["layer_id"],
-                x1=kwargs["x1"],
-                y1=kwargs["y1"],
-                x2=kwargs["x2"],
-                y2=kwargs["y2"],
-                lod=kwargs.get("lod", 0),
-                representation_ids=kwargs.get("representation_ids", ()),
-            )
-        return self.local.matrix_viewport(project_id, **kwargs)
-
-    def frame_cells(self, project_id, layer_id, representation_id, **kwargs):
-        return self._backend(project_id).frame_cells(
-            project_id, layer_id, representation_id, **kwargs
-        )
-
-    def frame_management_states(
-        self, project_id, layer_id, representation_id, **kwargs
-    ):
-        return self._backend(project_id).frame_management_states(
-            project_id, layer_id, representation_id, **kwargs
-        )
 
     def create_initial_account(self, username: str, display_name: str, password: str):
         return self.local.create_initial_account(username, display_name, password)
@@ -868,29 +573,84 @@ class DualCatalogService:
     def login(self, username: str, password: str):
         return self.local.login(username, password)
 
-    def __getattr__(self, name: str) -> Any:
-        local_attr = getattr(self.local, name)
-        if not callable(local_attr):
-            return local_attr
+    def archive_performer(self, performer_id):
+        return self.local.archive_performer(performer_id)
 
-        def route_or_refuse(*args: Any, **kwargs: Any) -> Any:
-            project_id = project_id_from_call(kwargs)
-            remote_method = getattr(self.remote, name, None) if self.remote is not None else None
-            if call_uses_remote_catalog(
-                project_id=project_id,
-                known_remote=project_id is not None and self.is_remote_project(project_id),
-                remote_available=self.remote is not None,
-                operation=name,
-            ):
-                if callable(remote_method):
-                    return remote_method(*args, **kwargs)
-                raise RemoteServerError(
-                    f"Операция «{name}» для проекта на сервере не подключена. "
-                    "Локальный каталог Hub этот проект не содержит."
-                )
-            return local_attr(*args, **kwargs)
+    def attach_project(self, project_directory, *, principal=None, take_ownership=False):
+        return self.local.attach_project(project_directory, principal=principal, take_ownership=take_ownership)
 
-        return route_or_refuse
+    def begin_derived_run(self, *, project_id, layer_id, layer_name, kind, plugin_id, operation, principal=None):
+        return self._local_operations(project_id, "begin_derived_run").begin_derived_run(
+            project_id=project_id,
+            layer_id=layer_id,
+            layer_name=layer_name,
+            kind=kind,
+            plugin_id=plugin_id,
+            operation=operation,
+            principal=principal,
+        )
+
+    def bind_project_workspace(self, *, principal, project, source_root, derived_root, idempotency_key):
+        return self._local_operations(project.id, "bind_project_workspace").bind_project_workspace(
+            principal=principal,
+            project=project,
+            source_root=source_root,
+            derived_root=derived_root,
+            idempotency_key=idempotency_key,
+        )
+
+    def create_manual_performer(self, *, name, color):
+        return self.local.create_manual_performer(name=name, color=color)
+
+    def delete_project(self, *, principal, project, confirmation_name):
+        return self._local_operations(project.id, "delete_project").delete_project(
+            principal=principal, project=project, confirmation_name=confirmation_name
+        )
+
+    def export_backup(self, project_id, destination, *, principal=None):
+        return self._local_operations(project_id, "export_backup").export_backup(
+            project_id, destination, principal=principal
+        )
+
+    def fail_derived_run(self, *, principal, project_id, run_id, error):
+        return self._local_operations(project_id, "fail_derived_run").fail_derived_run(
+            principal=principal, project_id=project_id, run_id=run_id, error=error
+        )
+
+    def import_agent_publications(self, *, principal, publications, staging_root):
+        return self.local.import_agent_publications(
+            principal=principal, publications=publications, staging_root=staging_root
+        )
+
+    def import_agent_result(self, *, principal, result_payload, staging_root, confirm_partial=False):
+        return self.local.import_agent_result(
+            principal=principal,
+            result_payload=result_payload,
+            staging_root=staging_root,
+            confirm_partial=confirm_partial,
+        )
+
+    def import_backup(self, bundle_root, *, principal=None, take_ownership=False):
+        return self.local.import_backup(bundle_root, principal=principal, take_ownership=take_ownership)
+
+    def import_stitch_publication(self, *, project_id, principal, publication, source_path):
+        return self._local_operations(project_id, "import_stitch_publication").import_stitch_publication(
+            project_id=project_id, principal=principal, publication=publication, source_path=source_path
+        )
+
+    def publish_workspace_plugin_result(self, *, principal, project, layer, result):
+        return self._local_operations(project.id, "publish_workspace_plugin_result").publish_workspace_plugin_result(
+            principal=principal, project=project, layer=layer, result=result
+        )
+
+    def resolve_session(self, token):
+        return self.local.resolve_session(token)
+
+    def scan_integrity(self):
+        return self.local.scan_integrity()
+
+    def update_performer(self, *, performer_id, name, color):
+        return self.local.update_performer(performer_id=performer_id, name=name, color=color)
 
 
 def build_workspace_service(
@@ -902,7 +662,7 @@ def build_workspace_service(
 
     try:
         remote = build_remote_service(data_dir=local.data_dir)
-    except (OSError, RemoteServerError, ValueError):
+    except OSError, RemoteServerError, ValueError:
         LOGGER.exception("Could not configure the remote Kraken service")
         remote = None
     try:

@@ -15,7 +15,7 @@ from kraken_manager.domain.workflows import (
     PluginJob,
 )
 from kraken_manager.infrastructure.filesystem._codec import decode_model
-from kraken_manager.infrastructure.reports import (
+from kraken_manager.application.reporting import (
     ReportMetrics,
     ReportSeries,
 )
@@ -26,6 +26,14 @@ from kraken_hub.infrastructure.remote.parts.remote_history_event import _RemoteH
 
 
 class SubmitPluginJobMixin:
+    def retry_plugin_job(self, *, principal, gateway, job, idempotency_key):
+        del principal, gateway
+        payload = self._call(
+            "POST", f"/api/v1/projects/{job.project_id}/jobs/{job.id}/retry",
+            payload={}, idempotency_key=idempotency_key, if_match=job.revision,
+        )
+        return decode_model(PluginJob, payload)
+
     def plugin_jobs(self) -> tuple[PluginJob, ...]:
         jobs: list[PluginJob] = []
         for project in self.list_projects(include_archived=True):
@@ -128,12 +136,11 @@ class SubmitPluginJobMixin:
         return "Сервер PostgreSQL"
 
     def is_remote_project(self, project_id: object) -> bool:
-        return str(project_id) in self._remote_ids
+        return True
 
     def history(
-        self, project_id: object, *, as_of: datetime | None = None
+        self, project_id: object, *, as_of: datetime | None = None, event_types=None
     ) -> tuple[object, ...]:
-        del as_of
         events = []
         cursor: str | None = None
         while True:
@@ -157,10 +164,15 @@ class SubmitPluginJobMixin:
             )
             if cursor is None:
                 break
-        return tuple(events)
+        allowed = None if event_types is None else frozenset(event_types)
+        return tuple(
+            event for event in events
+            if (as_of is None or event.recorded_at <= as_of)
+            and (allowed is None or event.event_type in allowed)
+        )
 
     def activity_records(self) -> tuple[object, ...]:
-        from kraken_manager.infrastructure.reports import ActivityRecord
+        from kraken_manager.application.reporting import ActivityRecord
 
         records = [
             ActivityRecord.from_event(event)

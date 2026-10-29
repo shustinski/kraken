@@ -57,16 +57,13 @@ from kraken_manager.domain.workflows import (
     ReviewBatch,
 )
 from kraken_manager.infrastructure.filesystem._codec import decode_model
-from kraken_manager.infrastructure.reports import (
+from kraken_manager.application.reporting import (
     ReportMetrics,
     ReportSeries,
 )
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
-from kraken_hub.application.workspace import (
-    REMOTE_STORAGE_PROFILE,
-    ProjectEventWake,
-    project_from_server_dict,
-)
+from kraken_hub.application.workspace import REMOTE_STORAGE_PROFILE, ProjectEventWake
+from kraken_hub.infrastructure.remote.project_codec import project_from_server_dict
 
 from .parts.module_state import LOGGER
 from .parts.iter_bytes import IterBytesMixin

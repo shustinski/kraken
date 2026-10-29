@@ -34,6 +34,7 @@ from kraken_server.services import CommandContext, ConflictError, ForbiddenError
 
 from kraken_server.persistent_services_parts.layer_source_scan import (
     _layer_dict,
+    _layer_id,
     _layer_source_scan,
     _project_dict,
     _project_id,
@@ -78,13 +79,13 @@ class CreateExternalLayerMixin:
         return context.expected_revision
 
     def list_layers(
-        self, project_id: str, *, include_archived: bool = False
+        self, project_id: str, *, include_archived: bool = False, as_of=None
     ) -> list[dict[str, Any]]:
         self.get_project(project_id)
         return [
             _layer_dict(layer)
             for layer in self.projections.list_layers(
-                _project_id(project_id), include_archived=include_archived
+                _project_id(project_id), include_archived=include_archived, as_of=as_of
             )
         ]
 
@@ -105,6 +106,7 @@ class CreateExternalLayerMixin:
                     type=LayerType(str(payload.get("type", ""))),
                     order=int(payload.get("order", 0)),
                     expected_project_revision=self._require_revision(context),
+                        **({} if payload.get("layer_id") is None else {"layer_id": _layer_id(str(payload["layer_id"]))}),
                 )
             )
             return _layer_dict(layer)

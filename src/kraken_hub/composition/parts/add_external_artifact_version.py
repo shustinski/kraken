@@ -12,15 +12,6 @@ from kraken_manager.application.dto import (
     CommandContext,
     RenameArtifactSeriesCommand,
 )
-from kraken_manager.application.use_cases import (
-    AddArtifactVersionHandler,
-)
-from kraken_manager.application.artifact_lifecycle import (
-    ActivateArtifactVersionHandler,
-    AddExternalArtifactVersionHandler,
-    ArchiveArtifactSeriesHandler,
-    RenameArtifactSeriesHandler,
-)
 from kraken_manager.domain.artifacts import (
     ArtifactSeries,
     ArtifactVersion,
@@ -49,11 +40,7 @@ class AddExternalArtifactVersionMixin:
         path = Path(source).resolve(strict=True)
         media_type = artifact_media_type(path.name)
         with open_regular_read(path, root=path.parent) as stream:
-            return AddArtifactVersionHandler(
-                self._uow(str(project_id)),
-                self.profiles,
-                self.clock,
-            )(
+            return self._commands(str(project_id)).execute(
                 AddArtifactVersionCommand(
                     context=CommandContext(
                         actor=principal,
@@ -94,11 +81,7 @@ class AddExternalArtifactVersionMixin:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
                 size += len(chunk)
-        return AddExternalArtifactVersionHandler(
-            self._uow(str(project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(project_id)).execute(
             AddExternalArtifactVersionCommand(
                 context=CommandContext(
                     actor=principal,
@@ -132,11 +115,7 @@ class AddExternalArtifactVersionMixin:
         name: str,
         idempotency_key: str,
     ) -> ArtifactSeries:
-        return RenameArtifactSeriesHandler(
-            self._uow(str(series.project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(series.project_id)).execute(
             RenameArtifactSeriesCommand(
                 context=CommandContext(
                     actor=principal,
@@ -156,11 +135,7 @@ class AddExternalArtifactVersionMixin:
         series: ArtifactSeries,
         idempotency_key: str,
     ) -> ArtifactSeries:
-        return ArchiveArtifactSeriesHandler(
-            self._uow(str(series.project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(series.project_id)).execute(
             ArchiveArtifactSeriesCommand(
                 context=CommandContext(
                     actor=principal,
@@ -181,11 +156,7 @@ class AddExternalArtifactVersionMixin:
         version_id: ArtifactVersionId | str,
         idempotency_key: str,
     ) -> ArtifactVersion:
-        return ActivateArtifactVersionHandler(
-            self._uow(str(project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(project_id)).execute(
             ActivateArtifactVersionCommand(
                 context=CommandContext(
                     actor=principal,

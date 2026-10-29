@@ -7,7 +7,6 @@ from kraken_manager.application.dto import (
     CommandContext,
     RevokeProjectRoleCommand,
 )
-from kraken_manager.application.acl import AssignProjectRoleHandler, RevokeProjectRoleHandler
 from kraken_manager.domain.common import (
     PerformerId,
     PrincipalId,
@@ -43,6 +42,40 @@ from kraken_hub.composition.parts.frame_cell_snapshot import (
 
 
 class RevokeProjectRoleMixin:
+    def execute_project_command(self, command):
+        from kraken_manager.application.project_commands import user_project_command_definition
+
+        user_project_command_definition(type(command))
+        return self._commands(command.project_id).execute(command)
+
+    @property
+    def local_administration(self):
+        return self
+
+    @property
+    def supports_server_connection(self) -> bool:
+        return False
+
+    @property
+    def server_connection(self):
+        return None
+
+    def _commands(self, project_id):
+        return self._compose_commands(self._uow(str(project_id)))
+
+    def _compose_commands(self, uow_factory):
+        from kraken_manager.application.project_commands import ProjectCommandService
+        from kraken_manager.infrastructure.workspace_rename import FilesystemWorkspaceRenameStorage
+        from kraken_manager.infrastructure.layer_deletion import WorkspaceLayerDeletionStorage
+
+        return ProjectCommandService(
+            uow_factory, self.profiles, self.clock,
+            rename_storage=FilesystemWorkspaceRenameStorage(
+                self.workspace_files, invalidate=self._external_source_indexes.clear,
+            ),
+            deletion_storage=WorkspaceLayerDeletionStorage(self.workspace_files),
+        )
+
     def __init__(
         self,
         data_dir: Path | str | None = None,
@@ -68,6 +101,16 @@ class RevokeProjectRoleMixin:
         self.profiles = DesktopStorageProfiles(self.profile)
         self.clock = SystemClock()
         self.secrets = secret_store or KeyringSecretStore()
+
+        from kraken_manager.application.backend_contract import validate_project_operations
+        validate_project_operations(self)
+
+        def no_project_selected():
+            raise RuntimeError("Command assembly must not open project storage")
+
+        # Validate the exact same dependency composition without creating a
+        # dummy project, a database transaction, or a filesystem event stream.
+        self._compose_commands(no_project_selected)
 
     @property
     def has_accounts(self) -> bool:
@@ -161,7 +204,7 @@ class RevokeProjectRoleMixin:
         expected_revision: int,
         idempotency_key: str,
     ) -> frozenset[ProjectRole]:
-        return AssignProjectRoleHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             AssignProjectRoleCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project_id=project.id,
@@ -192,7 +235,7 @@ class RevokeProjectRoleMixin:
                 candidate.id == target_principal_id for candidate in owners
             ):
                 raise ValueError("Нельзя отозвать роль последнего сопровождающего проекта.")
-        return RevokeProjectRoleHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             RevokeProjectRoleCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project_id=project.id,

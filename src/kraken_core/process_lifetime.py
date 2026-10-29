@@ -81,7 +81,7 @@ class _ProcessEntry(ctypes.Structure):
     ]
 
 
-def bind_child_process_lifetime() -> None:
+def bind_child_process_lifetime(*, independent: bool = False) -> None:
     """Terminate descendant processes when this process or its console ends."""
     global _bound
     if os.name != "nt" or _bound or _called_from_pytest():
@@ -92,7 +92,11 @@ def bind_child_process_lifetime() -> None:
     # job and are terminated with the process that created them.
     _arm_kill_on_job_close()
     _install_console_close_handler()
-    _watch_parent_process()
+    if independent:
+        # Descendant plugins belong to the durable Agent, not to its former Hub.
+        os.environ["KRAKEN_PROCESS_LIFETIME_ROOT_PID"] = str(os.getpid())
+    else:
+        _watch_parent_process()
 
 
 def _called_from_pytest() -> bool:
@@ -210,6 +214,7 @@ def _running_ancestor_handles() -> list[int]:
     handles: list[int] = []
     pid = os.getppid()
     seen = {os.getpid()}
+    boundary = os.environ.get("KRAKEN_PROCESS_LIFETIME_ROOT_PID", "")
     while pid > 0 and pid not in seen and len(handles) < 64:
         seen.add(pid)
         handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
@@ -217,6 +222,8 @@ def _running_ancestor_handles() -> list[int]:
             handles.append(int(handle))
         elif handle:
             kernel32.CloseHandle(handle)
+        if str(pid) == boundary:
+            break
         pid = parents.get(pid, 0)
     return handles
 

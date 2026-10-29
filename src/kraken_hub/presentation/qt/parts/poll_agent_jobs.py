@@ -114,6 +114,7 @@ class PollAgentJobsMixin:
                 job
                 for job in self.service.plugin_jobs()
                 if job.state.value not in {"succeeded", "failed", "cancelled"}
+                and not getattr(self.service, "is_remote_project", lambda _: False)(job.project_id)
             ),
             None,
         )
@@ -134,6 +135,8 @@ class PollAgentJobsMixin:
             schedule_pipeline()
         gateway = self._agent_gateway
         if gateway is None:
+            if self.my_work_refresh is not None:
+                self.my_work_refresh()
             return
         try:
             jobs = self.service.synchronize_plugin_jobs(

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import ContextManager, Protocol, Self, runtime_checkable
 
-from kraken_manager.application.dto import StorageBackendKind, StorageScope, StoredContent
+from kraken_manager.application.dto import CommandContext, StorageBackendKind, StorageScope, StoredContent
 from kraken_manager.domain.artifacts import ArtifactSeries, ArtifactVersion, BlobRef, NoteRevision
 from kraken_manager.domain.common import (
     ArtifactSeriesId,
@@ -177,6 +177,10 @@ class ProjectionStore(Protocol):
         self, series_id: ArtifactSeriesId, *, as_of: datetime | None = None
     ) -> ArtifactVersion | None: ...
 
+    def list_active_artifact_versions(
+        self, series_ids: Iterable[ArtifactSeriesId],
+    ) -> dict[str, ArtifactVersion]: ...
+
     def list_artifact_versions(
         self, series_id: ArtifactSeriesId, *, as_of: datetime | None = None
     ) -> tuple[ArtifactVersion, ...]: ...
@@ -306,6 +310,11 @@ class UnitOfWork(Protocol):
 
 class UnitOfWorkFactory(Protocol):
     def __call__(self) -> UnitOfWork: ...
+
+
+class ProjectCommand(Protocol):
+    context: CommandContext
+    project_id: ProjectId
 
 
 class StorageProfileCatalog(Protocol):

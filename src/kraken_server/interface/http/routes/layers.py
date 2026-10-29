@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime
 from uuid import uuid4
 
 from kraken_server.interface.http.context import HttpContext
@@ -27,9 +28,11 @@ def register(ctx: HttpContext) -> None:
     def list_layers(
         project_id: str,
         include_archived: bool = False,
+        as_of: datetime | None = None,
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
-        return {"items": backend.list_layers(project_id, include_archived=include_archived)}
+        return {"items": backend.list_layers(project_id, include_archived=include_archived,
+                                            **({} if as_of is None else {"as_of": as_of}))}
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers", status_code=201)
     def create_layer(
@@ -164,3 +167,22 @@ def register(ctx: HttpContext) -> None:
             layer_id,
             command_context(actor, idempotency_key, if_match, revision_required=True),
         )
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/layers/{{layer_id}}/delete")
+    async def delete_layer(
+        project_id: str,
+        layer_id: str,
+        payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+        if_match: str | None = Header(default=None, alias="If-Match"),
+    ) -> dict[str, Any]:
+        context = command_context(actor, idempotency_key, if_match, revision_required=True)
+        confirmation = payload.get("confirmation_name")
+        if not isinstance(confirmation, str) or not confirmation:
+            raise ValidationError("Layer name confirmation is required")
+        operation = getattr(backend, "delete_layer", None)
+        if operation is None:
+            raise HTTPException(status_code=503, detail="Server layer deletion is unavailable")
+        async with heavy_operations:
+            return await run_in_threadpool(operation, project_id, layer_id, confirmation, context)

@@ -1,0 +1,1774 @@
+{
+  "local_count": 146,
+  "remote_count": 146,
+  "shared_count": 124,
+  "shared": [
+    "accept_review",
+    "activate_artifact_version",
+    "activate_representation",
+    "active_artifact_version",
+    "active_review_batches",
+    "activity_records",
+    "add_external_artifact_version",
+    "add_managed_artifact_version",
+    "archive_artifact_series",
+    "archive_layer",
+    "archive_project",
+    "archive_representation",
+    "artifact_source_path",
+    "artifact_stream_revision",
+    "artifact_version",
+    "artifact_versions",
+    "assign_project_role",
+    "cancel_plugin_job",
+    "cancel_review_batch",
+    "cancel_work_order",
+    "command_layer_pipeline",
+    "commit_managed_import",
+    "commit_review_return",
+    "complete_work_order",
+    "create_artifact_series",
+    "create_external_layer",
+    "create_layer",
+    "create_layer_from_disk",
+    "create_note",
+    "create_project",
+    "create_quality_from_analysis",
+    "create_quality_issue",
+    "create_representation",
+    "create_review_batch",
+    "create_work_plan",
+    "deactivate_representation",
+    "define_layer_pipeline",
+    "delete_layer",
+    "execute_project_command",
+    "export_artifact_version",
+    "export_electrical_model",
+    "export_managed_artifact",
+    "export_review_batch",
+    "export_stitch_vectors",
+    "external_artifact_changed",
+    "frame_cells",
+    "frame_management_states",
+    "get_artifact_version",
+    "get_electrical_model",
+    "get_layer_pipeline",
+    "get_multilayer_model",
+    "get_project",
+    "get_quality_issue",
+    "get_work_plan",
+    "get_work_template",
+    "history",
+    "import_stitch_observations",
+    "is_remote_project",
+    "issue_work",
+    "latest_karakal_analysis",
+    "layer_file_binding",
+    "list_artifact_series",
+    "list_layers",
+    "list_notes",
+    "list_performers",
+    "list_principals",
+    "list_project_principals",
+    "list_projects",
+    "list_quality_issues",
+    "list_representations",
+    "list_storage_profiles",
+    "list_work_plans",
+    "list_work_templates",
+    "managed_artifact_path",
+    "mark_work_running",
+    "materialize_representation_inputs",
+    "matrix_viewport",
+    "migrate_legacy_work_orders",
+    "mutate_electrical_model",
+    "mutate_multilayer_model",
+    "mutate_quality_issue",
+    "mutate_work_plan",
+    "plan_import_directory",
+    "plan_legacy_work_order_migration",
+    "plugin_jobs",
+    "project_permissions",
+    "project_role_revision",
+    "project_roles",
+    "project_storage_label",
+    "project_workspace",
+    "publish_karakal_analysis",
+    "quality_analysis_readiness",
+    "quality_analysis_runs",
+    "quality_frame_versions",
+    "quality_issue_history",
+    "read_project_blob",
+    "recheck_quality_from_analysis",
+    "record_layer_pipeline_action",
+    "remove_layer_pipeline_action",
+    "rename_artifact_series",
+    "rename_layer",
+    "rename_project",
+    "rename_representation",
+    "reorder_layer",
+    "reorder_layers",
+    "request_review_changes",
+    "restore_project",
+    "retry_plugin_job",
+    "review_batches",
+    "review_candidate_version_ids",
+    "review_return_preflight",
+    "revise_note",
+    "revoke_project_role",
+    "save_work_template",
+    "scan_layer_source",
+    "set_layer_stitching_status",
+    "stitch_block",
+    "stitch_vector_block",
+    "stitch_vector_header",
+    "submit_plugin_job",
+    "synchronize_plugin_jobs",
+    "update_representation_note",
+    "work_orders",
+    "work_plan_analytics"
+  ],
+  "local_only": [
+    "archive_performer",
+    "attach_project",
+    "begin_derived_run",
+    "bind_project_workspace",
+    "create_initial_account",
+    "create_manual_performer",
+    "delete_project",
+    "dispatch_stitch",
+    "export_backup",
+    "fail_derived_run",
+    "import_agent_publications",
+    "import_agent_result",
+    "import_backup",
+    "import_stitch_publication",
+    "list_derived_runs",
+    "login",
+    "publish_workspace_plugin_result",
+    "refresh_stitch",
+    "resolve_session",
+    "scan_integrity",
+    "tick_layer_pipeline",
+    "update_performer"
+  ],
+  "remote_only": [
+    "add_catalog_handler",
+    "add_status_handler",
+    "add_wake_handler",
+    "authenticate_local",
+    "command_server_analysis",
+    "create_server_analysis",
+    "current_principal",
+    "project_deletion_requests",
+    "register_local",
+    "remote_stitch_block",
+    "request_project_deletion",
+    "request_server_analysis_map",
+    "run_interactive_job",
+    "server_analysis_frames",
+    "server_analysis_map_bytes",
+    "server_analysis_run",
+    "server_analysis_runs",
+    "start_sync",
+    "statistics",
+    "stop_sync",
+    "subscribe_project",
+    "unsubscribe_project"
+  ],
+  "parameter_differences": {},
+  "local": {
+    "accept_review": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', candidate_version_ids: 'Iterable[ArtifactVersionId | str]', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/composition/parts/review_return_preflight.py",
+      "line": 120
+    },
+    "activate_artifact_version": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', series_id: 'ArtifactSeriesId | str', version_id: 'ArtifactVersionId | str', idempotency_key: 'str') -> 'ArtifactVersion'",
+      "source": "src/kraken_hub/composition/parts/add_external_artifact_version.py",
+      "line": 150
+    },
+    "activate_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 146
+    },
+    "active_artifact_version": {
+      "signature": "(self, project_id: 'ProjectId | str', series_id: 'ArtifactSeriesId | str') -> 'ArtifactVersion | None'",
+      "source": "src/kraken_hub/composition/parts/domain_selection.py",
+      "line": 28
+    },
+    "active_review_batches": {
+      "signature": "(self) -> 'tuple[ReviewBatch, ...]'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 74
+    },
+    "activity_records": {
+      "signature": "(self) -> 'tuple[ActivityRecord, ...]'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 66
+    },
+    "add_external_artifact_version": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', series_id: 'ArtifactSeriesId | str', source: 'Path | str', parent_version_id: 'ArtifactVersionId | str | None' = None, idempotency_key: 'str') -> 'ArtifactVersion'",
+      "source": "src/kraken_hub/composition/parts/add_external_artifact_version.py",
+      "line": 67
+    },
+    "add_managed_artifact_version": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', series_id: 'ArtifactSeriesId | str', source: 'Path | str', parent_version_id: 'ArtifactVersionId | str | None' = None, idempotency_key: 'str') -> 'ArtifactVersion'",
+      "source": "src/kraken_hub/composition/parts/add_external_artifact_version.py",
+      "line": 30
+    },
+    "archive_artifact_series": {
+      "signature": "(self, *, principal: 'Principal', series: 'ArtifactSeries', idempotency_key: 'str') -> 'ArtifactSeries'",
+      "source": "src/kraken_hub/composition/parts/add_external_artifact_version.py",
+      "line": 131
+    },
+    "archive_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', idempotency_key: 'str') -> 'Layer'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 59
+    },
+    "archive_performer": {
+      "signature": "(self, performer_id: 'PerformerId | str') -> 'Performer'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 153
+    },
+    "archive_project": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', idempotency_key: 'str') -> 'Project'",
+      "source": "src/kraken_hub/composition/parts/staging_entry_belongs_project.py",
+      "line": 23
+    },
+    "archive_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 172
+    },
+    "artifact_source_path": {
+      "signature": "(self, project_id: 'ProjectId | str', artifact_version_id: 'ArtifactVersionId | str') -> 'Path'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 36
+    },
+    "artifact_stream_revision": {
+      "signature": "(self, project_id: 'ProjectId | str', series_id: 'ArtifactSeriesId | str') -> 'int'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 205
+    },
+    "artifact_version": {
+      "signature": "(self, project_id: 'ProjectId | str', version_id: 'ArtifactVersionId | str') -> 'ArtifactVersion | None'",
+      "source": "src/kraken_hub/composition/parts/domain_selection.py",
+      "line": 37
+    },
+    "artifact_versions": {
+      "signature": "(self, project_id: 'ProjectId | str', series_id: 'ArtifactSeriesId | str') -> 'tuple[ArtifactVersion, ...]'",
+      "source": "src/kraken_hub/composition/parts/domain_selection.py",
+      "line": 19
+    },
+    "assign_project_role": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', target_principal_id: 'PrincipalId', role: 'ProjectRole', expected_revision: 'int', idempotency_key: 'str') -> 'frozenset[ProjectRole]'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 197
+    },
+    "attach_project": {
+      "signature": "(self, project_directory: 'Path | str', *, principal: 'Principal | None' = None, take_ownership: 'bool' = False) -> 'Project'",
+      "source": "src/kraken_hub/composition/parts/import_backup.py",
+      "line": 126
+    },
+    "begin_derived_run": {
+      "signature": "(self, *, project_id: 'ProjectId | str', layer_id: 'LayerId | str', layer_name: 'str', kind: 'DerivedRunKind', plugin_id: 'str', operation: 'str', principal: 'Principal | None' = None) -> 'DerivedRun'",
+      "source": "src/kraken_hub/composition/parts/begin_derived_run.py",
+      "line": 17
+    },
+    "bind_project_workspace": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', source_root: 'Path | str', derived_root: 'Path | str', idempotency_key: 'str') -> 'ProjectWorkspaceBinding'",
+      "source": "src/kraken_hub/composition/parts/bind_project_workspace.py",
+      "line": 49
+    },
+    "cancel_plugin_job": {
+      "signature": "(self, *, principal: 'Principal', gateway: 'object', job: 'object', idempotency_key: 'str')",
+      "source": "src/kraken_hub/composition/parts/synchronize_plugin_jobs.py",
+      "line": 20
+    },
+    "cancel_review_batch": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/composition/parts/review_return_preflight.py",
+      "line": 165
+    },
+    "cancel_work_order": {
+      "signature": "(self, order: 'WorkOrder', *, idempotency_key: 'str', principal=None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/composition/parts/issue_work.py",
+      "line": 158
+    },
+    "command_layer_pipeline": {
+      "signature": "(self, *, project_id, layer_id, operation, principal, expected_revision, idempotency_key, node_id=None)",
+      "source": "src/kraken_hub/composition/parts/pipeline_execution.py",
+      "line": 50
+    },
+    "commit_managed_import": {
+      "signature": "(self, *, principal, project, layer, representation, plan, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/commit_managed_import.py",
+      "line": 9
+    },
+    "commit_review_return": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', source: 'Path | str', idempotency_key: 'str')",
+      "source": "src/kraken_hub/composition/parts/review_return_preflight.py",
+      "line": 93
+    },
+    "complete_work_order": {
+      "signature": "(self, order: 'WorkOrder', *, idempotency_key: 'str', principal=None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/composition/parts/issue_work.py",
+      "line": 163
+    },
+    "create_artifact_series": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', scope: 'ArtifactScope', name: 'str', layer_id: 'LayerId | str | None' = None, representation_id: 'RepresentationId | str | None' = None, frame_id: 'str | None' = None, series_id: 'ArtifactSeriesId | str | None' = None, idempotency_key: 'str') -> 'ArtifactSeries'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 170
+    },
+    "create_external_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', name: 'str', layer_type: 'LayerType', order: 'int', image_directory: 'Path | str', ssc_directory: 'Path | str | None', prv_directory: 'Path | str | None', idempotency_key: 'str') -> 'tuple[Layer, LayerFileBinding, Representation]'",
+      "source": "src/kraken_hub/composition/parts/create_external_layer.py",
+      "line": 27
+    },
+    "create_initial_account": {
+      "signature": "(self, username: 'str', display_name: 'str', password: 'str') -> 'DesktopSession'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 119
+    },
+    "create_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', name: 'str', layer_type: 'LayerType', order: 'int', idempotency_key: 'str', layer_id: 'LayerId | str | None' = None) -> 'Layer'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 69
+    },
+    "create_layer_from_disk": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', name: 'str', layer_type: 'LayerType', order: 'int', scan: 'LayerSourceScan', conversion: 'ImageConversionSettings', idempotency_key: 'str', progress=None, cancelled=None) -> 'tuple[Layer, LayerFileBinding, Representation]'",
+      "source": "src/kraken_hub/composition/parts/create_layer_disk.py",
+      "line": 29
+    },
+    "create_manual_performer": {
+      "signature": "(self, *, name: 'str', color: 'str') -> 'Performer'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 138
+    },
+    "create_note": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', body: 'str', layer_id: 'LayerId | str | None' = None, frame_id: 'str | None' = None, idempotency_key: 'str') -> 'NoteRevision'",
+      "source": "src/kraken_hub/composition/parts/export_artifact_version.py",
+      "line": 153
+    },
+    "create_project": {
+      "signature": "(self, *, principal: 'Principal', name: 'str', width: 'int', height: 'int', orientation: 'GridOrientation', idempotency_key: 'str', layer_template: 'bool' = False, source_root: 'Path | str | None' = None, derived_root: 'Path | str | None' = None, storage_profile_id: 'str | None' = None) -> 'Project'",
+      "source": "src/kraken_hub/composition/parts/create_project.py",
+      "line": 23
+    },
+    "create_quality_from_analysis": {
+      "signature": "(self, *, project_id, principal, run_id, rule, severity, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/quality_analysis.py",
+      "line": 21
+    },
+    "create_quality_issue": {
+      "signature": "(self, *, project_id, principal, arguments, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/quality.py",
+      "line": 14
+    },
+    "create_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', name: 'str', kind: 'RepresentationKind', idempotency_key: 'str', note: 'str' = '', source: 'str | None' = None, source_image_representation_id=None, active: 'bool' = False, purpose: 'RepresentationPurpose' = <RepresentationPurpose.SOURCE: 'source'>) -> 'Representation'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 91
+    },
+    "create_review_batch": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', layer_id: 'LayerId | str', image_representation_id: 'RepresentationId | str', vector_representation_id: 'RepresentationId | str', coordinates: 'Iterable[tuple[int, int]]', assignee_id: 'PerformerId | str', instructions: 'str' = '', due_at: 'datetime | None' = None, idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/composition/parts/create_review_batch.py",
+      "line": 34
+    },
+    "create_work_plan": {
+      "signature": "(self, *, project_id, title, principal, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 15
+    },
+    "deactivate_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 157
+    },
+    "define_layer_pipeline": {
+      "signature": "(self, *, project_id, layer_id, definition, principal, expected_revision, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/pipeline_execution.py",
+      "line": 40
+    },
+    "delete_layer": {
+      "signature": "(self, *, principal: kraken_manager.domain.identity.Principal, project: kraken_manager.domain.project.Project, layer: kraken_manager.domain.project.Layer, confirmation_name: str, idempotency_key: str) -> kraken_manager.domain.project.Layer",
+      "source": "src/kraken_hub/composition/parts/delete_layer.py",
+      "line": 10
+    },
+    "delete_project": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', confirmation_name: 'str') -> 'ProjectDeletionResult'",
+      "source": "src/kraken_hub/composition/parts/delete_project.py",
+      "line": 23
+    },
+    "dispatch_stitch": {
+      "signature": "(self, *, project_id, job_id, principal, gateway)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 91
+    },
+    "execute_project_command": {
+      "signature": "(self, command)",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 45
+    },
+    "export_artifact_version": {
+      "signature": "(self, project_id: 'ProjectId | str', version: 'ArtifactVersion', destination: 'Path | str') -> 'Path'",
+      "source": "src/kraken_hub/composition/parts/export_artifact_version.py",
+      "line": 92
+    },
+    "export_backup": {
+      "signature": "(self, project_id: 'ProjectId | str', destination: 'Path | str', *, principal: 'Principal | None' = None) -> 'KrakenMigrationBundleV1'",
+      "source": "src/kraken_hub/composition/parts/import_backup.py",
+      "line": 54
+    },
+    "export_electrical_model": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/composition/parts/electrical.py",
+      "line": 17
+    },
+    "export_managed_artifact": {
+      "signature": "(self, project_id: 'ProjectId | str', version: 'ArtifactVersion', destination: 'Path | str') -> 'Path'",
+      "source": "src/kraken_hub/composition/parts/export_artifact_version.py",
+      "line": 65
+    },
+    "export_review_batch": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', destination: 'Path | str', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/composition/parts/review_return_preflight.py",
+      "line": 32
+    },
+    "export_stitch_vectors": {
+      "signature": "(self, *, project_id, job_id, destination, cancelled=<callable>)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 37
+    },
+    "external_artifact_changed": {
+      "signature": "(self, version: 'ArtifactVersion') -> 'bool'",
+      "source": "src/kraken_hub/composition/parts/export_artifact_version.py",
+      "line": 39
+    },
+    "fail_derived_run": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', run_id: 'str', error: 'str') -> 'DerivedRun'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 38
+    },
+    "frame_cells": {
+      "signature": "(self, project_id, layer_id, representation_id, *, as_of=None, bounds=None)",
+      "source": "src/kraken_hub/composition/parts/frame_cells.py",
+      "line": 12
+    },
+    "frame_management_states": {
+      "signature": "(self, project_id: 'ProjectId | str', layer_id: 'LayerId | str', representation_id: 'RepresentationId | str', *, as_of: 'datetime | None' = None) -> 'tuple[FrameManagementState, ...]'",
+      "source": "src/kraken_hub/composition/parts/frame_management_states.py",
+      "line": 14
+    },
+    "get_artifact_version": {
+      "signature": "(self, project_id: 'ProjectId | str', artifact_version_id: 'ArtifactVersionId | str') -> 'ArtifactVersion | None'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 29
+    },
+    "get_electrical_model": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/composition/parts/electrical.py",
+      "line": 13
+    },
+    "get_layer_pipeline": {
+      "signature": "(self, project_id, layer_id)",
+      "source": "src/kraken_hub/composition/parts/pipeline_execution.py",
+      "line": 37
+    },
+    "get_multilayer_model": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/composition/parts/multilayer.py",
+      "line": 11
+    },
+    "get_project": {
+      "signature": "(self, project_id: 'ProjectId | str', *, as_of: 'datetime | None' = None) -> 'Project | None'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 76
+    },
+    "get_quality_issue": {
+      "signature": "(self, project_id, issue_id)",
+      "source": "src/kraken_hub/composition/parts/quality.py",
+      "line": 36
+    },
+    "get_work_plan": {
+      "signature": "(self, project_id, plan_id)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 35
+    },
+    "get_work_template": {
+      "signature": "(self, project_id, template_id, *, version=None)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 91
+    },
+    "history": {
+      "signature": "(self, project_id: 'ProjectId | str', *, as_of: 'datetime | None' = None, event_types: 'Iterable[str] | None' = None) -> 'tuple[object, ...]'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 52
+    },
+    "import_agent_publications": {
+      "signature": "(self, *, principal: 'Principal', publications: 'Iterable[Mapping[str, object]]', staging_root: 'Path | str')",
+      "source": "src/kraken_hub/composition/parts/import_agent_publications.py",
+      "line": 14
+    },
+    "import_agent_result": {
+      "signature": "(self, *, principal: 'Principal', result_payload: 'Mapping[str, object]', staging_root: 'Path | str', confirm_partial: 'bool' = False)",
+      "source": "src/kraken_hub/composition/parts/import_agent_result.py",
+      "line": 42
+    },
+    "import_backup": {
+      "signature": "(self, bundle_root: 'Path | str', *, principal: 'Principal | None' = None, take_ownership: 'bool' = False) -> 'Project'",
+      "source": "src/kraken_hub/composition/parts/import_backup.py",
+      "line": 77
+    },
+    "import_stitch_observations": {
+      "signature": "(self, *, project_id, layer_id, principal, source_path, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 50
+    },
+    "import_stitch_publication": {
+      "signature": "(self, *, project_id, principal, publication, source_path)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 106
+    },
+    "is_remote_project": {
+      "signature": "(self, project_id: 'ProjectId | str') -> 'bool'",
+      "source": "src/kraken_hub/composition/parts/bind_project_workspace.py",
+      "line": 42
+    },
+    "issue_work": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', layer_id: 'object', kind: 'str', placement: 'str', assignee_id: 'object', coordinates: 'tuple[tuple[int, int], ...]' = (), image_representation_id: 'str' = '', vector_representation_id: 'str' = '', instructions: 'str' = '', due_at: 'datetime | None' = None, destination_parent: 'Path | str | None' = None, idempotency_key: 'str', transport: 'str | None' = None, companion_representations: 'tuple[tuple[str, str], ...] | None' = None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/composition/parts/issue_work.py",
+      "line": 48
+    },
+    "latest_karakal_analysis": {
+      "signature": "(self, project_id, layer_id, *, as_of=None)",
+      "source": "src/kraken_hub/composition/parts/latest_karakal_analysis.py",
+      "line": 6
+    },
+    "layer_file_binding": {
+      "signature": "(self, project_id: 'ProjectId | str', layer_id: 'LayerId | str') -> 'LayerFileBinding | None'",
+      "source": "src/kraken_hub/composition/parts/bind_project_workspace.py",
+      "line": 92
+    },
+    "list_artifact_series": {
+      "signature": "(self, project_id: 'ProjectId | str', *, layer_id: 'LayerId | str | None' = None, representation_id: 'RepresentationId | str | None' = None, include_archived: 'bool' = False) -> 'tuple[ArtifactSeries, ...]'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 151
+    },
+    "list_derived_runs": {
+      "signature": "(self, project_id: 'ProjectId | str', layer_id: 'LayerId | str' = '') -> 'tuple[DerivedRun, ...]'",
+      "source": "src/kraken_hub/composition/parts/begin_derived_run.py",
+      "line": 56
+    },
+    "list_layers": {
+      "signature": "(self, project_id: 'ProjectId | str', *, as_of: 'datetime | None' = None, include_archived: 'bool' = False) -> 'tuple[Layer, ...]'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 126
+    },
+    "list_notes": {
+      "signature": "(self, project_id: 'ProjectId | str', *, layer_id: 'LayerId | str | None' = None, frame_id: 'str | None' = None) -> 'tuple[NoteRevision, ...]'",
+      "source": "src/kraken_hub/composition/parts/export_artifact_version.py",
+      "line": 140
+    },
+    "list_performers": {
+      "signature": "(self, *, include_archived: 'bool' = False) -> 'tuple[Performer, ...]'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 135
+    },
+    "list_principals": {
+      "signature": "(self, *, include_inactive: 'bool' = False) -> 'tuple[Principal, ...]'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 161
+    },
+    "list_project_principals": {
+      "signature": "(self, project_id: 'ProjectId | str', *, include_inactive: 'bool' = False) -> 'tuple[Principal, ...]'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 164
+    },
+    "list_projects": {
+      "signature": "(self, *, include_archived: 'bool' = False) -> 'tuple[Project, ...]'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 90
+    },
+    "list_quality_issues": {
+      "signature": "(self, project_id, *, artifact_version_id=None, frame_id=None)",
+      "source": "src/kraken_hub/composition/parts/quality.py",
+      "line": 39
+    },
+    "list_representations": {
+      "signature": "(self, project_id: 'ProjectId | str', layer_id: 'LayerId | str', *, include_archived: 'bool' = False, as_of: 'datetime | None' = None) -> 'tuple[Representation, ...]'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 137
+    },
+    "list_storage_profiles": {
+      "signature": "(self) -> 'tuple[StorageProfile, ...]'",
+      "source": "src/kraken_hub/composition/parts/bind_project_workspace.py",
+      "line": 27
+    },
+    "list_work_plans": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 31
+    },
+    "list_work_templates": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 85
+    },
+    "login": {
+      "signature": "(self, username: 'str', password: 'str') -> 'DesktopSession | None'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 248
+    },
+    "managed_artifact_path": {
+      "signature": "(self, project_id: 'ProjectId | str', version_id: 'ArtifactVersionId | str') -> 'Path'",
+      "source": "src/kraken_hub/composition/parts/domain_selection.py",
+      "line": 46
+    },
+    "mark_work_running": {
+      "signature": "(self, order: 'WorkOrder', *, job_id: 'str' = '', idempotency_key: 'str', principal=None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/composition/parts/issue_work.py",
+      "line": 152
+    },
+    "materialize_representation_inputs": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation') -> 'tuple[FrameCellSnapshot, ...]'",
+      "source": "src/kraken_hub/composition/parts/materialize_representation_inputs.py",
+      "line": 16
+    },
+    "matrix_viewport": {
+      "signature": "(self, project_id: 'ProjectId | str', *, layer_id: 'LayerId | str', representation_ids: 'Iterable[RepresentationId | str]' = (), x1: 'int', y1: 'int', x2: 'int', y2: 'int', lod: 'int' = 0, include_missing: 'bool' = True) -> 'dict[str, Any]'",
+      "source": "src/kraken_hub/composition/parts/matrix_viewport.py",
+      "line": 16
+    },
+    "migrate_legacy_work_orders": {
+      "signature": "(self, *, principal, project_id, expected_plan_digest, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/issue_work.py",
+      "line": 33
+    },
+    "mutate_electrical_model": {
+      "signature": "(self, *, project_id, principal, expected_revision, expected_physical_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/electrical.py",
+      "line": 20
+    },
+    "mutate_multilayer_model": {
+      "signature": "(self, *, project_id, principal, expected_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/multilayer.py",
+      "line": 15
+    },
+    "mutate_quality_issue": {
+      "signature": "(self, *, project_id, principal, issue_id, expected_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/quality.py",
+      "line": 20
+    },
+    "mutate_work_plan": {
+      "signature": "(self, *, project_id, plan_id, principal, expected_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 42
+    },
+    "plan_import_directory": {
+      "signature": "(self, *, project: 'Project', directory: 'Path | str', mode: 'ImportMappingMode' = <ImportMappingMode.XY_FILENAME: 'xy_filename'>, regex: 'str | None' = None) -> 'ImportPlan'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 183
+    },
+    "plan_legacy_work_order_migration": {
+      "signature": "(self, *, principal, project_id)",
+      "source": "src/kraken_hub/composition/parts/issue_work.py",
+      "line": 27
+    },
+    "plugin_jobs": {
+      "signature": "(self) -> 'tuple[object, ...]'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 97
+    },
+    "project_permissions": {
+      "signature": "(self, project_id: 'ProjectId | str', principal: 'Principal') -> 'frozenset[Permission]'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 187
+    },
+    "project_role_revision": {
+      "signature": "(self, project_id: 'ProjectId | str', principal_id: 'PrincipalId | str') -> 'int'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 177
+    },
+    "project_roles": {
+      "signature": "(self, project_id: 'ProjectId | str', principal_id: 'PrincipalId | str') -> 'frozenset[ProjectRole]'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 156
+    },
+    "project_storage_label": {
+      "signature": "(self, project_id: 'ProjectId | str') -> 'str'",
+      "source": "src/kraken_hub/composition/parts/bind_project_workspace.py",
+      "line": 38
+    },
+    "project_workspace": {
+      "signature": "(self, project_id: 'ProjectId | str') -> 'ProjectWorkspaceBinding | None'",
+      "source": "src/kraken_hub/composition/parts/bind_project_workspace.py",
+      "line": 46
+    },
+    "publish_karakal_analysis": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', layer_id: 'LayerId | str', frame_confidence: 'dict[str, float]', report: 'dict[str, object]', parameters: 'dict[str, object]', plugin_version: 'str', idempotency_key: 'str') -> 'KarakalAnalysisRun'",
+      "source": "src/kraken_hub/composition/parts/publish_karakal_analysis.py",
+      "line": 19
+    },
+    "publish_workspace_plugin_result": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', result: 'WorkspacePluginResultV1') -> 'tuple[DerivedRun, Representation | None]'",
+      "source": "src/kraken_hub/composition/parts/publish_workspace_plugin_result.py",
+      "line": 24
+    },
+    "quality_analysis_readiness": {
+      "signature": "(self, project_id, run_id)",
+      "source": "src/kraken_hub/composition/parts/quality_analysis.py",
+      "line": 16
+    },
+    "quality_analysis_runs": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/composition/parts/quality_analysis.py",
+      "line": 13
+    },
+    "quality_frame_versions": {
+      "signature": "(self, project_id, layer_id, x, y)",
+      "source": "src/kraken_hub/composition/parts/quality.py",
+      "line": 11
+    },
+    "quality_issue_history": {
+      "signature": "(self, project_id, issue_id)",
+      "source": "src/kraken_hub/composition/parts/quality.py",
+      "line": 43
+    },
+    "read_project_blob": {
+      "signature": "(self, project_id: 'ProjectId | str', sha256: 'str') -> 'bytes'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 26
+    },
+    "recheck_quality_from_analysis": {
+      "signature": "(self, *, project_id, principal, issue_id, run_id, expected_revision, idempotency_key, note)",
+      "source": "src/kraken_hub/composition/parts/quality_analysis.py",
+      "line": 30
+    },
+    "record_layer_pipeline_action": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', layer_id: 'LayerId | str', action: 'str', node_id: 'str', plugin_id: 'str', capability: 'str', mode: 'str', parameters: 'dict[str, object] | None' = None) -> 'EventEnvelope'",
+      "source": "src/kraken_hub/composition/parts/record_layer_pipeline_action.py",
+      "line": 54
+    },
+    "refresh_stitch": {
+      "signature": "(self, *, project_id, job_id, principal, gateway)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 115
+    },
+    "remove_layer_pipeline_action": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'ProjectId | str', layer_id: 'LayerId | str', action_event_id: 'str', remove_task: 'bool' = False) -> 'EventEnvelope'",
+      "source": "src/kraken_hub/composition/parts/remove_layer_pipeline_action.py",
+      "line": 20
+    },
+    "rename_artifact_series": {
+      "signature": "(self, *, principal: 'Principal', series: 'ArtifactSeries', name: 'str', idempotency_key: 'str') -> 'ArtifactSeries'",
+      "source": "src/kraken_hub/composition/parts/add_external_artifact_version.py",
+      "line": 110
+    },
+    "rename_layer": {
+      "signature": "(self, *, principal: kraken_manager.domain.identity.Principal, project: kraken_manager.domain.project.Project, layer: kraken_manager.domain.project.Layer, name: str, idempotency_key: str) -> kraken_manager.domain.project.Layer",
+      "source": "src/kraken_hub/composition/parts/rename_layer.py",
+      "line": 10
+    },
+    "rename_project": {
+      "signature": "(self, *, principal: kraken_manager.domain.identity.Principal, project: kraken_manager.domain.project.Project, name: str, idempotency_key: str) -> kraken_manager.domain.project.Project",
+      "source": "src/kraken_hub/composition/parts/rename_project.py",
+      "line": 10
+    },
+    "rename_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', name: 'str', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 124
+    },
+    "reorder_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', order: 'int', idempotency_key: 'str') -> 'Layer'",
+      "source": "src/kraken_hub/composition/parts/create_artifact_series.py",
+      "line": 40
+    },
+    "reorder_layers": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layers: 'Iterable[Layer]', layer_ids: 'Iterable[LayerId | str]', idempotency_key: 'str') -> 'tuple[Layer, ...]'",
+      "source": "src/kraken_hub/composition/parts/reorder_layers.py",
+      "line": 30
+    },
+    "request_review_changes": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', reason: 'str', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/composition/parts/review_return_preflight.py",
+      "line": 144
+    },
+    "resolve_session": {
+      "signature": "(self, token: 'str') -> 'Principal | None'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 262
+    },
+    "restore_project": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', idempotency_key: 'str') -> 'Project'",
+      "source": "src/kraken_hub/composition/parts/staging_entry_belongs_project.py",
+      "line": 34
+    },
+    "retry_plugin_job": {
+      "signature": "(self, *, principal: 'Principal', gateway: 'object', job: 'object', idempotency_key: 'str')",
+      "source": "src/kraken_hub/composition/parts/synchronize_plugin_jobs.py",
+      "line": 45
+    },
+    "review_batches": {
+      "signature": "(self) -> 'tuple[ReviewBatch, ...]'",
+      "source": "src/kraken_hub/composition/parts/plugin_jobs.py",
+      "line": 83
+    },
+    "review_candidate_version_ids": {
+      "signature": "(self, batch: 'ReviewBatch') -> 'tuple[ArtifactVersionId, ...]'",
+      "source": "src/kraken_hub/composition/parts/review_return_preflight.py",
+      "line": 184
+    },
+    "review_return_preflight": {
+      "signature": "(self, *, principal: 'Principal', source: 'Path | str', idempotency_key: 'str')",
+      "source": "src/kraken_hub/composition/parts/review_return_preflight.py",
+      "line": 60
+    },
+    "revise_note": {
+      "signature": "(self, *, principal: 'Principal', note: 'NoteRevision', body: 'str', idempotency_key: 'str') -> 'NoteRevision'",
+      "source": "src/kraken_hub/composition/parts/export_artifact_version.py",
+      "line": 176
+    },
+    "revoke_project_role": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', target_principal_id: 'PrincipalId', role: 'ProjectRole', expected_revision: 'int', idempotency_key: 'str') -> 'frozenset[ProjectRole]'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 217
+    },
+    "save_work_template": {
+      "signature": "(self, *, project_id, principal, definition, idempotency_key, template_id=None, expected_version=0)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 99
+    },
+    "scan_integrity": {
+      "signature": "(self) -> 'IntegrityScanResult'",
+      "source": "src/kraken_hub/composition/parts/import_backup.py",
+      "line": 37
+    },
+    "scan_layer_source": {
+      "signature": "(self, directory: 'Path | str', *, maximum_frames: 'int', project_id: 'ProjectId | str | None' = None) -> 'LayerSourceScan'",
+      "source": "src/kraken_hub/composition/parts/bind_project_workspace.py",
+      "line": 97
+    },
+    "set_layer_stitching_status": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', layer_id: 'object', kind: 'str', completed: 'bool', version_id: 'str' = '') -> 'EventEnvelope'",
+      "source": "src/kraken_hub/composition/parts/record_layer_pipeline_action.py",
+      "line": 17
+    },
+    "stitch_block": {
+      "signature": "(self, project_id, job_id, column, row, *, coverage=False)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 16
+    },
+    "stitch_vector_block": {
+      "signature": "(self, project_id, job_id, column, row)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 31
+    },
+    "stitch_vector_header": {
+      "signature": "(self, project_id, job_id)",
+      "source": "src/kraken_hub/composition/parts/stitch_computations.py",
+      "line": 25
+    },
+    "submit_plugin_job": {
+      "signature": "(self, *, principal: 'Principal', gateway: 'object', project_id: 'ProjectId | str', layer_id: 'LayerId | str', source_representation_id: 'RepresentationId | str', target_representation_id: 'RepresentationId | str', coordinates: 'Iterable[tuple[int, int]]', capability: 'str', parameters: 'Mapping[str, object]', idempotency_key: 'str')",
+      "source": "src/kraken_hub/composition/parts/submit_plugin_job.py",
+      "line": 32
+    },
+    "synchronize_plugin_jobs": {
+      "signature": "(self, *, principal: 'Principal', gateway: 'object') -> 'tuple[object, ...]'",
+      "source": "src/kraken_hub/composition/parts/synchronize_plugin_jobs.py",
+      "line": 70
+    },
+    "tick_layer_pipeline": {
+      "signature": "(self, *, project_id, layer_id, principal, gateway=None, stitch_gateway=None)",
+      "source": "src/kraken_hub/composition/parts/pipeline_execution.py",
+      "line": 63
+    },
+    "update_performer": {
+      "signature": "(self, *, performer_id: 'PerformerId | str', name: 'str', color: 'str') -> 'Performer'",
+      "source": "src/kraken_hub/composition/parts/revoke_project_role.py",
+      "line": 141
+    },
+    "update_representation_note": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', note: 'str', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/composition/parts/create_representation.py",
+      "line": 135
+    },
+    "work_orders": {
+      "signature": "(self) -> 'tuple[WorkOrder, ...]'",
+      "source": "src/kraken_hub/composition/parts/issue_work.py",
+      "line": 41
+    },
+    "work_plan_analytics": {
+      "signature": "(self, project_id, *, principal, **request)",
+      "source": "src/kraken_hub/composition/parts/work_planning.py",
+      "line": 122
+    }
+  },
+  "remote": {
+    "accept_review": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', candidate_version_ids: 'object', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/export_review_batch.py",
+      "line": 26
+    },
+    "activate_artifact_version": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', series_id: 'object', version_id: 'object', idempotency_key: 'str') -> 'ArtifactVersion'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 92
+    },
+    "activate_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 21
+    },
+    "active_artifact_version": {
+      "signature": "(self, project_id: 'object', series_id: 'object') -> 'ArtifactVersion | None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 106
+    },
+    "active_review_batches": {
+      "signature": "(self) -> 'tuple[ReviewBatch, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_review_batch.py",
+      "line": 149
+    },
+    "activity_records": {
+      "signature": "(self) -> 'tuple[object, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 174
+    },
+    "add_catalog_handler": {
+      "signature": "(self, handler: 'Callable[[], None]') -> 'None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 199
+    },
+    "add_external_artifact_version": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', series_id: 'object', source: 'Path | str', parent_version_id: 'object | None' = None, idempotency_key: 'str') -> 'ArtifactVersion'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 24
+    },
+    "add_managed_artifact_version": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', series_id: 'object', source: 'Path | str', parent_version_id: 'object | None' = None, idempotency_key: 'str') -> 'ArtifactVersion'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_managed_artifact_version.py",
+      "line": 95
+    },
+    "add_status_handler": {
+      "signature": "(self, handler: 'Callable[[str], None]') -> 'None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 202
+    },
+    "add_wake_handler": {
+      "signature": "(self, handler: 'Callable[[ProjectEventWake], None]') -> 'None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 196
+    },
+    "archive_artifact_series": {
+      "signature": "(self, *, principal: 'Principal', series: 'ArtifactSeries', idempotency_key: 'str') -> 'ArtifactSeries'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 79
+    },
+    "archive_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', idempotency_key: 'str') -> 'Layer'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 79
+    },
+    "archive_project": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', idempotency_key: 'str') -> 'Project'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/list_layers.py",
+      "line": 111
+    },
+    "archive_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 57
+    },
+    "artifact_source_path": {
+      "signature": "(self, project_id, artifact_version_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 24
+    },
+    "artifact_stream_revision": {
+      "signature": "(self, project_id: 'object', series_id: 'object') -> 'int'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 87
+    },
+    "artifact_version": {
+      "signature": "(self, project_id: 'object', version_id: 'object') -> 'ArtifactVersion | None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 117
+    },
+    "artifact_versions": {
+      "signature": "(self, project_id: 'object', series_id: 'object') -> 'tuple[ArtifactVersion, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 93
+    },
+    "assign_project_role": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', target_principal_id: 'object', role: 'ProjectRole', expected_revision: 'int', idempotency_key: 'str') -> 'frozenset[ProjectRole]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 147
+    },
+    "authenticate_local": {
+      "signature": "(base_url: 'str', *, username: 'str', password: 'str', data_dir: 'Path | str | None' = None, http: 'RemoteHttpClient | None' = None) -> 'RemoteServerProjectService'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 54
+    },
+    "cancel_plugin_job": {
+      "signature": "(self, *, principal: 'Principal', gateway: 'object', job: 'PluginJob', idempotency_key: 'str') -> 'PluginJob'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 98
+    },
+    "cancel_review_batch": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/export_review_batch.py",
+      "line": 65
+    },
+    "cancel_work_order": {
+      "signature": "(self, order: 'WorkOrder', *, idempotency_key: 'str', principal=None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/issue_work.py",
+      "line": 216
+    },
+    "command_layer_pipeline": {
+      "signature": "(self, *, project_id, layer_id, operation, principal, expected_revision, idempotency_key, node_id=None)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/pipeline_execution.py",
+      "line": 17
+    },
+    "command_server_analysis": {
+      "signature": "(self, project_id, run_id, operation, *, expected_revision, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/analysis_runs.py",
+      "line": 30
+    },
+    "commit_managed_import": {
+      "signature": "(self, *, principal, project, layer, representation, plan, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 39
+    },
+    "commit_review_return": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', source: 'Path | str', idempotency_key: 'str') -> 'ReviewReturnCommitResult'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/export_review_batch.py",
+      "line": 196
+    },
+    "complete_work_order": {
+      "signature": "(self, order: 'WorkOrder', *, idempotency_key: 'str', principal=None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/issue_work.py",
+      "line": 225
+    },
+    "create_artifact_series": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', scope: 'ArtifactScope', name: 'str', layer_id: 'object | None' = None, representation_id: 'object | None' = None, frame_id: 'object | None' = None, series_id: 'object | None' = None, idempotency_key: 'str') -> 'ArtifactSeries'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 56
+    },
+    "create_external_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', name: 'str', layer_type: 'LayerType', order: 'int', image_directory: 'Path | str', ssc_directory: 'Path | str | None', prv_directory: 'Path | str | None', idempotency_key: 'str')",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 144
+    },
+    "create_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', name: 'str', layer_type: 'LayerType', order: 'int', idempotency_key: 'str', layer_id: 'object | None' = None) -> 'Layer'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 90
+    },
+    "create_layer_from_disk": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', name: 'str', layer_type: 'LayerType', order: 'int', scan: 'object', conversion: 'object', idempotency_key: 'str', progress=None, cancelled=None)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 173
+    },
+    "create_note": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', body: 'str', layer_id: 'object | None' = None, frame_id: 'object | None' = None, idempotency_key: 'str') -> 'NoteRevision'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 136
+    },
+    "create_project": {
+      "signature": "(self, *, principal: 'Principal', name: 'str', width: 'int', height: 'int', orientation: 'GridOrientation', idempotency_key: 'str', layer_template: 'bool' = False, source_root: 'Path | str | None' = None, derived_root: 'Path | str | None' = None, storage_profile_id: 'str | None' = None) -> 'Project'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/list_layers.py",
+      "line": 58
+    },
+    "create_quality_from_analysis": {
+      "signature": "(self, *, project_id, principal, run_id, rule, severity, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality_analysis.py",
+      "line": 14
+    },
+    "create_quality_issue": {
+      "signature": "(self, *, project_id, principal, arguments, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality.py",
+      "line": 31
+    },
+    "create_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', name: 'str', kind: 'RepresentationKind', idempotency_key: 'str', note: 'str' = '', source: 'str | None' = None, source_image_representation_id: 'object | None' = None, active: 'bool' = False, purpose: 'RepresentationPurpose' = <RepresentationPurpose.SOURCE: 'source'>) -> 'Representation'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 129
+    },
+    "create_review_batch": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', layer_id: 'object', image_representation_id: 'object', vector_representation_id: 'object', coordinates: 'object', assignee_id: 'object', instructions: 'str' = '', due_at: 'datetime | None' = None, idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_review_batch.py",
+      "line": 167
+    },
+    "create_server_analysis": {
+      "signature": "(self, project_id, payload, *, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/analysis_runs.py",
+      "line": 26
+    },
+    "create_work_plan": {
+      "signature": "(self, *, project_id, title, principal, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 20
+    },
+    "current_principal": {
+      "signature": "(self) -> 'Principal'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 146
+    },
+    "deactivate_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 39
+    },
+    "define_layer_pipeline": {
+      "signature": "(self, *, project_id, layer_id, definition, principal, expected_revision, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/pipeline_execution.py",
+      "line": 8
+    },
+    "delete_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', confirmation_name: 'str', idempotency_key: 'str') -> 'Layer'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 34
+    },
+    "execute_project_command": {
+      "signature": "(self, command)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/call.py",
+      "line": 13
+    },
+    "export_artifact_version": {
+      "signature": "(self, project_id: 'object', version: 'ArtifactVersion', destination: 'Path | str') -> 'Path'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_review_batch.py",
+      "line": 111
+    },
+    "export_electrical_model": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/electrical.py",
+      "line": 9
+    },
+    "export_managed_artifact": {
+      "signature": "(self, project_id: 'object', version: 'ArtifactVersion', destination: 'Path | str') -> 'Path'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 200
+    },
+    "export_review_batch": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', destination: 'Path | str', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/export_review_batch.py",
+      "line": 95
+    },
+    "export_stitch_vectors": {
+      "signature": "(self, *, project_id, job_id, destination, cancelled=<callable>)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 20
+    },
+    "external_artifact_changed": {
+      "signature": "(self, version: 'ArtifactVersion') -> 'bool'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_review_batch.py",
+      "line": 81
+    },
+    "frame_cells": {
+      "signature": "(self, project_id: 'object', layer_id: 'object', representation_id: 'object', *, as_of: 'datetime | None' = None, bounds: 'tuple[int, int, int, int] | None' = None) -> 'tuple[FrameCellSnapshot, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/frame_cells.py",
+      "line": 11
+    },
+    "frame_management_states": {
+      "signature": "(self, project_id: 'object', layer_id: 'object', representation_id: 'object', *, as_of: 'datetime | None' = None) -> 'tuple[FrameManagementState, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/frame_cells.py",
+      "line": 49
+    },
+    "get_artifact_version": {
+      "signature": "(self, project_id, artifact_version_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 21
+    },
+    "get_electrical_model": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/electrical.py",
+      "line": 6
+    },
+    "get_layer_pipeline": {
+      "signature": "(self, project_id, layer_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/pipeline_execution.py",
+      "line": 5
+    },
+    "get_multilayer_model": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 11
+    },
+    "get_project": {
+      "signature": "(self, project_id: 'object', *, as_of: 'datetime | None' = None) -> 'Project | None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/list_layers.py",
+      "line": 39
+    },
+    "get_quality_issue": {
+      "signature": "(self, project_id, issue_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality.py",
+      "line": 25
+    },
+    "get_work_plan": {
+      "signature": "(self, project_id, plan_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 17
+    },
+    "get_work_template": {
+      "signature": "(self, project_id, template_id, *, version=None)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 57
+    },
+    "history": {
+      "signature": "(self, project_id: 'object', *, as_of: 'datetime | None' = None, event_types=None) -> 'tuple[object, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 141
+    },
+    "import_stitch_observations": {
+      "signature": "(self, *, project_id, layer_id, principal, source_path, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 42
+    },
+    "is_remote_project": {
+      "signature": "(self, project_id: 'object') -> 'bool'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 138
+    },
+    "issue_work": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', layer_id: 'object', kind: 'str', placement: 'str', assignee_id: 'object', coordinates: 'tuple[tuple[int, int], ...]' = (), image_representation_id: 'str' = '', vector_representation_id: 'str' = '', instructions: 'str' = '', due_at: 'datetime | None' = None, destination_parent: 'Path | str | None' = None, idempotency_key: 'str', transport: 'str | None' = None, companion_representations: 'tuple[tuple[str, str], ...] | None' = None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/issue_work.py",
+      "line": 38
+    },
+    "latest_karakal_analysis": {
+      "signature": "(self, project_id, layer_id, *, as_of=None)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/remove_layer_pipeline_action.py",
+      "line": 50
+    },
+    "layer_file_binding": {
+      "signature": "(self, project_id: 'object', layer_id: 'object')",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 114
+    },
+    "list_artifact_series": {
+      "signature": "(self, project_id: 'object', *, layer_id: 'object | None' = None, representation_id: 'object | None' = None, include_archived: 'bool' = False) -> 'tuple[ArtifactSeries, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_artifact_series.py",
+      "line": 27
+    },
+    "list_layers": {
+      "signature": "(self, project_id: 'object', *, include_archived: 'bool' = False, as_of: 'datetime | None' = None) -> 'tuple[Layer, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/list_layers.py",
+      "line": 145
+    },
+    "list_notes": {
+      "signature": "(self, project_id: 'object', *, layer_id: 'object | None' = None, frame_id: 'object | None' = None) -> 'tuple[NoteRevision, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 111
+    },
+    "list_performers": {
+      "signature": "(self, *, include_archived: 'bool' = False) -> 'tuple[Performer, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 184
+    },
+    "list_principals": {
+      "signature": "(self, *, include_inactive: 'bool' = False) -> 'tuple[Principal, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 152
+    },
+    "list_project_principals": {
+      "signature": "(self, project_id: 'object', *, include_inactive: 'bool' = False) -> 'tuple[Principal, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 166
+    },
+    "list_projects": {
+      "signature": "(self, *, include_archived: 'bool' = False) -> 'tuple[Project, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/list_layers.py",
+      "line": 24
+    },
+    "list_quality_issues": {
+      "signature": "(self, project_id, *, artifact_version_id=None, frame_id=None)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality.py",
+      "line": 17
+    },
+    "list_representations": {
+      "signature": "(self, project_id: 'object', layer_id: 'object', *, include_archived: 'bool' = False, as_of: 'datetime | None' = None) -> 'tuple[Representation, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 99
+    },
+    "list_storage_profiles": {
+      "signature": "(self) -> 'tuple[StorageProfile, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 143
+    },
+    "list_work_plans": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 13
+    },
+    "list_work_templates": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 51
+    },
+    "managed_artifact_path": {
+      "signature": "(self, project_id: 'object', version_id: 'object') -> 'Path'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_review_batch.py",
+      "line": 25
+    },
+    "mark_work_running": {
+      "signature": "(self, order: 'WorkOrder', *, job_id: 'str' = '', idempotency_key: 'str', principal=None) -> 'WorkOrder'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/issue_work.py",
+      "line": 205
+    },
+    "materialize_representation_inputs": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation') -> 'tuple[object, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/remove_layer_pipeline_action.py",
+      "line": 179
+    },
+    "matrix_viewport": {
+      "signature": "(self, project_id: 'object', *, layer_id: 'object', x1: 'int', y1: 'int', x2: 'int', y2: 'int', lod: 'int' = 0, representation_ids: 'object' = (), include_missing: 'bool' = True) -> 'Mapping[str, object]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/remove_layer_pipeline_action.py",
+      "line": 149
+    },
+    "migrate_legacy_work_orders": {
+      "signature": "(self, *, principal, project_id, expected_plan_digest, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/issue_work.py",
+      "line": 25
+    },
+    "mutate_electrical_model": {
+      "signature": "(self, *, project_id, principal, expected_revision, expected_physical_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/electrical.py",
+      "line": 12
+    },
+    "mutate_multilayer_model": {
+      "signature": "(self, *, project_id, principal, expected_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 26
+    },
+    "mutate_quality_issue": {
+      "signature": "(self, *, project_id, principal, issue_id, expected_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality.py",
+      "line": 35
+    },
+    "mutate_work_plan": {
+      "signature": "(self, *, project_id, plan_id, principal, expected_revision, operation, arguments, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 30
+    },
+    "plan_import_directory": {
+      "signature": "(self, *, project, directory, mode=None, regex=None)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 28
+    },
+    "plan_legacy_work_order_migration": {
+      "signature": "(self, *, principal, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/issue_work.py",
+      "line": 22
+    },
+    "plugin_jobs": {
+      "signature": "(self) -> 'tuple[PluginJob, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 37
+    },
+    "project_deletion_requests": {
+      "signature": "(self, project_id: 'object')",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 124
+    },
+    "project_permissions": {
+      "signature": "(self, project_id: 'object', principal: 'Principal') -> 'frozenset[Permission]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 75
+    },
+    "project_role_revision": {
+      "signature": "(self, project_id: 'object', principal_id: 'object') -> 'int'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 106
+    },
+    "project_roles": {
+      "signature": "(self, project_id: 'object', principal_id: 'object') -> 'frozenset[ProjectRole]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 94
+    },
+    "project_storage_label": {
+      "signature": "(self, project_id: 'object') -> 'str'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 135
+    },
+    "project_workspace": {
+      "signature": "(self, project_id: 'object')",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 122
+    },
+    "publish_karakal_analysis": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', layer_id: 'object', frame_confidence: 'dict[str, float]', report: 'dict[str, object]', parameters: 'dict[str, object]', plugin_version: 'str', idempotency_key: 'str') -> 'object'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/remove_layer_pipeline_action.py",
+      "line": 21
+    },
+    "quality_analysis_readiness": {
+      "signature": "(self, project_id, run_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality_analysis.py",
+      "line": 10
+    },
+    "quality_analysis_runs": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality_analysis.py",
+      "line": 7
+    },
+    "quality_frame_versions": {
+      "signature": "(self, project_id, layer_id, x, y)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality.py",
+      "line": 10
+    },
+    "quality_issue_history": {
+      "signature": "(self, project_id, issue_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality.py",
+      "line": 28
+    },
+    "read_project_blob": {
+      "signature": "(self, project_id: 'object', sha256: 'str') -> 'bytes'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_review_batch.py",
+      "line": 53
+    },
+    "recheck_quality_from_analysis": {
+      "signature": "(self, *, project_id, principal, issue_id, run_id, expected_revision, idempotency_key, note)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/quality_analysis.py",
+      "line": 19
+    },
+    "record_layer_pipeline_action": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', layer_id: 'object', action: 'str', node_id: 'str', plugin_id: 'str', capability: 'str', mode: 'str', parameters: 'dict[str, object] | None' = None) -> 'object'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/remove_layer_pipeline_action.py",
+      "line": 62
+    },
+    "register_local": {
+      "signature": "(base_url: 'str', *, username: 'str', password: 'str', display_name: 'str' = '', data_dir: 'Path | str | None' = None, http: 'RemoteHttpClient | None' = None) -> 'RemoteServerProjectService'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/register_local.py",
+      "line": 79
+    },
+    "remote_stitch_block": {
+      "signature": "(self, project_id, job_id, column, row, *, coverage=False)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 33
+    },
+    "remove_layer_pipeline_action": {
+      "signature": "(self, *, principal: 'Principal', project_id: 'object', layer_id: 'object', action_event_id: 'str', remove_task: 'bool' = False) -> 'object'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/remove_layer_pipeline_action.py",
+      "line": 109
+    },
+    "rename_artifact_series": {
+      "signature": "(self, *, principal: 'Principal', series: 'ArtifactSeries', name: 'str', idempotency_key: 'str') -> 'ArtifactSeries'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 61
+    },
+    "rename_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', name: 'str', idempotency_key: 'str') -> 'Layer'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 212
+    },
+    "rename_project": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', name: 'str', idempotency_key: 'str') -> 'Project'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/list_layers.py",
+      "line": 93
+    },
+    "rename_representation": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', name: 'str', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 195
+    },
+    "reorder_layer": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', order: 'int', idempotency_key: 'str') -> 'Layer'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 20
+    },
+    "reorder_layers": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layers: 'tuple[Layer, ...] | list[Layer]', layer_ids: 'tuple[str, ...]', idempotency_key: 'str') -> 'tuple[Layer, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 51
+    },
+    "request_project_deletion": {
+      "signature": "(self, *, project: 'Project', reason: 'str' = '', **_kwargs)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 117
+    },
+    "request_review_changes": {
+      "signature": "(self, *, principal: 'Principal', batch: 'ReviewBatch', reason: 'str', idempotency_key: 'str') -> 'ReviewBatch'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/export_review_batch.py",
+      "line": 47
+    },
+    "request_server_analysis_map": {
+      "signature": "(self, project_id, run_id, frame_id, *, expected_revision, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/analysis_runs.py",
+      "line": 6
+    },
+    "restore_project": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', idempotency_key: 'str') -> 'Project'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/list_layers.py",
+      "line": 128
+    },
+    "retry_plugin_job": {
+      "signature": "(self, *, principal, gateway, job, idempotency_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 29
+    },
+    "review_batches": {
+      "signature": "(self) -> 'tuple[ReviewBatch, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_review_batch.py",
+      "line": 133
+    },
+    "review_candidate_version_ids": {
+      "signature": "(self, batch: 'ReviewBatch') -> 'tuple[object, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/export_review_batch.py",
+      "line": 82
+    },
+    "review_return_preflight": {
+      "signature": "(self, *, principal: 'Principal', source: 'Path | str', idempotency_key: 'str') -> 'tuple[ReviewBatch, ReviewReturnPlan]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/export_review_batch.py",
+      "line": 179
+    },
+    "revise_note": {
+      "signature": "(self, *, principal: 'Principal', note: 'NoteRevision', body: 'str', idempotency_key: 'str') -> 'NoteRevision'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/add_external_artifact_version.py",
+      "line": 159
+    },
+    "revoke_project_role": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', target_principal_id: 'object', role: 'ProjectRole', expected_revision: 'int', idempotency_key: 'str') -> 'frozenset[ProjectRole]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/change_project_role.py",
+      "line": 167
+    },
+    "run_interactive_job": {
+      "signature": "(self, project_id: 'object', job_id: 'object', *, registry: 'PluginRegistry') -> 'dict[str, Any]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 81
+    },
+    "save_work_template": {
+      "signature": "(self, *, project_id, principal, definition, idempotency_key, template_id=None, expected_version=0)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 64
+    },
+    "scan_layer_source": {
+      "signature": "(self, directory: 'Path | str', *, maximum_frames: 'int', project_id: 'object')",
+      "source": "src/kraken_hub/infrastructure/remote/parts/representation.py",
+      "line": 128
+    },
+    "server_analysis_frames": {
+      "signature": "(self, project_id, run_id, metric_key)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/analysis_runs.py",
+      "line": 34
+    },
+    "server_analysis_map_bytes": {
+      "signature": "(self, project_id, run_id, frame_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/analysis_runs.py",
+      "line": 10
+    },
+    "server_analysis_run": {
+      "signature": "(self, project_id, run_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/analysis_runs.py",
+      "line": 23
+    },
+    "server_analysis_runs": {
+      "signature": "(self, project_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/analysis_runs.py",
+      "line": 20
+    },
+    "set_layer_stitching_status": {
+      "signature": "(self, *, principal, project_id, layer_id, kind: 'str', completed: 'bool', version_id: 'str' = '')",
+      "source": "src/kraken_hub/infrastructure/remote/parts/remove_layer_pipeline_action.py",
+      "line": 96
+    },
+    "start_sync": {
+      "signature": "(self) -> 'None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/start_sync.py",
+      "line": 11
+    },
+    "statistics": {
+      "signature": "(self, project_id: 'object', *, start: 'datetime', end: 'datetime', timezone: 'object') -> 'tuple[ReportMetrics, dict[str, ReportSeries]]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 186
+    },
+    "stitch_block": {
+      "signature": "(self, project_id, job_id, column, row, *, coverage=False)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 8
+    },
+    "stitch_vector_block": {
+      "signature": "(self, project_id, job_id, column, row)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 17
+    },
+    "stitch_vector_header": {
+      "signature": "(self, project_id, job_id)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/multilayer.py",
+      "line": 14
+    },
+    "stop_sync": {
+      "signature": "(self) -> 'None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/start_sync.py",
+      "line": 37
+    },
+    "submit_plugin_job": {
+      "signature": "(self, *, principal: 'Principal', gateway: 'object', project_id: 'object', layer_id: 'object', source_representation_id: 'object', target_representation_id: 'object', coordinates: 'object', capability: 'str', parameters: 'Mapping[str, object]', idempotency_key: 'str') -> 'PluginJob'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 51
+    },
+    "subscribe_project": {
+      "signature": "(self, project_id: 'object') -> 'None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/start_sync.py",
+      "line": 42
+    },
+    "synchronize_plugin_jobs": {
+      "signature": "(self, *, principal: 'Principal', gateway: 'object') -> 'tuple[PluginJob, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/submit_plugin_job.py",
+      "line": 116
+    },
+    "unsubscribe_project": {
+      "signature": "(self, project_id: 'object') -> 'None'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/start_sync.py",
+      "line": 47
+    },
+    "update_representation_note": {
+      "signature": "(self, *, principal: 'Principal', project: 'Project', layer: 'Layer', representation: 'Representation', note: 'str', idempotency_key: 'str') -> 'Representation'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/create_representation.py",
+      "line": 214
+    },
+    "work_orders": {
+      "signature": "(self) -> 'tuple[WorkOrder, ...]'",
+      "source": "src/kraken_hub/infrastructure/remote/parts/issue_work.py",
+      "line": 30
+    },
+    "work_plan_analytics": {
+      "signature": "(self, project_id, *, principal, **request)",
+      "source": "src/kraken_hub/infrastructure/remote/parts/work_planning.py",
+      "line": 79
+    }
+  },
+  "required_operations": [
+    "accept_review",
+    "activate_artifact_version",
+    "activate_representation",
+    "active_artifact_version",
+    "active_review_batches",
+    "activity_records",
+    "add_external_artifact_version",
+    "add_managed_artifact_version",
+    "archive_artifact_series",
+    "archive_layer",
+    "archive_project",
+    "archive_representation",
+    "artifact_source_path",
+    "artifact_stream_revision",
+    "artifact_version",
+    "artifact_versions",
+    "assign_project_role",
+    "cancel_plugin_job",
+    "cancel_review_batch",
+    "cancel_work_order",
+    "command_layer_pipeline",
+    "commit_managed_import",
+    "commit_review_return",
+    "complete_work_order",
+    "create_artifact_series",
+    "create_external_layer",
+    "create_layer",
+    "create_layer_from_disk",
+    "create_note",
+    "create_project",
+    "create_quality_from_analysis",
+    "create_quality_issue",
+    "create_representation",
+    "create_review_batch",
+    "create_work_plan",
+    "deactivate_representation",
+    "define_layer_pipeline",
+    "delete_layer",
+    "execute_project_command",
+    "export_artifact_version",
+    "export_electrical_model",
+    "export_managed_artifact",
+    "export_review_batch",
+    "export_stitch_vectors",
+    "external_artifact_changed",
+    "frame_cells",
+    "frame_management_states",
+    "get_artifact_version",
+    "get_electrical_model",
+    "get_layer_pipeline",
+    "get_multilayer_model",
+    "get_project",
+    "get_quality_issue",
+    "get_work_plan",
+    "get_work_template",
+    "history",
+    "import_stitch_observations",
+    "is_remote_project",
+    "issue_work",
+    "latest_karakal_analysis",
+    "layer_file_binding",
+    "list_artifact_series",
+    "list_layers",
+    "list_notes",
+    "list_performers",
+    "list_principals",
+    "list_project_principals",
+    "list_projects",
+    "list_quality_issues",
+    "list_representations",
+    "list_storage_profiles",
+    "list_work_plans",
+    "list_work_templates",
+    "managed_artifact_path",
+    "mark_work_running",
+    "materialize_representation_inputs",
+    "matrix_viewport",
+    "migrate_legacy_work_orders",
+    "mutate_electrical_model",
+    "mutate_multilayer_model",
+    "mutate_quality_issue",
+    "mutate_work_plan",
+    "plan_import_directory",
+    "plan_legacy_work_order_migration",
+    "plugin_jobs",
+    "project_permissions",
+    "project_role_revision",
+    "project_roles",
+    "project_storage_label",
+    "project_workspace",
+    "publish_karakal_analysis",
+    "quality_analysis_readiness",
+    "quality_analysis_runs",
+    "quality_frame_versions",
+    "quality_issue_history",
+    "read_project_blob",
+    "recheck_quality_from_analysis",
+    "record_layer_pipeline_action",
+    "remove_layer_pipeline_action",
+    "rename_artifact_series",
+    "rename_layer",
+    "rename_project",
+    "rename_representation",
+    "reorder_layer",
+    "reorder_layers",
+    "request_review_changes",
+    "restore_project",
+    "retry_plugin_job",
+    "review_batches",
+    "review_candidate_version_ids",
+    "review_return_preflight",
+    "revise_note",
+    "revoke_project_role",
+    "save_work_template",
+    "scan_layer_source",
+    "set_layer_stitching_status",
+    "stitch_block",
+    "stitch_vector_block",
+    "stitch_vector_header",
+    "submit_plugin_job",
+    "synchronize_plugin_jobs",
+    "update_representation_note",
+    "work_orders",
+    "work_plan_analytics"
+  ],
+  "missing_local": [],
+  "missing_remote": [],
+  "undeclared_shared": [],
+  "contract_errors": {}
+}

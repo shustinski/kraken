@@ -10,6 +10,7 @@ from kraken_server.interface.http.routes.agent import register as register_agent
 from kraken_server.interface.http.routes.analysis import register_analysis_routes
 from kraken_server.interface.http.routes.artifacts import register as register_artifacts
 from kraken_server.interface.http.routes.auth import register as register_auth
+from kraken_server.interface.http.routes.commands import register as register_commands
 from kraken_server.interface.http.routes.electrical import register_electrical_routes
 from kraken_server.interface.http.routes.jobs import register as register_jobs
 from kraken_server.interface.http.routes.layers import register as register_layers
@@ -59,6 +60,7 @@ def create_app(
     register_session(context)
     register_auth(context)
     register_projects(context)
+    register_commands(context)
     register_layers(context)
     register_representations(context)
     register_project_reads(context)

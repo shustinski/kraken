@@ -18,6 +18,30 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
 
 
 class MatrixViewportMixin:
+    def frame_cells(self, project_id, layer_id, representation_id, *, as_of=None, bounds=None):
+        from kraken_manager.application.frame_queries import FrameQueryService
+        from kraken_manager.infrastructure.filesystem._codec import encode_model
+
+        _project_id(project_id)
+        _layer_id(layer_id)
+        validate_uuid(str(representation_id), field="representation_id")
+
+        def history(identifier, *, as_of=None, event_types=None):
+            return tuple(
+                event for event in self._pipeline_events(str(identifier))
+                if (as_of is None or event.recorded_at <= as_of)
+                and (event_types is None or event.event_type in event_types)
+            )
+
+        store = getattr(self, "performer_store", None)
+        queries = FrameQueryService(
+            self.projections, history=history,
+            performers=lambda: () if store is None else store.list(),
+        )
+        return [encode_model(item) for item in queries.frame_cells(
+            project_id, layer_id, representation_id, as_of=as_of, bounds=bounds,
+        )]
+
     def matrix_viewport(
         self,
         project_id: str,

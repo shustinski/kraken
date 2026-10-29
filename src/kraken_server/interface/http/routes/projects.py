@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime
 
 from kraken_server.interface.http.context import HttpContext
 from kraken_server.interface.http.prefix import API_PREFIX
@@ -69,8 +70,8 @@ def register(ctx: HttpContext) -> None:
         )
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}")
-    def get_project(project_id: str, _: SessionPrincipal = Depends(project_reader)) -> dict[str, Any]:
-        return backend.get_project(project_id)
+    def get_project(project_id: str, as_of: datetime | None = None, _: SessionPrincipal = Depends(project_reader)) -> dict[str, Any]:
+        return backend.get_project(project_id, **({} if as_of is None else {"as_of": as_of}))
 
     @app.get(f"{API_PREFIX}/projects/{{project_id}}/workspace")
     def get_project_workspace(

@@ -1,9 +1,9 @@
 """manager_app: performer panel."""
 from __future__ import annotations
 from kraken_manager.domain.identity import Performer
-from kraken_hub.composition import EmbeddedProjectService
+from kraken_hub.application.workspace import ProjectWorkspaceService
 
-def _performer_panel(service: EmbeddedProjectService):
+def _performer_panel(service: ProjectWorkspaceService):
     from PyQt6.QtCore import QModelIndex, Qt
     from PyQt6.QtGui import QColor, QPainter
     from PyQt6.QtWidgets import (

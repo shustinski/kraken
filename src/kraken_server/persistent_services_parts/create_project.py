@@ -171,6 +171,20 @@ class CreateProjectMixin:
             )
             project = self._create_project(command)
             self._ensure_server_workspace(project)
+            if payload.get("layer_template"):
+                from kraken_manager.application.dto import CreateLayerCommand
+                from kraken_manager.domain.project import LayerType
+
+                for order, layer_type in enumerate(LayerType, start=1):
+                    self._create_layer(CreateLayerCommand(
+                        context=ApplicationCommandContext(
+                            actor=actor, gitlab_identity_verified=True,
+                            idempotency_key=f"{context.idempotency_key}:layer:{layer_type.value}",
+                        ),
+                        project_id=project.id, name=layer_type.value.capitalize(), type=layer_type,
+                        order=order, expected_project_revision=project.revision,
+                    ))
+                    project = self.projections.get_project(project.id)
             return _project_dict(project)
         except ApplicationNotFoundError as exc:
             raise NotFoundError(str(exc)) from exc
@@ -219,9 +233,9 @@ class CreateProjectMixin:
         binding = files.registry.get_project(project_id)
         return None if binding is None else project_workspace_to_dict(binding)
 
-    def get_project(self, project_id: str) -> dict[str, Any]:
+    def get_project(self, project_id: str, *, as_of=None) -> dict[str, Any]:
         try:
-            project = self.projections.get_project(_project_id(project_id))
+            project = self.projections.get_project(_project_id(project_id), as_of=as_of)
         except (TypeError, ValueError) as exc:
             raise ValidationError("Invalid project id") from exc
         if project is None:

@@ -72,8 +72,6 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel, GridDimension
 from kraken_manager.workspace import DerivedRunKind, ProjectWorkspaceBinding
 from kraken_hub.infrastructure.credentials import windows as windows_credentials
 from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
-from kraken_hub.composition import DesktopSession, EmbeddedProjectService
-from kraken_hub.composition.catalog import DualCatalogService, build_workspace_service
 from kraken_hub.presentation.qt.matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
 from kraken_hub.application.workspace import REMOTE_STORAGE_PROFILE, ProjectEventWake
 

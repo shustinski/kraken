@@ -2,7 +2,7 @@
 from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
-from kraken_manager.infrastructure.reports import (
+from kraken_manager.application.reporting import (
     ActivityRecord,
     ReportFilters,
     ReportGranularity,

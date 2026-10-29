@@ -171,6 +171,13 @@ class WorkspaceRegistry:
     def __init__(self, catalog_root: Path | str) -> None:
         self.catalog_root = Path(catalog_root).resolve()
 
+    def mutation_lock(self, project_id: str):
+        import hashlib
+        from kraken_manager.infrastructure.filesystem.locking import ProjectFileLock
+
+        name = hashlib.sha256(str(project_id).encode()).hexdigest()
+        return ProjectFileLock(self.catalog_root / "workspace-locks" / f"{name}.lock").hold()
+
     def _path(self, project_id: str) -> Path:
         return self.catalog_root / "projects" / str(project_id) / "workspace.json"
 
@@ -208,6 +215,12 @@ class WorkspaceRegistry:
         value["mode"] = binding.mode.value
         payload["layers"][binding.layer_id] = value
         _atomic_json(self._path(project_id), payload)
+
+    def list_layers(self, project_id: str) -> tuple[LayerFileBinding, ...]:
+        return tuple(
+            binding for identifier in self._read(project_id).get("layers", {})
+            if (binding := self.get_layer(project_id, identifier)) is not None
+        )
 
     def get_layer(self, project_id: str, layer_id: str) -> LayerFileBinding | None:
         raw = self._read(project_id).get("layers", {}).get(str(layer_id))

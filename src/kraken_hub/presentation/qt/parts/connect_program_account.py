@@ -1,6 +1,5 @@
 """manager_app: connect program account."""
 from __future__ import annotations
-from kraken_hub.composition.catalog import DualCatalogService
 
 from kraken_hub.presentation.qt.parts.connect_saved_server import (
     _configure_administration_page,
@@ -30,7 +29,7 @@ class ConnectProgramAccountMixin:
 
         from kraken_hub.presentation.qt.preferences_dialog import default_program_account, program_server_url
 
-        if not isinstance(self.service, DualCatalogService):
+        if not self.service.supports_server_connection:
             raise ValueError("Подключение к Kraken Server недоступно в этой сборке")
         settings = QSettings("Kraken", "KrakenHub")
         account = default_program_account(settings)
@@ -39,12 +38,11 @@ class ConnectProgramAccountMixin:
             raise ValueError(
                 "Укажите адрес сервера и учётную запись по умолчанию в меню Вид → Настройки."
             )
-        current = self.service.remote
-        current_principal = getattr(getattr(current, "auth", None), "principal", None)
+        current = self.service.server_connection
         same_account = (
             current is not None
             and str(getattr(current, "base_url", "")).rstrip("/") == url
-            and str(getattr(current_principal, "subject", "")) == account.username
+            and str(current.account_subject) == account.username
         )
         if same_account:
             return

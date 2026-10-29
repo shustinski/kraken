@@ -14,7 +14,8 @@ from kraken_hub.infrastructure.remote.client import (
     RemoteServerError,
     RemoteServerProjectService,
 )
-from kraken_hub.application.workspace import REMOTE_STORAGE_PROFILE, project_from_server_dict
+from kraken_hub.application.workspace import REMOTE_STORAGE_PROFILE
+from kraken_hub.infrastructure.remote.project_codec import project_from_server_dict
 from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.artifacts import ArtifactVersion, BlobRef
 from kraken_manager.domain.common import ArtifactSeriesId, PrincipalId
@@ -258,7 +259,7 @@ def test_dual_catalog_can_configure_remote_during_desktop_session(
     )
     instances = []
 
-    class ConfiguredRemote:
+    class ConfiguredRemote(RemoteServerProjectService):
         supports_live_sync = True
 
         def __init__(self, base_url, *, auth, data_dir):
@@ -653,21 +654,12 @@ def test_unwired_remote_operation_does_not_touch_the_local_catalog(tmp_path: Pat
         http=http,
     )
     dual = DualCatalogService(local, remote)
-    project = project_from_server_dict(project_payload)
-    layer = type("Layer", (), {"id": "layer", "project_id": project_id, "name": "Metal"})()
-
     try:
-        dual.delete_layer(
-            principal=account.principal,
-            project=project,
-            layer=layer,
-            confirmation_name="Metal",
-            idempotency_key="delete",
-        )
+        dual.export_backup(project_id, tmp_path / "backup", principal=account.principal)
     except RemoteServerError as exc:
         message = str(exc)
     else:
-        raise AssertionError("local delete_layer ran for a server project")
+        raise AssertionError("local export_backup ran for a server project")
 
-    assert "delete_layer" in message
+    assert "export_backup" in message
     assert local.get_project(project_id) is None

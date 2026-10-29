@@ -18,6 +18,12 @@ from kraken_hub.infrastructure.remote.parts.extract_review_archive import Remote
 
 
 class CreateArtifactSeriesMixin:
+    def get_artifact_version(self, project_id, artifact_version_id):
+        return self.artifact_version(project_id, artifact_version_id)
+
+    def artifact_source_path(self, project_id, artifact_version_id):
+        return self.managed_artifact_path(project_id, artifact_version_id)
+
     def list_artifact_series(
         self,
         project_id: object,

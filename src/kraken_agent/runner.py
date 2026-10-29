@@ -124,6 +124,7 @@ class SubprocessPluginRunner:
             "PYTHONPATH",
             "PYTHONHOME",
             "VIRTUAL_ENV",
+            "KRAKEN_PROCESS_LIFETIME_ROOT_PID",
             "DISPLAY",
             "WAYLAND_DISPLAY",
             "XAUTHORITY",
@@ -255,6 +256,20 @@ class SubprocessPluginRunner:
             raise ValueError("Worker did not return the requested rendered map")
 
     def _capture_progress(self, workspace: StagingWorkspace, job_id: str) -> None:
+        checkpoint_path = workspace.path / "checkpoint.json"
+        try:
+            with open_regular_read(checkpoint_path, root=workspace.path) as stream:
+                checkpoint = json.loads(stream.read(1024 * 1024 + 1).decode("utf-8"))
+            if (isinstance(checkpoint, dict) and checkpoint.get("job_id") == job_id
+                    and checkpoint != self.store.get(job_id).checkpoint):
+                from kraken_core.job_recovery import execution_state
+                execution_state({"checkpoint": checkpoint})
+                for item in checkpoint.get("files", []):
+                    if workspace.digest(item["relative_path"]) != item["sha256"]:
+                        raise ValueError("Incomplete checkpoint file")
+                self.store.record_checkpoint(job_id, checkpoint)
+        except (OSError, ValueError, TypeError):
+            pass  # An atomic snapshot is picked up on the next poll.
         progress_path = workspace.path / "progress.json"
         if not progress_path.is_file():
             return
@@ -276,6 +291,17 @@ class SubprocessPluginRunner:
             manifest = job.manifest
             workspace = StagingWorkspace(self.staging_root, job.job_id)
             workspace.write_manifest(manifest)
+            # The plugin decides its own resume granularity; Agent supplies the
+            # last durable state and files rather than keeping Python memory alive.
+            resume_path = workspace.path / "resume.json"
+            with open_regular_append(resume_path, root=workspace.path) as stream:
+                stream.seek(0)
+                stream.truncate()
+                stream.write(json.dumps({"progress": job.progress, "checkpoint": job.checkpoint},
+                                        allow_nan=False).encode("utf-8"))
+            for item in (job.checkpoint or {}).get("files", []):
+                if workspace.digest(item["relative_path"]) != item["sha256"]:
+                    raise ValueError("Saved checkpoint is missing or damaged")
             if isinstance(manifest, AnalysisPartitionJobManifest):
                 input_artifacts = tuple(artifact for frame in manifest.frames for artifact in frame.artifacts)
                 operation = ANALYSIS_OPERATION
@@ -322,6 +348,8 @@ class SubprocessPluginRunner:
                     "KRAKEN_RESULT_MANIFEST": str(result_path),
                     "KRAKEN_STAGING_ROOT": str(workspace.path),
                     "KRAKEN_PROGRESS_PATH": str(workspace.path / "progress.json"),
+                    "KRAKEN_CHECKPOINT_PATH": str(workspace.path / "checkpoint.json"),
+                    "KRAKEN_RESUME_PATH": str(resume_path),
                     "KRAKEN_CANCEL_PATH": str(workspace.path / "cancel.request"),
                 }
             )
@@ -339,6 +367,7 @@ class SubprocessPluginRunner:
                     self._capture_progress(workspace, job.job_id)
                     if self._stop.wait(0.25):
                         self._terminate(process)
+                        self._capture_progress(workspace, job.job_id)
                         current = self.store.get(job.job_id)
                         if current.state in {AgentJobState.RUNNING, AgentJobState.WAITING_FOR_USER}:
                             self.store.transition(

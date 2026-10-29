@@ -56,17 +56,30 @@ def register(ctx: HttpContext) -> None:
         project_id: str,
         layer_id: str,
         representation_id: str,
+        as_of: datetime | None = None,
+        x1: int = 1,
+        y1: int = 1,
+        x2: int | None = None,
+        y2: int | None = None,
         _: SessionPrincipal = Depends(project_reader),
     ) -> dict[str, Any]:
         project = backend.get_project(project_id)
+        bounds = (x1, y1, int(project["width"]) if x2 is None else x2,
+                  int(project["height"]) if y2 is None else y2)
+        query = getattr(backend, "frame_cells", None)
+        if callable(query):
+            items = query(project_id, layer_id, representation_id, as_of=as_of, bounds=bounds)
+            return {"items": items, "revision": max((item["modified_at"] for item in items), default=str(project["revision"]))}
+        if as_of is not None:
+            raise ValidationError("This backend does not support temporal frame queries")
         viewport = backend.matrix_viewport(
             project_id,
             layer_id=layer_id,
             representation_ids=(representation_id,),
-            x1=1,
-            y1=1,
-            x2=int(project["width"]),
-            y2=int(project["height"]),
+            x1=bounds[0],
+            y1=bounds[1],
+            x2=bounds[2],
+            y2=bounds[3],
             lod=0,
             include_missing=False,
         )

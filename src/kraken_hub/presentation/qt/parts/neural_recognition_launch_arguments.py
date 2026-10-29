@@ -1,5 +1,6 @@
 """manager_app: neural recognition launch arguments."""
 from __future__ import annotations
+from kraken_manager.domain.ordering import natural_name_key
 import hashlib
 import shutil
 from pathlib import Path
@@ -57,7 +58,7 @@ class NeuralRecognitionLaunchArgumentsMixin:
                 if path.is_file()
                 and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".bmp"}
             ),
-            key=self.service._natural_path_key,
+            key=lambda path: natural_name_key(path.name),
         )
         for path in image_paths:
             position = binding.frame_positions.get(path.name)

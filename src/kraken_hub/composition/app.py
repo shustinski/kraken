@@ -298,8 +298,13 @@ def run_gui(
 
     from kraken_hub.presentation.qt.manager_app import run_manager_gui
 
+    from kraken_hub.composition.catalog import build_workspace_service
+
     return run_manager_gui(
         items,
+        service=build_workspace_service(),
+        application_version=application_version(),
+        plugin_launcher=launch_plugin,
         update_url=update_url,
         thumbnail_store_uri=thumbnail_store_uri,
     )

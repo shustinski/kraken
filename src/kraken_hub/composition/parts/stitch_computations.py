@@ -1,4 +1,5 @@
 """Recoverable local stitch handoff and atomic layer-result import."""
+from kraken_core.safe_files import open_regular_read
 from kraken_manager.application.errors import ConflictError, NotFoundError
 from kraken_manager.application.multilayer import MultilayerService
 from kraken_manager.application.stitch_results import _context, fail_stitch_result, import_stitch_result
@@ -12,6 +13,15 @@ def validate_mosaic(path, plan, job_id):
 
 
 class StitchComputationsMixin:
+    def stitch_block(self, project_id, job_id, column, row, *, coverage=False):
+        from kraken_manager.infrastructure.mosaic import block_preview
+        from kraken_manager.infrastructure.stitch_reads import published_mosaic
+
+        with self._uow(str(project_id))() as unit, published_mosaic(
+            unit.event_store, unit.projections, unit.blobs.path_for_read, project_id, job_id,
+        ) as (reader, _version):
+            return block_preview(reader, column, row, coverage=coverage)
+
     def stitch_vector_header(self, project_id, job_id):
         from kraken_manager.infrastructure.stitch_reads import published_mosaic, vector_header
         with self._uow(str(project_id))() as unit, published_mosaic(unit.event_store, unit.projections,
@@ -44,7 +54,6 @@ class StitchComputationsMixin:
         from uuid import UUID, uuid5
         from kraken_core.safe_files import open_regular_read
         from kraken_manager.application.dto import AddArtifactVersionCommand, CommandContext
-        from kraken_manager.application.use_cases import AddArtifactVersionHandler
         from kraken_manager.domain.artifacts import ArtifactScope
 
         with open_regular_read(source_path) as stream:
@@ -62,7 +71,7 @@ class StitchComputationsMixin:
             series_id=str(uuid5(UUID(str(project_id)), "stitch-observations:" + idempotency_key)),
             idempotency_key=idempotency_key + ":series")
         digest = hashlib.sha256(data).hexdigest()
-        version = AddArtifactVersionHandler(self._uow(str(project_id)), self.profiles, self.clock)(
+        version = self._commands(str(project_id)).execute(
             AddArtifactVersionCommand(context=CommandContext(actor=principal, idempotency_key=idempotency_key + ":evidence"),
                 project_id=str(project_id), series_id=series.id, filename="stitch-observations.json", media_type="application/json",
                 expected_series_revision=self.artifact_stream_revision(project_id, series.id), expected_sha256=digest), (data,))
@@ -99,7 +108,7 @@ class StitchComputationsMixin:
             project = unit.projections.get_project(str(project_id))
             model = import_stitch_result(unit, project_id=str(project_id), principal=principal,
                 storage=self.profiles.get(project.storage_profile), roles=unit.acl.roles_for(project.id, principal.id),
-                publication=publication, source_path=source_path, validate_mosaic=validate_mosaic)
+                publication=publication, source_path=source_path, validate_mosaic=validate_mosaic, open_source=open_regular_read)
             unit.commit()
             return MultilayerService(unit.event_store, unit.projections).describe(model)
 

@@ -19,7 +19,7 @@ from kraken_manager.infrastructure.filesystem import (
 from kraken_manager.infrastructure.blob.filesystem import FilesystemBlobStore
 from kraken_manager.infrastructure.filesystem.event_store import StoredEvent
 from kraken_manager.infrastructure.filesystem.history import GenericHistoryEvent
-from kraken_manager.infrastructure.reports import ActivityRecord
+from kraken_manager.application.reporting import ActivityRecord
 
 
 class PluginJobsMixin:

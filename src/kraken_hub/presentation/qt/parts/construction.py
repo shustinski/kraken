@@ -8,8 +8,8 @@ from kraken_manager.presentation.qt import (
     LayerManagerDialog,
     ProjectManagerShell,
 )
-from kraken_hub.composition import DesktopSession, EmbeddedProjectService
-from kraken_hub.composition.catalog import DualCatalogService
+from kraken_manager.application.results import UserSession as DesktopSession
+from kraken_hub.application.workspace import ProjectWorkspaceService
 from kraken_hub.application.workspace import ProjectEventWake
 
 from kraken_hub.presentation.qt.parts.event_matches_node import _RemoteSignalBridge
@@ -95,15 +95,17 @@ class ConstructionMixin:
     def __init__(
         self,
         shell: ProjectManagerShell,
-        service: EmbeddedProjectService | DualCatalogService,
+        service: ProjectWorkspaceService,
         session: DesktopSession,
         *,
         thumbnail_store_uri: str = "",
         plugin_items: list[PluginInventoryItem] | None = None,
+        plugin_launcher: Callable | None = None,
     ) -> None:
         from kraken_hub.presentation.qt.manager_app import LocalAgentRuntime
         self.shell = shell
         self.service = service
+        self._plugin_launcher = plugin_launcher
         self.session = session
         self.thumbnail_store_uri = str(thumbnail_store_uri)
         self.plugin_items = {item.metadata.id: item for item in (plugin_items or [])}

@@ -4,7 +4,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping
-from datetime import datetime
 from uuid import uuid4
 from kraken_manager.domain.identity import (
     Principal,
@@ -48,41 +47,17 @@ class RemoveLayerPipelineActionMixin:
         )
         return self._karakal_run(project_id, payload)
 
-    def latest_karakal_analysis(
-        self, project_id: object, layer_id: object, *, as_of: datetime | None = None
-    ) -> object | None:
-        events = self.history(project_id, as_of=as_of)
-        event = next(
-            (
-                item
-                for item in reversed(events)
-                if item.event_type == "KarakalAnalysisPublished"
-                and str(item.payload.get("layer_id", "")) == str(layer_id)
-            ),
-            None,
-        )
-        return None if event is None else self._karakal_run(project_id, event._payload)
+    def latest_karakal_analysis(self, project_id, layer_id, *, as_of=None):
+        from kraken_manager.application.frame_queries import latest_karakal_analysis
+
+        return latest_karakal_analysis(self.history, project_id, layer_id, as_of=as_of)
 
     @staticmethod
-    def _karakal_run(project_id: object, event: Mapping[str, object]) -> object:
-        from kraken_hub.application.analysis_run import KarakalAnalysisRun
+    def _karakal_run(project_id: object, event: Mapping[str, object]):
+        from kraken_manager.application.frame_queries import karakal_analysis_from_event
+        from kraken_hub.infrastructure.remote.parts.remote_history_event import _RemoteHistoryEvent
 
-        raw = event.get("payload", {})
-        payload = raw if isinstance(raw, Mapping) else {}
-        return KarakalAnalysisRun(
-            run_id=str(payload.get("run_id", "")),
-            project_id=str(project_id),
-            layer_id=str(payload.get("layer_id", "")),
-            publication_sequence=int(payload.get("publication_sequence", 0)),
-            created_at=str(event.get("recorded_at", "")),
-            frame_confidence={
-                str(key): float(value)
-                for key, value in dict(payload.get("frame_confidence", {})).items()
-            },
-            report=dict(payload.get("report", {})),
-            parameters=dict(payload.get("parameters", {})),
-            plugin_version=str(payload.get("plugin_version", "")),
-        )
+        return karakal_analysis_from_event(_RemoteHistoryEvent(event, project_id=str(project_id)))
 
     def record_layer_pipeline_action(
         self,

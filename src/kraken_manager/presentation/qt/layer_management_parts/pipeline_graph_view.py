@@ -1,5 +1,6 @@
 """layer_management: pipeline graph view."""
 from __future__ import annotations
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from typing import Callable
 from PyQt6.QtCore import QPointF, Qt, pyqtSignal
@@ -8,6 +9,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsView,
+    QInputDialog,
     QWidget,
 )
 
@@ -92,11 +94,14 @@ class PipelineGraphView(QGraphicsView):
                 for vector in vectors:
                     visible_edges.append((blackbox.node_id, vector.node_id))
             for column, node in enumerate(visible_nodes):
-                belongs_to_expanded_box = is_expanded and node in internal_nodes
+                if not node.representation_id:
+                    note = str(self._settings.value(self._key(f"note/{node.node_id}"), "") or "")
+                    node = replace(node, details={**node.details, "note": note})
+                belongs_to_expanded_box = is_expanded and any(value.node_id == node.node_id for value in internal_nodes)
                 item = PipelineNodeItem(
                     node,
                     activate=lambda value: self.nodeActivated.emit(value),
-                    request_action=lambda value, action: self.nodeActionRequested.emit(value, action),
+                    request_action=self._request_node_action,
                     request_selection_action=lambda nodes, action: self.selectionActionRequested.emit(nodes, action),
                     selected_nodes=self._selected_nodes,
                     request_properties=lambda value: self.nodePropertiesRequested.emit(value),
@@ -128,6 +133,18 @@ class PipelineGraphView(QGraphicsView):
             self._update_edges()
             y += 168
         self.graph_scene.setSceneRect(self.graph_scene.itemsBoundingRect().adjusted(-80, -80, 120, 120))
+
+    def _request_node_action(self, node: PipelineNode, action: str) -> None:
+        if action != "edit_node_note":
+            self.nodeActionRequested.emit(node, action)
+            return
+        value, accepted = QInputDialog.getMultiLineText(
+            self, "Заметка блока", "Заметка:", text=str(node.details.get("note") or "")
+        )
+        if accepted:
+            self.save_layout()
+            self._settings.setValue(self._key(f"note/{node.node_id}"), value.strip())
+            self._rebuild()
 
     def _update_edges(self) -> None:
         for edge, source, target in self._edges:
@@ -191,6 +208,7 @@ class PipelineGraphView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+        self.save_layout()
 
     def wheelEvent(self, event) -> None:  # type: ignore[override]
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:

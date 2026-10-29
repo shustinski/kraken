@@ -48,6 +48,8 @@ class RegisterLocalMixin:
         self._wake_handlers: list[Callable[[ProjectEventWake], None]] = []
         self._catalog_handlers: list[Callable[[], None]] = []
         self._status_handlers: list[Callable[[str], None]] = []
+        from kraken_manager.application.backend_contract import validate_project_operations
+        validate_project_operations(self)
 
     @classmethod
     def authenticate_local(

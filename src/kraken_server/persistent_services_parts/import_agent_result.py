@@ -39,6 +39,27 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
 
 
 class ImportAgentResultMixin:
+    def retry_plugin_job(self, project_id: str, job_id: str, context: CommandContext) -> dict[str, Any]:
+        from kraken_manager.application.dto import RetryPluginJobCommand
+        from kraken_manager.application.plugin_jobs import RetryPluginJobHandler
+
+        if self.agent_gateway is None:
+            raise ConflictError("Server agent queue is not configured")
+        try:
+            value = RetryPluginJobHandler(
+                self.uow_factory, self.profiles, SystemClock(), self.agent_gateway,
+            )(
+                RetryPluginJobCommand(
+                    context=self._application_context(context), project_id=_project_id(project_id),
+                    job_id=PluginJobId(validate_uuid(job_id, field="job_id")),
+                    expected_revision=self._require_revision(context),
+                )
+            )
+            return encode_model(value)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
     def cancel_plugin_job(
         self,
         project_id: str,

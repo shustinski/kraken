@@ -154,6 +154,15 @@ class RenameLayerCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class DeleteLayerCommand:
+    context: CommandContext
+    project_id: ProjectId
+    layer_id: LayerId
+    confirmation_name: str
+    expected_revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReorderLayerCommand:
     context: CommandContext
     project_id: ProjectId

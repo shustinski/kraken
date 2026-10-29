@@ -17,8 +17,9 @@ class LaunchManagedPluginMixin:
         if inventory is None or not is_plugin_launchable(inventory) or not inventory.metadata.enabled:
             self._error(f"Плагин {plugin_id} не установлен или отключён")
             return None
-        from kraken_hub.composition.app import launch_plugin
-        return launch_plugin(inventory.metadata, arguments=arguments)
+        if self._plugin_launcher is None:
+            raise RuntimeError("A plugin launcher must be supplied by the application host")
+        return self._plugin_launcher(inventory.metadata, arguments=arguments)
 
     def launch_selected_work(self, kind: str, work) -> None:
         """Open the plugin that already handles this work item."""

@@ -30,10 +30,8 @@ def _deletion_reason_dialog(parent, project_name: str) -> str | None:
         return None
     return reason.text()
 
-def _plugin_panel(items: list[PluginInventoryItem]):
+def _plugin_panel(items: list[PluginInventoryItem], *, launch_plugin=None):
     from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
-
-    from kraken_hub.composition.app import launch_plugin
 
     host = QWidget()
     layout = QVBoxLayout(host)
@@ -47,8 +45,9 @@ def _plugin_panel(items: list[PluginInventoryItem]):
         label.setWordWrap(True)
         row_layout.addWidget(label, 1)
         button = QPushButton("Открыть")
-        button.setEnabled(plugin.enabled and (inventory.installed or bool(plugin.source_dir)))
-        button.clicked.connect(lambda _checked=False, selected=plugin: launch_plugin(selected))
+        button.setEnabled(launch_plugin is not None and plugin.enabled and (inventory.installed or bool(plugin.source_dir)))
+        if launch_plugin is not None:
+            button.clicked.connect(lambda _checked=False, selected=plugin: launch_plugin(selected))
         row_layout.addWidget(button)
         layout.addWidget(row)
     layout.addStretch(1)

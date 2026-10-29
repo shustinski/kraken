@@ -8,13 +8,6 @@ from kraken_manager.application.dto import (
     CreateArtifactSeriesCommand,
     ReorderLayerCommand,
 )
-from kraken_manager.application.use_cases import (
-    CreateArtifactSeriesHandler,
-)
-from kraken_manager.application.lifecycle import (
-    ArchiveLayerHandler,
-    ReorderLayerHandler,
-)
 from kraken_manager.domain.artifacts import (
     ArtifactScope,
     ArtifactSeries,
@@ -53,7 +46,7 @@ class CreateArtifactSeriesMixin:
         order: int,
         idempotency_key: str,
     ) -> Layer:
-        return ReorderLayerHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             ReorderLayerCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project_id=project.id,
@@ -71,7 +64,7 @@ class CreateArtifactSeriesMixin:
         layer: Layer,
         idempotency_key: str,
     ) -> Layer:
-        return ArchiveLayerHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             ArchiveLayerCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project_id=project.id,
@@ -189,11 +182,7 @@ class CreateArtifactSeriesMixin:
     ) -> ArtifactSeries:
         from kraken_manager.domain.common import new_uuid
 
-        return CreateArtifactSeriesHandler(
-            self._uow(str(project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(project_id)).execute(
             CreateArtifactSeriesCommand(
                 context=CommandContext(
                     actor=principal,

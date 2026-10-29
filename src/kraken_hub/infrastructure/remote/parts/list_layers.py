@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
+from urllib.parse import urlencode
 from pathlib import Path
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import (
@@ -14,9 +15,7 @@ from kraken_manager.domain.project import (
     Project,
     StructureState,
 )
-from kraken_hub.application.workspace import (
-    project_from_server_dict,
-)
+from kraken_hub.infrastructure.remote.project_codec import project_from_server_dict
 
 from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
 
@@ -43,11 +42,9 @@ class ListLayersMixin:
         *,
         as_of: datetime | None = None,
     ) -> Project | None:
-        del (
-            as_of
-        )  # server temporal get is history-based; catalog uses current projection
+        suffix = "" if as_of is None else "?" + urlencode({"as_of": as_of.isoformat()})
         try:
-            payload = self._call("GET", f"/api/v1/projects/{project_id}")
+            payload = self._call("GET", f"/api/v1/projects/{project_id}{suffix}")
         except RemoteServerError as exc:
             if exc.status == 404:
                 return None
@@ -72,7 +69,7 @@ class ListLayersMixin:
         derived_root: Path | str | None = None,
         storage_profile_id: str | None = None,
     ) -> Project:
-        del principal, layer_template, source_root, derived_root
+        del principal, source_root, derived_root
         profile_id = storage_profile_id or self.profile.id
         payload = self._call(
             "POST",
@@ -83,6 +80,7 @@ class ListLayersMixin:
                 "height": height,
                 "orientation": orientation.value,
                 "storage_profile_id": profile_id,
+                "layer_template": layer_template,
             },
             idempotency_key=idempotency_key,
         )
@@ -145,9 +143,11 @@ class ListLayersMixin:
         return project_from_server_dict(payload if isinstance(payload, Mapping) else {})
 
     def list_layers(
-        self, project_id: object, *, include_archived: bool = False
+        self, project_id: object, *, include_archived: bool = False, as_of: datetime | None = None
     ) -> tuple[Layer, ...]:
         suffix = "?include_archived=true" if include_archived else ""
+        if as_of is not None:
+            suffix += ("&" if suffix else "?") + urlencode({"as_of": as_of.isoformat()})
         payload = self._call("GET", f"/api/v1/projects/{project_id}/layers{suffix}")
         items = (
             payload

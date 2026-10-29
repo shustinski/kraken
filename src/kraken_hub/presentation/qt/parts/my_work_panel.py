@@ -4,11 +4,12 @@ from typing import TYPE_CHECKING
 from pathlib import Path
 from uuid import uuid4
 from kraken_manager.domain.identity import Permission
-from kraken_hub.composition import DesktopSession, EmbeddedProjectService
+from kraken_manager.application.results import UserSession as DesktopSession
+from kraken_hub.application.workspace import ProjectWorkspaceService
 from kraken_manager.presentation.qt.text_bounds import TABLE_ROW_HEIGHT_LIMIT, bounded_popup_text
 
 def _my_work_panel(
-    service: EmbeddedProjectService,
+    service: ProjectWorkspaceService,
     session: DesktopSession,
     controller: DesktopController,
 ):

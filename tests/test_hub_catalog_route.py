@@ -1,93 +1,104 @@
-"""Dual catalog sends a project call to the backend that owns it."""
-
-from __future__ import annotations
-
-from pathlib import Path
+"""Assembly validates adapters; project operations have explicit routes."""
 
 import pytest
-
+from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.composition.catalog import DualCatalogService
-from kraken_hub.infrastructure.remote.client import RemoteServerError
+from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProjectService
+from kraken_manager.application.backend_contract import BackendContractError
+from kraken_manager.domain.identity import Principal
 
 
 class _Project:
-    def __init__(self, project_id: str) -> None:
+    def __init__(self, project_id):
         self.id = project_id
 
 
-class _Local:
-    def __init__(self) -> None:
-        self.data_dir = Path(".")
-        self.profile = object()
-        self.calls: list[str] = []
+class _Local(EmbeddedProjectService):
+    def __init__(self, directory):
+        super().__init__(directory)
+        self.calls = []
 
-    def plan_import_directory(self, **_kwargs):
+    def get_artifact_version(self, project_id, artifact_version_id):
+        self.calls.append("get_artifact_version")
+        return "local-version"
+
+    def plan_import_directory(self, *, project, directory, mode=None, regex=None):
         self.calls.append("plan_import_directory")
         return "local-plan"
 
-    def open_owned(self, **_kwargs):
-        self.calls.append("open_owned")
-        return "local-owned"
 
-    def missing_operation(self, **_kwargs):
-        self.calls.append("missing_operation")
-        return "local-missing"
-
-
-class _Remote:
-    def __init__(self, projects: tuple[_Project, ...] = ()) -> None:
+class _Remote(RemoteServerProjectService):
+    def __init__(self, directory, projects=()):
         self._projects = projects
-        self.calls: list[str] = []
+        super().__init__(
+            "http://example.test",
+            data_dir=directory,
+            auth=RemoteAuth("test", Principal.local(subject="test", display_name="Test")),
+        )
+        self.calls = []
 
-    def list_projects(self, *, include_archived: bool = False):
+    def list_projects(self, *, include_archived=False):
         return self._projects
 
-    def plan_import_directory(self, **_kwargs):
+    def get_artifact_version(self, project_id, artifact_version_id):
+        self.calls.append("get_artifact_version")
+        return "remote-version"
+
+    def plan_import_directory(self, *, project, directory, mode=None, regex=None):
         self.calls.append("plan_import_directory")
         return "remote-plan"
 
-    def open_owned(self, **_kwargs):
-        self.calls.append("open_owned")
-        return "remote-owned"
 
-
-def test_known_server_project_is_labeled_and_routed_to_the_server() -> None:
-    local = _Local()
-    remote = _Remote((_Project("remote-1"),))
+def test_known_server_project_is_labeled_and_routed_to_the_server(tmp_path):
+    local = _Local(tmp_path / "local")
+    remote = _Remote(tmp_path / "remote", (_Project("remote-1"),))
     catalog = DualCatalogService(local, remote)
-
-    assert catalog.is_remote_project("remote-1") is True
-    assert catalog.is_remote_project("local-1") is False
-    assert catalog.project_storage_label("remote-1") == "Сервер PostgreSQL"
-    assert catalog.project_storage_label("local-1") == "Локальный файл"
-    assert catalog.open_owned(project_id="remote-1") == "remote-owned"
-    assert remote.calls == ["open_owned"]
-    assert local.calls == []
+    assert catalog.is_remote_project("remote-1")
+    assert not catalog.is_remote_project("local-1")
+    assert catalog.get_artifact_version("remote-1", "version") == "remote-version"
+    assert remote.calls == ["get_artifact_version"]
+    assert not local.calls
 
 
-def test_directory_plan_stays_local_even_for_a_server_project() -> None:
-    local = _Local()
-    remote = _Remote((_Project("remote-1"),))
+def test_directory_plan_uses_server_files_for_a_server_project(tmp_path):
+    local = _Local(tmp_path / "local")
+    remote = _Remote(tmp_path / "remote", (_Project("remote-1"),))
     catalog = DualCatalogService(local, remote)
-
-    assert catalog.plan_import_directory(project_id="remote-1") == "local-plan"
-    assert local.calls == ["plan_import_directory"]
-    assert remote.calls == []
-
-
-def test_server_project_without_that_operation_is_refused() -> None:
-    local = _Local()
-    remote = _Remote((_Project("remote-1"),))
-    catalog = DualCatalogService(local, remote)
-
-    with pytest.raises(RemoteServerError, match="не подключена"):
-        catalog.missing_operation(project=_Project("remote-1"))
-    assert local.calls == []
+    assert catalog.plan_import_directory(project=_Project("remote-1"), directory="server-path") == "remote-plan"
+    assert not local.calls
+    assert remote.calls == ["plan_import_directory"]
 
 
-def test_unknown_project_uses_the_local_catalog() -> None:
-    local = _Local()
-    catalog = DualCatalogService(local, _Remote(()))
+def test_missing_operation_is_rejected_before_any_project_action(tmp_path):
+    local = _Local(tmp_path / "local")
+    remote = _Remote(tmp_path / "remote")
+    remote.delete_layer = None
+    with pytest.raises(BackendContractError, match="delete_layer"):
+        DualCatalogService(local, remote)
+    assert not local.calls
 
-    assert catalog.open_owned(project_id="local-1") == "local-owned"
-    assert local.calls == ["open_owned"]
+
+def test_unknown_operation_cannot_fall_back_to_the_local_catalog(tmp_path):
+    catalog = DualCatalogService(_Local(tmp_path / "local"))
+    with pytest.raises(AttributeError):
+        catalog.missing_operation(project_id="local-1")
+
+
+def test_local_project_uses_the_local_adapter(tmp_path):
+    local = _Local(tmp_path / "local")
+    catalog = DualCatalogService(local)
+    assert catalog.get_artifact_version("local-1", "version") == "local-version"
+    assert local.calls == ["get_artifact_version"]
+
+
+def test_disconnected_server_project_never_falls_back_to_local_storage(tmp_path):
+    from kraken_hub.application.remote_error import RemoteServerError
+
+    local = _Local(tmp_path / "local")
+    catalog = DualCatalogService(local)
+    catalog._remote_ids = {"remote-1"}
+    with pytest.raises(RemoteServerError):
+        catalog.get_artifact_version("remote-1", "version")
+    with pytest.raises(RemoteServerError):
+        catalog.get_project("remote-1")
+    assert not local.calls

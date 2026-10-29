@@ -4,7 +4,6 @@ import hashlib
 from uuid import UUID, uuid5
 
 from kraken_core.plugin_protocol import MOSAIC_MEDIA_TYPE, PluginJobManifestV2
-from kraken_core.safe_files import open_regular_read
 from kraken_manager.application.authorization import AuthorizationPolicy
 from kraken_manager.application.errors import ConflictError, NotFoundError
 from kraken_manager.domain.artifacts import ArtifactScope, ArtifactSeries, ArtifactVersion
@@ -46,7 +45,7 @@ def _record(unit, model, request, principal, operation, digest, *, actor_snapsho
     return changed
 
 
-def import_stitch_result(unit, *, project_id, principal, storage, roles, publication, source_path, validate_mosaic, verified=False):
+def import_stitch_result(unit, *, project_id, principal, storage, roles, publication, source_path, validate_mosaic, open_source, verified=False):
     service, model, request, manifest = _context(unit, project_id, publication.job_id, principal, storage, roles, verified)
     digest = hashlib.sha256(publication.to_json().encode()).hexdigest()
     if request.state == "imported":
@@ -65,7 +64,7 @@ def import_stitch_result(unit, *, project_id, principal, storage, roles, publica
     asset = publication.outputs[0]
     if asset.scope.value != "layer" or asset.role != "mosaic" or asset.media_type != MOSAIC_MEDIA_TYPE:
         raise ConflictError("Invalid mosaic output scope, role or media type")
-    with open_regular_read(source_path) as stream:
+    with open_source(source_path) as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != asset.sha256:
             raise ConflictError("Mosaic output SHA-256 mismatch")
         metadata = validate_mosaic(source_path, stitch, request.job_id)

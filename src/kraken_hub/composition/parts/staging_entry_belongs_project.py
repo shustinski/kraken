@@ -11,10 +11,6 @@ from kraken_manager.application.dto import (
 from kraken_manager.workspace import (
     WorkspaceValidationError,
 )
-from kraken_manager.application.lifecycle import (
-    ArchiveProjectHandler,
-    RestoreProjectHandler,
-)
 from kraken_manager.domain.identity import (
     Principal,
 )
@@ -27,7 +23,7 @@ class StagingEntryBelongsProjectMixin:
     def archive_project(
         self, *, principal: Principal, project: Project, idempotency_key: str
     ) -> Project:
-        return ArchiveProjectHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             ArchiveProjectCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project_id=project.id,
@@ -38,7 +34,7 @@ class StagingEntryBelongsProjectMixin:
     def restore_project(
         self, *, principal: Principal, project: Project, idempotency_key: str
     ) -> Project:
-        return RestoreProjectHandler(self._uow(str(project.id)), self.profiles, self.clock)(
+        return self._commands(str(project.id)).execute(
             RestoreProjectCommand(
                 context=CommandContext(actor=principal, idempotency_key=idempotency_key),
                 project_id=project.id,

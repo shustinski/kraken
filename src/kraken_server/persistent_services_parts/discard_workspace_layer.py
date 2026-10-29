@@ -25,6 +25,22 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
 
 
 class DiscardWorkspaceLayerMixin:
+    def delete_layer(
+        self, project_id: str, layer_id: str, confirmation_name: str, context: CommandContext
+    ) -> dict[str, Any]:
+        from kraken_manager.application.dto import DeleteLayerCommand
+
+        try:
+            layer = self._delete_layer(DeleteLayerCommand(
+                context=self._application_context(context), project_id=_project_id(project_id),
+                layer_id=_layer_id(layer_id), confirmation_name=confirmation_name,
+                expected_revision=self._require_revision(context),
+            ))
+            return _layer_dict(layer)
+        except Exception as exc:
+            self._translate_lifecycle_error(exc)
+            raise AssertionError("unreachable")
+
     def _discard_workspace_layer(
         self,
         files: Any,

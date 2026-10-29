@@ -18,12 +18,13 @@ class MatrixViewportMixin:
         project_id: ProjectId | str,
         *,
         layer_id: LayerId | str,
-        representation_ids: Iterable[RepresentationId | str],
+        representation_ids: Iterable[RepresentationId | str] = (),
         x1: int,
         y1: int,
         x2: int,
         y2: int,
         lod: int = 0,
+        include_missing: bool = True,
     ) -> dict[str, Any]:
         """Return sparse cells or aggregate buckets for a visible matrix region."""
 
@@ -39,7 +40,7 @@ class MatrixViewportMixin:
         representations = {
             str(value.id): value
             for value in self.list_representations(project.id, LayerId(str(layer_id)))
-            if str(value.id) in identifiers
+            if not identifiers or str(value.id) in identifiers
         }
         priority = {
             "empty": 0,
@@ -143,7 +144,7 @@ class MatrixViewportMixin:
             for identifier, representation in representations.items()
             if representation.source == "managed-import"
         }
-        if int(lod) == 0 and managed:
+        if int(lod) == 0 and managed and include_missing:
             for y in range(int(y1), int(y2) + 1):
                 for x in range(int(x1), int(x2) + 1):
                     coordinate = (x, y)

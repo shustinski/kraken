@@ -11,6 +11,9 @@ from kraken_manager.presentation.qt import (
 
 class LayerManagerActionMixin:
     def _layer_manager_action(self, _layer_id: str, _node: PipelineNode, action: str) -> None:
+        if action == "continue_pipeline_step":
+            self._continue_pipeline_step(_layer_id, _node)
+            return
         if action == "manage_stitching":
             self._layer_manager_layer_action(_layer_id, action)
             return
@@ -342,3 +345,51 @@ class LayerManagerActionMixin:
             "Задание создано",
             f"Задание {job.id} передано Kraken Agent и продолжит работу независимо от окна проекта.",
         )
+
+    def _continue_pipeline_step(self, layer_id: str, node: PipelineNode) -> None:
+        available, reason = self._action_availability("continue_pipeline_step")
+        if not available:
+            self._error(reason)
+            return
+        try:
+            if node.details.get("workflow_operation"):
+                state = self.service.get_layer_pipeline(self._project_id, layer_id)
+                operation = "resume" if state["status"] == "paused" else None
+                if node.details.get("approval_required"):
+                    operation = "approve"
+                if operation:
+                    self.service.command_layer_pipeline(
+                        project_id=self._project_id, layer_id=layer_id,
+                        operation=operation, node_id=node.node_id,
+                        principal=self.session.principal,
+                        expected_revision=node.details["workflow_revision"],
+                        idempotency_key=str(uuid4()),
+                    )
+                self._schedule_pipeline_cycle()
+                return
+            job_id = str(node.details.get("job_id") or "")
+            job = next((item for item in self.service.plugin_jobs()
+                        if str(item.id) == job_id
+                        and str(item.project_id) == str(self._project_id)
+                        and str(item.layer_id) == str(layer_id)), None)
+            if job is None:
+                self._error("Задание больше не доступно")
+                return
+            if job.state.value in {"succeeded", "failed", "cancelled"}:
+                self._error("Задание уже завершено. Обновите граф.")
+                return
+            if job.state.value == "recovery_required":
+                self.retry_agent_job(job)
+            elif self.service.is_remote_project(job.project_id):
+                if job.capability in {"frames.binary-segment.v2", "frames.confidence.v1"}:
+                    registry = self.agent_runtime.execution_registry(job.capability)
+                else:
+                    registry = self.agent_runtime.interactive_registry(job.capability)
+                self._run_remote_interactive_job(job, registry=registry)
+            elif job.state.value == "waiting_for_user":
+                self.launch_selected_work("job", job)
+            else:
+                self._gateway_for_job(job)
+                self._poll_agent_jobs()
+        except Exception as exc:
+            self._error(f"Не удалось продолжить выполнение: {exc}")

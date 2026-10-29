@@ -1,10 +1,10 @@
 """manager_app: statistics panel."""
 
 from __future__ import annotations
-from kraken_hub.composition import EmbeddedProjectService
+from kraken_hub.application.workspace import ProjectWorkspaceService
 
 
-def _statistics_panel(service: EmbeddedProjectService, principal=None, *, background_workers=None, async_reads=False):
+def _statistics_panel(service: ProjectWorkspaceService, principal=None, *, background_workers=None, async_reads=False):
     from datetime import UTC, datetime
 
     from PyQt6.QtCore import QDateTime, Qt

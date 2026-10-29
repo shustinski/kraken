@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsSceneMouseEvent,
     QGraphicsSimpleTextItem,
+    QGraphicsTextItem,
+    QApplication,
     QMenu,
 )
 from kraken_manager.domain.layer_board import (
@@ -49,9 +51,19 @@ class PipelineNodeItem(QGraphicsRectItem):
         selected_nodes: Callable[[], tuple[PipelineNode, ...]] | None = None,
     ) -> None:
         self._parameter_lines = _node_parameter_lines(node)
-        height = 72 + 16 * len(self._parameter_lines)
+        note = str(node.details.get("note") or "").strip()
+        note_item = QGraphicsTextItem() if note else None
+        note_height = 0.0
+        if note_item is not None:
+            note_item.setPlainText(note)
+            note_item.setTextWidth(166)
+            note_item.document().setDocumentMargin(0)
+            note_height = note_item.boundingRect().height() + 8
+        height = 72 + note_height + 16 * len(self._parameter_lines)
         super().__init__(0, 0, 190, height)
         self.node = node
+        self._press_screen_pos = None
+        self._dragged = False
         self._activate = activate
         self._request_action = request_action
         self._request_properties = request_properties
@@ -72,14 +84,18 @@ class PipelineNodeItem(QGraphicsRectItem):
         title = QGraphicsSimpleTextItem(node.title, self)
         title.setBrush(QColor("#f3f4f6"))
         title.setPos(12, 9)
+        if note_item is not None:
+            note_item.setParentItem(self)
+            note_item.setDefaultTextColor(QColor("#f3f4f6"))
+            note_item.setPos(12, 30)
         if node.subtitle:
             subtitle = QGraphicsSimpleTextItem(node.subtitle[:52], self)
             subtitle.setBrush(QColor("#c3c8c3"))
-            subtitle.setPos(12, 38)
+            subtitle.setPos(12, 38 + note_height)
         for offset, line in enumerate(self._parameter_lines):
             parameter = QGraphicsSimpleTextItem(line[:42], self)
             parameter.setBrush(QColor("#e5e7eb"))
-            parameter.setPos(12, 58 + offset * 16)
+            parameter.setPos(12, 58 + note_height + offset * 16)
         visible = {"время", "автор", "программа", "прогресс", "ошибка", "создан"}
         self.setToolTip("\n".join(f"{key}: {value}" for key, value in node.details.items() if key in visible and value))
         port_color = QColor("#22d3ee" if node.kind in {"source", "binary"} else "#facc15")
@@ -101,9 +117,26 @@ class PipelineNodeItem(QGraphicsRectItem):
             event.accept()
             return
         super().mousePressEvent(event)
-        if event.button() is Qt.MouseButton.LeftButton and not (
-            event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
-        ):
+        if event.button() is Qt.MouseButton.LeftButton:
+            self._press_screen_pos = event.screenPos()
+            self._dragged = False
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if self._press_screen_pos is not None:
+            distance = (event.screenPos() - self._press_screen_pos).manhattanLength()
+            self._dragged |= distance >= QApplication.startDragDistance()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        activate = (
+            event.button() is Qt.MouseButton.LeftButton
+            and self._press_screen_pos is not None
+            and not self._dragged
+            and not event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        )
+        self._press_screen_pos = None
+        super().mouseReleaseEvent(event)
+        if activate:
             self._activate(self.node)
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # type: ignore[override]
@@ -139,6 +172,14 @@ class PipelineNodeItem(QGraphicsRectItem):
                 ("Управление сшивкой…", "manage_stitching"),
             ),
         }.get(self.node.kind, ())
+        if (
+            self.node.kind in {"job", "operation"}
+            and self.node.state not in {"", "succeeded", "cancelled", "failed"}
+            and (self.node.details.get("job_id") or self.node.details.get("workflow_operation"))
+        ):
+            actions = (*actions, ("Продолжить выполнение", "continue_pipeline_step"))
+        if not self.node.representation_id:
+            actions = (*actions, ("Изменить заметку…", "edit_node_note"))
         if bool(self.node.details.get("deletable", False)):
             actions = (*actions, ("Удалить шаг из pipeline", "delete_pipeline_step"))
         if self.node.representation_id:
@@ -171,7 +212,7 @@ class PipelineNodeItem(QGraphicsRectItem):
             menu_action = menu.addAction(label)
             enabled, reason = (
                 (True, "")
-                if code == "collapse_pipeline"
+                if code in {"collapse_pipeline", "edit_node_note"}
                 else self._action_availability(code)
             )
             menu_action.setEnabled(enabled)

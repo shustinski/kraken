@@ -9,10 +9,6 @@ from kraken_manager.application.dto import (
     CreateNoteCommand,
     ReviseNoteCommand,
 )
-from kraken_manager.application.artifact_lifecycle import (
-    CreateNoteHandler,
-    ReviseNoteHandler,
-)
 from kraken_manager.domain.artifacts import (
     ArtifactVersion,
     NoteRevision,
@@ -164,11 +160,7 @@ class ExportArtifactVersionMixin:
         frame_id: str | None = None,
         idempotency_key: str,
     ) -> NoteRevision:
-        return CreateNoteHandler(
-            self._uow(str(project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(project_id)).execute(
             CreateNoteCommand(
                 context=CommandContext(
                     actor=principal,
@@ -189,11 +181,7 @@ class ExportArtifactVersionMixin:
         body: str,
         idempotency_key: str,
     ) -> NoteRevision:
-        return ReviseNoteHandler(
-            self._uow(str(note.project_id)),
-            self.profiles,
-            self.clock,
-        )(
+        return self._commands(str(note.project_id)).execute(
             ReviseNoteCommand(
                 context=CommandContext(
                     actor=principal,

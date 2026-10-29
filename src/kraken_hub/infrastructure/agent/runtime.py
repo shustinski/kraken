@@ -14,6 +14,7 @@ from threading import RLock
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
 
 from kraken_core.plugins import PluginInventoryItem, is_plugin_launchable
 from kraken_agent.runner import PluginRegistry
@@ -224,6 +225,19 @@ class LocalAgentRuntime:
             else:
                 if health.get("status") == "ok":
                     return self._registry()[1]
+        # The Agent owns its jobs and can outlive any individual Hub session.
+        saved_connection = self.data_dir / "runtime-connection.json"
+        try:
+            saved = json.loads(saved_connection.read_text(encoding="utf-8"))
+            address = urlsplit(saved["url"])
+            if address.scheme != "http" or address.hostname not in {"127.0.0.1", "::1"}:
+                raise ValueError("Invalid local Agent address")
+            self.base_url, self.token = saved["url"], saved["token"]
+            if self._request("GET", "/api/v1/health").get("status") == "ok":
+                return self._registry()[1]
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
+        self.base_url = self.token = ""
         registry, capabilities = self._registry()
         connection = self.data_dir / f"connection-{secrets.token_hex(8)}.json"
         command = [
@@ -235,6 +249,7 @@ class LocalAgentRuntime:
             str(registry),
             "--connection-file",
             str(connection),
+            "--independent",
         ]
         environment = os.environ.copy()
         source_root = str(Path(__file__).resolve().parents[1])
@@ -242,7 +257,8 @@ class LocalAgentRuntime:
         python_path_entries = tuple(entry for entry in python_path.split(os.pathsep) if entry)
         if source_root not in python_path_entries:
             environment["PYTHONPATH"] = os.pathsep.join((source_root, *python_path_entries))
-        creation_flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0)) if os.name == "nt" else 0
+        from kraken_core.process_lifetime import detached_creationflags
+        creation_flags = detached_creationflags(int(getattr(subprocess, "CREATE_NO_WINDOW", 0)))
         log_path = self.data_dir / "agent.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_handle = log_path.open("ab")
@@ -252,6 +268,7 @@ class LocalAgentRuntime:
             stdout=self._log_handle,
             stderr=subprocess.STDOUT,
             creationflags=creation_flags,
+            start_new_session=os.name != "nt",
             env=environment,
         )
         deadline = time.monotonic() + 12.0
@@ -286,7 +303,18 @@ class LocalAgentRuntime:
         if health.get("status") != "ok":
             self._discard_process()
             raise RuntimeError("Kraken Agent health check failed")
+        _atomic_json(saved_connection, payload)
+        saved_connection.chmod(0o600)
         return capabilities
+
+    def detach(self) -> None:
+        """Release this client's handles while leaving durable jobs running."""
+        with self._lifecycle_lock:
+            self.process = None
+            self.base_url = self.token = ""
+            if self._log_handle is not None:
+                self._log_handle.close()
+                self._log_handle = None
 
     def shutdown(self) -> None:
         with self._lifecycle_lock:
@@ -307,6 +335,10 @@ class LocalAgentRuntime:
             self.base_url = ""
             self.token = ""
             self.process = None
+            (self.data_dir / "runtime-connection.json").unlink(missing_ok=True)
+            if self._log_handle is not None:
+                self._log_handle.close()
+                self._log_handle = None
 
 
 __all__ = ["LocalAgentRuntime"]

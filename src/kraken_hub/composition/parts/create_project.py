@@ -9,9 +9,6 @@ from kraken_manager.workspace import (
     project_workspace_to_dict,
     validate_workspace_name,
 )
-from kraken_manager.application.use_cases import (
-    CreateProjectHandler,
-)
 from kraken_manager.domain.identity import (
     Principal,
 )
@@ -60,7 +57,7 @@ class CreateProjectMixin:
         )
 
         try:
-            project = CreateProjectHandler(self._uow(project_id), self.profiles, self.clock)(command)
+            project = self._commands(project_id).execute(command)
         except Exception:
             self.workspace_files.remove_project_layout(binding)
             self.workspace_registry.remove_project(project_id)

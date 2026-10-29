@@ -61,7 +61,7 @@ from test_hub_manager_app_parts.review_return_preview import (
 )
 from test_hub_manager_app_parts.running_agent_job import (
     test_non_running_agent_jobs_do_not_block_close,
-    test_running_agent_job_still_blocks_close,
+    test_running_agent_job_does_not_block_close,
 )
 from test_hub_manager_app_parts.matrix_context_menu import (
     test_matrix_context_menu_exports_and_opens_vector_properties,
@@ -111,7 +111,7 @@ _FACADE_EXPORTS = (
     test_review_return_preview_is_resizable,
     test_review_return_without_changed_files_refreshes_current_matrix,
     test_non_running_agent_jobs_do_not_block_close,
-    test_running_agent_job_still_blocks_close,
+    test_running_agent_job_does_not_block_close,
     test_matrix_context_menu_exports_and_opens_vector_properties,
     test_matrix_context_menu_hides_properties_for_multiple_frames,
     test_matrix_context_menu_preserves_review_action,

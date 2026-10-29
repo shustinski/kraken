@@ -132,6 +132,7 @@ class AgentJob:
     revision: int
     error: str | None = None
     progress_json: str | None = None
+    checkpoint_json: str | None = None
 
     @property
     def manifest(self) -> AgentManifest:
@@ -144,6 +145,10 @@ class AgentJob:
     @property
     def progress(self) -> dict[str, object] | None:
         return None if self.progress_json is None else json.loads(self.progress_json)
+
+    @property
+    def checkpoint(self) -> dict[str, object] | None:
+        return None if self.checkpoint_json is None else json.loads(self.checkpoint_json)
 
 
 def _utc_now() -> str:
@@ -232,6 +237,8 @@ class DurableJobStore:
                 connection.execute("ALTER TABLE jobs ADD COLUMN progress_json TEXT")
             if "attempt_key" not in columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN attempt_key TEXT")
+            if "checkpoint_json" not in columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN checkpoint_json TEXT")
             connection.commit()
 
     @staticmethod
@@ -246,6 +253,7 @@ class DurableJobStore:
             revision=int(row["revision"]),
             error=row["error"],
             progress_json=row["progress_json"],
+            checkpoint_json=row["checkpoint_json"],
         )
 
     def enqueue(self, manifest: AgentManifest, *, attempt_key: str | None = None) -> AgentJob:
@@ -296,7 +304,7 @@ class DurableJobStore:
                     connection.execute("DELETE FROM callbacks WHERE job_id=?", (manifest.job_id,))
                     connection.execute("DELETE FROM publications WHERE job_id=?", (manifest.job_id,))
                     connection.execute(
-                        "UPDATE jobs SET state=?, result_json=NULL, progress_json=NULL, error=NULL, "
+                        "UPDATE jobs SET state=?, result_json=NULL, progress_json=NULL, checkpoint_json=NULL, error=NULL, "
                         "updated_at=?, revision=revision+1, attempt_key=? WHERE job_id=?",
                         (AgentJobState.QUEUED.value, now, attempt_key, manifest.job_id),
                     )
@@ -476,9 +484,28 @@ class DurableJobStore:
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._lock, self._connect() as connection:
             connection.execute(
-                "UPDATE jobs SET progress_json=?, updated_at=? WHERE job_id=?",
-                (canonical, _utc_now(), job_id),
+                "UPDATE jobs SET progress_json=?, updated_at=? WHERE job_id=? AND progress_json IS NOT ?",
+                (canonical, _utc_now(), job_id, canonical),
             )
+
+    def record_checkpoint(self, job_id: str, payload: dict[str, object]) -> None:
+        from kraken_core.job_recovery import execution_state
+
+        checkpoint = execution_state({"checkpoint": payload})["checkpoint"]
+        with self._lock, self._connect() as connection:
+            connection.execute("UPDATE jobs SET checkpoint_json=?, updated_at=? WHERE job_id=?",
+                               (json.dumps(checkpoint, allow_nan=False), _utc_now(), job_id))
+
+    def resume_interrupted(self) -> int:
+        """Restart interrupted execution, preserving checkpoints and ready results."""
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE jobs SET state=CASE WHEN result_json IS NOT NULL THEN 'importing' ELSE 'queued' END, "
+                "error=NULL, updated_at=?, revision=revision+1 "
+                "WHERE state IN ('staging', 'running', 'waiting_for_user', 'recovery_required')",
+                (_utc_now(),),
+            )
+            return cursor.rowcount
 
     def recover_interrupted(self) -> int:
         """Mark jobs that cannot safely continue without operator inspection."""

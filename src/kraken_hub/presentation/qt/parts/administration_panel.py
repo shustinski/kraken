@@ -2,10 +2,11 @@
 from __future__ import annotations
 import os
 from uuid import uuid4
-from kraken_hub.composition import DesktopSession, EmbeddedProjectService
+from kraken_manager.application.results import UserSession as DesktopSession
+from kraken_hub.application.workspace import ProjectWorkspaceService
 
 def _administration_panel(
-    service: EmbeddedProjectService,
+    service: ProjectWorkspaceService,
     session: DesktopSession,
 ):
     from kraken_hub.presentation.qt.manager_app import _configure_workspace_roots

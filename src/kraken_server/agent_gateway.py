@@ -53,6 +53,7 @@ class PostgresAgentGateway:
             sa.Column("lease_owner", sa.Text),
             sa.Column("lease_claim", sa.Text),
             sa.Column("telemetry", sa.JSON),
+            sa.Column("execution_state", sa.JSON),
             sa.Column("lease_until", sa.DateTime(timezone=True)),
             sa.Column("lease_attempts", sa.Integer, nullable=False),
             sa.Column("last_error", sa.Text),
@@ -303,12 +304,61 @@ class PostgresAgentGateway:
                     updated_at=now,
                 )
             )
+            publications = connection.execute(sa.select(self.publications.c.payload).where(
+                self.publications.c.job_id == row["job_id"])).scalars().all()
         return {
             "job_id": str(row["job_id"]),
             "lease_until": lease_until.isoformat(),
             "lease_claim": claim,
             "manifest": dict(row["payload"].get("native_manifest", row["payload"])),
+            "execution_state": dict(row["execution_state"] or {}),
+            "result_ready": any(
+                value.get("outcome") is not None and value.get("final", True)
+                for value in publications
+            ),
         }
+
+    def save_execution_state(self, job_id: str, agent: AgentIdentity, payload: dict) -> None:
+        import sqlalchemy as sa
+        from kraken_core.job_recovery import execution_state
+
+        snapshot = execution_state(payload)
+        if (snapshot.get("checkpoint") or {}).get("job_id", job_id) != job_id:
+            raise ValueError("Checkpoint belongs to another job")
+        with self.engine.begin() as connection:
+            self._require_lease(connection, job_id, agent)
+            previous = connection.execute(sa.select(self.jobs.c.execution_state).where(
+                self.jobs.c.job_id == job_id)).scalar_one() or {}
+            for item in (snapshot.get("checkpoint") or {}).get("files", []):
+                stored = connection.execute(sa.select(self.outputs.c.size_bytes).where(
+                    self.outputs.c.job_id == job_id,
+                    self.outputs.c.output_id == "checkpoint-" + item["sha256"],
+                    self.outputs.c.sha256 == item["sha256"],
+                )).scalar_one_or_none()
+                if stored != item["size_bytes"]:
+                    raise ValueError("Checkpoint file has not been uploaded")
+            connection.execute(sa.update(self.jobs).where(self.jobs.c.job_id == job_id).values(
+                execution_state={**previous, **snapshot}, updated_at=datetime.now(UTC)))
+
+    def checkpoint_blob(self, job_id: str, digest: str, agent: AgentIdentity) -> BlobRef:
+        import sqlalchemy as sa
+
+        with self.engine.begin() as connection:
+            self._require_lease(connection, job_id, agent)
+            snapshot = connection.execute(sa.select(self.jobs.c.execution_state).where(
+                self.jobs.c.job_id == job_id)).scalar_one() or {}
+            for item in (snapshot.get("checkpoint") or {}).get("files", []):
+                if item["sha256"] == digest:
+                    return BlobRef(digest, item["size_bytes"])
+        raise PermissionError("File is not part of this job's saved checkpoint")
+
+    def project_execution_states(self, project_id: str) -> dict[str, dict]:
+        import sqlalchemy as sa
+
+        with self.engine.connect() as connection:
+            rows = connection.execute(sa.select(self.jobs.c.job_id, self.jobs.c.execution_state).where(
+                self.jobs.c.project_id == project_id))
+            return {str(row[0]): dict(row[1] or {}) for row in rows}
 
     def heartbeat(self, job_id: str, agent: AgentIdentity, *, seconds: int = 60, telemetry: Any = None) -> str:
         import sqlalchemy as sa

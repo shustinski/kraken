@@ -430,6 +430,55 @@ class ServerAgentWorker:
             LOGGER.exception("Server job %s failed", lease.get("job_id"))
         return True
 
+    def _save_execution_state(self, job_id: str, workspace: StagingWorkspace, *, previous: str = "") -> str:
+        from kraken_core.job_recovery import execution_state
+
+        job = self.store.get(job_id)
+        snapshot = execution_state({"progress": job.progress, "checkpoint": job.checkpoint})
+        canonical = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+        if canonical == previous:
+            return previous
+        previous_checkpoint = json.loads(previous).get("checkpoint") if previous else None
+        files = (job.checkpoint or {}).get("files", []) if job.checkpoint != previous_checkpoint else []
+        for item in files:
+            if workspace.digest(item["relative_path"]) != item["sha256"]:
+                raise ValueError("Checkpoint file changed after publication")
+            self._upload(f"/api/v1/agent/jobs/{job_id}/outputs/checkpoint-{item['sha256']}?"
+                         + urllib.parse.urlencode({"sha256": item["sha256"]}),
+                         workspace.resolve(item["relative_path"]), staging_root=workspace.path)
+        self._request("POST", f"/api/v1/agent/jobs/{job_id}/execution-state", snapshot)
+        return canonical
+
+    def _sync_execution_state(self, job_id: str, workspace: StagingWorkspace,
+                              done: threading.Event, lost: threading.Event) -> None:
+        previous = ""
+        while not done.is_set() and not lost.is_set():
+            try:
+                previous = self._save_execution_state(job_id, workspace, previous=previous)
+            except (OSError, ValueError, KeyError):
+                LOGGER.exception("Could not persist execution state for job %s", job_id)
+            done.wait(2)
+
+    def _restore_execution_state(self, job_id: str, workspace: StagingWorkspace, payload: object) -> None:
+        from kraken_core.job_recovery import execution_state
+
+        snapshot = execution_state(payload or {})
+        checkpoint = snapshot.get("checkpoint")
+        for item in (checkpoint or {}).get("files", []):
+            try:
+                digest = workspace.digest(item["relative_path"])
+            except FileNotFoundError:
+                self._download(f"/api/v1/agent/jobs/{job_id}/checkpoint-files/{item['sha256']}",
+                               workspace.resolve(item["relative_path"]), expected_sha256=item["sha256"],
+                               staging_root=workspace.path)
+            else:
+                if digest != item["sha256"]:
+                    raise ValueError("Restored checkpoint hash mismatch")
+        if snapshot.get("progress") is not None:
+            self.store.record_progress(job_id, snapshot["progress"])
+        if checkpoint is not None:
+            self.store.record_checkpoint(job_id, checkpoint)
+
     def run_leased_job(self, lease: dict[str, Any]) -> dict[str, Any]:
         """Execute a specific lease, including staging and result publication."""
         with self._lease_lock:
@@ -460,8 +509,13 @@ class ServerAgentWorker:
         done = threading.Event()
         lost = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(job_id, done, lost, deadline), daemon=True)
+        state_sync = None
         try:
             heartbeat.start()
+            if lease.get("result_ready"):
+                # Publication and output blobs already live on the server.
+                # Finish an interrupted import without running computation again.
+                return self._request("POST", f"/api/v1/agent/jobs/{job_id}/complete", {})
             raw_manifest = lease["manifest"]
             schema = str(raw_manifest.get("schema", "")) if isinstance(raw_manifest, dict) else ""
             if schema in {ANALYSIS_PARTITION_JOB_SCHEMA, PLUGIN_JOB_SCHEMA_V2, PLUGIN_JOB_SCHEMA}:
@@ -501,6 +555,7 @@ class ServerAgentWorker:
             transport = self._stage_model_input(transport, workspace)
             workspace.write_manifest(transport)
             self.store.enqueue(transport, attempt_key=attempt_key)
+            self._restore_execution_state(job_id, workspace, lease.get("execution_state"))
             if lost.is_set():
                 from kraken_agent.jobs import AgentJobState, JobStateError
 
@@ -510,8 +565,14 @@ class ServerAgentWorker:
                 except JobStateError:
                     pass
                 return {"imported": {"job": {"state": "cancelled"}}}
+            state_sync = threading.Thread(target=self._sync_execution_state,
+                args=(job_id, workspace, done, lost), daemon=True, name="kraken-agent-state-sync")
+            state_sync.start()
             self.runner.run_once(job_id=job_id, cancel_event=lost)
             job = self.store.get(job_id)
+            if self._stop.is_set():
+                # Keep the lease reclaimable. Stopping a process is not a failed task.
+                return {"imported": {"job": {"state": "interrupted"}}}
             if lost.is_set() or job.state.value == "cancelled":
                 return {"imported": {"job": {"state": "cancelled"}}}
             if job.result is None:
@@ -554,6 +615,8 @@ class ServerAgentWorker:
             )
             return self._request("POST", f"/api/v1/agent/jobs/{job_id}/complete", {})
         except Exception as exc:  # noqa: BLE001 - plugin and transport failures must fail the lease
+            if self._stop.is_set():
+                return {"imported": {"job": {"state": "interrupted"}}}
             try:
                 self._request(
                     "POST",
@@ -569,6 +632,11 @@ class ServerAgentWorker:
                 heartbeat.join(timeout=7)
                 if heartbeat.is_alive():
                     LOGGER.error("Heartbeat did not stop; retire this worker before another lease")
+                    self.stop()
+            if state_sync is not None:
+                state_sync.join(timeout=7)
+                if state_sync.is_alive():
+                    LOGGER.error("State sync did not stop; retire worker before another lease")
                     self.stop()
             self.runner.staging_root = previous_staging
             if previous_environment_claim is None:

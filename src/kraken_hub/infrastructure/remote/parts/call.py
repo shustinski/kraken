@@ -10,6 +10,20 @@ from kraken_hub.infrastructure.remote.parts.extract_review_archive import Remote
 
 
 class CallMixin:
+    def execute_project_command(self, command):
+        from kraken_manager.infrastructure.project_command_codec import (
+            decode_project_command_result, encode_project_command,
+        )
+
+        payload = self._call(
+            "POST", f"/api/v1/projects/{command.project_id}/commands",
+            payload=encode_project_command(command), idempotency_key=command.context.idempotency_key,
+        )
+        try:
+            return decode_project_command_result(command, payload)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise RemoteServerError("Kraken Server returned an invalid project command response") from exc
+
     def _call(
         self,
         method: str,

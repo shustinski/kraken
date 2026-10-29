@@ -1,6 +1,8 @@
 """remote_client: create representation."""
 from __future__ import annotations
 from collections.abc import Mapping
+from datetime import datetime
+from urllib.parse import urlencode
 from kraken_manager.domain.identity import (
     Principal,
 )
@@ -15,6 +17,37 @@ from kraken_manager.domain.project import (
 
 
 class CreateRepresentationMixin:
+    def reorder_layer(
+        self, *, principal: Principal, project: Project, layer: Layer,
+        order: int, idempotency_key: str,
+    ) -> Layer:
+        del principal
+        payload = self._call(
+            "POST", f"/api/v1/projects/{project.id}/layers/{layer.id}/reorder",
+            payload={"order": order}, idempotency_key=idempotency_key,
+            if_match=layer.revision,
+        )
+        if not isinstance(payload, Mapping):
+            raise TypeError("Server returned an invalid layer")
+        return self._layer(project.id, payload)
+
+    def delete_layer(
+        self,
+        *,
+        principal: Principal,
+        project: Project,
+        layer: Layer,
+        confirmation_name: str,
+        idempotency_key: str,
+    ) -> Layer:
+        from typing import cast
+        from kraken_manager.application.dto import CommandContext, DeleteLayerCommand
+
+        return cast(Layer, self.execute_project_command(DeleteLayerCommand(
+            context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+            project_id=project.id, layer_id=layer.id, confirmation_name=confirmation_name, expected_revision=layer.revision,
+        )))
+
     def reorder_layers(
         self,
         *,
@@ -69,11 +102,15 @@ class CreateRepresentationMixin:
         layer_id: object,
         *,
         include_archived: bool = False,
+        as_of: datetime | None = None,
     ) -> tuple[Representation, ...]:
+        suffix = "?include_archived=true" if include_archived else ""
+        if as_of is not None:
+            suffix += ("&" if suffix else "?") + urlencode({"as_of": as_of.isoformat()})
         payload = self._call(
             "GET",
             f"/api/v1/projects/{project_id}/layers/{layer_id}/representations"
-            + ("?include_archived=true" if include_archived else ""),
+            + suffix,
         )
         values = payload.get("items", ()) if isinstance(payload, Mapping) else ()
         representations = tuple(

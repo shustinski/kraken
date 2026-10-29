@@ -4,7 +4,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from types import SimpleNamespace
+from kraken_manager.application.results import FrameCellSnapshot, FrameManagementState
 
 
 class FrameCellsMixin:
@@ -15,18 +15,19 @@ class FrameCellsMixin:
         representation_id: object,
         *,
         as_of: datetime | None = None,
-    ) -> tuple[object, ...]:
-        if as_of is not None:
-            raise ValueError("Temporal server matrix views are not supported by API v1")
+        bounds: tuple[int, int, int, int] | None = None,
+    ) -> tuple[FrameCellSnapshot, ...]:
         query = urllib.parse.urlencode(
             {
                 "layer_id": str(layer_id),
                 "representation_id": str(representation_id),
+                **({} if as_of is None else {"as_of": as_of.isoformat()}),
+                **({} if bounds is None else dict(zip(("x1", "y1", "x2", "y2"), bounds, strict=True))),
             }
         )
         payload = self._call("GET", f"/api/v1/projects/{project_id}/frames?{query}")
         return tuple(
-            SimpleNamespace(
+            FrameCellSnapshot(
                 x=int(item["x"]),
                 y=int(item["y"]),
                 status=str(item.get("status", "empty")),
@@ -41,6 +42,8 @@ class FrameCellsMixin:
             )
             for item in payload.get("items", ())
             if not item.get("missing")
+            and (bounds is None or bounds[0] <= int(item["x"]) <= bounds[2]
+                 and bounds[1] <= int(item["y"]) <= bounds[3])
         )
 
     def frame_management_states(
@@ -50,9 +53,9 @@ class FrameCellsMixin:
         representation_id: object,
         *,
         as_of: datetime | None = None,
-    ) -> tuple[object, ...]:
+    ) -> tuple[FrameManagementState, ...]:
         return tuple(
-            SimpleNamespace(
+            FrameManagementState(
                 frame_id=item.frame_id,
                 artifact_version_id=item.artifact_version_id,
                 modified_at=item.modified_at,

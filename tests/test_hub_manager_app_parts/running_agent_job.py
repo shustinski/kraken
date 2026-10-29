@@ -15,36 +15,31 @@ from kraken_hub.presentation.qt.manager_app import (
     ("recovery_required", "partial", "awaiting_authorization", "importing"),
 )
 def test_non_running_agent_jobs_do_not_block_close(qapp, state) -> None:
-    shutdown = []
+    detached = []
     controller = object.__new__(DesktopController)
     controller.shell = QWidget()
     controller.service = SimpleNamespace(
         plugin_jobs=lambda: (SimpleNamespace(state=SimpleNamespace(value=state)),)
     )
-    controller.agent_runtime = SimpleNamespace(shutdown=lambda: shutdown.append(True))
+    controller.agent_runtime = SimpleNamespace(detach=lambda: detached.append(True))
     controller._background_workers = set()
 
     assert controller._allow_close() is True
-    assert shutdown == [True]
+    assert detached == [True]
 
-def test_running_agent_job_still_blocks_close(qapp, monkeypatch) -> None:
-    messages = []
+@pytest.mark.parametrize("state", ("queued", "staging", "running", "waiting_for_user"))
+def test_running_agent_job_does_not_block_close(qapp, monkeypatch, state) -> None:
+    detached = []
     controller = object.__new__(DesktopController)
     controller.shell = QWidget()
     controller.service = SimpleNamespace(
-        plugin_jobs=lambda: (
-            SimpleNamespace(state=SimpleNamespace(value="waiting_for_user")),
-        )
+        plugin_jobs=lambda: (SimpleNamespace(state=SimpleNamespace(value=state)),)
     )
-    controller.agent_runtime = SimpleNamespace(
-        shutdown=lambda: pytest.fail("active Agent must not be stopped")
-    )
+    controller.agent_runtime = SimpleNamespace(detach=lambda: detached.append(True))
     controller._background_workers = set()
     monkeypatch.setattr(
-        QMessageBox,
-        "information",
-        lambda _parent, title, message: messages.append((title, message)),
+        QMessageBox, "information", lambda *_args: pytest.fail("no close warning expected")
     )
 
-    assert controller._allow_close() is False
-    assert messages[0][0] == "Есть активные задания"
+    assert controller._allow_close() is True
+    assert detached == [True]

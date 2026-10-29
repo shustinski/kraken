@@ -379,6 +379,7 @@ def test_pipeline_uses_applied_parameters_and_human_titles():
     source = SimpleNamespace(
         id="source",
         name="Images",
+        note="Source image note",
         kind=RepresentationKind.IMAGE,
         purpose=RepresentationPurpose.SOURCE,
         active=True,
@@ -412,6 +413,7 @@ def test_pipeline_uses_applied_parameters_and_human_titles():
         list_derived_runs=lambda *_: (),
     )
     snapshot = controller._pipeline_snapshot("project", "layer")
+    assert snapshot.lanes[0].nodes[0].details["note"] == "Source image note"
     node = next(n for n in snapshot.lanes[0].nodes if n.node_id == "job")
     assert node.title == "Векторизация изображений"
     assert node.subtitle == "Завершено"

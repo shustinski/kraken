@@ -1,13 +1,14 @@
 """manager_app: login."""
 from __future__ import annotations
-from kraken_hub.composition import DesktopSession, EmbeddedProjectService
+from kraken_manager.application.results import UserSession as DesktopSession
+from kraken_hub.application.workspace import ProjectWorkspaceService
 
 from kraken_hub.presentation.qt.parts.development_session import (
     _autofill_credentials,
     _remember_credentials,
 )
 
-def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
+def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout
 

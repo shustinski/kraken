@@ -8,7 +8,7 @@ from kraken_core.theme import THEME_SYSTEM, apply_app_theme
 from kraken_manager.presentation.qt import (
     ProjectManagerShell,
 )
-from kraken_hub.composition.catalog import DualCatalogService, build_workspace_service
+from kraken_hub.application.workspace import ProjectWorkspaceService
 
 from kraken_hub.presentation.qt.parts.connect_saved_server import (
     _configure_administration_page,
@@ -31,6 +31,9 @@ from kraken_hub.presentation.qt.parts.statistics_panel import _statistics_panel
 def run_manager_gui(
     items: list[PluginInventoryItem],
     *,
+    service: ProjectWorkspaceService,
+    application_version: str,
+    plugin_launcher,
     update_url: str = "",
     thumbnail_store_uri: str = "",
 ) -> int:
@@ -40,20 +43,18 @@ def run_manager_gui(
 
     from kraken_core.update_ui import QtUpdateController
     from kraken_core.updater import UpdateService
-    from kraken_hub.composition.app import application_version
 
     app = QApplication.instance() or QApplication([])
     configure_application_identity(app, app_id="Kraken.ProjectManager", icon_name="kraken")
     apply_app_theme(str(QSettings("Kraken", "KrakenHub").value("appearance/theme", THEME_SYSTEM)), app)
-    service = build_workspace_service()
-    local = service.local if isinstance(service, DualCatalogService) else service
+    local = service.local_administration
     session = _development_session(local) or _login(None, local)
     if session is None:
         return 1
     _connect_saved_server(None, service, session.principal)
-    if isinstance(service, DualCatalogService) and service.remote is not None:
+    if service.server_connection is not None:
         # Shared mutations use the server principal carried by the remote client.
-        session_summary = f"{session.principal.display_name}\nЛокальная сессия + сервер {service.remote.base_url}"
+        session_summary = f"{session.principal.display_name}\nЛокальная сессия + сервер {service.server_connection.base_url}"
     else:
         session_summary = f"{session.principal.display_name}\nЛокальная сессия"
     shell = ProjectManagerShell()
@@ -66,11 +67,12 @@ def run_manager_gui(
         session,
         thumbnail_store_uri=thumbnail_store_uri,
         plugin_items=items,
+        plugin_launcher=plugin_launcher,
     )
     controller = shell._desktop_controller
     plugins_page = shell.page("plugins")
     if plugins_page is not None:
-        plugins_page.set_content(_plugin_panel(items))
+        plugins_page.set_content(_plugin_panel(items, launch_plugin=plugin_launcher))
     performers_page = shell.page("performers")
     if performers_page is not None:
         performers_page.set_content(_performer_panel(service))
@@ -89,7 +91,7 @@ def run_manager_gui(
     configured_update_url = update_url or os.getenv("KRAKEN_UPDATE_URL", "") or str(settings.value("updates/url", ""))
     update_service = UpdateService(
         configured_update_url,
-        current_version=application_version(),
+        current_version=application_version,
         app_id="kraken-hub",
     )
     update_controller = QtUpdateController(shell, update_service, application_name="Kraken Hub")

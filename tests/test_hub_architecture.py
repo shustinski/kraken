@@ -37,6 +37,27 @@ def violations(package: Path, forbidden: set[str]) -> list[str]:
 
 
 class HubArchitectureTests(unittest.TestCase):
+    def test_qt_uses_application_ports_instead_of_constructing_services(self) -> None:
+        found = violations(HUB / "presentation" / "qt", {"kraken_hub.composition"})
+        self.assertEqual([], found, "\n".join(found))
+
+    def test_qt_calls_are_declared_by_the_application_port(self) -> None:
+        from kraken_hub.application.workspace import ProjectWorkspaceService
+
+        errors = []
+        for path in (HUB / "presentation" / "qt").rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                    continue
+                target = node.func.value
+                is_service = (isinstance(target, ast.Name) and target.id == "service") or (
+                    isinstance(target, ast.Attribute) and target.attr == "service"
+                )
+                if is_service and not callable(getattr(ProjectWorkspaceService, node.func.attr, None)):
+                    errors.append(f"{path.name}:{node.lineno}: undeclared operation {node.func.attr}")
+        self.assertEqual([], errors, "\n".join(errors))
+
     def test_package_root_is_only_the_process_entry(self) -> None:
         root_modules = sorted(path.name for path in HUB.glob("*.py"))
         self.assertEqual(["__init__.py", "__main__.py"], root_modules)

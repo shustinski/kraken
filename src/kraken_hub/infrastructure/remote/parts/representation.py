@@ -25,6 +25,29 @@ from kraken_hub.infrastructure.remote.parts.extract_review_archive import (
 
 
 class RepresentationMixin:
+    def plan_import_directory(self, *, project, directory, mode=None, regex=None):
+        from kraken_manager.application.imports import ImportMappingMode, ImportPlan
+        from kraken_manager.infrastructure.filesystem._codec import decode_model
+
+        payload = self._call(
+            "POST", f"/api/v1/projects/{project.id}/import-plan",
+            payload={"directory": str(directory), "mode": (mode or ImportMappingMode.XY_FILENAME).value,
+                     "regex": regex},
+        )
+        return decode_model(ImportPlan, payload)
+
+    def commit_managed_import(self, *, principal, project, layer, representation, plan, idempotency_key):
+        from kraken_manager.application.results import ManagedImportResult
+        from kraken_manager.domain.artifacts import ArtifactVersion
+        from kraken_manager.infrastructure.filesystem._codec import decode_model, encode_model
+
+        del principal
+        payload = self._call(
+            "POST", f"/api/v1/projects/{project.id}/layers/{layer.id}/representations/{representation.id}/import",
+            payload={"plan": encode_model(plan)}, idempotency_key=idempotency_key, timeout=600,
+        )
+        return ManagedImportResult(plan, tuple(decode_model(ArtifactVersion, item) for item in payload["versions"]))
+
     @staticmethod
     def _representation(
         project_id: object,
@@ -75,11 +98,12 @@ class RepresentationMixin:
         idempotency_key: str,
         layer_id: object | None = None,
     ) -> Layer:
-        del principal, layer_id
+        del principal
         payload = self._call(
             "POST",
             f"/api/v1/projects/{project.id}/layers",
-            payload={"name": name, "type": layer_type.value, "order": order},
+            payload={"name": name, "type": layer_type.value, "order": order,
+                     **({} if layer_id is None else {"layer_id": str(layer_id)})},
             idempotency_key=idempotency_key,
             if_match=project.revision,
         )
@@ -194,14 +218,10 @@ class RepresentationMixin:
         name: str,
         idempotency_key: str,
     ) -> Layer:
-        del principal
-        payload = self._call(
-            "POST",
-            f"/api/v1/projects/{project.id}/layers/{layer.id}/rename",
-            payload={"name": name},
-            idempotency_key=idempotency_key,
-            if_match=layer.revision,
-        )
-        if not isinstance(payload, Mapping):
-            raise TypeError("Server returned an invalid layer")
-        return self._layer(project.id, payload)
+        from typing import cast
+        from kraken_manager.application.dto import CommandContext, RenameLayerCommand
+
+        return cast(Layer, self.execute_project_command(RenameLayerCommand(
+            context=CommandContext(actor=principal, idempotency_key=idempotency_key),
+            project_id=project.id, layer_id=layer.id, name=name, expected_revision=layer.revision,
+        )))

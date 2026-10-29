@@ -1,5 +1,6 @@
 """composition: synchronize plugin jobs."""
 from __future__ import annotations
+from kraken_core.job_recovery import progress_fraction
 from kraken_manager.application.dto import (
     CommandContext,
     RetryPluginJobCommand,
@@ -9,7 +10,6 @@ from kraken_manager.application.dto import (
 from kraken_manager.application.plugin_jobs import (
     CancelPluginJobHandler,
     RetryPluginJobHandler,
-    SynchronizePluginJobHandler,
 )
 from kraken_manager.domain.identity import (
     Principal,
@@ -91,19 +91,15 @@ class SynchronizePluginJobsMixin:
                     if agent.get("error") in {None, ""}
                     else str(agent.get("error"))
                 )
-                progress = job.progress
-            if target == job.state.value:
+                progress = max(job.progress, progress_fraction(agent.get("progress"), job.progress))
+            if target == job.state.value and progress == job.progress:
                 synchronized.append(job)
                 continue
-            updated = SynchronizePluginJobHandler(
-                self._uow(str(job.project_id)),
-                self.profiles,
-                self.clock,
-            )(
+            updated = self._commands(str(job.project_id)).execute(
                 SynchronizePluginJobCommand(
                     context=CommandContext(
                         actor=principal,
-                        idempotency_key=f"agent-sync:{job.id}:{job.revision}:{target}",
+                        idempotency_key=f"agent-sync:{job.id}:{job.revision}:{target}:{progress}",
                     ),
                     project_id=job.project_id,
                     job_id=job.id,

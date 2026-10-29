@@ -7,6 +7,8 @@ from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Mapping
+from collections.abc import Iterator
+from typing import Protocol
 
 
 class ImportMappingMode(StrEnum):
@@ -31,6 +33,20 @@ class ImportSource:
         if self.expected_sha256 is not None:
             from kraken_manager.domain.artifacts import validate_sha256
             object.__setattr__(self, "expected_sha256", validate_sha256(self.expected_sha256))
+
+
+@dataclass(frozen=True, slots=True)
+class ImportContentMetadata:
+    filename: str
+    media_type: str
+
+
+class ImportContentReader(Protocol):
+    """Read an opaque source key; the application never opens a filesystem path."""
+
+    def describe(self, source: ImportSource) -> ImportContentMetadata: ...
+
+    def iter_bytes(self, source: ImportSource) -> Iterator[bytes]: ...
 
 
 @dataclass(frozen=True, slots=True)

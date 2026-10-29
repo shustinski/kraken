@@ -26,6 +26,13 @@ def register(ctx: HttpContext) -> None:
     agent_identity = ctx.agent_identity
     transfer_identity = ctx.transfer_identity
 
+    @app.get(f"{API_PREFIX}/agent/jobs/{{job_id}}/checkpoint-files/{{digest}}")
+    def download_checkpoint_file(job_id: str, digest: str, agent: Any = Depends(agent_identity)) -> Any:
+        if agent_gateway is None:
+            raise HTTPException(status_code=503, detail="Server agent queue is not configured")
+        reference = agent_gateway.checkpoint_blob(job_id, digest, agent)
+        return StreamingResponse(agent_gateway.blobs.iter_bytes(reference), media_type="application/octet-stream")
+
     def input_metadata(manifest, version_id):
         from kraken_core.analysis_run_protocol import AnalysisPartitionJobManifest
         from kraken_core.plugin_protocol import PluginJobManifestV2

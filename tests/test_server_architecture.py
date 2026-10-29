@@ -75,3 +75,29 @@ class ServerArchitectureTests(unittest.TestCase):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.decorator_list
         ]
         self.assertEqual([], [node.name for node in decorators])
+
+    def test_postgres_facade_composes_resource_modules(self) -> None:
+        source = (SERVER / "persistent_services.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        classes = [
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "PostgresServerServices"
+        ]
+        self.assertEqual([node.bases for node in classes], [[]])
+
+        from kraken_server.persistent_services import PostgresServerServices
+        from kraken_server.persistent_services_parts.analysis_maps import AnalysisMapsMixin
+        from kraken_server.persistent_services_parts.analysis_runs import AnalysisRunsMixin
+        from kraken_server.persistent_services_parts.construction import ConstructionMixin
+        from kraken_server.persistent_services_parts.create_project import CreateProjectMixin
+        from kraken_server.persistent_services_parts.quality_analysis import QualityAnalysisMixin
+        from kraken_server.persistent_services_parts.stitch_execution import StitchExecutionMixin
+
+        self.assertEqual(PostgresServerServices.__bases__, (object,))
+        self.assertIs(PostgresServerServices.__init__, ConstructionMixin.__init__)
+        self.assertIs(PostgresServerServices.create_project, CreateProjectMixin.create_project)
+        self.assertIs(PostgresServerServices.run_stitch_cycle, StitchExecutionMixin.run_stitch_cycle)
+        self.assertIs(PostgresServerServices.quality_analysis_runs, QualityAnalysisMixin.quality_analysis_runs)
+        self.assertIs(PostgresServerServices._analysis_view, AnalysisRunsMixin._analysis_view)
+        self.assertIs(PostgresServerServices._verified_map_bytes, AnalysisMapsMixin._verified_map_bytes)

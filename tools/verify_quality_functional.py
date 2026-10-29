@@ -27,7 +27,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     sys.path[:0] = [str(root / "src"), str(root / "plugins/contour/src")]
     from kraken_hub.composition import EmbeddedProjectService
-    from kraken_hub.secret_store import KeyringSecretStore
+    from kraken_hub.infrastructure.credentials.secret_store import KeyringSecretStore
     from kraken_manager.application.errors import AuthorizationError
     from kraken_manager.application.imports import ImportPlanner, ImportSource, ImportMappingMode
     from kraken_manager.domain.identity import Performer, ProjectRole

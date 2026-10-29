@@ -80,4 +80,4 @@ class PublishKarakalAnalysisMixin:
         return self._karakal_run_from_event(prior)
 
 if TYPE_CHECKING:
-    from kraken_hub.composition.parts.frame_cell_snapshot import KarakalAnalysisRun
+    from kraken_hub.application.analysis_run import KarakalAnalysisRun

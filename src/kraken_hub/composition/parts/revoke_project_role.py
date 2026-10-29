@@ -32,7 +32,7 @@ from kraken_manager.infrastructure.filesystem import (
     filesystem_storage_profile,
 )
 from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
-from kraken_hub.secret_store import KeyringSecretStore
+from kraken_hub.infrastructure.credentials.secret_store import KeyringSecretStore
 
 from kraken_hub.composition.parts.frame_cell_snapshot import (
     DesktopSession,

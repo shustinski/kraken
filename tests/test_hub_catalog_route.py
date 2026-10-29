@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kraken_hub.dual_catalog import DualCatalogService
+from kraken_hub.composition.catalog import DualCatalogService
 from kraken_hub.infrastructure.remote.client import RemoteServerError
 
 

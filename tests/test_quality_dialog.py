@@ -8,7 +8,7 @@ def test_quality_dialog_drives_real_local_issue_assignment_and_history():
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtTest import QTest
-        from kraken_hub.quality_dialog import QualityDialog
+        from kraken_hub.presentation.qt.quality_dialog import QualityDialog
         from tests.test_work_orders import _service, _project_with_frames
         app = QApplication([])
         with tempfile.TemporaryDirectory() as temporary:
@@ -68,7 +68,7 @@ def test_quality_dialog_analysis_rule_uses_measured_runs_without_default_thresho
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtTest import QTest
-        from kraken_hub.quality_dialog import QualityDialog
+        from kraken_hub.presentation.qt.quality_dialog import QualityDialog
         from kraken_manager.infrastructure.analysis import FilesystemAnalysisStore
         from tests.test_quality_workflow import quality
         from tests.test_quality_analysis import real_inputs, real_run

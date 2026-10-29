@@ -1,6 +1,6 @@
 """remote_client: start sync."""
 from __future__ import annotations
-from kraken_hub.workspace_service import (
+from kraken_hub.application.workspace import (
     ProjectEventWake,
 )
 

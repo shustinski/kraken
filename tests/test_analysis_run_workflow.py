@@ -316,7 +316,7 @@ def test_local_agent_worker_gateway_and_manager_import_smoke(tmp_path, monkeypat
         from PyQt6.QtWidgets import QWidget, QVBoxLayout, QDialog, QLabel, QPlainTextEdit
         from PyQt6.QtCore import pyqtSignal
         from types import SimpleNamespace
-        from kraken_hub.manager_app import DesktopController
+        from kraken_hub.presentation.qt.manager_app import DesktopController
         from kraken_manager.presentation.qt.analysis_ui import AnalysisRunsPanel
 
         class Workspace(QWidget):

@@ -2,7 +2,7 @@
 from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
-from kraken_hub.workspace_service import (
+from kraken_hub.application.workspace import (
     ProjectEventWake,
 )
 

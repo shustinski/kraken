@@ -25,9 +25,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from kraken_core.frame_matrix.qt import FrameRect
-from kraken_hub import manager_app, windows_credentials
+from kraken_hub.presentation.qt import manager_app
+from kraken_hub.infrastructure.credentials import windows as windows_credentials
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
     _configure_administration_page,
     _count_regular_files,
@@ -40,7 +41,7 @@ from kraken_hub.manager_app import (
     _performer_panel,
     _statistics_panel,
 )
-from kraken_hub.statistics_widgets import MetricChartWidget
+from kraken_hub.presentation.qt.statistics_widgets import MetricChartWidget
 from kraken_manager.domain.identity import Permission
 from kraken_manager.domain.project import LayerType, RepresentationKind
 from kraken_manager.infrastructure.reports import ActivityRecord

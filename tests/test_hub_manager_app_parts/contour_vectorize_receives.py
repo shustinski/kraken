@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
 )
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
     _configure_administration_page,
 )

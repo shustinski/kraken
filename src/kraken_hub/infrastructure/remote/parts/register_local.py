@@ -9,7 +9,7 @@ from kraken_manager.domain.identity import (
     Principal,
 )
 from kraken_manager.infrastructure.filesystem._codec import decode_model
-from kraken_hub.workspace_service import (
+from kraken_hub.application.workspace import (
     REMOTE_STORAGE_PROFILE,
     ProjectEventWake,
 )

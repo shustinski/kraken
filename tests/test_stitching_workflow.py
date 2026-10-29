@@ -104,7 +104,7 @@ def test_stitching_accepts_arbitrary_files_keeps_variants_and_selects_primary(tm
 
 def test_stitching_dialog_uploads_and_marks_only_the_matching_kind(tmp_path, monkeypatch):
     from time import monotonic
-    from kraken_hub.stitching_dialog import StitchingDialog
+    from kraken_hub.presentation.qt.stitching_dialog import StitchingDialog
 
     app = QApplication.instance() or QApplication([])
     _, local, session, project, layer, *_ = _server_layer(tmp_path)

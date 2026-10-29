@@ -202,7 +202,8 @@ from kraken_manager.infrastructure.plugin import (
     domain_result_from_transport,
 )
 from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
-from kraken_hub.secret_store import KeyringSecretStore
+from kraken_hub.application.analysis_run import KarakalAnalysisRun
+from kraken_hub.infrastructure.credentials.secret_store import KeyringSecretStore
 
 from .parts.revoke_project_role import RevokeProjectRoleMixin
 from .parts.record_workspace_event import RecordWorkspaceEventMixin
@@ -256,7 +257,6 @@ from .parts.frame_cell_snapshot import (
     IntegrityScanResult,
     FrameCellSnapshot,
     FrameManagementState,
-    KarakalAnalysisRun,
     ProjectDeletionResult,
 )
 

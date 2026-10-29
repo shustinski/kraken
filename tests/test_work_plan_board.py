@@ -3,8 +3,8 @@ from threading import Event
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtWidgets import QFileDialog
 
-from kraken_hub.work_plan_board import WorkPlanBoardDialog, WorkPlanBoardWidget
-from kraken_hub.work_planning_dialog import WorkPlanningDialog
+from kraken_hub.presentation.qt.work_plan_board import WorkPlanBoardDialog, WorkPlanBoardWidget
+from kraken_hub.presentation.qt.work_planning_dialog import WorkPlanningDialog
 from tests.test_work_plan_analytics_integration import seed_plan
 from tests.test_work_planning_integration import setup_project
 
@@ -150,7 +150,7 @@ def test_board_close_waits_for_running_read_and_keeps_worker_registered(qtbot, t
 def test_statistics_page_keeps_qt_responsive_during_real_background_report_read(qtbot, tmp_path):
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QTabWidget
-    from kraken_hub.manager_app_parts.statistics_panel import _statistics_panel
+    from kraken_hub.presentation.qt.parts.statistics_panel import _statistics_panel
 
     local, principal, project, layer, performer = setup_project(tmp_path)
     entered, release = Event(), Event()

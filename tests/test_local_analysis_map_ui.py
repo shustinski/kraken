@@ -7,7 +7,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QDialog
 
-from kraken_hub.local_analysis_maps import LocalAnalysisMapController, _LOCAL_MAP_CALLS
+from kraken_hub.presentation.qt.local_analysis_maps import LocalAnalysisMapController, _LOCAL_MAP_CALLS
 from kraken_manager.presentation.qt.analysis_ui import AnalysisRunsPanel
 from tests.test_electrical_graph import png
 

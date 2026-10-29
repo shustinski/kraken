@@ -7,7 +7,7 @@ from kraken_manager.domain.common import (
 )
 from kraken_manager.domain.events import EventEnvelope
 
-from kraken_hub.composition.parts.frame_cell_snapshot import KarakalAnalysisRun
+from kraken_hub.application.analysis_run import KarakalAnalysisRun
 
 
 class LatestKarakalAnalysisMixin:

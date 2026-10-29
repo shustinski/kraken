@@ -8,10 +8,10 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTabWidget,
 )
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     _statistics_panel,
 )
-from kraken_hub.statistics_widgets import MetricChartWidget
+from kraken_hub.presentation.qt.statistics_widgets import MetricChartWidget
 from kraken_manager.infrastructure.reports import ActivityRecord
 
 def test_statistics_panel_has_human_readable_project_filtered_charts(qapp) -> None:

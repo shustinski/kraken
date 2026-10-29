@@ -25,6 +25,13 @@ plugin process APIs. `application` exposes semantic ports rather than a generic
 storage abstraction. Backend selection and credentials belong only to a
 composition root.
 
+`kraken_hub` is the desktop composition root. Its own layers follow the same
+direction: `domain` (catalog ownership and credential-target names), `application`
+(the workspace port and the shared server error), `infrastructure` (HTTP,
+credentials, and the local agent process), and `presentation` (the Qt shell and
+deployment probes). The embedded file-project service and the local/remote
+catalog façade stay in `composition`. Project rules stay in `kraken_manager`.
+
 `kraken_server` is one of those composition roots. Its HTTP interface is
 `kraken_server.interface.http`: the factory builds one context, and each module
 under `routes/` registers one resource. Those route modules do not import the

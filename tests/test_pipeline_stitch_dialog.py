@@ -5,8 +5,8 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QComboBox, QDialogButtonBox, QLabel
 import pytest
 
-from kraken_hub.layer_pipeline_dialog import LayerPipelineDialog
-from kraken_hub.pipeline_stitch_editor import edit_stitch_step
+from kraken_hub.presentation.qt.layer_pipeline_dialog import LayerPipelineDialog
+from kraken_hub.presentation.qt.pipeline_stitch_editor import edit_stitch_step
 from kraken_manager.domain.pipeline import PipelineResources
 from kraken_manager.domain.pipeline_layer import PipelineLayerContent, PipelineLayerOperation
 from kraken_manager.domain.multilayer import MultilayerModel
@@ -89,7 +89,7 @@ def test_layer_editor_rejects_invalid_geometry_selection_without_replacing_conte
 def test_desktop_background_controller_executes_layer_only_graph(qtbot, computing):
     from types import SimpleNamespace
     from PyQt6.QtWidgets import QMainWindow
-    from kraken_hub.manager_app_parts.pipeline_controller import PipelineControllerMixin
+    from kraken_hub.presentation.qt.parts.pipeline_controller import PipelineControllerMixin
     from tests.test_pipeline_stitch_runtime import define
 
     local, session, _, _, _, _, gateway, runner, _ = computing

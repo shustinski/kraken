@@ -1,7 +1,7 @@
 """Repeat the administration backup action against a changed real project."""
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QPushButton
 
-from kraken_hub.manager_app_parts.administration_panel import _administration_panel
+from kraken_hub.presentation.qt.parts.administration_panel import _administration_panel
 from kraken_manager.infrastructure.migration import BundleVerifier, load_bundle_manifest
 from tests.test_work_orders import _service, _project_with_frames
 

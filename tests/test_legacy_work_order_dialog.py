@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import QPushButton
 from PyQt6.QtCore import Qt
 import pytest
 
-from kraken_hub.legacy_work_order_dialog import LegacyWorkOrderMigrationDialog
-from kraken_hub.manager_app_parts.administration_panel import _administration_panel
+from kraken_hub.presentation.qt.legacy_work_order_dialog import LegacyWorkOrderMigrationDialog
+from kraken_hub.presentation.qt.parts.administration_panel import _administration_panel
 
 pytest_plugins = ["tests.test_legacy_work_order_migration"]
 
@@ -59,7 +59,7 @@ from threading import Event
 from PyQt6 import sip
 from PyQt6.QtCore import QCoreApplication,QEvent
 from PyQt6.QtWidgets import QApplication,QWidget
-from kraken_hub.legacy_work_order_dialog import LegacyWorkOrderMigrationDialog,_RUNNING
+from kraken_hub.presentation.qt.legacy_work_order_dialog import LegacyWorkOrderMigrationDialog,_RUNNING
 entered=Event(); release=Event()
 class Service:
  def plan_legacy_work_order_migration(self,**kwargs):

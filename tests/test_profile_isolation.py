@@ -4,8 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-from kraken_hub import windows_credentials
-from kraken_hub.manager_app_parts.development_session import _remember_credentials
+from kraken_hub.infrastructure.credentials import windows as windows_credentials
+from kraken_hub.presentation.qt.parts.development_session import _remember_credentials
 
 
 def test_credential_targets_preserve_default_and_separate_profiles(tmp_path):
@@ -34,7 +34,7 @@ import json,sys
 from pathlib import Path
 from kraken_core.settings import QSettings
 from PyQt6.QtCore import QSettings as NativeQSettings
-from kraken_hub.app import configure_settings_directory
+from kraken_hub.composition.app import configure_settings_directory
 assert QSettings('Kraken','KrakenHub').fileName() == NativeQSettings('Kraken','KrakenHub').fileName()
 root=configure_settings_directory(sys.argv[1])
 settings=QSettings('Kraken','KrakenHub')

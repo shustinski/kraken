@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from kraken_hub.deployment_matrix_probe import prepare_project, probe_records, verify_project
+from kraken_hub.presentation.probes.deployment_matrix_probe import prepare_project, probe_records, verify_project
 from kraken_manager.domain.project import GridOrientation
 from tests.test_work_orders import _service
 
@@ -52,7 +52,7 @@ def test_reference_cli_requires_an_isolated_self_test_directory(option):
 
 def test_previous_fixture_rejects_another_profile_before_opening_accounts(tmp_path):
     from uuid import uuid4
-    from kraken_hub.deployment_upgrade_probe import previous_fixture
+    from kraken_hub.presentation.probes.deployment_upgrade_probe import previous_fixture
 
     root = tmp_path / ("desktop-self-test-" + uuid4().hex)
     (root / "profile").mkdir(parents=True)

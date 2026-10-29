@@ -54,7 +54,7 @@ def run_gate(root):
     from contour.domain import PolygonData
     from contour.serializers import save_polygons_cif
     from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_directory
-    from kraken_hub.agent_runtime import LocalAgentRuntime
+    from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
     from kraken_hub.composition import EmbeddedProjectService
     from kraken_manager.application.dto import AddArtifactVersionCommand, CommandContext
     from kraken_manager.application.use_cases import AddArtifactVersionHandler

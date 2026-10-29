@@ -65,7 +65,7 @@ class RemoveLayerPipelineActionMixin:
 
     @staticmethod
     def _karakal_run(project_id: object, event: Mapping[str, object]) -> object:
-        from kraken_hub.composition import KarakalAnalysisRun
+        from kraken_hub.application.analysis_run import KarakalAnalysisRun
 
         raw = event.get("payload", {})
         payload = raw if isinstance(raw, Mapping) else {}

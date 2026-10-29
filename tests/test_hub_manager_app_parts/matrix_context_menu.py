@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from kraken_core.frame_matrix.qt import FrameRect
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
 )
 from kraken_manager.domain.identity import Permission

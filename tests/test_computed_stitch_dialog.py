@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMainWindow
 
-from kraken_hub.agent_runtime import LocalAgentRuntime
-from kraken_hub.computed_stitch_dialog import ComputedStitchDialog, _STITCH_CALLS
+from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
+from kraken_hub.presentation.qt.computed_stitch_dialog import ComputedStitchDialog, _STITCH_CALLS
 from tests.test_stitch_plan_workflow import geometry as geometry
 
 

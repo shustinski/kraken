@@ -296,7 +296,7 @@ def test_inference_import_rejects_invalid_parameters_without_changing_settings(k
 
 
 def test_theme_preferences_apply_and_restore_all_choices(tmp_path, monkeypatch, app):
-    from kraken_hub import preferences_dialog as preferences
+    from kraken_hub.presentation.qt import preferences_dialog as preferences
     from kraken_core.theme import apply_app_theme, shared_theme_stylesheet
 
     settings = QSettings(str(tmp_path / "preferences.ini"), QSettings.Format.IniFormat)
@@ -358,7 +358,7 @@ def test_light_theme_repaints_graphics_scenes(app):
 
 
 def test_theme_cancel_does_not_apply(tmp_path, monkeypatch, app):
-    from kraken_hub import preferences_dialog as preferences
+    from kraken_hub.presentation.qt import preferences_dialog as preferences
 
     settings = QSettings(str(tmp_path / "preferences.ini"), QSettings.Format.IniFormat)
     settings.setValue("appearance/theme", "light")
@@ -372,7 +372,7 @@ def test_theme_cancel_does_not_apply(tmp_path, monkeypatch, app):
 
 def test_pipeline_uses_applied_parameters_and_human_titles():
     from datetime import UTC, datetime
-    from kraken_hub.manager_app import DesktopController
+    from kraken_hub.presentation.qt.manager_app import DesktopController
     from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
 
     now = datetime.now(UTC)

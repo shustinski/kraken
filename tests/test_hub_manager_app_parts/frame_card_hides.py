@@ -1,7 +1,7 @@
 """test_hub_manager_app: test frame card hides."""
 from __future__ import annotations
 from types import SimpleNamespace
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
 )
 from kraken_manager.domain.identity import Permission

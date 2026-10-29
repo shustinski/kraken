@@ -14,7 +14,7 @@ from kraken_manager.domain.project import (
     Project,
     StructureState,
 )
-from kraken_hub.workspace_service import (
+from kraken_hub.application.workspace import (
     project_from_server_dict,
 )
 

@@ -1,7 +1,7 @@
 """test_hub_manager_app: test property helpers filter."""
 from __future__ import annotations
 from pathlib import Path
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     _count_regular_files,
     _event_belongs_to_layer,
     _event_matches_node,

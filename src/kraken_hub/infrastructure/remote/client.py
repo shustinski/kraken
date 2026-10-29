@@ -62,7 +62,7 @@ from kraken_manager.infrastructure.reports import (
     ReportSeries,
 )
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
-from kraken_hub.workspace_service import (
+from kraken_hub.application.workspace import (
     REMOTE_STORAGE_PROFILE,
     ProjectEventWake,
     project_from_server_dict,

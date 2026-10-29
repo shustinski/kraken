@@ -11,6 +11,7 @@ from pathlib import Path
 from kraken_manager.domain.identity import (
     Principal,
 )
+from kraken_hub.application.remote_error import RemoteServerError
 
 def _layer_file_binding(payload: Mapping[str, object]):
     from kraken_manager.workspace import ImageConversionSettings, LayerFileBinding
@@ -111,20 +112,6 @@ def _extract_review_archive(archive: Path, destination: Path) -> None:
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
-class RemoteServerError(RuntimeError):
-    def __init__(
-        self,
-        message: str,
-        *,
-        status: int | None = None,
-        body: str = "",
-        problem: Mapping[str, object] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.status = status
-        self.body = body
-        self.problem = dict(problem or {})
-        self.code = str(self.problem.get("code", ""))
 
 @dataclass(slots=True)
 class RemoteAuth:

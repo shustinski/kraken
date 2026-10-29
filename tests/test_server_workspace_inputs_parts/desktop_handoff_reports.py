@@ -2,7 +2,7 @@
 from __future__ import annotations
 from types import SimpleNamespace
 import pytest
-from kraken_hub.manager_app import DesktopController
+from kraken_hub.presentation.qt.manager_app import DesktopController
 
 @pytest.mark.parametrize("fails", [False, True])
 def test_desktop_handoff_reports_result_and_refreshes_on_qt_thread(qtbot, fails):

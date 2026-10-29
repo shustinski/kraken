@@ -7,7 +7,7 @@ from PIL import Image
 
 from kraken_core.plugin_protocol import WorkspacePluginResultV1
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.manager_app import DesktopController
+from kraken_hub.presentation.qt.manager_app import DesktopController
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.workspace import (
     DerivedRunKind,

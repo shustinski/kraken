@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .app import main
+from kraken_hub.composition.app import main
 
 if __name__ == "__main__":
     main()

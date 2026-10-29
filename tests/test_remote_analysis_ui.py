@@ -7,7 +7,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QDialog, QLabel
 
-from kraken_hub.remote_analysis import RemoteAnalysisController, _ACTIVE_CALLS
+from kraken_hub.presentation.qt.remote_analysis import RemoteAnalysisController, _ACTIVE_CALLS
 from kraken_manager.presentation.qt.analysis_ui import AnalysisRunsPanel
 
 
@@ -100,7 +100,7 @@ def test_remote_panel_commands_and_csv_use_background_calls(qtbot, tmp_path, mon
     assert service.commands[-1][0] == "cancel" and service.commands[-1][2] == 1
     qtbot.waitUntil(lambda: controller._worker is None)
     target = tmp_path / "analysis.csv"
-    monkeypatch.setattr("kraken_hub.remote_analysis.QFileDialog.getSaveFileName", lambda *a: (str(target), "CSV"))
+    monkeypatch.setattr("kraken_hub.presentation.qt.remote_analysis.QFileDialog.getSaveFileName", lambda *a: (str(target), "CSV"))
     controller.export("1")
     qtbot.waitUntil(target.exists)
     assert "transport fixture" in target.read_text(encoding="utf-8-sig")

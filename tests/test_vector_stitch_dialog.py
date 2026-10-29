@@ -6,9 +6,9 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QComboBox, QDialogButtonBox
 from shapely import box
 
-from kraken_hub.computed_stitch_dialog import MosaicBlockDialog
-from kraken_hub.layer_pipeline_dialog import LayerPipelineDialog
-from kraken_hub.pipeline_stitch_editor import edit_stitch_step
+from kraken_hub.presentation.qt.computed_stitch_dialog import MosaicBlockDialog
+from kraken_hub.presentation.qt.layer_pipeline_dialog import LayerPipelineDialog
+from kraken_hub.presentation.qt.pipeline_stitch_editor import edit_stitch_step
 from kraken_manager.domain.multilayer import MultilayerModel
 from kraken_manager.domain.pipeline import PipelineOperation
 from kraken_manager.domain.project import RepresentationKind

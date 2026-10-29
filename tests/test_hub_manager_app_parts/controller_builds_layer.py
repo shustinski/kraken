@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
 )
 from kraken_manager.presentation.qt import (

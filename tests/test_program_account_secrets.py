@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QSettings
 
-from kraken_hub.preferences_dialog import (
+from kraken_hub.presentation.qt.preferences_dialog import (
     ACCOUNTS_KEY,
     ProgramAccount,
     load_program_accounts,

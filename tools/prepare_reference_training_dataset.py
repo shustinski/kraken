@@ -12,7 +12,7 @@ import zipfile
 
 from kraken_core.safe_files import open_regular_read
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.secret_store import KeyringSecretStore
+from kraken_hub.infrastructure.credentials.secret_store import KeyringSecretStore
 from kraken_manager.application.dto import AddArtifactVersionCommand, CommandContext
 from kraken_manager.application.use_cases import AddArtifactVersionHandler
 from kraken_manager.domain.artifacts import ArtifactScope

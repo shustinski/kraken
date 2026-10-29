@@ -4,7 +4,7 @@ import json
 import sys
 from types import SimpleNamespace
 
-import kraken_hub.app as hub_app
+import kraken_hub.composition.app as hub_app
 import kraken_core.plugins as plugin_core
 from kraken_core.ipc import ActionRegistry, ActionRequest
 from kraken_core.plugins import (
@@ -101,7 +101,7 @@ def test_standalone_plugin_launches_from_its_install_directory(tmp_path, monkeyp
         return object()
 
     monkeypatch.setattr("kraken_core.plugins.current_platform", lambda: "windows")
-    monkeypatch.setattr(hub_app, "current_platform", lambda: "windows")
+    monkeypatch.setattr("kraken_hub.infrastructure.agent.launch.current_platform", lambda: "windows")
     monkeypatch.setattr(hub_app, "workspace_root", lambda: tmp_path / "workspace")
     monkeypatch.setattr(hub_app.subprocess, "Popen", fake_popen)
 
@@ -303,7 +303,10 @@ def test_hub_prefers_root_plugin_launcher(tmp_path, monkeypatch):
     plugin_root = tmp_path / "plugins" / "contour"
     plugin_root.mkdir(parents=True)
     (plugin_root / "__main__.py").write_text("print('contour')\n", encoding="utf-8")
-    monkeypatch.setattr(hub_app.shutil, "which", lambda name: "uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        "kraken_hub.infrastructure.agent.launch.shutil.which",
+        lambda name: "uv" if name == "uv" else None,
+    )
 
     command = hub_app.build_launch_command(PluginMetadata(id="contour", display_name="Contour"), root=tmp_path)
 

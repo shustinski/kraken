@@ -2,7 +2,7 @@
 
 import pytest
 
-from kraken_hub.layer_pipeline_dialog import LayerPipelineDialog
+from kraken_hub.presentation.qt.layer_pipeline_dialog import LayerPipelineDialog
 from tests.test_pipeline_runtime_integration import setup
 
 
@@ -41,7 +41,7 @@ def test_shown_workflow_commands_persist_and_history_is_visible(qtbot, tmp_path,
 def test_local_controller_continues_after_workflow_dialog_is_closed(qtbot, tmp_path):
     from types import SimpleNamespace
     from PyQt6.QtWidgets import QMainWindow
-    from kraken_hub.manager_app_parts.pipeline_controller import PipelineControllerMixin
+    from kraken_hub.presentation.qt.parts.pipeline_controller import PipelineControllerMixin
     from tests.test_pipeline_runtime_integration import Gateway
 
     local, actor, project, layer, definition, state = setup(tmp_path)

@@ -33,8 +33,8 @@ from PyQt6.QtWidgets import (
 
 from kraken_core.plugins import build_plugin_inventory, scan_plugin_directory
 from kraken_hub.composition import DesktopSession, EmbeddedProjectService
-from kraken_hub.dual_catalog import DualCatalogService
-from kraken_hub.manager_app import DesktopController, _my_work_panel, _statistics_panel
+from kraken_hub.composition.catalog import DualCatalogService
+from kraken_hub.presentation.qt.manager_app import DesktopController, _my_work_panel, _statistics_panel
 from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
 from kraken_manager.presentation.qt import ProjectManagerShell
 from kraken_manager.presentation.qt.layer_creation import LayerCreationDialog
@@ -177,7 +177,7 @@ def live_ui(qtbot, tmp_path, monkeypatch):
             super().__init__(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
 
     monkeypatch.setattr(qt_core, "QSettings", AcceptanceSettings)
-    from kraken_hub import preferences_dialog
+    from kraken_hub.presentation.qt import preferences_dialog
 
     monkeypatch.setattr(preferences_dialog, "program_server_url", lambda *_args: config["server_url"])
     account = preferences_dialog.ProgramAccount(

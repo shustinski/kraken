@@ -12,8 +12,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QWidget,
 )
-from kraken_hub import manager_app
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt import manager_app
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
 )
 from kraken_manager.domain.project import RepresentationKind

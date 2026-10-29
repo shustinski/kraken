@@ -78,17 +78,6 @@ class FrameManagementState:
     performer_initials: str
     review_status: str
 
-@dataclass(frozen=True, slots=True)
-class KarakalAnalysisRun:
-    run_id: str
-    project_id: str
-    layer_id: str
-    publication_sequence: int
-    created_at: str
-    frame_confidence: dict[str, float]
-    report: dict[str, object]
-    parameters: dict[str, object]
-    plugin_version: str
 
 @dataclass(frozen=True, slots=True)
 class ProjectDeletionResult:

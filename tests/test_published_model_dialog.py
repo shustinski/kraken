@@ -5,8 +5,8 @@ from uuid import uuid4
 import pytest
 from PyQt6.QtWidgets import QDialogButtonBox, QFileDialog, QMessageBox
 
-from kraken_hub.layer_pipeline_dialog import LayerPipelineDialog
-from kraken_hub.published_model_dialog import PublishedModelDialog
+from kraken_hub.presentation.qt.layer_pipeline_dialog import LayerPipelineDialog
+from kraken_hub.presentation.qt.published_model_dialog import PublishedModelDialog
 from tests.test_pipeline_model_inputs import catalog as catalog
 from tests.test_layer_pipeline_dialog import wait_done
 
@@ -63,7 +63,7 @@ def test_workflow_editor_preserves_named_model_binding_and_shows_pinned_attempt_
 
 
 def controller(monkeypatch, *, action):
-    from kraken_hub.manager_app_parts.layer_manager_action import LayerManagerActionMixin
+    from kraken_hub.presentation.qt.parts.layer_manager_action import LayerManagerActionMixin
     recorded, submitted = [], []
     node = SimpleNamespace(node_id="model-node", kind="model", representation_id=None, details={})
     obj = SimpleNamespace(
@@ -91,7 +91,7 @@ def test_hub_published_selection_submits_reference_without_local_model_path(monk
             return True
         def parameters(self):
             return {"model_version_id": "exact-published-version"}
-    monkeypatch.setattr("kraken_hub.published_model_dialog.PublishedModelDialog", Selected)
+    monkeypatch.setattr("kraken_hub.presentation.qt.published_model_dialog.PublishedModelDialog", Selected)
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: pytest.fail("Published model opened file picker"))
     mixin._layer_manager_action(obj, "layer", node, action)
     assert submitted[0]["parameters"]["model_version_id"] == "exact-published-version"
@@ -104,7 +104,7 @@ def test_explicit_external_file_action_keeps_its_legacy_hash_pinned_contract(mon
     path = tmp_path / "legacy.pth"
     path.write_bytes(b"not a trained model: selection contract fixture")
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(path), ""))
-    monkeypatch.setattr("kraken_hub.published_model_dialog.PublishedModelDialog", lambda *a, **k: pytest.fail("Explicit file action changed"))
+    monkeypatch.setattr("kraken_hub.presentation.qt.published_model_dialog.PublishedModelDialog", lambda *a, **k: pytest.fail("Explicit file action changed"))
     mixin._layer_manager_action(obj, "layer", node, "recognize_external")
     parameters = submitted[0]["parameters"]
     assert parameters["model_source_path"] == str(path.resolve())
@@ -123,7 +123,7 @@ def test_selecting_legacy_option_opens_file_workflow_instead_of_exporting_manage
             return True
         def parameters(self):
             return {"legacy_file": True}
-    monkeypatch.setattr("kraken_hub.published_model_dialog.PublishedModelDialog", Selected)
+    monkeypatch.setattr("kraken_hub.presentation.qt.published_model_dialog.PublishedModelDialog", Selected)
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a: (str(path), ""))
     mixin._layer_manager_action(obj, "layer", node, "recognize")
     assert submitted[0]["parameters"]["model_source_path"] == str(path.resolve())

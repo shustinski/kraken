@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from PyQt6.QtCore import Qt
 
-from kraken_hub.electrical_dialog import ElectricalDialog
+from kraken_hub.presentation.qt.electrical_dialog import ElectricalDialog
 from tests.test_work_orders import _service
 
 pytest_plugins = ["tests.test_device_candidate_workflow"]

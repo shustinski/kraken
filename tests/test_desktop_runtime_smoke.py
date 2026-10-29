@@ -15,10 +15,10 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtWidgets import QApplication, QMessageBox, QPushButton
 
 from kraken_agent.runner import PluginRegistry
-from kraken_hub import manager_app
+from kraken_hub.presentation.qt import manager_app
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.dual_catalog import DualCatalogService
-from kraken_hub.manager_app import (
+from kraken_hub.composition.catalog import DualCatalogService
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
     _configure_administration_page,
     _my_work_panel,

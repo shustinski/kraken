@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
-from kraken_hub.secret_store import KeyringSecretStore
+from kraken_hub.infrastructure.credentials.secret_store import KeyringSecretStore
 
 
 def test_keyring_secret_store_round_trip_and_missing_delete(monkeypatch) -> None:

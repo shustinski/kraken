@@ -1,4 +1,9 @@
-"""Hub layers point inward: domain, then application, then adapters."""
+"""Hub layers point inward: domain, application, then adapters.
+
+The package root is only the process entry. Qt lives in presentation, OS and
+HTTP adapters live in infrastructure, and the local project service stays in
+the composition root. Inner layers do not import the desktop shell.
+"""
 
 from __future__ import annotations
 
@@ -32,6 +37,37 @@ def violations(package: Path, forbidden: set[str]) -> list[str]:
 
 
 class HubArchitectureTests(unittest.TestCase):
+    def test_package_root_is_only_the_process_entry(self) -> None:
+        root_modules = sorted(path.name for path in HUB.glob("*.py"))
+        self.assertEqual(["__init__.py", "__main__.py"], root_modules)
+        for layer in ("domain", "application", "infrastructure", "presentation", "composition"):
+            self.assertTrue((HUB / layer / "__init__.py").is_file(), layer)
+
+    def test_application_depends_only_inward(self) -> None:
+        application = HUB / "application"
+        self.assertTrue(application.is_dir(), "kraken_hub.application is missing")
+        forbidden = {
+            "PyQt6",
+            "ctypes",
+            "keyring",
+            "urllib",
+            "kraken_hub.infrastructure",
+            "kraken_hub.presentation",
+            "kraken_hub.composition",
+        }
+        self.assertEqual([], violations(application, forbidden), "\n".join(violations(application, forbidden)))
+
+    def test_infrastructure_does_not_import_the_desktop_shell(self) -> None:
+        forbidden = {
+            "PyQt6",
+            "kraken_hub.presentation",
+            "kraken_hub.composition",
+            "kraken_hub.presentation.qt.manager_app",
+            "kraken_hub.composition.catalog",
+        }
+        found = violations(HUB / "infrastructure", forbidden)
+        self.assertEqual([], found, "\n".join(found))
+
     def test_domain_has_no_outward_dependencies(self) -> None:
         domain = HUB / "domain"
         self.assertTrue(domain.is_dir(), "kraken_hub.domain is missing")
@@ -45,10 +81,10 @@ class HubArchitectureTests(unittest.TestCase):
             "kraken_hub.infrastructure",
             "kraken_hub.presentation",
             "kraken_hub.composition",
-            "kraken_hub.manager_app",
+            "kraken_hub.presentation.qt.manager_app",
             "kraken_hub.infrastructure.remote.client",
-            "kraken_hub.windows_credentials",
-            "kraken_hub.dual_catalog",
+            "kraken_hub.infrastructure.credentials.windows",
+            "kraken_hub.composition.catalog",
         }
         self.assertEqual([], violations(domain, forbidden), "\n".join(violations(domain, forbidden)))
 
@@ -59,7 +95,7 @@ class HubArchitectureTests(unittest.TestCase):
         self.assertTrue(parts.is_dir(), "remote client parts are still outside infrastructure")
         self.assertFalse((HUB / "remote_client.py").exists(), "remote client facade still sits on the package root")
         self.assertFalse((HUB / "remote_client_parts").exists(), "remote client parts still sit on the package root")
-        forbidden = {"PyQt6", "kraken_hub.presentation", "kraken_hub.manager_app", "kraken_hub.dual_catalog"}
+        forbidden = {"PyQt6", "kraken_hub.presentation", "kraken_hub.presentation.qt.manager_app", "kraken_hub.composition.catalog"}
         self.assertEqual(
             [],
             violations(HUB / "infrastructure" / "remote", forbidden),

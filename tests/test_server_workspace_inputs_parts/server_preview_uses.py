@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import pytest
 from PyQt6.QtGui import QImage
-from kraken_hub.matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
+from kraken_hub.presentation.qt.matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
 from kraken_core.frame_matrix import MatrixBounds, MatrixViewportRequest
 from kraken_server.services import ForbiddenError, NotFoundError, ValidationError
 

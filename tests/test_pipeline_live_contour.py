@@ -11,7 +11,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_directory
-from kraken_hub.agent_runtime import LocalAgentRuntime
+from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.pipeline import LayerPipelineDefinition, PipelineOperation, PipelinePolicy, PipelineResources
 from kraken_manager.domain.project import RepresentationKind

@@ -8,7 +8,7 @@ from uuid import uuid4
 from PIL import Image, ImageDraw
 
 from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_directory
-from kraken_hub.agent_runtime import LocalAgentRuntime
+from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
 from kraken_manager.domain.artifacts import ArtifactScope, deterministic_frame_series_id
 from kraken_manager.domain.multilayer import MultilayerModel
 from kraken_manager.domain.pipeline import LayerPipelineDefinition, PipelineOperation

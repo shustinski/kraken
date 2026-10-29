@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QWidget,
 )
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
 )
 

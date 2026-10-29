@@ -7,14 +7,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from kraken_hub.dual_catalog import DualCatalogService
+from kraken_hub.composition.catalog import DualCatalogService
 from kraken_hub.infrastructure.remote.client import (
     RemoteAuth,
     RemoteHttpClient,
     RemoteServerError,
     RemoteServerProjectService,
 )
-from kraken_hub.workspace_service import REMOTE_STORAGE_PROFILE, project_from_server_dict
+from kraken_hub.application.workspace import REMOTE_STORAGE_PROFILE, project_from_server_dict
 from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.artifacts import ArtifactVersion, BlobRef
 from kraken_manager.domain.common import ArtifactSeriesId, PrincipalId
@@ -246,7 +246,7 @@ def test_dual_catalog_routes_create_by_storage_profile(tmp_path: Path) -> None:
 def test_dual_catalog_can_configure_remote_during_desktop_session(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from kraken_hub import dual_catalog
+    from kraken_hub.composition import catalog as dual_catalog
     from kraken_hub.composition import EmbeddedProjectService
 
     local = EmbeddedProjectService(data_dir=tmp_path / "local")

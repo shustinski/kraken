@@ -3,8 +3,8 @@
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtWidgets import QApplication, QDialog
 
-from kraken_hub.work_planning_dialog import WorkPlanningDialog
-from kraken_hub.work_template_editor import WorkTemplateEditor
+from kraken_hub.presentation.qt.work_planning_dialog import WorkPlanningDialog
+from kraken_hub.presentation.qt.work_template_editor import WorkTemplateEditor
 from tests.test_work_planning_dialog import click, wait_done, check_layer
 from tests.test_work_planning_integration import setup_project
 from tests.test_work_templates import definition, recipe

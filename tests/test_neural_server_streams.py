@@ -124,7 +124,7 @@ def test_agent_preserves_username_for_torch_optimizer(monkeypatch):
 
 def test_remote_hub_does_not_create_local_analysis_store(monkeypatch):
     from types import SimpleNamespace
-    from kraken_hub import manager_app
+    from kraken_hub.presentation.qt import manager_app
 
     controller = object.__new__(manager_app.DesktopController)
     controller.service = SimpleNamespace(is_remote_project=lambda _id: True)
@@ -137,7 +137,7 @@ def test_remote_hub_does_not_create_local_analysis_store(monkeypatch):
         remote_controllers.append((parent, service, project_id, options, instance))
         return instance
 
-    monkeypatch.setattr("kraken_hub.remote_analysis.RemoteAnalysisController", remote_controller)
+    monkeypatch.setattr("kraken_hub.presentation.qt.remote_analysis.RemoteAnalysisController", remote_controller)
     monkeypatch.setattr(
         manager_app, "FilesystemAnalysisStore", lambda *_args: pytest.fail("Local project store opened")
     )

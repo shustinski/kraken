@@ -199,7 +199,7 @@ def test_remote_analysis_executes_actual_short_karakal_and_reopens(database, tmp
             assert reopened.analysis_map_bytes(pid, first["run_id"], frame_id) == response.content
             from types import SimpleNamespace
             from PyQt6.QtWidgets import QWidget, QVBoxLayout, QDialog, QLabel, QPlainTextEdit
-            from kraken_hub.remote_analysis import RemoteAnalysisController
+            from kraken_hub.presentation.qt.remote_analysis import RemoteAnalysisController
             from kraken_manager.presentation.qt.analysis_ui import AnalysisRunsPanel
 
             class HttpBridge:

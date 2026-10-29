@@ -10,7 +10,7 @@ import pytest
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QFileDialog, QMessageBox, QPushButton
 
-from kraken_hub.manager_app_parts.administration_panel import _administration_panel
+from kraken_hub.presentation.qt.parts.administration_panel import _administration_panel
 from tests.test_work_orders import _service, _project_with_frames
 
 
@@ -145,7 +145,7 @@ import threading,time,sys
 from PyQt6 import sip
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication,QWidget,QLabel
-from kraken_hub.administration_tasks import AdministrationTasks,_RUNNING
+from kraken_hub.presentation.qt.administration_tasks import AdministrationTasks,_RUNNING
 app=QApplication([]);owner=QWidget();status=QLabel(owner);received=[]
 entered=threading.Event();release=threading.Event();done=threading.Event()
 def work():

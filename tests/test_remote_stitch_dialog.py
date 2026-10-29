@@ -16,7 +16,7 @@ import uvicorn
 
 from kraken_agent.runner import PluginProcessSpec, PluginRegistry
 from kraken_agent.server_worker import ServerAgentWorker
-from kraken_hub.computed_stitch_dialog import ComputedStitchDialog, _STITCH_CALLS
+from kraken_hub.presentation.qt.computed_stitch_dialog import ComputedStitchDialog, _STITCH_CALLS
 from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteHttpClient, RemoteServerError, RemoteServerProjectService
 from kraken_manager.domain.identity import Principal, ProjectRole, ProjectRoleAssignment
 from kraken_manager.domain.multilayer import MultilayerModel

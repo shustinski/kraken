@@ -21,7 +21,7 @@ from kraken_manager.domain import GridOrientation, LayerType
 
 @pytest.mark.parametrize("kind", ["source", "binary"])
 def test_pipeline_vectorization_uses_clicked_image_representation(kind):
-    from kraken_hub.manager_app import DesktopController
+    from kraken_hub.presentation.qt.manager_app import DesktopController
     from kraken_manager.presentation.qt.layer_management import (
         LayerPipelineSnapshot, PipelineLane, PipelineNode,
     )
@@ -47,7 +47,7 @@ def test_pipeline_vectorization_uses_clicked_image_representation(kind):
 
 def test_selecting_active_image_refreshes_its_new_vector_representations():
     from types import SimpleNamespace
-    from kraken_hub.manager_app import DesktopController
+    from kraken_hub.presentation.qt.manager_app import DesktopController
     from kraken_manager.domain.project import RepresentationKind
 
     project = SimpleNamespace(id="project")

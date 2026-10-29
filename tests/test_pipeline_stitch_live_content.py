@@ -21,7 +21,7 @@ def test_actual_inference_outputs_are_sampled_without_replacing_geometry(geometr
     from neuralimage.model.NeuralNetwork import create_model
     from neuralimage.model.NeuralNetwork.model_io import save_model_artifact
     from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_directory
-    from kraken_hub.agent_runtime import LocalAgentRuntime
+    from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
     from kraken_manager.application.dto import AddArtifactVersionCommand, CommandContext
     from kraken_manager.application.use_cases import AddArtifactVersionHandler
     from kraken_manager.domain.artifacts import ArtifactScope

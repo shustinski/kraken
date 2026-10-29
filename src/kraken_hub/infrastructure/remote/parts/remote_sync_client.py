@@ -4,7 +4,7 @@ import json
 import threading
 from collections.abc import Callable, Mapping
 from typing import Any
-from kraken_hub.workspace_service import (
+from kraken_hub.application.workspace import (
     ProjectEventWake,
 )
 

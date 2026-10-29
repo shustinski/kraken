@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from PyQt6.QtCore import Qt
 
-from kraken_hub.multilayer_dialog import MultilayerDialog
+from kraken_hub.presentation.qt.multilayer_dialog import MultilayerDialog
 from tests.test_work_orders import _service
 
 pytest_plugins = ["tests.test_multilayer_workflow"]

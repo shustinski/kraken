@@ -7,10 +7,10 @@ import pytest
 from PIL import Image
 from PyQt6.QtWidgets import QDialog, QMessageBox
 
-from kraken_hub import manager_app
+from kraken_hub.presentation.qt import manager_app
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.dual_catalog import DualCatalogService
-from kraken_hub.manager_app import DesktopController
+from kraken_hub.composition.catalog import DualCatalogService
+from kraken_hub.presentation.qt.manager_app import DesktopController
 from kraken_manager.application.dto import CommandContext, CreateProjectCommand
 from kraken_manager.application.errors import AuthorizationError
 from kraken_manager.application.use_cases import CreateProjectHandler

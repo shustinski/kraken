@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QTableWidget,
 )
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     _my_work_panel,
 )
 from kraken_manager.domain.identity import Permission

@@ -2,7 +2,7 @@
 from __future__ import annotations
 from types import SimpleNamespace
 import pytest
-from kraken_hub.manager_app import DesktopController
+from kraken_hub.presentation.qt.manager_app import DesktopController
 from kraken_manager.domain.project import RepresentationKind
 
 from test_server_workspace_inputs_parts.server_layer import _server_layer
@@ -11,7 +11,7 @@ from test_server_workspace_inputs_parts.server_layer import _server_layer
 @pytest.mark.parametrize("remote", [False, True])
 @pytest.mark.parametrize("existing_target", ["missing", "linked", "unrelated"])
 def test_contour_launch_creates_or_reuses_empty_output(tmp_path, monkeypatch, remote, existing_target, capability):
-    from kraken_hub import manager_app
+    from kraken_hub.presentation.qt import manager_app
     from kraken_manager.domain.project import RepresentationPurpose
 
     output_kind = RepresentationKind.VECTOR if capability == "frames.vectorize.v1" else RepresentationKind.IMAGE

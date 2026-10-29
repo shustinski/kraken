@@ -8,9 +8,9 @@ from pathlib import Path
 import time
 
 from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_directory
-from kraken_hub.agent_runtime import LocalAgentRuntime
+from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.secret_store import KeyringSecretStore
+from kraken_hub.infrastructure.credentials.secret_store import KeyringSecretStore
 from kraken_manager.application.dto import AddArtifactVersionCommand, CommandContext, StoredContent
 from kraken_manager.application.use_cases import AddArtifactVersionHandler
 from kraken_manager.domain.artifacts import is_training_dataset_artifact

@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import pytest
 from PIL import Image
-from kraken_hub.manager_app import DesktopController
+from kraken_hub.presentation.qt.manager_app import DesktopController
 
 from test_server_workspace_inputs_parts.desktop_job import _desktop_job
 

@@ -10,7 +10,7 @@ from PIL import Image
 from PyQt6.QtGui import QImage
 
 from kraken_core.frame_matrix import MatrixAssetRef
-from kraken_hub.matrix_source import KrakenMatrixAssetSource
+from kraken_hub.presentation.qt.matrix_source import KrakenMatrixAssetSource
 from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProjectService
 from kraken_manager.domain.identity import Principal
 
@@ -31,7 +31,7 @@ def test_remote_preview_never_opens_server_path(tmp_path, monkeypatch):
     def forbidden_file(*_args, **_kwargs):
         raise AssertionError("Hub attempted to open a server-side path")
 
-    monkeypatch.setattr("kraken_hub.matrix_source.open_regular_read", forbidden_file)
+    monkeypatch.setattr("kraken_hub.presentation.qt.matrix_source.open_regular_read", forbidden_file)
     reference = MatrixAssetRef(
         source_key="image-version",
         source_revision="1",

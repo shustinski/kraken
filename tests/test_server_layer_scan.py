@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from kraken_hub.dual_catalog import DualCatalogService
+from kraken_hub.composition.catalog import DualCatalogService
 from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
 from kraken_manager.domain.identity import Principal, ProjectRole
 from kraken_manager.presentation.qt.layer_creation import LayerCreationDialog

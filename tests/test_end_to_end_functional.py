@@ -53,7 +53,7 @@ def run_gate(root):
     from PIL import Image, ImageDraw
     from contour.serializers import load_polygons_cif, save_polygons_cif
     from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_directory
-    from kraken_hub.agent_runtime import LocalAgentRuntime
+    from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
     from kraken_hub.composition import EmbeddedProjectService
     from kraken_manager.application.dto import AddArtifactVersionCommand, CommandContext
     from kraken_manager.application.errors import AuthorizationError

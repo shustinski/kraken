@@ -3,7 +3,7 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from kraken_hub import manager_app
+from kraken_hub.presentation.qt import manager_app
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application import dto
 
@@ -90,7 +90,7 @@ def _desktop_ui_source() -> str:
     """Qt routes live in the desktop facade and the modules split out of it."""
     root = Path(manager_app.__file__).resolve().parent
     chunks = [inspect.getsource(manager_app)]
-    parts = root / "manager_app_parts"
+    parts = root / "parts"
     if parts.is_dir():
         chunks.extend(
             path.read_text(encoding="utf-8")

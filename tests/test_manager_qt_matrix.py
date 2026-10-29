@@ -18,7 +18,7 @@ from kraken_core.frame_matrix import (
     MatrixViewportResult,
 )
 from kraken_core.frame_matrix.adapters.memory import MemoryThumbnailStore
-from kraken_hub.matrix_source import KrakenMatrixDataSource
+from kraken_hub.presentation.qt.matrix_source import KrakenMatrixDataSource
 from kraken_manager.presentation.qt import (
     FrameCellData,
     FrameMatrixMinimap,

@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from kraken_hub.manager_app_parts.my_work_panel import _fit_my_work_table
+from kraken_hub.presentation.qt.parts.my_work_panel import _fit_my_work_table
 from kraken_manager.presentation.qt.text_bounds import TABLE_ROW_HEIGHT_LIMIT
 
 

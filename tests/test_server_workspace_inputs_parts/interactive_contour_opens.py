@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-from kraken_hub.manager_app import DesktopController
+from kraken_hub.presentation.qt.manager_app import DesktopController
 from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProjectService
 from kraken_server.app import SessionPrincipal, create_app
 from kraken_server.services import CommandContext

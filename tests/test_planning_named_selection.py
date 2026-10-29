@@ -5,8 +5,8 @@ from types import SimpleNamespace
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialogButtonBox, QLabel
 
-from kraken_hub.planning_evidence_picker import PlanningEvidencePicker
-from kraken_hub.work_planning_dialog import WorkPlanningDialog
+from kraken_hub.presentation.qt.planning_evidence_picker import PlanningEvidencePicker
+from kraken_hub.presentation.qt.work_planning_dialog import WorkPlanningDialog
 from kraken_manager.domain.planning import WorkScope
 from tests.test_work_planning_dialog import click, wait_done, check_layer, move
 from tests.test_work_orders import _service, _project_with_frames

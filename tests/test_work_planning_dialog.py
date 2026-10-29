@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QDialogButtonBox
 
-from kraken_hub.work_planning_dialog import WorkPlanningDialog
+from kraken_hub.presentation.qt.work_planning_dialog import WorkPlanningDialog
 from kraken_manager.domain.planning import (
     AcceptanceCriterion, WorkAssignment, WorkItem, WorkPlan, WorkScope,
 )
@@ -113,7 +113,7 @@ def move(qtbot, dialog, state):
 
 
 def choose_evidence(qtbot, dialog, monkeypatch, identifier=None):
-    from kraken_hub.planning_evidence_picker import PlanningEvidencePicker
+    from kraken_hub.presentation.qt.planning_evidence_picker import PlanningEvidencePicker
     original = PlanningEvidencePicker.exec
 
     def execute(picker):
@@ -283,7 +283,7 @@ def test_plan_operation_participates_in_hub_close_guard(qtbot):
     from threading import Event
     from types import SimpleNamespace
     from uuid import uuid4
-    from kraken_hub.work_planning_dialog import WorkPlanningDialog
+    from kraken_hub.presentation.qt.work_planning_dialog import WorkPlanningDialog
 
     release = Event()
     workers = set()

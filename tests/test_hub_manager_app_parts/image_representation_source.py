@@ -5,11 +5,13 @@ from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
     QLineEdit,
+    QPushButton,
     QWidget,
 )
-from kraken_hub import windows_credentials
+from kraken_hub.infrastructure.credentials import windows as windows_credentials
+from kraken_hub.presentation.qt import windows_hello
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.manager_app import (
+from kraken_hub.presentation.qt.manager_app import (
     DesktopController,
     _development_session,
     _login,
@@ -69,7 +71,7 @@ def test_login_autofills_only_after_windows_verification(qapp, monkeypatch, tmp_
     monkeypatch.setattr(windows_credentials, "credentials_available", lambda *, target: targets.append(target) or True)
     monkeypatch.setattr(windows_credentials, "load_credentials", lambda *, target: targets.append(target) or ("operator", "secret"))
     monkeypatch.setattr(
-        windows_credentials,
+        windows_hello,
         "verify_windows_identity",
         lambda window: verification_windows.append(window) or True,
     )
@@ -79,6 +81,14 @@ def test_login_autofills_only_after_windows_verification(qapp, monkeypatch, tmp_
         assert dialog.objectName() == "loginDialog"
         username = dialog.findChild(QLineEdit, "loginUsername")
         password = dialog.findChild(QLineEdit, "loginPassword")
+        assert username is not None and username.text() == ""
+        assert password is not None and password.text() == ""
+        assert verification_windows == []
+        assert targets == []
+        dialog.show()
+        autofill = dialog.findChild(QPushButton, "loginAutofill")
+        assert autofill is not None
+        autofill.click()
         assert username is not None and username.text() == "operator"
         assert password is not None and password.text() == "secret"
         return QDialog.DialogCode.Accepted
@@ -96,7 +106,7 @@ def test_login_does_not_autofill_when_windows_verification_is_cancelled(qapp, mo
     service = EmbeddedProjectService(tmp_path)
     service.create_initial_account("operator", "Operator", "secret")
     monkeypatch.setattr(windows_credentials, "credentials_available", lambda **_kwargs: True)
-    monkeypatch.setattr(windows_credentials, "verify_windows_identity", lambda _window: False)
+    monkeypatch.setattr(windows_hello, "verify_windows_identity", lambda _window: False)
     monkeypatch.setattr(
         windows_credentials,
         "load_credentials",
@@ -104,6 +114,10 @@ def test_login_does_not_autofill_when_windows_verification_is_cancelled(qapp, mo
     )
 
     def cancel_empty_dialog(dialog: QDialog) -> QDialog.DialogCode:
+        dialog.show()
+        autofill = dialog.findChild(QPushButton, "loginAutofill")
+        assert autofill is not None
+        autofill.click()
         username = dialog.findChild(QLineEdit, "loginUsername")
         password = dialog.findChild(QLineEdit, "loginPassword")
         assert username is not None and username.text() == ""

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kraken_hub.agent_runtime import LocalAgentRuntime
+from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
 
 
 def test_source_plugin_can_launch_without_package_installation(tmp_path):
@@ -46,7 +46,7 @@ def test_local_agent_runtime_starts_lazily_and_shuts_down_cleanly(tmp_path) -> N
 
 def test_concurrent_scheduler_and_ui_share_one_agent_process(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
-    import kraken_hub.agent_runtime as runtime_module
+    import kraken_hub.infrastructure.agent.runtime as runtime_module
 
     started = []
     launch = runtime_module.subprocess.Popen

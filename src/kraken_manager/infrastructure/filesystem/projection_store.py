@@ -14,6 +14,7 @@ from ._atomic import fsync_directory
 from ._codec import decode_model, encode_model
 from .event_store import StoredEvent, _json_compatible
 from .layout import FileProjectLayout
+from . import matrix_coordinates
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -147,6 +148,7 @@ class SQLiteProjectionStore:
                 ON typed_current_models(model_type, parent_id, active, entity_id);
             """
         )
+        matrix_coordinates.create_schema(connection)
         connection.execute(
             "INSERT OR REPLACE INTO index_metadata(key, value) VALUES ('schema_version', ?)",
             (str(cls.SCHEMA_VERSION),),
@@ -409,6 +411,8 @@ class SQLiteProjectionStore:
             value_json,
         )
         with self._connect() as connection:
+            if model_type in {"project", "artifact_series", "artifact_version"}:
+                matrix_coordinates.invalidate(connection)
             if model_type == "artifact_version" and active_value:
                 connection.execute(
                     "UPDATE typed_current_models SET active = 0 WHERE model_type = ? AND parent_id = ?",
@@ -574,6 +578,21 @@ class SQLiteProjectionStore:
     def save_artifact_series(self, series: Any) -> None:
         self._save_typed("artifact_series", series)
 
+    def matrix_frame_rows(self, project_id: Any, layer_id: Any, representation_id: Any, bounds):
+        with self._connect() as connection:
+            values = matrix_coordinates.rows(connection, project_id, layer_id, representation_id, bounds)
+        series_model = self._model_class("artifact_series")
+        version_model = self._model_class("artifact_version")
+        return tuple(
+            (decode_model(series_model, json.loads(row["series_json"])),
+             decode_model(version_model, json.loads(row["version_json"])), (row["x"], row["y"]))
+            for row in values
+        )
+
+    def has_matrix_frames(self, project_id: Any, layer_id: Any, representation_id: Any) -> bool:
+        with self._connect() as connection:
+            return matrix_coordinates.has_frames(connection, project_id, layer_id, representation_id)
+
     def get_artifact_version(self, version_id: Any, *, as_of: datetime | None = None) -> Any | None:
         return self._get_typed("artifact_version", version_id, as_of=as_of)
 
@@ -595,23 +614,29 @@ class SQLiteProjectionStore:
         return decode_model(self._model_class("artifact_version"), json.loads(row["value_json"]))
 
     def list_active_artifact_versions(self, series_ids: Any) -> dict[str, Any]:
-        identifiers = [str(series_id) for series_id in series_ids]
+        identifiers = tuple(dict.fromkeys(str(series_id) for series_id in series_ids))
         if not identifiers:
             return {}
-        placeholders = ",".join("?" for _ in identifiers)
-        with self._connect() as connection:
-            rows = connection.execute(
-                f"""
-                SELECT parent_id, value_json FROM typed_current_models
-                WHERE model_type = 'artifact_version' AND active = 1
-                  AND parent_id IN ({placeholders})
-                """,
-                identifiers,
-            ).fetchall()
         versions: dict[str, Any] = {}
         model = self._model_class("artifact_version")
-        for row in rows:
-            versions[str(row["parent_id"])] = decode_model(model, json.loads(row["value_json"]))
+        with self._connect() as connection:
+            # Bound SQL parameters and decoded rows for large projects. Without
+            # statistics SQLite can prefer scanning every version for each
+            # request; this schema-owned index selects only requested series.
+            for offset in range(0, len(identifiers), 500):
+                batch = identifiers[offset:offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""
+                    SELECT parent_id, value_json
+                    FROM typed_current_models INDEXED BY ix_typed_current_parent
+                    WHERE model_type = 'artifact_version' AND active = 1
+                      AND parent_id IN ({placeholders})
+                    """,
+                    batch,
+                )
+                for row in rows:
+                    versions[str(row["parent_id"])] = decode_model(model, json.loads(row["value_json"]))
         return versions
 
     def list_artifact_versions(
@@ -690,6 +715,18 @@ class SQLiteProjectionStore:
 
     def save_work_order(self, order: Any) -> None:
         self._save_typed("work_order", order)
+
+    def list_work_order_observations(self, project_id, order_id):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT recorded_at, value_json FROM typed_model_history "
+                "WHERE model_type = 'work_order' AND project_id = ? AND entity_id = ? "
+                "ORDER BY recorded_at, sequence LIMIT 10001", (str(project_id), str(order_id)),
+            ).fetchall()
+        if len(rows) > 10000:
+            raise ValueError("Legacy work order has more than 10000 cached observations")
+        return tuple(dict(recorded_at=row["recorded_at"], valid_to=None,
+                          snapshot=json.loads(row["value_json"])) for row in rows)
 
     def list_work_orders(self, project_id: Any, *, as_of: datetime | None = None) -> tuple[Any, ...]:
         return self._list_typed(
@@ -772,6 +809,11 @@ class SQLiteProjectionStore:
 
     def destroy_cache(self) -> None:
         """Delete only the rebuildable index; authoritative events are untouched."""
+        from .event_store import FilesystemEventStore
+        from kraken_manager.infrastructure.projections.legacy_work_orders import assert_work_orders_replayable
 
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{self.path}{suffix}").unlink(missing_ok=True)
+        events = FilesystemEventStore(self.layout.catalog_root, self.layout.project_id)
+        with events.lock.hold(events.lock_timeout):
+            assert_work_orders_replayable(events, self)
+            for suffix in ("", "-wal", "-shm"):
+                Path(f"{self.path}{suffix}").unlink(missing_ok=True)

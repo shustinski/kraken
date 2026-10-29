@@ -435,6 +435,20 @@ class PostgresProjectionStore:
     def save_work_order(self, order: Any) -> None:
         self._save("work_order", order)
 
+    def list_work_order_observations(self, project_id, order_id):
+        sa, _ = _sqlalchemy()
+        statement = sa.select(self.temporal).where(
+            self.temporal.c.kind == "work_order", self.temporal.c.project_id == str(project_id),
+            self.temporal.c.entity_id == str(order_id),
+        ).order_by(self.temporal.c.valid_from, self.temporal.c.sequence).limit(10001)
+        with self._scope() as connection:
+            rows = connection.execute(statement).mappings().all()
+        if len(rows) > 10000:
+            raise ValueError("Legacy work order has more than 10000 cached observations")
+        return tuple(dict(recorded_at=row["valid_from"].isoformat(),
+            valid_to=None if row["valid_to"] is None else row["valid_to"].isoformat(),
+            snapshot=row["payload"]) for row in rows)
+
     def list_work_orders(self, project_id: Any, *, as_of: datetime | None = None) -> tuple[Any, ...]:
         return self._list("work_order", "project_id", project_id, include_archived=True, as_of=as_of)
 

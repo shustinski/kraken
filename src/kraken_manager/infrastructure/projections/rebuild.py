@@ -105,13 +105,22 @@ class ProjectionRebuilder:
     def apply(self, envelope: EventEnvelope) -> bool:
         event = self.upcasters.upcast(envelope)
         payload = dict(event.payload)
-        if event.event_type == "WorkOrderRecordedV1":
+        if event.event_type in {"WorkOrderRecordedV1", "WorkOrderImportedFromProjectionV1"}:
             from kraken_manager.domain.work_orders import WorkOrder
             from kraken_manager.infrastructure.filesystem._codec import decode_model
 
             order = decode_model(WorkOrder, payload["work_order"])
             if order.project_id != event.project_id or event.stream_id != f"work-order:{order.id}":
                 raise ValueError("work order event identity does not match its payload")
+            if event.event_type == "WorkOrderImportedFromProjectionV1":
+                from kraken_manager.application.legacy_work_orders import snapshot_digest, validate_legacy_observations
+                from kraken_manager.infrastructure.filesystem._codec import encode_model
+
+                validate_legacy_observations(payload.get("legacy_observations"), order.project_id, order.id)
+                if (payload.get("origin") != "legacy_projection" or payload.get("prior_history") != "unknown"
+                        or payload.get("snapshot_sha256") != snapshot_digest(order, encode_model)
+                        or payload.get("observations_sha256") != snapshot_digest(payload.get("legacy_observations"), encode_model)):
+                    raise ValueError("Legacy work order snapshot provenance or SHA-256 differs")
             self._save("work_order", order, event)
             return True
         if event.event_type == "ProjectCreated":
@@ -528,6 +537,9 @@ def rebuild_filesystem_index(
 
     index_path = Path(projection_store.path)
     index_path.parent.mkdir(parents=True, exist_ok=True)
+    from .legacy_work_orders import assert_work_orders_replayable
+
+    assert_work_orders_replayable(event_store, projection_store)
     if index_path.exists():
         with closing(sqlite3.connect(index_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
             legacy_analysis = connection.execute(

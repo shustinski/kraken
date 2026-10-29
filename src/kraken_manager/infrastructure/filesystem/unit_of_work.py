@@ -280,6 +280,9 @@ class _StagedProjectionStore:
     def save_work_order(self, order: Any) -> None:
         self._save("work_order", order)
 
+    def list_work_order_observations(self, project_id, order_id):
+        return self.backing.list_work_order_observations(project_id, order_id)
+
     def list_work_orders(self, project_id: Any, *, as_of: datetime | None = None) -> tuple[Any, ...]:
         return self._merge_list(
             "work_order", self.backing.list_work_orders(project_id, as_of=as_of),
@@ -438,6 +441,22 @@ class LocalProjectUnitOfWork:
                     "storage_profile": project.storage_profile,
                 }
             )
+        self._committed = True
+
+    def commit_events_and_rebuild(self) -> None:
+        """Capture a legacy baseline without falsely advancing a lagging cache.
+
+        Only append-only migrations may use this path. A failed replay leaves
+        the old index and a detectable lag; retry can replay the committed log.
+        """
+        if not self._entered or self._committed:
+            raise RuntimeError("unit of work is not active or was already committed")
+        if self.projections._operations or self.acl._operations:
+            raise RuntimeError("Replay commit requires an event-only migration")
+        from kraken_manager.infrastructure.projections import rebuild_filesystem_index
+
+        self.event_store.commit()
+        rebuild_filesystem_index(self._backing_event_store, self._backing_projections, acl=self.acl.backing)
         self._committed = True
 
     def rollback(self) -> None:

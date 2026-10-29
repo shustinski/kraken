@@ -82,7 +82,7 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
             except Exception as exc:
                 QMessageBox.warning(dialog, "Не удалось создать аккаунт", str(exc))
                 continue
-            _remember_credentials(username.text().strip(), password.text())
+            _remember_credentials(username.text().strip(), password.text(), data_directory=service.data_dir)
             return session
         return None
     dialog = QDialog(parent)
@@ -111,14 +111,14 @@ def _login(parent, service: EmbeddedProjectService) -> DesktopSession | None:
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
     layout.addWidget(buttons)
-    _autofill_credentials(dialog, username, password)
+    _autofill_credentials(dialog, username, password, data_directory=service.data_dir)
     while dialog.exec() == QDialog.DialogCode.Accepted:
         entered_username = username.text()
         entered_password = password.text()
         session = service.login(entered_username, entered_password)
         password.clear()
         if session is not None:
-            _remember_credentials(entered_username.strip(), entered_password)
+            _remember_credentials(entered_username.strip(), entered_password, data_directory=service.data_dir)
             return session
         QMessageBox.warning(dialog, "Kraken", "Неверные учётные данные или аккаунт временно заблокирован.")
     return None

@@ -20,8 +20,8 @@ from kraken_manager.presentation.qt.widgets import ClickableLabel
 def test_login_creates_first_account_in_dialog(qapp, monkeypatch, tmp_path) -> None:
     service = EmbeddedProjectService(tmp_path)
     saved = []
-    monkeypatch.setattr(windows_credentials, "credentials_available", lambda: False)
-    monkeypatch.setattr(windows_credentials, "save_credentials", lambda *values: saved.append(values))
+    monkeypatch.setattr(windows_credentials, "credentials_available", lambda **_kwargs: False)
+    monkeypatch.setattr(windows_credentials, "save_credentials", lambda *values, target: saved.append((values, target)))
 
     def complete_dialog(dialog: QDialog) -> QDialog.DialogCode:
         assert dialog.objectName() == "initialAccountDialog"
@@ -45,7 +45,7 @@ def test_login_creates_first_account_in_dialog(qapp, monkeypatch, tmp_path) -> N
     assert service.has_accounts
     assert session.principal.subject == "operator"
     assert service.login("operator", "") is not None
-    assert saved == [("operator", "")]
+    assert saved == [(("operator", ""), windows_credentials.credential_target(tmp_path))]
 
 def test_development_session_creates_and_reuses_vscode_account(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KRAKEN_DEV_AUTO_LOGIN", "1")
@@ -65,14 +65,15 @@ def test_login_autofills_only_after_windows_verification(qapp, monkeypatch, tmp_
     service.create_initial_account("operator", "Operator", "secret")
     verification_windows = []
     saved = []
-    monkeypatch.setattr(windows_credentials, "credentials_available", lambda: True)
-    monkeypatch.setattr(windows_credentials, "load_credentials", lambda: ("operator", "secret"))
+    targets = []
+    monkeypatch.setattr(windows_credentials, "credentials_available", lambda *, target: targets.append(target) or True)
+    monkeypatch.setattr(windows_credentials, "load_credentials", lambda *, target: targets.append(target) or ("operator", "secret"))
     monkeypatch.setattr(
         windows_credentials,
         "verify_windows_identity",
         lambda window: verification_windows.append(window) or True,
     )
-    monkeypatch.setattr(windows_credentials, "save_credentials", lambda *values: saved.append(values))
+    monkeypatch.setattr(windows_credentials, "save_credentials", lambda *values, target: saved.append((values, target)))
 
     def accept_autofilled_dialog(dialog: QDialog) -> QDialog.DialogCode:
         assert dialog.objectName() == "loginDialog"
@@ -88,17 +89,18 @@ def test_login_autofills_only_after_windows_verification(qapp, monkeypatch, tmp_
 
     assert session is not None
     assert verification_windows and verification_windows[0] != 0
-    assert saved == [("operator", "secret")]
+    assert saved == [(("operator", "secret"), windows_credentials.credential_target(tmp_path))]
+    assert targets == [windows_credentials.credential_target(tmp_path)] * 2
 
 def test_login_does_not_autofill_when_windows_verification_is_cancelled(qapp, monkeypatch, tmp_path) -> None:
     service = EmbeddedProjectService(tmp_path)
     service.create_initial_account("operator", "Operator", "secret")
-    monkeypatch.setattr(windows_credentials, "credentials_available", lambda: True)
+    monkeypatch.setattr(windows_credentials, "credentials_available", lambda **_kwargs: True)
     monkeypatch.setattr(windows_credentials, "verify_windows_identity", lambda _window: False)
     monkeypatch.setattr(
         windows_credentials,
         "load_credentials",
-        lambda: pytest.fail("credentials must not be loaded before verification"),
+        lambda **_kwargs: pytest.fail("credentials must not be loaded before verification"),
     )
 
     def cancel_empty_dialog(dialog: QDialog) -> QDialog.DialogCode:

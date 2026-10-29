@@ -34,7 +34,8 @@ def run_manager_gui(
     update_url: str = "",
     thumbnail_store_uri: str = "",
 ) -> int:
-    from PyQt6.QtCore import QSettings, QTimer
+    from PyQt6.QtCore import QTimer
+    from kraken_core.settings import QSettings
     from PyQt6.QtWidgets import QApplication, QInputDialog
 
     from kraken_core.update_ui import QtUpdateController

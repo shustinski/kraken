@@ -6,7 +6,8 @@ import json
 from dataclasses import dataclass
 from uuid import uuid4
 
-from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtCore import Qt
+from kraken_core.settings import QSettings
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,

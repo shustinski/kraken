@@ -26,7 +26,7 @@ class ConnectProgramAccountMixin:
         self.refresh_projects()
 
     def _connect_program_account(self) -> None:
-        from PyQt6.QtCore import QSettings
+        from kraken_core.settings import QSettings
 
         from kraken_hub.preferences_dialog import default_program_account, program_server_url
 

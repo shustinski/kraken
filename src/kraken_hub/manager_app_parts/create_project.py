@@ -16,7 +16,7 @@ from kraken_hub.manager_app_parts.connect_saved_server import (
 class CreateProjectMixin:
     def create_project(self) -> None:
         from kraken_hub.manager_app import _configure_workspace_roots
-        from PyQt6.QtCore import QSettings
+        from kraken_core.settings import QSettings
         from PyQt6.QtWidgets import (
             QComboBox,
             QDialog,

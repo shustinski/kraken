@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Callable
 
-from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
+from kraken_core.settings import QSettings
 from PyQt6.QtGui import QAction, QActionGroup
 from PyQt6.QtWidgets import (
     QFrame,

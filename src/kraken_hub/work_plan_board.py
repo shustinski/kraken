@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from PyQt6.QtCore import QDateTime, QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import QDateTime, Qt, pyqtSignal
+from kraken_core.settings import QSettings
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,

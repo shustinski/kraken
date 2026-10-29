@@ -17,7 +17,8 @@ class LaunchKarakalMixin:
             from karakal.core.domain import FolderSpec
             from karakal.app.presenter import FOLDER_CONFIDENCE_ROLE
             from karakal.plugin.plugin import KarakalPlugin
-            from PyQt6.QtCore import QSettings, Qt, QUrl
+            from PyQt6.QtCore import Qt, QUrl
+            from kraken_core.settings import QSettings
             from PyQt6.QtGui import QDesktopServices
             from PyQt6.QtWidgets import QDialog, QVBoxLayout
         except ImportError as exc:

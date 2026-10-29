@@ -9,7 +9,7 @@ class DeleteProjectMixin:
     def delete_project(self, item: ProjectListItem | None) -> None:
         if item is None:
             return
-        from PyQt6.QtCore import QSettings
+        from kraken_core.settings import QSettings
         from PyQt6.QtWidgets import QDialog, QInputDialog, QLineEdit, QMessageBox
 
         project = self.service.get_project(item.project_id)

@@ -5,7 +5,7 @@ from kraken_manager.infrastructure.workspace_files import validate_workspace_roo
 from kraken_hub.manager_app_parts.layer_create_thread import _volume_key
 
 def _configure_workspace_roots(parent, service, *, force: bool = False) -> tuple[str, str] | None:
-    from PyQt6.QtCore import QSettings
+    from kraken_core.settings import QSettings
     from PyQt6.QtWidgets import (
         QDialog,
         QDialogButtonBox,

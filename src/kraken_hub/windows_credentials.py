@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+from pathlib import Path
 import sys
 from ctypes import wintypes
 
@@ -59,7 +61,18 @@ def _windows_api():
     )
 
 
-def save_credentials(username: str, password: str) -> bool:
+def credential_target(data_directory: str | Path | None = None) -> str:
+    """Preserve the legacy default profile; isolate explicitly separate profiles."""
+    if data_directory is None:
+        return _TARGET
+    directory = Path(data_directory).expanduser().resolve()
+    if directory == (Path.home() / ".kraken").resolve():
+        return _TARGET
+    canonical = str(directory).casefold() if sys.platform == "win32" else str(directory)
+    return _TARGET + ".Profile." + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def save_credentials(username: str, password: str, *, target: str | None = None) -> bool:
     """Replace the remembered Kraken credential in Windows Credential Manager."""
     apis = _windows_api()
     if apis is None:
@@ -69,7 +82,7 @@ def save_credentials(username: str, password: str) -> bool:
     blob = ctypes.create_string_buffer(encoded) if encoded else None
     credential = _CREDENTIALW()
     credential.Type = _CRED_TYPE_GENERIC
-    credential.TargetName = _TARGET
+    credential.TargetName = _TARGET if target is None else target
     credential.CredentialBlobSize = len(encoded)
     if blob is not None:
         credential.CredentialBlob = ctypes.cast(blob, ctypes.POINTER(ctypes.c_ubyte))
@@ -84,7 +97,7 @@ def save_credentials(username: str, password: str) -> bool:
             ctypes.memset(ctypes.addressof(blob), 0, ctypes.sizeof(blob))
 
 
-def load_credentials() -> tuple[str, str] | None:
+def load_credentials(*, target: str | None = None) -> tuple[str, str] | None:
     """Read the last Kraken credential from the current Windows user's vault."""
     apis = _windows_api()
     if apis is None:
@@ -99,7 +112,7 @@ def load_credentials() -> tuple[str, str] | None:
     )
     advapi.CredReadW.restype = wintypes.BOOL
     advapi.CredFree.argtypes = (ctypes.c_void_p,)
-    if not advapi.CredReadW(_TARGET, _CRED_TYPE_GENERIC, 0, ctypes.byref(pointer)):
+    if not advapi.CredReadW(_TARGET if target is None else target, _CRED_TYPE_GENERIC, 0, ctypes.byref(pointer)):
         return None
     try:
         credential = pointer.contents
@@ -113,7 +126,7 @@ def load_credentials() -> tuple[str, str] | None:
         advapi.CredFree(pointer)
 
 
-def credentials_available() -> bool:
+def credentials_available(*, target: str | None = None) -> bool:
     """Check for a saved entry without copying its secret into Python memory."""
     apis = _windows_api()
     if apis is None:
@@ -128,7 +141,7 @@ def credentials_available() -> bool:
     )
     advapi.CredReadW.restype = wintypes.BOOL
     advapi.CredFree.argtypes = (ctypes.c_void_p,)
-    if not advapi.CredReadW(_TARGET, _CRED_TYPE_GENERIC, 0, ctypes.byref(pointer)):
+    if not advapi.CredReadW(_TARGET if target is None else target, _CRED_TYPE_GENERIC, 0, ctypes.byref(pointer)):
         return False
     advapi.CredFree(pointer)
     return True
@@ -275,6 +288,7 @@ def verify_windows_identity(parent_window: int = 0) -> bool:
 
 
 __all__ = [
+    "credential_target",
     "credentials_available",
     "load_credentials",
     "save_credentials",

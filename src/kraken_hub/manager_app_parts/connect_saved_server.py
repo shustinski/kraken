@@ -48,7 +48,7 @@ def _sign_in_program_account(service, url: str, account, *, principal):
     configure(base_url=url, access_token=account.secret, principal=principal)
 
 def _connect_saved_server(parent, service, principal) -> None:
-    from PyQt6.QtCore import QSettings
+    from kraken_core.settings import QSettings
     from PyQt6.QtWidgets import QMessageBox
 
     from kraken_hub.preferences_dialog import default_program_account, program_server_url

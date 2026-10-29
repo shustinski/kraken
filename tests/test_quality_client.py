@@ -5,7 +5,7 @@ import pytest
 
 from kraken_manager.application.errors import ConflictError
 from kraken_manager.application.quality import QualityService
-from kraken_hub.remote_client import RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
 from kraken_hub.dual_catalog import DualCatalogService
 from tests.test_quality_workflow import quality as quality, server_for
 

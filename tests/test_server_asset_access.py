@@ -11,7 +11,7 @@ from PyQt6.QtGui import QImage
 
 from kraken_core.frame_matrix import MatrixAssetRef
 from kraken_hub.matrix_source import KrakenMatrixAssetSource
-from kraken_hub.remote_client import RemoteAuth, RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProjectService
 from kraken_manager.domain.identity import Principal
 
 

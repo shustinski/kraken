@@ -20,9 +20,9 @@ from kraken_manager.infrastructure.reports import (
     ReportSeries,
 )
 
-from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
 
-from kraken_hub.remote_client_parts.remote_history_event import _RemoteHistoryEvent
+from kraken_hub.infrastructure.remote.parts.remote_history_event import _RemoteHistoryEvent
 
 
 class SubmitPluginJobMixin:

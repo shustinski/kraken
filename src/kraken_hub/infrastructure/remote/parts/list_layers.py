@@ -18,7 +18,7 @@ from kraken_hub.workspace_service import (
     project_from_server_dict,
 )
 
-from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
 
 
 class ListLayersMixin:

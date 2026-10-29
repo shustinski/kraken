@@ -17,7 +17,7 @@ from kraken_manager.domain.project import (
     StructureState,
 )
 
-from kraken_hub.remote_client_parts.extract_review_archive import (
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import (
     RemoteServerError,
     _layer_file_binding,
     _workspace_layer_result,

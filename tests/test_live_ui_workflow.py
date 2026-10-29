@@ -35,7 +35,7 @@ from kraken_core.plugins import build_plugin_inventory, scan_plugin_directory
 from kraken_hub.composition import DesktopSession, EmbeddedProjectService
 from kraken_hub.dual_catalog import DualCatalogService
 from kraken_hub.manager_app import DesktopController, _my_work_panel, _statistics_panel
-from kraken_hub.remote_client import RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
 from kraken_manager.presentation.qt import ProjectManagerShell
 from kraken_manager.presentation.qt.layer_creation import LayerCreationDialog
 

@@ -62,38 +62,38 @@ from kraken_manager.infrastructure.reports import (
     ReportSeries,
 )
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
-from .workspace_service import (
+from kraken_hub.workspace_service import (
     REMOTE_STORAGE_PROFILE,
     ProjectEventWake,
     project_from_server_dict,
 )
 
-from .remote_client_parts.module_state import LOGGER
-from .remote_client_parts.iter_bytes import IterBytesMixin
-from .remote_client_parts.request import RequestMixin
-from .remote_client_parts.download import DownloadMixin
-from .remote_client_parts.register_local import RegisterLocalMixin
-from .remote_client_parts.start_sync import StartSyncMixin
-from .remote_client_parts.call import CallMixin
-from .remote_client_parts.list_layers import ListLayersMixin
-from .remote_client_parts.representation import RepresentationMixin
-from .remote_client_parts.create_representation import CreateRepresentationMixin
-from .remote_client_parts.change_project_role import ChangeProjectRoleMixin
-from .remote_client_parts.create_artifact_series import CreateArtifactSeriesMixin
-from .remote_client_parts.add_managed_artifact_version import AddManagedArtifactVersionMixin
-from .remote_client_parts.add_external_artifact_version import AddExternalArtifactVersionMixin
-from .remote_client_parts.create_review_batch import CreateReviewBatchMixin
-from .remote_client_parts.issue_work import IssueWorkMixin
-from .remote_client_parts.work_planning import WorkPlanningMixin
-from .remote_client_parts.quality import QualityMixin
-from .remote_client_parts.pipeline_execution import PipelineExecutionMixin
-from .remote_client_parts.multilayer import MultilayerMixin
-from .remote_client_parts.electrical import ElectricalMixin
-from .remote_client_parts.export_review_batch import ExportReviewBatchMixin
-from .remote_client_parts.submit_plugin_job import SubmitPluginJobMixin
-from .remote_client_parts.remove_layer_pipeline_action import RemoveLayerPipelineActionMixin
-from .remote_client_parts.frame_cells import FrameCellsMixin
-from .remote_client_parts.extract_review_archive import (
+from .parts.module_state import LOGGER
+from .parts.iter_bytes import IterBytesMixin
+from .parts.request import RequestMixin
+from .parts.download import DownloadMixin
+from .parts.register_local import RegisterLocalMixin
+from .parts.start_sync import StartSyncMixin
+from .parts.call import CallMixin
+from .parts.list_layers import ListLayersMixin
+from .parts.representation import RepresentationMixin
+from .parts.create_representation import CreateRepresentationMixin
+from .parts.change_project_role import ChangeProjectRoleMixin
+from .parts.create_artifact_series import CreateArtifactSeriesMixin
+from .parts.add_managed_artifact_version import AddManagedArtifactVersionMixin
+from .parts.add_external_artifact_version import AddExternalArtifactVersionMixin
+from .parts.create_review_batch import CreateReviewBatchMixin
+from .parts.issue_work import IssueWorkMixin
+from .parts.work_planning import WorkPlanningMixin
+from .parts.quality import QualityMixin
+from .parts.pipeline_execution import PipelineExecutionMixin
+from .parts.multilayer import MultilayerMixin
+from .parts.electrical import ElectricalMixin
+from .parts.export_review_batch import ExportReviewBatchMixin
+from .parts.submit_plugin_job import SubmitPluginJobMixin
+from .parts.remove_layer_pipeline_action import RemoveLayerPipelineActionMixin
+from .parts.frame_cells import FrameCellsMixin
+from .parts.extract_review_archive import (
     _layer_file_binding,
     _workspace_layer_result,
     _review_archive,
@@ -101,11 +101,11 @@ from .remote_client_parts.extract_review_archive import (
     RemoteServerError,
     RemoteAuth,
 )
-from .remote_client_parts.remote_sync_client import RemoteSyncClient
-from .remote_client_parts.principal_server_payload import _principal_from_server_payload
-from .remote_client_parts.remote_history_event import _RemoteHistoryEvent
-from .remote_client_parts.analysis_runs import ServerAnalysisMixin
-from .remote_client_parts.load_remote_auth_env import (
+from .parts.remote_sync_client import RemoteSyncClient
+from .parts.principal_server_payload import _principal_from_server_payload
+from .parts.remote_history_event import _RemoteHistoryEvent
+from .parts.analysis_runs import ServerAnalysisMixin
+from .parts.load_remote_auth_env import (
     load_remote_auth_from_env,
     build_remote_service,
 )

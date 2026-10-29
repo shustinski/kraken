@@ -63,7 +63,7 @@ def postgres_analysis(database, root):
 
 def test_real_analysis_postgres_remote_creation_recheck_readiness_and_replay(database, tmp_path):
     from fastapi.testclient import TestClient
-    from kraken_hub.remote_client import RemoteServerProjectService
+    from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
     from kraken_server.app import SessionPrincipal, create_app
     services, owner, reviewer, performer, q, target, correction, original, checked = postgres_analysis(database, tmp_path)
     project_id = str(q.project.id)

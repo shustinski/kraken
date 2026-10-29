@@ -78,7 +78,7 @@ def test_actual_remote_contour_vector_stitch_and_bounded_overlay_api(database, t
         response = httpx.get(url + f"/api/v1/projects/{pid}/stitch-renders/{job}/blocks/0/0", headers={"Authorization": "Bearer owner"})
         assert response.status_code == 200, response.text
         assert response.json()["metadata"]["vector_stitch"]["electrical_connectivity"] == "unverified"
-        from kraken_hub.remote_client import RemoteAuth, RemoteServerProjectService
+        from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProjectService
         from kraken_hub.computed_stitch_dialog import MosaicBlockDialog
         from kraken_manager.infrastructure.vector_exchange import VectorExchangeReader
         from PyQt6.QtWidgets import QFileDialog

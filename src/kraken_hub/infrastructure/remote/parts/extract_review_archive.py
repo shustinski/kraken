@@ -132,4 +132,4 @@ class RemoteAuth:
     principal: Principal
 
 if TYPE_CHECKING:
-    from kraken_hub.remote_client import RemoteServerProjectService
+    from kraken_hub.infrastructure.remote.client import RemoteServerProjectService

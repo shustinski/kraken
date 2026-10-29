@@ -4,7 +4,7 @@ import urllib.error
 
 import pytest
 
-from kraken_hub.remote_client import RemoteHttpClient, RemoteServerError
+from kraken_hub.infrastructure.remote.client import RemoteHttpClient, RemoteServerError
 
 
 @pytest.fixture(params=["server", "gateway"])

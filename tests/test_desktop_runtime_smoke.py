@@ -26,7 +26,7 @@ from kraken_hub.manager_app import (
     _plugin_panel,
     _statistics_panel,
 )
-from kraken_hub.remote_client import RemoteHttpClient
+from kraken_hub.infrastructure.remote.client import RemoteHttpClient
 from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.project import GridOrientation
 from kraken_manager.presentation.qt import ProjectListItem, ProjectManagerShell

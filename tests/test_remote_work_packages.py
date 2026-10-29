@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from kraken_hub.remote_client_parts.issue_work import IssueWorkMixin
+from kraken_hub.infrastructure.remote.parts.issue_work import IssueWorkMixin
 from kraken_manager.domain.work_orders import WorkOrder
 from tests.test_work_orders import _project_with_frames, _service
 

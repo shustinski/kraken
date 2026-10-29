@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kraken_hub.remote_client_parts.create_review_batch import CreateReviewBatchMixin
+from kraken_hub.infrastructure.remote.parts.create_review_batch import CreateReviewBatchMixin
 from kraken_manager.domain.artifacts import BlobRef
 
 

@@ -94,7 +94,7 @@ def test_remote_analysis_executes_actual_short_karakal_and_reopens(database, tmp
     created = client.post(f"/api/v1/projects/{pid}/analysis-runs", headers=headers, json=payload)
     assert created.status_code == 201, created.text
     first = created.json()
-    from kraken_hub.remote_client_parts.analysis_runs import ServerAnalysisMixin
+    from kraken_hub.infrastructure.remote.parts.analysis_runs import ServerAnalysisMixin
 
     class Remote(ServerAnalysisMixin):
         def _call(self, method, path, *, payload=None, idempotency_key=None, if_match=None):

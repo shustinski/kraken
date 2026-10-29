@@ -7,7 +7,7 @@ import urllib.request
 from collections.abc import Mapping
 from typing import Any
 
-from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
 
 
 class RequestMixin:

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 from kraken_admin.application.roles import set_roles, snapshot
 from kraken_hub.remote_analysis import RemoteAnalysisController
-from kraken_hub.remote_client_parts.analysis_runs import ServerAnalysisMixin
+from kraken_hub.infrastructure.remote.parts.analysis_runs import ServerAnalysisMixin
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import Principal, ProjectRole
 from kraken_manager.presentation.qt.analysis_ui import AnalysisRunsPanel

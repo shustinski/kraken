@@ -86,7 +86,7 @@ def test_local_administration_page_is_wired_for_desktop_session(qapp, tmp_path) 
     assert "Подключить проект из локального каталога…" in labels
 
 def test_layer_manager_reports_history_failure_without_opening_dialog() -> None:
-    from kraken_hub.remote_client import RemoteServerError
+    from kraken_hub.infrastructure.remote.client import RemoteServerError
 
     controller = object.__new__(DesktopController)
     controller._workspace = SimpleNamespace(layer_model=SimpleNamespace(items=lambda: ()), _selected_layer_id="layer")

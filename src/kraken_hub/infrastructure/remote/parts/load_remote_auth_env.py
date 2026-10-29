@@ -7,7 +7,7 @@ from kraken_manager.domain.identity import (
     Principal,
 )
 
-from kraken_hub.remote_client_parts.extract_review_archive import RemoteAuth
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteAuth
 
 def load_remote_auth_from_env() -> RemoteAuth | None:
     token = (
@@ -46,9 +46,9 @@ def build_remote_service(
     credentials = auth or load_remote_auth_from_env()
     if credentials is None:
         return None
-    from kraken_hub.remote_client import RemoteServerProjectService
+    from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
 
     return RemoteServerProjectService(url, auth=credentials, data_dir=data_dir)
 
 if TYPE_CHECKING:
-    from kraken_hub.remote_client import RemoteServerProjectService
+    from kraken_hub.infrastructure.remote.client import RemoteServerProjectService

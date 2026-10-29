@@ -14,7 +14,7 @@ from kraken_manager.domain.identity import (
 )
 from kraken_manager.infrastructure.filesystem._codec import decode_model
 
-from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
 
 
 class CreateArtifactSeriesMixin:

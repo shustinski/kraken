@@ -8,7 +8,7 @@ from kraken_hub.workspace_service import (
     ProjectEventWake,
 )
 
-from kraken_hub.remote_client_parts.module_state import LOGGER
+from kraken_hub.infrastructure.remote.parts.module_state import LOGGER
 
 class RemoteSyncClient:
     """Background WebSocket subscriber that emits ProjectEventWake callbacks."""

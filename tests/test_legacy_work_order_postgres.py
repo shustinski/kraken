@@ -11,7 +11,7 @@ import uvicorn
 from PyQt6.QtCore import Qt
 
 from kraken_hub.legacy_work_order_dialog import LegacyWorkOrderMigrationDialog
-from kraken_hub.remote_client import RemoteHttpClient, RemoteServerError, RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteHttpClient, RemoteServerError, RemoteServerProjectService
 from kraken_manager.domain.identity import Performer, Principal, SystemRole
 from kraken_manager.domain.selection import FrameSelectionV1
 from kraken_manager.domain.work_orders import WorkKind, WorkOrder, WorkPlacement

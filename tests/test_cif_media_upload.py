@@ -5,7 +5,7 @@ import time
 
 import uvicorn
 
-from kraken_hub.remote_client import RemoteAuth, RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProjectService
 from kraken_manager.infrastructure.work_package import media_type_for
 from kraken_server.app import SessionPrincipal, create_app
 from kraken_server.services import CommandContext

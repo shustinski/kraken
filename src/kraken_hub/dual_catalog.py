@@ -22,7 +22,7 @@ from kraken_hub.domain.catalog_route import (
 )
 
 from .composition import EmbeddedProjectService
-from .remote_client import RemoteAuth, RemoteServerError, RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerError, RemoteServerProjectService
 from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 LOGGER = logging.getLogger(__name__)
@@ -898,7 +898,7 @@ def build_workspace_service(
     data_dir: Path | str | None = None,
 ) -> DualCatalogService:
     local = EmbeddedProjectService(data_dir=data_dir)
-    from .remote_client import build_remote_service
+    from kraken_hub.infrastructure.remote.client import build_remote_service
 
     try:
         remote = build_remote_service(data_dir=local.data_dir)

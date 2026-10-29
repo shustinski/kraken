@@ -17,7 +17,7 @@ _STITCH_CALLS = set()
 
 
 def _command_result(call, kind, *, document=False):
-    from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
+    from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
     from kraken_manager.application.errors import ApplicationError
     from kraken_manager.domain.common import DomainValidationError
     try:

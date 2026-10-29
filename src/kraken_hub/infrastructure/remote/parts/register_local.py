@@ -14,16 +14,16 @@ from kraken_hub.workspace_service import (
     ProjectEventWake,
 )
 
-from kraken_hub.remote_client_parts.extract_review_archive import (
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import (
     RemoteAuth,
     RemoteServerError,
 )
 
-from kraken_hub.remote_client_parts.principal_server_payload import _principal_from_server_payload
+from kraken_hub.infrastructure.remote.parts.principal_server_payload import _principal_from_server_payload
 
 
 def _remote_http_client():
-    from kraken_hub.remote_client import RemoteHttpClient
+    from kraken_hub.infrastructure.remote.client import RemoteHttpClient
 
     return RemoteHttpClient
 
@@ -201,5 +201,5 @@ class RegisterLocalMixin:
         self._status_handlers.append(handler)
 
 if TYPE_CHECKING:
-    from kraken_hub.remote_client import RemoteHttpClient, RemoteServerProjectService
-    from kraken_hub.remote_client_parts.remote_sync_client import RemoteSyncClient
+    from kraken_hub.infrastructure.remote.client import RemoteHttpClient, RemoteServerProjectService
+    from kraken_hub.infrastructure.remote.parts.remote_sync_client import RemoteSyncClient

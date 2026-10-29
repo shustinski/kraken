@@ -15,7 +15,7 @@ from kraken_manager.domain.workflows import (
 from kraken_manager.infrastructure.filesystem._codec import decode_model
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
 
-from kraken_hub.remote_client_parts.extract_review_archive import (
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import (
     RemoteServerError,
     _extract_review_archive,
     _review_archive,

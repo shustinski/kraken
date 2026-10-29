@@ -4,7 +4,7 @@ from kraken_hub.workspace_service import (
     ProjectEventWake,
 )
 
-from kraken_hub.remote_client_parts.remote_sync_client import RemoteSyncClient
+from kraken_hub.infrastructure.remote.parts.remote_sync_client import RemoteSyncClient
 
 
 class StartSyncMixin:

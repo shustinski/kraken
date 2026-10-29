@@ -253,7 +253,7 @@ def test_template_definition_cannot_inject_runtime_state(tmp_path):
 def http_remote(tmp_path):
     from fastapi.testclient import TestClient
     from kraken_server.app import SessionPrincipal, create_app
-    from kraken_hub.remote_client_parts.work_planning import WorkPlanningMixin as RemotePlanning
+    from kraken_hub.infrastructure.remote.parts.work_planning import WorkPlanningMixin as RemotePlanning
     from kraken_manager.infrastructure.filesystem import FilesystemEventStore
     from tests.test_work_planning_integration import PlanningServer
 

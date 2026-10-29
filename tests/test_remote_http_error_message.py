@@ -8,8 +8,8 @@ import urllib.request
 
 import pytest
 
-from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
-from kraken_hub.remote_client_parts.request import RequestMixin
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
+from kraken_hub.infrastructure.remote.parts.request import RequestMixin
 
 
 class _Client(RequestMixin):

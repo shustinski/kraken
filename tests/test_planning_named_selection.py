@@ -102,7 +102,7 @@ def test_postgres_http_named_work_and_attachment_acceptance_reopen(qtbot, databa
     import threading
     import time
     import uvicorn
-    from kraken_hub.remote_client import RemoteAuth, RemoteServerProjectService
+    from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProjectService
     from kraken_server.app import SessionPrincipal, create_app
     from tests.test_quality_postgres import setup_quality
 

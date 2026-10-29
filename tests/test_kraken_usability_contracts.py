@@ -128,7 +128,7 @@ def test_karakal_confidence_worker_writes_the_result_contract(tmp_path: Path) ->
 
 
 def test_remote_project_identity_uses_the_known_catalog() -> None:
-    from kraken_hub.remote_client import RemoteServerProjectService
+    from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
 
     service = object.__new__(RemoteServerProjectService)
     service._remote_ids = {"project-1"}

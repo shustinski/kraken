@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from kraken_hub.dual_catalog import DualCatalogService
-from kraken_hub.remote_client import (
+from kraken_hub.infrastructure.remote.client import (
     RemoteAuth,
     RemoteHttpClient,
     RemoteServerError,

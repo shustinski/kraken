@@ -15,7 +15,7 @@ from kraken_manager.domain.project import (
     Representation,
 )
 
-from kraken_hub.remote_client_parts.remote_history_event import _RemoteHistoryEvent
+from kraken_hub.infrastructure.remote.parts.remote_history_event import _RemoteHistoryEvent
 
 
 class RemoveLayerPipelineActionMixin:

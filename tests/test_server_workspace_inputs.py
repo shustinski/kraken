@@ -8,7 +8,7 @@ from PyQt6.QtGui import QImage
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.manager_app import DesktopController
 from kraken_hub.matrix_source import KrakenMatrixAssetSource, KrakenMatrixDataSource
-from kraken_hub.remote_client import RemoteAuth, RemoteHttpClient, RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteHttpClient, RemoteServerProjectService
 from kraken_core.frame_matrix import MatrixBounds, MatrixViewportRequest
 from kraken_manager.application.use_cases import AddArtifactVersionHandler, CreateArtifactSeriesHandler
 from kraken_manager.application.plugin_jobs import SubmitPluginJobHandler

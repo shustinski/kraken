@@ -338,7 +338,7 @@ class StatisticsReportTests(unittest.TestCase):
         self.assertEqual("Импортировано файлов", daily_rows[0][1])
 
     def test_remote_history_event_supplies_project_id(self) -> None:
-        from kraken_hub.remote_client import _RemoteHistoryEvent
+        from kraken_hub.infrastructure.remote.client import _RemoteHistoryEvent
 
         event = _RemoteHistoryEvent(
             {

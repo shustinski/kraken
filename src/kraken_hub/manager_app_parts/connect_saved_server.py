@@ -52,7 +52,7 @@ def _connect_saved_server(parent, service, principal) -> None:
     from PyQt6.QtWidgets import QMessageBox
 
     from kraken_hub.preferences_dialog import default_program_account, program_server_url
-    from kraken_hub.remote_client import RemoteServerError
+    from kraken_hub.infrastructure.remote.client import RemoteServerError
 
     if not isinstance(service, DualCatalogService) or service.remote is not None:
         return

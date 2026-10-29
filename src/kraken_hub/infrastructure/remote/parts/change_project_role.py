@@ -14,7 +14,7 @@ from kraken_manager.domain.project import (
     Representation,
 )
 
-from kraken_hub.remote_client_parts.extract_review_archive import RemoteServerError
+from kraken_hub.infrastructure.remote.parts.extract_review_archive import RemoteServerError
 
 
 class ChangeProjectRoleMixin:

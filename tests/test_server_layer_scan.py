@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from kraken_hub.dual_catalog import DualCatalogService
-from kraken_hub.remote_client import RemoteServerProjectService
+from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
 from kraken_manager.domain.identity import Principal, ProjectRole
 from kraken_manager.presentation.qt.layer_creation import LayerCreationDialog
 from kraken_server.app import create_app

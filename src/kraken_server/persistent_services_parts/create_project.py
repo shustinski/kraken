@@ -1,5 +1,6 @@
 """persistent_services: create project."""
 from __future__ import annotations
+from kraken_server.project_deletion import guarded_storage
 from dataclasses import replace
 from collections.abc import Mapping
 from typing import Any
@@ -87,8 +88,8 @@ class CreateProjectMixin:
         return tuple(sorted(role.value for role in principal.system_roles))
 
     def list_principals(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
-        return [
-            {
+        people = {
+            str(principal.id): {
                 "principal_id": str(principal.id),
                 "provider": principal.provider.value,
                 "subject": principal.subject,
@@ -96,14 +97,30 @@ class CreateProjectMixin:
                 "display_name": principal.display_name,
                 "email": principal.email,
                 "active": principal.active,
-                "system_roles": sorted(
-                    role.value for role in principal.system_roles
-                ),
+                "system_roles": sorted(role.value for role in principal.system_roles),
             }
-            for principal in self.identities.list(
-                include_inactive=include_inactive
-            )
-        ]
+            for principal in self.identities.list(include_inactive=include_inactive)
+        }
+        accounts = getattr(self, "accounts", None)
+        list_accounts = getattr(accounts, "list_accounts", None)
+        if callable(list_accounts):
+            roles_for = getattr(accounts, "global_roles_for", None)
+            for account in list_accounts(include_disabled=include_inactive):
+                identifier = str(account.account_id)
+                if identifier in people:
+                    continue
+                system_roles = () if not callable(roles_for) else roles_for(identifier)
+                people[identifier] = {
+                    "principal_id": identifier,
+                    "provider": "local",
+                    "subject": account.username,
+                    "issuer": None,
+                    "display_name": account.display_name,
+                    "email": None,
+                    "active": bool(account.enabled),
+                    "system_roles": sorted(str(role) for role in system_roles),
+                }
+        return list(people.values())
 
     def list_performers(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         if self.performer_store is None:
@@ -130,6 +147,7 @@ class CreateProjectMixin:
             )
         return actor
 
+    @guarded_storage
     def create_project(self, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]:
         actor = self._actor(context.actor_id)
         if context.expected_revision not in {None, 0}:
@@ -163,6 +181,7 @@ class CreateProjectMixin:
         except (StorageCapabilityError, ValueError, TypeError) as exc:
             raise ValidationError(str(exc)) from exc
 
+    @guarded_storage
     def _ensure_server_workspace(self, project: Any) -> None:
         files = self.workspace_files
         if files is None:

@@ -58,7 +58,10 @@ class RequestMixin:
             except (json.JSONDecodeError, TypeError, AttributeError):
                 message = detail
             raise RemoteServerError(
-                message, status=exc.code, body=detail, problem=parsed
+                f"{method.upper()} {path} returned HTTP {exc.code}: {message}",
+                status=exc.code,
+                body=detail,
+                problem=parsed,
             ) from exc
         except urllib.error.URLError as exc:
             raise RemoteServerError(

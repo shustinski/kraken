@@ -147,17 +147,39 @@ class DiscardWorkspaceLayerMixin:
             principal_identifier = PrincipalId(validate_uuid(principal_id, field="principal_id"))
         except (TypeError, ValueError) as exc:
             raise ValidationError("Invalid project or principal id") from exc
-        if self.identities.get(principal_identifier) is None:
+        roles = self.identities.roles_for(project_identifier, principal_identifier)
+        if self._known_principal(principal_identifier) is None and not roles:
             raise NotFoundError(principal_id)
         stream_id = f"acl:{project_identifier}:{principal_identifier}"
         return {
             "project_id": project_id,
             "principal_id": principal_id,
-            "roles": sorted(
-                role.value for role in self.identities.roles_for(project_identifier, principal_identifier)
-            ),
+            "roles": sorted(role.value for role in roles),
             "revision": self.events.current_revision(stream_id),
         }
+
+    def _known_principal(self, principal_identifier: PrincipalId):
+        """A catalogued user with no ACL rows is known and simply has no roles.
+
+        ``identities.get`` can miss a row that ``list`` still returns when the
+        UUID comparison does not match the stored form. Accounts that have not
+        been mirrored into the identity table are the same case: no roles yet.
+        """
+
+        found = self.identities.get(principal_identifier)
+        if found is not None:
+            return found
+        target = str(principal_identifier)
+        listing = getattr(self.identities, "list", None)
+        if callable(listing):
+            for candidate in listing(include_inactive=True):
+                if str(getattr(candidate, "id", "")) == target:
+                    return candidate
+        accounts = getattr(self, "accounts", None)
+        getter = getattr(accounts, "get_account", None)
+        if callable(getter) and getter(target) is not None:
+            return True
+        return None
 
     def assign_project_role(
         self,

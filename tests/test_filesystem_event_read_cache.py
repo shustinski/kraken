@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +11,26 @@ from kraken_manager.infrastructure.filesystem.event_store import (
     EventStreamConflict,
     FilesystemEventStore,
 )
+
+
+def test_filtered_read_keeps_positions_isolation_and_canonical_validation(tmp_path):
+    store = FilesystemEventStore(tmp_path, "filtered-project")
+    store.append("a", expected_revision=0, events=[
+        {"event_type": "Other", "payload": {"values": [0]}},
+        {"event_type": "Selected", "payload": {"values": [1]}},
+        {"type": "Selected", "payload": {"values": [2]}},
+    ])
+    selected = tuple(store.iter_project(event_types=("Selected",)))
+    assert [e.global_position for e in selected] == [2, 3]
+    assert tuple(store.iter_project(after_global_position=2, event_types=("Selected",))) == selected[1:]
+    assert tuple(store.iter_project(event_types=())) == ()
+    selected[0].data["payload"]["values"].append(99)
+    assert tuple(store.iter_project(event_types=("Selected",)))[0].data["payload"]["values"] == [1]
+    # Filtering must still verify segments containing no selected events.
+    segment = next(store.layout.events_dir.glob("*.jsonl"))
+    segment.write_bytes(segment.read_bytes().replace(b'"revision":1', b'"revision":9', 1))
+    with pytest.raises(CorruptEventLogError):
+        tuple(store.iter_project(event_types=("Missing",)))
 
 
 def test_new_store_instances_parse_only_new_segments_and_keep_cas(tmp_path):

@@ -350,8 +350,13 @@ class FilesystemEventStore:
 
     read_stream = load_stream
 
-    def iter_project(self, *, after_global_position: int = 0) -> Iterator[StoredEvent]:
+    def iter_project(
+        self, *, after_global_position: int = 0, event_types: Iterable[str] | None = None
+    ) -> Iterator[StoredEvent]:
+        selected = None if event_types is None else frozenset(event_types)
         for event in self._verified_log().events[max(0, after_global_position) :]:
+            if selected is not None and event.data.get("event_type", event.data.get("type")) not in selected:
+                continue
             yield copy.deepcopy(event)
 
     def current_revision(self, stream_id: str) -> int:

@@ -1,5 +1,6 @@
 """composition: plugin jobs."""
 from __future__ import annotations
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from kraken_manager.domain.artifacts import (
@@ -48,10 +49,13 @@ class PluginJobsMixin:
         blob_store.verify(version.blob)
         return blob_store.path_for_read(version.blob)
 
-    def history(self, project_id: ProjectId | str, *, as_of: datetime | None = None) -> tuple[object, ...]:
+    def history(
+        self, project_id: ProjectId | str, *, as_of: datetime | None = None,
+        event_types: Iterable[str] | None = None,
+    ) -> tuple[object, ...]:
         store = FilesystemEventStore(self.catalog_root, str(project_id))
         events = []
-        for stored in store.iter_project():
+        for stored in store.iter_project(event_types=event_types):
             event = store._decode(stored)
             if isinstance(event, StoredEvent):
                 event = GenericHistoryEvent.from_stored(event)

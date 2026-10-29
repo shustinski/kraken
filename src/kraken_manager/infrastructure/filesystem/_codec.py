@@ -5,7 +5,14 @@ import types
 from collections import abc
 from datetime import datetime
 from enum import Enum
+from functools import lru_cache
 from typing import Any, Union, get_args, get_origin, get_type_hints
+
+
+@lru_cache(maxsize=128)
+def _model_hints(model: type) -> dict[str, Any]:
+    """Model annotations are stable; resolve forward references once per class."""
+    return get_type_hints(model)
 
 
 def encode_model(value: Any) -> Any:
@@ -74,7 +81,7 @@ def decode_model(annotation: Any, value: Any) -> Any:
     if isinstance(annotation, type) and dataclasses.is_dataclass(annotation):
         if not isinstance(value, abc.Mapping):
             raise TypeError(f"expected object for {annotation.__name__}")
-        hints = get_type_hints(annotation)
+        hints = _model_hints(annotation)
         return annotation(
             **{
                 field.name: decode_model(hints.get(field.name, field.type), value[field.name])

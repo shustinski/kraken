@@ -21,7 +21,9 @@ class LatestKarakalAnalysisMixin:
         event = next(
             (
                 item
-                for item in reversed(self.history(project_id, as_of=as_of))
+                for item in reversed(self.history(
+                    project_id, as_of=as_of, event_types=("KarakalAnalysisPublished",)
+                ))
                 if item.event_type == "KarakalAnalysisPublished"
                 and str(item.payload.get("layer_id", "")) == str(layer_id)
             ),

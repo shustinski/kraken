@@ -396,6 +396,29 @@ def _create_app_section_4(agent_gateway, blob_gateway, Depends, HTTPException, H
             command_context(actor, idempotency_key, None, revision_required=False),
         )
 
+    @app.get(f"{API_PREFIX}/projects/{{project_id}}/work-orders/legacy-migration")
+    async def plan_legacy_work_order_migration(
+        project_id: str, actor: SessionPrincipal = Depends(shared_mutation_actor),
+    ) -> dict[str, Any]:
+        method = getattr(backend, "plan_legacy_work_order_migration", None)
+        if not callable(method):
+            raise ValidationError("Legacy migration requires a persistent metadata backend")
+        async with heavy_operations:
+            return await run_in_threadpool(method, project_id, actor.principal_id)
+
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/work-orders/legacy-migration")
+    async def migrate_legacy_work_orders(
+        project_id: str, payload: dict[str, Any],
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        method = getattr(backend, "migrate_legacy_work_orders", None)
+        if not callable(method):
+            raise ValidationError("Legacy migration requires a persistent metadata backend")
+        context = command_context(actor, idempotency_key, None, revision_required=False)
+        async with heavy_operations:
+            return await run_in_threadpool(method, project_id, payload, context)
+
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/work-orders/{{order_id}}/cancel")
     def cancel_work_order(
         project_id: str,

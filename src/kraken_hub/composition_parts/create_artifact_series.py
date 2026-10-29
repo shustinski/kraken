@@ -40,6 +40,7 @@ from kraken_manager.infrastructure.filesystem import (
     SQLiteProjectionStore,
 )
 from kraken_manager.infrastructure.projections import rebuild_filesystem_index
+from kraken_manager.infrastructure.projections.legacy_work_orders import LegacyWorkOrderMigrationRequired
 
 
 class CreateArtifactSeriesMixin:
@@ -107,6 +108,11 @@ class CreateArtifactSeriesMixin:
                     else directory.name
                 )
                 project = self._projection(project_id).get_project(project_id)
+            except LegacyWorkOrderMigrationRequired:
+                # Keep the catalog entry visible so administration can migrate
+                # it. Opening/writing the project still goes through _projection
+                # and cannot silently consume a lagging work cache.
+                project = SQLiteProjectionStore(self.catalog_root, str(project_id)).get_project(project_id)
             except (OSError, ValueError, KeyError, json.JSONDecodeError):
                 continue
             if project is not None and not descriptor.is_file():

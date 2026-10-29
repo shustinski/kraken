@@ -238,6 +238,8 @@ _ACTION_TITLES = {
 
 
 def action_for_request(method: str, path: str) -> str:
+    if path.rstrip("/").endswith("/work-orders/legacy-migration"):
+        return "migrate_project"
     if "/quality-issues" in path:
         # These commands select their permission by operation inside the UoW,
         # including the selected acting role, rather than by the shared URL.

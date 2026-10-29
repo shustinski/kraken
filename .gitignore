@@ -4,6 +4,7 @@ __pycache__/
 *.pyd
 *.so
 *.sqlite3
+*.db
 .Python
 .venv/
 venv/

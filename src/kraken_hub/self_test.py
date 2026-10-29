@@ -10,7 +10,7 @@ import traceback
 from uuid import uuid4
 
 
-def run_self_test(output_directory):
+def run_self_test(output_directory, *, reference_manifest=None):
     base = Path(output_directory).expanduser().resolve()
     run = base / f"desktop-self-test-{uuid4().hex}"
     run.mkdir(parents=True)
@@ -23,7 +23,7 @@ def run_self_test(output_directory):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PyQt6.QtWidgets import QApplication
         from PyQt6.QtGui import QFont, QFontDatabase
-        from PyQt6.QtCore import QSettings
+        from kraken_core.settings import QSettings, configure_settings_directory
         from kraken_hub.secret_store import KeyringSecretStore
         from kraken_hub.composition import EmbeddedProjectService
         from kraken_hub.manager_app import DesktopController
@@ -32,6 +32,9 @@ def run_self_test(output_directory):
         from kraken_hub.quality_dialog import QualityDialog
         from kraken_manager.presentation.qt import ProjectManagerShell, ProjectListItem
         from kraken_manager.domain.project import GridOrientation
+        from kraken_hub.deployment_matrix_probe import (
+            advance_head, prepare_project, probe_records, verify_project, verify_workspace,
+        )
 
         class ProbeStore(KeyringSecretStore):
             def __init__(self):
@@ -49,23 +52,32 @@ def run_self_test(output_directory):
             raise RuntimeError("OS secret-store round trip failed")
         report["checks"].append("OS secret-store round trip")
         app = QApplication.instance() or QApplication([])
-        QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-        QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(run / "settings"))
+        configure_settings_directory(run / "settings")
+        settings_file = Path(QSettings("Kraken", "KrakenHub").fileName()).resolve()
+        if not settings_file.is_relative_to((run / "settings").resolve()):
+            raise RuntimeError("Deployment settings did not leave the user's global settings namespace")
+        report["settings_isolated"] = True
+        report["settings_file"] = str(settings_file)
         if not QFontDatabase.families() and os.name == "nt":
             font = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/segoeui.ttf"
             if font.is_file() and QFontDatabase.addApplicationFont(str(font)) >= 0:
                 app.setFont(QFont("Segoe UI", 9))
         service = EmbeddedProjectService(run / "profile", secret_store=store)
         session = service.create_initial_account("self-test", "Deployment self-test", "")
+        records = probe_records(run, reference_manifest)
+        size = 4 if reference_manifest else 2
         project = service.create_project(
             principal=session.principal,
             name="Deployment probe",
-            width=2,
-            height=2,
+            width=size,
+            height=size,
             orientation=GridOrientation.Y_DOWN,
             idempotency_key="project",
             layer_template=True,
         )
+        report["managed_matrix"] = prepare_project(service, session, project, records)
+        report["fixture_kind"] = "real reference manifest, at most 16 pairs" if reference_manifest else "diagnostic pixels/CIF"
+        report["checks"].append("Managed raster/CIF import, spatial viewport and inherited head coordinates")
         plan = service.create_work_plan(
             project_id=project.id, title="Deployment probe", principal=session.principal, idempotency_key="plan"
         )
@@ -73,25 +85,33 @@ def run_self_test(output_directory):
             raise RuntimeError("Local event-store readback failed")
         report["checks"].append("Local account/project/event-store readback")
         shell = ProjectManagerShell()
+        shell.resize(1280, 900)
         shell.set_session_summary("Deployment self-test · local")
         dialogs.append(shell)
         controller = DesktopController(shell, service, session, thumbnail_store_uri="memory://", plugin_items=[])
         controller._agent_timer.stop()
         controller.open_project(ProjectListItem(str(project.id), project.name, project.width, project.height, "local"))
         shell.show()
-        matrix = controller._workspace.matrix_view
-        errors = []
-        matrix.errorOccurred.connect(errors.append)
-        deadline = time.monotonic() + 15
-        while getattr(matrix, "_loading", False) and time.monotonic() < deadline:
-            app.processEvents()
-            time.sleep(0.01)
-        if errors or getattr(matrix, "_loading", False):
-            raise RuntimeError(f"Matrix background load failed: {errors}")
-        if matrix.cell_data(1, 1).x != 1:
-            raise RuntimeError("Matrix coordinate readback failed")
-        shell.grab().save(str(run / "workspace.png"))
-        report["checks"].append("Qt workspace construction and rendering")
+        verify_workspace(app, controller, report["managed_matrix"], run / "workspace.png")
+        advance_head(service, session, report["managed_matrix"], records[0]["vector"], "deployment-visible-head")
+        controller._refresh_matrix(controller._workspace, project.id)
+        verify_workspace(app, controller, report["managed_matrix"], run / "workspace-updated.png")
+        report["checks"].append("Qt managed matrix, raster thumbnail pixels and visible head refresh")
+        service = EmbeddedProjectService(run / "profile", secret_store=store)
+        verify_project(service, report["managed_matrix"])
+        controller.service = service
+        controller.open_project(ProjectListItem(str(project.id), project.name, project.width, project.height, "local"))
+        verify_workspace(app, controller, report["managed_matrix"], run / "workspace-reopened.png")
+        report["checks"].append("Fresh service/project reopen preserves managed versions and Qt thumbnails")
+        from kraken_hub.deployment_legacy_work_probe import probe_legacy_work_orders
+
+        report["legacy_work_order_migration"] = probe_legacy_work_orders(service, session, project, run, app)
+        verify_project(service, report["managed_matrix"])
+        report["checks"].append("Legacy work Qt preview/import, cached observations, cache replay and verified backup")
+        from kraken_hub.deployment_administration_probe import probe_administration
+
+        report["administration_operations"] = probe_administration(service, session, project, run, app, report["managed_matrix"])
+        report["checks"].append("Qt administration backup/scan/restore, GUI heartbeat and busy close guard")
         from types import SimpleNamespace
         from kraken_manager.domain.multilayer import ControlPoint
         from kraken_manager.infrastructure.registration import fit_affine
@@ -159,6 +179,13 @@ def run_self_test(output_directory):
             raise RuntimeError("Local Agent health check failed")
         controller.agent_runtime.shutdown()
         report["checks"].append("Bundled/local Agent launch, authenticated health and graceful shutdown")
+        for record in records:
+            for role in ("image", "vector"):
+                if sha256(Path(record[role]).read_bytes()).hexdigest() != record[role + "_sha256"]:
+                    raise RuntimeError("Deployment probe source changed during the run")
+        report["source_files_unchanged"] = True
+        if reference_manifest:
+            report["reference_manifest_sha256"] = sha256(Path(reference_manifest).read_bytes()).hexdigest()
         report["status"] = "passed"
     except Exception as exc:
         report.update(status="failed", error=str(exc), traceback=traceback.format_exc())

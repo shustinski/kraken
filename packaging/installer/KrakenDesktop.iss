@@ -1,4 +1,6 @@
-#define AppVersion "0.1.0"
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 #define RepoRoot AddBackslash(SourcePath) + "..\.."
 #ifndef BuildRoot
   #define BuildRoot RepoRoot + "\dist\windows"
@@ -22,6 +24,8 @@ PrivilegesRequired=lowest
 Compression=lzma2
 SolidCompression=yes
 UninstallDisplayIcon={app}\KrakenDesktop.exe
+CloseApplications=no
+RestartApplications=no
 
 [Files]
 Source: "{#BuildRoot}\KrakenDesktop\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -39,3 +43,6 @@ Name: "desktopicon"; Description: "Создать ярлык на рабочем
 
 [Run]
 Filename: "{app}\KrakenDesktop.exe"; Description: "Запустить Kraken Desktop"; Flags: nowait postinstall skipifsilent
+
+[Code]
+#include "DeploymentGuard.iss"

@@ -1,4 +1,6 @@
-#define AppVersion "0.1.0"
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 #define RepoRoot AddBackslash(SourcePath) + "..\.."
 #ifndef BuildRoot
   #define BuildRoot RepoRoot + "\dist\windows"
@@ -30,6 +32,8 @@ PrivilegesRequired=admin
 Compression=lzma2
 SolidCompression=yes
 UninstallDisplayIcon={app}\KrakenServer.exe
+CloseApplications=no
+RestartApplications=no
 
 [Files]
 Source: "{#BuildRoot}\KrakenServer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -46,6 +50,8 @@ Filename: "{sys}\sc.exe"; Parameters: "stop KrakenServer"; Flags: runhidden wait
 Filename: "{sys}\sc.exe"; Parameters: "delete KrakenServer"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteKrakenServer"; Check: OwnsServerService
 
 [Code]
+#include "DeploymentGuard.iss"
+
 function OwnsServerService: Boolean;
 var
   Command, Executable: String;

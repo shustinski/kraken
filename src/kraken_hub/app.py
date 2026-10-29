@@ -181,7 +181,8 @@ def print_inventory(items: list[PluginInventoryItem]) -> None:
 
 
 def run_legacy_gui(items: list[PluginInventoryItem], *, update_url: str = "") -> int:
-    from PyQt6.QtCore import QSettings, QTimer, Qt
+    from PyQt6.QtCore import QTimer, Qt
+    from kraken_core.settings import QSettings
     from PyQt6.QtWidgets import (
         QApplication,
         QFrame,
@@ -354,6 +355,13 @@ def load_plugins(catalog_path: str, plugins_dir: Path) -> list[PluginMetadata]:
     return merge_plugin_sources(registered_plugins, discovered)
 
 
+def configure_settings_directory(directory: str | Path) -> Path:
+    """Explicit CLI isolation for parallel profiles, demos and acceptance runs."""
+    from kraken_core.settings import configure_settings_directory as configure
+
+    return configure(directory)
+
+
 def main(argv: list[str] | None = None) -> None:
     from kraken_core.process_lifetime import bind_child_process_lifetime
 
@@ -363,7 +371,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--catalog", help="Path to plugins.json catalog.")
     parser.add_argument("--plugins-dir", help="Folder where Kraken plugins are stored.")
     parser.add_argument("--list", action="store_true", help="Print plugin catalog and exit.")
+    parser.add_argument("--settings-dir", help="Isolate normal GUI settings in this directory; default settings stay unchanged when omitted.")
     parser.add_argument("--self-test-dir", help="Run an isolated deployment probe and save JSON/screenshots in a new child directory.")
+    parser.add_argument("--self-test-reference-manifest", help="Read up to 16 real JPEG/CIF pairs for the isolated deployment probe; requires --self-test-dir.")
+    parser.add_argument("--self-test-reopen-report", help=argparse.SUPPRESS)
     parser.add_argument(
         "--update-url",
         help="URL or local path of the Kraken Hub update manifest (also KRAKEN_UPDATE_URL).",
@@ -374,9 +385,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Thumbnail cache backend: sqlite:///path, files:///path or memory://.",
     )
     args = parser.parse_args(argv)
+    if args.settings_dir and args.self_test_dir:
+        parser.error("--settings-dir applies to the normal GUI; self-tests already isolate their settings")
     if args.self_test_dir:
+        if args.self_test_reopen_report:
+            from kraken_hub.deployment_upgrade_probe import run_reopen_probe
+            raise SystemExit(run_reopen_probe(args.self_test_dir, args.self_test_reopen_report))
         from kraken_hub.self_test import run_self_test
-        raise SystemExit(run_self_test(args.self_test_dir))
+        raise SystemExit(run_self_test(args.self_test_dir, reference_manifest=args.self_test_reference_manifest))
+    if args.self_test_reference_manifest:
+        parser.error("--self-test-reference-manifest requires --self-test-dir")
+    if args.self_test_reopen_report:
+        parser.error("--self-test-reopen-report requires --self-test-dir")
+    if args.settings_dir:
+        configure_settings_directory(args.settings_dir)
     catalog = discover_catalog(args.catalog)
     plugins_dir = Path(args.plugins_dir).expanduser().resolve() if args.plugins_dir else default_plugins_dir()
     plugins = load_plugins(catalog, plugins_dir)

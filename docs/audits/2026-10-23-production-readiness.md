@@ -51,23 +51,24 @@ numpy 2.4.4, OpenCV 5.0.0, Shapely 2.1.2, SciPy 1.17.1. Lock-файл не ме�
 | R06 NeuralImage dataset/training/inference/confidence | Ч | Подготовлен реальный dataset; ограниченный CPU train→публикация checkpoint→выбор model port→inference→import→reopen прошёл за 21.93 s, `2026-10-26-model-functional-acceptance.md` | GPU fault injection и воспроизводимость runtime; длительное обучение и оценка качества исключены из текущего этапа пользователем |
 | R06 Karakal server versioned input/analysis | Ч | Реальные HTTP/PostgreSQL/Agent/Karakal: import, ошибка, retry, cancel, repeat, reopen/replay; local/remote PNG maps, worker receipt/pin/refusal/recheck, diagnostics, backup. Единый локальный representative 20-stage E2E с actual Karakal/quality/correction/review/backup прошёл 27 октября | Единый desktop/server/installed E2E; финальная упаковка |
 | R06 Krona трассируемые гипотезы | П | SHA-256, provenance и метки unverified; `plugins/krona/tests/test_quality*` | Полная строгая электрическая модель: GAP-Q01 |
-| R06 CSliser стандартные контракты и защита данных | Ч | Реальные Qt copy/cancel/close и файловые гонки; Linux source gate; 32 реальные пары → 64 Hub версии → архив/reopen/backup/restore, SHA исходников неизменны; `2026-10-27-csliser-functional.md` | Hub IPC actions ещё не подключены к окну; durable crash recovery, большие диапазоны и installed acceptance |
+| R06 CSliser стандартные контракты и защита данных | Ч | Qt copy/cancel/close, файловые гонки, 32 реальные пары → 64 Hub версии → backup/restore; CLI context, deprecated ложные actions, bounded ranges. Добавлены fsync write-ahead removal receipt, OS lock и явное CLI/Qt восстановление source quarantine. Реальные process exits, конфликты/SHA/cancel/fsync failure, 47 Linux checks; standalone Windows install/crash child/recovery/copy 16 реальных пар/uninstall прошли; оба EXE сверены по 34 модулям | Общий batch/copy/same-volume move journal, физический power-cut, обычный внешний GUI, clean OS/reboot/update и большой load открыты; `2026-10-27-csliser-removal-recovery.md` |
 | R07 маски/геометрические метрики/analysis issues | Ч | Durable QualityIssue, correction/independent recheck/acceptance/exception, local/server/UI, lineage gates и AnalysisRun rules; `docs/quality-workflow.md` | Реальная corpus приёмка, межслойные эталоны и все quality dimensions |
 | R07 неопределённость и отделение расчёта от электрической приёмки | Ч | Krona явно unverified; критерии плана требуют versioned evidence | Унифицированные независимые quality dimensions по всем плагинам |
 | R08 многослойность, transforms, calibration, registration revisions | Ч | SI calibration, stack, SVD affine control points, stale anchors, uncertainty и independent contact review; local/HTTP/PG/Qt, `docs/physical-registration.md` | Проверенные реальные физические слои и контрольные точки |
 | R09 проводимость/vias/elements/verified netlist | Ч | Krona анализирует существующие EDIF, не доказывает связь по микрофотографиям | Полная evidence-based цепочка геометрия→элементы→netlist |
-| R10 планирование в настоящем Hub | Ч | WorkPlanningDialog, templates, workflow, quality, physical model; board/analytics проходят интеграционную проверку | Полная проверка массовых операций, всех рабочих представлений и многопользовательских сценариев |
+| R10 планирование в настоящем Hub | Ч | WorkPlanningDialog, templates, workflow, quality, physical model; board/analytics. Исполнители/слои/evidence выбираются по именам, project-backend routing; actual Qt→HTTP/PostgreSQL→acceptance→reopen проверены, новый UI включён в audit-tested Desktop, `2026-10-27-planning-named-ui.md` | Полная проверка массовых операций, всех рабочих представлений и многопользовательских сценариев |
 | R10 отзывчивость планирования и восстановление UI после ошибок | П | Фоновые service calls, revision refresh, retry key; Qt tests | Реальная WAN/большие планы и все рабочие представления |
 | R10 время жизни матрицы при удалении родителем | П | `background_resources.py`, weak owner, queue errors; `test_matrix_lifetime.py` | Совпадение с конкретным native crash не доказано |
+| R10 фоновые административные операции | П | Каталог/история, backup/restore/attach/scan в worker; Qt heartbeat, errors/retry, busy close, child-process parent deletion/quit; installed Desktop backup/scan/restore 16 реальных пар, `2026-10-27-administration-background.md` | Полная отзывчивость остальных экранов, WAN и большая concurrent нагрузка отдельно открыты |
 | R10 RU/EN | Ч | Новая панель и Krona имеют обе локализации | Все существующие экраны ещё не сверены |
 | R11 статистика и экспорт CSV/XLSX/PDF | НП | `infrastructure/reports`, `test_statistics_reports.py` | Измеренные cycle time/rework/utilization/forecast и baseline variance |
 | R12 аудит/идемпотентность/CAS WorkOrder | П | `work_order_lifecycle.py`, UOW, `WorkOrderRecordedV1` reducer; security tests | Миграция legacy записей, созданных до event-sourced сохранения |
 | R12 серверный RBAC отмены/завершения и запрет перезаписи record | П | `persistent_services_parts/issue_work.py`; `test_work_order_security.py` | Проверить на настоящем PostgreSQL + concurrent clients |
-| R12 SHA-256/path/RBAC/secret/blob contracts | ? | Windows native junction regressions Python/Agent 20 ? Rust HTTP 13+8; generation claims; ???????? kernel-lock death/recovery. Linux fork ?????? ? ???????? ????? ? ????????? ????, before/after ????? ????????? | ?????? ??????????? ?????, ???????? ???? races, ???????? ? ??????? ???????? native plugins; path checks ?? ???????? OS sandbox |
-| R12 согласованный PostgreSQL+BlobStore backup/restore | Ч | Реальный offline PostgreSQL dump/restore и 315 blobs проверены: 879 events, 835 projections, 253 idempotency records | Автоматизация эксплуатационного backup и online/concurrent disaster recovery |
-| R13 small/medium/large измерения | Ч | Существуют performance tests и blob benchmark | Свежие базовые измерения всех указанных операций, memory/users/files |
-| R14 многослойная стратегия проверок | Ч | Targeted + isolated XML/log/JSON, реальные Qt/subprocess; representative local 20-stage E2E и backup прошли. Последний root: 189 модулей, 1254 cases, 0 failures/errors, 14 skipped; 2630 source files unchanged | Единый desktop/remote/installed E2E, нагрузка нескольких пользователей, все внешние плагины |
-| R14 дистрибутивы/установка/обновление/удаление | Ч | Актуальные 27 октября PyInstaller/production installers; audit install/acceptance/uninstall Desktop и Server прошли. Installed raster/vector/invalid-CIF workers, frozen Server/Admin/Gateway migrations/auth/HTTP/Range/SciPy/restart проверены; 453/368 project/Contour pure modules совпали с source | Production AppId install/update, SCM service, clean OS/reboot/Linux, standalone plugin packages и побитовая воспроизводимость; `2026-10-27-windows-installed-functional.md` |
+| R12 SHA-256/path/RBAC/secret/blob contracts | Ч | Текущий PostgreSQL root: 20 настоящих Windows junction cases без пропусков; path/package suite — 16 выполнены, 3 symlink-пропуска. Rust Gateway HTTP и Linux core имеют отдельные исторические протоколы: `2026-10-25-rust-gateway-junction-security.md`, `2026-10-26-linux-core-install-gate.md` | Полная проверка конкурентных файловых races, привилегированных и внешних native plugins, всех поддерживаемых ОС; проверки путей не заменяют OS sandbox |
+| R12 согласованный PostgreSQL+BlobStore backup/restore | Ч | Автоматизированные backup-server/backup-verify/restore-server: exported PG snapshot, все три корня, SHA, filesystem/SQL receipts, root relocation, pending cleanup и Gateway barrier. 24 native PG cases; installed Server на 16 JPEG/CIF парах подтвердил две матрицы/32 SHA/Range, --resume и restart; `2026-10-28-server-backup-functional.md` | Длительная конкурентная/аварийная нагрузка, physical power/disk loss, PITR/WAL и внешние зависимости/cluster portability |
+| R13 small/medium/large измерения | Ч | Свежие импорты 16/256 реальных пар со сверкой SHA; чтение 5498 пар. Управляемый viewport читает видимые модели по пространственному индексу: тёплые запросы 0,675/0,666 s; `2026-10-27-spatial-matrix.md` | Свежий полный импорт и все операции, внешние каталоги, многослойные/многопользовательские нагрузки, долгий профиль памяти |
+| R14 многослойная стратегия проверок | Ч | Targeted + isolated XML/log/JSON, реальные Qt/subprocess; representative local 20-stage E2E и backup прошли. Последний upgrade-root: 213 модулей, 1417 XML checks (1386 top-level + 31 subtests), 0 failures/errors, 15 skipped, PostgreSQL/native tools включены; 2700 pinned files unchanged. Обучение отключено | Единый desktop/remote/installed E2E, нагрузка нескольких пользователей, все внешние плагины |
+| R14 дистрибутивы/установка/обновление/удаление | Ч | Actual audit upgrade прежних EXE → текущие: занятые Server/Gateway и Desktop дали отказ до замены, PID и payload SHA сохранились. После штатной остановки Server сохранил config/secrets/account/history/32 SHA/Range и прошёл backup/restore; новая Desktop EXE открыла прежний 16-pair project/account/Qt cells/thumbnails/heads, canonical/settings SHA unchanged и fresh self-test. Audit uninstall сохранил untracked data; все 473 Desktop/380 Server/380 Admin modules совпали с source | Обычный native UI/login не верифицируется: Computer Use pipe недоступен. Полный 20-stage, production AppId update, elevated SCM/drain, concurrent relaunch, atomic power-loss rollback, clean OS/reboot/Linux, остальные standalone plugins и bit reproducibility открыты; `2026-10-28-installed-upgrade.md` |
 | R15 реестр GAP | Ч | Реестр ниже | Полная трассировка каждого дефекта всех подсистем |
 | R17–19 итоговая готовность/независимый аудит | Не достигнуто | Открытые MAJOR/CRITICAL и непроверенные целевые сценарии | Закрыть по воспроизводимой проверке, затем повторить весь E2E |
 
@@ -93,7 +94,12 @@ CLI и форматы файлов сохранены. Доменные объе
 | GAP-A02 | CRITICAL Agent | Callback после cancel сохранял outputs; финальный retry конфликтовал. Atomic result/state и dedup | Тот же набор: исправлено |
 | GAP-A03 | MAJOR Agent | Остановка могла оставлять RUNNING. Перевод в recovery_required | Реальные subprocess: исправлено |
 | GAP-W01 | CRITICAL Server | Cancel/complete игнорировали actor, record мог переписать поручение. ACL внутри UOW, immutable metadata, references, CAS | `test_work_order_security.py`: исправлено |
-| GAP-W02 | MAJOR storage | WorkOrder был только проекцией и терялся при rebuild. Событие snapshot + reducer + staged projection | Replay/rollback/reopen tests: исправлено для новых записей; legacy migration открыта |
+| GAP-W02 | MAJOR storage | WorkOrder был только проекцией и терялся при rebuild. Новые записи имеют события; для projection-only v1 добавлены reviewed snapshot/observations import, guards rebuild/cache deletion/new export и retry-safe commit | Исправлено в поддерживаемом формате: local/PG/HTTP/Qt, snapshot SHA/scope, revoked ACL, stripped console roles, backup/replay и installed Desktop/Server прошли. Старая история не выдумывается; `2026-10-27-legacy-work-orders.md` |
+| GAP-BACKUP01 | MAJOR backup | Повторное создание backup в фиксированном каталоге UI возвращало старый завершённый bundle вместо текущего snapshot | Исправлено: отдельный каталог каждого UI запроса, source inventory/head/descriptor/references/profile fence, immutable complete archive и bound checkpoint resume. Qt repeat + restore managed bytes, root gate и installed Desktop с 16 реальными парами прошли; `2026-10-27-backup-freshness.md` |
+| GAP-GATEWAY-METADATA01 | MAJOR transport/matrix | Gateway transfer payload отбрасывал artifact parameters: accepted JPEG/CIF versions не отображались в матрице | Исправлено: bounded finite JSON metadata сохраняется, SHA parameters привязан к signed ticket; changed metadata 401, invalid 422, пустой context совместим. Regression before/after, current root и actual installed Server 16-pair matrix/backup/restart прошли; `2026-10-28-server-backup-functional.md` |
+| GAP-SERVER-SETUP01 | MAJOR setup | setup-server завершался UnboundLocalError из-за локального импорта run_migrations в другой ветке dispatcher | Исправлено: устранено затенение импорта; actual dispatcher regression migrations/config/bootstrap и current root прошли |
+| GAP-INSTALL-LIVE01 | MAJOR installer | Тихая установка полагалась на автоматическое закрытие Restart Manager без собственного отказа при занятых runtime files | CloseApplications/RestartApplications выключены; общий preflight EXE/DLL/PYD/reparse, отказ busy update/uninstall. Actual installed Server/Desktop upgrades подтвердили код 7, живой PID/старый payload, успешную замену после stop и сохранение старых данных; `2026-10-28-installed-upgrade.md`. Это не атомарный запрет concurrent relaunch |
+| GAP-UI-ADMIN01 | MAJOR Hub responsiveness | Backup/restore/attach/integrity и чтение каталога/истории блокировали главный поток Qt | Исправлено: retained worker и bound Qt slots, status/progress, single operation, retry, busy close + parent deletion/quit safety; source/root/installed gates прошли, `2026-10-27-administration-background.md` |
 | GAP-W03 | CRITICAL Server | Client destination воспринимался как путь сервера. Новая external registration не может назначить server placement; completion не читает client path | Security tests: исправлено; импорт внешнего результата требует отдельного workflow |
 | GAP-W04 | MAJOR Server | due_at терялся для server work; invalid review due_at выходил сырым ValueError | Положительные/отрицательные due_at tests: исправлено |
 | GAP-P01 | MAJOR planning | Не было планов, baseline и критериев отдельно от Job/Order | Domain/service/HTTP/local/Qt tests: исправлено в реализованном объёме; шаблоны/scheduler/board открыты |
@@ -110,6 +116,7 @@ CLI и форматы файлов сохранены. Доменные объе
 | GAP-HISTORY01 | MAJOR Hub mixed history | После actual AnalysisRun generic StoredEvent не имел event_type attribute; следующая Agent synchronization падала в plugin_jobs(), также затрагивались matrix/history/activity | Исправлен read-only GenericHistoryEvent adapter без изменения журнала; unknown actor сохраняется неизвестным; 3 регрессии, statistics/layer tests и единый E2E 27 октября прошли |
 | GAP-PLAN-ARGS01 | MAJOR planning transport | Неполные обязательные поля вызывали KeyError/TypeError вместо validation error | 17 negative cases падали до исправления; required fields decoder, rollback и PostgreSQL/ASGI HTTP 422 с исправлением того же Idempotency-Key проверены |
 | GAP-PKG-CIF01 | MAJOR Windows native vector worker | Spec исключал CIF-кодек; его eager imports тянули Contour application/OpenCV в headless worker. Frozen и installed self-test воспроизвели отказ | Исправлены пакетный состав, lazy exports и helper imports; source guard без GUI/cv2/Torch, actual installed vector/hole/rotated-box и contextual invalid-CIF refusal прошли. RU/EN codec resources включены. 27 октября, Windows deployment protocol |
+| GAP-UI-PLAN01 | MAJOR Hub planning workflow | Основная форма требовала ручных UUID исполнителя, слоёв и evidence; именной список в DualCatalog должен принадлежать backend выбранного проекта | Named selectors, immutable version browser, scope guards, retry/close lifetime и восстановление evidence metadata проверены Qt/local/HTTP/PostgreSQL; новый Desktop установлен и проверен в audit-варианте. Полный desktop 20-stage и нагрузка отдельно открыты |
 
 ## Правила интерпретации проверок
 
@@ -154,3 +161,92 @@ PostgreSQL включён. Opt-in twenty-stage E2E выполнен отдель
 [протокол сборки и установленного приложения](2026-10-27-windows-installed-functional.md).
 Последний root — 189 модулей, 1254 cases, 0 failures/errors, 14 skipped
 (1240 выполнены), с неизменностью 2630 закреплённых source files.
+
+Следующий функциональный блок — [именованное планирование](2026-10-27-planning-named-ui.md).
+Финальный PostgreSQL root: 197 модулей, 1279 cases, 0 failures/errors,
+14 skipped (1265 выполнены); 2651 закреплённый source file unchanged.
+Обновлённые audit installers Desktop/Server прошли install/acceptance/uninstall.
+Прерванный при недоступном Docker запуск не засчитывается; успешный повтор
+выполнен после восстановления собственного изолированного PostgreSQL контейнера.
+
+Последующая [нагрузочная проверка матрицы и импорта](2026-10-27-matrix-functional-load.md)
+обнаружила и исправила поштучное сканирование таблицы версий. На 5498 реальных
+парах первый запрос 100 ячеек сократился с 272,9 до 5,4 s, повторные — 2,3 s;
+это ещё не закрывает интерактивный performance gate. Свежие отдельные импорты
+16 и 256 пар прошли проверку SHA исходников, blob и журнала. Обучение не запускалось.
+Эти изменения исходников появились после проверки предыдущих установщиков.
+Новый `viewport-final-build` содержит проверенные 462 Desktop / 373 Server
+модуля. Новые audit installers прошли install/acceptance/uninstall; Server —
+с настоящим изолированным PostgreSQL. Общий root gate после изменений:
+192 модуля, 1237 cases, 0 failures/errors, 90 skipped (1147 выполнены), без PG.
+Точные SHA новых production installers и ограничения — в протоколе нагрузки.
+
+Следующий этап — [пространственное чтение управляемой матрицы](2026-10-27-spatial-matrix.md).
+Устранено декодирование всех кадров перед фильтрацией viewport; индекс координат
+восстанавливается из текущих моделей и инвалидируется при изменениях. Проверены
+legacy-координаты, head/архивирование, отказ и восстановление кэша, два читателя.
+Реальный корпус: тёплый viewport 0,675/0,666 s; 100 переходов со сверкой SHA прошли.
+Общий PostgreSQL root + CSliser: 199 модулей, 1295 cases, 0 failures/errors,
+14 skipped (1281 выполнены), 2654 source files unchanged. Новые spatial-final
+audit installers также прошли install/acceptance/uninstall. Непустой installed
+UI и полный twenty-stage сценарий остаются открыты.
+
+Последующий [непустой installed Desktop gate](2026-10-27-nonempty-installed-ui.md)
+закрыл конкретный пробел пустой матрицы. Установленный exe импортировал 16 реальных
+JPEG/CIF, показал миниатюры, обновил head и переоткрыл workspace с новым service;
+SHA исходников сохранились. Дополнительно проверены диагностические thumbnail
+pixels. На первом реальном снимке обнаружено наложение секций легенды: старые
+виджеты теперь скрываются сразу, неизменные секции переиспользуются. Qt-регрессии
+и просмотр нового installed screenshot прошли. Последний PostgreSQL root + CSliser:
+201 модуль, 1300 cases, 0 failures/errors, 14 skipped (1286 выполнены), 2657 source
+files unchanged. Новые Desktop/Server audit installers прошли проверки и удалены.
+Полный двадцатиэтапный UI-сценарий и остальные открытые требования этим не закрыты.
+
+[Изоляция профилей и обычный GUI](2026-10-27-profile-isolation.md): исправлено
+общее имя запомненного входа для разных каталогов данных, стандартный профиль
+сохраняет legacy target. Две собственные записи Credential Manager проверены
+нативно и удалены с guard против любых посторонних targets. Исправлена также
+неэффективная изоляция GUI settings через Qt default format: новый opt-in
+`--settings-dir` и явный INI factory проверены между независимыми процессами и
+в установленном exe. На этапе изоляции PostgreSQL root + CSliser: 202 модуля,
+1303 cases, 0 failures/errors, 14 skipped (1289 выполнены), 2659 source files
+unchanged. Обычный audit-профиль подготовлен, но native pipe helper недоступен
+в основном и резервном UI-интерфейсах; ordinary login/restart не засчитаны.
+Остальные функциональные требования продолжаются независимо от этого ограничения.
+
+[Восстановление CSliser](2026-10-27-csliser-removal-recovery.md): fsync receipt
+до source quarantine, OS lock, SHA проверки и явное CLI/Qt восстановление
+проверены реальными process exits и installed Windows child EXE. Linux: 47
+проверок; текущие Windows EXE сверены по 34 модулям и прошли audit
+install/acceptance/uninstall. Итоговый PostgreSQL root: 205 модулей, 1335 XML
+checks, 0 failures/errors, 15 skipped (1320 выполнены); 2676 pinned files
+неизменны. Общий batch/copy/move journal и физический power-cut этим не закрыты.
+
+[Миграция старых поручений](2026-10-27-legacy-work-orders.md): reviewed plan,
+snapshot/observation SHA, actor provenance, role/schema guards и retry-safe
+перенос защищают projection-only v1 при rebuild/cache deletion/new backup.
+208 модулей, 1360 XML checks, 0 failures/errors, 15 skipped; 2683 pinned files
+неизменны. Новые Desktop/Server installers сверены по 469/377 модулям,
+прошли audit install/acceptance/uninstall; Server legacy import сохранился
+после process restart. Следующий найденный MAJOR — reuse старого backup
+из прежнего каталога вместо нового snapshot. Общая готовность не достигнута.
+
+[Актуальность повторных копий](2026-10-27-backup-freshness.md): GAP-BACKUP01
+исправлен с проверкой current source и сохранением immutable старого архива;
+прерванный экспорт связан с source fingerprint, новые UI запросы разделены.
+209 модулей, 1371 XML checks, 0 failures/errors, 15 skipped; 2684 pinned files
+не изменились во время тестов, сборки и обеих установок. Installed Desktop
+на 16 реальных парах отказался вернуть stale backup и восстановил новый
+snapshot в отдельное хранилище. Desktop/Server audit install/acceptance/
+uninstall прошли; production installers скомпилированы, не опубликованы.
+Обучение модели не запускалось. Общая функциональная готовность требует
+оставшихся gates из матрицы; этот этап её целиком не подтверждает.
+
+[Фоновые административные операции](2026-10-27-administration-background.md)
+устранили подтверждённое выполнение backup/restore/attach/scan и каталога
+в Qt thread. Worker/receiver lifetime, heartbeat, errors/retry и busy close
+проверены в Qt и child processes; установленный Desktop восстановил 16
+реальных пар. Последний root завершён 28 октября: 210 модулей, 1379 XML
+checks, 0 failures/errors, 15 skipped; 2687 pinned files не изменились.
+Desktop 471 frozen modules и неизменённый Server 377 modules совпали с source.
+Native UI/полный E2E и прочие открытые требования этим не закрыты.

@@ -29,7 +29,7 @@ from csliser import __version__
 from csliser.application.use_cases import BuildTransferPlan
 from csliser.domain.models import FileOperation, OperationPlan, OperationResult, ProcessingConfig, SelectionMode, SourceFolder
 from csliser.domain.planner import PlanningError, discover_extensions
-from csliser.domain.ranges import FrameRangeError
+from csliser.domain.ranges import FrameRangeError, MAX_EXPRESSION_LENGTH
 from csliser.infrastructure.settings_store import CSliserPreset, WindowSettings, WindowSettingsStore
 from csliser.presentation.qt.widgets import AnimatedToggle, ExtensionCheckbox
 from csliser.presentation.qt.worker import TransferWorker
@@ -108,6 +108,7 @@ class CSliserWindow(QMainWindow):
         self._current_operation = FileOperation.COPY
         self._busy = False
         self._pending_result = None
+        self._completion_message = None
         self._close_when_finished = False
         self._theme = "dark"
         self._dynamic_extensions = False
@@ -186,6 +187,7 @@ class CSliserWindow(QMainWindow):
         self.gridapp.addWidget(self.first_frame_label, 2, 0)
 
         self.first_frame_lineedit = QLineEdit()
+        self.first_frame_lineedit.setMaxLength(MAX_EXPRESSION_LENGTH)
         self.first_frame_lineedit.setFont(self.font)
         self.first_frame_lineedit.setPlaceholderText("Например: 10-20;100:300,500:600;700")
         self.gridapp.addWidget(self.first_frame_lineedit, 2, 1)
@@ -244,7 +246,7 @@ class CSliserWindow(QMainWindow):
         self.gridapp.addWidget(self.progress, 6, 0, 1, 3)
 
         self.settings_btn = QPushButton()
-        self.settings_btn.setText("⚙")
+        self.settings_btn.setText("Настройки")
         self.settings_btn.setToolTip("Настройки")
         self.settings_btn.setFont(self.font)
         self.gridapp.addWidget(self.settings_btn, 6, 3)
@@ -265,6 +267,7 @@ class CSliserWindow(QMainWindow):
         self._add_menu_action(file_menu, "Создать пресет кадров", lambda: self._save_preset(include_sources=False))
         self._add_menu_action(file_menu, "Восстановить полный пресет", lambda: self._restore_preset(include_sources=True))
         self._add_menu_action(file_menu, "Восстановить пресет кадров", lambda: self._restore_preset(include_sources=False))
+        self._add_menu_action(file_menu, "Восстановить файлы из карантина…", self._recover_source_removals)
         self._add_menu_action(help_menu, "О версии", self._show_about)
 
     def _add_menu_action(self, menu: QMenu, text: str, callback) -> None:
@@ -298,6 +301,36 @@ class CSliserWindow(QMainWindow):
         self.copy_all_radiobutton.setChecked(settings.selection_mode == SelectionMode.FULL_RANGE.value)
         self.copy_area_radiobutton.setChecked(settings.selection_mode != SelectionMode.FULL_RANGE.value)
         self._disable_frames_in_row()
+
+    def apply_launch_context(self, context) -> None:
+        """Apply validated external context before user preview/confirmation."""
+        if self._busy or self._worker_thread is not None:
+            raise RuntimeError("Cannot reconfigure CSliser while a transfer is active")
+        if context.sources:
+            self._source_folders.clear()
+            for source in context.sources:
+                self._add_source_path(source.path)
+                if source.extensions:
+                    payload = self._source_folders[source.path]
+                    payload["all_extensions"] = tuple(sorted(set(payload["all_extensions"]) | set(source.extensions)))
+                    payload["active_extensions"] = set(source.extensions)
+            self._source_ui()
+        if context.frame_expression is not None:
+            self.first_frame_lineedit.setText(context.frame_expression)
+        if context.frames_per_row is not None:
+            self.frames_in_row_lineedit.setText(str(context.frames_per_row))
+        if context.selection_mode is not None:
+            self.copy_all_radiobutton.setChecked(context.selection_mode is SelectionMode.FULL_RANGE)
+            self.copy_area_radiobutton.setChecked(context.selection_mode is SelectionMode.RECTANGLE)
+        if context.destination is not None:
+            self.destination_folder_lineedit.setText(context.destination)
+        if context.add_extension_prefix is not None:
+            self.add_extension_checkbox.setChecked(context.add_extension_prefix)
+        if context.operation is not None:
+            self._current_operation = context.operation
+        self._disable_frames_in_row()
+        self._current_plan = None
+        self._refresh_state()
 
     def _save_settings(self) -> None:
         frames_per_row = int(self.frames_in_row_lineedit.text() or "135")
@@ -585,10 +618,36 @@ class CSliserWindow(QMainWindow):
         )
         return answer == QMessageBox.StandardButton.Yes
 
-    def _start_worker(self, plan: OperationPlan) -> None:
+    def _recover_source_removals(self):
+        if self._worker_thread is not None:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Папка исходных файлов с прерванными операциями")
+        if not folder:
+            return
+        from csliser.application.removal_recovery import RecoverRemovals, discover_removal_receipts
+
+        try:
+            plan = discover_removal_receipts(Path(folder))
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Восстановление", str(error))
+            return
+        if not plan.operations:
+            QMessageBox.information(self, "Восстановление", "Незавершённые записи карантина не найдены.")
+            return
+        answer = QMessageBox.question(self, "Восстановление",
+            f"Найдено записей: {len(plan.operations)}. Вернуть проверенные файлы из карантина? "
+            "Занятые имена не перезаписываются. Удаление файлов не возобновляется.")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._start_worker(plan, executor=RecoverRemovals(),
+            completion_message="Проверка карантина завершена. Доступные файлы возвращены; "
+                               "уже удалённые файлы восстановить из журнала невозможно.")
+
+    def _start_worker(self, plan, *, executor=None, completion_message=None) -> None:
         if self._worker_thread is not None:
             return
         self._pending_result = None
+        self._completion_message = completion_message
         self._close_when_finished = False
         self.progress.setRange(0, len(plan.operations))
         self.progress.setValue(0)
@@ -598,7 +657,7 @@ class CSliserWindow(QMainWindow):
         self._change_enabling(False)
 
         self._worker_thread = QThread(self)
-        self._worker = TransferWorker(plan)
+        self._worker = TransferWorker(plan, executor=executor)
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
         self._worker.progress_changed.connect(self._on_progress)
@@ -653,7 +712,7 @@ class CSliserWindow(QMainWindow):
                 FileOperation.MOVE: "Перемещение завершено",
                 FileOperation.DELETE: "Удаление завершено",
             }
-            QMessageBox.information(self, "Информация", messages[self._current_operation])
+            QMessageBox.information(self, "Информация", self._completion_message or messages[self._current_operation])
 
     def _change_enabling(self, state: bool) -> None:
         for widget in (

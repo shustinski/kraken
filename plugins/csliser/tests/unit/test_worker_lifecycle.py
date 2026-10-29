@@ -44,7 +44,7 @@ def test_close_requests_cancel_and_waits_for_thread_before_window_deletion(qtbot
             while not cancelled():
                 Event().wait(.01)
             return ExecuteTransferPlan().execute(plan, progress=progress, cancelled=cancelled)
-    monkeypatch.setattr(module, "TransferWorker", lambda p: TransferWorker(p, executor=BlockingExecutor()))
+    monkeypatch.setattr(module, "TransferWorker", lambda p, **_kwargs: TransferWorker(p, executor=BlockingExecutor()))
     window._start_worker(plan)
     qtbot.waitUntil(entered.is_set, timeout=5000)
     window.close()
@@ -60,7 +60,7 @@ def test_unexpected_backend_error_reports_unknown_outcome_and_does_not_leave_ui_
         def execute(self, *_args, **_kwargs):
             raise RuntimeError("controlled unexpected transfer backend failure")
     notices = []
-    monkeypatch.setattr(module, "TransferWorker", lambda p: TransferWorker(p, executor=FailingExecutor()))
+    monkeypatch.setattr(module, "TransferWorker", lambda p, **_kwargs: TransferWorker(p, executor=FailingExecutor()))
     monkeypatch.setattr(QMessageBox, "warning", lambda *_args: notices.append(True))
     window._start_worker(plan)
     qtbot.waitUntil(lambda: window._worker_thread is None, timeout=5000)

@@ -17,7 +17,7 @@ def inside():
     subprocess.run([sys.executable, "-m", "pip", "install", "--no-index", "--find-links=/input/wheels", "--no-cache-dir",
         "--target=/tmp/site", "pytest==9.0.3"], check=True, timeout=60)
     environment = dict(os.environ, PYTHONPATH="/input/source/src:/input/source/plugins/csliser/src:/tmp/site", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
-    modules = ["test_planner", "test_ranges", "test_use_cases", "test_transfer_safety"]
+    modules = ["test_planner", "test_ranges", "test_use_cases", "test_transfer_safety", "test_removal_recovery"]
     status = subprocess.run([sys.executable, "-m", "pytest", "-q", "--tb=short", "--basetemp=/tmp/csliser-tests", "-o", "cache_dir=/tmp/pytest-cache",
         "--junitxml=/evidence/results.xml", *(f"/input/source/plugins/csliser/tests/unit/{name}.py" for name in modules)],
         env=environment, timeout=90).returncode
@@ -38,7 +38,7 @@ def host(args):
         if path.name.split("-", 1)[0].casefold() in {"pytest", "iniconfig", "packaging", "pluggy", "pygments"}:
             shutil.copyfile(path, wheels / path.name)
     assert any(wheels.glob("pytest-9.0.3-*.whl"))
-    sources = [*(ROOT / "src/kraken_core").rglob("*.py"), *(ROOT / "plugins/csliser/src").rglob("*.py"), *(ROOT / "plugins/csliser/tests").rglob("*.py")]
+    sources = [ROOT / "plugins/csliser/__main__.py", *(ROOT / "src/kraken_core").rglob("*.py"), *(ROOT / "plugins/csliser/src").rglob("*.py"), *(ROOT / "plugins/csliser/tests").rglob("*.py")]
     manifest = {}
     for path in sorted(sources):
         relative = path.relative_to(ROOT)
@@ -55,7 +55,8 @@ def host(args):
             "--mount", f"type=bind,source={output},target=/evidence", IMAGE, "python", "-u", "/input/check.py", "--inside"],
             stdout=log, stderr=subprocess.STDOUT, timeout=150).returncode
     receipt = {"status": "passed" if status == 0 else "failed", "exit_code": status, "image": IMAGE, "container": name,
-        "network": "none", "scope": "native source file operations, no Qt/installer certification", "training_started": False}
+        "network": "none", "scope": "native source file operations, no Qt/installer certification", "training_started": False,
+        "verifier_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     (output / "receipt.json").write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt), flush=True)
     return status

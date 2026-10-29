@@ -111,7 +111,8 @@
         "windows": {"command": ["python", "__main__.py"]},
         "linux": {"command": ["python", "__main__.py"]}
       },
-      "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+      "actions": ["get_capabilities"],
+      "deprecated_actions": ["open_path", "open_folder", "run_action"]
     },
     {
       "id": "kategb",

@@ -23,7 +23,7 @@ datas += [
 
 a = Analysis(
     [str(PROJECT_ROOT / "__main__.py")],
-    pathex=[str(PROJECT_ROOT / "src")],
+    pathex=[str(PROJECT_ROOT / "src"), str(PROJECT_ROOT.parent.parent / "src")],
     binaries=[],
     datas=datas,
     hiddenimports=[],
@@ -55,8 +55,15 @@ exe = EXE(
     icon=str(APP_ICON),
 )
 
+cli = EXE(
+    pyz, a.scripts, [], exclude_binaries=True, name="CSliserCli",
+    debug=False, bootloader_ignore_signals=False, strip=False, upx=True,
+    console=True, icon=str(APP_ICON),
+)
+
 coll = COLLECT(
     exe,
+    cli,
     a.binaries,
     a.datas,
     strip=False,

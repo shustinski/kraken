@@ -117,7 +117,9 @@ def test_replacement_at_native_rename_is_restored_and_never_deleted(tmp_path, mo
     assert result.errors and result.completed == 0
     assert image.read_bytes() == b"concurrent replacement image"
     assert saved.read_bytes() == b"reviewed original"
-    assert not list(source.glob("*.csliser-remove-*"))
+    # A failed removal now retains a write-ahead receipt, but no payload remains
+    # hidden in quarantine after the original concurrent replacement is restored.
+    assert not [p for p in source.glob("*.csliser-remove-*") if not p.name.endswith(".json")]
 
 
 def test_parallel_publish_of_same_destination_has_one_winner(tmp_path):

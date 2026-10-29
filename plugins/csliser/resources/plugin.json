@@ -12,5 +12,6 @@
     "windows": {"command": ["python", "-m", "csliser"]},
     "linux": {"command": ["python", "-m", "csliser"]}
   },
-  "actions": ["get_capabilities", "open_path", "open_folder", "run_action"]
+  "actions": ["get_capabilities"],
+  "deprecated_actions": ["open_path", "open_folder", "run_action"]
 }

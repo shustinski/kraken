@@ -17,6 +17,7 @@ from uuid import uuid4
 from kraken_core.safe_files import contained_path, ensure_regular_directory, make_contained_directories, open_exclusive_write, open_regular_read
 
 from csliser.domain.models import SourceFileSnapshot
+from csliser.infrastructure.removal_receipt import RemovalReceipt, sync_directory, verified_digest
 
 
 class TransferCancelled(RuntimeError):
@@ -139,22 +140,32 @@ def copy_verified(item, *, copy_metadata, cancelled=None):
                 pass
 
 
-def remove_verified_source(item):
+def remove_verified_source(item, *, cancelled=None):
     source_matches(item)
     quarantine = item.source.with_name("."+item.source.name+".csliser-remove-"+uuid4().hex)
-    try:
-        _rename_new(item.source, quarantine)
-        # Verify the object actually renamed. A replacement arriving after the
-        # initial stat is preserved/restored, never removed as the planned file.
-        source_matches(item, quarantine)
-        quarantine.unlink()
-    except BaseException as exc:
-        if os.path.lexists(quarantine):
-            try:
-                _rename_new(quarantine, item.source)
-            except OSError as restore_error:
-                raise OSError(f"Source was not deleted; preserved at {quarantine}. Restore failed: {restore_error}") from exc
-        raise
+    def check_cancel():
+        _cancelled(cancelled)
+    with RemovalReceipt(item, quarantine, cancelled=check_cancel) as receipt:
+        try:
+            _cancelled(cancelled)
+            source_matches(item)
+            _rename_new(item.source, quarantine)
+            sync_directory(item.source.parent)
+            # Check both object identity and content before irreversible removal.
+            source_matches(item, quarantine)
+            if verified_digest(quarantine, item.source_snapshot, cancelled=check_cancel) != receipt.sha256:
+                raise OSError(f"Source contents changed before removal: {item.source}")
+            _cancelled(cancelled)
+            quarantine.unlink()
+            sync_directory(item.source.parent)
+        except BaseException as exc:
+            if os.path.lexists(quarantine):
+                try:
+                    _rename_new(quarantine, item.source)
+                    sync_directory(item.source.parent)
+                except OSError as restore_error:
+                    raise OSError(f"Source was not deleted; preserved at {quarantine}. Recovery receipt: {receipt.path}. Restore failed: {restore_error}") from exc
+            raise
 
 
 def move_verified(item, *, cancelled=None):
@@ -169,7 +180,7 @@ def move_verified(item, *, cancelled=None):
             raise
         copy_verified(item, copy_metadata=True, cancelled=cancelled)
         try:
-            remove_verified_source(item)
+            remove_verified_source(item, cancelled=cancelled)
         except OSError as remove_error:
             raise OSError(f"Verified destination copy is preserved at {item.destination}; source removal failed: {remove_error}") from remove_error
         return

@@ -18,7 +18,7 @@ class CSliserApplicationComponents:
     window: CSliserWindow
 
 
-def build_application(argv: Sequence[str] | None = None, *, apply_qss: bool = True) -> CSliserApplicationComponents:
+def build_application(argv: Sequence[str] | None = None, *, apply_qss: bool = True, settings_store=None) -> CSliserApplicationComponents:
     qt_argv = sys.argv if argv is None else [sys.argv[0], *argv]
     app = QApplication.instance() or QApplication(qt_argv)
     assert isinstance(app, QApplication)
@@ -28,5 +28,5 @@ def build_application(argv: Sequence[str] | None = None, *, apply_qss: bool = Tr
     configure_application_identity(app, app_id="Krarken.CSliser", icon_name="csliser")
     if apply_qss:
         app.setStyleSheet(load_shared_stylesheet("dark_modern.qss"))
-    window = CSliserWindow()
+    window = CSliserWindow(settings_store=settings_store)
     return CSliserApplicationComponents(app=app, window=window)

@@ -229,7 +229,7 @@ def _execute_one(operation: FileOperation, item: PlannedOperation, *, copy_metad
         elif operation == FileOperation.DELETE:
             if _is_cancelled(cancelled):
                 raise TransferCancelled()
-            remove_verified_source(item)
+            remove_verified_source(item, cancelled=cancelled)
         else:
             raise ValueError(f"Unsupported operation: {operation}")
     except TransferCancelled:

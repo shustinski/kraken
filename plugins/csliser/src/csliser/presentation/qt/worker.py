@@ -6,6 +6,7 @@ from threading import Event
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 from csliser.application.use_cases import ExecuteTransferPlan
+from csliser.application.removal_recovery import RecoveryPlan, RecoverRemovals
 from csliser.domain.models import OperationError, OperationPlan, OperationResult
 
 
@@ -13,7 +14,7 @@ class TransferWorker(QObject):
     progress_changed = pyqtSignal(int, int, str)
     finished = pyqtSignal(object)
 
-    def __init__(self, plan: OperationPlan, executor: ExecuteTransferPlan | None = None) -> None:
+    def __init__(self, plan: OperationPlan | RecoveryPlan, executor: ExecuteTransferPlan | RecoverRemovals | None = None) -> None:
         super().__init__()
         self._plan = plan
         self._executor = executor or ExecuteTransferPlan()

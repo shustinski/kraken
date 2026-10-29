@@ -113,6 +113,27 @@ fn transfer_lease(state: &AppState, claims: &TicketClaims) -> Result<Option<Tran
     Ok(Some(lease))
 }
 
+fn storage_gate(state: &AppState, shared: bool) -> Result<std::fs::File, ApiError> {
+    let directory = state.object_root.join(".server");
+    regular_directories(&directory, true).map_err(ApiError::io)?;
+    let path = directory.join("storage-backup.lock.gate");
+    let file = match create_regular_file(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            open_regular_file(&path).map_err(ApiError::io)?
+        }
+        Err(error) => return Err(ApiError::io(error)),
+    };
+    let result = if shared { file.try_lock_shared() } else { file.try_lock() };
+    match result {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE, "blob transfers are paused for backup; retry later",
+        )),
+        Err(std::fs::TryLockError::Error(error)) => Err(ApiError::io(error)),
+    }
+}
+
 fn unsafe_path() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "blob path contains a link, reparse point or special file")
 }
@@ -288,15 +309,18 @@ async fn main() {
         );
         std::process::exit(2);
     }
-    if let Err(error) = cleanup_staging(&staging_root).await {
-        eprintln!("cannot clean stale Blob Gateway uploads: {error}");
-    }
-
     let state = AppState {
         object_root,
         staging_root,
         secret: Arc::new(args.secret.into_bytes()),
     };
+    // A second Gateway or a backup may share this store. Never clean another
+    // process's in-flight staging bytes; skip maintenance while its gate is held.
+    if let Ok(_maintenance_gate) = storage_gate(&state, false) {
+        if let Err(error) = cleanup_staging(&state.staging_root).await {
+            eprintln!("cannot clean stale Blob Gateway uploads: {error}");
+        }
+    }
     let app = Router::new()
         .route("/health", get(health))
         .route(
@@ -393,7 +417,7 @@ async fn cleanup_staging(staging_root: &FsPath) -> io::Result<()> {
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok", "service": "kraken-blob-gateway", "version": 1,
-                          "project_deletion_barrier": 1}))
+                          "project_deletion_barrier": 1, "storage_backup_barrier": 1}))
 }
 
 async fn put_blob(
@@ -404,6 +428,7 @@ async fn put_blob(
 ) -> Result<impl IntoResponse, ApiError> {
     validate_digest(&digest)?;
     let claims = authorize(&state, &headers, "upload", &digest)?;
+    let _storage_gate = storage_gate(&state, true)?;
     let _lease = transfer_lease(&state, &claims)?;
     let declared = content_length(&headers)?;
     if declared != claims.size {
@@ -490,6 +515,7 @@ async fn serve_blob(
 ) -> Result<Response<Body>, ApiError> {
     validate_digest(digest)?;
     let claims = authorize(state, headers, "download", digest)?;
+    let storage_gate = storage_gate(state, true)?;
     let lease = transfer_lease(state, &claims)?;
     let path = blob_path(state, digest);
     let mut file = tokio::fs::File::from_std(open_regular_file(&path).map_err(|error| {
@@ -531,6 +557,7 @@ async fn serve_blob(
             1024 * 1024,
         ).map(move |chunk| {
             let _keep_alive = &lease;
+            let _storage_gate_alive = &storage_gate;
             chunk
         }))
     };

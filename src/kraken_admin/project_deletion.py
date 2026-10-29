@@ -172,7 +172,7 @@ def project_storage_paths(
     return owned, untouched
 
 
-def _storage_records(engine, project_id: str) -> tuple[str | None, str | None, list[str], list[str]]:
+def _storage_records(engine, project_id: str, *, relocations=None) -> tuple[str | None, str | None, list[str], list[str]]:
     """Catalog directories for this project, other projects, and its layers."""
 
     source = derived = None
@@ -204,6 +204,11 @@ def _storage_records(engine, project_id: str) -> tuple[str | None, str | None, l
                 for row in rows
                 if str(row["project_id"]) == project_id and row["image_directory"]
             ]
+    if relocations is not None:
+        source = None if source is None else str(relocations.resolve(source))
+        derived = None if derived is None else str(relocations.resolve(derived))
+        claimed = [str(relocations.resolve(path)) for path in claimed]
+        layers = [str(relocations.resolve(path)) for path in layers]
     return source, derived, claimed, layers
 
 
@@ -262,6 +267,28 @@ class ProjectDeletion:
         self.requests = DeletionRequests(services.engine)
         self.table = self.requests.table
 
+    def _relocations(self):
+        from kraken_manager.infrastructure.root_relocations import RootRelocations
+
+        return RootRelocations.load(self.config.blob_root,
+            (self.config.blob_root, self.config.source_root, self.config.derived_root),
+            required=getattr(self.config, "recovery_roots", None) is not None)
+
+    def _resolved_plan(self, plan):
+        aliases = self._relocations()
+        result = dict(plan)
+        result["paths"] = [{**entry, "path": str(aliases.resolve(entry["path"])), "root": str(aliases.resolve(entry["root"]))}
+                           for entry in plan["paths"]]
+        if "untouched" in plan:
+            result["untouched"] = [str(aliases.resolve(path)) for path in plan["untouched"]]
+        return result
+
+    def _resolved_step(self, step):
+        aliases = self._relocations()
+        if step.startswith("staged:"):
+            return "staged:" + str(aliases.resolve(step[7:]))
+        return str(aliases.resolve(step)) if step != "database" else step
+
     def _schema(self, connection):
         metadata = sa.MetaData()
         metadata.reflect(connection)
@@ -273,7 +300,7 @@ class ProjectDeletion:
             raise ValueError("Заявка не найдена")
         row = rows[0]
         if row["state"] in {"deleting", "failed"}:
-            return row["plan"]
+            return self._resolved_plan(row["plan"])
         if row["state"] != "pending":
             raise ConflictError("Заявка уже обработана")
         project_id = str(row["project_id"])
@@ -281,7 +308,7 @@ class ProjectDeletion:
         registry = self.services.workspace_files.registry
         binding = registry.get_project(project_id)
         recorded_source, recorded_derived, claimed, layer_directories = _storage_records(
-            self.services.engine, project_id,
+            self.services.engine, project_id, relocations=self._relocations(),
         )
         owned, outside = project_storage_paths(
             project_name=str(project["name"]),
@@ -410,7 +437,7 @@ class ProjectDeletion:
                 "request_id": request_id, "project_id": project_id, "reason": deletion_reason,
                 "auto_confirmed": confirmed_automatically,
             })
-            completed = list(row["completed"])
+            completed = [self._resolved_step(step) for step in row["completed"]]
         try:
             for index, entry in enumerate(plan["paths"]):
                 path = safe_path(Path(entry["path"]), Path(entry["root"]))
@@ -430,9 +457,13 @@ class ProjectDeletion:
                             completed.append(staged)
                             connection.execute(self.table.update().where(self.table.c.request_id == request_id)
                                                .values(completed=completed, updated_at=datetime.now(UTC)))
-                    remove_stored_path(trash, authorization)
-                    completed.append(step)
-                    self._progress(request_id, completed)
+                    with engine.begin() as connection:
+                        if not lock(connection, "kraken:storage", attempt=True):
+                            raise ConflictError("Хранилище занято. Повторите очистку после резервного копирования.")
+                        remove_stored_path(trash, authorization)
+                        completed.append(step)
+                        connection.execute(self.table.update().where(self.table.c.request_id == request_id)
+                                           .values(completed=completed, updated_at=datetime.now(UTC)))
             with engine.begin() as connection:
                 # Brief global barrier protects deduplication/reference registration.
                 if not lock(connection, "kraken:storage", attempt=True):

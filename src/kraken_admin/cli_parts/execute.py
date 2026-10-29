@@ -39,6 +39,10 @@ from kraken_admin.cli_parts.list_projects import _list_projects
 from kraken_admin.cli_parts.run_local_admin import _run_local_admin
 
 def _execute(args: argparse.Namespace) -> int:
+    if args.command in {"backup-server", "backup-verify", "restore-server"}:
+        from .server_backup import execute_backup_command
+
+        return execute_backup_command(args)
     if args.command in {"init", "init-local-server"}:
         _initialize_local_server(args)
     elif args.command == "doctor":
@@ -126,8 +130,6 @@ def _execute(args: argparse.Namespace) -> int:
     elif args.command == "service-status":
         print(_service_status())
     elif args.command == "migrate":
-        from kraken_server.configuration import run_migrations
-
         run_migrations(_database_url(args))
         print("Migrations are at head")
     elif args.command == "bootstrap-local":

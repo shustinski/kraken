@@ -253,7 +253,11 @@ class CanonicalBundleExporter:
         *,
         external_references: Iterable[Mapping[str, Any]] = (),
     ) -> MigrationPlan:
-        events = list(self.event_store.iter_project())
+        from kraken_manager.infrastructure.projections.legacy_work_orders import assert_work_orders_replayable
+
+        with self.event_store.lock.hold(self.event_store.lock_timeout):
+            assert_work_orders_replayable(self.event_store)
+            events = list(self.event_store.iter_project())
         blobs = list(self.blob_store.iter_refs())
         snapshots = list(iter_regular_files(self.event_store.layout.snapshots_dir))
         references = tuple(external_references)
@@ -279,23 +283,39 @@ class CanonicalBundleExporter:
         external_references: Iterable[Mapping[str, Any]] = (),
         resume: bool = True,
     ) -> KrakenMigrationBundleV1:
+        """Export the current source; reuse a destination only for the same snapshot.
+
+        A completed bundle is immutable. Read/verify it directly to retrieve a
+        historical result; export must never report it as the current backup.
+        Interrupted exports can resume only while their source snapshot matches.
+        """
         root = Path(destination).resolve()
         manifest_path = root / MANIFEST_NAME
-        if manifest_path.exists():
-            manifest = load_bundle_manifest(root)
-            if manifest.project_id != self.event_store.project_id:
-                raise MigrationBundleError("existing bundle belongs to another project")
-            BundleVerifier().verify(root).raise_for_errors()
-            return manifest
+        from kraken_manager.infrastructure.projections.legacy_work_orders import assert_work_orders_replayable
 
-        root.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = root / CHECKPOINT_NAME
-        checkpoint = self._load_or_create_checkpoint(checkpoint_path, resume=resume)
         references = tuple(dict(reference) for reference in external_references)
-
         with self.event_store.lock.hold(self.event_store.lock_timeout):
-            entries: list[BundleEntry] = []
+            assert_work_orders_replayable(self.event_store)
             events = list(self.event_store.iter_project())
+            source_snapshot = self._source_snapshot(events, references)
+            source_digest = hashlib.sha256(_canonical_record(source_snapshot)).hexdigest()
+            if manifest_path.exists():
+                manifest = load_bundle_manifest(root)
+                if manifest.project_id != self.event_store.project_id:
+                    raise MigrationBundleError("existing bundle belongs to another project")
+                BundleVerifier().verify(root).raise_for_errors()
+                if not resume or self._manifest_snapshot(manifest) != source_snapshot:
+                    raise MigrationBundleError(
+                        "Завершённый архив сохранён без изменений. Для новой резервной "
+                        "копии текущего проекта выберите новый каталог."
+                    )
+                return manifest
+            root.mkdir(parents=True, exist_ok=True)
+            checkpoint_path = root / CHECKPOINT_NAME
+            checkpoint = self._load_or_create_checkpoint(
+                checkpoint_path, resume=resume, source_digest=source_digest,
+            )
+            entries: list[BundleEntry] = []
             events_target = safe_join(root, EVENTS_PATH)
             event_digest, event_size = _write_stream_atomic(
                 events_target,
@@ -358,12 +378,56 @@ class CanonicalBundleExporter:
                 project_descriptor=descriptor,
                 external_references=references,
             )
+            # Recheck mutable snapshots/descriptor before publishing a complete
+            # archive, including mutations made outside the project lock.
+            if (
+                self._manifest_snapshot(manifest) != source_snapshot
+                or self._source_snapshot(events, references) != source_snapshot
+            ):
+                raise MigrationBundleError("Source changed during export; use a new destination")
             atomic_write_json(manifest_path, manifest.to_dict(), overwrite=False)
             checkpoint_path.unlink(missing_ok=True)
             fsync_directory(root)
             return manifest
 
-    def _load_or_create_checkpoint(self, path: Path, *, resume: bool) -> dict[str, Any]:
+    @staticmethod
+    def _manifest_snapshot(manifest: KrakenMigrationBundleV1) -> dict[str, Any]:
+        value = manifest.to_dict()
+        return {key: value[key] for key in (
+            "project_id", "source_profile", "event_count", "last_global_position",
+            "entries", "project_descriptor", "external_references",
+        )}
+
+    def _source_snapshot(self, events, references) -> dict[str, Any]:
+        digest = hashlib.sha256()
+        size = 0
+        for event in events:
+            record = _canonical_record(event.to_dict(include_storage_metadata=True))
+            digest.update(record)
+            size += len(record)
+        entries = [BundleEntry(EVENTS_PATH, digest.hexdigest(), size, "events")]
+        for reference in self.blob_store.iter_refs():
+            relative = f"objects/sha256/{reference.sha256[:2]}/{reference.sha256[2:4]}/{reference.sha256}"
+            entries.append(BundleEntry(relative, reference.sha256, reference.size_bytes, "blob"))
+        layout = self.event_store.layout
+        for path in iter_regular_files(layout.snapshots_dir):
+            digest_string, size = _hash_file(path)
+            entries.append(BundleEntry(
+                f"snapshots/{portable_relative(path, layout.snapshots_dir)}", digest_string, size, "snapshot",
+            ))
+        return {
+            "project_id": self.event_store.project_id,
+            "source_profile": self.source_profile,
+            "event_count": len(events),
+            "last_global_position": events[-1].global_position if events else 0,
+            "entries": [entry.to_dict() for entry in sorted(entries, key=lambda entry: entry.path)],
+            "project_descriptor": layout.read_descriptor() if layout.descriptor_path.exists() else {
+                "schema_version": 1, "project_id": self.event_store.project_id,
+            },
+            "external_references": list(references),
+        }
+
+    def _load_or_create_checkpoint(self, path: Path, *, resume: bool, source_digest: str) -> dict[str, Any]:
         if path.exists():
             if not resume:
                 raise MigrationBundleError(f"incomplete bundle already exists at {path.parent}")
@@ -373,6 +437,10 @@ class CanonicalBundleExporter:
                 raise MigrationBundleError("invalid migration export checkpoint") from exc
             if value.get("project_id") != self.event_store.project_id:
                 raise MigrationBundleError("migration checkpoint belongs to another project")
+            if value.get("source_digest") != source_digest:
+                raise MigrationBundleError(
+                    "Source differs from the interrupted export (or checkpoint is unbound); use a new destination"
+                )
             return value
 
         unexpected = [item for item in path.parent.iterdir() if item.name not in {CHECKPOINT_NAME}]
@@ -383,6 +451,7 @@ class CanonicalBundleExporter:
             "bundle_id": str(uuid.uuid4()),
             "project_id": self.event_store.project_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "source_digest": source_digest,
             "completed": {},
         }
         atomic_write_json(path, value)

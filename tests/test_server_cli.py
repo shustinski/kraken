@@ -249,3 +249,26 @@ def test_project_cli_requires_https_outside_loopback(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="HTTPS"):
         cli._server_session(args)
+
+
+def test_setup_server_dispatch_applies_migrations_before_configuration(monkeypatch, tmp_path):
+    from kraken_admin.cli_parts import execute
+
+    args = Namespace(command="setup-server", config=tmp_path / "server.toml", blob_root=tmp_path / "blobs",
+        source_root=tmp_path / "source", derived_root=tmp_path / "derived", host="127.0.0.1", port=8080,
+        tls_cert_file=None, tls_key_file=None, blob_gateway_host="127.0.0.1", blob_gateway_port=8081,
+        blob_gateway_executable=None, username="admin", display_name="Administrator", install_service=False)
+    calls = []
+    monkeypatch.setattr(execute, "_database_url", lambda _args: "postgresql+psycopg://own-fixture")
+    monkeypatch.setattr(execute, "run_migrations", lambda _url: calls.append("migrate"))
+    monkeypatch.setattr(execute, "_data_root", lambda value, **_kwargs: Path(value))
+    monkeypatch.setattr(execute, "_blob_gateway_public_url", lambda _args: None)
+    monkeypatch.setattr(execute, "_postgres_store", lambda _url: object())
+    monkeypatch.setattr(execute, "_bootstrap", lambda *_args: calls.append("bootstrap") or "account")
+
+    def configured(*_args, **_kwargs):
+        calls.append("config")
+        return SimpleNamespace(path=args.config, database_url="postgresql+psycopg://own-fixture")
+    monkeypatch.setattr(execute, "write_config", configured)
+    assert execute._execute(args) == 0
+    assert calls == ["migrate", "config", "bootstrap"]

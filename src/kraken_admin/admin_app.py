@@ -48,14 +48,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     from kraken_core.qt import configure_application_identity
     from kraken_core.styles import load_shared_stylesheet
+    from PyQt6.QtCore import QTimer
 
     application = QApplication.instance() or QApplication(sys.argv)
     application.setApplicationName("Kraken Admin")
     configure_application_identity(application, app_id="kraken-admin")
     application.setStyleSheet(load_shared_stylesheet())
     window = AdminWindow()
-    window.open_config(window.remembered_config_path())
     window.show()
+    QTimer.singleShot(0, lambda: window.open_config(window.remembered_config_path()))
     return int(application.exec())
 
 

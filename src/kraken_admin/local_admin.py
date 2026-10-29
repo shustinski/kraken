@@ -210,7 +210,9 @@ def connect_local_admin(config_path: Path) -> tuple[object, object]:
     from kraken_server.configuration import ServerConfig
 
     config = ServerConfig.load(config_path)
-    engine = create_engine(config.database_url, pool_pre_ping=True)
+    # An unavailable database must not leave the administration window waiting
+    # indefinitely before it can report the connection failure.
+    engine = create_engine(config.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
     accounts = PostgresAccountStore(engine, Argon2PasswordHasher())
     services = open_project_services(config.database_url, config.blob_root, engine=engine)
     from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry

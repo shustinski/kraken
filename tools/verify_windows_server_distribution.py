@@ -265,6 +265,38 @@ def main():
                 json={"name": "Declared synthetic runtime fixture", "type": "metal", "order": 0},
             )
             layer_id = layer.get("layer_id", layer.get("id"))
+            # Seed only this invocation's UUID schema with the exact old
+            # projection-only representation. The frozen HTTP backend must
+            # capture it; the verifier never appends its canonical events.
+            from kraken_manager.domain.identity import Performer
+            from kraken_manager.domain.selection import FrameSelectionV1
+            from kraken_manager.domain.work_orders import WorkKind, WorkOrder, WorkPlacement
+            from kraken_manager.infrastructure.postgres.performer_store import PostgresPerformerStore
+            from kraken_manager.infrastructure.postgres.projection_store import PostgresProjectionStore
+
+            performer = PostgresPerformerStore(schema_engine).create(
+                Performer.create(name="Own deployment legacy fixture", color="#446688"))
+            legacy_order = WorkOrder.create(project_id=project_id, layer_id=layer_id,
+                kind=WorkKind.STITCH, placement=WorkPlacement.EXTERNAL, assignee_id=performer.id,
+                created_by=session["principal"]["id"], destination=str(report / "absent-legacy-package"),
+                frame_count=1, selection=FrameSelectionV1.rectangle(1, 1, 1, 1),
+                instructions="Own deployment projection-only diagnostic")
+            legacy_projection = PostgresProjectionStore(schema_engine)
+            legacy_projection.save_work_order(legacy_order)
+            legacy_order = legacy_order.mark_running()
+            legacy_projection.save_work_order(legacy_order)
+            migration_path = prefix + "/work-orders/legacy-migration"
+            migration_plan = request("GET", migration_path)
+            assert len(migration_plan["legacy"]) == 1 and len(migration_plan["legacy"][0]["observations"]) == 2
+            migration_body = {"expected_plan_digest": migration_plan["digest"]}
+            migration_headers = {"Idempotency-Key": "packaged-legacy-work-import"}
+            migrated = request("POST", migration_path, headers=migration_headers, json=migration_body)
+            assert migrated["migrated"] == 1
+            assert request("POST", migration_path, headers=migration_headers, json=migration_body) == migrated
+            assert legacy_projection.get_work_order(legacy_order.id) == legacy_order
+            assert not (report / "absent-legacy-package").exists()
+            assert request("GET", migration_path)["legacy"] == []
+            passed("packaged_legacy_work_order_migration", imported=1, observations=2, idempotent_retry=True)
             mask_series = request(
                 "POST",
                 prefix + "/artifacts",
@@ -359,6 +391,9 @@ def main():
             assert persisted.get("project_id", persisted.get("id")) == project_id
             check_download(2)
             assert request("GET", prefix + "/electrical") == electrical
+            assert request("GET", migration_path)["legacy"] == []
+            assert legacy_projection.get_work_order(legacy_order.id) == legacy_order
+            passed("packaged_legacy_work_restart_persistence")
             passed("packaged_electrical_restart_persistence")
             stop()
             passed("packaged_restart_persistence_and_stop", exit_code=0)

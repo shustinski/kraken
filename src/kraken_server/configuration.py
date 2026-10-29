@@ -154,6 +154,7 @@ class ServerConfig:
     db_pool_size: int = 10
     db_max_overflow: int = 10
     queue_budget: QueueResourceBudget | None = None
+    recovery_roots: Path | None = None
 
     @classmethod
     def load(cls, path: Path | str) -> ServerConfig:
@@ -214,6 +215,9 @@ class ServerConfig:
             raise ValueError("database.pool_size must be at least 1 and max_overflow must not be negative")
         source_root = resolve(storage.get("source_root"))
         derived_root = resolve(storage.get("derived_root"))
+        recovery_roots = resolve(storage.get("recovery_roots"), required=False)
+        if recovery_roots is not None and not recovery_roots.is_file():
+            raise ValueError("Required recovery_roots metadata is missing")
         return cls(
             path=config_path,
             database_url_secret=resolve(database.get("url_secret")),  # type: ignore[arg-type]
@@ -238,6 +242,7 @@ class ServerConfig:
             db_pool_size=pool_size,
             db_max_overflow=max_overflow,
             queue_budget=queue_budget,
+            recovery_roots=recovery_roots,
         )
 
     @property
@@ -249,6 +254,7 @@ class ServerConfig:
         return None if self.blob_gateway_secret is None else unprotect_secret(self.blob_gateway_secret)
 
     def apply_to_environment(self) -> None:
+        os.environ["KRAKEN_RECOVERY_ROOTS_REQUIRED"] = "1" if self.recovery_roots is not None else "0"
         if self.queue_budget is not None:
             values=self.queue_budget.to_dict()
             for field,name in {'max_active_jobs':'KRAKEN_QUEUE_MAX_JOBS', 'cpu':'KRAKEN_QUEUE_CPU',

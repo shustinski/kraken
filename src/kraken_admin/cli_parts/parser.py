@@ -402,10 +402,33 @@ def _parser() -> argparse.ArgumentParser:
     )
     uninstall.add_argument('--server-executable', type=Path, default=_default_server_executable(),
                            help='Executable that must own the service before removal')
-    status = command(
+    command(
         "service-status",
         help="Показать состояние Windows-службы Kraken Server",
         description="Не меняет службу.",
         epilog="Пример:\n  KrakenAdmin service-status",
     )
+    backup = command("backup-server", help="Согласованная копия PostgreSQL и серверных файлов",
+        description="Копирует PostgreSQL, BlobStore и настроенные source/derived корни. На время копирования проектные операции приостановлены. Каталог копии должен быть новым.")
+    backup.add_argument("--config", type=Path, required=True, help="Существующий server.toml")
+    backup.add_argument("--destination", type=Path, required=True, help="Новый каталог архива")
+    verify_backup = command("backup-verify", help="Проверить SHA и полноту серверного архива",
+        description="Проверяет архив без подключения к БД и без изменения файлов.")
+    verify_backup.add_argument("--backup", type=Path, required=True)
+    restore = command("restore-server", help="Восстановить сервер в пустую БД и новые каталоги",
+        description="Существующие данные не перезаписываются. URL новой БД берётся из переменной окружения. SQL и квитанция фиксируются одной транзакцией; --resume продолжает тот же архив/назначение после сбоя.")
+    restore.add_argument("--backup", type=Path, required=True)
+    restore.add_argument("--destination", type=Path, required=True, help="Новый корень восстановления с подкаталогами хранилищ")
+    restore.add_argument("--config-dir", type=Path, required=True, help="Отдельный новый каталог server.toml и защищённых секретов")
+    restore.add_argument("--database-url-env", default="KRAKEN_RESTORE_DATABASE_URL", help="Переменная окружения с URL пустой БД")
+    restore.add_argument("--resume", action="store_true")
+    restore.add_argument("--host", help="Заменить интерфейс из архива")
+    restore.add_argument("--port", type=int, help="Заменить порт из архива")
+    restore.add_argument("--tls-cert-file", type=Path)
+    restore.add_argument("--tls-key-file", type=Path)
+    restore.add_argument("--gitlab-ca-file", type=Path)
+    restore.add_argument("--blob-gateway-executable", type=Path)
+    for item in (backup, restore):
+        item.add_argument("--pg-bin-dir", type=Path, help="Каталог pg_dump/pg_restore/psql; по умолчанию PATH")
+        item.add_argument("--timeout", type=float, default=3600, help="Таймаут отдельного инструмента PostgreSQL, секунд")
     return parser

@@ -20,6 +20,19 @@ from kraken_manager.domain.project import (
 )
 from kraken_core.plugin_protocol import safe_relative_path
 
+
+def resolve_storage_path(service, value):
+    from pathlib import Path
+    from kraken_manager.infrastructure.root_relocations import RootRelocations
+
+    factory = getattr(service, "uow_factory", None)
+    root = getattr(getattr(factory, "blobs", None), "root", None)
+    if root is None:
+        return Path(value)
+    roots = (root, getattr(service, "source_root", None), getattr(service, "derived_root", None))
+    aliases = RootRelocations.load(root, roots, required=getattr(service, "recovery_roots_required", False))
+    return aliases.resolve(value)
+
 class SystemClock:
     def now(self) -> datetime:
         return datetime.now(UTC)

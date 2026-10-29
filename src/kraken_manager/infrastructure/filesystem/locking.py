@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 import weakref
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -19,9 +20,9 @@ _OPEN_GATE_FDS: set[int] = set()
 _FORK_GUARD = threading.Lock()
 
 
-def _open_gate(path: Path) -> int:
+def _open_gate(path: Path, *, create: bool = True) -> int:
     with _FORK_GUARD:
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = os.open(path, os.O_RDWR | (os.O_CREAT if create else 0) | getattr(os, "O_NOFOLLOW", 0), 0o600)
         _OPEN_GATE_FDS.add(fd)
         return fd
 
@@ -124,6 +125,39 @@ def _known_dead_owner(value: object) -> bool:
 
 class ProjectLockTimeout(TimeoutError):
     pass
+
+
+@contextmanager
+def kernel_file_gate(path: str | Path):
+    """Nonblocking kernel-only gate for the shared Python/Rust storage protocol."""
+    from kraken_core.safe_files import is_link_or_reparse, open_exclusive_write
+
+    path = Path(path)
+    try:
+        with open_exclusive_write(path):
+            pass
+    except FileExistsError:
+        pass
+    if is_link_or_reparse(path):
+        raise ValueError("Storage gate may not be a link/reparse point")
+    before = path.stat(follow_symlinks=False)
+    descriptor = _open_gate(path, create=False)
+    acquired = False
+    try:
+        opened = os.fstat(descriptor)
+        after = path.stat(follow_symlinks=False)
+        if (not stat.S_ISREG(opened.st_mode) or is_link_or_reparse(path)
+                or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError("Storage gate changed while opening")
+        acquired = _kernel_lock(descriptor)
+        if not acquired:
+            raise ProjectLockTimeout("Storage gate is busy")
+        yield
+    finally:
+        if acquired:
+            _kernel_unlock(descriptor)
+        _close_gate(descriptor)
 
 
 class ProjectFileLock:

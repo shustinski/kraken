@@ -1,5 +1,6 @@
 """persistent_services: attach workspace layer."""
 from __future__ import annotations
+from kraken_server.project_deletion import guarded_storage
 from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
@@ -41,6 +42,7 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
 
 
 class AttachWorkspaceLayerMixin:
+    @guarded_storage
     def _attach_workspace_layer(
         self,
         project_id: str,

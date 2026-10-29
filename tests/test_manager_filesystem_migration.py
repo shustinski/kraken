@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+from unittest.mock import patch
 
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope
 from kraken_manager.domain.identity import PrincipalProvider
@@ -38,6 +39,75 @@ def _event(project_id: str, stream_id: str, revision: int, event_type: str) -> E
 
 
 class FilesystemMigrationTests(unittest.TestCase):
+    def test_completed_export_requires_current_snapshot_and_preserves_history(self) -> None:
+        for change in ("event", "blob", "snapshot", "descriptor", "references", "profile"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                project_id = str(uuid4())
+                layout = FileProjectLayout(root / "source", project_id)
+                layout.initialize({"schema_version": 1, "project_id": project_id})
+                events = FilesystemEventStore(root / "source", project_id)
+                blobs = FilesystemBlobStore.for_project(root / "source", project_id)
+                exporter = CanonicalBundleExporter(events, blobs)
+                snapshot = layout.snapshots_dir / "state.json"
+                snapshot.write_text("old", encoding="utf-8")
+                target = root / "first"
+                original = exporter.export(target)
+                before = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+                self.assertEqual(exporter.export(target), original)
+                with self.assertRaises(MigrationBundleError):
+                    exporter.export(target, resume=False)
+                references = ()
+                if change == "event":
+                    stream = f"project:{project_id}"
+                    events.append(stream, expected_revision=0, events=(_event(project_id, stream, 1, "Changed"),))
+                elif change == "blob":
+                    blobs.put(b"new bytes")
+                elif change == "snapshot":
+                    snapshot.write_text("new", encoding="utf-8")
+                elif change == "descriptor":
+                    layout.descriptor_path.write_text(
+                        '{"schema_version":1,"project_id":"' + project_id + '","name":"new"}', encoding="utf-8",
+                    )
+                elif change == "references":
+                    references = ({"uri": "file:///new-external"},)
+                else:
+                    exporter.source_profile = "changed-profile"
+                with self.assertRaises(MigrationBundleError):
+                    exporter.export(target, external_references=references)
+                self.assertEqual(before, {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()})
+                BundleVerifier().verify(target).raise_for_errors()
+                latest = exporter.export(root / "latest", external_references=references)
+                self.assertNotEqual(latest.bundle_id, original.bundle_id)
+                BundleVerifier().verify(root / "latest").raise_for_errors()
+                if change == "event":
+                    restored = FilesystemEventStore(root / "restored", project_id)
+                    CanonicalBundleImporter(restored, FilesystemBlobStore.for_project(root / "restored", project_id)).import_bundle(root / "latest")
+                    self.assertEqual(len(list(restored.iter_project())), 1)
+
+    def test_interrupted_export_resumes_only_the_same_source_snapshot(self) -> None:
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                project_id = str(uuid4())
+                events = FilesystemEventStore(root / "source", project_id)
+                blobs = FilesystemBlobStore.for_project(root / "source", project_id)
+                blobs.put(b"payload")
+                exporter = CanonicalBundleExporter(events, blobs)
+                target = root / "bundle"
+                with patch.object(exporter, "_record_checkpoint", side_effect=OSError("media disconnected")):
+                    with self.assertRaises(OSError):
+                        exporter.export(target)
+                before = {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()}
+                if changed:
+                    blobs.put(b"changed source")
+                    with self.assertRaises(MigrationBundleError):
+                        exporter.export(target)
+                    self.assertEqual(before, {p.relative_to(target): p.read_bytes() for p in target.rglob("*") if p.is_file()})
+                else:
+                    exporter.export(target)
+                    BundleVerifier().verify(target).raise_for_errors()
+
     def test_bundle_round_trip_is_idempotent_and_fully_verified(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

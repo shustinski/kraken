@@ -90,7 +90,8 @@ def test_remote_gateway_requires_https() -> None:
         validate_public_gateway_url("http://blob.example.test:8081")
 
 
-def test_server_issues_and_commits_bound_upload_ticket() -> None:
+@pytest.mark.parametrize("parameters", [{}, {"x": 1, "y": 2, "mapping": "declared"}])
+def test_server_issues_and_commits_bound_upload_ticket(parameters) -> None:
     content = b"hello kraken"
     digest = hashlib.sha256(content).hexdigest()
     services = _Services(digest)
@@ -102,6 +103,7 @@ def test_server_issues_and_commits_bound_upload_ticket() -> None:
         "media_type": "application/octet-stream",
         "sha256": digest,
         "size_bytes": len(content),
+        "parameters": parameters,
     }
 
     with TestClient(app) as client:
@@ -113,6 +115,8 @@ def test_server_issues_and_commits_bound_upload_ticket() -> None:
         assert initiated.status_code == 200
         transfer = initiated.json()
         assert transfer["mode"] == "gateway"
+        claims = gateway.signer.verify(transfer["token"], operation="upload")
+        assert ("parameters_sha256" in claims["ctx"]) == bool(parameters)
         completed = client.post(
             "/api/v1/projects/project-1/artifacts/series-1/uploads/complete",
             headers=headers,
@@ -120,6 +124,15 @@ def test_server_issues_and_commits_bound_upload_ticket() -> None:
         )
         assert completed.status_code == 201
         assert completed.json()["artifact_version_id"] == "version-1"
+        assert services.prepared[2].get("parameters", {}) == parameters
+        assert services.registered[2].get("parameters", {}) == parameters
+
+        changed_parameters = client.post(
+            "/api/v1/projects/project-1/artifacts/series-1/uploads/complete",
+            headers=headers,
+            json={**payload, "parameters": {"x": 2, "y": 2}, "upload_token": transfer["token"]},
+        )
+        assert changed_parameters.status_code == 401
 
         changed = client.post(
             "/api/v1/projects/project-1/artifacts/series-1/uploads/complete",
@@ -138,6 +151,19 @@ def test_server_issues_and_commits_bound_upload_ticket() -> None:
     assert services.prepared is not None
     assert services.registered is not None
     assert gateway.started is False
+
+
+@pytest.mark.parametrize("parameters", [None, [], "invalid", {"large": "x" * 65536}])
+def test_invalid_gateway_parameters_are_rejected_before_upload_preflight(parameters):
+    services, gateway = _Services("a" * 64), _Gateway()
+    app = create_app(services=services, development=True, blob_gateway=gateway)
+    with TestClient(app) as client:
+        response = client.post("/api/v1/projects/project-1/artifacts/series-1/uploads",
+            headers={"Authorization": "Bearer developer", "Idempotency-Key": "bad", "If-Match": "0"},
+            json=dict(filename="own.bin", media_type="application/octet-stream", sha256="a" * 64,
+                      size_bytes=1, parameters=parameters))
+        assert response.status_code == 422
+        assert services.prepared is None
 
 
 def test_configuration_protects_gateway_secret(tmp_path: Path) -> None:

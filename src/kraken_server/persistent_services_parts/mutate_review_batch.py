@@ -1,5 +1,6 @@
 """persistent_services: mutate review batch."""
 from __future__ import annotations
+from kraken_server.project_deletion import guarded_storage
 from collections.abc import Iterator, Mapping
 from typing import Any
 from kraken_manager.application.authorization import AuthorizationPolicy
@@ -69,6 +70,7 @@ class MutateReviewBatchMixin:
             self._translate_lifecycle_error(exc)
             raise AssertionError("unreachable")
 
+    @guarded_storage
     def export_review_package(
         self,
         project_id: str,

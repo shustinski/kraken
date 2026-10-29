@@ -52,10 +52,14 @@ from kraken_manager.infrastructure.review import ReviewPackageReader, ReviewPack
 from kraken_server.persistent_services_parts.layer_source_scan import (
     ServerStorageProfiles,
     SystemClock,
+    resolve_storage_path,
 )
 
 
 class ConstructionMixin:
+    def resolve_storage_path(self, value):
+        return resolve_storage_path(self, value)
+
     def __init__(
         self,
         engine: Any,
@@ -68,6 +72,7 @@ class ConstructionMixin:
         workspace_files: Any | None = None,
         source_root: str | None = None,
         derived_root: str | None = None,
+        recovery_roots_required: bool = False,
     ) -> None:
         self.engine = engine
         self.uow_factory = uow_factory
@@ -78,6 +83,7 @@ class ConstructionMixin:
         self.workspace_files = workspace_files
         self.source_root = source_root
         self.derived_root = derived_root
+        self.recovery_roots_required = recovery_roots_required
         self.projections = PostgresProjectionStore(engine)
         self.events = PostgresEventStore(engine)
         self.identities = PostgresIdentityAclStore(engine)

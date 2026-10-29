@@ -177,6 +177,10 @@ def postgresql_composition() -> dict[str, Any]:
     performers = PostgresPerformerStore(engine)
     review_keys = _review_key_pair(blob_root)
     from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
+    from kraken_manager.infrastructure.root_relocations import RootRelocations
+
+    RootRelocations.load(blob_root, (blob_root, source_root, derived_root),
+                         required=os.environ.get("KRAKEN_RECOVERY_ROOTS_REQUIRED") == "1")
 
     services = PostgresServerServices(
         engine,
@@ -188,9 +192,11 @@ def postgresql_composition() -> dict[str, Any]:
         workspace_files=WorkspaceFileService(WorkspaceRegistry(blob_root / "workspaces")),
         source_root=source_root,
         derived_root=derived_root,
+        recovery_roots_required=os.environ.get("KRAKEN_RECOVERY_ROOTS_REQUIRED") == "1",
     )
 
     accounts = PostgresAccountStore(engine, Argon2PasswordHasher())
+    services.accounts = accounts
     identities = PostgresIdentityAclStore(engine)
     issuer = os.environ.get("KRAKEN_GITLAB_ISSUER", "").strip()
     oidc = None

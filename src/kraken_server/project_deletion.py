@@ -3,14 +3,47 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from uuid import uuid4
+from functools import wraps
 
 import sqlalchemy as sa
 
 from .services import ConflictError, ValidationError
 
 REASON_LIMIT = 500
+_STORAGE_GUARDS = ContextVar("kraken_storage_guards", default=frozenset())
+
+
+def _storage_key(engine):
+    url = engine.url
+    return (url.host, url.port, url.database)
+
+
+def guarded_storage(function):
+    """Fence direct filesystem commands as well as HTTP-mediated commands."""
+    @wraps(function)
+    def guarded(service, *args, **kwargs):
+        engine = getattr(service, "engine", None)
+        if getattr(getattr(engine, "dialect", None), "name", None) != "postgresql":
+            return function(service, *args, **kwargs)
+        key = _storage_key(engine)
+        if key in _STORAGE_GUARDS.get():
+            return function(service, *args, **kwargs)
+        gate = sa.create_engine(engine.url, poolclass=sa.pool.NullPool)
+        try:
+            with gate.begin() as connection:
+                if not lock(connection, "kraken:storage", shared=True, attempt=True):
+                    raise ConflictError("Хранилище занято резервным копированием или очисткой. Повторите операцию.")
+                token = _STORAGE_GUARDS.set(_STORAGE_GUARDS.get() | {key})
+                try:
+                    return function(service, *args, **kwargs)
+                finally:
+                    _STORAGE_GUARDS.reset(token)
+        finally:
+            gate.dispose()
+    return guarded
 
 
 def normalize_deletion_reason(value: object) -> str:
@@ -197,7 +230,11 @@ class ProjectOperationMiddleware:
             await JSONResponse({"detail": str(exc)}, status_code=409)(scope, receive, send)
             return
         try:
-            await self.app(scope, receive, send)
+            token = _STORAGE_GUARDS.set(_STORAGE_GUARDS.get() | {_storage_key(self.engine)})
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _STORAGE_GUARDS.reset(token)
         finally:
             with anyio.CancelScope(shield=True):
                 await anyio.to_thread.run_sync(lambda: guard.__exit__(None, None, None))

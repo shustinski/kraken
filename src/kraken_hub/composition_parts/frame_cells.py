@@ -21,10 +21,16 @@ class FrameCellsMixin:
         representation_id: RepresentationId | str,
         *,
         as_of: datetime | None = None,
+        bounds: tuple[int, int, int, int] | None = None,
     ) -> tuple[FrameCellSnapshot, ...]:
         project = self.get_project(project_id, as_of=as_of)
         if project is None:
             return ()
+        if bounds is not None and not (
+            1 <= bounds[0] <= bounds[2] <= project.width
+            and 1 <= bounds[1] <= bounds[3] <= project.height
+        ):
+            raise ValueError("Viewport is outside the project grid")
         projection = self._projection(project.id)
         representation = projection.get_representation(
             RepresentationId(str(representation_id)), as_of=as_of
@@ -39,23 +45,40 @@ class FrameCellsMixin:
         }
         accepted_versions = {
             str(identifier)
-            for event in self.history(project.id, as_of=as_of)
+            for event in self.history(project.id, as_of=as_of, event_types=("ReviewBatchAccepted",))
             if event.event_type == "ReviewBatchAccepted"
             for identifier in event.payload.get("candidate_version_ids", ())
         }
         analysis = self.latest_karakal_analysis(project.id, layer_id, as_of=as_of)
         confidence = {} if analysis is None else analysis.frame_confidence
-        for series in projection.list_artifact_series(
-            project.id,
-            layer_id=LayerId(str(layer_id)),
-            representation_id=representation.id,
-            as_of=as_of,
-        ):
-            version = projection.get_active_artifact_version(series.id, as_of=as_of)
+        coordinates = {}
+        if bounds is not None and as_of is None:
+            rows = projection.matrix_frame_rows(project.id, layer_id, representation.id, bounds)
+            series_list = tuple(row[0] for row in rows)
+            active_versions = {str(row[0].id): row[1] for row in rows}
+            coordinates = {str(row[0].id): row[2] for row in rows}
+        else:
+            series_list = projection.list_artifact_series(
+                project.id,
+                layer_id=LayerId(str(layer_id)),
+                representation_id=representation.id,
+                as_of=as_of,
+            )
+            active_versions = (
+                projection.list_active_artifact_versions(series.id for series in series_list)
+                if as_of is None
+                else None
+            )
+        for series in series_list:
+            version = (
+                active_versions.get(str(series.id))
+                if active_versions is not None
+                else projection.get_active_artifact_version(series.id, as_of=as_of)
+            )
             cursor = version
-            coordinate: tuple[int, int] | None = None
+            coordinate: tuple[int, int] | None = coordinates.get(str(series.id))
             visited: set[str] = set()
-            while cursor is not None and str(cursor.id) not in visited:
+            while coordinate is None and cursor is not None and str(cursor.id) not in visited:
                 visited.add(str(cursor.id))
                 x, y = cursor.parameters.get("x"), cursor.parameters.get("y")
                 if (
@@ -118,4 +141,8 @@ class FrameCellsMixin:
                         "in_review",
                         previous.quality,
                     )
-        return tuple(sorted(cells.values(), key=lambda item: (item.y, item.x)))
+        return tuple(sorted(
+            (item for item in cells.values() if bounds is None
+             or bounds[0] <= item.x <= bounds[2] and bounds[1] <= item.y <= bounds[3]),
+            key=lambda item: (item.y, item.x),
+        ))

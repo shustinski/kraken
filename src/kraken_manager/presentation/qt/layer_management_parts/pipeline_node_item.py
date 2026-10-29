@@ -12,6 +12,12 @@ from PyQt6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QMenu,
 )
+from kraken_manager.domain.layer_board import (
+    BoardNode,
+    multi_selection_actions,
+    parameter_lines,
+    selection_kind,
+)
 
 class PipelineNodeItem(QGraphicsRectItem):
     COLORS = {
@@ -39,8 +45,12 @@ class PipelineNodeItem(QGraphicsRectItem):
         collapse: Callable[[], None] | None,
         action_availability: Callable[[str], tuple[bool, str]],
         position_changed: Callable[[], None],
+        request_selection_action: Callable[[tuple[PipelineNode, ...], str], None] | None = None,
+        selected_nodes: Callable[[], tuple[PipelineNode, ...]] | None = None,
     ) -> None:
-        super().__init__(0, 0, 190, 72)
+        self._parameter_lines = _node_parameter_lines(node)
+        height = 72 + 16 * len(self._parameter_lines)
+        super().__init__(0, 0, 190, height)
         self.node = node
         self._activate = activate
         self._request_action = request_action
@@ -49,10 +59,13 @@ class PipelineNodeItem(QGraphicsRectItem):
         self._collapse = collapse
         self._action_availability = action_availability
         self._position_changed = position_changed
+        self._request_selection_action = request_selection_action
+        self._selected_nodes = selected_nodes or (lambda: ())
         self.setFlag(self.GraphicsItemFlag.ItemIsMovable, True)
         self.setFlag(self.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(self.GraphicsItemFlag.ItemSendsGeometryChanges, True)
-        self.setBrush(QColor(self.COLORS.get(node.kind, "#4c5350")))
+        paint_kind = str(node.details.get("collapsed_kind") or node.kind)
+        self.setBrush(QColor(self.COLORS.get(paint_kind, self.COLORS.get(node.kind, "#4c5350"))))
         pen = QPen(QColor("#f59e0b" if node.active else "#101210"), 3 if node.active else 1.5)
         pen.setStyle(Qt.PenStyle.DashLine if node.kind == "missing" else Qt.PenStyle.SolidLine)
         self.setPen(pen)
@@ -63,11 +76,16 @@ class PipelineNodeItem(QGraphicsRectItem):
             subtitle = QGraphicsSimpleTextItem(node.subtitle[:52], self)
             subtitle.setBrush(QColor("#c3c8c3"))
             subtitle.setPos(12, 38)
+        for offset, line in enumerate(self._parameter_lines):
+            parameter = QGraphicsSimpleTextItem(line[:42], self)
+            parameter.setBrush(QColor("#e5e7eb"))
+            parameter.setPos(12, 58 + offset * 16)
         visible = {"время", "автор", "программа", "прогресс", "ошибка", "создан"}
         self.setToolTip("\n".join(f"{key}: {value}" for key, value in node.details.items() if key in visible and value))
         port_color = QColor("#22d3ee" if node.kind in {"source", "binary"} else "#facc15")
+        port_y = height / 2 - 5
         for x in (-5.0, 185.0):
-            port = QGraphicsEllipseItem(x, 31.0, 10.0, 10.0, self)
+            port = QGraphicsEllipseItem(x, port_y, 10.0, 10.0, self)
             port.setBrush(port_color)
             port.setPen(QPen(QColor("#111827"), 1.0))
 
@@ -83,7 +101,9 @@ class PipelineNodeItem(QGraphicsRectItem):
             event.accept()
             return
         super().mousePressEvent(event)
-        if event.button() is Qt.MouseButton.LeftButton:
+        if event.button() is Qt.MouseButton.LeftButton and not (
+            event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+        ):
             self._activate(self.node)
 
     def mouseDoubleClickEvent(self, event: QGraphicsSceneMouseEvent) -> None:  # type: ignore[override]
@@ -110,6 +130,7 @@ class PipelineNodeItem(QGraphicsRectItem):
             "binary": (("Получить CIF в Contour", "vectorize"),),
             "vector": (
                 ("Выдать работу…", "issue_work"),
+                ("Назначить слои для проверки", "assign_review_layers"),
                 ("Добавить CIF из внешнего источника…", "add_external_vector"),
             ),
             "missing": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
@@ -133,6 +154,16 @@ class PipelineNodeItem(QGraphicsRectItem):
             actions = (*actions, *lifecycle)
         if self._collapse is not None:
             actions = (*actions, ("Свернуть", "collapse_pipeline"))
+        selected = self._selected_nodes()
+        multi = None if self not in self.scene().selectedItems() else multi_selection_actions(
+            tuple(
+                BoardNode(node.node_id, selection_kind(node.kind, node.subtitle), node.title)
+                for node in selected
+            )
+        )
+        selection_menu = bool(multi)
+        if selection_menu:
+            actions = tuple((item.label, item.code) for item in multi)
         menu = QMenu()
         by_action = {}
         menu.setToolTipsVisible(True)
@@ -150,18 +181,31 @@ class PipelineNodeItem(QGraphicsRectItem):
                 menu_action.setToolTip(reason)
                 menu_action.setStatusTip(reason)
             by_action[menu_action] = code
-        if actions:
+        if actions and not selection_menu:
             menu.addSeparator()
-        properties = menu.addAction("Свойства")
-        selected = menu.exec(event.screenPos())
-        if selected is properties:
+        properties = None if selection_menu else menu.addAction("Свойства")
+        chosen = menu.exec(event.screenPos())
+        if properties is not None and chosen is properties:
             self._request_properties(self.node)
-        elif selected in by_action:
-            code = by_action[selected]
+        elif chosen in by_action:
+            code = by_action[chosen]
             if code == "collapse_pipeline" and self._collapse is not None:
                 self._collapse()
+            elif selection_menu and self._request_selection_action is not None:
+                self._request_selection_action(selected, code)
             else:
                 self._request_action(self.node, code)
+
+
+def _node_parameter_lines(node: PipelineNode) -> tuple[str, ...]:
+    stored = node.details.get("parameter_lines")
+    if isinstance(stored, (list, tuple)) and stored:
+        return tuple(str(line) for line in stored)
+    parameters = node.details.get("параметры")
+    capability = str(node.details.get("capability") or node.details.get("operation") or "")
+    if node.kind not in {"job", "blackbox"}:
+        capability = ""
+    return parameter_lines(parameters if isinstance(parameters, dict) else None, capability=capability)
 
 if TYPE_CHECKING:
     from kraken_manager.presentation.qt.layer_management_parts.format_scalar import PipelineNode

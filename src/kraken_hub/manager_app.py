@@ -126,6 +126,8 @@ from .manager_app_parts.archive_layer_representation import ArchiveLayerRepresen
 from .manager_app_parts.start_representation_import import StartRepresentationImportMixin
 from .manager_app_parts.add_representation import AddRepresentationMixin
 from .manager_app_parts.add_layer import AddLayerMixin
+from .manager_app_parts.add_layer_images import AddLayerImagesMixin
+from .manager_app_parts.layer_board_actions import LayerBoardActionsMixin
 from .manager_app_parts.error import ErrorMixin
 from .manager_app_parts.event_matches_node import (
     _RemoteSignalBridge,
@@ -224,6 +226,8 @@ class DesktopController(
     StartRepresentationImportMixin,
     AddRepresentationMixin,
     AddLayerMixin,
+    AddLayerImagesMixin,
+    LayerBoardActionsMixin,
     ErrorMixin,
 ):
     pass

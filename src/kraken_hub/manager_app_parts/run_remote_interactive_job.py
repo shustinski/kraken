@@ -77,10 +77,17 @@ class RunRemoteInteractiveJobMixin:
             "delete_layer",
             "rename_layer",
             "archive_layer",
+            "assign_review_layers",
         }:
             if not self._has_permission(Permission.MANAGE_STRUCTURE):
                 return False, "Недостаточно прав для изменения структуры проекта"
             return True, ""
+        if action == "export_selection":
+            if not self._has_permission(Permission.VIEW_PROJECT):
+                return False, "Недостаточно прав для выгрузки"
+            return True, ""
+        if action == "open_in_contour":
+            action = "vectorize"
         if not self._has_permission(Permission.RUN_PLUGIN):
             return False, "Недостаточно прав для запуска плагинов"
         requirement = self._action_requirement(action)

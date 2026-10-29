@@ -280,6 +280,16 @@ def test_workspace_menus_and_modeless_layer_manager(qapp, monkeypatch) -> None:
         if getattr(item, "node", None) is not None and item.node.kind == "blackbox"
     }
     assert blackbox_ids == {"lane-a:blackbox", "lane-b:blackbox"}
+    titles = {
+        item.node.node_id: item.node.title
+        for item in dialog.graph.scene().items()
+        if getattr(item, "node", None) is not None and item.node.kind == "blackbox"
+    }
+    assert titles == {
+        "lane-a:blackbox": "Prepared dataset",
+        "lane-b:blackbox": "Recognition",
+    }
+    assert dialog.graph._items["lane-a:blackbox"]._parameter_lines == ()
 
     dialog.graph.expand_lane("lane-a")
     assert dialog.graph._expanded_lane_id == "lane-a"

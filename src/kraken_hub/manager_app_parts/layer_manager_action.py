@@ -14,6 +14,9 @@ class LayerManagerActionMixin:
         if action == "manage_stitching":
             self._layer_manager_layer_action(_layer_id, action)
             return
+        if action == "assign_review_layers":
+            self._assign_cif_review_layers(_layer_id, _node)
+            return
         if action == "issue_work":
             available, reason = self._action_availability(action)
             if not available:
@@ -242,7 +245,7 @@ class LayerManagerActionMixin:
             if not selected.get("legacy_file"):
                 parameters.update(selected)
         if action in {"recognize", "recognize_external", "confidence"} and "model_version_id" not in parameters:
-            from PyQt6.QtCore import QSettings
+            from kraken_core.settings import QSettings
             from PyQt6.QtWidgets import QFileDialog
 
             settings = QSettings("Kraken", "KrakenHub")

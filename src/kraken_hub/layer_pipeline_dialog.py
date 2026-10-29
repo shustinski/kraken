@@ -263,9 +263,11 @@ class LayerPipelineDialog(QDialog):
         self.producer.currentIndexChanged.connect(self._producer_changed)
         self.operations.itemSelectionChanged.connect(self._operation_selected)
         self._capability_changed()
+        self._applied_signature = None
+        self._quiet_refresh = False
         self._timer = QTimer(self)
         self._timer.setInterval(2000)
-        self._timer.timeout.connect(self.refresh)
+        self._timer.timeout.connect(lambda: self.refresh(quiet=True))
         self._timer.start()
         self.refresh()
 
@@ -318,11 +320,12 @@ class LayerPipelineDialog(QDialog):
         models = published_models(self.service, self.project_id, self.layer_id)
         return project, representations, history, state, models
 
-    def _run(self, call, succeeded):
+    def _run(self, call, succeeded, quiet: bool = False):
         if self._worker is not None:
             return
-        self.controls.setEnabled(False)
-        self.buttons.setEnabled(False)
+        if not quiet:
+            self.controls.setEnabled(False)
+            self.buttons.setEnabled(False)
         worker = _BackgroundCallThread(call, parent=self)
         self._worker = worker
         if self._background_workers is not None:
@@ -341,19 +344,35 @@ class LayerPipelineDialog(QDialog):
             if self._background_workers is not None:
                 self._background_workers.discard(worker)
             self._worker = None
-            self.controls.setEnabled(True)
-            self.buttons.setEnabled(True)
+            if not quiet:
+                self.controls.setEnabled(True)
+                self.buttons.setEnabled(True)
 
         worker.finished.connect(finished)
         worker.finished.connect(worker.deleteLater)
         worker.start()
 
-    def refresh(self):
+    def refresh(self, quiet: bool = False):
+        if self._worker is not None:
+            return
+        if quiet and self._editor_busy():
+            return
+        self._quiet_refresh = quiet
         if self.isVisible() or self._project is None:
-            self._run(self._load, self._loaded)
+            self._run(self._load, self._loaded, quiet=quiet)
+
+    def _editor_busy(self) -> bool:
+        from PyQt6.QtWidgets import QApplication
+
+        focus = QApplication.focusWidget()
+        return focus is not None and self.isAncestorOf(focus) and focus is not self.refresh_button
 
     def _loaded(self, result):
         project, representations, history, state, self._published_models = result
+        signature = self._view_signature(project, representations, history, state)
+        if signature == self._applied_signature or (self._dirty and self._quiet_refresh):
+            return
+        self._applied_signature = signature
         self._project, self._representations, self._history = project, tuple(representations), tuple(history)
         self._state = state
         self._loading = True
@@ -396,6 +415,25 @@ class LayerPipelineDialog(QDialog):
         self._loading = False
         if self._state_changed is not None and state is not None:
             self._state_changed(state)
+
+    def _view_signature(self, project, representations, history, state):
+        from kraken_manager.domain.layer_board import workflow_view_signature
+
+        nodes = {} if not state else state.get("nodes", {})
+        statuses = tuple(
+            sorted(
+                (str(key), str(value.get("status", "") if isinstance(value, Mapping) else ""))
+                for key, value in nodes.items()
+            )
+        )
+        return workflow_view_signature(
+            project_revision=getattr(project, "revision", None),
+            representation_ids=tuple(str(item.id) for item in representations),
+            history_count=len(tuple(history)),
+            pipeline_revision=None if state is None else state.get("revision"),
+            pipeline_status=None if state is None else state.get("status"),
+            node_statuses=statuses,
+        )
 
     def _state_label(self, value):
         ru = {
@@ -765,6 +803,7 @@ class LayerPipelineDialog(QDialog):
         self._pending = None
         self._dirty = False
         self._state = state
+        self._applied_signature = None
         self._revision = state["revision"]
         self._operations = list(state["definition"]["operations"])
         self._redraw()

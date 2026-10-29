@@ -59,7 +59,7 @@ class MatrixViewportMixin:
         for identifier in identifiers:
             current_coverage = coverage.setdefault(identifier, set())
             representation = representations.get(identifier)
-            frame_cells = self.frame_cells(project.id, layer_id, identifier)
+            frame_cells = self.frame_cells(project.id, layer_id, identifier, bounds=(x1, y1, x2, y2))
             for item in frame_cells:
                 if not (x1 <= item.x <= x2 and y1 <= item.y <= y2):
                     continue
@@ -110,6 +110,7 @@ class MatrixViewportMixin:
                 and representation.kind is RepresentationKind.IMAGE
                 and representation.source
                 and representation.source != "managed-import"
+                and not self._projection(project.id).has_matrix_frames(project.id, layer_id, identifier)
             ):
                 for cell in self._external_directory_viewport(
                     project,

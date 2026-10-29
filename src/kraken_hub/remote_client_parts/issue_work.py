@@ -19,6 +19,14 @@ from kraken_manager.infrastructure.filesystem._codec import decode_model, encode
 
 
 class IssueWorkMixin:
+    def plan_legacy_work_order_migration(self, *, principal, project_id):
+        return self._call("GET", f"/api/v1/projects/{project_id}/work-orders/legacy-migration")
+
+    def migrate_legacy_work_orders(self, *, principal, project_id, expected_plan_digest, idempotency_key):
+        return self._call("POST", f"/api/v1/projects/{project_id}/work-orders/legacy-migration",
+            payload={"expected_plan_digest": expected_plan_digest}, idempotency_key=idempotency_key,
+            timeout=max(180, self._http.timeout))
+
     def work_orders(self) -> tuple[WorkOrder, ...]:
         orders: list[WorkOrder] = []
         for project in self.list_projects(include_archived=True):
@@ -44,8 +52,14 @@ class IssueWorkMixin:
         destination_parent: Path | str | None = None,
         idempotency_key: str,
         transport: str | None = None,
+        companion_representations: tuple[tuple[str, str], ...] | None = None,
     ) -> WorkOrder:
         work_placement = WorkPlacement(placement)
+        companions = (
+            self._review_companion_plan(project_id, vector_representation_id, image_representation_id)
+            if companion_representations is None
+            else tuple(companion_representations)
+        )
         body = {
             "layer_id": str(layer_id),
             "kind": WorkKind(kind).value,
@@ -57,6 +71,10 @@ class IssueWorkMixin:
             "instructions": instructions,
             "due_at": None if due_at is None else due_at.isoformat(),
             "transport": transport,
+            "companion_representations": [
+                {"folder": folder, "representation_id": representation_id}
+                for folder, representation_id in companions
+            ],
         }
         if work_placement is WorkPlacement.SERVER:
             payload = self._call(
@@ -92,6 +110,23 @@ class IssueWorkMixin:
                 principal=principal, batch=batch, destination=destination,
                 idempotency_key=f"{idempotency_key}:export",
             )
+            if companions:
+                from kraken_manager.infrastructure.work_package import write_companion_images
+
+                def read_bytes(version_id: str) -> bytes:
+                    version = self.artifact_version(project.id, version_id)
+                    if version is None or version.blob is None:
+                        raise ValueError("Файл не сохранён в проекте")
+                    return self.read_project_blob(project.id, version.sha256)
+
+                write_companion_images(
+                    destination,
+                    project=project,
+                    companions=companions,
+                    selection=issued.selection,
+                    active_version=lambda series_id: self.active_artifact_version(project.id, series_id),
+                    read_bytes=read_bytes,
+                )
             order = WorkOrder.create(
                 order_id=str(issued.id), project_id=project.id, layer_id=layer.id,
                 kind=WorkKind.VECTOR_REVIEW, placement=WorkPlacement.EXTERNAL,
@@ -136,6 +171,7 @@ class IssueWorkMixin:
                 transport=transport or "files",
                 remote=True,
                 now=datetime.now(UTC),
+                companion_representations=companions,
             ),
             active_version=active_version,
             read_bytes=read_bytes,
@@ -151,6 +187,20 @@ class IssueWorkMixin:
             idempotency_key=idempotency_key,
         )
         return decode_model(WorkOrder, payload)
+
+    def _review_companion_plan(self, project_id, vector_representation_id: str, primary_image_id: str):
+        from kraken_manager.domain.layer_board import companion_export_plan, review_image_ids
+        from kraken_manager.domain.project import RepresentationKind
+
+        if not vector_representation_id or not hasattr(self, "history"):
+            return ()
+        ordered = review_image_ids(self.history(project_id), (str(vector_representation_id),))
+        names = {}
+        for layer in self.list_layers(project_id):
+            for representation in self.list_representations(project_id, layer.id):
+                if representation.kind is RepresentationKind.IMAGE:
+                    names[str(representation.id)] = (layer.name, representation.name)
+        return companion_export_plan(ordered, primary_image_id=str(primary_image_id or ""), names_by_id=names)
 
     def mark_work_running(self, order: WorkOrder, *, job_id: str = "", idempotency_key: str, principal=None) -> WorkOrder:
         running = order.mark_running(job_id=job_id)

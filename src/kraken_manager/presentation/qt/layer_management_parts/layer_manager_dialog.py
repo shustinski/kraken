@@ -2,7 +2,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 from typing import Callable
-from PyQt6.QtCore import QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
+from kraken_core.settings import QSettings
 from PyQt6.QtWidgets import (
     QDialog,
     QPushButton,
@@ -22,6 +23,7 @@ class LayerManagerDialog(QDialog):
     orderChanged = pyqtSignal(object)
     representationActivated = pyqtSignal(str)
     nodeActionRequested = pyqtSignal(str, object, str)
+    selectionActionRequested = pyqtSignal(str, object, str)
     layerActionRequested = pyqtSignal(str, str)
     nodePropertiesRequested = pyqtSignal(str, object)
     layerPropertiesRequested = pyqtSignal(str)
@@ -74,6 +76,7 @@ class LayerManagerDialog(QDialog):
         self.add_layer_button.clicked.connect(self.addLayerRequested)
         self.graph.nodeActivated.connect(self._node_activated)
         self.graph.nodeActionRequested.connect(self._node_action)
+        self.graph.selectionActionRequested.connect(self._selection_action)
         self.graph.nodePropertiesRequested.connect(self._node_properties)
 
     def set_layers(self, layers: list[LayerListItem], selected_id: str = "") -> None:
@@ -93,6 +96,11 @@ class LayerManagerDialog(QDialog):
         snapshot = self.graph._snapshot
         if snapshot is not None:
             self.nodeActionRequested.emit(snapshot.layer_id, node, action)
+
+    def _selection_action(self, nodes: object, action: str) -> None:
+        snapshot = self.graph._snapshot
+        if snapshot is not None:
+            self.selectionActionRequested.emit(snapshot.layer_id, nodes, action)
 
     def _node_properties(self, node: PipelineNode) -> None:
         snapshot = self.graph._snapshot

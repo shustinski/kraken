@@ -1,6 +1,7 @@
 """persistent_services: issue performer work into a server folder."""
 
 from __future__ import annotations
+from kraken_server.project_deletion import guarded_storage
 
 from collections.abc import Mapping
 from dataclasses import replace
@@ -27,13 +28,52 @@ from kraken_server.services import CommandContext, ConflictError, ForbiddenError
 from kraken_server.persistent_services_parts.layer_source_scan import SystemClock, _layer_id, _project_id
 
 
+def _companion_representations(payload: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    raw = payload.get("companion_representations", ())
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    companions: list[tuple[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        folder = str(item.get("folder", "")).strip()
+        representation_id = str(item.get("representation_id", "")).strip()
+        if folder and representation_id:
+            companions.append((folder, representation_id))
+    return tuple(companions)
+
+
 class IssueWorkMixin:
+    def plan_legacy_work_order_migration(self, project_id: str, actor_id: str):
+        from kraken_manager.application.legacy_work_orders import plan_legacy_work_order_migration
+
+        try:
+            return plan_legacy_work_order_migration(uow_factory=self.uow_factory, profiles=self.profiles,
+                principal=self._actor(actor_id), project_id=_project_id(project_id), encode=encode_model,
+                gitlab_identity_verified=True)
+        except Exception as error:
+            self._translate_lifecycle_error(error)
+            raise
+
+    def migrate_legacy_work_orders(self, project_id: str, payload, context: CommandContext):
+        from kraken_manager.application.legacy_work_orders import migrate_legacy_work_orders
+
+        try:
+            return migrate_legacy_work_orders(uow_factory=self.uow_factory, profiles=self.profiles,
+                principal=self._actor(context.actor_id), project_id=_project_id(project_id), encode=encode_model,
+                expected_plan_digest=payload.get("expected_plan_digest"),
+                idempotency_key=context.idempotency_key, gitlab_identity_verified=True)
+        except Exception as error:
+            self._translate_lifecycle_error(error)
+            raise
+
     def list_work_orders(self, project_id: str) -> list[dict[str, Any]]:
         project = self.projections.get_project(_project_id(project_id))
         if project is None:
             raise NotFoundError("Project was not found")
         return [encode_model(order) for order in self.projections.list_work_orders(project.id)]
 
+    @guarded_storage
     def issue_work_order(self, project_id: str, payload: Mapping[str, Any], context: CommandContext) -> dict[str, Any]:
         try:
             return self._issue_work_order(project_id, payload, context)
@@ -171,6 +211,7 @@ class IssueWorkMixin:
                     transport=payload.get("transport"),
                     remote=True,
                     now=now,
+                    companion_representations=_companion_representations(payload),
                 ),
                 active_version=current_version,
                 read_bytes=read_bytes,
@@ -203,7 +244,9 @@ class IssueWorkMixin:
             if current.placement is WorkPlacement.EXTERNAL:
                 raise ValidationError("Import external results before completing work; server cannot inspect client paths")
             expected = self._server_work_directory(current.project_id, current.id).resolve()
-            if Path(current.destination).resolve() != expected:
+            from .layer_source_scan import resolve_storage_path
+
+            if resolve_storage_path(self, current.destination).resolve() != expected:
                 raise ValidationError("Work order destination is outside its server directory")
             if not package_has_result(expected, current.kind):
                 raise ValidationError("В папке работы ещё нет файла результата")
@@ -264,6 +307,26 @@ class IssueWorkMixin:
             str(destination),
             CommandContext(context.actor_id, f"{context.idempotency_key}:export", int(created["revision"])),
         )
+        companions = _companion_representations(payload)
+        if companions:
+            from kraken_manager.infrastructure.work_package import write_companion_images
+
+            def read_bytes(version_id: str) -> bytes:
+                version = self.projections.get_artifact_version(
+                    ArtifactVersionId(validate_uuid(version_id, field="version_id"))
+                )
+                if version is None or version.blob is None:
+                    raise ValidationError("Файл не сохранён в проекте")
+                return self.uow_factory.blobs.read(version.blob)
+
+            write_companion_images(
+                Path(destination),
+                project=project,
+                companions=companions,
+                selection=selection,
+                active_version=self.projections.get_active_artifact_version,
+                read_bytes=read_bytes,
+            )
         now = SystemClock().now()
         order = WorkOrder.create(
             project_id=project.id,

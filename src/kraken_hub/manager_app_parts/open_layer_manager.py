@@ -65,6 +65,7 @@ class OpenLayerManagerMixin:
             dialog.orderChanged.connect(self._layer_manager_reorder)
             dialog.representationActivated.connect(self._layer_manager_activate)
             dialog.nodeActionRequested.connect(self._layer_manager_action)
+            dialog.selectionActionRequested.connect(self._layer_manager_selection_action)
             dialog.layerActionRequested.connect(self._layer_manager_layer_action)
             dialog.nodePropertiesRequested.connect(self._show_node_properties)
             dialog.layerPropertiesRequested.connect(self._show_layer_properties)

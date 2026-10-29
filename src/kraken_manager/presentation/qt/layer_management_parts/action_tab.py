@@ -17,6 +17,7 @@ from kraken_manager.presentation.qt.layer_management_parts.format_scalar import 
     _display_value,
     _local_timestamp,
 )
+from kraken_manager.presentation.qt.text_bounds import bounded_popup_text, cap_table_row_heights
 
 
 class ActionTabMixin:
@@ -58,9 +59,10 @@ class ActionTabMixin:
                 else:
                     text = _display_value(value)
                 item = QTableWidgetItem(text)
-                item.setToolTip(text)
+                item.setToolTip(bounded_popup_text(text))
                 table.setItem(row, column, item)
         table.resizeRowsToContents()
+        cap_table_row_heights(table)
         return table
 
     def _action_tab(

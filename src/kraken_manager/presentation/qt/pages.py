@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .analysis_ui import AnalysisRunsPanel, AnalysisSetupDialog
+from .matrix_legend import MatrixLegendPanel
 from .models import LayerListItem, LayerListModel, ProjectListItem, ProjectListModel
 from .widgets import FrameMatrixMinimap, FrameMatrixView, FrameMatrixWidget
 
@@ -230,6 +231,10 @@ class ProjectWorkspacePage(_TitledPage):
         matrix_host_layout = QHBoxLayout(matrix_host)
         matrix_host_layout.setContentsMargins(0, 0, 0, 0)
         matrix_host_layout.addWidget(self.matrix_view, 1)
+        self.matrix_legend = MatrixLegendPanel(matrix_host)
+        matrix_host_layout.addWidget(self.matrix_legend)
+        if hasattr(self.matrix_view, "cellsChanged"):
+            self.matrix_view.cellsChanged.connect(self._refresh_matrix_legend)
         self.matrix_minimap = FrameMatrixMinimap(self.matrix_view)
         self.matrix_loading_label = QLabel("", self.matrix_view.viewport())
         self.matrix_loading_label.setObjectName("matrixLoadingLabel")
@@ -387,6 +392,10 @@ class ProjectWorkspacePage(_TitledPage):
         item = self.layer_model.layer_by_id(str(layer_id or ""))
         if isinstance(item, LayerListItem):
             self.layerActivated.emit(item)
+
+    def _refresh_matrix_legend(self) -> None:
+        rows = self.matrix_view.legend_rows() if hasattr(self.matrix_view, "legend_rows") else ()
+        self.matrix_legend.set_rows(rows)
 
     def _show_selection_summary(self, selection) -> None:
         self._selected_frame_count = sum(1 for _ in selection.coordinates())

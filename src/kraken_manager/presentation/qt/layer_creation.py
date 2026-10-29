@@ -100,6 +100,8 @@ class LayerCreationDialog(QDialog):
         scanner: Callable[..., LayerSourceScan],
         source_location: Literal["local", "server"] = "local",
         parent=None,
+        locked_name: str | None = None,
+        locked_layer_type: LayerType | None = None,
     ) -> None:
         super().__init__(parent)
         self.maximum_frames = int(maximum_frames)
@@ -109,13 +111,16 @@ class LayerCreationDialog(QDialog):
         self.source_location = source_location
         self.scan_result: LayerSourceScan | None = None
         self._scan_thread: _ScanThread | None = None
+        self._identity_locked = locked_name is not None and locked_layer_type is not None
         self.setObjectName("layerCreationDialog")
-        self.setWindowTitle("Добавить слой")
+        self.setWindowTitle("Добавить изображения" if self._identity_locked else "Добавить слой")
         self.setMinimumWidth(720)
 
         root = QVBoxLayout(self)
         intro = QLabel(
-            "Укажите имя и источник слоя. Kraken проверит нумерацию кадров до записи файлов.",
+            "Название и тип слоя уже заданы. Укажите источник изображений — Kraken проверит нумерацию кадров до записи файлов."
+            if self._identity_locked
+            else "Укажите имя и источник слоя. Kraken проверит нумерацию кадров до записи файлов.",
             self,
         )
         intro.setWordWrap(True)
@@ -139,6 +144,13 @@ class LayerCreationDialog(QDialog):
         identity.addRow("Название слоя *", self.name_edit)
         identity.addRow("Тип", self.type_combo)
         root.addLayout(identity)
+        if self._identity_locked:
+            self.name_edit.setText(str(locked_name))
+            self.name_edit.setReadOnly(True)
+            type_index = self.type_combo.findData(locked_layer_type.value)
+            if type_index >= 0:
+                self.type_combo.setCurrentIndex(type_index)
+            self.type_combo.setEnabled(False)
 
         self.tabs = QTabWidget(self)
         self.tabs.setObjectName("layerSourceMode")
@@ -164,7 +176,7 @@ class LayerCreationDialog(QDialog):
         self.cancel_button = self.buttons.button(
             QDialogButtonBox.StandardButton.Cancel
         )
-        self.ok_button.setText("Создать слой")
+        self.ok_button.setText("Добавить изображения" if self._identity_locked else "Создать слой")
         self.cancel_button.setText("Отмена")
         self.ok_button.setObjectName("createLayerConfirm")
         self.ok_button.setEnabled(False)

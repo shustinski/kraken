@@ -135,10 +135,12 @@ def lookup_frame_files(
     selection: FrameSelectionV1,
     active_version,
     role: str,
+    relative_root: str = "",
+    skip_missing: bool = False,
 ) -> tuple[WorkFrameFile, ...]:
     files: list[WorkFrameFile] = []
     missing: list[str] = []
-    folder = "vectors" if role == "vector" else "images" if role == "image" else "sources"
+    folder = relative_root or ("vectors" if role == "vector" else "images" if role == "image" else "sources")
     for coordinate in selection.iter_coordinates():
         frame_id = coordinate.frame_id(project.id)
         series_id = deterministic_frame_series_id(representation_id, frame_id)
@@ -162,10 +164,36 @@ def lookup_frame_files(
                 content=None,
             )
         )
-    if missing:
+    if missing and not skip_missing:
         label = "CIF" if role == "vector" else "изображение"
         raise ValueError(f"Нет файла ({label}) для кадров: " + ", ".join(missing))
     return tuple(files)
+
+
+def write_companion_images(
+    destination: Path,
+    *,
+    project,
+    companions: tuple[tuple[str, str], ...],
+    selection: FrameSelectionV1,
+    active_version,
+    read_bytes,
+) -> None:
+    """Export the images assigned to a CIF into the same work folder."""
+
+    for folder, representation_id in companions:
+        root = f"слои/{safe_folder_name(folder)}/images"
+        frames = lookup_frame_files(
+            project=project,
+            representation_id=representation_id,
+            selection=selection,
+            active_version=active_version,
+            role="image",
+            relative_root=root,
+            skip_missing=True,
+        )
+        if frames:
+            materialize_files(destination, frames, read_bytes)
 
 
 def materialize_files(root: Path, frames: tuple[WorkFrameFile, ...], read_bytes) -> tuple[WorkFrameFile, ...]:
@@ -310,6 +338,7 @@ class WorkIssueRequest:
     transport: str | None
     remote: bool
     now: datetime
+    companion_representations: tuple[tuple[str, str], ...] = ()
 
 
 def latest_dataset_version(series_list, versions_of):
@@ -422,6 +451,15 @@ def _place_work_order(request, *, active_version, read_bytes, dataset_version, a
             materialize_files(destination, image_frames, read_bytes)
             if vector_frames:
                 materialize_files(destination, vector_frames, read_bytes)
+            if request.companion_representations:
+                write_companion_images(
+                    destination,
+                    project=request.project,
+                    companions=request.companion_representations,
+                    selection=selection,
+                    active_version=active_version,
+                    read_bytes=read_bytes,
+                )
             if kind is WorkKind.VECTORIZE:
                 write_contour_job(
                     destination,

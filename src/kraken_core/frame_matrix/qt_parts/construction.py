@@ -138,6 +138,7 @@ class ConstructionMixin:
         self._cells = prepared
         self._indexed_tile_cells = 0
         self._invalidate_tiles()
+        self._emit_cells_changed()
 
     def set_aggregates(self, aggregates: Iterable[MatrixAggregate]) -> None:
         self._aggregates = tuple(aggregates)
@@ -149,6 +150,7 @@ class ConstructionMixin:
             self._cells[(cell.x, cell.y)] = cell
         self._indexed_tile_cells = 0
         self._invalidate_tiles()
+        self._emit_cells_changed()
 
     def remove_cells(self, coordinates: Iterable[tuple[int, int]]) -> None:
         for x, y in coordinates:
@@ -161,6 +163,7 @@ class ConstructionMixin:
         self._aggregates = ()
         self._indexed_tile_cells = 0
         self._invalidate_tiles()
+        self._emit_cells_changed()
 
     def cell_data(self, x: int, y: int) -> FrameCellData:
         self._ensure_inside(x, y)
@@ -168,6 +171,32 @@ class ConstructionMixin:
 
     def materialized_cell_count(self) -> int:
         return len(self._cells)
+
+    def _emit_cells_changed(self) -> None:
+        signal = getattr(self, "cellsChanged", None)
+        if signal is not None:
+            signal.emit()
+
+    def legend_rows(self) -> tuple[dict[str, object], ...]:
+        rows: list[dict[str, object]] = []
+        for cell in self._cells.values():
+            payload = cell.payload if isinstance(cell.payload, Mapping) else {}
+            row: dict[str, object] = {
+                "performer_initials": str(payload.get("performer_initials") or cell.performer_initials or ""),
+                "performer_color": str(payload.get("performer_color") or cell.performer_color or ""),
+            }
+            if payload.get("performer_name"):
+                row["performer_name"] = str(payload.get("performer_name"))
+            if "modified_at" in payload:
+                row["modified_at"] = payload.get("modified_at")
+            if "quality" in payload:
+                row["quality"] = payload.get("quality")
+            if "review_status" in payload and payload.get("review_status") not in ("", None):
+                row["review_status"] = payload.get("review_status")
+            elif cell.status:
+                row["status"] = cell.status
+            rows.append(row)
+        return tuple(rows)
 
     def set_status_colors(self, colors: Mapping[str, str | QColor]) -> None:
         for status, color in colors.items():

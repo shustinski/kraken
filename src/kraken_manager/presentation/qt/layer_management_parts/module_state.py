@@ -46,6 +46,7 @@ _EVENT_TYPE_LABELS: dict[str, str] = {
     "LayerPipelineActionRemoved": "Удалено действие конвейера",
     "KarakalAnalysisPublished": "Опубликован анализ Karakal",
     "LayerStitchingStatusChangedV1": "Изменена отметка о сшивке",
+    "BatchFileChange": "Пакетное изменение файлов",
 }
 
 _FIELD_LABELS: dict[str, str] = {
@@ -66,6 +67,7 @@ _FIELD_LABELS: dict[str, str] = {
     "instructions": "Инструкции",
     "reason": "Причина",
     "filename": "Файл",
+    "file_count": "Файлов",
     "media_type": "Тип файла",
     "size_bytes": "Размер",
     "sha256": "SHA-256",

@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
-from PyQt6.QtCore import QLineF, QPointF, QRectF, QSettings, Qt, pyqtSignal
+from PyQt6.QtCore import QLineF, QPointF, QRectF, Qt, pyqtSignal
+from kraken_core.settings import QSettings
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,

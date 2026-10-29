@@ -75,6 +75,7 @@ class FrameMatrixView(
     contextMenuRequested = pyqtSignal(object, object)
     viewportChanged = pyqtSignal(object)
     lodChanged = pyqtSignal(str)
+    cellsChanged = pyqtSignal()
     CELL_SIZE = 48.0
     CELL_GAP = 0.0
     CELL_PITCH = CELL_SIZE + CELL_GAP

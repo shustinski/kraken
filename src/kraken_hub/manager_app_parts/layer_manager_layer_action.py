@@ -1,7 +1,6 @@
 """manager_app: layer manager layer action."""
 from __future__ import annotations
 from uuid import uuid4
-from kraken_manager.domain.project import RepresentationKind
 from .pipeline_controller import PipelineControllerMixin
 
 
@@ -151,11 +150,15 @@ class LayerManagerLayerActionMixin(PipelineControllerMixin):
                 self._error("Слой больше не доступен")
                 return
             self._select_layer(workspace, self._project_id, item)
-            self._add_representation(
-                workspace,
-                self._project_id,
-                RepresentationKind.IMAGE,
+            layer = next(
+                (
+                    value
+                    for value in self.service.list_layers(self._project_id)
+                    if str(value.id) == str(_layer_id)
+                ),
+                None,
             )
+            self._add_images_to_layer(workspace, self._project_id, layer)
             return
         if action == "karakal":
             available, reason = self._action_availability(action)

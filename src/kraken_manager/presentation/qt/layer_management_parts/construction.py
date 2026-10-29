@@ -16,6 +16,7 @@ from kraken_manager.presentation.qt.layer_management_parts.format_scalar import 
     _event_type_label,
     _local_timestamp,
 )
+from kraken_manager.presentation.qt.text_bounds import bounded_popup_text, cap_table_row_heights
 
 
 class ConstructionMixin:
@@ -39,9 +40,10 @@ class ConstructionMixin:
         for row, (name, value) in enumerate(snapshot.properties):
             self.properties_table.setItem(row, 0, QTableWidgetItem(str(name)))
             value_item = QTableWidgetItem(_display_value(value))
-            value_item.setToolTip(value_item.text())
+            value_item.setToolTip(bounded_popup_text(value_item.text()))
             self.properties_table.setItem(row, 1, value_item)
         self.properties_table.resizeRowsToContents()
+        cap_table_row_heights(self.properties_table)
         parameter_actions = tuple(action for action in snapshot.actions if action[0].startswith("Сохранить параметры"))
         tabs.addTab(self._action_tab(self.properties_table, (), (), general_actions=parameter_actions), "Свойства")
 
@@ -60,9 +62,10 @@ class ConstructionMixin:
             self.history_table.setItem(row, 2, event_item)
             summary = _format_history_payload(entry.event_type, entry.payload)
             details = QTableWidgetItem(summary)
-            details.setToolTip(_display_value(entry.payload))
+            details.setToolTip(bounded_popup_text(_display_value(entry.payload)))
             self.history_table.setItem(row, 3, details)
         self.history_table.resizeRowsToContents()
+        cap_table_row_heights(self.history_table)
         if snapshot.temporal_loader is not None:
             self.history_table.setToolTip(
                 "Дважды щёлкните событие, чтобы открыть состояние объекта на этот момент"

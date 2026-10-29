@@ -178,6 +178,8 @@ class PipelineSnapshotMixin:
                     # that were recorded before source association existed.
                     if action_source or source is not sources[0]:
                         continue
+                if str(action_payload.get("action", "")) == "assign_cif_review_layers":
+                    continue
                 action_id = f"action:{action_event.event_id}"
                 lane_nodes.append(
                     PipelineNode(
@@ -191,6 +193,7 @@ class PipelineSnapshotMixin:
                             "автор": action_event.actor.display_name,
                             "программа": action_payload.get("plugin_id", ""),
                             "capability": action_payload.get("capability", ""),
+                            "operation": action_payload.get("action", ""),
                             "режим": action_payload.get("mode", ""),
                             "параметры": action_parameters,
                             "pipeline_event_id": action_event.event_id,
@@ -290,6 +293,7 @@ class PipelineSnapshotMixin:
                             "прогресс": job.get("progress", 0),
                             "ошибка": job.get("error") or "",
                             "параметры": parameters,
+                            "capability": capability,
                             "pipeline_event_id": event.event_id,
                             "job_id": job_id,
                             "deletable": True,

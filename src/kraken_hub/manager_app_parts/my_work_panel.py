@@ -5,15 +5,19 @@ from pathlib import Path
 from uuid import uuid4
 from kraken_manager.domain.identity import Permission
 from kraken_hub.composition import DesktopSession, EmbeddedProjectService
+from kraken_manager.presentation.qt.text_bounds import TABLE_ROW_HEIGHT_LIMIT, bounded_popup_text
 
 def _my_work_panel(
     service: EmbeddedProjectService,
     session: DesktopSession,
     controller: DesktopController,
 ):
+    from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import (
+        QAbstractItemView,
         QFileDialog,
         QHBoxLayout,
+        QHeaderView,
         QInputDialog,
         QMessageBox,
         QPushButton,
@@ -27,24 +31,39 @@ def _my_work_panel(
     layout = QVBoxLayout(host)
     actions = QHBoxLayout()
     refresh_button = QPushButton("Обновить")
+    launch_button = QPushButton("Запустить плагин")
     actions.addWidget(refresh_button)
+    actions.addWidget(launch_button)
     actions.addStretch(1)
     layout.addLayout(actions)
-    table = QTableWidget(0, 8)
-    table.setHorizontalHeaderLabels(
-        (
-            "Тип",
-            "Проект",
-            "Слой",
-            "Исполнитель",
-            "Состояние",
-            "Срок / обновление",
-            "Кадры / прогресс",
-            "Действия",
-        )
+    headers = (
+        "Тип",
+        "Проект",
+        "Слой",
+        "Исполнитель",
+        "Состояние",
+        "Срок / обновление",
+        "Кадры / прогресс",
+        "Действия",
     )
-    table.horizontalHeader().setStretchLastSection(True)
-    layout.addWidget(table)
+    table = QTableWidget(0, len(headers))
+    table.setHorizontalHeaderLabels(headers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setWordWrap(True)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.verticalHeader().setDefaultSectionSize(36)
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setMinimumSectionSize(72)
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    for index, label in enumerate(headers):
+        item = table.horizontalHeaderItem(index)
+        if item is not None:
+            item.setToolTip(label)
+    layout.addWidget(table, 1)
+    row_work: list[tuple[str, object]] = []
 
     review_states = {
         "draft": "Черновик",
@@ -207,6 +226,17 @@ def _my_work_panel(
             )
         refresh()
 
+    def launch_selected() -> None:
+        row = table.currentRow()
+        if row < 0 or row >= len(row_work):
+            QMessageBox.information(host, "Задание не выбрано", "Выберите строку в списке работы.")
+            return
+        kind, work = row_work[row]
+        try:
+            controller.launch_selected_work(kind, work)
+        except Exception as exc:
+            QMessageBox.warning(host, "Не удалось запустить плагин", str(exc))
+
     def refresh() -> None:
         projects = {
             str(project.id): project.name
@@ -238,6 +268,10 @@ def _my_work_panel(
             "cancelled": "Отменено",
         }
         table.setRowCount(len(batches) + len(jobs) + len(orders))
+        row_work.clear()
+        row_work.extend(("review", batch) for batch in batches)
+        row_work.extend(("job", job) for job in jobs)
+        row_work.extend(("order", order) for order in orders)
         for row, batch in enumerate(batches):
             values = (
                 "Проверка",
@@ -249,7 +283,9 @@ def _my_work_panel(
                 str(len(batch.items)),
             )
             for column, value in enumerate(values):
-                table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                item.setToolTip(bounded_popup_text(value))
+                table.setItem(row, column, item)
             action_host = QWidget(table)
             action_layout = QHBoxLayout(action_host)
             action_layout.setContentsMargins(0, 0, 0, 0)
@@ -298,7 +334,9 @@ def _my_work_panel(
                 f"{job.progress * 100:.0f} %",
             )
             for column, value in enumerate(values):
-                table.setItem(offset, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                item.setToolTip(bounded_popup_text(value))
+                table.setItem(offset, column, item)
             action_host = QWidget(table)
             action_layout = QHBoxLayout(action_host)
             action_layout.setContentsMargins(0, 0, 0, 0)
@@ -331,7 +369,7 @@ def _my_work_panel(
                 )
                 action_layout.addWidget(cancel_button)
             if job.error:
-                action_host.setToolTip(job.error)
+                action_host.setToolTip(bounded_popup_text(job.error))
             if Permission.RUN_PLUGIN in permissions:
                 delete_button = QPushButton("Удалить", action_host)
                 delete_button.clicked.connect(lambda _checked=False, value=job: delete_job(value))
@@ -348,7 +386,9 @@ def _my_work_panel(
                 str(order.frame_count),
             )
             for column, value in enumerate(values):
-                table.setItem(offset, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                item.setToolTip(bounded_popup_text(value))
+                table.setItem(offset, column, item)
             action_host = QWidget(table)
             action_layout = QHBoxLayout(action_host)
             action_layout.setContentsMargins(0, 0, 0, 0)
@@ -366,11 +406,41 @@ def _my_work_panel(
                 cancel_button.clicked.connect(lambda _checked=False, value=order: controller.cancel_issued_work(value))
                 action_layout.addWidget(cancel_button)
             table.setCellWidget(offset, 7, action_host)
+        _fit_my_work_table(table)
 
     refresh_button.clicked.connect(refresh)
+    launch_button.clicked.connect(launch_selected)
     controller.my_work_refresh = refresh
     refresh()
     return host
+
+def _fit_my_work_table(table) -> None:
+    """Size columns to their headers and keep action buttons inside the row."""
+    from PyQt6.QtWidgets import QPushButton, QSizePolicy
+
+    header = table.horizontalHeader()
+    actions = table.columnCount() - 1
+    for column in range(max(0, actions)):
+        header_width = header.sectionSizeHint(column)
+        content = table.sizeHintForColumn(column)
+        table.setColumnWidth(column, max(header_width, min(content, 240)))
+    width = header.sectionSizeHint(actions) if actions >= 0 else 0
+    for row in range(table.rowCount()):
+        widget = table.cellWidget(row, actions)
+        if widget is None:
+            if table.rowHeight(row) > TABLE_ROW_HEIGHT_LIMIT:
+                table.setRowHeight(row, TABLE_ROW_HEIGHT_LIMIT)
+            continue
+        for button in widget.findChildren(QPushButton):
+            button.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
+            button.setMinimumWidth(button.sizeHint().width())
+        widget.adjustSize()
+        width = max(width, widget.sizeHint().width() + 8)
+        height = min(max(widget.sizeHint().height() + 4, 36), TABLE_ROW_HEIGHT_LIMIT)
+        table.setRowHeight(row, height)
+    if actions >= 0:
+        table.setColumnWidth(actions, max(width, 72))
+
 
 if TYPE_CHECKING:
     from kraken_hub.manager_app import DesktopController

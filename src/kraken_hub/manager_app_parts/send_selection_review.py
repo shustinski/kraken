@@ -209,15 +209,20 @@ class SendSelectionReviewMixin:
                 ),
             )
             return
-        if order.placement.value == "server" or order.transport == "http":
-            QMessageBox.information(self.shell, order.kind.title, _issued_work_message(order))
+        if order.launch_mode == "review-package":
+            arguments = (str(destination),) if destination.is_dir() else ()
+            self._launch_managed_plugin("contour", arguments=arguments)
             return
         if order.launch_mode == "neural-dir":
+            self._launch_managed_plugin("neuralimage")
             QMessageBox.information(
                 self.shell,
                 "Обучение",
                 f"Выборка для NeuralImage:\n{destination / 'dataset'}",
             )
+            return
+        if order.placement.value == "server" or order.transport == "http":
+            QMessageBox.information(self.shell, order.kind.title, _issued_work_message(order))
             return
         QMessageBox.information(
             self.shell,

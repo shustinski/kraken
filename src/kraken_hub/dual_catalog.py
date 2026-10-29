@@ -15,44 +15,20 @@ from kraken_manager.domain.identity import Principal
 from kraken_manager.domain.project import GridOrientation, Project
 from kraken_manager.infrastructure.review.manifest import manifest_from_json
 
+from kraken_hub.domain.catalog_route import (
+    call_uses_remote_catalog,
+    project_id_from_call,
+    storage_label,
+)
+
 from .composition import EmbeddedProjectService
 from .remote_client import RemoteAuth, RemoteServerError, RemoteServerProjectService
 from .workspace_service import REMOTE_STORAGE_PROFILE, ProjectEventWake
 
 LOGGER = logging.getLogger(__name__)
 
-# These calls only read values already loaded on the project object or scan a
-# folder the user picked. They do not open the local project database.
-_REMOTE_PROJECT_LOCAL_CALLS = frozenset({"plan_import_directory"})
-
-
-def _project_id_from_call(kwargs: dict[str, Any]) -> str | None:
-    project = kwargs.get("project")
-    project_identifier = getattr(project, "id", None)
-    if project_identifier is not None:
-        return str(project_identifier)
-    project_id = kwargs.get("project_id")
-    if project_id is not None:
-        return str(project_id)
-    for key in ("job", "batch", "layer", "series", "note"):
-        value = kwargs.get(key)
-        identifier = getattr(value, "project_id", None)
-        if identifier is not None:
-            return str(identifier)
-    return None
-
 
 class DualCatalogService:
-    def request_project_deletion(self, *, project, reason: str = ""):
-        if self.remote is None or not self.is_remote_project(project.id):
-            raise ValueError("Заявка доступна только для серверного проекта")
-        return self.remote.request_project_deletion(project=project, reason=reason)
-
-    def project_deletion_requests(self, project_id):
-        if self.remote is None or not self.is_remote_project(project_id):
-            return []
-        return self.remote.project_deletion_requests(project_id)
-
     """Route catalog/project operations to local or remote backends by ownership."""
 
     def __init__(
@@ -77,6 +53,16 @@ class DualCatalogService:
                 # Server may be temporarily unreachable; catalog refresh will retry.
                 LOGGER.exception("Could not load the initial remote project catalog")
                 self._remote_ids = set()
+
+    def request_project_deletion(self, *, project, reason: str = ""):
+        if self.remote is None or not self.is_remote_project(project.id):
+            raise ValueError("Заявка доступна только для серверного проекта")
+        return self.remote.request_project_deletion(project=project, reason=reason)
+
+    def project_deletion_requests(self, project_id):
+        if self.remote is None or not self.is_remote_project(project_id):
+            return []
+        return self.remote.project_deletion_requests(project_id)
 
     @property
     def supports_workspace_roots(self) -> bool:
@@ -125,9 +111,7 @@ class DualCatalogService:
         return str(project_id) in self._remote_ids
 
     def project_storage_label(self, project_id: object) -> str:
-        if self.is_remote_project(project_id):
-            return "Сервер PostgreSQL"
-        return "Локальный файл"
+        return storage_label(remote=self.is_remote_project(project_id))
 
     def _backend(self, project_id: object) -> Any:
         if self.is_remote_project(project_id) and self.remote is not None:
@@ -890,13 +874,13 @@ class DualCatalogService:
             return local_attr
 
         def route_or_refuse(*args: Any, **kwargs: Any) -> Any:
-            project_id = _project_id_from_call(kwargs)
+            project_id = project_id_from_call(kwargs)
             remote_method = getattr(self.remote, name, None) if self.remote is not None else None
-            if (
-                project_id is not None
-                and self.is_remote_project(project_id)
-                and self.remote is not None
-                and name not in _REMOTE_PROJECT_LOCAL_CALLS
+            if call_uses_remote_catalog(
+                project_id=project_id,
+                known_remote=project_id is not None and self.is_remote_project(project_id),
+                remote_available=self.remote is not None,
+                operation=name,
             ):
                 if callable(remote_method):
                     return remote_method(*args, **kwargs)

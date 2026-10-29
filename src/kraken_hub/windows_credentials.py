@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 import ctypes
-import hashlib
 from pathlib import Path
 import sys
+
+from kraken_hub.domain.credential_target import LEGACY_CREDENTIAL_TARGET, credential_target_name
 from ctypes import wintypes
 
-_TARGET = "Kraken.ProjectManager.LocalAccount"
-_ERROR_ACCOUNT_RESTRICTION = 1327
+_TARGET = LEGACY_CREDENTIAL_TARGET
 _CRED_TYPE_GENERIC = 1
 _CRED_PERSIST_LOCAL_MACHINE = 2
-_CREDUIWIN_ENUMERATE_CURRENT_USER = 0x200
-_LOGON32_LOGON_INTERACTIVE = 2
-_LOGON32_PROVIDER_DEFAULT = 0
-_NAME_SAM_COMPATIBLE = 2
-_MAX_CREDENTIAL_TEXT = 514
 
 
 class _FILETIME(ctypes.Structure):
@@ -40,16 +35,6 @@ class _CREDENTIALW(ctypes.Structure):
     )
 
 
-class _CREDUI_INFOW(ctypes.Structure):
-    _fields_ = (
-        ("cbSize", wintypes.DWORD),
-        ("hwndParent", wintypes.HWND),
-        ("pszMessageText", wintypes.LPCWSTR),
-        ("pszCaptionText", wintypes.LPCWSTR),
-        ("hbmBanner", wintypes.HBITMAP),
-    )
-
-
 def _windows_api():
     if sys.platform != "win32":
         return None
@@ -64,12 +49,16 @@ def _windows_api():
 def credential_target(data_directory: str | Path | None = None) -> str:
     """Preserve the legacy default profile; isolate explicitly separate profiles."""
     if data_directory is None:
-        return _TARGET
-    directory = Path(data_directory).expanduser().resolve()
-    if directory == (Path.home() / ".kraken").resolve():
-        return _TARGET
-    canonical = str(directory).casefold() if sys.platform == "win32" else str(directory)
-    return _TARGET + ".Profile." + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        directory = None
+        is_default = True
+    else:
+        directory = Path(data_directory).expanduser().resolve()
+        is_default = directory == (Path.home() / ".kraken").resolve()
+    return credential_target_name(
+        is_default_profile=is_default,
+        canonical_directory="" if directory is None else str(directory),
+        casefold=sys.platform == "win32",
+    )
 
 
 def save_credentials(username: str, password: str, *, target: str | None = None) -> bool:
@@ -148,143 +137,12 @@ def credentials_available(*, target: str | None = None) -> bool:
 
 
 def verify_windows_identity(parent_window: int = 0) -> bool:
-    """Ask Windows to verify the current OS user before releasing autofill data."""
-    apis = _windows_api()
-    if apis is None:
+    """Ask Windows Hello to verify the current user before releasing autofill."""
+    if sys.platform != "win32":
         return False
-    advapi, credui, ole32, secur32 = apis
-    current_user = ctypes.create_unicode_buffer(_MAX_CREDENTIAL_TEXT)
-    current_user_size = wintypes.ULONG(len(current_user))
-    secur32.GetUserNameExW.argtypes = (
-        ctypes.c_int,
-        wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.ULONG),
-    )
-    secur32.GetUserNameExW.restype = wintypes.BOOL
-    if not secur32.GetUserNameExW(
-        _NAME_SAM_COMPATIBLE,
-        current_user,
-        ctypes.byref(current_user_size),
-    ):
-        return False
+    from .windows_hello import verify_user
 
-    info = _CREDUI_INFOW(
-        ctypes.sizeof(_CREDUI_INFOW),
-        parent_window or None,
-        "Подтвердите личность, чтобы заполнить сохранённые данные Kraken.",
-        "Kraken — проверка Windows",
-        None,
-    )
-    credui.CredUIPromptForWindowsCredentialsW.argtypes = (
-        ctypes.POINTER(_CREDUI_INFOW),
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.ULONG),
-        ctypes.c_void_p,
-        wintypes.ULONG,
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(wintypes.ULONG),
-        ctypes.POINTER(wintypes.BOOL),
-        wintypes.DWORD,
-    )
-    credui.CredUIPromptForWindowsCredentialsW.restype = wintypes.DWORD
-    credui.CredUnPackAuthenticationBufferW.argtypes = (
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD),
-        wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD),
-        wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD),
-    )
-    credui.CredUnPackAuthenticationBufferW.restype = wintypes.BOOL
-    advapi.LogonUserW.argtypes = (
-        wintypes.LPCWSTR,
-        wintypes.LPCWSTR,
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.HANDLE),
-    )
-    advapi.LogonUserW.restype = wintypes.BOOL
-    ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
-
-    error = 0
-    for _attempt in range(3):
-        auth_package = wintypes.ULONG()
-        output = ctypes.c_void_p()
-        output_size = wintypes.ULONG()
-        error = int(
-            credui.CredUIPromptForWindowsCredentialsW(
-                ctypes.byref(info),
-                error,
-                ctypes.byref(auth_package),
-                None,
-                0,
-                ctypes.byref(output),
-                ctypes.byref(output_size),
-                None,
-                _CREDUIWIN_ENUMERATE_CURRENT_USER,
-            )
-        )
-        if error != 0:
-            return False
-        try:
-            username = ctypes.create_unicode_buffer(_MAX_CREDENTIAL_TEXT)
-            domain = ctypes.create_unicode_buffer(_MAX_CREDENTIAL_TEXT)
-            password = ctypes.create_unicode_buffer(_MAX_CREDENTIAL_TEXT)
-            username_size = wintypes.DWORD(len(username))
-            domain_size = wintypes.DWORD(len(domain))
-            password_size = wintypes.DWORD(len(password))
-            unpacked = bool(
-                credui.CredUnPackAuthenticationBufferW(
-                    0,
-                    output,
-                    output_size.value,
-                    username,
-                    ctypes.byref(username_size),
-                    domain,
-                    ctypes.byref(domain_size),
-                    password,
-                    ctypes.byref(password_size),
-                )
-            )
-            ctypes.memset(output, 0, output_size.value)
-            if not unpacked:
-                error = ctypes.get_last_error()
-                continue
-            if username.value.casefold() != current_user.value.casefold():
-                error = 1326
-                continue
-            account_domain, separator, account_name = username.value.partition("\\")
-            if not separator:
-                error = 1326
-                continue
-            token = wintypes.HANDLE()
-            accepted = bool(
-                advapi.LogonUserW(
-                    account_name,
-                    account_domain,
-                    password,
-                    _LOGON32_LOGON_INTERACTIVE,
-                    _LOGON32_PROVIDER_DEFAULT,
-                    ctypes.byref(token),
-                )
-            )
-            if accepted:
-                ctypes.windll.kernel32.CloseHandle(token)
-                return True
-            error = ctypes.get_last_error()
-            if error == _ERROR_ACCOUNT_RESTRICTION:
-                return True
-        finally:
-            if output:
-                ctypes.memset(output, 0, output_size.value)
-                ole32.CoTaskMemFree(output)
-            if "password" in locals():
-                ctypes.memset(ctypes.addressof(password), 0, ctypes.sizeof(password))
-    return False
+    return verify_user(parent_window)
 
 
 __all__ = [

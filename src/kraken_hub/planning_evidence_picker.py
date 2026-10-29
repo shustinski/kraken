@@ -179,7 +179,8 @@ class PlanningEvidencePicker(QDialog):
             self.versions.addItem(item)
         self.versions.blockSignals(False)
         self._refresh_chosen()
-        self.status.setText(self._t("Выберите версии флажками; выбор сохраняется между загрузками", "Check versions; selections are retained across loads"))
+        self.status.setText(self._t("Выберите версии флажками; выбор сохраняется между загрузками", "Check versions; selections are retained across loads")
+            if self.versions.count() else self._t("Здесь нет версий; предыдущий выбор сохранён", "No versions here; previous selections retained"))
 
     def _checked(self, item):
         identifier = item.data(Qt.ItemDataRole.UserRole)

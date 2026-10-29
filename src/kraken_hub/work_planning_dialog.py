@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QHeaderView,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -75,6 +76,7 @@ class WorkPlanningDialog(QDialog):
         row = QHBoxLayout()
         self.templates = QComboBox()
         self.templates.setObjectName("workTemplates")
+        self.templates.setPlaceholderText(self._t("Выберите шаблон", "Choose a template"))
         row.addWidget(self.templates, 1)
         self.new_template_button = self._button(
             row, "Создать шаблон", "Create template", lambda: self.edit_template(False)
@@ -117,7 +119,10 @@ class WorkPlanningDialog(QDialog):
         self.items.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.items.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.items.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.items.horizontalHeader().setStretchLastSection(True)
+        self.items.horizontalHeader().setStretchLastSection(False)
+        self.items.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column, width in ((1, 100), (2, 150), (3, 90), (4, 110), (5, 160)):
+            self.items.setColumnWidth(column, width)
         layout.addWidget(self.items, 1)
         form = QFormLayout()
         self.item_title = QLineEdit()
@@ -255,6 +260,8 @@ class WorkPlanningDialog(QDialog):
                 self.service.list_work_templates(self.project_id)
                 if hasattr(self.service, "list_work_templates")
                 else (),
+                self.service.list_project_performers(self.project_id, include_archived=True)
+                if hasattr(self.service, "list_project_performers") else
                 self.service.list_performers(include_archived=True) if hasattr(self.service, "list_performers") else (),
                 self.service.list_layers(self.project_id, include_archived=True) if hasattr(self.service, "list_layers") else (),
                 self.service.get_project(self.project_id) if hasattr(self.service, "get_project") else None,
@@ -353,6 +360,7 @@ class WorkPlanningDialog(QDialog):
                 ]
                 for col, value in enumerate(values):
                     cell = QTableWidgetItem(value)
+                    cell.setToolTip(value)
                     cell.setData(Qt.ItemDataRole.UserRole, item.id)
                     self.items.setItem(row, col, cell)
                 if item.id == selected_id:
@@ -404,7 +412,7 @@ class WorkPlanningDialog(QDialog):
             self.percent.setValue(item.progress.fraction * 100)
             self.effort.setValue(item.progress.actual_effort_hours)
             for criterion in item.criteria:
-                self.criteria.addItem(("✓ " if criterion.satisfied else "") + criterion.description, criterion.id)
+                self.criteria.addItem((self._t("Подтверждён: ", "Satisfied: ") if criterion.satisfied else "") + criterion.description, criterion.id)
             index = self.criteria.findData(previous_criterion)
             if index >= 0:
                 self.criteria.setCurrentIndex(index)

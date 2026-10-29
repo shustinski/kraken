@@ -14,6 +14,27 @@ from tests.test_work_orders import _service, _project_with_frames
 pytest_plugins = ["tests.test_admin_project_workflows"]
 
 
+def test_named_performers_are_read_from_the_project_backend(qtbot):
+    from tests.test_work_planning_dialog import PlanningAdapter
+
+    class ProjectCatalogue(PlanningAdapter):
+        def list_performers(self, **kwargs):
+            raise AssertionError("The merged local/remote catalogue must not supply project assignments")
+
+        def list_project_performers(self, project_id, **kwargs):
+            assert project_id == "selected-project"
+            return self.performers
+
+    service = ProjectCatalogue()
+    dialog = WorkPlanningDialog(service, SimpleNamespace(id="owner"), "selected-project")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    wait_done(qtbot, dialog)
+    assert dialog.performer.count() == 2
+    assert dialog.performer.itemData(1) == service.performers[0].id
+    dialog.close()
+
+
 def test_picker_frame_scope_refuses_foreign_frame_and_preserves_checks_after_failure(qtbot, tmp_path, monkeypatch):
     local = _service(tmp_path)
     _, _, project, layer, _, _ = _project_with_frames(local, tmp_path / "source", with_vectors=False)
@@ -73,6 +94,10 @@ def test_picker_loading_participates_in_parent_and_hub_close_guard(qtbot, tmp_pa
 
 
 def test_postgres_http_named_work_and_attachment_acceptance_reopen(qtbot, database, tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+    from PyQt6.QtGui import QFont, QFontDatabase
+    from PyQt6.QtWidgets import QApplication
     import socket
     import threading
     import time
@@ -81,6 +106,12 @@ def test_postgres_http_named_work_and_attachment_acceptance_reopen(qtbot, databa
     from kraken_server.app import SessionPrincipal, create_app
     from tests.test_quality_postgres import setup_quality
 
+    # The isolated pytest APPDATA profile has no Windows font cache. Load the
+    # same installed font used by the deployment probe for reviewable PNGs.
+    if os.name == "nt":
+        font_id = QFontDatabase.addApplicationFont(str(Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/segoeui.ttf"))
+        assert font_id >= 0
+        QApplication.instance().setFont(QFont(QFontDatabase.applicationFontFamilies(font_id)[0], 9))
     service, owner, pid, performer, _source, corrected, arguments = setup_quality(database)
     lid, = arguments["scope"]["layer_ids"]
     app = create_app(services=service, session_resolver=lambda token: SessionPrincipal(str(owner.id), "local", token) if token == "owner" else None)

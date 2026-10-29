@@ -1,32 +1,31 @@
-"""create_app section 5."""
-import asyncio
-import os
-import re
-import shutil
-import stat
-import tempfile
-import zipfile
-from collections.abc import Callable
-from contextlib import asynccontextmanager
-from datetime import datetime
-from pathlib import Path, PurePosixPath
-from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-import anyio
-from kraken_server.services import (
-    CommandContext,
-    ConflictError,
-    ForbiddenError,
-    InMemoryServerServices,
-    NotFoundError,
-    ServerServices,
-    ValidationError,
-)
-from kraken_server.app_parts.module_state import API_PREFIX
-from kraken_server.app_parts.session_principal import SessionPrincipal
+"""Agent job inputs, outputs and completion."""
 
-def _create_app_section_5(account_store, session_resolver, development, agent_gateway, blob_gateway, Depends, HTTPException, Header, Request, StreamingResponse, WebSocket, WebSocketDisconnect, agent_identity, app, backend, has_project_access, hub, run_in_threadpool, transfer_identity):
+from __future__ import annotations
+
+import re
+import tempfile
+from typing import Any
+
+from fastapi import Request
+
+from kraken_server.interface.http.context import HttpContext
+from kraken_server.interface.http.prefix import API_PREFIX
+from kraken_server.services import ValidationError
+
+
+def register(ctx: HttpContext) -> None:
+    app = ctx.app
+    backend = ctx.backend
+    blob_gateway = ctx.blob_gateway
+    agent_gateway = ctx.agent_gateway
+    Depends = ctx.Depends
+    HTTPException = ctx.HTTPException
+    Header = ctx.Header
+    StreamingResponse = ctx.StreamingResponse
+    run_in_threadpool = ctx.run_in_threadpool
+    agent_identity = ctx.agent_identity
+    transfer_identity = ctx.transfer_identity
+
     def input_metadata(manifest, version_id):
         from kraken_core.analysis_run_protocol import AnalysisPartitionJobManifest
         from kraken_core.plugin_protocol import PluginJobManifestV2
@@ -233,89 +232,3 @@ def _create_app_section_5(account_store, session_resolver, development, agent_ga
                                    else backend.fail_agent_job(job_id, error)),
         )
         return {"state": "failed", "imported": failed}
-
-    @app.websocket(f"{API_PREFIX}/ws")
-    async def websocket(websocket: WebSocket) -> None:
-        authorization = websocket.headers.get("authorization", "")
-        token = authorization.removeprefix("Bearer ").strip() if authorization.startswith("Bearer ") else ""
-
-        def resolve_session() -> SessionPrincipal | None:
-            if session_resolver is not None:
-                return session_resolver(token)
-            if account_store is not None:
-                account = account_store.resolve_session(token)
-                if account is None:
-                    return None
-                return SessionPrincipal(str(account.account_id), "local", token)
-            if development and token:
-                return SessionPrincipal(token, "development", token)
-            return None
-
-        session = await run_in_threadpool(resolve_session)
-        if session is None:
-            await websocket.close(code=4401)
-            return
-        await websocket.accept()
-        hub.register(websocket)
-        await websocket.send_json({"type": "connected", "api_version": "v1"})
-        try:
-            while True:
-                try:
-                    message = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
-                except TimeoutError:
-                    still_valid = await run_in_threadpool(resolve_session) is not None
-                    if not still_valid:
-                        await websocket.close(code=4401)
-                        return
-                    continue
-                kind = str(message.get("type", ""))
-                if kind == "ping":
-                    await websocket.send_json({"type": "pong"})
-                elif kind == "subscribe":
-                    project_id = message.get("project_id")
-                    catalog = bool(message.get("catalog"))
-                    if project_id is not None and not await run_in_threadpool(
-                        has_project_access, str(project_id), session
-                    ):
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "code": "authorization.denied",
-                                "project_id": str(project_id),
-                            }
-                        )
-                        continue
-                    hub.subscribe(
-                        websocket,
-                        project_id=None if project_id is None else str(project_id),
-                        catalog=catalog,
-                        catalog_visible=(lambda project_id, subject=session: has_project_access(project_id, subject))
-                        if catalog
-                        else None,
-                    )
-                    await websocket.send_json(
-                        {
-                            "type": "subscribed",
-                            "project_id": None if project_id is None else str(project_id),
-                            "catalog": bool(message.get("catalog")),
-                        }
-                    )
-                elif kind == "unsubscribe":
-                    project_id = message.get("project_id")
-                    hub.unsubscribe(
-                        websocket,
-                        project_id=None if project_id is None else str(project_id),
-                        catalog=bool(message.get("catalog")),
-                    )
-                    await websocket.send_json(
-                        {
-                            "type": "unsubscribed",
-                            "project_id": None if project_id is None else str(project_id),
-                            "catalog": bool(message.get("catalog")),
-                        }
-                    )
-        except WebSocketDisconnect:
-            hub.unregister(websocket)
-            return
-        finally:
-            hub.unregister(websocket)

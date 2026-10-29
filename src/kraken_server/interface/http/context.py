@@ -1,19 +1,24 @@
-"""create_app section 1."""
+"""Build the HTTP dependencies once, then let route modules close over them.
+
+Nested FastAPI callables keep their annotations evaluated at definition time.
+A postponed-annotation import would turn ``Request`` into a query parameter.
+"""
+
 import asyncio
 import os
 import re
-import shutil
 import stat
-import tempfile
 import zipfile
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from uuid import NAMESPACE_URL, uuid5
+
 import anyio
+
+from kraken_server.interface.http.prefix import API_PREFIX
+from kraken_server.interface.session import SessionPrincipal
 from kraken_server.services import (
     CommandContext,
     ConflictError,
@@ -23,10 +28,62 @@ from kraken_server.services import (
     ServerServices,
     ValidationError,
 )
-from kraken_server.app_parts.module_state import API_PREFIX
-from kraken_server.app_parts.session_principal import SessionPrincipal
 
-def _create_app_section_1(services, account_store, session_resolver, live_gitlab_verifier, project_access_mode, development, connection_hub, outbox_publisher, agent_token_store, agent_gateway, blob_gateway):
+
+class HttpContext:
+    """Dependencies one FastAPI app closes over. Routes only read this object."""
+
+    def __init__(self) -> None:
+        self.app: Any = None
+        self.backend: Any = None
+        self.development: bool = False
+        self.account_store: Any = None
+        self.session_resolver: Callable[..., Any] | None = None
+        self.live_gitlab_verifier: Callable[..., Any] | None = None
+        self.access_mode: str = "acl"
+        self.hub: Any = None
+        self.heavy_operations: Any = None
+        self.agent_token_store: Any = None
+        self.agent_gateway: Any = None
+        self.blob_gateway: Any = None
+        self.Body: Any = None
+        self.Depends: Any = None
+        self.HTTPException: Any = None
+        self.Header: Any = None
+        self.Query: Any = None
+        self.Request: Any = None
+        self.StreamingResponse: Any = None
+        self.WebSocket: Any = None
+        self.WebSocketDisconnect: Any = None
+        self.run_in_threadpool: Any = None
+        self.principal: Any = None
+        self.shared_mutation_actor: Any = None
+        self.project_reader: Any = None
+        self.command_context: Any = None
+        self.agent_identity: Any = None
+        self.desktop_identity: Any = None
+        self.has_project_access: Any = None
+        self.transfer_identity: Any = None
+        self.transfer_payload: Any = None
+        self.transfer_ticket_context: Any = None
+        self.extract_review_archive: Any = None
+        self.problem: Any = None
+        self.system_roles: Any = None
+
+
+def build_http_context(
+    services: ServerServices | None,
+    account_store: Any | None,
+    session_resolver: Callable[[str], SessionPrincipal | None] | None,
+    live_gitlab_verifier: Callable[[SessionPrincipal], bool] | None,
+    project_access_mode: str | None,
+    development: bool,
+    connection_hub: Any | None,
+    outbox_publisher: Any | None,
+    agent_token_store: Any | None,
+    agent_gateway: Any | None,
+    blob_gateway: Any | None,
+) -> HttpContext:
     try:
         from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
         from fastapi.concurrency import run_in_threadpool
@@ -338,31 +395,6 @@ def _create_app_section_1(services, account_store, session_resolver, live_gitlab
         from dataclasses import replace
         return replace(identity, lease_claim=request.headers.get("X-Kraken-Lease-Claim"))
 
-    @app.get(f"{API_PREFIX}/session")
-    def current_session(subject: SessionPrincipal = Depends(principal)) -> dict[str, Any]:
-        actor = next(
-            (
-                item
-                for item in backend.list_principals(include_inactive=True)
-                if str(item.get("principal_id")) == subject.principal_id
-            ),
-            None,
-        )
-        if actor is None:
-            return {
-                "principal_id": subject.principal_id,
-                "provider": (subject.provider if subject.provider in {"local", "gitlab"} else "local"),
-                "subject": subject.principal_id,
-                "issuer": None,
-                "display_name": subject.principal_id,
-                "email": None,
-                "active": True,
-                "system_roles": sorted(system_roles(subject)),
-            }
-        payload = dict(actor)
-        payload["system_roles"] = sorted(system_roles(subject))
-        return payload
-
     def command_context(
         actor: SessionPrincipal,
         idempotency_key: str | None,
@@ -413,4 +445,100 @@ def _create_app_section_1(services, account_store, session_resolver, live_gitlab
             "parent_version_id": payload.get("parent_version_id"),
             **({"parameters": parameters} if parameters else {}),
         }
-    return Body, Depends, HTTPException, Header, Query, Request, StreamingResponse, WebSocket, WebSocketDisconnect, access_mode, agent_identity, app, backend, command_context, desktop_identity, has_project_access, heavy_operations, hub, principal, problem, project_reader, run_in_threadpool, shared_mutation_actor, transfer_identity, transfer_payload
+    def transfer_ticket_context(
+        actor: SessionPrincipal,
+        project_id: str,
+        series_id: str,
+        payload: dict[str, Any],
+        idempotency_key: str,
+    ) -> dict[str, str]:
+        from kraken_server.blob_gateway import artifact_parameters_digest
+
+        return {
+            "actor": actor.principal_id,
+            "project": project_id,
+            "series": series_id,
+            "idempotency_key": idempotency_key,
+            "filename": str(payload["filename"]),
+            "media_type": str(payload["media_type"]),
+            "parent_version_id": str(payload.get("parent_version_id") or ""),
+            **({"parameters_sha256": artifact_parameters_digest(payload["parameters"])}
+               if payload.get("parameters") else {}),
+        }
+
+    def extract_review_archive(archive: Path, destination: Path) -> None:
+        total = 0
+        with zipfile.ZipFile(archive) as package:
+            entries = package.infolist()
+            if len(entries) > 250_000:
+                raise ValidationError("Review package has too many entries")
+            for entry in entries:
+                relative = PurePosixPath(entry.filename)
+                if (
+                    relative.is_absolute()
+                    or not relative.parts
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                    or "\\" in entry.filename
+                    or any(":" in part for part in relative.parts)
+                    or stat.S_ISLNK(entry.external_attr >> 16)
+                ):
+                    raise ValidationError(f"Unsafe review archive member: {entry.filename}")
+                if entry.file_size > 2 * 1024**3:
+                    raise ValidationError(f"Review archive member is too large: {entry.filename}")
+                if entry.file_size >= 1024 * 1024 and entry.file_size / max(1, entry.compress_size) > 200:
+                    raise ValidationError(f"Review archive compression ratio is unsafe: {entry.filename}")
+                total += entry.file_size
+                if total > 16 * 1024**3:
+                    raise ValidationError("Review archive is too large")
+                target = destination.joinpath(*relative.parts)
+                if entry.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                observed = 0
+                with package.open(entry) as source, target.open("xb") as output:
+                    while chunk := source.read(1024 * 1024):
+                        observed += len(chunk)
+                        if observed > entry.file_size:
+                            raise ValidationError(f"Review archive member expanded unexpectedly: {entry.filename}")
+                        output.write(chunk)
+                if observed != entry.file_size:
+                    raise ValidationError(f"Review archive member size differs: {entry.filename}")
+
+    ctx = HttpContext()
+    ctx.app = app
+    ctx.backend = backend
+    ctx.development = development
+    ctx.account_store = account_store
+    ctx.session_resolver = session_resolver
+    ctx.live_gitlab_verifier = live_gitlab_verifier
+    ctx.access_mode = access_mode
+    ctx.hub = hub
+    ctx.heavy_operations = heavy_operations
+    ctx.agent_token_store = agent_token_store
+    ctx.agent_gateway = agent_gateway
+    ctx.blob_gateway = blob_gateway
+    ctx.Body = Body
+    ctx.Depends = Depends
+    ctx.HTTPException = HTTPException
+    ctx.Header = Header
+    ctx.Query = Query
+    ctx.Request = Request
+    ctx.StreamingResponse = StreamingResponse
+    ctx.WebSocket = WebSocket
+    ctx.WebSocketDisconnect = WebSocketDisconnect
+    ctx.run_in_threadpool = run_in_threadpool
+    ctx.principal = principal
+    ctx.shared_mutation_actor = shared_mutation_actor
+    ctx.project_reader = project_reader
+    ctx.command_context = command_context
+    ctx.agent_identity = agent_identity
+    ctx.desktop_identity = desktop_identity
+    ctx.has_project_access = has_project_access
+    ctx.transfer_identity = transfer_identity
+    ctx.transfer_payload = transfer_payload
+    ctx.transfer_ticket_context = transfer_ticket_context
+    ctx.extract_review_archive = extract_review_archive
+    ctx.problem = problem
+    ctx.system_roles = system_roles
+    return ctx

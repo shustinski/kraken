@@ -25,6 +25,12 @@ plugin process APIs. `application` exposes semantic ports rather than a generic
 storage abstraction. Backend selection and credentials belong only to a
 composition root.
 
+`kraken_server` is one of those composition roots. Its HTTP interface is
+`kraken_server.interface.http`: the factory builds one context, and each module
+under `routes/` registers one resource. Those route modules do not import the
+database driver or the PostgreSQL service facade. Domain and application rules
+stay in `kraken_manager`.
+
 ## Data authority
 
 For a local project, immutable JSONL event segments and content-addressed blobs

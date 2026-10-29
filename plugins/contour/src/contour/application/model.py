@@ -12,6 +12,7 @@ class StartupConfiguration:
     dataset_dir: str | None = None
     cif_dir: str | None = None
     pipeline_json: str | None = None
+    frames_per_row: int | None = None
     file_paths: list[str] = field(default_factory=list)
     directory_paths: list[str] = field(default_factory=list)
 
@@ -24,8 +25,11 @@ class StartupConfiguration:
         dataset_dir: str | None = None,
         cif_dir: str | None = None,
         pipeline_json: str | None = None,
+        frames_per_row: int | None = None,
         paths: Sequence[str] | None = None,
     ) -> StartupConfiguration:
+        from .frame_matrix_layout import coerce_frames_per_row
+
         normalized_paths = [str(Path(path)) for path in (paths or [])]
         return cls(
             input_dir=input_dir,
@@ -33,6 +37,7 @@ class StartupConfiguration:
             dataset_dir=dataset_dir,
             cif_dir=cif_dir,
             pipeline_json=pipeline_json,
+            frames_per_row=coerce_frames_per_row(frames_per_row),
             file_paths=[path for path in normalized_paths if Path(path).is_file()],
             directory_paths=[path for path in normalized_paths if Path(path).is_dir()],
         )

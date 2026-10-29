@@ -466,6 +466,11 @@ class AddArtifactVersionHandler(_ProjectHandler):
                     "created_at": version.created_at.isoformat(),
                     "activated": activate,
                     "branched": active is not None and parent_id != active.id,
+                    **(
+                        {"file_history": "batch", "batch_key": command.batch_key}
+                        if command.file_history == "batch" and command.batch_key
+                        else {}
+                    ),
                 },
                 actor=ActorSnapshot.from_principal(command.context.actor),
                 recorded_at=now,
@@ -578,6 +583,11 @@ class CreateArtifactSeriesHandler(_ProjectHandler):
                     "representation_id": series.representation_id,
                     "frame_id": series.frame_id,
                     "archived": series.archived,
+                    **(
+                        {"file_history": "batch", "batch_key": command.batch_key}
+                        if command.file_history == "batch" and command.batch_key
+                        else {}
+                    ),
                 },
                 actor=ActorSnapshot.from_principal(command.context.actor),
                 recorded_at=now,

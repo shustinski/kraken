@@ -279,6 +279,8 @@ class AddArtifactVersionCommand:
     tool_version: str | None = None
     parameters: Mapping[str, object] = field(default_factory=dict)
     expected_sha256: str | None = None
+    file_history: str = "file"
+    batch_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +293,8 @@ class CreateArtifactSeriesCommand:
     representation_id: RepresentationId | None = None
     frame_id: FrameId | None = None
     series_id: ArtifactSeriesId = field(default_factory=lambda: ArtifactSeriesId(new_uuid()))
+    file_history: str = "file"
+    batch_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)

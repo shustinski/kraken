@@ -238,6 +238,9 @@ class PolygonExtractionWidget(
         self._gamification_profile_service = GamificationProfileService(WidgetGamificationProfileStore())
         self._gamification_service = GamificationService(self._gamification_profile_service)
         self._workspace = WorkspaceSession()
+        from .application.recognition_display import RecognitionResultCatalog
+
+        self._produced_recognition = RecognitionResultCatalog()
         self._pipeline = PreprocessingPipeline()
         self._display_settings = DisplaySettings()
         self._contour_settings_profiles = default_contour_settings_profiles()

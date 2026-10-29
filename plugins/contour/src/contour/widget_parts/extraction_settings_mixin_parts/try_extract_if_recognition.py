@@ -33,6 +33,14 @@ class TryExtractIfRecognitionMixin:
         state = self._workspace.current_state
         if state is None or state.image_path != current_path or state.preprocessed_image is None:
             return
+        from ...application.recognition_display import should_repeat_recognition
+
+        catalog = getattr(self, "_produced_recognition", None)
+        produced = bool(getattr(state, "recognition_produced", False)) or (
+            catalog is not None and catalog.has_result(current_path)
+        )
+        if not should_repeat_recognition(produced=produced):
+            return
         if state.pipeline_config != self.get_pipeline():
             return
         self.process_current_image(debounced=False)

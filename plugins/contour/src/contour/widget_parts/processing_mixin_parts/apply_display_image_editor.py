@@ -100,6 +100,8 @@ class ApplyDisplayImageEditorMixin:
     def _state_has_recognition_result(self: Any, state) -> bool:
         if state is None:
             return False
+        if getattr(state, "recognition_produced", False):
+            return True
         if getattr(state, "mask_image", None) is not None:
             return True
         if getattr(state, "metal_overlay_polygons", None):

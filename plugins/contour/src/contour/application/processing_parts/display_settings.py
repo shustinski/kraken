@@ -100,6 +100,7 @@ class ImageProcessingState:
     mask_image: Any | None = None
     polygons: list[PolygonData] = field(default_factory=list)
     recognition_base_polygons: list[PolygonData] = field(default_factory=list)
+    recognition_produced: bool = False
     debug_candidates: list[ContourDebugCandidate] = field(default_factory=list)
     debug_gradient_maps: dict[str, Any] = field(default_factory=dict)
     metal_overlay_polygons: dict[str, list[PolygonData]] = field(default_factory=dict)
@@ -151,6 +152,7 @@ class BatchFrameTiming:
 class BatchImageMetadata:
     image_path: str
     polygon_count: int = 0
+    polygons: list[PolygonData] = field(default_factory=list)
     saved_files: dict[str, str] = field(default_factory=dict)
     timing: BatchFrameTiming = field(default_factory=BatchFrameTiming)
     worker_pid: int | None = None

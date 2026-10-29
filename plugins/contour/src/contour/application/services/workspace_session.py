@@ -449,10 +449,11 @@ class WorkspaceSession:
         return self._current_image_path == image_path and self._current_state is state
 
     def apply_processing_result(self, result: BatchImageResult) -> bool:
-        existing_state = self._state_cache.get(result.image_path)
+        image_path = _norm_path_key(result.image_path)
+        existing_state = self._state_cache.get(image_path)
         metal_layers = getattr(result, "metal_overlay_polygons", None) or {}
         new_state = ImageProcessingState(
-            image_path=result.image_path,
+            image_path=image_path,
             source_image=result.source_image,
             preprocessed_image=result.preprocessed_image,
             pipeline_config=None if result.pipeline_config is None else dict(result.pipeline_config),
@@ -464,6 +465,7 @@ class WorkspaceSession:
                     getattr(result, "recognition_base_polygons", None) or result.polygons
                 )
             ],
+            recognition_produced=True,
             debug_candidates=list(result.debug_candidates),
             debug_gradient_maps=dict(result.debug_gradient_maps),
             metal_overlay_polygons={k: [p.clone() for p in v] for k, v in metal_layers.items()},
@@ -473,10 +475,34 @@ class WorkspaceSession:
             if existing_state is None
             else [polygon.clone() for polygon in existing_state.reference_polygons],
         )
-        self._state_cache[result.image_path] = new_state
-        if self._current_image_path != result.image_path:
+        self._state_cache[image_path] = new_state
+        if self._current_image_path != image_path:
             return False
         self._current_state = new_state
+        return True
+
+    def install_produced_recognition(
+        self,
+        image_path: str | Path,
+        polygons: list[PolygonData],
+    ) -> bool:
+        """Show recognition polygons that were already produced for this file."""
+
+        key = _norm_path_key(image_path)
+        state = self._state_cache.get(key)
+        if state is None and self._current_image_path == key:
+            state = self._current_state
+        if state is None:
+            return False
+        clones = [polygon.clone() for polygon in polygons]
+        state.polygons = [polygon.clone() for polygon in clones]
+        state.recognition_base_polygons = clones
+        state.recognition_produced = True
+        state.reference_polygons = [polygon.clone() for polygon in clones]
+        state.polygons_dirty = False
+        self._state_cache[key] = state
+        if self._current_image_path == key:
+            self._current_state = state
         return True
 
     def update_current_polygons(

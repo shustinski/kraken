@@ -26,6 +26,7 @@ from kraken_server.services import CommandContext, ValidationError
 from kraken_server.persistent_services_parts.layer_source_scan import (
     _layer_id,
     _project_id,
+    resolve_storage_path,
 )
 
 
@@ -56,7 +57,7 @@ class MaterializeRepresentationInputsMixin:
             if binding is None or not binding.frame_positions:
                 raise ValueError("The source layer has no registered image files")
             root = ensure_regular_directory(binding.image_directory)
-            if Path(str(representation.source or "")).resolve() != root:
+            if resolve_storage_path(self, str(representation.source or "")).resolve() != root:
                 raise ValueError("The representation does not use the registered layer image directory")
             application_context = self._application_context(context)
             prepared = 0
@@ -79,6 +80,8 @@ class MaterializeRepresentationInputsMixin:
                         representation_id=representation.id,
                         frame_id=frame_id,
                         series_id=series_id,
+                        file_history="batch",
+                        batch_key=f"workspace-input:{representation.id}",
                     )
                 )
                 if self.projections.get_active_artifact_version(series_id) is not None:
@@ -95,6 +98,8 @@ class MaterializeRepresentationInputsMixin:
                             media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",
                             expected_series_revision=self.artifact_stream_revision(project_id, str(series_id)),
                             parameters={"x": x, "y": y, "source_path": str(path)},
+                            file_history="batch",
+                            batch_key=f"workspace-input:{representation.id}",
                         ),
                         iter(lambda: stream.read(1024 * 1024), b""),
                     )

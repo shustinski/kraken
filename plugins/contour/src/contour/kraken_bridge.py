@@ -329,6 +329,12 @@ class ContourKrakenSession:
                 widget._source_image_loader = loader
                 widget._batch_processor.image_loader = loader
             width = int(self.manifest.parameters.get("project_width") or max(item.x for item in self.manifest.inputs))
+            if hasattr(widget, "apply_launch_frames_per_row"):
+                from .application.frame_matrix_layout import coerce_frames_per_row
+
+                frames_per_row = coerce_frames_per_row(self.manifest.parameters.get("project_width"))
+                if frames_per_row is not None:
+                    widget.apply_launch_frames_per_row(frames_per_row)
             widget._source_frame_numbers = {
                 str(path): (item.y - 1) * width + item.x - 1
                 for path, item in zip(self.input_paths, self.manifest.inputs, strict=True)
@@ -510,6 +516,7 @@ class ContourWorkspaceSession:
 def _validated_ui_arguments(arguments: Sequence[str]) -> list[str]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--language", choices=("ru", "en"))
+    parser.add_argument("--frames-per-row", type=int)
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument("--no-qss", action="store_true")
@@ -584,6 +591,12 @@ def prepare_contour_launch(
         "--dataset-dir"
         if session.manifest.operation == PluginOperation.PREPARE_DATASET.value
         else "--output-dir"
+    )
+    from .application.frame_matrix_layout import with_frames_per_row_argument
+
+    safe_ui_arguments = with_frames_per_row_argument(
+        safe_ui_arguments,
+        session.manifest.parameters.get("project_width"),
     )
     controlled = [
         *safe_ui_arguments,

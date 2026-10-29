@@ -89,6 +89,18 @@ class RefreshExtraLayersListMixin:
         self._apply_vector_geometry_editor_config()
         self._save_persisted_display_settings()
 
+    def apply_launch_frames_per_row(self: Any, frames_per_row: int) -> None:
+        """Use the project «Кадров в строке» value when the matrix is first built."""
+
+        value = int(frames_per_row)
+        if value < 1 or not hasattr(self, "neighbor_columns_spin"):
+            return
+        self.neighbor_columns_spin.setMaximum(max(self.neighbor_columns_spin.maximum(), value))
+        if self.neighbor_columns_spin.value() == value:
+            self._on_neighbor_display_settings_changed()
+            return
+        self.neighbor_columns_spin.setValue(value)
+
     def _on_neighbor_display_settings_changed(self: Any, *_args) -> None:
         if not self._ensure_neighbor_pyramid_or_prompt():
             self._sync_neighbor_frames()

@@ -25,6 +25,7 @@ class FinishFrameLoadUiMixin:
     ) -> None:
         profile_timings = profile_timings or {}
         phase_start = phase_start or perf_counter()
+        self._show_produced_recognition_for_current_file(image_result.image_path)
         preserve_editor_view_position = self._should_preserve_editor_view_position(
             image_result.image_path
         )

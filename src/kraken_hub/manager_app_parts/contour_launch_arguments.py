@@ -13,6 +13,14 @@ from kraken_manager.workspace import DerivedRunKind
 
 
 class ContourLaunchArgumentsMixin:
+    def _frames_per_row_arguments(self) -> tuple[str, ...]:
+        getter = getattr(self.service, "get_project", None)
+        project = getter(self._project_id) if callable(getter) else None
+        width = getattr(project, "width", None)
+        if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+            return ()
+        return ("--frames-per-row", str(width))
+
     def _contour_launch_arguments(
         self,
         *,
@@ -89,6 +97,7 @@ class ContourLaunchArgumentsMixin:
                     str(input_directory),
                     destination_option,
                     str(destination),
+                    *self._frames_per_row_arguments(),
                 ),
                 {
                     "input_representation_id": str(representation.id),
@@ -184,6 +193,7 @@ class ContourLaunchArgumentsMixin:
             (
                 "--kraken-workspace-context",
                 str(context_path),
+                *self._frames_per_row_arguments(),
             ),
             {
                 "input_representation_id": str(representation.id),

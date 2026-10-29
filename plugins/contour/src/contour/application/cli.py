@@ -22,6 +22,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.add_argument("--dataset-dir", help="Directory for the prepared training dataset.")
         parser.add_argument("--cif-dir", help="Directory with CIF overlays.")
         parser.add_argument("--pipeline-json", help="Path to pipeline JSON config.")
+        parser.add_argument(
+            "--frames-per-row",
+            type=int,
+            default=None,
+            help="Project frames per row (Кадров в строке) used to lay out the frame matrix.",
+        )
         parser.add_argument("--language", choices=("ru", "en"), default=None, help="UI language override.")
         parser.add_argument(
             "--width",

@@ -11,26 +11,31 @@ class PreviewProcessingResultMixin:
     def _on_preview_processing_result(self: Any, request_id: int, result) -> None:
         if request_id != self._preview_running_request_id:
             return
-        if self._workspace.current_image_path != result.image_path:
-            return
-        self._resume_preview_main_profiles(request_id)
+        is_current = self._workspace.current_image_path == result.image_path
+        if is_current:
+            self._resume_preview_main_profiles(request_id)
         recognition_session = getattr(self, "_image_recognition_profile", None)
         if (
-            recognition_session is not None
+            is_current
+            and recognition_session is not None
             and recognition_session.preview_request_id == request_id
         ):
             recognition_session.note("result_received")
 
         if (
-            hasattr(self, "recognition_mode_combo")
+            is_current
+            and hasattr(self, "recognition_mode_combo")
             and str(self.recognition_mode_combo.currentData() or "") == "via"
         ):
             result.polygons = self._recognized_contact_polygons_with_diameter(
                 list(result.polygons),
                 diameter=int(self.via_output_diameter_spin.value()),
             )
-        if self._workspace.apply_processing_result(result):
-            self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
+        self._remember_produced_recognition(result.image_path, list(result.polygons))
+        applied_to_current = self._workspace.apply_processing_result(result)
+        if not is_current or not applied_to_current:
+            return
+        self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
         self._update_frame_item_status(result.image_path)
         if hasattr(self, "recognition_mode_combo"):
             if str(self.recognition_mode_combo.currentData() or "") == "disabled":

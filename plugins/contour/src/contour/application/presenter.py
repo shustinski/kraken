@@ -28,6 +28,8 @@ class ContourPresenter:
 
     def _apply_startup_configuration(self) -> None:
         startup = self.model.startup
+        if startup.frames_per_row is not None:
+            self.view.apply_launch_frames_per_row(startup.frames_per_row)
         if startup.output_dir:
             self.view.set_output_directory(startup.output_dir)
         if startup.dataset_dir:

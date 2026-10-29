@@ -65,6 +65,8 @@ class CommitManagedImportMixin:
                         representation_id=representation.id,
                         frame_id=frame_id,
                         series_id=series_id,
+                        file_history="batch",
+                        batch_key=idempotency_key,
                     )
                 )
             elif (series.archived or series.project_id != project.id or series.layer_id != layer.id
@@ -90,6 +92,8 @@ class CommitManagedImportMixin:
                         expected_sha256=getattr(item.source, "expected_sha256", None),
                         tool_name="Импорт файлов Kraken",
                         parameters={"x": item.x, "y": item.y, "mapping": "preflight"},
+                        file_history="batch",
+                        batch_key=idempotency_key,
                     ),
                     chunks,
                 )

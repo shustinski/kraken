@@ -6,6 +6,7 @@ from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
+from kraken_manager.domain.file_change_history import events_for_file_change_history
 from kraken_manager.presentation.qt import (
     ObjectHistoryEntry,
     PipelineNode,
@@ -143,7 +144,7 @@ def _event_matches_node(event, node: PipelineNode) -> bool:
 
 def _history_entries(events) -> tuple[ObjectHistoryEntry, ...]:
     ordered = sorted(
-        events,
+        events_for_file_change_history(events),
         key=lambda event: (
             getattr(event, "recorded_at", None),
             str(getattr(event, "event_id", "")),

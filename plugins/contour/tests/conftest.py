@@ -30,6 +30,8 @@ FAST_TEST_FILES = frozenset(
         "test_frame_layers.py",
         "test_frame_path_list_model.py",
         "test_frame_prefetch.py",
+        "test_frames_per_row_launch.py",
+        "test_recognition_file_switch.py",
         "test_i18n.py",
         "test_logging.py",
         "test_processing_v2.py",

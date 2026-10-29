@@ -561,6 +561,9 @@ class ContourMainView(QMainWindow):
     def set_pipeline(self, payload: dict) -> None:
         self._widget.set_pipeline(payload)
 
+    def apply_launch_frames_per_row(self, frames_per_row: int) -> None:
+        self._widget.apply_launch_frames_per_row(frames_per_row)
+
     def load_images(self, paths: list[str], *, image_list_mode: str | None = None) -> None:
         self._widget.load_images(paths, image_list_mode=image_list_mode)
 

@@ -191,7 +191,11 @@ class CallMixin:
                     project_id=batch.project_id,
                     revision=series_revision + 1,
                     event_type="ArtifactVersionCreated",
-                    payload=_artifact_created_payload(candidate, activated=False, candidate=True),
+                    payload={
+                        **_artifact_created_payload(candidate, activated=False, candidate=True),
+                        "file_history": "batch",
+                        "batch_key": str(batch.id),
+                    },
                     actor=ActorSnapshot.from_principal(command.context.actor),
                     recorded_at=now,
                     effective_at=command.context.effective_at,

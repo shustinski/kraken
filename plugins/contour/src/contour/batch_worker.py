@@ -116,6 +116,7 @@ def process_batch_chunk(
                 BatchImageMetadata(
                     image_path=image_path,
                     polygon_count=len(result.polygons),
+                    polygons=[polygon.clone() for polygon in result.polygons],
                     saved_files=dict(result.saved_files),
                     timing=timing,
                     worker_pid=worker_pid,

@@ -12,10 +12,29 @@ from contour.widget_parts._imports import (
 
 
 class RestorePersistedSessionSelectionMixin:
+    def _remember_produced_recognition(self: Any, image_path: str, polygons: list) -> None:
+        catalog = getattr(self, "_produced_recognition", None)
+        if catalog is None:
+            return
+        catalog.remember(image_path, polygons)
+
+    def _show_produced_recognition_for_current_file(self: Any, image_path: str) -> None:
+        from ...application.recognition_display import install_produced_recognition_for_switch
+
+        catalog = getattr(self, "_produced_recognition", None)
+        if catalog is None:
+            return
+        install_produced_recognition_for_switch(self._workspace, catalog, image_path)
+
     def _on_batch_result(self: Any, result) -> None:
         polygons = list(getattr(result, "polygons", []) or [])
-        # Multiprocessing batch workers return metadata only to keep IPC and the
-        # GUI event queue bounded during multi-thousand-image runs.
+        if not getattr(result, "error", None):
+            self._remember_produced_recognition(result.image_path, polygons)
+            current = self._workspace.current_image_path
+            if current and str(Path(current)) == str(Path(result.image_path)):
+                self._show_produced_recognition_for_current_file(result.image_path)
+                if hasattr(self, "_sync_current_state_views"):
+                    self._sync_current_state_views(preserve_view=True, sync_neighbors=False)
         self.imageProcessed.emit(result.image_path, polygons)
         self._append_log(
             self._tr(

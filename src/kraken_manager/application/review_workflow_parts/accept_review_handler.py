@@ -87,6 +87,8 @@ class AcceptReviewHandler(_ReviewHandler):
                         "artifact_version_id": candidate.id,
                         "series_id": candidate.series_id,
                         "review_batch_id": batch.id,
+                        "file_history": "batch",
+                        "batch_key": str(batch.id),
                     },
                     actor=ActorSnapshot.from_principal(command.context.actor),
                     recorded_at=now,

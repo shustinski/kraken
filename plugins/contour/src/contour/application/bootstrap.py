@@ -68,6 +68,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to pipeline JSON config.",
     )
     parser.add_argument(
+        "--frames-per-row",
+        dest="frames_per_row",
+        type=int,
+        default=None,
+        help="Project frames per row (Кадров в строке) used to lay out the frame matrix.",
+    )
+    parser.add_argument(
         "--language",
         choices=("ru", "en"),
         default=None,
@@ -131,6 +138,7 @@ def _build_model(
             dataset_dir=args.dataset_dir,
             cif_dir=args.cif_dir,
             pipeline_json=args.pipeline_json,
+            frames_per_row=args.frames_per_row,
             paths=args.paths,
         ),
     )

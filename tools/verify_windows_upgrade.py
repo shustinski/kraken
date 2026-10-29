@@ -20,7 +20,7 @@ import httpx
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-from kraken_admin.server_backup import _connect
+from kraken_admin.infrastructure.backup import _connect
 from kraken_core.media_types import artifact_media_type
 from kraken_server.configuration import ServerConfig, write_config
 from verify_windows_installer import registration, service_hash

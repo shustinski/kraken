@@ -6,20 +6,20 @@ import sys
 from pathlib import Path
 
 from kraken_server.configuration import default_local_config_path
-from kraken_admin.local_admin import (
+from kraken_admin.application.accounts import (
     account_rows,
     audit_rows,
-    display_name_for,
-    connect_local_admin,
     create_account,
+    delete_account,
+    display_name_for,
     maintainer_rows,
     project_rows,
-    delete_account,
     reset_password,
     revoke_maintainer,
     revoke_sessions,
     set_account_enabled,
 )
+from kraken_admin.infrastructure.composition import connect_local_admin
 
 _AUDIT_LABELS = {
     "account.created": "Создан пользователь",

@@ -6,7 +6,7 @@ from threading import Barrier
 
 import sqlalchemy as sa
 
-from kraken_admin.local_admin import open_project_services
+from kraken_admin.infrastructure.composition import open_project_services
 from kraken_manager.infrastructure.postgres.event_store import PostgresEventStore
 from kraken_server.services import CommandContext, ConflictError
 from tests.test_admin_project_workflows import project

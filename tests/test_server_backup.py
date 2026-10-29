@@ -12,7 +12,7 @@ import pytest
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-from kraken_admin.server_backup import (
+from kraken_admin.infrastructure.backup import (
     PostgresTools, ServerBackupError, _connect, create_server_backup,
     restore_server_backup, verify_server_backup,
 )
@@ -286,8 +286,8 @@ def test_second_generation_recovery_composes_historic_roots(recovery, tmp_path):
 def test_restored_pending_cleanup_never_deletes_original_trees(recovery, tmp_path, monkeypatch):
     import sqlalchemy as sa
     from types import SimpleNamespace
-    from kraken_admin.local_admin import open_project_services
-    from kraken_admin.project_deletion import ProjectDeletion
+    from kraken_admin.infrastructure.composition import open_project_services
+    from kraken_admin.application.project_deletion import ProjectDeletion
     from kraken_admin import project_deletion
     from kraken_manager.domain.identity import Principal
     from kraken_manager.infrastructure.auth.local import ScryptPasswordHasher
@@ -397,8 +397,9 @@ def test_direct_storage_command_is_fenced_before_filesystem_or_database_mutation
 def test_cli_restores_protected_configuration_and_authenticated_http(recovery, tmp_path, monkeypatch, capsys):
     import httpx
     import sqlalchemy as sa
-    from kraken_admin.cli import _execute, _parser
-    from kraken_admin.local_admin import open_project_services
+    from kraken_admin.presentation.cli.execute import _execute
+    from kraken_admin.presentation.cli.parser import _parser
+    from kraken_admin.infrastructure.composition import open_project_services
     from kraken_manager.domain.identity import Principal
     from kraken_manager.infrastructure.auth.local import Argon2PasswordHasher
     from kraken_manager.infrastructure.postgres.account_store import PostgresAccountStore

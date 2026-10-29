@@ -12,12 +12,9 @@ import sqlalchemy as sa
 from kraken_server.project_deletion import DeletionRequests, lock
 from kraken_server.services import ConflictError
 
-from .deletion_confirmation import (
-    DeletionAuthorization,
-    DeletionPolicy,
-    remove_stored_path,
-    stage_stored_path,
-)
+from kraken_admin.application.deletion_policy import DeletionPolicy
+from kraken_admin.domain.deletion import DeletionAuthorization
+from kraken_admin.infrastructure.stored_files import remove_stored_path, stage_stored_path
 
 
 def safe_path(path: Path, root: Path) -> Path:

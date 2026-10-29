@@ -168,7 +168,7 @@ def _install_service(server_executable: Path, config: Path, *, start: bool) -> N
         raise SystemExit("Windows Service installation is available only on Windows")
     executable = server_executable.resolve(strict=True)
     configuration = config.resolve(strict=True)
-    from kraken_admin.service_ownership import require_owned_service, service_image_path
+    from kraken_admin.infrastructure.windows_service import require_owned_service, service_image_path
     require_owned_service(executable, image_path=service_image_path())
     if executable == Path(sys.executable).resolve() and not getattr(sys, "frozen", False):
         command = f'"{executable}" -m kraken_server --service --config "{configuration}"'

@@ -2,7 +2,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from kraken_admin.service_ownership import require_owned_service
+from kraken_admin.infrastructure.windows_service import require_owned_service
 
 
 def test_exact_executable_owns_service_and_quoted_suffix_cannot_spoof(tmp_path):
@@ -22,9 +22,9 @@ def test_exact_executable_owns_service_and_quoted_suffix_cannot_spoof(tmp_path):
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="Windows SCM entry points")
 def test_install_and_uninstall_never_mutate_foreign_service(tmp_path, monkeypatch):
-    import kraken_admin.service_ownership as ownership
-    from kraken_admin.cli_parts.install_service import _install_service
-    from kraken_admin.cli_parts.api_request import _uninstall_service
+    import kraken_admin.infrastructure.windows_service as ownership
+    from kraken_admin.presentation.cli.install_service import _install_service
+    from kraken_admin.presentation.cli.api_request import _uninstall_service
 
     executable = tmp_path / "KrakenServer.exe"
     executable.touch()
@@ -45,8 +45,8 @@ def test_install_and_uninstall_never_mutate_foreign_service(tmp_path, monkeypatc
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="Windows SCM entry points")
 def test_uninstall_owned_service_uses_exact_scm_name(tmp_path, monkeypatch):
-    import kraken_admin.service_ownership as ownership
-    from kraken_admin.cli_parts.api_request import _uninstall_service
+    import kraken_admin.infrastructure.windows_service as ownership
+    from kraken_admin.presentation.cli.api_request import _uninstall_service
 
     executable = tmp_path / "KrakenServer.exe"
     monkeypatch.setattr(ownership, "service_image_path", lambda: f'"{executable}" --service')
@@ -61,8 +61,8 @@ def test_uninstall_owned_service_uses_exact_scm_name(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(__import__("os").name != "nt", reason="Windows SCM entry points")
 def test_install_owned_service_rejects_changed_config_before_any_scm_mutation(tmp_path, monkeypatch):
-    import kraken_admin.service_ownership as ownership
-    from kraken_admin.cli_parts.install_service import _install_service
+    import kraken_admin.infrastructure.windows_service as ownership
+    from kraken_admin.presentation.cli.install_service import _install_service
     executable, config = tmp_path / "server.exe", tmp_path / "new.toml"
     executable.touch()
     config.touch()
@@ -78,8 +78,8 @@ def test_install_owned_service_rejects_changed_config_before_any_scm_mutation(tm
 @pytest.mark.skipif(__import__("os").name != "nt", reason="Windows SCM entry points")
 @pytest.mark.parametrize("matching", [True, False])
 def test_existing_service_race_rechecks_full_command_before_recovery_changes(tmp_path, monkeypatch, matching):
-    import kraken_admin.service_ownership as ownership
-    from kraken_admin.cli_parts.install_service import _install_service
+    import kraken_admin.infrastructure.windows_service as ownership
+    from kraken_admin.presentation.cli.install_service import _install_service
     executable, config = tmp_path / "server.exe", tmp_path / "new.toml"
     executable.touch()
     config.touch()

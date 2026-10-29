@@ -9,7 +9,7 @@ import time
 import httpx
 import pytest
 
-from kraken_admin.server_backup import ServerBackupError, _gateway_fence
+from kraken_admin.infrastructure.backup import ServerBackupError, _gateway_fence
 from kraken_manager.infrastructure.blob import FilesystemBlobStore
 from kraken_server.blob_gateway import BlobTicketSigner
 from tests.test_blob_gateway_junctions import gateway, SECRET, PROJECT

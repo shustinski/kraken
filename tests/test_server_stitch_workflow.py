@@ -12,7 +12,7 @@ import pytest
 import sqlalchemy as sa
 import uvicorn
 
-from kraken_admin.local_admin import open_project_services
+from kraken_admin.infrastructure.composition import open_project_services
 from kraken_agent.runner import PluginProcessSpec, PluginRegistry
 from kraken_agent.server_worker import ServerAgentWorker
 from kraken_manager.domain.artifacts import deterministic_frame_series_id

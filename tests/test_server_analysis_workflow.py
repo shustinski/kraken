@@ -140,7 +140,7 @@ def test_remote_analysis_executes_actual_short_karakal_and_reopens(database, tmp
         assert remote.server_analysis_frames(pid, first["run_id"], "iou") == tuple(measurements)
         assert len(measurements) == 1
         assert measurements[0]["raw_value"] is None if corrupt else measurements[0]["raw_value"] == pytest.approx(1)
-        from kraken_admin.local_admin import open_project_services
+        from kraken_admin.infrastructure.composition import open_project_services
 
         reopened = open_project_services(
             str(services.engine.url), services.uow_factory.blobs.root, engine=services.engine
@@ -313,7 +313,7 @@ def test_server_analysis_cancel_retry_repeat_and_queue_recovery_are_idempotent(d
 
 def test_server_preserves_actual_runtime_refusal_without_importing_measurements(database, tmp_path):
     from karakal.runtime_identity import worker_runtime_identity
-    from kraken_admin.local_admin import open_project_services
+    from kraken_admin.infrastructure.composition import open_project_services
 
     services, _owner, pid, _queue, app, token, payload = setup_analysis(database)
     measured = worker_runtime_identity()

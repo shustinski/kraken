@@ -7,7 +7,7 @@ from threading import Barrier
 import pytest
 import sqlalchemy as sa
 
-from kraken_admin.local_admin import open_project_services
+from kraken_admin.infrastructure.composition import open_project_services
 from kraken_manager.infrastructure.postgres.event_store import PostgresEventStore
 from kraken_server.services import CommandContext, ConflictError
 from tests.test_electrical_graph import png

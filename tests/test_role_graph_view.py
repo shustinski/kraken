@@ -56,7 +56,7 @@ def test_role_management_dialog_opens_with_an_empty_acting_role(qapp) -> None:
 
 
 def test_admin_project_role_graph_button_opens_and_paints_dialog(qtbot) -> None:
-    from kraken_admin.roles_panel import RolesPanel
+    from kraken_admin.presentation.qt.roles_panel import RolesPanel
 
     parent = QWidget()
     qtbot.addWidget(parent)

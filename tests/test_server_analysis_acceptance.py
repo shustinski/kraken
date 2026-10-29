@@ -3,7 +3,7 @@
 from fastapi.testclient import TestClient
 from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
-from kraken_admin.project_roles import set_roles, snapshot
+from kraken_admin.application.roles import set_roles, snapshot
 from kraken_hub.remote_analysis import RemoteAnalysisController
 from kraken_hub.remote_client_parts.analysis_runs import ServerAnalysisMixin
 from kraken_manager.domain.common import ProjectId

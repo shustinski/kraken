@@ -31,7 +31,7 @@ def registration(app_id):
 
 
 def service_hash():
-    from kraken_admin.service_ownership import service_image_path
+    from kraken_admin.infrastructure.windows_service import service_image_path
 
     value = service_image_path()
     return None if value is None else hashlib.sha256(value.encode()).hexdigest()

@@ -11,7 +11,7 @@ from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.domain.roles import CATALOG
 from kraken_manager.presentation.qt.role_management import RoleManagementDialog
 
-from .project_roles import all_principals, cascade_preview, set_roles, snapshot
+from kraken_admin.application.roles import all_principals, cascade_preview, set_roles, snapshot
 
 
 class RolesPanel(QWidget):

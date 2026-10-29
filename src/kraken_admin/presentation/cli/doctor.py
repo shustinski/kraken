@@ -6,7 +6,7 @@ from kraken_server.configuration import (
     ServerConfig,
 )
 
-from kraken_admin.cli_parts.api_request import (
+from kraken_admin.presentation.cli.api_request import (
     _record_health_check,
     _record_migration_check,
     _record_service_check,

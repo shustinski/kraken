@@ -9,9 +9,9 @@ from PyQt6.QtWidgets import QApplication
 
 from kraken_manager.domain.identity import ProjectRole
 from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
-from kraken_admin.admin_app import AdminWindow
+from kraken_admin.presentation.qt.window import AdminWindow
 from kraken_server.configuration import default_local_config_path
-from kraken_admin.cli import _parser
+from kraken_admin.presentation.cli.parser import _parser
 
 
 PROJECT_ID = "11111111-1111-1111-1111-111111111111"
@@ -95,7 +95,7 @@ def test_admin_window_lists_accounts_projects_and_revokes_maintainer(qapp, tmp_p
         revoked["project"] = project
         revoked["username"] = username
 
-    monkeypatch.setattr("kraken_admin.admin_app.revoke_maintainer", remember)
+    monkeypatch.setattr("kraken_admin.presentation.qt.window.revoke_maintainer", remember)
     window.maintainers.selectRow(0)
     window._revoke_maintainer()
     assert revoked == {"project": PROJECT_ID, "username": "owner"}
@@ -246,7 +246,7 @@ def test_deleted_requests_are_hidden_and_people_are_shown_by_name(qapp, tmp_path
 
 def test_admin_console_does_not_require_an_administrator_account() -> None:
     from kraken_manager.domain.identity import SystemRole
-    from kraken_admin.project_roles import administrator
+    from kraken_admin.application.roles import administrator
 
     actor = administrator(None)
 
@@ -261,7 +261,7 @@ def test_deletion_reload_explains_a_missing_schema(qapp, monkeypatch) -> None:
     reported: list[tuple[str, str]] = []
     monkeypatch.setattr(window, "_report", lambda title, exc: reported.append((title, str(exc))))
     monkeypatch.setattr(
-        "kraken_admin.deletion_panel.ensure_deletion_schema",
+        "kraken_admin.presentation.qt.deletion_panel.ensure_deletion_schema",
         lambda _engine: (_ for _ in ()).throw(
             RuntimeError(
                 '(psycopg.errors.UndefinedTable) отношение "project_deletion_requests" не существует\n'
@@ -293,11 +293,11 @@ def test_last_opened_toml_is_reused(qapp, tmp_path: Path, monkeypatch) -> None:
 
     ini = tmp_path / "admin.ini"
     monkeypatch.setattr(
-        "kraken_admin.admin_app._config_settings",
+        "kraken_admin.presentation.qt.window._config_settings",
         lambda: QSettings(str(ini), QSettings.Format.IniFormat),
     )
     monkeypatch.setattr("kraken_server.configuration.ServerConfig.load", lambda path: path)
-    monkeypatch.setattr("kraken_admin.admin_app.connect_local_admin", lambda path: (None, None))
+    monkeypatch.setattr("kraken_admin.presentation.qt.window.connect_local_admin", lambda path: (None, None))
     chosen = tmp_path / "custom-server.toml"
     chosen.write_text("host = '127.0.0.1'\n", encoding="utf-8")
     window = AdminWindow()

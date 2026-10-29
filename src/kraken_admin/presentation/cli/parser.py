@@ -8,7 +8,7 @@ from kraken_server.configuration import (
     default_local_config_path,
 )
 
-from kraken_admin.cli_parts.install_service import (
+from kraken_admin.presentation.cli.install_service import (
     _ArgumentParser,
     _HelpFormatter,
     _default_blob_gateway_executable,

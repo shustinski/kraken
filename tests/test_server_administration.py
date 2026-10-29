@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
 from kraken_server.app import SessionPrincipal, create_app
-from kraken_admin.cli import _database_url
+from kraken_admin.presentation.cli.install_service import _database_url
 from kraken_server.configuration import ServerConfig, protect_secret, unprotect_secret, write_config
 from kraken_server.services import InMemoryServerServices
 
@@ -37,7 +37,7 @@ def _administration_client(tmp_path: Path):
 
 def test_local_admin_manages_accounts_without_http(tmp_path: Path) -> None:
     client, store, administrator, operator = _administration_client(tmp_path)
-    from kraken_admin.local_admin import (
+    from kraken_admin.application.accounts import (
         create_account,
         reset_password,
         set_account_enabled,
@@ -58,7 +58,7 @@ def test_local_admin_manages_accounts_without_http(tmp_path: Path) -> None:
 
 def test_local_admin_cannot_remove_the_last_administrator(tmp_path: Path) -> None:
     _client, store, _administrator, _operator = _administration_client(tmp_path)
-    from kraken_admin.local_admin import set_account_enabled, set_server_admin
+    from kraken_admin.application.accounts import set_account_enabled, set_server_admin
 
     with pytest.raises(ValueError, match="last active"):
         set_account_enabled(store, "admin", enabled=False)
@@ -219,6 +219,9 @@ def test_local_admin_revokes_the_last_maintainer(tmp_path: Path) -> None:
 
 def test_initial_setup_accepts_a_new_config_path(monkeypatch, tmp_path: Path) -> None:
     prompted_url = "postgresql+psycopg://kraken@localhost/kraken"
-    monkeypatch.setattr("kraken_admin.cli.getpass.getpass", lambda _prompt: prompted_url)
+    monkeypatch.setattr(
+        "kraken_admin.presentation.cli.install_service.getpass.getpass",
+        lambda _prompt: prompted_url,
+    )
 
     assert _database_url(Namespace(config=tmp_path / "new-server.toml", database_url=None)) == prompted_url

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from kraken_admin.cli_parts.api_request import (
+from kraken_admin.presentation.cli.api_request import (
     _api_request,
     _server_session,
 )

@@ -10,7 +10,7 @@ import urllib.request
 from uuid import uuid4
 from pathlib import Path
 
-from kraken_admin.cli_parts.install_service import _secret
+from kraken_admin.presentation.cli.install_service import _secret
 
 def _record_migration_check(record, database_url: str) -> None:
     try:
@@ -98,8 +98,8 @@ def _service_status() -> str:
 def _uninstall_service(server_executable: Path | None = None) -> None:
     if os.name != "nt":
         raise SystemExit("Windows Service removal is available only on Windows")
-    from kraken_admin.cli_parts.install_service import _default_server_executable
-    from kraken_admin.service_ownership import require_owned_service, service_image_path
+    from kraken_admin.presentation.cli.install_service import _default_server_executable
+    from kraken_admin.infrastructure.windows_service import require_owned_service, service_image_path
     executable = server_executable or _default_server_executable()
     if not require_owned_service(executable, image_path=service_image_path()):
         return

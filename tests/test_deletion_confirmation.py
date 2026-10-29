@@ -6,15 +6,15 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 
-from kraken_admin.deletion_confirmation import (
-    DeletionAuthorization,
-    DeletionPolicy,
+from kraken_admin.application.deletion_policy import DeletionPolicy
+from kraken_admin.domain.deletion import DeletionAuthorization
+from kraken_admin.infrastructure.deletion_settings import (
     deletion_schema_ready,
     ensure_deletion_schema,
-    remove_stored_path,
     settings_table,
     short_database_error,
 )
+from kraken_admin.infrastructure.stored_files import remove_stored_path
 from kraken_server.project_deletion import DeletionRequests, normalize_deletion_reason, request_table
 from kraken_server.services import ConflictError, ValidationError
 

@@ -16,9 +16,10 @@ from PyQt6.QtWidgets import (
 from kraken_server.configuration import ServerConfig
 from kraken_server.project_deletion import DeletionRequests
 
-from .deletion_confirmation import DeletionPolicy, ensure_deletion_schema, short_database_error
-from .local_admin import display_name_for
-from .project_deletion import ProjectDeletion
+from kraken_admin.application.accounts import display_name_for
+from kraken_admin.application.deletion_policy import DeletionPolicy
+from kraken_admin.application.project_deletion import ProjectDeletion
+from kraken_admin.infrastructure.deletion_settings import ensure_deletion_schema, short_database_error
 
 
 class _DeletionWorker(QThread):
@@ -182,7 +183,7 @@ class DeletionPanel(QWidget):
         if self.admin._accounts is None or self.admin._services is None or self.admin._deletion_busy:
             return
         try:
-            from .project_roles import administrator
+            from kraken_admin.application.roles import administrator
 
             ensure_deletion_schema(self.admin._services.engine)
             actor = administrator(self.admin._accounts)

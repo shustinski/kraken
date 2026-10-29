@@ -12,7 +12,7 @@ from kraken_server.provisioning import (
     remove_provisioned_postgres,
 )
 
-from kraken_admin.cli_parts.install_service import (
+from kraken_admin.presentation.cli.install_service import (
     _blob_gateway_public_url,
     _bootstrap,
     _data_root,

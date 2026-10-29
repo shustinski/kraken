@@ -5,7 +5,7 @@ from threading import Barrier
 from fastapi.testclient import TestClient
 import sqlalchemy as sa
 
-from kraken_admin.local_admin import open_project_services
+from kraken_admin.infrastructure.composition import open_project_services
 from kraken_manager.domain.artifacts import deterministic_frame_series_id
 from kraken_manager.domain.multilayer import MultilayerModel
 from kraken_manager.infrastructure.postgres.event_store import PostgresEventStore

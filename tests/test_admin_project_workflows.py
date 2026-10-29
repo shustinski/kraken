@@ -8,14 +8,14 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 
-from kraken_admin.local_admin import open_project_services
-from kraken_admin.project_deletion import (
+from kraken_admin.infrastructure.composition import open_project_services
+from kraken_admin.application.project_deletion import (
     ProjectDeletion,
     directories_outside_project,
     project_storage_paths,
     safe_path,
 )
-from kraken_admin.project_roles import all_principals, set_roles, snapshot
+from kraken_admin.application.roles import all_principals, set_roles, snapshot
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import Principal, ProjectRole
 from kraken_manager.infrastructure.auth.local import ScryptPasswordHasher
@@ -140,7 +140,7 @@ def test_failed_cleanup_blocks_writes_and_can_resume(database, monkeypatch):
     target = project(services, person)
     request = services.request_project_deletion(target["project_id"], str(person.id))
     cleaner = ProjectDeletion(services, accounts, config)
-    import kraken_admin.deletion_confirmation as module
+    import kraken_admin.infrastructure.stored_files as module
     remove = module.shutil.rmtree
     monkeypatch.setattr(module.shutil, "rmtree", lambda *_: (_ for _ in ()).throw(OSError("disk failure")))
     with pytest.raises(OSError, match="disk failure"):
@@ -404,7 +404,7 @@ def test_role_batch_rolls_back_on_second_failure(database, monkeypatch):
 
 
 def test_cascade_preview_matches_applied_revocations(database):
-    from kraken_admin.project_roles import cascade_preview
+    from kraken_admin.application.roles import cascade_preview
 
     services, accounts, person, _config = database
     target = project(services, person)
@@ -427,7 +427,7 @@ def test_cascade_preview_matches_applied_revocations(database):
 
 
 def test_file_deletion_requires_confirmation_or_enabled_auto_confirm(database):
-    from kraken_admin.deletion_confirmation import DeletionPolicy
+    from kraken_admin.application.deletion_policy import DeletionPolicy
 
     services, accounts, person, config = database
     target = project(services, person)
@@ -453,7 +453,7 @@ def test_file_deletion_requires_confirmation_or_enabled_auto_confirm(database):
 
 
 def test_admin_matrix_lists_all_users_and_projects(database, qtbot, tmp_path):
-    from kraken_admin.admin_app import AdminWindow
+    from kraken_admin.presentation.qt.window import AdminWindow
 
     services, accounts, person, _config = database
     project(services, person)

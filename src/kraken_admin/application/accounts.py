@@ -1,8 +1,7 @@
-"""Local server administration. These operations never go through HTTP."""
+"""Local account and project-role administration. These operations never go through HTTP."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from kraken_manager.domain.common import ProjectId, validate_uuid
 from kraken_manager.domain.identity import ProjectRole
 
@@ -112,7 +111,7 @@ def revoke_maintainer(
 ) -> None:
     """Remove maintainer from any holder, including the last one in the project."""
 
-    from .project_roles import all_principals, set_roles, snapshot
+    from kraken_admin.application.roles import all_principals, set_roles, snapshot
 
     target = account_by_username(accounts, username)
     project_id = _project_identifier(services, project)
@@ -153,7 +152,7 @@ def display_name_for(
     text = str(identifier or "").strip()
     if not text:
         return ""
-    from .project_roles import CONSOLE_ACTOR_ID
+    from kraken_admin.application.roles import CONSOLE_ACTOR_ID
 
     if text == CONSOLE_ACTOR_ID:
         return "Kraken Admin"
@@ -202,46 +201,6 @@ def maintainer_rows(services: object, project_id: str) -> list[dict[str, str]]:
     return rows
 
 
-def connect_local_admin(config_path: Path) -> tuple[object, object]:
-    from sqlalchemy import create_engine
-
-    from kraken_manager.infrastructure.auth.local import Argon2PasswordHasher
-    from kraken_manager.infrastructure.postgres.account_store import PostgresAccountStore
-    from kraken_server.configuration import ServerConfig
-
-    config = ServerConfig.load(config_path)
-    # An unavailable database must not leave the administration window waiting
-    # indefinitely before it can report the connection failure.
-    engine = create_engine(config.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
-    accounts = PostgresAccountStore(engine, Argon2PasswordHasher())
-    services = open_project_services(config.database_url, config.blob_root, engine=engine)
-    from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
-
-    services.workspace_files = WorkspaceFileService(WorkspaceRegistry(config.blob_root / "workspaces"))
-    services.source_root = str(config.source_root)
-    services.derived_root = str(config.derived_root)
-    return accounts, services
-
-
-def open_project_services(database_url: str, blob_root: Path, *, engine: object | None = None) -> object:
-    from kraken_manager.infrastructure.blob import FilesystemBlobStore
-    from kraken_manager.infrastructure.postgres.unit_of_work import PostgresUnitOfWorkFactory
-    from kraken_server.persistent_services import PostgresServerServices, ServerStorageProfiles
-
-    if engine is None:
-        from sqlalchemy import create_engine
-
-        engine = create_engine(database_url, pool_pre_ping=True)
-    blobs = FilesystemBlobStore(blob_root)
-    services = PostgresServerServices(
-        engine,
-        PostgresUnitOfWorkFactory(engine, blobs),
-        profiles=ServerStorageProfiles(),
-    )
-    services.clock = _Clock()
-    return services
-
-
 def _project_identifier(services: object, project: str) -> str:
     from kraken_server.services import NotFoundError as MissingProject
     from kraken_server.services import ValidationError
@@ -262,10 +221,3 @@ def _project_identifier(services: object, project: str) -> str:
     except (MissingProject, ValidationError) as exc:
         raise ValueError(f"Проект «{project}» не найден") from exc
     return str(found["project_id"])
-
-
-class _Clock:
-    def now(self):
-        from datetime import UTC, datetime
-
-        return datetime.now(UTC)

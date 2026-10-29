@@ -3,7 +3,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-from kraken_admin.deletion_confirmation import settings_table
+from kraken_admin.infrastructure.deletion_settings import settings_table
 
 revision = "20260925_0009"
 down_revision = "20260925_0008"

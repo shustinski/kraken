@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import secrets
 
-from kraken_admin.server_backup import (
+from kraken_admin.infrastructure.backup import (
     PostgresTools, ServerBackupError, _directory, create_server_backup,
     restore_server_backup, verify_server_backup,
 )

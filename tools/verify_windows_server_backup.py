@@ -22,7 +22,7 @@ import httpx
 from psycopg import sql
 from sqlalchemy.engine import make_url
 
-from kraken_admin.server_backup import _connect
+from kraken_admin.infrastructure.backup import _connect
 from kraken_core.media_types import artifact_media_type
 from kraken_manager.domain.artifacts import deterministic_frame_series_id
 from kraken_manager.domain.project import deterministic_frame_id

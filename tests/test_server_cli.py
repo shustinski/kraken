@@ -6,9 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from kraken_admin import cli
-from kraken_admin.cli_parts import api_request as project_commands
-from kraken_admin.cli_parts import initialize_local_server as local_setup
+from kraken_admin.presentation.cli import api_request as project_commands
+from kraken_admin.presentation.cli import execute as command_dispatch
+from kraken_admin.presentation.cli import initialize_local_server as local_setup
+from kraken_admin.presentation.cli import parser as command_parser
 from kraken_server.provisioning import (
     new_postgres_provisioning,
     provision_postgres,
@@ -86,7 +87,7 @@ def test_postgres_provisioning_creates_role_and_database() -> None:
 
 
 def test_cli_help_lists_simple_commands_arguments_and_examples(capsys) -> None:
-    parser = cli._parser()
+    parser = command_parser._parser()
     with pytest.raises(SystemExit) as root_help:
         parser.parse_args(["--help"])
     assert root_help.value.code == 0
@@ -107,7 +108,7 @@ def test_cli_help_lists_simple_commands_arguments_and_examples(capsys) -> None:
 def test_local_initialization_orchestrates_database_migrations_config_and_admin(monkeypatch, tmp_path: Path) -> None:
     calls = []
     config_path = tmp_path / "server.toml"
-    args = cli._parser().parse_args(
+    args = command_parser._parser().parse_args(
         [
             "init-local-server",
             "--config",
@@ -134,12 +135,12 @@ def test_local_initialization_orchestrates_database_migrations_config_and_admin(
     monkeypatch.setattr(local_setup, "_postgres_store", lambda _url: object())
     monkeypatch.setattr(local_setup, "_bootstrap", lambda *_args, **_kwargs: "account-id")
 
-    assert cli._execute(args) == 0
+    assert command_dispatch._execute(args) == 0
     assert [call[0] for call in calls] == ["provision", "migrate", "config"]
 
 
 def test_local_initialization_wizard_uses_entered_database_and_admin_credentials(monkeypatch, tmp_path: Path) -> None:
-    args = cli._parser().parse_args(
+    args = command_parser._parser().parse_args(
         [
             "init",
             "--config",
@@ -186,7 +187,7 @@ def test_local_initialization_wizard_uses_entered_database_and_admin_credentials
 
     monkeypatch.setattr(local_setup, "_bootstrap", bootstrap)
 
-    cli._execute(args)
+    command_dispatch._execute(args)
 
     request = captured["request"]
     assert request.host == "db.example.test"
@@ -201,7 +202,7 @@ def test_local_initialization_wizard_uses_entered_database_and_admin_credentials
 
 
 def test_local_initialization_rolls_back_new_database_on_failure(monkeypatch, tmp_path: Path) -> None:
-    args = cli._parser().parse_args(
+    args = command_parser._parser().parse_args(
         ["init-local-server", "--config", str(tmp_path / "server.toml"), "--non-interactive"]
     )
     calls = []
@@ -216,13 +217,13 @@ def test_local_initialization_rolls_back_new_database_on_failure(monkeypatch, tm
     )
 
     with pytest.raises(RuntimeError, match="migration failed"):
-        cli._execute(args)
+        command_dispatch._execute(args)
 
     assert [call[0] for call in calls] == ["provision", "remove"]
 
 
 def test_project_create_is_scriptable(monkeypatch, capsys) -> None:
-    args = cli._parser().parse_args(["project-create", "--name", "Demo", "--width", "10", "--height", "20", "--json"])
+    args = command_parser._parser().parse_args(["project-create", "--name", "Demo", "--width", "10", "--height", "20", "--json"])
     monkeypatch.setattr(project_commands, "_server_session", lambda _args: ("http://server", "token"))
     captured = {}
 
@@ -232,7 +233,7 @@ def test_project_create_is_scriptable(monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(project_commands, "_api_request", request)
 
-    cli._create_project(args)
+    project_commands._create_project(args)
 
     assert captured["payload"]["width"] == 10
     assert captured["idempotency_key"]
@@ -248,11 +249,11 @@ def test_project_cli_requires_https_outside_loopback(monkeypatch) -> None:
     monkeypatch.setattr(project_commands, "_secret", lambda *_args, **_kwargs: "password")
 
     with pytest.raises(ValueError, match="HTTPS"):
-        cli._server_session(args)
+        project_commands._server_session(args)
 
 
 def test_setup_server_dispatch_applies_migrations_before_configuration(monkeypatch, tmp_path):
-    from kraken_admin.cli_parts import execute
+    from kraken_admin.presentation.cli import execute
 
     args = Namespace(command="setup-server", config=tmp_path / "server.toml", blob_root=tmp_path / "blobs",
         source_root=tmp_path / "source", derived_root=tmp_path / "derived", host="127.0.0.1", port=8080,

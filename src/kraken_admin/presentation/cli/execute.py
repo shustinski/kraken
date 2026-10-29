@@ -14,17 +14,17 @@ from kraken_server.configuration import (
     write_config,
 )
 
-from kraken_admin.cli_parts.api_request import (
+from kraken_admin.presentation.cli.api_request import (
     _create_project,
     _service_status,
     _uninstall_service,
 )
 
-from kraken_admin.cli_parts.doctor import _doctor
+from kraken_admin.presentation.cli.doctor import _doctor
 
-from kraken_admin.cli_parts.initialize_local_server import _initialize_local_server
+from kraken_admin.presentation.cli.initialize_local_server import _initialize_local_server
 
-from kraken_admin.cli_parts.install_service import (
+from kraken_admin.presentation.cli.install_service import (
     _blob_gateway_public_url,
     _bootstrap,
     _data_root,
@@ -34,9 +34,9 @@ from kraken_admin.cli_parts.install_service import (
     _postgres_store,
 )
 
-from kraken_admin.cli_parts.list_projects import _list_projects
+from kraken_admin.presentation.cli.list_projects import _list_projects
 
-from kraken_admin.cli_parts.run_local_admin import _run_local_admin
+from kraken_admin.presentation.cli.run_local_admin import _run_local_admin
 
 def _execute(args: argparse.Namespace) -> int:
     if args.command in {"backup-server", "backup-verify", "restore-server"}:

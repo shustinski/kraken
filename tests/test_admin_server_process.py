@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from kraken_admin.server_process import ServerProcess, server_command
+from kraken_admin.presentation.qt.server_process import ServerProcess, server_command
 
 
 def test_packaged_and_source_command(monkeypatch, tmp_path):
@@ -30,7 +30,7 @@ def test_server_readiness_logs_stop_and_restart(qtbot, monkeypatch, tmp_path):
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     config = SimpleNamespace(path=tmp_path / "server.toml", host="127.0.0.1", port=port, tls_cert_file=None)
-    monkeypatch.setattr("kraken_admin.server_process.ServerConfig.load", lambda _: config)
+    monkeypatch.setattr("kraken_admin.presentation.qt.server_process.ServerConfig.load", lambda _: config)
     script = (
         "import uvicorn\n"
         "from fastapi import FastAPI\n"
@@ -40,7 +40,7 @@ def test_server_readiness_logs_stop_and_restart(qtbot, monkeypatch, tmp_path):
         "def health(): return {'status':'ok'}\n"
         f"run_controlled(uvicorn.Config(app,host='127.0.0.1',port={port}))\n"
     )
-    monkeypatch.setattr("kraken_admin.server_process.server_command", lambda _: (sys.executable, ["-u", "-c", script]))
+    monkeypatch.setattr("kraken_admin.presentation.qt.server_process.server_command", lambda _: (sys.executable, ["-u", "-c", script]))
     runtime = ServerProcess()
     output, states = [], []
     runtime.output.connect(output.append)
@@ -63,8 +63,8 @@ def test_server_readiness_logs_stop_and_restart(qtbot, monkeypatch, tmp_path):
 
 def test_failed_start_reports_exit(qtbot, monkeypatch, tmp_path):
     config = SimpleNamespace(path=tmp_path / "server.toml", host="127.0.0.1", port=1, tls_cert_file=None)
-    monkeypatch.setattr("kraken_admin.server_process.ServerConfig.load", lambda _: config)
-    monkeypatch.setattr("kraken_admin.server_process.server_command",
+    monkeypatch.setattr("kraken_admin.presentation.qt.server_process.ServerConfig.load", lambda _: config)
+    monkeypatch.setattr("kraken_admin.presentation.qt.server_process.server_command",
                         lambda _: (sys.executable, ["-c", "print('port unavailable'); raise SystemExit(3)"]))
     runtime = ServerProcess()
     states, output = [], []

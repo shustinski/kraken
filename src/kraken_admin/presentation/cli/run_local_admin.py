@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from kraken_admin.cli_parts.install_service import (
+from kraken_admin.presentation.cli.install_service import (
     _database_url,
     _password,
     _postgres_store,
@@ -11,15 +11,15 @@ from kraken_admin.cli_parts.install_service import (
 
 def _run_local_admin(args: argparse.Namespace) -> None:
     from kraken_server.configuration import ServerConfig
-    from kraken_admin.local_admin import (
+    from kraken_admin.application.accounts import (
         create_account,
-        open_project_services,
         reset_password,
         revoke_maintainer,
         revoke_sessions,
         set_account_enabled,
         set_server_admin,
     )
+    from kraken_admin.infrastructure.composition import open_project_services
 
     store = _postgres_store(_database_url(args))
     command = args.command

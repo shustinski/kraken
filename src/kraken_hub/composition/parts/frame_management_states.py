@@ -7,7 +7,7 @@ from kraken_manager.domain.common import (
     RepresentationId,
 )
 
-from kraken_hub.composition_parts.frame_cell_snapshot import FrameManagementState
+from kraken_hub.composition.parts.frame_cell_snapshot import FrameManagementState
 
 
 class FrameManagementStatesMixin:

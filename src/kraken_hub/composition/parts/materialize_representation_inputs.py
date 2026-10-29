@@ -49,4 +49,4 @@ class MaterializeRepresentationInputsMixin:
         return self.frame_cells(project.id, layer.id, representation.id)
 
 if TYPE_CHECKING:
-    from kraken_hub.composition_parts.frame_cell_snapshot import FrameCellSnapshot
+    from kraken_hub.composition.parts.frame_cell_snapshot import FrameCellSnapshot

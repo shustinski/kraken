@@ -16,7 +16,7 @@ from kraken_manager.domain.project import (
     Project,
 )
 
-from kraken_hub.composition_parts.frame_cell_snapshot import ProjectDeletionResult
+from kraken_hub.composition.parts.frame_cell_snapshot import ProjectDeletionResult
 
 
 class DeleteProjectMixin:

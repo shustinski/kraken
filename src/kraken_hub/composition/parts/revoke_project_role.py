@@ -34,7 +34,7 @@ from kraken_manager.infrastructure.filesystem import (
 from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
 from kraken_hub.secret_store import KeyringSecretStore
 
-from kraken_hub.composition_parts.frame_cell_snapshot import (
+from kraken_hub.composition.parts.frame_cell_snapshot import (
     DesktopSession,
     DesktopStorageProfiles,
     SystemClock,

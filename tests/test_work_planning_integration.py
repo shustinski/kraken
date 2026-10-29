@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from kraken_hub.composition import EmbeddedProjectService
-from kraken_hub.composition_parts.work_planning import WorkPlanningMixin as LocalPlanning
+from kraken_hub.composition.parts.work_planning import WorkPlanningMixin as LocalPlanning
 from kraken_manager.domain.common import DomainValidationError
 from kraken_manager.domain.project import GridOrientation, LayerType
 from kraken_manager.infrastructure.filesystem import FilesystemEventStore

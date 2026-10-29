@@ -27,7 +27,7 @@ from kraken_manager.domain.project import (
     Representation,
 )
 
-from kraken_hub.composition_parts.frame_cell_snapshot import ManagedImportResult
+from kraken_hub.composition.parts.frame_cell_snapshot import ManagedImportResult
 
 
 class CommitManagedImportMixin:

@@ -50,7 +50,7 @@ def test_quality_export_removes_own_partial_output_on_stream_failure_and_can_ret
 
 
 def test_export_cleanup_preserves_replacement_owned_by_another_writer(tmp_path):
-    from kraken_hub.composition_parts.export_artifact_version import _cleanup_created_export
+    from kraken_hub.composition.parts.export_artifact_version import _cleanup_created_export
 
     destination = tmp_path / "export.cif"
     destination.write_bytes(b"our partial output")

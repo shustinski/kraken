@@ -10,7 +10,7 @@ from kraken_manager.domain.project import (
     RepresentationKind,
 )
 
-from kraken_hub.composition_parts.frame_cell_snapshot import FrameCellSnapshot
+from kraken_hub.composition.parts.frame_cell_snapshot import FrameCellSnapshot
 
 
 class FrameCellsMixin:

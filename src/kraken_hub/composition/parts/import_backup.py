@@ -30,7 +30,7 @@ from kraken_manager.infrastructure.migration import (
 )
 from kraken_manager.infrastructure.projections import rebuild_filesystem_index
 
-from kraken_hub.composition_parts.frame_cell_snapshot import IntegrityScanResult
+from kraken_hub.composition.parts.frame_cell_snapshot import IntegrityScanResult
 
 
 class ImportBackupMixin:

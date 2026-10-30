@@ -71,7 +71,20 @@ ANALYSIS_PROFILES: tuple[AnalysisProfileDefinition, ...] = (
         minimum_models=1,
         maximum_models=1,
     ),
+    AnalysisProfileDefinition(
+        key=AnalysisProfileKind.HEURISTIC_CHECK,
+        title_key="profile.heuristic_check.title",
+        description_key="profile.heuristic_check.description",
+        app_mode="validation",
+        analysis_mode="heuristic_check",
+        comparison_target="outputs",
+        minimum_models=1,
+        maximum_models=1,
+    ),
 )
+
+# Profiles that read exactly one source folder.
+SINGLE_SOURCE_PROFILES = frozenset({AnalysisProfileKind.SINGLE_RESULT_RISK, AnalysisProfileKind.HEURISTIC_CHECK})
 
 
 DEFAULT_ANALYSIS_PROFILE = AnalysisProfileKind.MODEL_COMPARISON
@@ -90,11 +103,14 @@ def auto_validation_profile(
     model_count: int,
     confidence_count: int,
     current: AnalysisProfileKind | str | None = None,
+    *,
+    photo_source: bool = False,
 ) -> AnalysisProfileKind:
     """Validation profile picked from the checked sources.
 
     Two or more models are compared; one model with a confidence map is checked by
-    confidence, one without it gets the single-result risk. Without models the current
+    confidence, one without it gets the single-result risk. One folder of chip photos rather
+    than masks (``photo_source``) gets the heuristic check. Without models the current
     validation profile stays, so nothing jumps while sources are being added.
     """
 
@@ -103,6 +119,8 @@ def auto_validation_profile(
     if model_count == 1:
         if confidence_count >= 1:
             return AnalysisProfileKind.CONFIDENCE_AUDIT
+        if photo_source:
+            return AnalysisProfileKind.HEURISTIC_CHECK
         return AnalysisProfileKind.SINGLE_RESULT_RISK
     definition = analysis_profile_definition(current)
     return definition.key if definition.app_mode == "validation" else DEFAULT_ANALYSIS_PROFILE
@@ -276,31 +294,27 @@ def build_standalone_preflight(
                 str(profile.minimum_models),
             )
         )
+    # The heuristic check reads photos, not model outputs: its problems belong to the photo row.
+    is_heuristic = profile.key == AnalysisProfileKind.HEURISTIC_CHECK
     if profile.maximum_models is not None and len(model_specs) > profile.maximum_models:
+        code = "single_photo_source_required" if is_heuristic else "single_model_required"
         issues.append(
             PreflightIssue(
                 PreflightSeverity.ERROR,
-                "single_model_required",
-                "preflight.single_model_required",
+                code,
+                f"preflight.{code}",
                 str(profile.maximum_models),
             )
         )
-    if profile.key == AnalysisProfileKind.SINGLE_RESULT_RISK and (
-        len(model_inventories) != 1 or not model_inventories[0]
-    ):
-        issues.append(
-            PreflightIssue(
-                PreflightSeverity.ERROR,
-                "model_output_required",
-                "preflight.model_output_required",
-            )
-        )
+    if profile.key in SINGLE_SOURCE_PROFILES and (len(model_inventories) != 1 or not model_inventories[0]):
+        code = "photo_source_required" if is_heuristic else "model_output_required"
+        issues.append(PreflightIssue(PreflightSeverity.ERROR, code, f"preflight.{code}"))
     if profile.confidence_required and not any(confidence_inventories):
         issues.append(PreflightIssue(PreflightSeverity.ERROR, "confidence_required", "preflight.confidence_required"))
     if profile.key == AnalysisProfileKind.GRID_DEFECTS and not model_inventories and not original_keys:
         issues.append(PreflightIssue(PreflightSeverity.ERROR, "grid_source_required", "preflight.grid_source_required"))
 
-    if profile.key == AnalysisProfileKind.SINGLE_RESULT_RISK:
+    if profile.key in SINGLE_SOURCE_PROFILES:
         baseline = model_inventories[0] if len(model_inventories) == 1 else set()
         compared_sets: list[set[str]] = []
     elif profile.key == AnalysisProfileKind.GRID_DEFECTS and model_inventories:
@@ -345,6 +359,20 @@ def build_standalone_preflight(
     if not baseline:
         issues.append(PreflightIssue(PreflightSeverity.ERROR, "no_frames", "preflight.no_frames"))
 
+    if is_heuristic:
+        photo_names = ", ".join(model.display_name for model in model_specs)
+        roles = (
+            _role_status(AnalysisSourceRole.ORIGINAL, tuple(model_inventories), baseline, photo_names),
+            _role_status(AnalysisSourceRole.MODEL_OUTPUT, (), baseline, ""),
+            _role_status(AnalysisSourceRole.CONFIDENCE, (), baseline, ""),
+        )
+        return AnalysisPreflightReport(
+            profile=profile.key,
+            roles=roles,
+            issues=tuple(issues),
+            total_frames=len(baseline),
+            matched_frames=len(matched_keys) if baseline else 0,
+        )
     roles = (
         _role_status(
             AnalysisSourceRole.ORIGINAL,
@@ -376,6 +404,7 @@ def build_standalone_preflight(
 __all__ = [
     "ANALYSIS_PROFILES",
     "DEFAULT_ANALYSIS_PROFILE",
+    "SINGLE_SOURCE_PROFILES",
     "AnalysisPreflightReport",
     "AnalysisProfileDefinition",
     "PreflightIssue",

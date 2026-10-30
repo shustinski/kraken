@@ -11,6 +11,7 @@ INTRA_MODEL_CONFIDENCE_MODE = "intra_model_confidence"
 MODEL_OUTPUT_CONFIDENCE_MODE = "model_output_confidence"
 CONFIDENCE_COMPARISON_MODE = "confidence_comparison"
 SINGLE_RESULT_RISK_MODE = "single_result_risk"
+HEURISTIC_CHECK_MODE = "heuristic_check"
 
 SINGLE_RESULT_RISK_DISPLAY_KEYS: tuple[str, ...] = (
     "single_result_risk_score",
@@ -20,6 +21,17 @@ SINGLE_RESULT_RISK_DISPLAY_KEYS: tuple[str, ...] = (
     "source_mask_agreement_risk",
     "confidence_risk",
 )
+# The same keys as core/heuristic_check.py (HEURISTIC_CHECK_METRICS).
+HEURISTIC_CHECK_DISPLAY_KEYS: tuple[str, ...] = (
+    "heuristic_check_score",
+    "heuristic_topology_risk",
+    "heuristic_contamination_risk",
+    "heuristic_width_risk",
+    "heuristic_geometry_risk",
+    "heuristic_batch_risk",
+)
+# Modes that rank one source by a 0-100 risk, explained by reasons.
+RISK_ANALYSIS_MODES = frozenset({SINGLE_RESULT_RISK_MODE, HEURISTIC_CHECK_MODE})
 
 POLYGON_OBJECT_TYPE = "polygon"
 POINT_OBJECT_TYPE = "point"
@@ -30,6 +42,7 @@ ANALYSIS_MODE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("analysis.mode.intra_model_confidence", INTRA_MODEL_CONFIDENCE_MODE),
     ("analysis.mode.model_output_confidence", MODEL_OUTPUT_CONFIDENCE_MODE),
     ("analysis.mode.single_result_risk", SINGLE_RESULT_RISK_MODE),
+    ("analysis.mode.heuristic_check", HEURISTIC_CHECK_MODE),
 )
 
 OBJECT_TYPE_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -81,6 +94,7 @@ SCORE_100_METRIC_KEYS = frozenset(
         "confidence_bce_score",
         "confidence_threshold_crossing_score",
         *SINGLE_RESULT_RISK_DISPLAY_KEYS,
+        *HEURISTIC_CHECK_DISPLAY_KEYS,
     }
 )
 
@@ -97,6 +111,7 @@ LOWER_IS_BETTER_METRIC_KEYS = frozenset(
         "grid_inspection_damage_score",
         "mean_localization_distance",
         *SINGLE_RESULT_RISK_DISPLAY_KEYS,
+        *HEURISTIC_CHECK_DISPLAY_KEYS,
     }
 )
 
@@ -123,6 +138,7 @@ def normalize_analysis_mode(value: str | None) -> str:
         MODEL_OUTPUT_CONFIDENCE_MODE,
         CONFIDENCE_COMPARISON_MODE,
         SINGLE_RESULT_RISK_MODE,
+        HEURISTIC_CHECK_MODE,
     }:
         return text
     return INTER_MODEL_ANALYSIS_MODE
@@ -229,6 +245,8 @@ def resolve_analysis_context(
 def display_metric_keys(context: AnalysisContext) -> tuple[str, ...]:
     if context.analysis_mode == SINGLE_RESULT_RISK_MODE:
         return SINGLE_RESULT_RISK_DISPLAY_KEYS
+    if context.analysis_mode == HEURISTIC_CHECK_MODE:
+        return HEURISTIC_CHECK_DISPLAY_KEYS
     if context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE:
         if context.confidence_model_id is None:
             return tuple()
@@ -247,6 +265,8 @@ def display_metric_keys(context: AnalysisContext) -> tuple[str, ...]:
 def percentile_basis_keys(context: AnalysisContext) -> tuple[str, ...]:
     if context.analysis_mode == SINGLE_RESULT_RISK_MODE:
         return SINGLE_RESULT_RISK_DISPLAY_KEYS
+    if context.analysis_mode == HEURISTIC_CHECK_MODE:
+        return HEURISTIC_CHECK_DISPLAY_KEYS
     if context.analysis_mode == INTRA_MODEL_CONFIDENCE_MODE:
         if context.confidence_model_id is None:
             return tuple()

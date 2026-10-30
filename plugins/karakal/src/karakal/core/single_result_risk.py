@@ -406,26 +406,32 @@ def _extract_rows(
     progress_callback: Callable[[int, int, str], None] | None = None,
     state_callback: Callable[[str, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
-) -> list[_FeatureRow]:
-    """Extract per-frame features, optionally in parallel via ThreadPool."""
+    extract: Callable[[FrameRecord, str], object] | None = None,
+) -> list:
+    """Extract per-frame features, optionally in parallel via ThreadPool.
+
+    ``extract`` reads one frame (``_extract_row`` by default); the heuristic check passes its own.
+    """
+
+    extract = extract or _extract_row
 
     if not source_records:
         return []
     worker_count = _risk_extract_worker_count(max_workers, len(source_records))
     if worker_count <= 1:
-        rows: list[_FeatureRow] = []
+        rows: list = []
         for index, record in enumerate(source_records, start=1):
             if cancel_check is not None and cancel_check():
                 raise BuildCancelledError("Build cancelled")
             if state_callback is not None:
                 state_callback(str(record.key), "processing")
-            row = _extract_row(record, model_id)
+            row = extract(record, model_id)
             rows.append(row)
             if progress_callback is not None:
                 progress_callback(index, total_work, str(record.key))
         return rows
 
-    ordered: list[_FeatureRow | None] = [None] * len(source_records)
+    ordered: list = [None] * len(source_records)
     completed = 0
     executor = ThreadPoolExecutor(max_workers=worker_count)
     shutdown_wait = True
@@ -436,7 +442,7 @@ def _extract_rows(
                 raise BuildCancelledError("Build cancelled")
             if state_callback is not None:
                 state_callback(str(record.key), "processing")
-            future = executor.submit(_extract_row, record, model_id)
+            future = executor.submit(extract, record, model_id)
             future_to_index[future] = index
 
         pending = set(future_to_index.keys())

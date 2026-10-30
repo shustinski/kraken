@@ -444,6 +444,9 @@ class FrameAnalysisSummary:
     frame_type: str = "polygon"
     single_result_risk: Any | None = None
     attention_issues_by_model: dict[str, tuple[Any, ...]] = field(default_factory=dict)
+    # Etch check of chip photos (core/heuristic_check.py). Read it with getattr: summaries
+    # pickled before it existed have no such slot.
+    heuristic_check: Any | None = None
 
 
 @dataclass(slots=True)

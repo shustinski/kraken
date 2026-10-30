@@ -21,6 +21,7 @@ class AnalysisProfileKind(StrEnum):
     CONFIDENCE_AUDIT = "confidence_audit"
     GRID_DEFECTS = "grid_defects"
     SINGLE_RESULT_RISK = "single_result_risk"
+    HEURISTIC_CHECK = "heuristic_check"
 
 
 class AnalysisSourceRole(StrEnum):

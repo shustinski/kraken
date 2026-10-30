@@ -39,6 +39,8 @@ _ISSUE_ROLES = {
     "duplicate_model_id": AnalysisSourceRole.MODEL_OUTPUT,
     "duplicate_frame_key": AnalysisSourceRole.MODEL_OUTPUT,
     "confidence_required": AnalysisSourceRole.CONFIDENCE,
+    "photo_source_required": AnalysisSourceRole.ORIGINAL,
+    "single_photo_source_required": AnalysisSourceRole.ORIGINAL,
 }
 
 

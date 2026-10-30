@@ -2038,6 +2038,35 @@ def export_ranked_frames(
                 for reason in tuple(getattr(risk_summary, "reasons", ()) or ())
             ],
         }
+    heuristic_check: dict[str, object] = {}
+    for record in export_records.values():
+        check = None if record.summary is None else getattr(record.summary, "heuristic_check", None)
+        if check is None:
+            continue
+        heuristic_check[str(record.key)] = {
+            "risk": check.total_risk,
+            "verdict": str(check.verdict),
+            "sensitivity": str(check.sensitivity),
+            "capture_issues": list(check.capture_issues),
+            "components": {
+                "topology": check.topology_risk,
+                "contamination": check.contamination_risk,
+                "width": check.width_risk,
+                "geometry": check.geometry_risk,
+                "batch_outlier": check.batch_outlier_risk,
+            },
+            "features": dict(check.feature_values),
+            "reasons": [
+                {
+                    "code": str(reason.code),
+                    "severity": str(reason.severity),
+                    "contribution": float(reason.contribution),
+                    "bbox": None if reason.bbox is None else [float(value) for value in reason.bbox],
+                    "detail": str(reason.detail),
+                }
+                for reason in check.reasons
+            ],
+        }
     manifest: dict[str, object] = {
         "metric_key": metric_key,
         "selection_mode": selection_mode,
@@ -2057,6 +2086,8 @@ def export_ranked_frames(
     }
     if single_result_risk:
         manifest["single_result_risk"] = single_result_risk
+    if heuristic_check:
+        manifest["heuristic_check"] = heuristic_check
 
     original_dir = destination_path / "original"
     masks_root = destination_path / "models"

@@ -238,6 +238,9 @@ def load_frame_detail_base(
             if active_record.summary is not None
             else None
         ),
+        "heuristic_check": (
+            getattr(active_record.summary, "heuristic_check", None) if active_record.summary is not None else None
+        ),
         "attention_issues_by_model": (
             dict(getattr(active_record.summary, "attention_issues_by_model", {}) or {})
             if active_record.summary is not None

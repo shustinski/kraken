@@ -152,6 +152,12 @@ def _available_metric_keys_for_models(
                 "source_alignment_risk",
                 "source_mask_agreement_risk",
                 "confidence_risk",
+                "heuristic_check_score",
+                "heuristic_topology_risk",
+                "heuristic_contamination_risk",
+                "heuristic_width_risk",
+                "heuristic_geometry_risk",
+                "heuristic_batch_risk",
             ]
         )
     model_ids_with_output = None

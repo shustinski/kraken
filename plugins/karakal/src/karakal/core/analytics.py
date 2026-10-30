@@ -1636,8 +1636,18 @@ def compute_build_result_analytics(
     cancel_check=None,
     include_attention_issues: bool = False,
 ) -> BuildResult:
+    from .heuristic_check import HEURISTIC_CHECK_METRICS, compute_heuristic_check
     from .single_result_risk import SINGLE_RESULT_RISK_METRICS, compute_single_result_risk
 
+    if str(metric_key or build_result.selected_metric_key or "") in HEURISTIC_CHECK_METRICS:
+        return compute_heuristic_check(
+            build_result,
+            sensitivity=str(getattr(build_result.options, "single_result_sensitivity", "balanced") or "balanced"),
+            excluded_record_keys=excluded_record_keys,
+            progress_callback=progress_callback,
+            state_callback=state_callback,
+            cancel_check=cancel_check,
+        )
     if str(metric_key or build_result.selected_metric_key or "") in SINGLE_RESULT_RISK_METRICS:
         return compute_single_result_risk(
             build_result,

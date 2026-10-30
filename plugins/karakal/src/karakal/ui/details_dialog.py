@@ -51,6 +51,7 @@ from ..core.backend_constants import (
 )
 from ..core.domain import BuildResult, ComparisonMode, FrameRecord
 from ..core.grid_anomaly import CONTOUR_AREA_FEATURE, GridFrameAnalysisResult
+from ..core.heuristic_check import CONTAMINATION_REASONS, GEOMETRY_REASONS, TOPOLOGY_REASONS
 from ..core.performance import PerformanceConfig
 from ..core.confidence_analysis import (
     _confidence_display_map_from_probability,
@@ -86,6 +87,14 @@ from ..ui.ui_constants import (
 )
 
 DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
+# Layers of the heuristic check: every finding, then by group.
+HEURISTIC_RESULT_KINDS = ("heuristic_all", "heuristic_topology", "heuristic_contamination", "heuristic_geometry")
+_HEURISTIC_KIND_CODES = {
+    "heuristic_all": TOPOLOGY_REASONS + CONTAMINATION_REASONS + GEOMETRY_REASONS,
+    "heuristic_topology": TOPOLOGY_REASONS,
+    "heuristic_contamination": CONTAMINATION_REASONS,
+    "heuristic_geometry": GEOMETRY_REASONS,
+}
 # A debris mark of a few pixels is hard to hit; the hover finds it within this many screen pixels.
 DEBRIS_HOVER_SLACK_SCREEN_PX = 4.0
 _LOGGER = logging.getLogger(__name__)
@@ -3649,6 +3658,7 @@ class ExtendFrameDetailsDialog(QDialog):
                 current_kind = self._allowed_result_kinds[0]
             labels_by_kind = {
                 "grid_cell_defects": self._t("details.grid_cell_defects"),
+                **{kind: self._t(f"details.{kind}") for kind in HEURISTIC_RESULT_KINDS},
             }
             self.result_kind_combo.blockSignals(True)
             self.result_kind_combo.clear()
@@ -4575,6 +4585,8 @@ class ExtendFrameDetailsDialog(QDialog):
         kind = self._selected_result_kind()
         if kind in {"risk_structure", "risk_source", "risk_confidence"}:
             return self._single_result_risk_pixmap(kind)
+        if kind in HEURISTIC_RESULT_KINDS:
+            return self._heuristic_check_pixmap(kind)
         if kind.startswith("comparison_layer::"):
             return self._comparison_raster_layer_pixmap(kind.split("::", 1)[1])
         if kind == "confidence":
@@ -4621,6 +4633,34 @@ class ExtendFrameDetailsDialog(QDialog):
             y1 = max(y0 + 1, min(height, int(round((y + h) * height))))
             intensity[y0:y1, x0:x1] = np.maximum(
                 intensity[y0:y1, x0:x1], float(getattr(reason, "contribution", 0.0))
+            )
+        pixmap = self._bad_area_intensity_pixmap(intensity, self._named_color("input_output_mask"), alpha_scale=250.0)
+        self._overlay_cache[cache_key] = pixmap
+        return pixmap
+
+    def _heuristic_check_pixmap(self, kind: str) -> QPixmap:
+        """Boxes of the heuristic findings of one group, as strong as each finding."""
+
+        cache_key = ("heuristic_check", str(kind))
+        cached = self._overlay_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        base = self._base_array()
+        intensity = np.zeros(base.shape, dtype=np.float32)
+        codes = set(_HEURISTIC_KIND_CODES.get(str(kind), ()))
+        summary = self._payload.get("heuristic_check")
+        height, width = intensity.shape
+        for reason in tuple(getattr(summary, "reasons", ()) or ()):
+            bbox = getattr(reason, "bbox", None)
+            if bbox is None or str(getattr(reason, "code", "")) not in codes:
+                continue
+            x, y, w, h = (float(value) for value in bbox)
+            x0 = max(0, min(width, int(round(x * width))))
+            y0 = max(0, min(height, int(round(y * height))))
+            x1 = max(x0 + 1, min(width, int(round((x + w) * width))))
+            y1 = max(y0 + 1, min(height, int(round((y + h) * height))))
+            intensity[y0:y1, x0:x1] = np.maximum(
+                intensity[y0:y1, x0:x1], max(0.35, float(getattr(reason, "contribution", 0.0)))
             )
         pixmap = self._bad_area_intensity_pixmap(intensity, self._named_color("input_output_mask"), alpha_scale=250.0)
         self._overlay_cache[cache_key] = pixmap
@@ -4673,6 +4713,8 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("details.risk_source_regions")
         if kind == "risk_confidence":
             return self._t("details.risk_confidence_regions")
+        if kind in HEURISTIC_RESULT_KINDS:
+            return self._t(f"details.{kind}")
         return self._t("details.difference_heatmap")
 
     def _refresh_dynamic_labels(self) -> None:
@@ -5503,10 +5545,56 @@ class ExtendFrameDetailsDialog(QDialog):
             return f"{level} {float(value) * 100.0:.1f}%"
         return f"{level} {float(value):.4f}"
 
+    def _heuristic_check_metrics_text(self, check) -> str:
+        lines = [f"{self._t('heuristic.verdict')}: {self._t(f'heuristic.verdict.{check.verdict}')}"]
+        if check.total_risk is not None:
+            lines.append(f"{self._t('metric.heuristic_check_score')}: {float(check.total_risk):.1f}/100")
+        for key, value in (
+            ("metric.heuristic_topology_risk", check.topology_risk),
+            ("metric.heuristic_contamination_risk", check.contamination_risk),
+            ("metric.heuristic_width_risk", check.width_risk),
+            ("metric.heuristic_geometry_risk", check.geometry_risk),
+            ("metric.heuristic_batch_risk", check.batch_outlier_risk),
+        ):
+            if value is not None:
+                lines.append(f"{self._t(key)}: {float(value):.1f}")
+        features = dict(check.feature_values or {})
+        if "width_narrow" in features:
+            lines.append(
+                self._t(
+                    "heuristic.widths",
+                    width=f"{float(features['width_narrow']):.1f}",
+                    gap=f"{float(features.get('gap_narrow', 0.0)):.1f}",
+                )
+            )
+        for key in ("residue_fraction", "particle_fraction", "stain_fraction"):
+            if key in features:
+                lines.append(f"{self._t(f'heuristic.feature.{key}')}: {100.0 * float(features[key]):.2f}%")
+        return "\n".join(lines)
+
+    def _heuristic_reason_text(self, reason) -> str:
+        code = str(getattr(reason, "code", ""))
+        family, _dot, feature = code.partition(".")
+        label = self._t(f"heuristic.reason.{family}")
+        if feature:
+            label = f"{label}: {feature}"
+        detail = str(getattr(reason, "detail", "") or "")
+        if detail and family in {"etch_over", "etch_under", "width_spread"}:
+            label = f"{label} ({detail})"
+        return f"{label} — {float(getattr(reason, 'contribution', 0.0)) * 100.0:.0f}%"
+
     def _refresh_comparison_panel(self) -> None:
         metrics_label = getattr(self, "comparison_metrics_label", None)
         events_label = getattr(self, "comparison_events_label", None)
         if metrics_label is None or events_label is None:
+            return
+        check = self._payload.get("heuristic_check")
+        if check is not None:
+            metrics_label.setText(self._heuristic_check_metrics_text(check))
+            events_label.setText(
+                "\n".join(self._heuristic_reason_text(reason) for reason in tuple(check.reasons or ()))
+                or self._t("heuristic.no_reasons")
+            )
             return
         risk_summary = self._payload.get("single_result_risk")
         if risk_summary is not None:

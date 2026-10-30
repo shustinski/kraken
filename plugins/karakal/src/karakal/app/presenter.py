@@ -48,8 +48,10 @@ from ..core.analysis_modes import (
     CONFIDENCE_COMPARISON_MODE,
     INTRA_MODEL_CONFIDENCE_MODE,
     INTER_MODEL_ANALYSIS_MODE,
+    HEURISTIC_CHECK_DISPLAY_KEYS,
     MODEL_OUTPUT_CONFIDENCE_MODE,
-    SINGLE_RESULT_RISK_MODE,
+    RISK_ANALYSIS_MODES,
+    SINGLE_RESULT_RISK_DISPLAY_KEYS,
     POINT_OBJECT_TYPE,
     POLYGON_OBJECT_TYPE,
     confidence_metric_family,
@@ -65,11 +67,13 @@ from ..core.analysis_modes import (
 )
 from ..core.analysis_profiles import (
     DEFAULT_ANALYSIS_PROFILE,
+    SINGLE_SOURCE_PROFILES,
     AnalysisPreflightReport,
     analysis_profile_definition,
     auto_validation_profile,
     build_standalone_preflight,
 )
+from ..core.heuristic_check import folder_holds_photos
 from ..core.features import (
     show_confidence_defects,
     show_grid_examples,
@@ -1574,7 +1578,7 @@ class KarakalPresenter(QObject):
         is_grid_inspection_mode = self._current_app_mode() == "grid_inspection"
         is_confidence_mode = context.analysis_mode in {INTRA_MODEL_CONFIDENCE_MODE, MODEL_OUTPUT_CONFIDENCE_MODE}
         is_confidence_comparison = context.analysis_mode == CONFIDENCE_COMPARISON_MODE
-        is_single_result_risk = context.analysis_mode == SINGLE_RESULT_RISK_MODE
+        is_single_result_risk = context.analysis_mode in RISK_ANALYSIS_MODES
         has_scope_choices = bool(getattr(build_result, "model_specs", ()) if build_result is not None else ())
         is_confidence = self._confidence_context_available(context, build_result)
         is_point = context.object_type == POINT_OBJECT_TYPE
@@ -1815,6 +1819,10 @@ class KarakalPresenter(QObject):
                 model_count == 1,
                 "" if model_count == 1 else self._t("profile.unavailable.single_result"),
             ),
+            AnalysisProfileKind.HEURISTIC_CHECK: (
+                model_count == 1,
+                "" if model_count == 1 else self._t("profile.unavailable.heuristic_check"),
+            ),
         }
 
     def _on_analysis_profile_changed(self, value: str) -> None:
@@ -1830,7 +1838,7 @@ class KarakalPresenter(QObject):
             index = combo.findData(selected_value)
             combo.setCurrentIndex(index if index >= 0 else 0)
             del blocker
-        if self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK:
+        if self._analysis_profile in SINGLE_SOURCE_PROFILES:
             geometry_blocker = QSignalBlocker(self.geometry_mode_combo)
             geometry_index = self.geometry_mode_combo.findData("mask")
             self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
@@ -1839,11 +1847,18 @@ class KarakalPresenter(QObject):
             score_index = self.matrix_score_view_combo.findData("absolute")
             self.matrix_score_view_combo.setCurrentIndex(score_index if score_index >= 0 else 0)
             del score_blocker
-            self._sync_metric_controls(None, preferred_metric_key="single_result_risk_score")
+            self._sync_metric_controls(None, preferred_metric_key=self._risk_profile_metric_key())
         self._preflight_signature = None
         self._on_app_mode_changed()
         self._sync_mode_controls(self._current_tab_state())
         self._sync_action_buttons()
+
+    def _risk_profile_metric_key(self) -> str:
+        """The main score of the one-source analysis that is chosen."""
+
+        if self._analysis_profile == AnalysisProfileKind.HEURISTIC_CHECK:
+            return HEURISTIC_CHECK_DISPLAY_KEYS[0]
+        return SINGLE_RESULT_RISK_DISPLAY_KEYS[0]
 
     def _on_primary_run_requested(self) -> None:
         report = self._refresh_analysis_preflight(force=True)
@@ -3756,14 +3771,7 @@ class KarakalPresenter(QObject):
     def _metric_value_missing_for_build_result(self, build_result: BuildResult | None, metric_key: str) -> bool:
         if build_result is None:
             return False
-        if str(metric_key or "") in {
-            "single_result_risk_score",
-            "mask_structure_risk",
-            "batch_outlier_risk",
-            "source_alignment_risk",
-            "source_mask_agreement_risk",
-            "confidence_risk",
-        }:
+        if str(metric_key or "") in {*SINGLE_RESULT_RISK_DISPLAY_KEYS, *HEURISTIC_CHECK_DISPLAY_KEYS}:
             return not any(
                 record.summary is not None and metric_key in getattr(record.summary, "metric_values", {})
                 for record in build_result.records
@@ -3996,15 +4004,10 @@ class KarakalPresenter(QObject):
 
     def _metric_hint(self, metric_key: str, summary) -> str | None:
         metric_key_text = str(metric_key)
-        if metric_key_text in {
-            "single_result_risk_score",
-            "mask_structure_risk",
-            "batch_outlier_risk",
-            "source_alignment_risk",
-            "source_mask_agreement_risk",
-            "confidence_risk",
-        }:
+        if metric_key_text in SINGLE_RESULT_RISK_DISPLAY_KEYS:
             return self._t("hint.single_result_risk")
+        if metric_key_text in HEURISTIC_CHECK_DISPLAY_KEYS:
+            return self._t("hint.heuristic_check")
         if metric_key_text == GRID_INSPECTION_DAMAGE_METRIC_KEY:
             return self._t("hint.grid_inspection_percentiles")
         if (
@@ -4113,6 +4116,7 @@ class KarakalPresenter(QObject):
             "source_alignment_risk": self._t("hint.single_result_risk"),
             "source_mask_agreement_risk": self._t("hint.single_result_risk"),
             "confidence_risk": self._t("hint.single_result_risk"),
+            **{key: self._t("hint.heuristic_check") for key in HEURISTIC_CHECK_DISPLAY_KEYS},
         }
         return defaults.get(family, self._metric_label(metric_key_text, build_result))
 
@@ -4133,6 +4137,13 @@ class KarakalPresenter(QObject):
                 return "-"
             parts = [f"{reason.code}: {float(reason.contribution) * 100.0:.1f}" for reason in risk.reasons[:4]]
             return "; ".join(parts) or ("причины не обнаружены" if is_ru else "no risk reasons detected")
+        if family in HEURISTIC_CHECK_DISPLAY_KEYS:
+            check = getattr(summary, "heuristic_check", None)
+            if check is None:
+                return "-"
+            parts = [self._t(f"heuristic.verdict.{check.verdict}")]
+            parts.extend(self._t(f"heuristic.reason.{reason.code.split('.', 1)[0]}") for reason in check.reasons[:3])
+            return "; ".join(dict.fromkeys(parts))
         if family == "overall_frame_score":
             return self._t("metric.disagreement_score")
         if family in {"overall_polygon_score", "iou_score", "dice_score", "polygon_bce_score", "iou", "dice", "bce"}:
@@ -5193,7 +5204,15 @@ class KarakalPresenter(QObject):
     def _auto_validation_profile(self) -> AnalysisProfileKind:
         specs = self._checked_model_specs()
         confidence_count = sum(1 for spec in specs if spec.prob_folder is not None)
-        return auto_validation_profile(len(specs), confidence_count, self._analysis_profile)
+        # One folder of chip photos (not network masks) gets the heuristic check.
+        photo_source = (
+            len(specs) == 1
+            and confidence_count == 0
+            and folder_holds_photos(specs[0].mask_folder, self._frame_naming())
+        )
+        return auto_validation_profile(
+            len(specs), confidence_count, self._analysis_profile, photo_source=photo_source
+        )
 
     def _sync_auto_validation_profile(self, is_busy: bool) -> None:
         """Follow the checked sources while in validation; a running analysis keeps its profile."""
@@ -5849,11 +5868,15 @@ class KarakalPresenter(QObject):
 
     def _start_build(self) -> None:
         explicit_model_specs = self._checked_model_specs()
-        if self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK and len(explicit_model_specs) != 1:
+        if self._analysis_profile in SINGLE_SOURCE_PROFILES and len(explicit_model_specs) != 1:
             QMessageBox.warning(
                 self._view,
                 self._t("dialog.warning_title"),
-                self._t("preflight.single_model_required"),
+                self._t(
+                    "preflight.single_photo_source_required"
+                    if self._analysis_profile == AnalysisProfileKind.HEURISTIC_CHECK
+                    else "preflight.single_model_required"
+                ),
             )
             return
         model_specs = self._effective_model_specs_for_build()
@@ -8145,6 +8168,7 @@ class KarakalPresenter(QObject):
         session_view_state = dict(self._details_view_payload)
         is_grid_inspection_details = self._current_app_mode() == "grid_inspection"
         is_single_result_risk_details = self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK
+        is_heuristic_check_details = self._analysis_profile == AnalysisProfileKind.HEURISTIC_CHECK
         preferred_model_id = self._preferred_details_model_id_for_state(state, session_view_state=session_view_state)
         session_view_state["preferred_model_id"] = preferred_model_id
         session_view_state["analysis_mode"] = str(state.analysis_mode or INTER_MODEL_ANALYSIS_MODE)
@@ -8153,6 +8177,8 @@ class KarakalPresenter(QObject):
             if is_grid_inspection_details
             else "risk_structure"
             if is_single_result_risk_details
+            else "heuristic_all"
+            if is_heuristic_check_details
             else self._default_details_result_kind_for_state(state)
         )
         session_view_state["layer_view"] = self._default_details_layer_view_for_state(state)
@@ -8199,6 +8225,10 @@ class KarakalPresenter(QObject):
             if risk_summary is not None and getattr(risk_summary, "confidence_risk", None) is not None:
                 risk_kinds.append("risk_confidence")
             allowed_result_kinds = tuple(risk_kinds)
+        elif is_heuristic_check_details:
+            from ..ui.details_dialog import HEURISTIC_RESULT_KINDS
+
+            allowed_result_kinds = HEURISTIC_RESULT_KINDS
         dialog = ExtendFrameDetailsDialog(
             record=record,
             build_result=state.build_result,
@@ -9606,7 +9636,7 @@ class KarakalPresenter(QObject):
             blocker = QSignalBlocker(self.pair_matrix_group)
             self.pair_matrix_group.setChecked(pair_panel_expanded)
             del blocker
-        if self._analysis_profile == AnalysisProfileKind.SINGLE_RESULT_RISK:
+        if self._analysis_profile in SINGLE_SOURCE_PROFILES:
             geometry_blocker = QSignalBlocker(self.geometry_mode_combo)
             geometry_index = self.geometry_mode_combo.findData("mask")
             self.geometry_mode_combo.setCurrentIndex(geometry_index if geometry_index >= 0 else 0)
@@ -9616,7 +9646,7 @@ class KarakalPresenter(QObject):
             self.matrix_score_view_combo.setCurrentIndex(score_index if score_index >= 0 else 0)
             del score_blocker
             metric_blocker = QSignalBlocker(self.metric_combo)
-            self._sync_metric_controls(None, preferred_metric_key="single_result_risk_score")
+            self._sync_metric_controls(None, preferred_metric_key=self._risk_profile_metric_key())
             del metric_blocker
         if hasattr(self, "pair_matrix_body"):
             self.pair_matrix_body.setVisible(pair_panel_expanded)

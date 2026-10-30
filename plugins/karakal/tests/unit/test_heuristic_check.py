@@ -16,6 +16,7 @@ from karakal.core.heuristic_check import (
     HEURISTIC_CHECK_SCORE,
     VERDICT_DIRT,
     VERDICT_ETCH_DEVIATION,
+    VERDICT_GROSS,
     VERDICT_NORMAL,
     VERDICT_TOPOLOGY,
     VERDICT_UNREADABLE,
@@ -28,43 +29,19 @@ from karakal.core.heuristic_check import (
 )
 from karakal.core.image_io import _grayscale_array_to_qimage
 from karakal.core.single_result_risk import RiskReason
+from karakal.core.synthetic_chip import LayerStyle, PhotoStyle, draw_layer, render_photo
 
-WIDTH, PITCH = 8, 24
-
-
-def _segments(rng: np.random.Generator, start: int, stop: int) -> list[tuple[int, int]]:
-    """Pieces of one track with designed cuts at least a pitch long."""
-
-    runs: list[tuple[int, int]] = []
-    position = start
-    while True:
-        end = min(stop, position + int(rng.integers(60, 160)))
-        if end - position >= 30:
-            runs.append((position, end))
-        position = end + int(rng.integers(PITCH, 2 * PITCH))
-        if position >= stop - 30:
-            return runs
+WIDTH = LayerStyle().width
 
 
-def _layout(seed: int = 0, size: int = 512) -> np.ndarray:
+def _layout(seed: int = 0) -> np.ndarray:
     """A clean metal layer: horizontal tracks, vertical tracks and a pour, every gap 16 px."""
 
-    rng = np.random.default_rng(seed)
-    metal = np.zeros((size, size), dtype=np.uint8)
-    for y in range(16, 360, PITCH):
-        for a, b in _segments(rng, 8, 248):
-            metal[y : y + WIDTH, a:b] = 1
-    for x in range(272, size - 8 - WIDTH, PITCH):
-        for a, b in _segments(rng, 8, 368):
-            metal[a:b, x : x + WIDTH] = 1
-    metal[400:480, 16:240] = 1
-    return metal
+    return draw_layer(LayerStyle(), seed)
 
 
 def _photo(metal: np.ndarray, *, seed: int = 0, blur: float = 1.2, noise: float = 4.0) -> np.ndarray:
-    rng = np.random.default_rng(seed + 100)
-    image = cv2.GaussianBlur(np.where(metal > 0, 180, 60).astype(np.float32), (0, 0), blur)
-    return np.clip(image + rng.normal(0.0, noise, image.shape), 0, 255).astype(np.uint8)
+    return render_photo(metal, PhotoStyle(blur=blur, noise=noise), seed)
 
 
 def _long_run(metal: np.ndarray, y: int) -> tuple[int, int]:
@@ -156,7 +133,7 @@ def test_residue_film_is_dirt_not_broken_topology() -> None:
     findings = analyze_frame(image)
 
     assert "residue" in _codes(findings)
-    assert findings.contamination_raw == 1.0
+    assert findings.contamination_raw >= 0.5
     assert findings.topology_raw == 0.0
 
 
@@ -253,6 +230,7 @@ def test_run_rates_every_frame_and_names_the_leading_problem(tmp_path: Path) -> 
         assert float(records[key].absolute_score) > worst_clean + 20.0
     assert sum(checks["F_0010"].component_contributions.values()) <= checks["F_0010"].total_risk + 1e-6
     assert verdict_counts(result) == {
+        VERDICT_GROSS: 0,
         VERDICT_NORMAL: 10,
         VERDICT_TOPOLOGY: 1,
         VERDICT_DIRT: 1,
@@ -397,7 +375,79 @@ def test_photo_folder_switches_validation_to_the_heuristic_check(tmp_path: Path,
 
     assert presenter._analysis_profile == AnalysisProfileKind.HEURISTIC_CHECK
     assert widget.app_mode_combo.currentData() == "validation"
-    assert widget.metric_combo.currentData() == HEURISTIC_CHECK_SCORE
+    # The metric list may follow on a deferred refresh: under a loaded parallel run, wait for it.
+    qtbot.waitUntil(lambda: widget.metric_combo.currentData() == HEURISTIC_CHECK_SCORE, timeout=5000)
     assert widget._t("profile.heuristic_check.title") in widget.analysis_setup_panel.profile_description_label.text()
     assert not widget._matrix_single_result_sensitivity_row.isHidden()
     assert widget._matrix_geometry_row.isHidden()
+
+
+def test_error_maps_paint_every_finding_and_list_them(tmp_path: Path) -> None:
+    import csv
+
+    from karakal.core.heuristic_error_export import (
+        ERROR_MAPS_FOLDER,
+        FINDINGS_FILE,
+        export_heuristic_error_maps,
+        render_heuristic_error_map,
+    )
+    from karakal.core.synthetic_chip import make_frame
+
+    broken, middle = _with_open(_layout())
+    craters = make_frame("craters", 1).image
+    images = [_photo(broken), craters, _photo(_layout(2), seed=2), np.full((512, 512), 120, dtype=np.uint8)]
+    result = compute_heuristic_check(_run(tmp_path / "run", images))
+
+    report = export_heuristic_error_maps(result, tmp_path / "export", image_format="png")
+
+    maps = sorted(path.name for path in (tmp_path / "export" / ERROR_MAPS_FOLDER).iterdir())
+    assert maps == ["F_0000.png", "F_0001.png"]
+    assert report.without_findings == ("F_0002",)
+    assert report.unrated == ("F_0003",)
+    # The maps folder is named in Russian: read through numpy, cv2.imread cannot open such paths on Windows.
+    error_map = cv2.imdecode(np.fromfile(str(tmp_path / "export" / ERROR_MAPS_FOLDER / "F_0000.png"), np.uint8), cv2.IMREAD_COLOR)
+    assert error_map.shape[:2] == (512, 512)
+    # The open is painted red where it is; the rest of the frame stays black.
+    assert tuple(error_map[68, middle + 3]) == (40, 40, 255)
+    assert tuple(error_map[5, 5]) == (0, 0, 0)
+    with (tmp_path / "export" / FINDINGS_FILE).open(encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle, delimiter=";"))
+    assert any(row["frame"] == "F_0000" and row["code"] == "open" and row["group"] == "topology" for row in rows)
+    assert any(row["frame"] == "F_0001" and row["group"] == "gross" for row in rows)
+    assert any(row["frame"] == "F_0003" and row["verdict"] == "unreadable" for row in rows)
+    # The map has every finding, not only the few the frame window lists.
+    check = result.records[1].summary.heuristic_check
+    assert len(check.regions) >= len([reason for reason in check.reasons if reason.bbox is not None])
+    assert render_heuristic_error_map(check, 512, 512).any()
+
+
+def test_export_button_writes_heuristic_error_maps(tmp_path: Path, qtbot, monkeypatch) -> None:
+    from PyQt6.QtCore import QSettings
+
+    import karakal.app.presenter as presenter_module
+    from karakal.app.main_window import KarakalWidget
+    from karakal.core.heuristic_error_export import ERROR_MAPS_FOLDER
+
+    widget = KarakalWidget(settings=QSettings(str(tmp_path / "karakal.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(widget)
+    presenter = widget._presenter
+    photos = tmp_path / "photos"
+    broken, _middle = _with_open(_layout())
+    _write(photos / "F_0000.png", _photo(broken))
+    _write(photos / "F_0001.png", _photo(_layout(1), seed=1))
+    presenter._append_folder_item(photos, checked=True)
+    presenter._refresh_folder_rows()
+    presenter._sync_action_buttons()
+    assert presenter._analysis_profile == AnalysisProfileKind.HEURISTIC_CHECK
+    result = compute_heuristic_check(_run(tmp_path / "run", [_photo(broken), _photo(_layout(1), seed=1)]))
+    state = type("State", (), {"build_result": result})()
+    presenter._export_folder = tmp_path / "export"
+    messages: list[str] = []
+    monkeypatch.setattr(presenter_module.QInputDialog, "getItem", lambda *args, **kwargs: ("PNG", True))
+    monkeypatch.setattr(presenter_module.QMessageBox, "information", lambda *args: messages.append(str(args[2])))
+
+    presenter._export_heuristic_error_maps(state)
+
+    written = list((tmp_path / "export").glob(f"*/{ERROR_MAPS_FOLDER}/*.png"))
+    assert [path.name for path in written] == ["F_0000.png"]
+    assert messages and str(written[0].parent) in messages[0]

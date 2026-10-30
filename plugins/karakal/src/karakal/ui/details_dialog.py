@@ -51,7 +51,7 @@ from ..core.backend_constants import (
 )
 from ..core.domain import BuildResult, ComparisonMode, FrameRecord
 from ..core.grid_anomaly import CONTOUR_AREA_FEATURE, GridFrameAnalysisResult
-from ..core.heuristic_check import CONTAMINATION_REASONS, GEOMETRY_REASONS, TOPOLOGY_REASONS
+from ..core.heuristic_check import CONTAMINATION_REASONS, GEOMETRY_REASONS, GROSS_REASONS, TOPOLOGY_REASONS
 from ..core.performance import PerformanceConfig
 from ..core.confidence_analysis import (
     _confidence_display_map_from_probability,
@@ -88,9 +88,16 @@ from ..ui.ui_constants import (
 
 DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
 # Layers of the heuristic check: every finding, then by group.
-HEURISTIC_RESULT_KINDS = ("heuristic_all", "heuristic_topology", "heuristic_contamination", "heuristic_geometry")
+HEURISTIC_RESULT_KINDS = (
+    "heuristic_all",
+    "heuristic_gross",
+    "heuristic_topology",
+    "heuristic_contamination",
+    "heuristic_geometry",
+)
 _HEURISTIC_KIND_CODES = {
-    "heuristic_all": TOPOLOGY_REASONS + CONTAMINATION_REASONS + GEOMETRY_REASONS,
+    "heuristic_all": GROSS_REASONS + TOPOLOGY_REASONS + CONTAMINATION_REASONS + GEOMETRY_REASONS,
+    "heuristic_gross": GROSS_REASONS,
     "heuristic_topology": TOPOLOGY_REASONS,
     "heuristic_contamination": CONTAMINATION_REASONS,
     "heuristic_geometry": GEOMETRY_REASONS,
@@ -5359,6 +5366,12 @@ class ExtendFrameDetailsDialog(QDialog):
         if kind.startswith("comparison_layer::"):
             self._comparison_score = None
             self.result_item.setPixmap(self._comparison_raster_layer_pixmap(kind.split("::", 1)[1]))
+        elif kind in {"risk_structure", "risk_source", "risk_confidence"}:
+            self._comparison_score = None
+            self.result_item.setPixmap(self._single_result_risk_pixmap(kind))
+        elif kind in HEURISTIC_RESULT_KINDS:
+            self._comparison_score = None
+            self.result_item.setPixmap(self._heuristic_check_pixmap(kind))
         elif kind == "confidence":
             self._comparison_score = None
             self.result_item.setPixmap(self._confidence_overlay_pixmap(confidence_model_id))
@@ -5550,6 +5563,7 @@ class ExtendFrameDetailsDialog(QDialog):
         if check.total_risk is not None:
             lines.append(f"{self._t('metric.heuristic_check_score')}: {float(check.total_risk):.1f}/100")
         for key, value in (
+            ("metric.heuristic_gross_risk", getattr(check, "gross_risk", None)),
             ("metric.heuristic_topology_risk", check.topology_risk),
             ("metric.heuristic_contamination_risk", check.contamination_risk),
             ("metric.heuristic_width_risk", check.width_risk),

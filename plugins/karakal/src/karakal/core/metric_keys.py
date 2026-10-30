@@ -153,6 +153,7 @@ def _available_metric_keys_for_models(
                 "source_mask_agreement_risk",
                 "confidence_risk",
                 "heuristic_check_score",
+                "heuristic_gross_risk",
                 "heuristic_topology_risk",
                 "heuristic_contamination_risk",
                 "heuristic_width_risk",

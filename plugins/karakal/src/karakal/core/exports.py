@@ -2049,6 +2049,7 @@ def export_ranked_frames(
             "sensitivity": str(check.sensitivity),
             "capture_issues": list(check.capture_issues),
             "components": {
+                "gross": getattr(check, "gross_risk", None),
                 "topology": check.topology_risk,
                 "contamination": check.contamination_risk,
                 "width": check.width_risk,

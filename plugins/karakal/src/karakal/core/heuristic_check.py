@@ -4,7 +4,7 @@ The frames are photos of one chip layer (lines, pours, vias). There is no lattic
 matrix, and no ground truth: every frame is read on its own and then against the whole run.
 
 - Capture: a frame with too little contrast, too much clipped light, or a blur (narrow lines no
-  longer reaching the brightness of wide metal, or a sharpness far below the run's) is not rated;
+  longer reaching the brightness of wide metal, or edges much softer than the run's) is not rated;
   it keeps only the reason.
 - Metal: Otsu on the smoothed frame, metal brighter than the substrate unless said otherwise. The
   frame is first scaled down until a typical line is about 8 px wide.
@@ -58,8 +58,10 @@ HEURISTIC_CONTAMINATION_RISK = "heuristic_contamination_risk"
 HEURISTIC_WIDTH_RISK = "heuristic_width_risk"
 HEURISTIC_GEOMETRY_RISK = "heuristic_geometry_risk"
 HEURISTIC_BATCH_RISK = "heuristic_batch_risk"
+HEURISTIC_GROSS_RISK = "heuristic_gross_risk"
 HEURISTIC_CHECK_METRICS = (
     HEURISTIC_CHECK_SCORE,
+    HEURISTIC_GROSS_RISK,
     HEURISTIC_TOPOLOGY_RISK,
     HEURISTIC_CONTAMINATION_RISK,
     HEURISTIC_WIDTH_RISK,
@@ -68,20 +70,31 @@ HEURISTIC_CHECK_METRICS = (
 )
 
 VERDICT_NORMAL = "normal"
+VERDICT_GROSS = "gross"
 VERDICT_TOPOLOGY = "topology"
 VERDICT_DIRT = "dirt"
 VERDICT_ETCH_DEVIATION = "etch_deviation"
 VERDICT_UNREADABLE = "unreadable"
-VERDICTS = (VERDICT_NORMAL, VERDICT_TOPOLOGY, VERDICT_DIRT, VERDICT_ETCH_DEVIATION, VERDICT_UNREADABLE)
+VERDICTS = (
+    VERDICT_NORMAL,
+    VERDICT_GROSS,
+    VERDICT_TOPOLOGY,
+    VERDICT_DIRT,
+    VERDICT_ETCH_DEVIATION,
+    VERDICT_UNREADABLE,
+)
 
 # Reason codes by the group the details window draws them in.
+# Gross defects: a hair or fibre across the frame, a crater field, a large damage (a hole).
+GROSS_REASONS = ("hair", "crater", "damage")
 TOPOLOGY_REASONS = ("open", "thin_metal", "narrow_gap")
-CONTAMINATION_REASONS = ("residue", "particle", "stain", "debris", "pinhole")
+CONTAMINATION_REASONS = ("residue", "particle", "stain", "debris", "pinhole", "anomaly")
 GEOMETRY_REASONS = ("off_axis_edges",)
 WIDTH_REASONS = ("etch_over", "etch_under", "width_spread")
 CAPTURE_REASONS = ("low_contrast", "clipped", "blur", "no_pattern")
 
 COMPONENT_WEIGHTS = {
+    HEURISTIC_GROSS_RISK: 0.30,
     HEURISTIC_TOPOLOGY_RISK: 0.30,
     HEURISTIC_CONTAMINATION_RISK: 0.30,
     HEURISTIC_WIDTH_RISK: 0.15,
@@ -115,18 +128,19 @@ class HeuristicCheckConfig:
     analysis_width: float = 8.0
     # Share of 0..255 between the 1st and 99th percentiles below which a frame is not rated.
     min_contrast: float = 0.08
-    max_clipped_fraction: float = 0.30
+    # Almost all of the frame clipped: nothing left to read. A clipped black background alone is fine.
+    max_clipped_fraction: float = 0.98
     # Metal share outside this range: no pattern to rate.
     min_metal_fraction: float = 0.02
     max_metal_fraction: float = 0.98
-    # Sharpness below this share of the run's median is a blur.
-    blur_ratio: float = 0.30
+    # Edges softer than this many times the run's median softness: a blur.
+    blur_ratio: float = 1.4
     # Narrow lines (gaps) reaching less than this share of the wide metal (substrate) level: a blur.
     min_line_fill: float = 0.75
     # Metal or gap narrower than this share of the narrow width (gap) is thin (narrow).
     thin_ratio: float = 0.5
     # Facing line ends closer than this share of the narrow gap are an open.
-    open_gap_ratio: float = 0.8
+    open_gap_ratio: float = 0.9
     # A line end narrower than this share of the line behind it tapers.
     taper_ratio: float = 0.6
     # Crumbs and holes smaller than this many W x W squares are debris and pinholes.
@@ -136,6 +150,22 @@ class HeuristicCheckConfig:
     particle_mad: float = 6.0
     particle_min_area: int = 4
     stain_level: float = 0.12
+    # Rarity of a patch: how far (robust z) its look is from its closest look-alikes in the frame.
+    # Dirt counts only on patches at least this rare; patches this rare with nothing else found
+    # are an anomaly of their own (a fibre, a crater, a hole).
+    rare_gate_z: float = 2.5
+    # Gross defects: a curved outline run at least this many line widths (or 2.5 % of the frame)
+    # long; a crater field: at least this many rare dirt findings close together.
+    gross_run_widths: float = 5.0
+    # An outline pixel more than this off 0/45/90 degrees is curved (for gross defects).
+    gross_off_degrees: float = 15.0
+    # The design also routes at 45 degrees: such outlines are not curved.
+    diagonal_routing: bool = False
+    crater_findings: int = 3
+    # More fine topology findings than this in one frame are the design's own narrow places
+    # (grainy rail edges, combs on SEM photos), not broken lines: they are not counted.
+    fine_topology_limit: int = 12
+    anomaly_z: float = 8.0
     off_axis_degrees: float = 10.0
 
 
@@ -156,6 +186,8 @@ class HeuristicCheckSummary:
     component_weights: dict[str, float]
     component_contributions: dict[str, float]
     feature_values: dict[str, float]
+    gross_risk: float | None = None
+    regions: tuple[RiskReason, ...] = ()
 
 
 @dataclass(slots=True)
@@ -169,6 +201,9 @@ class FrameFindings:
     contamination_raw: float = 0.0
     geometry_raw: float = 0.0
     reasons: list[RiskReason] = field(default_factory=list)
+    gross_raw: float = 0.0
+    # Every finding with a box, not only the few kept as reasons: the error map draws these.
+    regions: list[RiskReason] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -186,17 +221,36 @@ class _HeuristicRow:
 
 
 def looks_like_photo(gray: np.ndarray) -> bool:
-    """A photo spreads over many gray levels; a mask, even a soft one, sits mostly at 0 and 255."""
+    """A photo, not a network mask or confidence map.
+
+    A photo spreads over many gray levels. A contrast-stretched SEM photo may sit mostly at 0 and
+    255 like a mask, but its bright areas are grainy inside, while a mask (even a JPEG one) and a
+    confidence map are smooth inside and only have a gray fringe at their edges.
+    """
 
     values = np.asarray(gray)
     if values.ndim != 2 or values.size == 0:
         return False
-    step = max(1, int(np.sqrt(values.size / 250_000.0)))
+    step = max(1, int(np.sqrt(values.size / 1_000_000.0)))
     sample = np.asarray(values[::step, ::step], dtype=np.uint8)
     extreme = float(np.mean((sample <= 10) | (sample >= 245)))
     histogram = np.bincount(sample.ravel(), minlength=256)
     levels = int(np.count_nonzero(histogram > sample.size * 1.0e-4))
-    return extreme < 0.5 and levels >= 32
+    if extreme < 0.5 and levels >= 32:
+        return True
+    if cv2 is None:
+        return False
+    plane = sample.astype(np.float32)
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    # Inside bright areas, and in gray areas away from any step (a mask has no such gray).
+    # Well inside: a soft mask's blurred fringe must not count as grain.
+    bright_inside = cv2.erode((sample > 128).astype(np.uint8), np.ones((11, 11), dtype=np.uint8)) > 0
+    gray_inside = (sample > 30) & (sample < 225) & (cv2.morphologyEx(plane, cv2.MORPH_GRADIENT, kernel) < 60.0)
+    region = (bright_inside & (sample < 250)) | gray_inside
+    if np.count_nonzero(region) < max(256, sample.size // 100):
+        return False
+    grain = np.abs(plane - cv2.GaussianBlur(plane, (0, 0), 1.0))
+    return float(np.median(grain[region])) >= 4.0
 
 
 _PHOTO_FOLDER_CACHE: dict[tuple[str, int], bool] = {}
@@ -289,6 +343,183 @@ def _component_boxes(
     return boxes
 
 
+def _crumbs(metal: np.ndarray, small_area: float) -> tuple[int, list[tuple[int, tuple[float, float, float, float]]]]:
+    """(vias, crumbs): small metal pieces off the frame border, told apart on a via layer.
+
+    When at least eight small pieces make half of all pieces, the frame is a via layer. A via is
+    then a piece within 35 % of the typical small area, nearly square and filling its box; the
+    other small pieces are crumbs. Elsewhere every small piece is a crumb.
+    """
+
+    if not np.any(metal):
+        return 0, []
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(metal.astype(np.uint8), connectivity=8)
+    height, width = metal.shape
+    pieces = []
+    for label in range(1, count):
+        left, top = int(stats[label, cv2.CC_STAT_LEFT]), int(stats[label, cv2.CC_STAT_TOP])
+        box_width, box_height = int(stats[label, cv2.CC_STAT_WIDTH]), int(stats[label, cv2.CC_STAT_HEIGHT])
+        if left == 0 or top == 0 or left + box_width >= width or top + box_height >= height:
+            continue
+        pieces.append((int(stats[label, cv2.CC_STAT_AREA]), left, top, box_width, box_height))
+    small = [piece for piece in pieces if 3 <= piece[0] < small_area]
+    via_layer = len(small) >= 8 and 2 * len(small) >= len(pieces)
+    typical = float(np.median([piece[0] for piece in small])) if small else 0.0
+    vias = 0
+    crumbs: list[tuple[int, tuple[float, float, float, float]]] = []
+    for area, left, top, box_width, box_height in small:
+        fill = area / float(max(1, box_width * box_height))
+        aspect = min(box_width, box_height) / float(max(1, box_width, box_height))
+        if via_layer and abs(area / max(typical, 1.0) - 1.0) <= 0.35 and fill >= 0.85 and aspect >= 0.75:
+            vias += 1
+            continue
+        crumbs.append((area, _bbox(top - 2, left - 2, top + box_height + 2, left + box_width + 2, metal.shape)))
+    crumbs.sort(key=lambda item: item[0], reverse=True)
+    return vias, crumbs
+
+
+def _outline_runs(
+    shape_mask: np.ndarray, smoother: np.ndarray, width: float, cfg: "HeuristicCheckConfig"
+) -> list[tuple[str, int, tuple[float, float, float, float]]]:
+    """Long runs of curved outline of ``shape_mask``, grouped: (kind, length, box).
+
+    The direction of the outline is read from ``smoother``. A group long, thin and far-reaching
+    is a "hair"; any other is a "damage".
+    """
+
+    height, width_px = shape_mask.shape
+    grad_x = cv2.Sobel(smoother, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(smoother, cv2.CV_32F, 0, 1, ksize=3)
+    period = 45.0 if cfg.diagonal_routing else 90.0
+    angle = np.mod(np.degrees(np.arctan2(grad_y, grad_x)), period)
+    curved = np.minimum(angle, period - angle) > cfg.gross_off_degrees
+    outline = shape_mask & ~(cv2.erode(shape_mask.astype(np.uint8), np.ones((3, 3), dtype=np.uint8)) > 0)
+    off = (outline & curved).astype(np.uint8)
+    if not np.any(off):
+        return []
+    count, labels, _stats, _centroids = cv2.connectedComponentsWithStats(
+        cv2.dilate(off, np.ones((3, 3), dtype=np.uint8)), connectivity=8
+    )
+    min_run = max(cfg.gross_run_widths * width, 0.025 * min(height, width_px))
+    run_lengths = np.bincount(labels[off > 0], minlength=count)
+    keep = np.zeros(count, dtype=bool)
+    keep[1:] = run_lengths[1:] >= min_run
+    long_runs = (keep[labels] & (off > 0)).astype(np.uint8)
+    if not np.any(long_runs):
+        return []
+    radius = max(2, int(round(2.0 * width)))
+    grouped = cv2.dilate(long_runs, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)))
+    group_count, group_labels, group_stats, _centroids = cv2.connectedComponentsWithStats(grouped, connectivity=8)
+    found: list[tuple[str, int, tuple[float, float, float, float]]] = []
+    for label in range(1, group_count):
+        ys, xs = np.nonzero((group_labels == label) & (long_runs > 0))
+        if xs.size < 3:
+            continue
+        points = np.stack([xs, ys], axis=1).astype(np.float32)
+        spread = np.linalg.eigvalsh(np.cov((points - points.mean(axis=0)).T))
+        elongation = float(np.sqrt(max(spread[1], 1.0e-6) / max(spread[0], 1.0e-6)))
+        reach = 4.0 * float(np.sqrt(max(spread[1], 0.0)))
+        hair = elongation > 5.0 and reach > max(20.0 * width, 0.15 * min(height, width_px))
+        left, top = int(group_stats[label, cv2.CC_STAT_LEFT]), int(group_stats[label, cv2.CC_STAT_TOP])
+        right = left + int(group_stats[label, cv2.CC_STAT_WIDTH])
+        bottom = top + int(group_stats[label, cv2.CC_STAT_HEIGHT])
+        # A damage on its own must be large: a hole's edge, not the corner of a design pocket.
+        large = hair or reach >= max(8.0 * width, 0.1 * min(height, width_px))
+        found.append(("hair" if hair else "damage" if large else "curve", int(xs.size), _bbox(top, left, bottom, right, shape_mask.shape)))
+    return found
+
+
+def _curved_runs(
+    metal: np.ndarray, smooth: np.ndarray, width: float, cfg: "HeuristicCheckConfig"
+) -> tuple[list[tuple[str, int, tuple[float, float, float, float]]], list[tuple[str, int, tuple[float, float, float, float]]]]:
+    """(metal runs, dark runs): long curved outlines of the metal, and of black pits in the dark.
+
+    The design draws its outline at 0 and 90 degrees (and 45 with diagonal routing); its rounded
+    line ends are curved for a line width or two only. A crater rim, the edge of a hole or a hair
+    is curved for hundreds of pixels. Black pits in a grey dielectric (craters) lie below the
+    metal threshold, so the dark class is split once more and its outline read too.
+    """
+
+    height, width_px = metal.shape
+    # The outline of the lightly smoothed photo; its direction from a strongly smoothed one, so
+    # that pixel stairs and grain do not read as curves.
+    smoother = cv2.GaussianBlur(smooth, (0, 0), max(2.0, width / 3.0, min(height, width_px) / 500.0))
+    lightly = cv2.GaussianBlur(smooth, (0, 0), 1.5)
+    lightly_u8 = np.asarray(np.clip(lightly * 255.0, 0, 255), dtype=np.uint8)
+    level, _binary = cv2.threshold(lightly_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    bright_metal = not (np.any(metal) and np.any(~metal)) or bool(np.mean(lightly[metal]) >= np.mean(lightly[~metal]))
+    shape_mask = (lightly_u8 > level) == bright_metal
+    metal_runs = _outline_runs(shape_mask, smoother, width, cfg)
+    dark = ~shape_mask
+    dark_runs: list[tuple[str, int, tuple[float, float, float, float]]] = []
+    if np.count_nonzero(dark) > 64:
+        pits_source = cv2.GaussianBlur(smooth, (0, 0), max(3.0, width / 4.0))
+        pits_u8 = np.asarray(np.clip(pits_source * 255.0, 0, 255), dtype=np.uint8)
+        dark_level, _binary = cv2.threshold(pits_u8[dark].reshape(-1, 1), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        pits = dark & ((pits_u8 <= dark_level) if bright_metal else (pits_u8 > dark_level))
+        dark_runs = _outline_runs(pits, smoother, width, cfg)
+    return metal_runs, dark_runs
+
+
+def _crater_fields(
+    boxes: list[tuple[float, float, float, float]],
+    curved_boxes: list[tuple[float, float, float, float]],
+    shape: tuple[int, int],
+    width: float,
+    cfg: "HeuristicCheckConfig",
+) -> list[tuple[str, int, tuple[float, float, float, float]]]:
+    """Dirt findings close together over a large area with long curved outlines in it: craters.
+
+    Dirt alone also clusters on designed grey pads; curved outlines alone also ring the round
+    pockets of a meander. Craters have both.
+    """
+
+    if len(boxes) < cfg.crater_findings:
+        return []
+    height, width_px = shape
+    area = np.zeros(shape, dtype=np.uint8)
+    centres = []
+    for box in boxes:
+        y0, x0, y1, x1 = _pixel_box(box, shape)
+        area[y0:y1, x0:x1] = 1
+        centres.append(((y0 + y1) // 2, (x0 + x1) // 2))
+    radius = max(3, int(round(3.0 * width)))
+    grouped = cv2.dilate(area, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1)))
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(grouped, connectivity=8)
+    members = np.bincount([int(labels[min(y, height - 1), min(x, width_px - 1)]) for y, x in centres], minlength=count)
+    reach = max(8.0 * width, 0.05 * min(height, width_px))
+    found = []
+    for label in range(1, count):
+        box_w, box_h = int(stats[label, cv2.CC_STAT_WIDTH]), int(stats[label, cv2.CC_STAT_HEIGHT])
+        if members[label] < cfg.crater_findings or max(box_w, box_h) < reach:
+            continue
+        # A long thin strip is grain along a rail, not a crater field.
+        if max(box_w, box_h) > 3 * max(1, min(box_w, box_h)):
+            continue
+        left, top = int(stats[label, cv2.CC_STAT_LEFT]), int(stats[label, cv2.CC_STAT_TOP])
+        field = np.zeros(shape, dtype=bool)
+        field[top : top + box_h, left : left + box_w] = labels[top : top + box_h, left : left + box_w] == label
+        if not any(_box_center_in(field, box) for box in curved_boxes):
+            continue
+        found.append(("crater", int(members[label]), _bbox(top, left, top + box_h, left + box_w, shape)))
+    return found
+
+
+def _drop_repeated(
+    items: list[tuple[str, int, tuple[float, float, float, float]]], copies: int = 3
+) -> list[tuple[str, int, tuple[float, float, float, float]]]:
+    """Without findings that have ``copies`` or more look-alikes (same size within 20 %): the design repeats, damage does not."""
+
+    def alike(first, second) -> bool:
+        return all(abs(a - b) <= 0.2 * max(a, b) for a, b in ((first[2], second[2]), (first[3], second[3])))
+
+    return [
+        item
+        for item in items
+        if sum(1 for other in items if other is not item and alike(item[2], other[2])) < copies
+    ]
+
+
 def _open3(mask: np.ndarray) -> np.ndarray:
     kernel = np.ones((3, 3), dtype=np.uint8)
     return cv2.morphologyEx(np.asarray(mask, dtype=np.uint8), cv2.MORPH_OPEN, kernel).astype(bool)
@@ -327,13 +558,16 @@ def _box_center_in(mask: np.ndarray, box: tuple[float, float, float, float]) -> 
 
 
 def _rough_width(mask: np.ndarray, distance: np.ndarray) -> float:
-    """Typical width from the ridge of the distance transform (no skeleton needed)."""
+    """Typical width of the narrowest lines, from the ridge of the distance transform (no skeleton needed)."""
 
     if not np.any(mask):
         return 0.0
     ridge = mask & (distance >= 1.0) & (distance >= cv2.dilate(distance, np.ones((3, 3), dtype=np.uint8)))
-    values = distance[ridge]
-    return float(max(1.0, 2.0 * np.median(values) - 1.0)) if values.size else 1.0
+    values = 2.0 * distance[ridge] - 1.0
+    if not values.size:
+        return 1.0
+    lowest = float(np.percentile(values, 10.0))
+    return float(max(1.0, np.median(values[values <= 1.3 * max(lowest, 1.0)])))
 
 
 def _bounded_skeleton(mask: np.ndarray, distance: np.ndarray, cap: float) -> np.ndarray:
@@ -388,8 +622,14 @@ def _width_profile(mask: np.ndarray, distance: np.ndarray) -> _Profile:
     core[:, :radius] = False
     core[:, -radius:] = False
     widths = 2.0 * distance[core if np.any(core) else skeleton] - 1.0
-    p20, p25, p50, p75 = (float(value) for value in np.percentile(widths, (20.0, 25.0, 50.0, 75.0)))
-    return _Profile(skeleton, neighbors, core, max(1.0, p20), max(1.0, p50), (p75 - p25) / max(1.0, p50))
+    # The narrow width is the lowest family of widths (the minimum-width lines), however many
+    # wider lines and pours the frame has; its spread is the spread of those lines only.
+    lowest = float(np.percentile(widths, 10.0))
+    family = widths[widths <= 1.3 * max(lowest, 1.0)]
+    q25, narrow, q75 = (float(value) for value in np.percentile(family, (25.0, 50.0, 75.0)))
+    return _Profile(
+        skeleton, neighbors, core, max(1.0, narrow), max(1.0, float(np.median(widths))), (q75 - q25) / max(1.0, narrow)
+    )
 
 
 _NEIGHBOR_STEPS = tuple((dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx)
@@ -502,21 +742,156 @@ def _opens(
     return found
 
 
+def _blur(plane: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian blur; a wide one runs on a smaller copy (same look, a fraction of the time)."""
+
+    plane = np.asarray(plane, dtype=np.float32)
+    if sigma <= 6.0:
+        return cv2.GaussianBlur(plane, (0, 0), sigma)
+    height, width = plane.shape
+    factor = sigma / 3.0
+    small_size = (max(1, int(round(width / factor))), max(1, int(round(height / factor))))
+    small = cv2.GaussianBlur(cv2.resize(plane, small_size, interpolation=cv2.INTER_AREA), (0, 0), 3.0)
+    return cv2.resize(small, (width, height), interpolation=cv2.INTER_LINEAR)
+
+
+def _patch_rarity(
+    smooth: np.ndarray, grad_x: np.ndarray, grad_y: np.ndarray, magnitude: np.ndarray, patch: int, neighbours: int = 3
+) -> np.ndarray:
+    """Robust z of each patch's distance to its ``neighbours``-th closest look-alike, per pixel.
+
+    A patch looks like its brightness histogram, the directions of its edges and how much edge it
+    has. What the design repeats (rails, pads, grainy metal, combs) has look-alikes; a crater, a
+    hole or a fibre has none.
+    """
+
+    height, width = smooth.shape
+    rows, columns = height // patch, width // patch
+    if rows * columns < 4 * neighbours:
+        return np.zeros((height, width), dtype=np.float32)
+    crop = (slice(0, rows * patch), slice(0, columns * patch))
+
+    def pool(values: np.ndarray) -> np.ndarray:
+        return values[crop].reshape(rows, patch, columns, patch).mean(axis=(1, 3)).reshape(-1)
+
+    features = []
+    levels = np.clip(((smooth + 0.25) / 1.5 * 6.0).astype(np.int32), 0, 5)
+    for level in range(6):
+        features.append(pool((levels == level).astype(np.float32)))
+    edge = pool(magnitude)
+    presence = edge / (edge + 0.02)
+    orientation = np.clip((np.mod(np.degrees(np.arctan2(grad_y, grad_x)), 180.0) / 22.5).astype(np.int32), 0, 7)
+    for direction in range(8):
+        features.append(pool(magnitude * (orientation == direction)) / (edge + 1.0e-6) * presence)
+    features.append(np.log1p(10.0 * edge))
+    looks = np.stack(features, axis=1).astype(np.float32)
+    squared = np.sum(looks * looks, axis=1)
+    distances = squared[:, None] + squared[None, :] - 2.0 * (looks @ looks.T)
+    np.fill_diagonal(distances, np.inf)
+    nearest = np.sqrt(np.maximum(np.partition(distances, neighbours - 1, axis=1)[:, neighbours - 1], 0.0))
+    # The norm comes from patches with something in them: in a frame mostly empty, empty patches
+    # all look alike and would make every drawn patch look rare.
+    busy = presence > 0.5
+    reference = nearest[busy] if int(np.count_nonzero(busy)) >= 4 * neighbours else nearest
+    median = float(np.median(reference))
+    spread = max(1.4826 * float(np.median(np.abs(reference - median))), 0.03)
+    rarity = ((nearest - median) / spread).reshape(rows, columns).astype(np.float32)
+    grid = np.repeat(np.repeat(rarity, patch, axis=0), patch, axis=1)
+    return np.pad(grid, ((0, height - grid.shape[0]), (0, width - grid.shape[1])), mode="edge")
+
+
+def _local_level(smooth: np.ndarray, region: np.ndarray, tiles: int, percentile: float) -> np.ndarray:
+    """Smooth map of a percentile of ``smooth`` over ``region``, read in ``tiles`` x ``tiles`` blocks.
+
+    A percentile per block, not a mean: a residue film or a stain covering a minor part of a
+    block does not move it. Blocks without enough pixels take the frame's value.
+    """
+
+    height, width = smooth.shape
+    overall = float(np.percentile(smooth[region], percentile))
+    grid = np.full((tiles, tiles), overall, dtype=np.float32)
+    for row in range(tiles):
+        y0, y1 = row * height // tiles, (row + 1) * height // tiles
+        for column in range(tiles):
+            x0, x1 = column * width // tiles, (column + 1) * width // tiles
+            block = region[y0:y1, x0:x1]
+            if int(np.count_nonzero(block)) >= 32:
+                grid[row, column] = float(np.percentile(smooth[y0:y1, x0:x1][block], percentile))
+    level = cv2.resize(grid, (width, height), interpolation=cv2.INTER_LINEAR)
+    return _blur(level, max(4.0, min(height, width) / (2.0 * tiles)))
+
+
+def _flatten(smooth: np.ndarray, metal: np.ndarray, tiles: int = 3) -> tuple[np.ndarray, np.ndarray]:
+    """Uneven light out: local metal level to 1, local substrate level to 0, and the mask again.
+
+    The levels are block medians of pixels well inside their class (``_local_level``). From here
+    on metal is bright, whatever the polarity of the photo. Stains and films smaller than half a
+    block stay.
+    """
+
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    inner_metal = cv2.erode(metal.astype(np.uint8), kernel) > 0
+    inner_gap = cv2.erode((~metal).astype(np.uint8), kernel) > 0
+    if not np.any(inner_metal) or not np.any(inner_gap):
+        return smooth, metal
+    # Metal is read high: where little metal is about, a mid-tone film the first mask took for
+    # metal must not become the metal level.
+    metal_level = _local_level(smooth, inner_metal, tiles, 75.0)
+    gap_level = _local_level(smooth, inner_gap, tiles, 50.0)
+    span = metal_level - gap_level
+    overall_span = float(np.median(smooth[inner_metal]) - np.median(smooth[inner_gap]))
+    span = np.where(np.abs(span) < 0.05, overall_span, span)
+    flat = np.clip((smooth - gap_level) / span, -0.5, 1.5).astype(np.float32)
+    return flat, flat > 0.5
+
+
+def _line_fills(photo: np.ndarray, core: np.ndarray, deep: np.ndarray, other: np.ndarray, tiles: int = 3) -> list[float]:
+    """Per block: how far the narrow skeleton pixels get from the other class towards the wide areas."""
+
+    height, width = photo.shape
+    fills: list[float] = []
+    for row in range(tiles):
+        y0, y1 = row * height // tiles, (row + 1) * height // tiles
+        for column in range(tiles):
+            x0, x1 = column * width // tiles, (column + 1) * width // tiles
+            block = (slice(y0, y1), slice(x0, x1))
+            if (
+                np.count_nonzero(core[block]) < 8
+                or np.count_nonzero(deep[block]) < 16
+                or np.count_nonzero(other[block]) < 16
+            ):
+                continue
+            other_level = float(np.median(photo[block][other[block]]))
+            reference = float(np.median(photo[block][deep[block]])) - other_level
+            if abs(reference) >= 0.05:
+                fills.append((float(np.median(photo[block][core[block]])) - other_level) / reference)
+    return fills
+
+
 def _class_drift(values: np.ndarray, weight: np.ndarray, sigma: float) -> tuple[np.ndarray, np.ndarray]:
     """Local mean of ``values`` over ``weight`` pixels and where it is defined."""
 
     weight_f = np.asarray(weight, dtype=np.float32)
-    blurred_weight = cv2.GaussianBlur(weight_f, (0, 0), sigma)
-    blurred = cv2.GaussianBlur(values * weight_f, (0, 0), sigma)
+    blurred_weight = _blur(weight_f, sigma)
+    blurred = _blur(values * weight_f, sigma)
     valid = blurred_weight > 0.25
     return np.where(valid, blurred / np.maximum(blurred_weight, 1.0e-6), 0.0), valid
 
 
 def _add_reasons(
-    reasons: list[RiskReason], code: str, contribution: float, boxes: list[tuple[int, tuple[float, float, float, float]]]
+    reasons: list[RiskReason],
+    regions: list[RiskReason],
+    code: str,
+    contribution: float,
+    boxes: list[tuple[int, tuple[float, float, float, float]]],
 ) -> None:
-    for _area, box in boxes[:REASONS_PER_CODE]:
-        reasons.append(RiskReason(code, _severity(contribution), contribution, box, detail=str(len(boxes))))
+    """The largest few boxes as reasons (what the frame window lists), every box as a region (the error map)."""
+
+    for index, (_area, box) in enumerate(boxes):
+        finding = RiskReason(code, _severity(contribution), contribution, box, detail=str(len(boxes)))
+        regions.append(finding)
+        if index < REASONS_PER_CODE:
+            reasons.append(finding)
 
 
 def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) -> FrameFindings:
@@ -532,7 +907,13 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
     clipped = float(np.mean((image <= 2) | (image >= 253)))
     normalized = np.clip((values - low) / max(high - low, 1.0e-6), 0.0, 1.0)
     sharpness = float(np.var(cv2.Laplacian(normalized, cv2.CV_32F, ksize=3)))
-    extra = {"contrast": contrast, "clipped_fraction": clipped, "sharpness": sharpness}
+    extra = {
+        "contrast": contrast,
+        "clipped_fraction": clipped,
+        "sharpness": sharpness,
+        "frame_height": float(image.shape[0]),
+        "frame_width": float(image.shape[1]),
+    }
     issues: list[str] = []
     if contrast < cfg.min_contrast:
         issues.append("low_contrast")
@@ -564,6 +945,10 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
         scale = target_width / float(image.shape[1])
         smooth, metal = metal_of(cv2.resize(normalized, (target_width, target_height), interpolation=cv2.INTER_AREA))
     extra["analysis_scale"] = scale
+    # The photo as it was, before the light is flattened: a blur shows there (flattening would
+    # lift the soft narrow lines to the metal level).
+    photo_smooth, photo_metal = smooth, metal
+    smooth, metal = _flatten(smooth, metal)
     gap = ~metal
     shape = metal.shape
 
@@ -574,6 +959,7 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
     gap_profile = _width_profile(gap, gap_distance)
     width_narrow, gap_narrow = metal_profile.narrow, gap_profile.narrow
     reasons: list[RiskReason] = []
+    regions: list[RiskReason] = []
 
     def narrow_boxes(profile: _Profile, distance: np.ndarray) -> list[tuple[int, tuple[float, float, float, float]]]:
         if profile.narrow < 4.0:
@@ -610,9 +996,11 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
         for a, b, gap_size in opens
     ]
 
-    # Crumbs of metal and holes in it.
+    # Crumbs of metal and holes in it. On a via layer the small pieces are the pattern itself:
+    # only the ones unlike the typical via are crumbs.
     small_area = max(4.0, cfg.debris_area_ratio * width_narrow * width_narrow)
-    debris = _component_boxes(metal, min_area=3, max_area=small_area, skip_border=True, margin=2.0)
+    via_count, debris = _crumbs(metal, small_area)
+    extra["via_count"] = float(via_count)
     pinholes = _component_boxes(gap, min_area=3, max_area=small_area, skip_border=True, margin=2.0)
 
     # Contamination by brightness. The class levels come from pixels well inside their class;
@@ -631,6 +1019,8 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
     near_edge = edge_distance <= max(3.0, 0.5 * width_narrow)
     boundary_length = int(np.count_nonzero(_boundary_mask(metal)))
     transition = float(np.count_nonzero(mid_tone & near_edge)) / float(max(1, boundary_length))
+    # Mid-tone pixels per edge pixel: how soft the edges are, whatever the pattern density.
+    extra["edge_softness"] = transition
     band = max(2.0, 0.25 * width_narrow, transition + 1.0)
     extra["edge_band"] = band
     far_metal = metal & (metal_distance > band)
@@ -642,18 +1032,21 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
     separation = metal_level - gap_level if abs(metal_level - gap_level) >= 0.05 else separation
     position = (smooth - gap_level) / separation
     # A soft focus: the narrow lines no longer reach the level of wide metal, nor the narrow gaps
-    # that of open substrate. Measured on the skeletons, against the wide areas when there are any.
+    # that of open substrate. Measured on the photo before flattening, block by block so that
+    # uneven light does not count, on the skeletons against the wide areas nearby.
     fills: list[float] = []
-    for profile, mask_of_class, distance, own, other in (
-        (metal_profile, metal, metal_distance, metal_level, gap_level),
-        (gap_profile, gap, gap_distance, gap_level, metal_level),
+    for profile, mask_of_class, distance, other_class, other_distance in (
+        (metal_profile, metal, metal_distance, gap, gap_distance),
+        (gap_profile, gap, gap_distance, metal, metal_distance),
     ):
         if not np.any(profile.core):
             continue
         deep = mask_of_class & (distance > max(band, 0.5 * profile.narrow + 1.5))
-        reference = float(np.median(smooth[deep])) if np.count_nonzero(deep) >= 32 else own
-        if abs(reference - other) >= 0.05:
-            fills.append((float(np.median(smooth[profile.core])) - other) / (reference - other))
+        other = other_class & (other_distance > band)
+        narrow_core = profile.core & (2.0 * distance - 1.0 <= 1.5 * profile.narrow)
+        class_fills = _line_fills(photo_smooth, narrow_core, deep, other)
+        if class_fills:
+            fills.append(float(np.median(class_fills)))
     line_fill = min(fills, default=1.0)
     extra["line_fill"] = line_fill
     if line_fill < cfg.min_line_fill:
@@ -681,9 +1074,10 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
         deviating |= region & (deviation > limit)
     deviating &= ~residue
     particle_limit = 4.0 * width_narrow * width_narrow
-    particle_boxes = _component_boxes(
-        deviating, min_area=int(cfg.particle_min_area), max_area=particle_limit, margin=2.0
-    )
+    # A rough edge leaves crumbs of a few pixels; a particle worth a finding is a quarter of a
+    # W x W square or more.
+    particle_area = max(int(cfg.particle_min_area), int(round(0.25 * width_narrow * width_narrow)))
+    particle_boxes = _component_boxes(deviating, min_area=particle_area, max_area=particle_limit, margin=2.0)
     particle_pixels = sum(area for area, _box in particle_boxes)
     sigma = max(8.0, min(shape) / 48.0)
     stain = _component_mask(deviating, min_area=int(particle_limit))
@@ -693,19 +1087,52 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
         deep = mask_of_class & (distance > max(band, 0.5 * narrow + 1.5))
         if not np.any(deep):
             continue
+        # Against the class's own level a few stain sizes around, not the frame's: what light
+        # is left after flattening changes slower than that.
         drift, valid = _class_drift(smooth, deep, sigma)
-        level = float(np.median(smooth[deep]))
-        stain |= valid & deep & (np.abs(drift - level) > cfg.stain_level * abs(separation))
+        surround, surround_valid = _class_drift(smooth, deep, 4.0 * sigma)
+        stain |= valid & surround_valid & deep & (np.abs(drift - surround) > cfg.stain_level * abs(separation))
     stain &= ~residue
+    # What repeats over the frame is the design; dirt is rare. Dirt counts only on patches with
+    # few look-alikes: grey rails, pads and grainy metal repeat, craters and films do not.
+    patch = int(max(32, round(6.0 * width_narrow)))
+    rarity = _patch_rarity(smooth, grad_x, grad_y, magnitude, patch)
+    rare = rarity >= cfg.rare_gate_z
+    all_dirt_boxes = [box for _area, box in particle_boxes + debris + pinholes]
+    all_dirt_boxes += [box for _area, box in _component_boxes(residue | stain, min_area=9)]
+    # The topology inside dirt is the dirt's own, rare or not.
+    dirty = residue | stain
+    for box in all_dirt_boxes:
+        _fill_box(dirty, box)
+    residue &= rare
+    stain &= rare
+
+    def rare_only(boxes: list[tuple[int, tuple[float, float, float, float]]]) -> list[tuple[int, tuple[float, float, float, float]]]:
+        return [item for item in boxes if _box_center_in(rare, item[1])]
+
+    particle_boxes = rare_only(particle_boxes)
+    debris = rare_only(debris)
+    pinholes = rare_only(pinholes)
+    particle_pixels = sum(area for area, _box in particle_boxes)
     residue_fraction = float(np.mean(residue))
     particle_fraction = float(particle_pixels) / float(max(1, metal.size))
     stain_fraction = float(np.mean(stain))
+    # Very rare patches with curved edges (off 0/45/90 degrees) are an anomaly of their own: a
+    # crater, a hole, a fibre. A rare patch of straight edges is a part of the design seen once.
+    edge_angle = np.mod(np.degrees(np.arctan2(grad_y, grad_x)), 45.0)
+    curved = (np.minimum(edge_angle, 45.0 - edge_angle) > cfg.off_axis_degrees) * magnitude
+    curved_share = _blur(curved, patch / 2.0) / np.maximum(_blur(magnitude, patch / 2.0), 1.0e-6)
+    anomaly = (rarity >= cfg.anomaly_z) & (curved_share >= 0.35)
+    anomaly_boxes = _component_boxes(anomaly, min_area=2 * patch * patch)
+    anomaly = np.zeros(shape, dtype=bool)
+    for _area, box in anomaly_boxes:
+        _fill_box(anomaly, box)
+    anomaly_fraction = float(np.mean(anomaly))
+    extra["anomaly_fraction"] = anomaly_fraction
 
     # Dirt hides the topology: thin metal, narrow gaps and opens inside a dirty patch are the
-    # dirt's own shapes, so they count as dirt there, not as broken lines.
-    dirty = residue | stain
-    for _area, box in particle_boxes + debris + pinholes:
-        _fill_box(dirty, box)
+    # dirt's own shapes, so they count as dirt there, not as broken lines. A lone faint spot is
+    # no such patch: in the gap of a broken line it is the strand of metal left over.
     dirty = (
         cv2.dilate(
             dirty.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), iterations=max(1, int(round(width_narrow)))
@@ -721,6 +1148,11 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
     thin = clean_of_dirt(thin)
     narrow_gaps = clean_of_dirt(narrow_gaps)
     open_boxes = clean_of_dirt(open_boxes)
+    # The gap of an open is narrow too; it is told once, as the open.
+    open_area = np.zeros(shape, dtype=bool)
+    for _area, box in open_boxes:
+        _fill_box(open_area, box)
+    narrow_gaps = [item for item in narrow_gaps if not _box_center_in(open_area, item[1])]
 
     # Geometry: edges off 0/45/90 degrees.
     angle = np.mod(np.degrees(np.arctan2(grad_y, grad_x)), 45.0)
@@ -729,30 +1161,59 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
     off_axis_share = float(np.sum(magnitude[off_axis], dtype=np.float64)) / max(edge_strength, 1.0e-9)
     off_density, off_valid = _class_drift(off_axis.astype(np.float32), edge, sigma)
     off_regions = off_valid & (off_density > 0.6) & (
-        cv2.GaussianBlur(edge.astype(np.float32), (0, 0), sigma) > 0.02
+        _blur(edge.astype(np.float32), sigma) > 0.02
     )
 
-    topology_raw = _clip01((len(open_boxes) + 0.5 * len(thin) + 0.5 * len(narrow_gaps)) / 2.0)
+    # Dozens of narrow places are the design's own (grainy rail edges, combs on SEM photos).
+    fine_count = len(open_boxes) + len(thin) + len(narrow_gaps)
+    extra["fine_topology_count"] = float(fine_count)
+    if fine_count > cfg.fine_topology_limit:
+        open_boxes, thin, narrow_gaps = [], [], []
+    # One open is a broken line by itself; one neck or nearly shorted gap is half of one.
+    topology_raw = _clip01(len(open_boxes) + 0.5 * len(thin) + 0.5 * len(narrow_gaps))
     contamination_raw = _clip01(
         max(
-            residue_fraction / 0.02,
+            residue_fraction / 0.008,
             particle_fraction / 0.005,
             stain_fraction / 0.03,
             (len(debris) + len(pinholes)) / 10.0,
+            anomaly_fraction / 0.01,
         )
     )
-    geometry_raw = _clip01((off_axis_share - 0.25) / 0.35)
+    # The edges of small square vias are mostly their rounded corners: no edge shape to judge.
+    via_layer = via_count >= 8 and via_count * small_area >= 0.5 * float(np.count_nonzero(metal))
+    geometry_raw = 0.0 if via_layer else _clip01((off_axis_share - 0.25) / 0.35)
 
-    _add_reasons(reasons, "open", _clip01(len(open_boxes) / 2.0), open_boxes)
-    _add_reasons(reasons, "thin_metal", _clip01(len(thin) / 4.0), thin)
-    _add_reasons(reasons, "narrow_gap", _clip01(len(narrow_gaps) / 4.0), narrow_gaps)
-    _add_reasons(reasons, "residue", _clip01(residue_fraction / 0.02), _component_boxes(residue, min_area=9, margin=2.0))
-    _add_reasons(reasons, "particle", _clip01(particle_fraction / 0.005), particle_boxes)
-    _add_reasons(reasons, "stain", _clip01(stain_fraction / 0.03), _component_boxes(stain, min_area=16))
-    _add_reasons(reasons, "debris", _clip01(len(debris) / 10.0), debris)
-    _add_reasons(reasons, "pinhole", _clip01(len(pinholes) / 10.0), pinholes)
+    _add_reasons(reasons, regions, "open", _clip01(float(len(open_boxes))), open_boxes)
+    _add_reasons(reasons, regions, "thin_metal", _clip01(len(thin) / 2.0), thin)
+    _add_reasons(reasons, regions, "narrow_gap", _clip01(len(narrow_gaps) / 2.0), narrow_gaps)
+    _add_reasons(reasons, regions, "residue", _clip01(residue_fraction / 0.008), _component_boxes(residue, min_area=9, margin=2.0))
+    _add_reasons(reasons, regions, "particle", _clip01(particle_fraction / 0.005), particle_boxes)
+    _add_reasons(reasons, regions, "stain", _clip01(stain_fraction / 0.03), _component_boxes(stain, min_area=16))
+    _add_reasons(reasons, regions, "debris", _clip01(len(debris) / 10.0), debris)
+    _add_reasons(reasons, regions, "pinhole", _clip01(len(pinholes) / 10.0), pinholes)
+    _add_reasons(reasons, regions, "anomaly", _clip01(anomaly_fraction / 0.01), anomaly_boxes)
+
+    # Gross defects: long curved outlines (a hair, the edge of a hole) and crater fields.
+    # Outlines are read on the photo's own mask: flattening the light sharpens grain into curls.
+    metal_runs, dark_runs = _curved_runs(photo_metal, photo_smooth, width_narrow, cfg)
+    craters = _crater_fields(
+        all_dirt_boxes, [box for _code, _size, box in metal_runs + dark_runs], shape, width_narrow, cfg
+    )
+    crater_area = np.zeros(shape, dtype=bool)
+    for _code, _size, box in craters:
+        _fill_box(crater_area, box)
+    # A curved outline inside a crater field is that field's; outside it stands on its own.
+    gross = _drop_repeated(craters) + _drop_repeated(
+        [item for item in metal_runs if item[0] != "curve" and not _box_center_in(crater_area, item[2])]
+    )
+    for code, size, box in gross:
+        reasons.append(RiskReason(code, "critical", 1.0, box, detail=str(size)))
+        regions.append(reasons[-1])
+    gross_raw = 1.0 if gross else 0.0
+    extra["gross_count"] = float(len(gross))
     if geometry_raw >= 0.35:
-        _add_reasons(reasons, "off_axis_edges", geometry_raw, _component_boxes(off_regions, min_area=16))
+        _add_reasons(reasons, regions, regions, "off_axis_edges", geometry_raw, _component_boxes(off_regions, min_area=16))
 
     features = {
         "metal_fraction": metal_fraction,
@@ -776,7 +1237,9 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
             "pinhole_count": float(len(pinholes)),
         }
     )
-    return FrameFindings(features, extra, tuple(issues), topology_raw, contamination_raw, geometry_raw, reasons)
+    return FrameFindings(
+        features, extra, tuple(issues), topology_raw, contamination_raw, geometry_raw, reasons, gross_raw, regions
+    )
 
 
 # --- The run -------------------------------------------------------------------------------------
@@ -856,7 +1319,9 @@ def _width_baseline(rows: list[_HeuristicRow]) -> dict[str, tuple[float, float]]
     return baseline
 
 
-def _verdict(topology: float, contamination: float, width: float | None) -> str:
+def _verdict(topology: float, contamination: float, width: float | None, gross: float = 0.0) -> str:
+    if gross >= VERDICT_LEVEL:
+        return VERDICT_GROSS
     if topology >= VERDICT_LEVEL and topology >= contamination:
         return VERDICT_TOPOLOGY
     if contamination >= VERDICT_LEVEL:
@@ -921,12 +1386,12 @@ def compute_heuristic_check(
     )
 
     rated = [row for row in rows if not row.error and row.findings is not None and not row.findings.capture_issues]
-    sharpness = [float(row.findings.extra["sharpness"]) for row in rated]
+    softness = [float(row.findings.extra["edge_softness"]) for row in rated if "edge_softness" in row.findings.extra]
     blur_limit = (
-        cfg.blur_ratio * float(np.median(sharpness)) if len(sharpness) >= MIN_BASELINE_FRAMES else None
+        cfg.blur_ratio * float(np.median(softness)) if len(softness) >= MIN_BASELINE_FRAMES else None
     )
     if blur_limit is not None:
-        rated = [row for row in rated if float(row.findings.extra["sharpness"]) >= blur_limit]
+        rated = [row for row in rated if float(row.findings.extra.get("edge_softness", 0.0)) <= blur_limit]
     baseline = {
         key: value for key, value in _robust_baseline(rated).items() if key in BASELINE_FEATURES
     }
@@ -946,7 +1411,7 @@ def compute_heuristic_check(
             continue
         findings = row.findings
         issues = tuple(findings.capture_issues)
-        if blur_limit is not None and not issues and float(findings.extra["sharpness"]) < blur_limit:
+        if blur_limit is not None and not issues and float(findings.extra.get("edge_softness", 0.0)) > blur_limit:
             issues = ("blur",)
         if issues:
             risk_summary = _unrated_summary(row, issues, sensitivity_key)
@@ -964,7 +1429,9 @@ def compute_heuristic_check(
         topology = _scaled(findings.topology_raw, multiplier)
         contamination = _scaled(findings.contamination_raw, multiplier)
         geometry = _scaled(findings.geometry_raw, multiplier)
+        gross = float(findings.gross_raw)
         components = {
+            HEURISTIC_GROSS_RISK: gross,
             HEURISTIC_TOPOLOGY_RISK: topology,
             HEURISTIC_CONTAMINATION_RISK: contamination,
             HEURISTIC_WIDTH_RISK: width_raw,
@@ -977,7 +1444,9 @@ def compute_heuristic_check(
         contributions = {name: 100.0 * weights[name] * float(value) for name, value in available.items()}
         # The worst problem must not drown in clean components: a frame with a clear open is at
         # least as risky as that open.
-        total = max(sum(contributions.values()) / 100.0, 0.8 * max(topology, contamination, width_raw or 0.0))
+        total = max(
+            sum(contributions.values()) / 100.0, 0.9 * gross, 0.8 * max(topology, contamination, width_raw or 0.0)
+        )
         reasons = [
             replace(reason, contribution=_scaled(reason.contribution, multiplier), severity=_severity(_scaled(reason.contribution, multiplier)))
             for reason in findings.reasons
@@ -985,7 +1454,7 @@ def compute_heuristic_check(
         reasons.extend(width_reasons)
         reasons.extend(batch_reasons)
         reasons.sort(key=lambda item: item.contribution, reverse=True)
-        verdict = _verdict(topology, contamination, width_raw)
+        verdict = _verdict(topology, contamination, width_raw, gross)
         risk_summary = HeuristicCheckSummary(
             total_risk=100.0 * _clip01(total),
             verdict=verdict,
@@ -1000,6 +1469,8 @@ def compute_heuristic_check(
             component_weights=weights,
             component_contributions=contributions,
             feature_values={**findings.extra, **findings.features},
+            gross_risk=100.0 * gross,
+            regions=tuple(findings.regions),
         )
         metric_values = {name: 100.0 * float(value) for name, value in available.items()}
         metric_values[HEURISTIC_CHECK_SCORE] = float(risk_summary.total_risk)
@@ -1068,6 +1539,9 @@ __all__ = [
     "CAPTURE_REASONS",
     "CONTAMINATION_REASONS",
     "GEOMETRY_REASONS",
+    "GROSS_REASONS",
+    "HEURISTIC_GROSS_RISK",
+    "VERDICT_GROSS",
     "HEURISTIC_BATCH_RISK",
     "HEURISTIC_CHECK_METRICS",
     "HEURISTIC_CHECK_SCORE",

@@ -6026,7 +6026,78 @@ class KarakalPresenter(QObject):
         state = self._current_tab_state()
         if state is None:
             return
+        if self._analysis_profile == AnalysisProfileKind.HEURISTIC_CHECK:
+            self._export_heuristic_error_maps(state, records=self._current_matrix_selected_records() or None)
+            return
         self._export_result_layer_jpgs(state, records=self._current_matrix_selected_records() or None)
+
+    def _export_heuristic_error_maps(
+        self, state: ExtendMatrixTabState, *, records: tuple[FrameRecord, ...] | None = None
+    ) -> None:
+        """Error maps of the heuristic check (selected frames, else all) into a new export folder."""
+
+        from ..core.grid_error_export import unique_run_dir
+        from ..core.heuristic_error_export import ERROR_MAPS_FOLDER, FINDINGS_FILE, export_heuristic_error_maps
+
+        build_result = state.build_result
+        if records is not None:
+            keys = {str(record.key) for record in records if record is not None}
+            chosen = tuple(record for record in build_result.records if str(record.key) in keys)
+            if chosen:
+                build_result = replace(build_result, records=chosen)
+        if not any(
+            record.summary is not None and getattr(record.summary, "heuristic_check", None) is not None
+            for record in build_result.records
+        ):
+            QMessageBox.warning(self._view, self._t("dialog.warning_title"), self._t("heuristic.export.none"))
+            return
+        export_folder = self._ensure_export_folder()
+        if export_folder is None:
+            return
+        formats = ["PNG", "JPG", "BMP", "TIFF"]
+        image_format, accepted = QInputDialog.getItem(
+            self._view, self._t("heuristic.export.title"), self._t("heuristic.export.format"), formats, 0, False
+        )
+        if not accepted or not image_format:
+            return
+        run_dir = unique_run_dir(export_folder)
+        total = max(1, len(build_result.records))
+        progress = QProgressDialog(self._t("heuristic.export.title"), self._t("common.cancel"), 0, total, self._view)
+        progress.setWindowTitle(self._t("heuristic.export.title"))
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+
+        def on_progress(current: int, total_count: int, frame_name: str) -> None:
+            progress.setMaximum(max(1, int(total_count)))
+            progress.setValue(int(current))
+            progress.setLabelText(self._t("heuristic.export.title") + chr(10) + frame_name)
+            QApplication.processEvents()
+
+        try:
+            report = export_heuristic_error_maps(
+                build_result,
+                run_dir,
+                image_format=str(image_format).lower(),
+                progress=on_progress,
+                cancelled=progress.wasCanceled,
+            )
+        except Exception as error:
+            progress.close()
+            QMessageBox.warning(self._view, self._t("dialog.warning_title"), str(error))
+            return
+        progress.close()
+        QMessageBox.information(
+            self._view,
+            self._t("heuristic.export.title"),
+            self._t(
+                "heuristic.export.done",
+                written=len(report.written),
+                empty=len(report.without_findings),
+                unrated=len(report.unrated),
+                folder=str(run_dir / ERROR_MAPS_FOLDER),
+                table=FINDINGS_FILE,
+            ),
+        )
 
     def _grid_export_analysis_layer(self, state: ExtendMatrixTabState) -> str:
         from ..core.features import show_confidence_defects
@@ -9097,6 +9168,11 @@ class KarakalPresenter(QObject):
         if hasattr(self, "btn_export_layer"):
             self.btn_export_layer.setEnabled(
                 current_state is not None and bool(getattr(current_state.build_result, "records", ())) and not is_busy
+            )
+            self.btn_export_layer.setToolTip(
+                self._t("heuristic.export.tooltip")
+                if self._analysis_profile == AnalysisProfileKind.HEURISTIC_CHECK
+                else self._t("context.export_result_layer_jpgs_auto")
             )
         self._sync_auto_validation_profile(is_busy)
         report = self._refresh_analysis_preflight()

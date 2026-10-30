@@ -24,6 +24,7 @@ SINGLE_RESULT_RISK_DISPLAY_KEYS: tuple[str, ...] = (
 # The same keys as core/heuristic_check.py (HEURISTIC_CHECK_METRICS).
 HEURISTIC_CHECK_DISPLAY_KEYS: tuple[str, ...] = (
     "heuristic_check_score",
+    "heuristic_gross_risk",
     "heuristic_topology_risk",
     "heuristic_contamination_risk",
     "heuristic_width_risk",

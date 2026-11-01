@@ -159,7 +159,7 @@ class CreateArtifactSeriesMixin:
         context: CommandContext,
     ) -> dict[str, Any] | None:
         try:
-            value = self._add_artifact_version.preflight(
+            value = self.commands.preflight_artifact_version(
                 self._managed_artifact_command(project_id, series_id, payload, context)
             )
             return None if value is None else encode_model(value)

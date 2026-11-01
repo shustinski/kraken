@@ -255,6 +255,10 @@ class ProjectCommandService:
     def command_types(self) -> frozenset[type]:
         return frozenset(self._handlers)
 
+    def preflight_artifact_version(self, command: AddArtifactVersionCommand):
+        """Validate a managed upload before transferring content to the gateway."""
+        return self._handlers[AddArtifactVersionCommand].preflight(command)
+
     def execute(self, command: object, chunks: Iterable[bytes] | None = None, *, stored=None):
         handler = self._handlers.get(type(command))
         if handler is None:

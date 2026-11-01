@@ -130,6 +130,11 @@ def live_worker(tmp_path, request):
 
 
 def _open_project(qtbot, remote, project, output, attempt):
+    if Path("C:/Windows/Fonts/arial.ttf").is_file():
+        from PyQt6.QtGui import QFont, QFontDatabase
+        from PyQt6.QtWidgets import QApplication
+        QFontDatabase.addApplicationFont("C:/Windows/Fonts/arial.ttf")
+        QApplication.instance().setFont(QFont("Arial", 10))
     local = EmbeddedProjectService(output / f"hub-cache-{attempt}")
     local.identities.save(remote.auth.principal)
     dual = DualCatalogService(local, remote)

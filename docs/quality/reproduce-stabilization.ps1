@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'qt', 'plugins', 'statistics', 'd1', 'd4', 'policy', 'schema-upgrade', 'hub-resume')]
+    [ValidateSet('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'qt', 'plugins', 'statistics', 'd1', 'd4', 'policy', 'schema-upgrade', 'hub-resume', 'gateway-preflight', 'targeted-lease', 'live-worker')]
     [string]$Block = 'd4',
     [string]$PostgresBin = 'C:\PostgreSQL\16\pgsql\bin'
 )
@@ -10,6 +10,9 @@ $python = Join-Path $repository '.venv\Scripts\python.exe'
 $runRoot = Join-Path $repository ('.test_runtime\quality-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $runRoot | Out-Null
 $groups = @{
+    'gateway-preflight' = @('tests/test_server_managed_upload_preflight.py', 'tests/test_blob_gateway.py', 'tests/test_project_command_transport.py')
+    'targeted-lease' = @('tests/test_targeted_machine_lease.py', 'tests/test_server_extended_api.py', 'tests/test_server_stitch_workflow.py')
+    'live-worker' = @('tests/test_live_server_worker_acceptance.py', 'tests/test_live_server_worker_faults.py')
     'backup' = @('tests/test_server_backup.py', 'tests/test_server_backup_gateway.py')
     'server' = @('tests/test_registered_principal_before_session.py', 'tests/test_server_analysis_workflow.py', 'tests/test_server_analysis_acceptance.py', 'tests/test_server_stitch_workflow.py', 'tests/test_remote_stitch_dialog.py', 'tests/test_server_extended_api.py', 'tests/test_server_route_contracts.py', 'tests/test_server_workspace_inputs.py', 'tests/test_server_asset_access.py', 'tests/test_blob_gateway.py', 'tests/test_remote_catalog.py')
     'server-domain' = @('tests/test_agent_queue_admission.py', 'tests/test_server_services.py', 'tests/test_server_vector_stitch.py', 'tests/test_quality_postgres.py', 'tests/test_multilayer_postgres.py', 'tests/test_electrical_postgres.py', 'tests/test_work_templates_postgres.py', 'tests/test_work_plan_analytics_postgres.py', 'tests/test_planning_postgres.py')
@@ -32,11 +35,14 @@ $started = $false
 $testExitCode = 1
 $arguments = @('-m', 'pytest') + $groups[$Block] + @('-v', '-p', 'no:cacheprovider', '-o', 'faulthandler_timeout=60', "--basetemp=$runRoot\pytest", "--junitxml=$runRoot\junit.xml")
 try {
+    if ($Block -eq 'live-worker' -and -not $env:KRAKEN_LIVE_WORKER_CONFIG) {
+        throw 'KRAKEN_LIVE_WORKER_CONFIG must reference non-secret configuration and DPAPI credential paths; no implicit working-server run.'
+    }
     $env:QT_QPA_PLATFORM = 'offscreen'
     $env:PYTHONUNBUFFERED = '1'
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
-    if ($Block -in @('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'policy', 'schema-upgrade')) {
+    if ($Block -in @('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'policy', 'schema-upgrade', 'gateway-preflight', 'targeted-lease')) {
         # This is always a new cluster, never the configured working database.
         $cluster = Join-Path $runRoot 'postgres'
         & (Join-Path $PostgresBin 'initdb.exe') -D $cluster -U kraken_audit --auth=trust --encoding=UTF8 --no-locale *> (Join-Path $runRoot 'initdb.txt')

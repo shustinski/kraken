@@ -53,20 +53,44 @@ def _protected_snapshot(remote, pid):
             "jobs": _digest(remote._call("GET", f"/api/v1/projects/{pid}/jobs"))}
 
 
+def _upload_frame(remote, project_id, layer_id, representation_id, source, x, y):
+    frame_id = FrameCoordinate(x, y).frame_id(project_id)
+    series = remote._call("POST", f"/api/v1/projects/{project_id}/artifacts",
+        payload={"name": source.stem, "scope": "frame_representation", "layer_id": str(layer_id),
+                 "representation_id": str(representation_id), "frame_id": str(frame_id),
+                 "series_id": str(deterministic_frame_series_id(representation_id, frame_id))},
+        idempotency_key=str(uuid4()))
+    metadata = {"filename": source.name, "media_type": "image/png",
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(), "size_bytes": source.stat().st_size,
+                "parameters": {"x": x, "y": y, "mapping": "preflight"}}
+    key = str(uuid4())
+    revision = remote.artifact_stream_revision(project_id, series["id"])
+    base = f"/api/v1/projects/{project_id}/artifacts/{series['id']}/uploads"
+    transfer = remote._call("POST", base, payload=metadata, idempotency_key=key, if_match=revision)
+    assert transfer["mode"] == "gateway"
+    remote._http.upload_url(transfer["url"], token=transfer["token"], source=source)
+    saved = remote._call("POST", base + "/complete", payload={**metadata, "upload_token": transfer["token"]},
+        idempotency_key=key, if_match=revision)
+    return remote.artifact_version(project_id, saved["id"])
+
+
 class ObservedWorker(ServerAgentWorker):
     """Observe actual network transitions; never replace responses or execution."""
     def _request(self, method, path, payload=None, **kwargs):
         result = super()._request(method, path, payload, **kwargs)
+        if path.endswith("/publications") and method == "POST":
+            self.last_publication = payload
         entry = {"method": method, "path": path, "status": 200}
         if path.endswith("/lease") and result.get("job"):
             entry["job_id"] = result["job"]["job_id"]
             assert entry["job_id"] in self.allowed_jobs, "Unexpected lease; stop acceptance"
+            self.last_claim = result["job"].get("lease_claim")
         self.transitions.append(entry)
         return result
 
 
 @pytest.fixture
-def live_worker(tmp_path):
+def live_worker(tmp_path, request):
     filename = os.environ.get("KRAKEN_LIVE_WORKER_CONFIG")
     if not filename:
         pytest.skip("Set KRAKEN_LIVE_WORKER_CONFIG for real Server acceptance")
@@ -74,6 +98,8 @@ def live_worker(tmp_path):
     from kraken_core.settings import configure_settings_directory
     configure_settings_directory(tmp_path / "settings")
     output = Path(config["results_directory"])
+    if request.node.name != "test_contour_machine_worker_publishes_versions_and_hub_reopens":
+        output = output / request.node.name
     output.mkdir(parents=True, exist_ok=True)
     remote = _connect(config, tmp_path / "client")
     protected = _protected_snapshot(remote, config["protected_project_id"])
@@ -158,26 +184,7 @@ def test_contour_machine_worker_publishes_versions_and_hub_reopens(live_worker, 
         image = Image.new("RGB", (64, 64), "black")
         ImageDraw.Draw(image).rectangle((8, 8, 44 + x, 44), fill="white")
         image.save(source)
-        frame_id = FrameCoordinate(x, 1).frame_id(project.id)
-        series = remote._call("POST", f"/api/v1/projects/{project.id}/artifacts",
-            payload={"name": source.stem, "scope": "frame_representation", "layer_id": str(layer.id),
-                     "representation_id": str(image_rep.id), "frame_id": str(frame_id),
-                     "series_id": str(deterministic_frame_series_id(image_rep.id, frame_id))},
-            idempotency_key=str(uuid4()))
-        # Frame uploads carry explicit grid coordinates, as managed import does.
-        # Exercise the real bound Gateway ticket, not a server-local file read.
-        metadata = {"filename": source.name, "media_type": "image/png",
-                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-                    "size_bytes": source.stat().st_size, "parameters": {"x": x, "y": 1, "mapping": "preflight"}}
-        key = str(uuid4())
-        revision = remote.artifact_stream_revision(project.id, series["id"])
-        transfer = remote._call("POST", f"/api/v1/projects/{project.id}/artifacts/{series['id']}/uploads",
-            payload=metadata, idempotency_key=key, if_match=revision)
-        assert transfer["mode"] == "gateway"
-        remote._http.upload_url(transfer["url"], token=transfer["token"], source=source)
-        saved = remote._call("POST", f"/api/v1/projects/{project.id}/artifacts/{series['id']}/uploads/complete",
-            payload={**metadata, "upload_token": transfer["token"]}, idempotency_key=key, if_match=revision)
-        version = remote.artifact_version(project.id, saved["id"])
+        version = _upload_frame(remote, project.id, layer.id, image_rep.id, source, x, 1)
         input_ids.add(str(version.id))
         input_by_coordinate[(x, 1)] = str(version.id)
     cells = remote.frame_cells(project.id, layer.id, image_rep.id)

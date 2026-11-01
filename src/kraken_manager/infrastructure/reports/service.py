@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from kraken_manager.infrastructure.filesystem._codec import encode_model
 
 from kraken_manager.application.reporting import (
     ActivityRecord as ActivityRecord,
@@ -103,7 +104,7 @@ class ReportService(ApplicationReportService):
                     item.tool or "",
                     item.status or "",
                     item.bytes_count,
-                    json.dumps(dict(item.payload), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    json.dumps(encode_model(item.payload), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
                 writer.writerow(tuple(_safe_tabular_text(value) for value in row))
         return output

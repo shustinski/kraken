@@ -127,10 +127,10 @@ def test_karakal_confidence_worker_writes_the_result_contract(tmp_path: Path) ->
     assert (workspace / "outputs" / "confidence.json").is_file()
 
 
-def test_remote_project_identity_uses_the_known_catalog() -> None:
-    from kraken_hub.infrastructure.remote.client import RemoteServerProjectService
+def test_dual_catalog_project_identity_uses_the_known_catalog() -> None:
+    from kraken_hub.composition.catalog import DualCatalogService
 
-    service = object.__new__(RemoteServerProjectService)
+    service = object.__new__(DualCatalogService)
     service._remote_ids = {"project-1"}
     assert service.is_remote_project("project-1") is True
     assert service.is_remote_project("other") is False

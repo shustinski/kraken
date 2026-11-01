@@ -56,7 +56,7 @@ class RunRemoteInteractiveJobMixin:
             "recognize": ("neuralimage", "frames.binary-segment.v2", "headless"),
             "recognize_external": ("neuralimage", "frames.binary-segment.v2", "headless"),
             "confidence": ("neuralimage", "frames.confidence.v1", "headless"),
-            "karakal": ("karakal", "layer.confidence.analyze.v1", "interactive"),
+            "karakal": ("karakal", "layer.confidence.analyze.v1", "headless"),
         }.get(action, ("", "", ""))
 
     def _action_availability(self, action: str) -> tuple[bool, str]:

@@ -1,13 +1,14 @@
 """test_widget_interactions: test inner hole stays."""
 from __future__ import annotations
+
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
+
 import cv2
 import numpy as np
 from PyQt6.QtCore import QPointF
 from PyQt6.QtTest import QTest
-
 from test_widget_interactions_parts.oversampled_rectangle_polygon import _rectangle_polygon
 
 
@@ -21,7 +22,7 @@ class InnerHoleStaysMixin:
             for _ in range(300):
                 self.widget._editor_display_thread_pool.waitForDone(10)
                 self._app.processEvents()
-                if self.widget._last_editor_display_path == path:
+                if getattr(self.widget, "_last_editor_display_path", None) == path:
                     return
                 QTest.qWait(10)
             self.assertEqual(self.widget._last_editor_display_path, path)

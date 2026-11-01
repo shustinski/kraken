@@ -118,6 +118,51 @@ def test_same_key_returns_a_project_created_under_a_random_id(tmp_path: Path) ->
     assert marker.read_text(encoding="utf-8") == "keep"
 
 
+@pytest.mark.parametrize("reject_first", [False, True])
+def test_retry_preserves_files_in_workspace_left_before_project_journal(tmp_path: Path, reject_first) -> None:
+    service = _service(tmp_path)
+    owner = service.create_initial_account("owner", "Owner", "secret")
+    project_id = project_id_for_idempotency_key(owner.principal.id, "project-audit")
+    binding = service.workspace_files.create_project(
+        project_id=project_id, project_name="Аудит",
+        source_root=service.default_source_root, derived_root=service.default_derived_root,
+    )
+    original = Path(binding.source_project_dir) / "img" / "source.png"
+    derived = Path(binding.derived_project_dir) / "result" / "result.json"
+    original.write_bytes(b"irreplaceable source")
+    derived.write_bytes(b"irreplaceable result")
+    reopened = _service(tmp_path)
+    if reject_first:
+        with pytest.raises(ValueError):
+            reopened.create_project(principal=owner.principal, name="Аудит", width=0, height=1,
+                                    orientation=GridOrientation.Y_DOWN, idempotency_key="project-audit")
+        assert original.read_bytes() == b"irreplaceable source"
+        assert derived.read_bytes() == b"irreplaceable result"
+    project = _create(reopened, owner.principal, name="Аудит", key="project-audit")
+    assert str(project.id) == project_id
+    assert original.read_bytes() == b"irreplaceable source"
+    assert derived.read_bytes() == b"irreplaceable result"
+    assert _service(tmp_path).workspace_registry.get_project(project_id) == binding
+    assert _service(tmp_path).get_project(project_id).name == "Аудит"
+
+
+def test_retry_with_changed_name_preserves_uncommitted_workspace(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    owner = service.create_initial_account("owner", "Owner", "secret")
+    project_id = project_id_for_idempotency_key(owner.principal.id, "project-audit")
+    binding = service.workspace_files.create_project(
+        project_id=project_id, project_name="Аудит",
+        source_root=service.default_source_root, derived_root=service.default_derived_root,
+    )
+    marker = Path(binding.source_project_dir) / "img" / "keep.txt"
+    marker.write_bytes(b"keep")
+    with pytest.raises(ValueError, match="workspace"):
+        _create(service, owner.principal, name="Changed", key="project-audit")
+    assert marker.read_bytes() == b"keep"
+    assert service.workspace_registry.get_project(project_id) == binding
+    assert service.get_project(project_id) is None
+
+
 def test_retry_writes_the_workspace_event_missed_after_the_journal(
     tmp_path: Path,
 ) -> None:

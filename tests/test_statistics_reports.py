@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import tempfile
 import unittest
 from importlib.util import find_spec
@@ -370,6 +371,40 @@ class StatisticsReportTests(unittest.TestCase):
         self.assertEqual(restored.values, metrics.values)
         self.assertIs(type(restored.values["accepted"]), int)
         self.assertIs(type(restored.values["average_turnaround_seconds"]), float)
+
+
+def test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions():
+    now = datetime.now(UTC)
+    records = (
+        ActivityRecord("import-1", now, "ArtifactVersionCreated", "p", bytes_count=7,
+                       payload={"parameters": {"mapping": "preflight", "x": 1, "y": 1}}),
+        ActivityRecord("import-2", now, "ArtifactVersionCreated", "p", bytes_count=7,
+                       payload={"parameters": {"mapping": "preflight", "x": 2, "y": 1}}),
+        ActivityRecord("generated", now, "ArtifactVersionCreated", "p", bytes_count=99,
+                       payload={"parameters": {"mapping": "generated"}}),
+    )
+    metrics = ReportService().aggregate(records, ReportFilters(now - timedelta(seconds=1), now + timedelta(seconds=1)))
+    assert metrics.values["imported_files"] == 2
+    assert metrics.values["imported_bytes"] == 14
+
+
+def test_csv_preserves_nested_immutable_event_payload(tmp_path):
+    import csv
+    import json
+    from types import MappingProxyType
+
+    now = datetime.now(UTC)
+    record = ActivityRecord("immutable", now, "ArtifactVersionCreated", "p", payload=MappingProxyType({
+        "parameters": MappingProxyType({"mapping": "preflight", "x": 1}),
+        "inputs": (MappingProxyType({"id": "input-version"}),),
+    }))
+    output = ReportService().write_csv(tmp_path / "nested.csv", (record,),
+        ReportFilters(now - timedelta(seconds=1), now + timedelta(seconds=1)))
+    with output.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert json.loads(rows[0]["payload_json"]) == {
+        "parameters": {"mapping": "preflight", "x": 1}, "inputs": [{"id": "input-version"}],
+    }
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
+from kraken_core.safe_files import ensure_regular_directory
 from kraken_manager.application.dto import (
     CommandContext,
     CreateProjectCommand,
@@ -9,6 +10,7 @@ from kraken_manager.application.dto import (
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.workspace import (
     project_workspace_to_dict,
+    ProjectWorkspaceBinding,
     validate_workspace_name,
 )
 from kraken_manager.domain.identity import (
@@ -61,18 +63,26 @@ class CreateProjectMixin:
         with self.workspace_registry.mutation_lock(project_id):
             project = self._recorded_project(principal, idempotency_key, project_id)
             if project is None:
-                self._remove_uncommitted_workspace(project_id)
-                binding = self.workspace_files.create_project(
-                    project_id=project_id,
-                    project_name=safe_name,
-                    source_root=source_root or self.default_source_root,
-                    derived_root=derived_root or self.default_derived_root,
-                )
+                binding = self.workspace_registry.get_project(project_id)
+                recovering = binding is not None
+                if recovering:
+                    self._validate_uncommitted_workspace(
+                        binding, safe_name, source_root or self.default_source_root,
+                        derived_root or self.default_derived_root,
+                    )
+                else:
+                    binding = self.workspace_files.create_project(
+                        project_id=project_id,
+                        project_name=safe_name,
+                        source_root=source_root or self.default_source_root,
+                        derived_root=derived_root or self.default_derived_root,
+                    )
                 try:
                     project = self._commands(project_id).execute(command)
                 except Exception:
-                    self.workspace_files.remove_project_layout(binding)
-                    self.workspace_registry.remove_project(project_id)
+                    if not recovering:
+                        self.workspace_files.remove_project_layout(binding)
+                        self.workspace_registry.remove_project(project_id)
                     raise
             else:
                 binding = self.workspace_registry.get_project(str(project.id))
@@ -155,15 +165,20 @@ class CreateProjectMixin:
                 return recorded
         return None
 
-    def _remove_uncommitted_workspace(self, project_id: str) -> None:
-        """Drop a folder recorded before the project journal entry exists.
-
-        A crashed create can leave the workspace binding without ProjectCreated.
-        The same idempotency key must be able to finish that create.
-        """
-
-        binding = self.workspace_registry.get_project(project_id)
-        if binding is None:
-            return
-        self.workspace_files.remove_project_layout(binding)
-        self.workspace_registry.remove_project(project_id)
+    @staticmethod
+    def _validate_uncommitted_workspace(
+        binding: ProjectWorkspaceBinding, name: str, source_root: Path | str, derived_root: Path | str,
+    ) -> None:
+        """Reuse an interrupted create without deleting files added before retry."""
+        source = Path(source_root).expanduser().resolve(strict=True)
+        derived = Path(derived_root).expanduser().resolve(strict=True)
+        if (
+            binding.project_name != name
+            or Path(binding.source_root) != source
+            or Path(binding.derived_root) != derived
+            or Path(binding.source_project_dir) != source / name
+            or Path(binding.derived_project_dir) != derived / name
+        ):
+            raise ValueError("Uncommitted workspace differs from the requested project name or storage roots")
+        ensure_regular_directory(binding.source_project_dir)
+        ensure_regular_directory(binding.derived_project_dir)

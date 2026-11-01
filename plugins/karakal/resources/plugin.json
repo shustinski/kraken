@@ -21,7 +21,7 @@
   "capabilities": [
     {
       "operation": "layer.confidence.analyze.v1",
-      "modes": ["interactive"],
+      "modes": ["headless"],
       "input_media_types": ["image/png", "image/tiff", "image/jpeg"],
       "output_media_types": ["application/vnd.kraken.confidence+json"],
       "maximum_batch_size": 10000

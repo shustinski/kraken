@@ -345,7 +345,9 @@ def _is_binary_representation(item: ActivityRecord) -> bool:
 
 def _is_import(item: ActivityRecord) -> bool:
     parameters = item.payload.get("parameters", {})
-    if isinstance(parameters, Mapping) and parameters.get("source_path"):
+    if isinstance(parameters, Mapping) and (
+        parameters.get("source_path") or parameters.get("mapping") == "preflight"
+    ):
         return True
     semantic = _semantic_values(item)
     return any(

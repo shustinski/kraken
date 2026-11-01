@@ -288,7 +288,7 @@ def test_restored_pending_cleanup_never_deletes_original_trees(recovery, tmp_pat
     from types import SimpleNamespace
     from kraken_admin.infrastructure.composition import open_project_services
     from kraken_admin.application.project_deletion import ProjectDeletion
-    from kraken_admin import project_deletion
+    from kraken_admin.application import project_deletion
     from kraken_manager.domain.identity import Principal
     from kraken_manager.infrastructure.auth.local import ScryptPasswordHasher
     from kraken_manager.infrastructure.postgres.account_store import PostgresAccountStore

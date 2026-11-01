@@ -6,7 +6,7 @@ def test_quality_dialog_drives_real_local_issue_assignment_and_history():
         import tempfile, time
         from pathlib import Path
         from PyQt6.QtCore import Qt
-        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtWidgets import QApplication, QPushButton
         from PyQt6.QtTest import QTest
         from kraken_hub.presentation.qt.quality_dialog import QualityDialog
         from tests.test_work_orders import _service, _project_with_frames
@@ -18,6 +18,10 @@ def test_quality_dialog_drives_real_local_issue_assignment_and_history():
             workers = set()
             dialog = QualityDialog(service, owner.principal, project.id, background_workers=workers)
             dialog.show()
+            def click(text):
+                button = next(b for b in dialog.findChildren(QPushButton) if b.text() == text)
+                assert button.isVisible() and button.isEnabled()
+                QTest.mouseClick(button, Qt.MouseButton.LeftButton)
             def idle():
                 deadline = time.monotonic()+8
                 while time.monotonic()<deadline:
@@ -30,31 +34,44 @@ def test_quality_dialog_drives_real_local_issue_assignment_and_history():
             idle()
             dialog.title.setText('Conductor gap')
             dialog.description.setText('Gap in selected frame')
-            dialog.load_frame_versions()
+            click('Версии выбранного кадра')
             idle()
             assert dialog.versions.count() == 1
             dialog.versions.setCurrentRow(0)
-            dialog.create_issue()
+            click('Создать дефект')
             idle()
             assert dialog.issue.state.value == 'open', dialog.status.text()
             assert dialog.table.rowCount() == 1
             dialog.note.setText('Repair assigned')
-            dialog.command('assign')
+            click('Назначить')
             idle()
             assert dialog.issue.state.value == 'assigned', dialog.status.text()
             assert 'Repair assigned' in dialog.history.toPlainText()
             dialog.note.setText('Correction cannot reuse the source version')
             dialog.versions.setCurrentRow(0)
-            dialog.command('correct')
+            click('Исправлено')
             idle()
             assert dialog.issue.state.value == 'assigned'
             assert dialog.status.text().startswith('Ошибка:')
-            dialog.refresh()
+            click('Обновить')
             idle()
             assert dialog.issue.revision == 1
             dialog.close()
             assert not workers
             del dialog
+            app.processEvents()
+            from kraken_hub.composition import EmbeddedProjectService
+            reopened = EmbeddedProjectService(service.data_dir)
+            dialog = QualityDialog(reopened, owner.principal, project.id, background_workers=workers)
+            dialog.show()
+            idle()
+            assert dialog.table.rowCount() == 1
+            dialog.table.selectRow(0)
+            idle()
+            assert dialog.issue.title == 'Conductor gap'
+            assert dialog.issue.state.value == 'assigned'
+            assert 'Repair assigned' in dialog.history.toPlainText()
+            dialog.close()
             app.processEvents()
     """)
 

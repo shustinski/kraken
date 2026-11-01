@@ -450,3 +450,48 @@ def test_stitch_real_file_dialog_machine_compute_and_hub_block_view(live_chain, 
     env.receipt.update(checks=["actual JSON file dialog import and GUI compute request", "native stitch machine subprocess",
         "immutable mosaic SHA/size/type and exact input lineage", "128x64 pixels equal independently concatenated inputs",
         "real bounded block viewer and coverage toggle", "fresh server session rereads same render/version"], status="passed")
+
+
+@pytest.mark.parametrize("live_chain", ["stitch"], indirect=True)
+def test_stitch_hub_reread_only_opens_saved_mosaic_without_compute(live_chain, qtbot):
+    from PyQt6.QtWidgets import QPushButton
+    from kraken_hub.presentation.qt.stitching_dialog import StitchingDialog
+
+    env = live_chain
+    saved = json.loads((env.output.parent / "receipt.json").read_text(encoding="utf-8"))
+    assert saved["status"] == "passed" and saved["project_id"] == str(env.project.id)
+    shell, controller, dual = _open_project(qtbot, env.remote, env.project, env.output, "reopen")
+    outer = StitchingDialog(controller, saved["layer_id"])
+    qtbot.addWidget(outer)
+    outer.show()
+    dialog = viewer = None
+    try:
+        QTest.mouseClick(outer.findChild(QPushButton, "computedStitchButton"), Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: hasattr(outer, "_computed"))
+        dialog = outer._computed
+        qtbot.waitUntil(lambda: dialog._worker is None and dialog.snapshot is not None, timeout=15000)
+        assert dialog.view_button.isVisible() and dialog.view_button.isEnabled()
+        QTest.mouseClick(dialog.view_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: hasattr(dialog, "_viewer") and dialog._viewer._worker is None
+            and dialog._viewer._metadata is not None, timeout=15000)
+        viewer = dialog._viewer
+        assert viewer.isVisible() and viewer._metadata["job_id"] == saved["job_id"]
+        assert not viewer.image.pixmap().isNull()
+        path = env.remote.managed_artifact_path(env.project.id, saved["output_version_id"])
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == saved["sha256"]
+        assert viewer.grab().save(str(env.output / "hub-mosaic-reopened.png"))
+    finally:
+        if viewer is not None:
+            viewer.close()
+        if dialog is not None:
+            dialog.timer.stop()
+            dialog.close()
+        outer.close()
+        qtbot.waitUntil(lambda: not controller._background_workers, timeout=15000)
+        controller._workspace._analysis_timer.stop()
+        controller._agent_timer.stop()
+        shell.close_guard = None
+        shell.close()
+        dual.stop_sync()
+    env.receipt.update(project_id=str(env.project.id), job_id=saved["job_id"], output_version_id=saved["output_version_id"],
+        sha256=saved["sha256"], checks=["no computation repeated", "new Hub session opens original mosaic in actual block viewer"], status="passed")

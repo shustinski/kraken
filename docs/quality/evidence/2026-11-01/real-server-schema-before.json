@@ -1,0 +1,21 @@
+{
+  "database": "kraken_local",
+  "mode": "READ ONLY",
+  "alembic_revisions": [
+    "20261025_0010"
+  ],
+  "background_jobs_columns": [
+    "job_id",
+    "project_id",
+    "state",
+    "payload",
+    "lease_owner",
+    "lease_until",
+    "created_at",
+    "updated_at",
+    "lease_attempts",
+    "last_error",
+    "lease_claim",
+    "telemetry"
+  ]
+}

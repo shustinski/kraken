@@ -1,0 +1,187 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+____________ test_resume_survives_jobs_http_failure_and_can_retry _____________
+
+self = <kraken_hub.infrastructure.remote.client.RemoteHttpClient object at 0x000002B24FCA27B0>
+method = 'GET'
+path = '/api/v1/projects/11111111-1111-4111-8111-111111111111/jobs'
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str,
+        payload: Mapping[str, object] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        url = f"{self.base_url}{path}"
+        body = (
+            None
+            if payload is None
+            else json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+        )
+        request_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        if body is not None:
+            request_headers["Content-Type"] = "application/json"
+        if headers:
+            request_headers.update(headers)
+        request = urllib.request.Request(
+            url, data=body, headers=request_headers, method=method.upper()
+        )
+        try:
+>           with urllib.request.urlopen(
+                request, timeout=self.timeout if timeout is None else timeout
+            ) as response:
+
+src\kraken_hub\infrastructure\remote\parts\request.py:42: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Program Files\Python314\Lib\urllib\request.py:187: in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python314\Lib\urllib\request.py:493: in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python314\Lib\urllib\request.py:602: in http_response
+    response = self.parent.error(
+C:\Program Files\Python314\Lib\urllib\request.py:531: in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python314\Lib\urllib\request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <urllib.request.HTTPDefaultErrorHandler object at 0x000002B24FCA2E40>
+req = <urllib.request.Request object at 0x000002B24FCF51D0>
+fp = <http.client.HTTPResponse object at 0x000002B24FD065F0>, code = 500
+msg = 'Internal Server Error'
+hdrs = <http.client.HTTPMessage object at 0x000002B24FC3F790>
+
+    def http_error_default(self, req, fp, code, msg, hdrs):
+>       raise HTTPError(req.full_url, code, msg, hdrs, fp)
+E       urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+
+C:\Program Files\Python314\Lib\urllib\request.py:611: HTTPError
+
+The above exception was the direct cause of the following exception:
+
+qtbot = <pytestqt.qtbot.QtBot object at 0x000002B24FCA1A90>
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/hub-resume-red/test_resume_survives_jobs_http0')
+
+    def test_resume_survives_jobs_http_failure_and_can_retry(qtbot, tmp_path):
+        project_id = "11111111-1111-4111-8111-111111111111"
+    
+        class Endpoint(BaseHTTPRequestHandler):
+            unavailable = True
+    
+            def log_message(self, *_args):
+                pass
+    
+            def do_GET(self):
+                if self.path.startswith("/api/v1/projects?"):
+                    status, body = 200, {"items": [{"project_id": project_id, "name": "Remote", "width": 1, "height": 1}]}
+                elif self.path == f"/api/v1/projects/{project_id}/jobs":
+                    status, body = (500, {"detail": "Agent queue unavailable"}) if self.unavailable else (200, {"items": []})
+                else:
+                    status, body = 404, {"detail": "Unknown test endpoint"}
+                payload = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+    
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        controller = object.__new__(DesktopController)
+        controller.shell = QMainWindow()
+        qtbot.addWidget(controller.shell)
+        controller.service = RemoteServerProjectService(
+            f"http://127.0.0.1:{server.server_port}",
+            auth=RemoteAuth(access_token="test-token", principal=Principal.local(subject="owner", display_name="Owner")),
+            data_dir=tmp_path,
+        )
+        try:
+>           controller._resume_agent_jobs()
+
+tests\test_hub_resume_remote_failure.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\kraken_hub\presentation\qt\parts\poll_agent_jobs.py:115: in _resume_agent_jobs
+    for job in self.service.plugin_jobs()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kraken_hub\infrastructure\remote\parts\submit_plugin_job.py:40: in plugin_jobs
+    payload = self._call("GET", f"/api/v1/projects/{project.id}/jobs")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\kraken_hub\infrastructure\remote\parts\call.py:53: in _call
+    return self._http.request(method, path, **request_arguments)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <kraken_hub.infrastructure.remote.client.RemoteHttpClient object at 0x000002B24FCA27B0>
+method = 'GET'
+path = '/api/v1/projects/11111111-1111-4111-8111-111111111111/jobs'
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str,
+        payload: Mapping[str, object] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        url = f"{self.base_url}{path}"
+        body = (
+            None
+            if payload is None
+            else json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+        )
+        request_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        if body is not None:
+            request_headers["Content-Type"] = "application/json"
+        if headers:
+            request_headers.update(headers)
+        request = urllib.request.Request(
+            url, data=body, headers=request_headers, method=method.upper()
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout if timeout is None else timeout
+            ) as response:
+                raw = response.read()
+                if not raw:
+                    return None
+                return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            message = detail
+            parsed: Mapping[str, object] | None = None
+            try:
+                candidate = json.loads(detail)
+                parsed = candidate if isinstance(candidate, Mapping) else None
+                if parsed is not None:
+                    message = str(parsed.get("detail") or parsed.get("title") or detail)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                message = detail
+>           raise RemoteServerError(
+                f"{method.upper()} {path} returned HTTP {exc.code}: {message}",
+                status=exc.code,
+                body=detail,
+                problem=parsed,
+            ) from exc
+E           kraken_hub.application.remote_error.RemoteServerError: GET /api/v1/projects/11111111-1111-4111-8111-111111111111/jobs returned HTTP 500: Agent queue unavailable
+
+src\kraken_hub\infrastructure\remote\parts\request.py:60: RemoteServerError
+=========================== short test summary info ===========================
+FAILED tests/test_hub_resume_remote_failure.py::test_resume_survives_jobs_http_failure_and_can_retry
+1 failed in 1.10s

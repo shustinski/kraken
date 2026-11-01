@@ -5,6 +5,11 @@
 Прежние PASS ниже сохраняются. Уточнения этой секции имеют приоритет над историческим
 «Не прогнано». Сырые журналы и команды: [checkpoint](checkpoint-2026-11-01.md).
 
+Уточнение области после `63ff7cb` (исправление `f749893`): KateGB исключён из обязательных проверок по
+прямому указанию пользователя. Существующие результаты ниже сохраняются исторически;
+новые проверки KateGB не выполняются. Реальный проект принимается пока только
+через серверное окружение; локальные PASS его приёмку не заменяют.
+
 | ID / блок | Статус | Подтверждение и граница |
 |---|---|---|
 | AGT-REGISTRY-CONFIDENCE / D4 | PASS | `test_karakal_agent_headless.py`: headless принимается, worker subprocess завершается, новый DurableJobStore читает результат, result.json и confidence.json перечитаны, SHA-256 совпал. Действие Hub доступно. `d4-focused.log`: 7 PASS вместе с режимами агента |
@@ -15,7 +20,7 @@
 | QT-QUALITY | PASS | `quality-clicks.log`: видимые кнопки создания/назначения/ошибочного исправления, refresh, новый EmbeddedProjectService и повторное окно читают assigned и историю |
 | SRV-AGENT-KARAKAL / SRV-AGENT-STITCH | PASS | `server-acceptance.log`: настоящий PostgreSQL, HTTP, ServerAgentWorker, subprocess Karakal/сшивка, повторное чтение, retry/cancel/runtime refusal, Qt удалённой сшивки. Блок 127 PASS |
 | PLUGIN-CSLISER-COPY-CANCEL-RECOVERY | PASS | `plugins-acceptance-importlib.log`: показанное окно, копирование с проверкой байтов, отказ перезаписи, отмена, карантин/восстановление, архив и повторное открытие проекта |
-| PLUGIN-KATEGB-CALCULATION | PASS | `test_calculate_author_quality_results`: Alice/Bob — по 50%; зашифрованный манифест перечитан. Полный пользовательский путь окна расчёта остаётся PARTIAL |
+| PLUGIN-KATEGB-CALCULATION | PASS | Историческая проверка до уточнения пользователя: Alice/Bob — по 50%; зашифрованный манифест перечитан. Дальнейшие проверки KateGB исключены |
 | PLUGIN-KRONA-LOGIC-VIEWER | PASS | `test_explicit_connectivity.py`, `test_quality_qt.py`: реальный CLI на EDF, таблица NOT, hash исходника; показанный viewer отображает неопределённость. Не приёмка реального прибора |
 | PLUGIN-KARAKAL-COMPARE-MAP | PASS | `test_headless_analysis.py`, `test_server_analysis_workflow.py`: контролируемые пары масок, численные XOR/IoU/Dice, карта кадра и повторное чтение |
 | PLUGIN-CONTOUR-DATASET-INTERACTIVE | PARTIAL | Интерактивные proxy/gateway пути до возврата прошли в `server-acceptance.log`; headless выборка не заявлена и отдельно не выполнена |
@@ -32,7 +37,11 @@
 | WINDOWS-SERVICE-INSTALL | BLOCKED | `WindowsPrincipal.IsInRole(Administrator)=False` вне sandbox. Служба рабочего сервера не изменялась; отдельная elevated VM/учётная запись не предоставлена |
 | WINDOWS-HELLO-CREDENTIALS | BLOCKED | Аппаратное/пользовательское подтверждение Hello невозможно заменить offscreen. Нужен интерактивный пользовательский проход; тесты с подменой проверки не считаются приёмкой Hello |
 | UPDATER-INSTALL / REMOTE-HTTPS | BLOCKED | Не предоставлены отдельный тестовый установщик и удалённый TLS-стенд. Проверки контракта URL/секрета прошли, скачивание/запуск реального установщика и удалённый HTTPS не выполнялись |
-| KATEGB-FULL-EXCEL-UI / REAL-DEVICE-ACCEPTANCE | NOT TESTED | Доменный расчёт KateGB и модельный синтетический E2E подтверждены. Отдельная эталонная Excel-разметка и приёмочный реальный прибор/проект не предоставлены. Запрошен безопасный путь к фикстурам |
+| REAL-PROJECT-SERVER-READ | PASS | Server/Gateway200; 100 PNG + 100 CIF полностью прочитаны через Gateway, hash/размер/декодирование/размеры пар; история и revision2 сохранены. [Результат](evidence/2026-11-01/real-project-artifact-verification.json) |
+| REAL-PROJECT-SERVER-QT | PASS | Реальный Hub/DualCatalog/HTTP, два открытия двойным щелчком после закрытия окна; слой и две репрезентации, нет uncaught/errors, ревизия сохранена. [Квитанция](evidence/2026-11-01/real-project-qt-view.json) |
+| HUB-QUEUE-HTTP-FAILURE / D7 | PASS | Прежний native abort воспроизведён; ошибка plugin_jobs теперь внутри try. [36 PASS](evidence/2026-11-01/hub-resume-green.txt), повторный успешный запрос200, независимое ревью |
+| REAL-SERVER-JOBS-SCHEMA | FAIL / BLOCKED | Подтверждён HTTP500: рабочая схема0010 не содержит execution_state. Миграция0011 [проверена изолированно](evidence/2026-11-01/schema-upgrade-isolated.txt), рабочая база не мигрирована; ожидается разрешение пользователя |
+| REAL-PROJECT-SERVER-ACCEPTANCE | PARTIAL | Чтение и Qt PASS; очередь блокирует дальнейший серверный сценарий. Leased worker на рабочем сервере NOT TESTED. Качество модели и электрическая приёмка реального прибора NOT TESTED |
 
 Остальные непройденные части исторических групп сохраняют NOT TESTED/PARTIAL.
 Kraken пока не объявляется готовым.

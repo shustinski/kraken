@@ -1,0 +1,22 @@
+{
+  "code_commit": "f749893",
+  "server": "http://127.0.0.1:8080",
+  "gateway": "http://127.0.0.1:8081",
+  "checks": {
+    "artifacts": "200 SHA256/size/decode/CIF pair dimensions PASS",
+    "qt": "two opens PASS; project revision/history unchanged",
+    "hub_regression": "36 PASS",
+    "schema_rehearsal": "1 PASS on isolated PostgreSQL55439; cluster stopped",
+    "lint": "PASS"
+  },
+  "working_database_migrated": false,
+  "pending_approval": "0010 to0011; working jobs endpoint500",
+  "reproduction": [
+    "docs/quality/reproduce-stabilization.ps1 -Block schema-upgrade",
+    "docs/quality/reproduce-stabilization.ps1 -Block hub-resume",
+    ".venv/Scripts/python.exe docs/quality/probes/manifest_live_artifacts.py",
+    ".venv/Scripts/python.exe docs/quality/probes/verify_live_artifacts.py",
+    ".venv/Scripts/python.exe docs/quality/probes/view_live_project_qt.py"
+  ],
+  "scope": "KateGB excluded; real-project acceptance through server only"
+}

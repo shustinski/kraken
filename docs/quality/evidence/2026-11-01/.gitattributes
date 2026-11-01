@@ -2,3 +2,4 @@
 *.txt -text
 *.json -text
 *.xml -text
+*.sql -text

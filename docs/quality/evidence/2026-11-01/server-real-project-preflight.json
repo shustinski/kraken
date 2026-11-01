@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-01",
+  "scope": "real project acceptance through server environment only",
+  "excluded_by_user": ["KateGB"],
+  "configuration_source": "user LocalServer/server.toml; no secret decrypted",
+  "checks": [
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8080/api/v1/health",
+      "result": "connection refused",
+      "windows_error": 10061
+    },
+    {
+      "method": "GET",
+      "url": "http://127.0.0.1:8081/health",
+      "result": "connection refused",
+      "windows_error": 10061
+    }
+  ],
+  "timeout_seconds": 3,
+  "database_connected": false,
+  "database_modified": false,
+  "working_server_started": false,
+  "status": "BLOCKED",
+  "next_step": "Obtain reachable server URL and target project name or ID, then check authenticated access"
+}

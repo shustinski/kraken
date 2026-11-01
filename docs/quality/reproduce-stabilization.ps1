@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'qt', 'plugins', 'statistics', 'd1', 'd4', 'policy')]
+    [ValidateSet('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'qt', 'plugins', 'statistics', 'd1', 'd4', 'policy', 'schema-upgrade', 'hub-resume')]
     [string]$Block = 'd4',
     [string]$PostgresBin = 'C:\PostgreSQL\16\pgsql\bin'
 )
@@ -16,10 +16,12 @@ $groups = @{
     'live-catalog' = @('tests/test_live_catalog_acceptance.py')
     'agent' = @((Get-ChildItem tests/test_agent*.py).FullName) + @('tests/test_work_plugin_launch.py', 'tests/test_karakal_agent_headless.py')
     'qt' = @('tests/test_work_planning_dialog.py', 'tests/test_quality_dialog.py', 'tests/test_multilayer_dialog.py', 'tests/test_electrical_dialog.py', 'tests/test_computed_stitch_dialog.py', 'tests/test_analysis_qt_ui.py', 'tests/test_local_analysis_map_ui.py', 'tests/test_work_templates_dialog.py', 'tests/test_vector_stitch_dialog.py', 'tests/test_remaining_qt_acceptance.py')
-    'plugins' = @('tests/test_csliser_functional.py', 'plugins/csliser/tests', 'plugins/kategb/tests', 'plugins/krona/tests/test_explicit_connectivity.py', 'plugins/krona/tests/test_quality_qt.py', 'plugins/karakal/tests/unit/test_headless_analysis.py', 'tests/test_contour_headless_worker.py', 'tests/test_headless_cif_deployment.py', '--import-mode=importlib')
+    'plugins' = @('tests/test_csliser_functional.py', 'plugins/csliser/tests', 'plugins/krona/tests/test_explicit_connectivity.py', 'plugins/krona/tests/test_quality_qt.py', 'plugins/karakal/tests/unit/test_headless_analysis.py', 'tests/test_contour_headless_worker.py', 'tests/test_headless_cif_deployment.py', '--import-mode=importlib')
     'statistics' = @('tests/test_statistics_reports.py', 'tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history')
     'd1' = @('tests/test_project_create_idempotency.py', 'tests/test_create_project_dialog_retry.py', 'tests/test_hub_embedded_service.py')
     'd4' = @('tests/test_karakal_agent_headless.py', 'tests/test_agent_execution_modes.py')
+    'schema-upgrade' = @('tests/test_agent_execution_schema_upgrade.py')
+    'hub-resume' = @('tests/test_hub_resume_remote_failure.py', 'tests/test_hub_manager_app.py')
     'policy' = @('tests/test_server_administration.py', 'tests/test_registered_principal_before_session.py')
 }
 $savedEnvironment = @{}
@@ -34,7 +36,7 @@ try {
     $env:PYTHONUNBUFFERED = '1'
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
-    if ($Block -in @('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'policy')) {
+    if ($Block -in @('backup', 'server', 'server-domain', 'live-catalog', 'agent', 'policy', 'schema-upgrade')) {
         # This is always a new cluster, never the configured working database.
         $cluster = Join-Path $runRoot 'postgres'
         & (Join-Path $PostgresBin 'initdb.exe') -D $cluster -U kraken_audit --auth=trust --encoding=UTF8 --no-locale *> (Join-Path $runRoot 'initdb.txt')

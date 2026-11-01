@@ -1,0 +1,41 @@
+{
+  "launcher_pid": 35792,
+  "configuration": "C:\\Users\\shust\\AppData\\Local\\Kraken\\LocalServer\\server.toml",
+  "log": "D:\\code\\kraken\\.test_runtime\\live-server\\server.log",
+  "checks": [
+    {
+      "url": "http://127.0.0.1:8080/api/v1/health",
+      "http_status": 200,
+      "body": {
+        "status": "ok",
+        "metadata": "postgresql",
+        "api_version": "v1",
+        "compute_admission": {
+          "scope": "global_server_queue",
+          "admission_enforced": false,
+          "admission_ready": false,
+          "state": "unenforced",
+          "limits": null,
+          "active_leases": 0,
+          "declared_reserved": null,
+          "legacy_unknown_requests": 0,
+          "legacy_policy": "reserve_entire_configured_budget",
+          "os_enforced": false,
+          "per_host_capacity_enforced": false
+        },
+        "blob_gateway": "enabled"
+      }
+    },
+    {
+      "url": "http://127.0.0.1:8081/health",
+      "http_status": 200,
+      "body": {
+        "project_deletion_barrier": 1,
+        "service": "kraken-blob-gateway",
+        "status": "ok",
+        "storage_backup_barrier": 1,
+        "version": 1
+      }
+    }
+  ]
+}

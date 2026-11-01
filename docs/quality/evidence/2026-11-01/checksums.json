@@ -43,6 +43,14 @@
     "sha256": "f2ee316f9105b652b5b937940f6af740cf157e3695ed9d6daa4a11edad1aea30",
     "bytes": 11441
   },
+  "hub-resume-green.txt": {
+    "sha256": "b66671f347c520a5d9177e1f9611e87de738c0575b62ff8ad00cec04d4155d96",
+    "bytes": 101
+  },
+  "hub-resume-red.txt": {
+    "sha256": "a79cb0be0abb141fd1bc41fa7ba3ca250a6669783f8de89b834a73d24708089a",
+    "bytes": 8439
+  },
   "krona-json-out-valid.txt": {
     "sha256": "3fceed711edfa7f56ad4392f91a7246aa102010361d7cd8f9a91eaacbfb5d167",
     "bytes": 87
@@ -91,6 +99,26 @@
     "sha256": "3af90ea636914b2be48ce9f24d6a8d9304fd5325fd34eeef1cc7a54c12cd4f3d",
     "bytes": 569
   },
+  "real-project-artifact-manifest.json": {
+    "sha256": "1cafad238890a703cc22b1188d445d61791411bae9b809af36cb677114bb9006",
+    "bytes": 66880
+  },
+  "real-project-artifact-verification.json": {
+    "sha256": "b48959fe99999f3fafb68e1c8ab8edab802b5471db1054cc5aa836c7b48419b6",
+    "bytes": 56800
+  },
+  "real-project-qt-view.json": {
+    "sha256": "eb19ffe7493bb22437b05d6036905d2abf73bb877ea845219834e3d91c6c23e1",
+    "bytes": 1032
+  },
+  "real-server-schema-before.json": {
+    "sha256": "faf080ca169d166a4a76fb18678bacf93f7cc75dc00fcc78e27089d7e982c135",
+    "bytes": 350
+  },
+  "real-server-startup.json": {
+    "sha256": "924a7559d3c21e5867ca1f8586429153534c1320210a4a424b953cda863277f6",
+    "bytes": 1176
+  },
   "reproducer-d4-junit.xml": {
     "sha256": "4fb8fc65daf99c2c700bf11ac3ddef38b5e000d208982d3ecc88b5883d0014d8",
     "bytes": 1230
@@ -103,13 +131,29 @@
     "sha256": "45726aa5ffc3d074539ea1b5aff9f12f9cde4eff4d284f1bf4c984eac17b4a2c",
     "bytes": 686
   },
+  "schema-upgrade-isolated.txt": {
+    "sha256": "693a5414db98f953da0951a547fc1cb7ab5b2c27eb479f1d7fcf1fac491add7f",
+    "bytes": 591
+  },
   "server-acceptance.txt": {
     "sha256": "eb0309b0de29a24bd6f0e7f1fafbf48302c5aacc699ad31ed271d230ec68f01f",
     "bytes": 16510
   },
+  "server-continuation-lint.txt": {
+    "sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+    "bytes": 20
+  },
+  "server-continuation-receipt.json": {
+    "sha256": "6e8570e240f7b229a865b1418df17753f358ee199d9d434d5b6348bd7b9a50d8",
+    "bytes": 955
+  },
   "server-domain-remaining.txt": {
     "sha256": "6168f0a48c31e01a25cacf97022889565faffa26ab62eeca96e1a277f8f07e4d",
     "bytes": 4561
+  },
+  "server-real-project-preflight.json": {
+    "sha256": "4eb38c42804a8a384d2a05ac7578162bb1a7913697c5002c13f605923dd3bbda",
+    "bytes": 783
   },
   "server-transport.txt": {
     "sha256": "6d2f7128c6eb91fe5b4591a81ad1c639fa05733609938632cf569222c38d4323",
@@ -138,5 +182,9 @@
   "statistics-verified.txt": {
     "sha256": "fb031e94e5317a1dc34478e2983da8edc813af344d8a5f614e93ed4dc133818f",
     "bytes": 101
+  },
+  "upgrade-0010-0011.sql": {
+    "sha256": "690e48feaaccca4375cdf92d99a4370725f51d7ea18d1495ae5424d192cbf30b",
+    "bytes": 249
   }
 }

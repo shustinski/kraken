@@ -1,0 +1,17 @@
+{
+  "mode": "READ ONLY",
+  "token_count": 0,
+  "active_token_count": 0,
+  "active_capabilities": [],
+  "machine_token_environment_present": false,
+  "existing_jobs": [
+    {
+      "id": "f08b5e32-2165-4756-b704-2ff9f8099e3c",
+      "state": "waiting_for_user"
+    },
+    {
+      "id": "4396b5bc-52fe-4c4f-9d84-e05c424f7820",
+      "state": "succeeded"
+    }
+  ]
+}

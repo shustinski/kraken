@@ -1,0 +1,16 @@
+{
+  "migration": "20261025_0010 -> 20261029_0011",
+  "authorization": "explicit user approval",
+  "database": "kraken_local",
+  "committed_revision": "20261029_0011",
+  "new_column_type": "json",
+  "new_column_nullable": true,
+  "job_count": 2,
+  "existing_job_rows_unchanged": true,
+  "preservation_checked": "migration transaction compared every existing job field and required new column NULL before commit",
+  "jobs_http_status": 200,
+  "catalog_jobs_count": 2,
+  "project_revision": 2,
+  "status": "passed",
+  "verification_probe_correction": "initial post-commit check passed positional argument to no-argument plugin_jobs; corrected without repeating migration"
+}

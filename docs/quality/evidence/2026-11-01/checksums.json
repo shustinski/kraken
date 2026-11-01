@@ -3,6 +3,10 @@
     "sha256": "2516d820ef0a9bc8b8df8857fa4dee1fc9af0fe2bdb3915e322efb791ac5bf56",
     "bytes": 11485
   },
+  "apply_approved_schema_upgrade.py.txt": {
+    "sha256": "bddaf79cb7424286ff1861ea1e6c704e748a18f14c9fc7f5960d6f123ee06376",
+    "bytes": 2468
+  },
   "contour-editor-full.txt": {
     "sha256": "45abbbd48d778db4b6aac62ed1bd40c0415b393f3fe34363500820878c18546b",
     "bytes": 59320
@@ -87,6 +91,10 @@
     "sha256": "eef8ffdca01aae0849fb5576fd49be35dffc3bf9c8ea663eae42b56037f0c610",
     "bytes": 4926
   },
+  "qt-after-migration.txt": {
+    "sha256": "38066edaf30d6173ee77abdbe5488c016593da11bd9ed48a34fb9b7bf8b63cb4",
+    "bytes": 2353
+  },
   "qt-return-statistics.txt": {
     "sha256": "a8ee81802a06aab8b4485cce816f89ce7ba8c97316f59044ed6b5a96471c48ae",
     "bytes": 3118
@@ -106,6 +114,10 @@
   "real-project-artifact-verification.json": {
     "sha256": "b48959fe99999f3fafb68e1c8ab8edab802b5471db1054cc5aa836c7b48419b6",
     "bytes": 56800
+  },
+  "real-project-qt-after-migration.json": {
+    "sha256": "eb19ffe7493bb22437b05d6036905d2abf73bb877ea845219834e3d91c6c23e1",
+    "bytes": 1032
   },
   "real-project-qt-view.json": {
     "sha256": "eb19ffe7493bb22437b05d6036905d2abf73bb877ea845219834e3d91c6c23e1",
@@ -135,6 +147,10 @@
     "sha256": "693a5414db98f953da0951a547fc1cb7ab5b2c27eb479f1d7fcf1fac491add7f",
     "bytes": 591
   },
+  "schema-upgrade-working.json": {
+    "sha256": "f6d33e1b5a0aef0de54d80a7b3abb86f9da437b93cece7c7c4ddf3214200c4b0",
+    "bytes": 670
+  },
   "server-acceptance.txt": {
     "sha256": "eb0309b0de29a24bd6f0e7f1fafbf48302c5aacc699ad31ed271d230ec68f01f",
     "bytes": 16510
@@ -158,6 +174,10 @@
   "server-transport.txt": {
     "sha256": "6d2f7128c6eb91fe5b4591a81ad1c639fa05733609938632cf569222c38d4323",
     "bytes": 1964
+  },
+  "server-worker-preflight.json": {
+    "sha256": "f18c6fb1a715f25061a73638e7f904c639e5c9052d80d6d2027d05f1a8b84be9",
+    "bytes": 363
   },
   "stabilization-lint-verified.txt": {
     "sha256": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
@@ -186,5 +206,9 @@
   "upgrade-0010-0011.sql": {
     "sha256": "690e48feaaccca4375cdf92d99a4370725f51d7ea18d1495ae5424d192cbf30b",
     "bytes": 249
+  },
+  "verify_approved_schema_upgrade.py.txt": {
+    "sha256": "936ae6d1882240bcf69631502ee49a5a640bb51ff81746758ff49815e9c690dc",
+    "bytes": 1751
   }
 }

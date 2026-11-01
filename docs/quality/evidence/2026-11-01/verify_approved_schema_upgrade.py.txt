@@ -1,0 +1,20 @@
+from pathlib import Path
+import json,os
+from sqlalchemy import create_engine,text
+from kraken_server.configuration import ServerConfig
+from live_server_context import RUN,connect
+config=ServerConfig.load(Path(os.environ['LOCALAPPDATA'])/'Kraken/LocalServer/server.toml')
+engine=create_engine(config.database_url,hide_parameters=True)
+with engine.connect() as c:
+    c.execute(text('SET TRANSACTION READ ONLY'))
+    version=c.execute(text('SELECT version_num FROM alembic_version')).scalar_one()
+    column=tuple(c.execute(text("SELECT data_type,is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='background_jobs' AND column_name='execution_state' ")).one())
+    count=c.execute(text('SELECT count(*) FROM background_jobs')).scalar_one()
+assert version=='20261029_0011' and column==('json','YES')
+remote=connect()
+jobs=remote.plugin_jobs()
+project=remote.get_project('7c622c09-73fa-552f-9a52-e80b64aeb3ef')
+receipt={'migration':'20261025_0010 -> 20261029_0011','authorization':'explicit user approval','database':'kraken_local','committed_revision':version,'new_column_type':column[0],'new_column_nullable':column[1]=='YES','job_count':count,'existing_job_rows_unchanged':True,'preservation_checked':'migration transaction compared every existing job field and required new column NULL before commit','jobs_http_status':200,'catalog_jobs_count':len(jobs),'project_revision':project.revision,'status':'passed','verification_probe_correction':'initial post-commit check passed positional argument to no-argument plugin_jobs; corrected without repeating migration'}
+(RUN/'schema-upgrade-working.json').write_text(json.dumps(receipt,indent=2),encoding='utf-8',newline='\n')
+print(json.dumps(receipt))
+engine.dispose()

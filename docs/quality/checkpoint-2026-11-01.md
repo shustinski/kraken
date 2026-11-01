@@ -73,16 +73,27 @@ require_escalated. Эти отказы среды не объявлялись д
    Подтверждён локальный loopback Agent; leased worker рабочего сервера ещё NOT TESTED.
    Это проверка доступности/чтения, а не качества модели или реального прибора.
 
-   **P1 BLOCKED:** `/projects/{id}/jobs` возвращает 500: в рабочей схеме
-   [0010 отсутствует execution_state](evidence/2026-11-01/real-server-schema-before.json).
-   Миграция 0011 добавляет nullable JSON и обновляет номер схемы в транзакции:
-   [точный SQL](evidence/2026-11-01/upgrade-0010-0011.sql).
-   На отдельном PG55439 воспроизведён отказ, затем upgrade сохранил существующую строку
-   полностью и исправил запрос: [1 PASS](evidence/2026-11-01/schema-upgrade-isolated.txt).
-   Рабочая база НЕ мигрирована; запрошено отдельное разрешение из-за исходного ограничения
-   «Не изменять рабочую базу». **Точный следующий шаг:** после явного согласия применить
-   только 0011 через сохранённую конфигурацию, проверить revision/schema/jobs200,
-   затем продолжить связку серверного worker и Hub; без согласия сохранить BLOCKED.
+   **P1 PASS после явного согласия пользователя:** миграция0011 применена к рабочей
+   `kraken_local` одной транзакцией. Заблокированы background_jobs и строка версии;
+   исходная версия0010 проверена. Все поля двух существующих заданий сравнены до/после,
+   новый nullable JSON проверен как NULL. После commit схема0011, `/projects/{id}/jobs`
+   отвечает200, проект остаётся на revision2:
+   [квитанция](evidence/2026-11-01/schema-upgrade-working.json),
+   [выполненный script как текст](evidence/2026-11-01/apply_approved_schema_upgrade.py.txt),
+   [окончательный read-only verifier](evidence/2026-11-01/verify_approved_schema_upgrade.py.txt).
+   Начальная post-commit проверка ошиблась сигнатурой `plugin_jobs(pid)`; исправлен только
+   read-only probe на `plugin_jobs()`, миграция повторно не выполнялась.
+   Два открытия Qt повторены после миграции: [PASS](evidence/2026-11-01/real-project-qt-after-migration.json),
+   [журнал](evidence/2026-11-01/qt-after-migration.txt), нет uncaught/errors, история неизменна.
+   Независимый reviewer проверил DDL/transaction/receipt/Qt, замечаний нет.
+
+   **Точный следующий шаг / worker BLOCKED:** [read-only preflight](evidence/2026-11-01/server-worker-preflight.json)
+   обнаружил 0 server_agent_tokens и отсутствие KRAKEN_AGENT_TOKEN. Существующие jobs
+   succeeded и waiting_for_user не менялись. Для leased worker нужен отдельный scoped
+   machine token и тестовое задание в согласованной серверной области; не подменять его
+   локальным loopback Agent. Не публиковать секрет и не возобновлять чужое waiting_for_user.
+   Полный сценарий на отдельном PostgreSQL/HTTP с ServerAgentWorker уже PASS в127-тестовом
+   блоке; это не означает приёмку worker в рабочем серверном окружении.
 
    Отдельный дефект D7: HTTP500 очереди выходил из startup Qt callback и завершал Hub
    с 0xc0000409. Выбор задания перенесён внутрь существующего try. [RED](evidence/2026-11-01/hub-resume-red.txt),

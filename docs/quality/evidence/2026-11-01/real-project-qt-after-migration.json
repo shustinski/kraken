@@ -1,0 +1,40 @@
+{
+  "project_id": "7c622c09-73fa-552f-9a52-e80b64aeb3ef",
+  "status": "passed",
+  "passes": [
+    {
+      "opened_by": "QTest.mouseDClick catalog item",
+      "layers": 1,
+      "images": 1,
+      "vectors": 1,
+      "screenshot": "D:\\code\\kraken\\.test_runtime\\live-server\\project-view-1.png"
+    },
+    {
+      "opened_by": "QTest.mouseDClick catalog item",
+      "layers": 1,
+      "images": 1,
+      "vectors": 1,
+      "screenshot": "D:\\code\\kraken\\.test_runtime\\live-server\\project-view-2.png"
+    }
+  ],
+  "agent": {
+    "url": "http://127.0.0.1:50335",
+    "capabilities": [
+      "dataset.model.train.v1",
+      "frames.binary-segment.v1",
+      "frames.binary-segment.v2",
+      "frames.confidence.v1",
+      "frames.dataset.prepare.v1",
+      "frames.vectorize.v1",
+      "karakal.analyze.v1",
+      "layer.confidence.analyze.v1",
+      "layer.stitch.v1"
+    ],
+    "health": "ok"
+  },
+  "project_history_unchanged": true,
+  "revision_before": 2,
+  "revision_after": 2,
+  "notices": [],
+  "uncaught_errors": []
+}

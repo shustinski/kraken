@@ -40,8 +40,8 @@
 | REAL-PROJECT-SERVER-READ | PASS | Server/Gateway200; 100 PNG + 100 CIF полностью прочитаны через Gateway, hash/размер/декодирование/размеры пар; история и revision2 сохранены. [Результат](evidence/2026-11-01/real-project-artifact-verification.json) |
 | REAL-PROJECT-SERVER-QT | PASS | Реальный Hub/DualCatalog/HTTP, два открытия двойным щелчком после закрытия окна; слой и две репрезентации, нет uncaught/errors, ревизия сохранена. [Квитанция](evidence/2026-11-01/real-project-qt-view.json) |
 | HUB-QUEUE-HTTP-FAILURE / D7 | PASS | Прежний native abort воспроизведён; ошибка plugin_jobs теперь внутри try. [36 PASS](evidence/2026-11-01/hub-resume-green.txt), повторный успешный запрос200, независимое ревью |
-| REAL-SERVER-JOBS-SCHEMA | FAIL / BLOCKED | Подтверждён HTTP500: рабочая схема0010 не содержит execution_state. Миграция0011 [проверена изолированно](evidence/2026-11-01/schema-upgrade-isolated.txt), рабочая база не мигрирована; ожидается разрешение пользователя |
-| REAL-PROJECT-SERVER-ACCEPTANCE | PARTIAL | Чтение и Qt PASS; очередь блокирует дальнейший серверный сценарий. Leased worker на рабочем сервере NOT TESTED. Качество модели и электрическая приёмка реального прибора NOT TESTED |
+| REAL-SERVER-JOBS-SCHEMA | PASS | После явного согласия0011 применена транзакционно; оба задания сохранены, JSON nullable, очередь HTTP200. [Квитанция](evidence/2026-11-01/schema-upgrade-working.json), [Qt после миграции](evidence/2026-11-01/real-project-qt-after-migration.json) |
+| REAL-PROJECT-SERVER-ACCEPTANCE | PARTIAL | Чтение, очередь и Qt PASS; leased worker рабочего сервера BLOCKED: 0 machine tokens и нет KRAKEN_AGENT_TOKEN; выполнение на этом сервере NOT TESTED. Качество модели и электрическая приёмка реального прибора NOT TESTED |
 
 Остальные непройденные части исторических групп сохраняют NOT TESTED/PARTIAL.
 Kraken пока не объявляется готовым.

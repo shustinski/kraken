@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from fastapi import Request
 
@@ -25,19 +26,30 @@ def register(ctx: HttpContext) -> None:
     agent_identity = ctx.agent_identity
     desktop_identity = ctx.desktop_identity
 
-    @app.post(f"{API_PREFIX}/agent/lease")
-    def lease_agent_job(
-        payload: dict[str, Any],
-        agent: Any = Depends(agent_identity),
-    ) -> dict[str, Any]:
+    def lease_job(payload: dict[str, Any], agent: Any, job_id: str | None = None) -> dict[str, Any]:
         if agent_gateway is None:
             raise HTTPException(status_code=503, detail="Server agent queue is not configured")
         requested = frozenset(str(item) for item in payload.get("capabilities", ()))
         if requested and not requested.issubset(agent.capabilities):
             raise HTTPException(status_code=403, detail="Requested capability is not granted to this agent")
         effective = agent if not requested else type(agent)(agent.token_id, agent.name, requested)
-        lease = agent_gateway.lease(effective, seconds=int(payload.get("lease_seconds", 60)))
+        lease = agent_gateway.lease(effective, seconds=int(payload.get("lease_seconds", 60)),
+                                    **({"job_id": job_id} if job_id is not None else {}))
         return {"job": lease}
+
+    @app.post(f"{API_PREFIX}/agent/lease")
+    def lease_agent_job(payload: dict[str, Any], agent: Any = Depends(agent_identity)) -> dict[str, Any]:
+        return lease_job(payload, agent)
+
+    @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/lease")
+    def lease_targeted_agent_job(
+        job_id: str, payload: dict[str, Any], agent: Any = Depends(agent_identity),
+    ) -> dict[str, Any]:
+        try:
+            target = str(UUID(job_id))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="job_id must be a UUID") from exc
+        return lease_job(payload, agent, target)
 
     @app.post(f"{API_PREFIX}/projects/{{project_id}}/jobs/{{job_id}}/desktop-lease")
     def lease_desktop_job(

@@ -413,10 +413,10 @@ class ServerAgentWorker:
             if done.wait(min(max(10, self.lease_seconds // 3), max(0, deadline - monotonic()))):
                 return
 
-    def run_once(self) -> bool:
+    def run_once(self, *, job_id: str | None = None) -> bool:
         lease = self._request(
             "POST",
-            "/api/v1/agent/lease",
+            "/api/v1/agent/lease" if job_id is None else f"/api/v1/agent/jobs/{job_id}/lease",
             {
                 "capabilities": sorted(self.registry.operations()),
                 "lease_seconds": self.lease_seconds,

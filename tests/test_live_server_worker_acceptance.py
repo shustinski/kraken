@@ -152,6 +152,7 @@ def test_contour_machine_worker_publishes_versions_and_hub_reopens(live_worker, 
         name="Contour result", kind=RepresentationKind.VECTOR, source_image_representation_id=image_rep.id,
         active=True, idempotency_key=str(uuid4()))
     input_ids = set()
+    input_by_coordinate = {}
     for x in (1, 2):
         source = tmp_path / f"{x}_1.png"
         image = Image.new("RGB", (64, 64), "black")
@@ -178,6 +179,7 @@ def test_contour_machine_worker_publishes_versions_and_hub_reopens(live_worker, 
             payload={**metadata, "upload_token": transfer["token"]}, idempotency_key=key, if_match=revision)
         version = remote.artifact_version(project.id, saved["id"])
         input_ids.add(str(version.id))
+        input_by_coordinate[(x, 1)] = str(version.id)
     cells = remote.frame_cells(project.id, layer.id, image_rep.id)
     assert {(c.x, c.y) for c in cells if c.sha256} == {(1, 1), (2, 1)}
     job = remote.submit_plugin_job(principal=principal, gateway=None, project_id=project.id,
@@ -189,7 +191,7 @@ def test_contour_machine_worker_publishes_versions_and_hub_reopens(live_worker, 
     env.receipt.update(job_id=str(job.id), input_version_ids=sorted(input_ids), layer_id=str(layer.id),
         image_representation_id=str(image_rep.id), vector_representation_id=str(vector_rep.id))
     assert job.state.value == "queued"
-    assert worker.run_once(), "Actual machine worker did not receive its job"
+    assert worker.run_once(job_id=str(job.id)), "Actual machine worker did not receive its job"
     done = next(j for j in remote.plugin_jobs() if j.id == job.id)
     assert done.state.value == "succeeded", (done.state, done.error)
     assert any(t["path"].endswith("/heartbeat") for t in worker.transitions)
@@ -203,7 +205,8 @@ def test_contour_machine_worker_publishes_versions_and_hub_reopens(live_worker, 
         assert hashlib.sha256(path.read_bytes()).hexdigest() == version.sha256 == cell.sha256
         assert path.stat().st_size == version.size_bytes > 0
         assert Path(version.filename).suffix.lower() == ".cif"
-        assert set(map(str, version.input_version_ids)).issubset(input_ids) and version.input_version_ids
+        assert version.media_type == "application/x-cif"
+        assert list(map(str, version.input_version_ids)) == [input_by_coordinate[(cell.x, cell.y)]]
         _, dimensions, polygons = load_polygons_cif(path)
         assert tuple(dimensions) == (64, 64) and polygons
         results.append({"id": str(version.id), "sha256": version.sha256, "bytes": version.size_bytes,

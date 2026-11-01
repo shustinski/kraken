@@ -187,13 +187,13 @@ def test_neuralimage_hub_reread_only_selects_actual_published_masks(live_chain, 
 
 def _choose_visible_combo(combo, identifier):
     assert combo.isVisible() and combo.isEnabled()
-    index = combo.findData(str(identifier))
+    index = combo.findData(identifier)
     assert index >= 0
     combo.setFocus()
     QTest.keyClick(combo, Qt.Key.Key_Home)
     for _ in range(index):
         QTest.keyClick(combo, Qt.Key.Key_Down)
-    assert str(combo.currentData()) == str(identifier)
+    assert combo.currentData() == identifier
 
 
 @pytest.mark.parametrize("live_chain", ["karakal"], indirect=True)
@@ -316,3 +316,137 @@ def test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics(live_
     env.receipt.update(checks=["actual visible GUI creation and matrix frame selection", "real machine Karakal subprocess",
         "two IoU values independently verified from pinned PNG bytes", "actual GUI metrics and discrepancy map",
         "map hash/size and fresh HTTP+Hub history reread"], quality_assessed=False, status="passed")
+
+
+@pytest.mark.parametrize("live_chain", ["stitch"], indirect=True)
+def test_stitch_real_file_dialog_machine_compute_and_hub_block_view(live_chain, qtbot):
+    import numpy as np
+    from PyQt6.QtWidgets import QApplication, QDialogButtonBox, QFileDialog, QLineEdit, QPushButton
+    from kraken_core.plugin_protocol import MOSAIC_MEDIA_TYPE
+    from kraken_hub.presentation.qt.stitching_dialog import StitchingDialog
+    from kraken_manager.domain.multilayer import MultilayerModel
+    from kraken_manager.infrastructure.mosaic import MosaicReader
+    from tests.test_live_ui_workflow import modal
+
+    env = live_chain
+    remote, project, state = env.remote, env.project, env.state
+    principal = remote.auth.principal
+    layer_id = state["layer_id"]
+    current = remote.get_multilayer_model(project.id)
+    remote.mutate_multilayer_model(project_id=project.id, principal=principal,
+        expected_revision=current["model"]["revision"], operation="set_stack",
+        arguments={"layers": [{"layer_id": layer_id, "layer_type": "metal", "z_m": 0, "thickness_m": 0}]},
+        idempotency_key=str(uuid4()))
+    cells = sorted(remote.frame_cells(project.id, layer_id, state["image_representation_id"]), key=lambda c:c.x)
+    assert len(cells) == 2
+    tiles, images = [], []
+    for cell in cells:
+        path = remote.managed_artifact_path(project.id, cell.artifact_version_id)
+        with Image.open(path) as image:
+            images.append(np.asarray(image.convert("RGB")))
+        tile = {"frame_id": cell.frame_id, "artifact_version_id": cell.artifact_version_id, "width": 64, "height": 64,
+                "pixel_size_m": [1e-6, 1e-6], "y_axis": "down", "catalog_xy": [cell.x, cell.y]}
+        if cell.x == 2:
+            tile.update(declared_affine=[1, 0, 64e-6, 0, 1, 0], note="Controlled adjacent synthetic tiles, not real stage calibration")
+        tiles.append(tile)
+    document = env.output / "observations.json"
+    document.write_text(json.dumps({"layer_id": layer_id, "reference_frame_id": cells[0].frame_id,
+        "tiles": tiles, "max_error_m": 1e-12}), encoding="utf-8")
+    shell, controller, dual = _open_project(qtbot, remote, project, env.output, "compute")
+    outer = StitchingDialog(controller, layer_id)
+    qtbot.addWidget(outer)
+    outer.show()
+    old_native = QApplication.testAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs)
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True)
+    dialog = viewer = None
+    try:
+        computed_button = outer.findChild(QPushButton, "computedStitchButton")
+        assert computed_button.isVisible() and computed_button.isEnabled()
+        QTest.mouseClick(computed_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: hasattr(outer, "_computed"))
+        dialog = outer._computed
+        qtbot.waitUntil(lambda: dialog._worker is None and dialog.snapshot is not None, timeout=15000)
+
+        def choose_file(file_dialog):
+            assert isinstance(file_dialog, QFileDialog) and file_dialog.isVisible()
+            edit = file_dialog.findChild(QLineEdit, "fileNameEdit")
+            assert edit is not None and edit.isVisible()
+            file_dialog.setDirectory(str(document.parent))
+            file_dialog.selectFile(document.name)
+            QTest.qWait(100)
+            assert file_dialog.selectedFiles() and Path(file_dialog.selectedFiles()[0]).resolve() == document.resolve()
+            button = file_dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Open)
+            assert button.isEnabled()
+            file_dialog.grab().save(str(env.output / "file-dialog-before-open.png"))
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+
+        modal(lambda: QTest.mouseClick(dialog.import_button, Qt.MouseButton.LeftButton), choose_file)
+        qtbot.waitUntil(lambda: dialog._worker is None and dialog._pending_import is None
+            and bool(dialog.snapshot["model"]["stitches"]), timeout=15000)
+        latest_geometry = MultilayerModel.from_dict(dialog.snapshot).stitches[-1]
+        assert tuple(dialog.plans.currentData()) == (latest_geometry.id, latest_geometry.revision)
+        _choose_visible_combo(dialog.mode, "rgb")
+        assert dialog.run_button.isEnabled() and dialog.run_button.isVisible()
+        QTest.mouseClick(dialog.run_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: dialog._worker is None and bool(dialog.snapshot["model"]["stitch_renders"]), timeout=15000)
+        job_id = dialog.snapshot["model"]["stitch_renders"][-1]["job_id"]
+        env.worker.allowed_jobs.add(job_id)
+        env.receipt.update(project_id=str(project.id), layer_id=layer_id, job_id=job_id,
+            launched_by="StitchingDialog computed button → real QFileDialog JSON → Compute")
+        assert env.worker.run_once(job_id=job_id)
+        qtbot.waitUntil(lambda: dialog._worker is None
+            and dialog.snapshot["model"]["stitch_renders"][-1]["state"] in {"imported", "failed", "cancelled"}, timeout=15000)
+        result = dialog.snapshot["model"]["stitch_renders"][-1]
+        assert result["state"] == "imported", result.get("error")
+        model = MultilayerModel.from_dict(dialog.snapshot)
+        render = model.stitch_renders[-1]
+        geometry = next(s for s in model.stitches if s.id == render.stitch_id and s.revision == render.stitch_revision)
+        version = remote.artifact_version(project.id, render.output.version_id)
+        path = remote.managed_artifact_path(project.id, version.id)
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == version.sha256
+        assert path.stat().st_size == version.size_bytes > 0 and version.media_type == MOSAIC_MEDIA_TYPE
+        assert set(map(str, version.input_version_ids)) == {str(c.artifact_version_id) for c in cells} | {geometry.plan.version_id}
+        with MosaicReader(path) as reader:
+            reader.validate(expected_job_id=job_id)
+            assert (reader.metadata["render"]["width"], reader.metadata["render"]["height"]) == (128, 64)
+            block = reader.read_block(0, 0)
+            assert np.array_equal(block.pixels, np.concatenate(images, axis=1))
+            assert np.all(block.coverage == 1)
+        QTest.mouseClick(dialog.view_button, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: hasattr(dialog, "_viewer") and dialog._viewer._worker is None
+            and dialog._viewer._metadata is not None, timeout=15000)
+        viewer = dialog._viewer
+        assert viewer.isVisible() and not viewer.image.pixmap().isNull()
+        assert viewer._metadata["job_id"] == job_id and "plan" not in viewer._metadata
+        QTest.mouseClick(viewer.coverage, Qt.MouseButton.LeftButton)
+        show_block = next(b for b in viewer.findChildren(QPushButton) if b.text() == "Показать блок")
+        QTest.mouseClick(show_block, Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: viewer._worker is None, timeout=15000)
+        assert viewer.image.pixmap().toImage().pixelColor(10, 10).getRgb()[:3] == (255, 255, 255)
+        assert viewer.grab().save(str(env.output / "hub-mosaic-block.png"))
+        env.receipt.update(output_version_id=str(version.id), sha256=version.sha256, bytes=version.size_bytes,
+            media_type=version.media_type, input_version_ids=list(map(str, version.input_version_ids)),
+            dimensions=[128, 64], bounded_viewer_metadata=True)
+    finally:
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, old_native)
+        if viewer is not None:
+            viewer.close()
+        if dialog is not None:
+            dialog.timer.stop()
+            dialog.close()
+        outer.close()
+        qtbot.waitUntil(lambda: not controller._background_workers, timeout=15000)
+        controller._workspace._analysis_timer.stop()
+        controller._agent_timer.stop()
+        shell.close_guard = None
+        shell.close()
+        dual.stop_sync()
+    reopened = _connect(env.config, env.tmp_path / "new-stitch-session")
+    snapshot = reopened.get_multilayer_model(project.id)
+    reread = MultilayerModel.from_dict(snapshot).stitch_renders[-1]
+    assert reread == render
+    reread_path = reopened.managed_artifact_path(project.id, version.id)
+    assert hashlib.sha256(reread_path.read_bytes()).hexdigest() == version.sha256
+    env.receipt.update(checks=["actual JSON file dialog import and GUI compute request", "native stitch machine subprocess",
+        "immutable mosaic SHA/size/type and exact input lineage", "128x64 pixels equal independently concatenated inputs",
+        "real bounded block viewer and coverage toggle", "fresh server session rereads same render/version"], status="passed")

@@ -109,18 +109,18 @@ class PollAgentJobsMixin:
         )
 
     def _resume_agent_jobs(self) -> None:
-        active = next(
-            (
-                job
-                for job in self.service.plugin_jobs()
-                if job.state.value not in {"succeeded", "failed", "cancelled"}
-                and not getattr(self.service, "is_remote_project", lambda _: False)(job.project_id)
-            ),
-            None,
-        )
-        if active is None:
-            return
         try:
+            active = next(
+                (
+                    job
+                    for job in self.service.plugin_jobs()
+                    if job.state.value not in {"succeeded", "failed", "cancelled"}
+                    and not getattr(self.service, "is_remote_project", lambda _: False)(job.project_id)
+                ),
+                None,
+            )
+            if active is None:
+                return
             self._gateway_for_job(active)
             self._poll_agent_jobs()
         except Exception as exc:

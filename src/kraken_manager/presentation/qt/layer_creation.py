@@ -218,6 +218,7 @@ class LayerCreationDialog(QDialog):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.jpg_count_label = QLabel("0", detection)
+        self.png_count_label = QLabel("0", detection)
         self.bmp_count_label = QLabel("0", detection)
         self.ssc_count_label = QLabel("0", detection)
         self.prv_count_label = QLabel("0", detection)
@@ -231,6 +232,7 @@ class LayerCreationDialog(QDialog):
             ),
         )
         detection_form.addRow("JPG/JPEG", self.jpg_count_label)
+        detection_form.addRow("PNG", self.png_count_label)
         detection_form.addRow("BMP", self.bmp_count_label)
         detection_form.addRow("SSC", self.ssc_count_label)
         detection_form.addRow("PRV", self.prv_count_label)
@@ -345,6 +347,7 @@ class LayerCreationDialog(QDialog):
         self.working_directory_label.setText("—")
         for label in (
             self.jpg_count_label,
+            self.png_count_label,
             self.bmp_count_label,
             self.ssc_count_label,
             self.prv_count_label,
@@ -377,6 +380,7 @@ class LayerCreationDialog(QDialog):
         self.scan_result = result
         self.working_directory_label.setText(result.working_directory or "Не найдена")
         self.jpg_count_label.setText(str(len(result.jpg_files)))
+        self.png_count_label.setText(str(len(result.png_files)))
         self.bmp_count_label.setText(str(len(result.bmp_files)))
         self.ssc_count_label.setText(str(len(result.ssc_files)))
         self.prv_count_label.setText(str(len(result.prv_files)))
@@ -389,9 +393,13 @@ class LayerCreationDialog(QDialog):
         else:
             self.scan_state.setText("Источник требует исправления.")
             self.validation_label.setText("\n".join(result.issues))
-        self.bmp_transform_group.setTitle(
-            "Преобразование BMP" if result.bmp_files else "Подготовка JPG"
-        )
+        if result.bmp_files:
+            preparation = "Преобразование BMP"
+        elif result.png_files:
+            preparation = "Подготовка PNG"
+        else:
+            preparation = "Подготовка JPG"
+        self.bmp_transform_group.setTitle(preparation)
         self.bmp_transform_group.setVisible(result.ready)
         for widget in (self.jpg_radio, self.png_radio, self.format_settings):
             widget.setVisible(bool(result.bmp_files))

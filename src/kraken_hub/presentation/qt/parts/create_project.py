@@ -105,6 +105,8 @@ class CreateProjectMixin:
         profile_box.currentIndexChanged.connect(_update_storage_hint)
         _update_storage_hint()
 
+        attempt_key: str | None = None
+        attempt_identity: tuple[object, ...] | None = None
         while dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 size = dimensions.validated_dimensions()
@@ -124,13 +126,25 @@ class CreateProjectMixin:
                     _configure_administration_page(
                         self.shell, self.service, self.session
                     )
+                identity = (
+                    name.text().strip(),
+                    size.width,
+                    size.height,
+                    size.orientation.value,
+                    profile_id,
+                    None if profile_id == REMOTE_STORAGE_PROFILE.id else source_root,
+                    None if profile_id == REMOTE_STORAGE_PROFILE.id else derived_root,
+                )
+                if attempt_key is None or identity != attempt_identity:
+                    attempt_key = str(uuid4())
+                    attempt_identity = identity
                 project = self.service.create_project(
                     principal=self.session.principal,
                     name=name.text(),
                     width=size.width,
                     height=size.height,
                     orientation=DomainOrientation(size.orientation.value),
-                    idempotency_key=str(uuid4()),
+                    idempotency_key=attempt_key,
                     layer_template=False,
                     source_root=source_root,
                     derived_root=derived_root,

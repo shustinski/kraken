@@ -152,6 +152,7 @@ def _layer_source_scan(payload: Mapping[str, Any]) -> Any:
         total_bytes=int(payload.get("total_bytes") or 0),
         issues=tuple(str(item) for item in payload.get("issues") or ()),
         file_fingerprints=fingerprints,
+        png_files=tuple(str(item) for item in payload.get("png_files") or ()),
     )
 
 def _layer_id(value: str) -> LayerId:

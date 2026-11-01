@@ -62,6 +62,26 @@ def test_jpg_scan_hides_conversion_but_keeps_reflections(qapp, tmp_path: Path) -
     assert dialog.flip_vertical.isVisible()
 
 
+def test_png_scan_is_ready_without_bmp_conversion(qapp, tmp_path: Path) -> None:
+    images = tmp_path / "png"
+    images.mkdir()
+    Image.new("RGB", (2, 2), "white").save(images / "frame_0.png")
+    dialog = _dialog()
+    dialog.show()
+    dialog.name_edit.setText("Metal")
+    dialog._scan_succeeded(scan_layer_source(images, maximum_frames=4))
+
+    assert dialog.ok_button.isEnabled()
+    assert dialog.png_count_label.text() == "1"
+    assert dialog.jpg_count_label.text() == "0"
+    assert dialog.bmp_count_label.text() == "0"
+    assert dialog.scan_result is not None and dialog.scan_result.ready
+    assert dialog.bmp_transform_group.title() == "Подготовка PNG"
+    assert not dialog.jpg_radio.isVisible()
+    assert not dialog.png_radio.isVisible()
+    assert dialog.flip_horizontal.isVisible()
+
+
 def test_bmp_scan_exposes_exactly_one_conversion_format_and_advanced_settings(
     qapp, tmp_path: Path
 ) -> None:

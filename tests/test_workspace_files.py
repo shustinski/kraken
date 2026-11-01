@@ -72,6 +72,50 @@ def test_scan_selects_densest_then_nearest_directory_and_maps_last_number(
     assert len(scan.ssc_files) == 1
 
 
+def test_png_folder_scans_and_imports_as_images(tmp_path: Path) -> None:
+    source_root, derived_root = _roots(tmp_path)
+    microscope = tmp_path / "microscope"
+    microscope.mkdir()
+    Image.new("RGB", (2, 2), "white").save(microscope / "frame_0.png")
+    (microscope / "notes.txt").write_text("keep", encoding="utf-8")
+
+    scan = scan_layer_source(microscope, maximum_frames=4)
+
+    assert scan.ready
+    assert scan.issues == ()
+    assert [Path(item).name for item in scan.png_files] == ["frame_0.png"]
+    assert scan.jpg_files == ()
+    assert scan.bmp_files == ()
+    assert [Path(item).name for item in scan.image_files] == ["frame_0.png"]
+    assert scan.frame_positions == {"frame_0.png": 1}
+    service = _service(tmp_path)
+    project = service.create_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=source_root,
+        derived_root=derived_root,
+    )
+    binding = service.import_layer(
+        project=project,
+        layer_id="layer-1",
+        layer_name="Metal",
+        scan=scan,
+        conversion=ImageConversionSettings(),
+    )
+    copied = Path(binding.image_directory) / "frame_0.png"
+    assert copied.read_bytes() == (microscope / "frame_0.png").read_bytes()
+    assert not (Path(binding.aux_directory) / "frame_0.png").exists()
+    assert (Path(binding.aux_directory) / "notes.txt").read_text(encoding="utf-8") == "keep"
+
+    mixed = tmp_path / "mixed-png"
+    mixed.mkdir()
+    Image.new("RGB", (2, 2), "white").save(mixed / "frame_0.png")
+    Image.new("RGB", (2, 2), "white").save(mixed / "frame_1.jpg")
+    refused = scan_layer_source(mixed, maximum_frames=4)
+    assert not refused.ready
+    assert any("PNG" in issue and "JPG" in issue for issue in refused.issues)
+
+
 def test_mixed_jpg_and_bmp_and_duplicate_frames_block_scan(tmp_path: Path) -> None:
     mixed = tmp_path / "mixed"
     mixed.mkdir()

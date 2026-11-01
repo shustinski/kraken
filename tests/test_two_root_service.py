@@ -142,6 +142,40 @@ def test_disk_import_registers_copied_directory_as_image_representation(
     ).is_file()
 
 
+def test_png_disk_import_survives_reopen(tmp_path: Path) -> None:
+    microscope = tmp_path / "microscope"
+    microscope.mkdir()
+    image = microscope / "frame_0.png"
+    Image.new("RGB", (2, 2), "red").save(image)
+    service, session, project = _project(tmp_path)
+    scan = service.scan_layer_source(microscope, maximum_frames=project.frame_count)
+    assert scan.ready
+
+    layer, binding, representation = service.create_layer_from_disk(
+        principal=session.principal,
+        project=project,
+        name="Metal",
+        layer_type=LayerType.METAL,
+        order=1,
+        scan=scan,
+        conversion=ImageConversionSettings(),
+        idempotency_key="png-layer",
+    )
+
+    copied = Path(binding.image_directory) / "frame_0.png"
+    assert copied.read_bytes() == image.read_bytes()
+    cells = service.frame_cells(project.id, layer.id, representation.id)
+    assert {(cell.x, cell.y) for cell in cells} == {(1, 1)}
+    reopened = EmbeddedProjectService(tmp_path / "data")
+    owner = reopened.login("owner", "")
+    assert owner is not None
+    again = reopened.frame_cells(project.id, layer.id, representation.id)
+    assert {(cell.x, cell.y) for cell in again} == {(1, 1)}
+    stored = reopened.managed_artifact_path(project.id, again[0].artifact_version_id)
+    assert stored.is_file()
+    assert stored.read_bytes() == image.read_bytes()
+
+
 def test_project_rename_rolls_back_both_workspace_roots_on_domain_failure(
     tmp_path: Path,
     monkeypatch,

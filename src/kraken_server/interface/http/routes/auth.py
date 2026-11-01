@@ -13,6 +13,7 @@ def register(ctx: HttpContext) -> None:
     app = ctx.app
     backend = ctx.backend
     account_store = ctx.account_store
+    session_resolver = ctx.session_resolver
     blob_gateway = ctx.blob_gateway
     HTTPException = ctx.HTTPException
     problem = ctx.problem
@@ -72,11 +73,20 @@ def register(ctx: HttpContext) -> None:
             session = store.authenticate(username, password)
             if session is None:
                 raise HTTPException(status_code=401, detail="Invalid credentials") from exc
+            publish_registered_account(session.account)
             return local_session_payload(session)
         session = store.authenticate(username, password)
         if session is None:
             raise HTTPException(status_code=401, detail="Invalid credentials")
+        publish_registered_account(session.account)
         return local_session_payload(session)
+
+    def publish_registered_account(account: Any) -> None:
+        if session_resolver is None:
+            return
+        publish = getattr(session_resolver, "provision_local_account", None)
+        if callable(publish):
+            publish(account)
 
     def require_account_store() -> Any:
         if account_store is None or not hasattr(account_store, "list_accounts"):

@@ -137,10 +137,11 @@ class LayerSourceScan:
     total_bytes: int
     issues: tuple[str, ...] = ()
     file_fingerprints: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    png_files: tuple[str, ...] = ()
 
     @property
     def image_files(self) -> tuple[str, ...]:
-        return self.jpg_files or self.bmp_files
+        return self.jpg_files or self.bmp_files or self.png_files
 
     @property
     def ready(self) -> bool:
@@ -244,7 +245,9 @@ def scan_layer_source(root: Path | str, *, maximum_frames: int) -> LayerSourceSc
             total_files += 1
             total_bytes += metadata.st_size
             fingerprints[str(path.resolve())] = (metadata.st_size, metadata.st_mtime_ns)
-        image_count = sum(path.suffix.casefold() in {".jpg", ".jpeg", ".bmp"} for path in files)
+        image_count = sum(
+            path.suffix.casefold() in {".jpg", ".jpeg", ".bmp", ".png"} for path in files
+        )
         if image_count:
             depth = len(current.relative_to(selected).parts)
             candidates.append((-len(files), depth, str(current).casefold(), current, tuple(files)))
@@ -252,25 +255,28 @@ def scan_layer_source(root: Path | str, *, maximum_frames: int) -> LayerSourceSc
     if not candidates:
         return LayerSourceScan(
             str(selected), "", (), (), (), (), {}, total_files, total_bytes,
-            ("В выбранном дереве не найдены изображения JPG/JPEG или BMP.",),
+            ("В выбранном дереве не найдены изображения JPG, PNG или BMP.",),
             fingerprints,
         )
 
     _negative_count, _depth, _key, working, files = min(candidates)
     jpg = tuple(path for path in files if path.suffix.casefold() in {".jpg", ".jpeg"})
+    png = tuple(path for path in files if path.suffix.casefold() == ".png")
     bmp = tuple(path for path in files if path.suffix.casefold() == ".bmp")
     ssc = tuple(path for path in files if path.suffix.casefold() == ".ssc")
     prv = tuple(path for path in files if path.suffix.casefold() == ".prv")
     issues: list[str] = []
-    if jpg and bmp:
+    present = [label for label, group in (("JPG", jpg), ("PNG", png), ("BMP", bmp)) if group]
+    if len(present) > 1:
         issues.append(
-            "В рабочей папке одновременно найдены JPG и BMP. "
-            "Оставьте изображения только одного формата."
+            "В рабочей папке одновременно найдены "
+            + " и ".join(present)
+            + ". Оставьте изображения только одного формата."
         )
     positions: dict[str, int] = {}
     if not issues:
         try:
-            positions = map_frame_positions(jpg or bmp, maximum=maximum_frames)
+            positions = map_frame_positions(jpg or png or bmp, maximum=maximum_frames)
         except WorkspaceValidationError as exc:
             issues.append(str(exc))
     natural = lambda values: tuple(sorted((str(path) for path in values), key=str.casefold))
@@ -286,6 +292,7 @@ def scan_layer_source(root: Path | str, *, maximum_frames: int) -> LayerSourceSc
         total_bytes=total_bytes,
         issues=tuple(issues),
         file_fingerprints=fingerprints,
+        png_files=natural(png),
     )
 
 

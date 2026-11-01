@@ -669,7 +669,9 @@ class WorkspaceFileService:
         recognized_images = {Path(value).resolve() for value in scan.image_files}
         recognized_ssc = {Path(value).resolve() for value in scan.ssc_files}
         recognized_prv = {Path(value).resolve() for value in scan.prv_files}
-        skip_aux = recognized_ssc | recognized_prv | (recognized_images if scan.jpg_files else set())
+        skip_aux = recognized_ssc | recognized_prv
+        if scan.jpg_files or scan.png_files:
+            skip_aux |= recognized_images
 
         tasks: list[tuple[Callable[..., None], tuple[Any, ...], str]] = []
         for raw in scan.jpg_files:
@@ -677,6 +679,13 @@ class WorkspaceFileService:
             target = stage / "img" / source.name
             if conversion.flip_horizontal or conversion.flip_vertical:
                 tasks.append((self._convert_image, (source, target, "jpg", conversion), source.name))
+            else:
+                tasks.append((self._copy_file, (source, target), source.name))
+        for raw in scan.png_files:
+            source = Path(raw)
+            target = stage / "img" / source.name
+            if conversion.flip_horizontal or conversion.flip_vertical:
+                tasks.append((self._convert_image, (source, target, "png", conversion), source.name))
             else:
                 tasks.append((self._copy_file, (source, target), source.name))
         for raw in scan.bmp_files:

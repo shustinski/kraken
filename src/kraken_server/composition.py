@@ -95,17 +95,7 @@ class HybridSessionResolver:
             return None
         local = self.accounts.resolve_session(token)
         if local is not None:
-            principal = Principal(
-                id=PrincipalId(local.account_id),
-                provider=PrincipalProvider.LOCAL,
-                subject=local.username,
-                display_name=local.display_name,
-                active=local.enabled,
-                system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(local.account_id)),
-            )
-            self.identities.save(principal)
-            if self.performers is not None:
-                ensure_linked_performer(principal, self.performers)
+            self.provision_local_account(local)
             return SessionPrincipal(local.account_id, "local", token)
         if self.oidc is None:
             return None
@@ -137,6 +127,26 @@ class HybridSessionResolver:
         if self.federated_cache is not None:
             self.federated_cache.save(token, principal.id)
         return SessionPrincipal(str(principal.id), "gitlab", token)
+
+    def provision_local_account(self, account: Any) -> None:
+        """Mirror a server account into the identity catalog.
+
+        Registration and later session use share this path. Role assignment
+        reads the catalog, so the row has to exist before the account's first
+        authenticated request.
+        """
+
+        principal = Principal(
+            id=PrincipalId(account.account_id),
+            provider=PrincipalProvider.LOCAL,
+            subject=account.username,
+            display_name=account.display_name,
+            active=account.enabled,
+            system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(account.account_id)),
+        )
+        self.identities.save(principal)
+        if self.performers is not None:
+            ensure_linked_performer(principal, self.performers)
 
     def verify_live(self, session: SessionPrincipal) -> bool:
         if session.provider != "gitlab" or self.oidc is None:

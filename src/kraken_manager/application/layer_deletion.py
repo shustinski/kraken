@@ -64,14 +64,19 @@ class DeleteLayerHandler(_LifecycleHandler):
                     raise ConflictError("Archived project or layer is read-only")
                 if layer.revision != command.expected_revision:
                     raise ConflictError("Layer revision changed")
-            if replay and not self._storage.is_bound(str(project.id), str(layer.id)):
+            bound = self._storage.is_bound(str(project.id), str(layer.id))
+            audit_written = bool(
+                uow.event_store.find_by_idempotency_key(project.id, f"delete-layer:{delete_id}:files")
+            )
+            if replay and not bound and audit_written:
                 return layer
             if self._storage.has_running_runs(str(project.id), str(layer.id)) or any(
                 job.layer_id == layer.id and job.state.value not in {"succeeded", "failed", "cancelled"}
                 for job in uow.projections.list_plugin_jobs(project.id)
             ):
                 raise ConflictError("Layer has an active plugin job")
-        stage = self._storage.stage(str(project.id), str(layer.id), delete_id)
+        # A catalog layer has no two-root binding. Its journal still has to close.
+        stage = self._storage.stage(str(project.id), str(layer.id), delete_id) if bound else None
         try:
             archived = self._archive(
                 ArchiveLayerCommand(
@@ -82,7 +87,8 @@ class DeleteLayerHandler(_LifecycleHandler):
                 )
             )
         except Exception:
-            self._storage.rollback(stage)
+            if stage is not None:
+                self._storage.rollback(stage)
             raise
         # Metadata is committed: subsequent failures must leave files staged.
         # Repeating this command finishes auditing/cleanup without undoing the archive.
@@ -100,7 +106,7 @@ class DeleteLayerHandler(_LifecycleHandler):
                         "layer_id": str(layer.id),
                         "layer_name": layer.name,
                         "delete_id": delete_id,
-                        "managed_files": stage.managed_files,
+                        "managed_files": False if stage is None else stage.managed_files,
                     },
                     actor=ActorSnapshot.from_principal(command.context.actor),
                     recorded_at=self._clock.now(),
@@ -108,5 +114,6 @@ class DeleteLayerHandler(_LifecycleHandler):
                 )
                 uow.event_store.append(stream, expected_revision=revision, events=(event,))
                 uow.commit()
-        self._storage.complete(str(project.id), str(layer.id), stage)
+        if stage is not None:
+            self._storage.complete(str(project.id), str(layer.id), stage)
         return archived

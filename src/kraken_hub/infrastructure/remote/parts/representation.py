@@ -139,6 +139,7 @@ class RepresentationMixin:
             frame_positions=payload["frame_positions"], total_files=payload["total_files"],
             total_bytes=payload["total_bytes"], issues=tuple(payload["issues"]),
             file_fingerprints={key: tuple(value) for key, value in payload["file_fingerprints"].items()},
+            png_files=tuple(payload.get("png_files") or ()),
         )
 
     def create_external_layer(

@@ -63,3 +63,9 @@ data loss и D6 статистики исправлены RED→GREEN, неза�
 - Opt-in тесты, не запущенные в этом сеансе, не переносятся в PASS.
 - `kraken-server --development` не заменяет PostgreSQL.
 - Успешный `--help` плагина не означает, что операция из Hub импортирует результат обратно в проект.
+
+Новый worker этап:393bca4/be1ca58/95ec8f2 — D8 upload fix, targeted lease, настоящий
+Contour+Gateway+Hub и отказоустойчивость PASS6; токен отозван/HTTP401. Прежнее отсутствие
+machine token не блокирует уже выполненный Contour блок. Следующие обязательные
+NeuralImage/Karakal/stitch и пользовательский GUI запуск пока NOT TESTED, этап PARTIAL.
+Точные команды/доказательства/next step — в checkpoint.

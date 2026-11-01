@@ -1,0 +1,77 @@
+{
+  "status": "passed",
+  "requirement": "Server\u2192machine worker\u2192Contour\u2192version\u2192Hub\u2192reopen",
+  "git_head": "be1ca58719a4c38cc99b7b3c56fb26cb56d73f31",
+  "server_url": "http://127.0.0.1:8080",
+  "protected_before": {
+    "revision": 2,
+    "history": "b9184f85f270aa9259128c6e99df6f10eed90804f91fdf87daa7be744c36bb72",
+    "jobs": "8e25e25f42a585dca50aa61fb7895f078ecadd462fc4fb700e8e298b226afab9"
+  },
+  "checks": [
+    "15s lease actually expires",
+    "expired owner fenced403",
+    "fresh worker reclaims and processes",
+    "duplicate completion/publication fenced403",
+    "no duplicate version/history",
+    "completed job not reissued"
+  ],
+  "project_id": "8d1cfd8f-4fb9-5f7a-93a2-f396f9b6edc8",
+  "job_id": "9315cec4-fe06-4393-b670-63e5f8746e9f",
+  "target_id": "46fc167d-80f0-4ced-bc7f-578eca3cc8f0",
+  "transitions": [
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/lease",
+      "status": 200,
+      "job_id": "9315cec4-fe06-4393-b670-63e5f8746e9f"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/lease",
+      "status": 200,
+      "job_id": "9315cec4-fe06-4393-b670-63e5f8746e9f"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/execution-state",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/outputs/9315cec4-fe06-4393-b670-63e5f8746e9f:contour:1/upload-ticket",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/outputs/9315cec4-fe06-4393-b670-63e5f8746e9f:contour:1/upload-complete",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/publications",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/complete",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/9315cec4-fe06-4393-b670-63e5f8746e9f/lease",
+      "status": 200
+    }
+  ],
+  "protected_after": {
+    "revision": 2,
+    "history": "b9184f85f270aa9259128c6e99df6f10eed90804f91fdf87daa7be744c36bb72",
+    "jobs": "8e25e25f42a585dca50aa61fb7895f078ecadd462fc4fb700e8e298b226afab9"
+  },
+  "protected_unchanged": true
+}

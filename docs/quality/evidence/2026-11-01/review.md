@@ -56,3 +56,14 @@ scripts, receipt и Qt log: DDL соответствует0011, блокиров
 Схема0011/json nullable/jobs200/revision2 и два открытия Qt подтверждены.
 Actionable findings нет, обязательных пропусков для этой миграции не обнаружено.
 Предыдущие упоминания ожидания разрешения выше являются историческими.
+
+## D8 and live-worker acceptance (393bca4 → be1ca58)
+
+D8 preflight fix accepted: same registered handler preserves ACL/CAS/replay. Reviewer
+identified Important global-lease race in test and Minor weak lineage. Both fixed:
+targeted authenticated HTTP route applies job_id SQL predicate before queue mutation;
+default global polling unchanged; unknown/denied/invalid preserve all queue fields,
+selected second job leaves first unchanged. RED2→GREEN14 and live rerun PASS.
+Lineage now matches exact source version for each coordinate, MIME asserted. Reviewer
+read updated source/receipt and closed both findings, no new actionable findings.
+Full new stage remains in progress; final stage review still required.

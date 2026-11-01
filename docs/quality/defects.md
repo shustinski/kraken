@@ -4,6 +4,16 @@
 
 ## Воспроизведено
 
+### D8. Persistent upload через Gateway возвращает HTTP500
+
+После унификации команд `_add_artifact_version` стал `commands.execute`, а preflight
+продолжал вызываться как атрибут handler: AttributeError function.preflight.
+Исправлено393bca4 через public preflight_artifact_version, использующий тот же
+зарегистрированный AddArtifactVersionHandler с авторизацией/CAS/idempotency.
+Новый PG regressionRED→GREEN проверяет первый upload, stale revision и replay одной
+version. Полный настоящий Server/Gateway/worker/Contour/Hub сценарий после исправления
+PASS; доказательства и точные границы — в checkpoint.
+
 ### D7. HTTP500 списка заданий завершает Hub из Qt callback
 
 - Исправлено в `f749893`, продолжение после `63ff7cb` (исправление `f749893`): выбор active в `_resume_agent_jobs`

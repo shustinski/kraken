@@ -1,0 +1,101 @@
+{
+  "status": "passed",
+  "requirement": "Server\u2192machine worker\u2192Contour\u2192version\u2192Hub\u2192reopen",
+  "git_head": "be1ca58719a4c38cc99b7b3c56fb26cb56d73f31",
+  "server_url": "http://127.0.0.1:8080",
+  "protected_before": {
+    "revision": 2,
+    "history": "b9184f85f270aa9259128c6e99df6f10eed90804f91fdf87daa7be744c36bb72",
+    "jobs": "8e25e25f42a585dca50aa61fb7895f078ecadd462fc4fb700e8e298b226afab9"
+  },
+  "checks": [
+    "machine capability boundary:403",
+    "real Contour subprocess and heartbeat/complete",
+    "two published CIF versions with input lineage",
+    "two fresh HTTP sessions and real Hub catalog double-click opens",
+    "reread bytes and history preserved"
+  ],
+  "project_id": "8d1cfd8f-4fb9-5f7a-93a2-f396f9b6edc8",
+  "job_id": "4b161b5b-b9cc-417e-8daa-3f0d23f6b497",
+  "input_version_ids": [
+    "aaf26904-5803-468c-84fe-0204d1207f53",
+    "cac4bd7f-1dd8-4df4-a114-41988fba5ba3"
+  ],
+  "layer_id": "1c7722dc-c52d-4ace-80da-5c2b07b8c4f5",
+  "image_representation_id": "aaa892e3-4cde-45d7-bcf6-4f28879afc15",
+  "vector_representation_id": "66b59a3e-3319-4725-823e-3205b436f75d",
+  "outputs": [
+    {
+      "id": "9435c18e-2a48-57f7-b748-92727b20fc94",
+      "sha256": "21632fedc3a18e6531204a1c3d0573777fb8a06653afa1ab9032c45474c58e49",
+      "bytes": 87,
+      "media_type": "application/x-cif",
+      "inputs": [
+        "aaf26904-5803-468c-84fe-0204d1207f53"
+      ]
+    },
+    {
+      "id": "b3796a44-4e7a-5cd5-8724-98f20769e3c6",
+      "sha256": "cbb861cc4d7a51c5b77b8cf9dab7df2e3055120a41c9c5bfa41094cb546e74e8",
+      "bytes": 87,
+      "media_type": "application/x-cif",
+      "inputs": [
+        "cac4bd7f-1dd8-4df4-a114-41988fba5ba3"
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/lease",
+      "status": 200,
+      "job_id": "4b161b5b-b9cc-417e-8daa-3f0d23f6b497"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/execution-state",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/heartbeat",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/outputs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497:contour:1/upload-ticket",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/outputs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497:contour:1/upload-complete",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/outputs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497:contour:2/upload-ticket",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/outputs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497:contour:2/upload-complete",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/publications",
+      "status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/agent/jobs/4b161b5b-b9cc-417e-8daa-3f0d23f6b497/complete",
+      "status": 200
+    }
+  ],
+  "protected_after": {
+    "revision": 2,
+    "history": "b9184f85f270aa9259128c6e99df6f10eed90804f91fdf87daa7be744c36bb72",
+    "jobs": "8e25e25f42a585dca50aa61fb7895f078ecadd462fc4fb700e8e298b226afab9"
+  },
+  "protected_unchanged": true
+}

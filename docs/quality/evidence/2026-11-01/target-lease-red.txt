@@ -1,0 +1,62 @@
+FF                                                                       [100%]
+================================== FAILURES ===================================
+________ test_targeted_machine_lease_filters_before_any_queue_mutation ________
+
+database = (<kraken_server.persistent_services.PostgresServerServices object at 0x0000017F64335FD0>, <kraken_manager.infrastructu...'), derived_root=WindowsPath('D:/code/kraken/.test_runtime/target-route-red/test_targeted_machine_lease_fi0/derived')))
+
+    def test_targeted_machine_lease_filters_before_any_queue_mutation(database):
+        service, _, pid, queue, app, _, token, payload = setup_stitch(database)
+        headers = {"Authorization": f"Bearer {token}"}
+        with TestClient(app) as client:
+            first = request(client, pid, payload)["model"]["stitch_renders"][-1]["job_id"]
+            second = request(client, pid, payload, revision=3, key="second")["model"]["stitch_renders"][-1]["job_id"]
+            with queue.engine.connect() as c:
+                before = [dict(r) for r in c.execute(sa.select(queue.jobs).order_by(queue.jobs.c.job_id)).mappings()]
+            unknown = client.post(f"/api/v1/agent/jobs/{uuid4()}/lease", headers=headers,
+                json={"capabilities": ["layer.stitch.v1"]})
+>           assert unknown.status_code == 200 and unknown.json() == {"job": None}
+E           assert (404 == 200)
+E            +  where 404 = <Response [404 Not Found]>.status_code
+
+tests\test_targeted_machine_lease.py:25: AssertionError
+---------------------------- Captured stderr setup ----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 20260717_0001, initial event, projection, identity and job schema
+INFO  [alembic.runtime.migration] Running upgrade 20260717_0001 -> 20260901_0002, partitioned Karakal analysis projections
+INFO  [alembic.runtime.migration] Running upgrade 20260717_0001 -> 20260811_0002, server agent identities and idempotent publications
+INFO  [alembic.runtime.migration] Running upgrade 20260811_0002 -> 20260812_0003, administrative audit log
+INFO  [alembic.runtime.migration] Running upgrade 20260812_0003, 20260901_0002 -> 20260922_0004, merge administration audit and analysis run branches
+INFO  [alembic.runtime.migration] Running upgrade 20260922_0004 -> 20260924_0005, Readable catalog tables beside the JSON projection.
+INFO  [alembic.runtime.migration] Running upgrade 20260924_0005 -> 20260924_0006, Keep image files and vector files in separate catalog tables.
+INFO  [alembic.runtime.migration] Running upgrade 20260924_0006 -> 20260924_0007, Indexes for viewport parent lookup and project ACL by principal.
+INFO  [alembic.runtime.migration] Running upgrade 20260924_0007 -> 20260925_0008, Durable admin-approved project deletion and database write barriers.
+INFO  [alembic.runtime.migration] Running upgrade 20260925_0008 -> 20260925_0009, Optional deletion reason and the administrator auto-confirm setting.
+INFO  [alembic.runtime.migration] Running upgrade 20260925_0009 -> 20261025_0010, Fence reclaimed jobs by a unique token for every lease acquisition.
+INFO  [alembic.runtime.migration] Running upgrade 20261025_0010 -> 20261029_0011, Persist portable Agent progress and checkpoint references on the server.
+_____ test_worker_sends_explicit_target_without_changing_default_polling ______
+
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/target-route-red/test_worker_sends_explicit_tar0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000017F622AA780>
+
+    def test_worker_sends_explicit_target_without_changing_default_polling(tmp_path, monkeypatch):
+        worker = ServerAgentWorker(server_url="http://127.0.0.1:8080", token="test-only",
+            data_dir=tmp_path, registry=PluginRegistry({}))
+        requests = []
+        monkeypatch.setattr(worker, "_request", lambda method, path, payload: requests.append(path) or {"job": None})
+        target = str(uuid4())
+>       assert worker.run_once(job_id=target) is False
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: ServerAgentWorker.run_once() got an unexpected keyword argument 'job_id'
+
+tests\test_targeted_machine_lease.py:48: TypeError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\code\kraken\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_targeted_machine_lease.py::test_targeted_machine_lease_filters_before_any_queue_mutation
+FAILED tests/test_targeted_machine_lease.py::test_worker_sends_explicit_target_without_changing_default_polling
+2 failed, 1 warning in 2.34s

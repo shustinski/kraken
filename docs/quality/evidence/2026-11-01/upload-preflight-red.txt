@@ -1,0 +1,74 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 1 item
+
+tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version FAILED [100%]
+
+================================== FAILURES ===================================
+_ test_persistent_upload_preflight_checks_revision_and_replays_existing_version _
+
+database = (<kraken_server.persistent_services.PostgresServerServices object at 0x000001B6247817F0>, <kraken_manager.infrastructu...rce'), derived_root=WindowsPath('D:/code/kraken/.test_runtime/preflight-red/test_persistent_upload_preflig0/derived')))
+
+    def test_persistent_upload_preflight_checks_revision_and_replays_existing_version(database):
+        services, _, owner, _ = database
+        pid = project(services, owner, "Gateway preflight regression")["project_id"]
+        series = services.create_artifact_series(pid, {"name": "Uploaded", "scope": "project_attachment"},
+            CommandContext(str(owner.id), str(uuid4()), None))
+        content = b"managed gateway regression content"
+        payload = {"filename": "test.bin", "media_type": "application/octet-stream",
+                   "sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content)}
+        context = CommandContext(str(owner.id), str(uuid4()), 0)
+>       assert services.prepare_managed_artifact_upload(pid, series["id"], payload, context) is None
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_server_managed_upload_preflight.py:22: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\kraken_server\persistent_services_parts\create_artifact_series.py:167: in prepare_managed_artifact_upload
+    self._translate_lifecycle_error(exc)
+src\kraken_server\persistent_services_parts\create_project.py:262: in _translate_lifecycle_error
+    raise exc
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <kraken_server.persistent_services.PostgresServerServices object at 0x000001B6247817F0>
+project_id = '1307cd35-50fa-55db-a400-8304ec84b9d4'
+series_id = 'a08fb4b3-0655-4064-b73c-e149cc1d5d96'
+payload = {'filename': 'test.bin', 'media_type': 'application/octet-stream', 'sha256': 'dfc6fc8eb0342f4bbce37d002f3b0e02569e5ba65e2ba30b3d167d716bf483f3', 'size_bytes': 34}
+context = CommandContext(actor_id='39b724cd-e029-416d-adb4-6a98e5ef9a84', idempotency_key='ec0b4abf-4d67-4e69-be2d-638bf67ed961', expected_revision=0)
+
+    def prepare_managed_artifact_upload(
+        self,
+        project_id: str,
+        series_id: str,
+        payload: Mapping[str, Any],
+        context: CommandContext,
+    ) -> dict[str, Any] | None:
+        try:
+>           value = self._add_artifact_version.preflight(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                self._managed_artifact_command(project_id, series_id, payload, context)
+            )
+E           AttributeError: 'function' object has no attribute 'preflight'
+
+src\kraken_server\persistent_services_parts\create_artifact_series.py:162: AttributeError
+---------------------------- Captured stderr setup ----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 20260717_0001, initial event, projection, identity and job schema
+INFO  [alembic.runtime.migration] Running upgrade 20260717_0001 -> 20260901_0002, partitioned Karakal analysis projections
+INFO  [alembic.runtime.migration] Running upgrade 20260717_0001 -> 20260811_0002, server agent identities and idempotent publications
+INFO  [alembic.runtime.migration] Running upgrade 20260811_0002 -> 20260812_0003, administrative audit log
+INFO  [alembic.runtime.migration] Running upgrade 20260812_0003, 20260901_0002 -> 20260922_0004, merge administration audit and analysis run branches
+INFO  [alembic.runtime.migration] Running upgrade 20260922_0004 -> 20260924_0005, Readable catalog tables beside the JSON projection.
+INFO  [alembic.runtime.migration] Running upgrade 20260924_0005 -> 20260924_0006, Keep image files and vector files in separate catalog tables.
+INFO  [alembic.runtime.migration] Running upgrade 20260924_0006 -> 20260924_0007, Indexes for viewport parent lookup and project ACL by principal.
+INFO  [alembic.runtime.migration] Running upgrade 20260924_0007 -> 20260925_0008, Durable admin-approved project deletion and database write barriers.
+INFO  [alembic.runtime.migration] Running upgrade 20260925_0008 -> 20260925_0009, Optional deletion reason and the administrator auto-confirm setting.
+INFO  [alembic.runtime.migration] Running upgrade 20260925_0009 -> 20261025_0010, Fence reclaimed jobs by a unique token for every lease acquisition.
+INFO  [alembic.runtime.migration] Running upgrade 20261025_0010 -> 20261029_0011, Persist portable Agent progress and checkpoint references on the server.
+=========================== short test summary info ===========================
+FAILED tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version
+============================== 1 failed in 1.73s ==============================

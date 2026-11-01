@@ -1,0 +1,17 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 6 items
+
+tests/test_live_server_worker_acceptance.py::test_contour_machine_worker_publishes_versions_and_hub_reopens PASSED [ 16%]
+tests/test_live_server_worker_faults.py::test_worker_unavailable_job_is_durable_and_cancelled_by_hub PASSED [ 33%]
+tests/test_live_server_worker_faults.py::test_actual_plugin_failures_are_saved_and_visible_in_hub[bad-parameters] PASSED [ 50%]
+tests/test_live_server_worker_faults.py::test_actual_plugin_failures_are_saved_and_visible_in_hub[bad-image] PASSED [ 66%]
+tests/test_live_server_worker_faults.py::test_lease_expiry_reconnect_and_duplicate_completion_do_not_duplicate_versions PASSED [ 83%]
+tests/test_live_server_worker_faults.py::test_lost_completion_response_preserves_committed_result_on_reconnect PASSED [100%]
+
+- generated xml file: D:\code\kraken\.test_runtime\live-server\worker-contour-faults-final-junit.xml -
+============================= 6 passed in 55.40s ==============================

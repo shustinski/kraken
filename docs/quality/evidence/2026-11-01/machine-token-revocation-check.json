@@ -1,0 +1,5 @@
+{
+  "status": "passed",
+  "revoked_machine_token_http_status": 401,
+  "existing_project_mutated": false
+}

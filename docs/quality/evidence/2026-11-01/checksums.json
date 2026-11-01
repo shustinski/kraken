@@ -15,6 +15,22 @@
     "sha256": "7b2403f4d4345cf4b69a28242c570f0d51cb4486fa8c021548ed17927d31137e",
     "bytes": 592
   },
+  "contour-machine-credential-revoked.json": {
+    "sha256": "78a5ba4a29bb8ddb3b9d2941518b5c1e4f0a2183afd5d18db15f691a8413735f",
+    "bytes": 280
+  },
+  "contour-machine-credential.json": {
+    "sha256": "81ff6127871a2a3bf2a498dd056c0bf2b83270902ec9e79b7129e7294f7ac6a0",
+    "bytes": 281
+  },
+  "contour-targeted-junit.xml": {
+    "sha256": "f3cd90cc818630283d57ae7a4fa499e6542e8169316b5c32029992b0274899cb",
+    "bytes": 386
+  },
+  "contour-targeted.txt": {
+    "sha256": "b72bc4b50b85612254a0737090f076784b2555a8a86a3159bf58c8c066e12351",
+    "bytes": 100
+  },
   "d1-review-green.txt": {
     "sha256": "41cc23679b327094f65459ef520ac13697f8f86187b8fecc124a685be541cada",
     "bytes": 5330
@@ -66,6 +82,38 @@
   "live-catalog.txt": {
     "sha256": "2b4047bfa5b3ef49c636751a671b43848eea585a7b0653a0b3e661b25d83fbe1",
     "bytes": 585
+  },
+  "live-contour-targeted-receipt.json": {
+    "sha256": "2d94377fe8ff3d28167f3d9ce255e65c625aae3de06d1608b0c48610d3ebb64f",
+    "bytes": 3528
+  },
+  "live-contour-worker-junit.xml": {
+    "sha256": "93b31858fd61c08e9f726f5b2a8409f1b04436a0d7a364e8691ffebc9081f060",
+    "bytes": 386
+  },
+  "live-contour-worker-receipt.json": {
+    "sha256": "02e31cb939d667688162792a5da81af565d5bb6cbe142f31ab4ef705cc31fd9c",
+    "bytes": 3486
+  },
+  "live-contour-worker.txt": {
+    "sha256": "421b36a4bf33d05c922a582d0ce66f61de347a6606c79722cae7cd8ececdbab8",
+    "bytes": 675
+  },
+  "live-upload-red.txt": {
+    "sha256": "8294fe73e80c43b4808be8448a509d36ffaf46f2300b4544f7f1c81aa1c2fcdb",
+    "bytes": 9800
+  },
+  "live-worker-contour-faults-junit.xml": {
+    "sha256": "54323a0765baf573d727918251a7abb4701c7dbd07c1c8ed86dc3dd0ccd12750",
+    "bytes": 1144
+  },
+  "live-worker-contour-faults.txt": {
+    "sha256": "26c72436826b7d3db1c65001f2c65b72556133f9ef2403a2fb32918b4c170920",
+    "bytes": 1315
+  },
+  "machine-token-revocation-check.json": {
+    "sha256": "f12dc2f13846f88aa7ff5e42e7761e3e27b6b8bf5011bd70e4959b0d2cfc2df2",
+    "bytes": 105
   },
   "p0-backup-live.txt": {
     "sha256": "0f41c4850a9b002657997b5aa87d3deb2f578d4ae02449c169e63a60133a699b",
@@ -203,12 +251,56 @@
     "sha256": "fb031e94e5317a1dc34478e2983da8edc813af344d8a5f614e93ed4dc133818f",
     "bytes": 101
   },
+  "target-lease-green.txt": {
+    "sha256": "8c008a1483e4031bf84dcbbfee312c60ec284d29ce05e4994f1640a014a652f2",
+    "bytes": 568
+  },
+  "target-lease-junit.xml": {
+    "sha256": "497960004538689e839a35525ec46e9696f1ef1bbbc1f6c15baeb3a916a724a6",
+    "bytes": 2234
+  },
+  "target-lease-red.txt": {
+    "sha256": "977328360d07fc85d96b84710990e86dd2e2f4043ecf69698ba711ec1d3d8865",
+    "bytes": 5151
+  },
   "upgrade-0010-0011.sql": {
     "sha256": "690e48feaaccca4375cdf92d99a4370725f51d7ea18d1495ae5424d192cbf30b",
     "bytes": 249
   },
+  "upload-preflight-green.txt": {
+    "sha256": "8c513139eedbf94f75a9ac16bede72dc80d18ad208edaab31681e458e778d6ba",
+    "bytes": 696
+  },
+  "upload-preflight-junit.xml": {
+    "sha256": "aab3b1cd160a60b11e0581364647399a9f01de7a4ae998daa86071104f6ad9ed",
+    "bytes": 403
+  },
+  "upload-preflight-red.txt": {
+    "sha256": "96158678e04cb675bff5544b29a745e4b56382df5005dea3c59bc53270b385d1",
+    "bytes": 5648
+  },
   "verify_approved_schema_upgrade.py.txt": {
     "sha256": "936ae6d1882240bcf69631502ee49a5a640bb51ff81746758ff49815e9c690dc",
     "bytes": 1751
+  },
+  "worker-fault-test_actual_plugin_failures_are_saved_and_visible_in_hub_bad-image_.json": {
+    "sha256": "8a8b126b78512f95eb251c9df3c2dea9644316af855806591578e5845b98c2d1",
+    "bytes": 1682
+  },
+  "worker-fault-test_actual_plugin_failures_are_saved_and_visible_in_hub_bad-parameters_.json": {
+    "sha256": "feaeac4f3abf6ae808bb188a312e6b60f6be411c3aed7ecce3045bf73ff4e79d",
+    "bytes": 1682
+  },
+  "worker-fault-test_lease_expiry_reconnect_and_duplicate_completion_do_not_duplicate_versions.json": {
+    "sha256": "45ab96c52843b6d6d1d62af4617c8a0ff1f27ae22ce88fb3f15c1c0379c2cf38",
+    "bytes": 2587
+  },
+  "worker-fault-test_lost_completion_response_preserves_committed_result_on_reconnect.json": {
+    "sha256": "68cd3dc8ffb9dd88b287e74e49f0d89f87feaefecb8e6f43406c25c906e8bb31",
+    "bytes": 2190
+  },
+  "worker-fault-test_worker_unavailable_job_is_durable_and_cancelled_by_hub.json": {
+    "sha256": "f76eeab53b003830b613a4e87f6e6a226afc585cbc8e9aba0007bf3869b9ce6a",
+    "bytes": 1200
   }
 }

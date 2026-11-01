@@ -140,3 +140,9 @@ Blob Gateway: `GET /health`, `PUT/GET/HEAD /v1/blobs/{digest}` с HMAC-биле�
 По явному согласию рабочая схема обновлена0011: оба job сохранены, очередь200 и Qt PASS.
 Leased worker рабочего сервера BLOCKED: нет machine token (read-only проверка).
 Текущие статусы и точный следующий шаг имеют приоритет в [checkpoint](checkpoint-2026-11-01.md).
+
+Новый worker этап:393bca4/be1ca58/95ec8f2 — D8 upload fix, targeted lease, настоящий
+Contour+Gateway+Hub и отказоустойчивость PASS6; токен отозван/HTTP401. Прежнее отсутствие
+machine token не блокирует уже выполненный Contour блок. Следующие обязательные
+NeuralImage/Karakal/stitch и пользовательский GUI запуск пока NOT TESTED, этап PARTIAL.
+Точные команды/доказательства/next step — в checkpoint.

@@ -12,6 +12,11 @@
 
 | ID / блок | Статус | Подтверждение и граница |
 |---|---|---|
+| LIVE-CONTOUR-MACHINE-WORKER | PASS | 393bca4: новый серверный project2×1, реальные upload tickets/Gateway/Contour subprocess, heartbeat/publication/complete,2CIF versions/hash/size/type/input lineage и2HTTP+Qt reopen. [Receipt](evidence/2026-11-01/live-contour-worker-receipt.json), [JUnit](evidence/2026-11-01/live-contour-worker-junit.xml). User test/jobs unchanged |
+| PERSISTENT-GATEWAY-UPLOAD / D8 | PASS | Реальный HTTP500, PG regressionRED→GREEN; preflight передан зарегистрированному handler. Новая регрессия1PASS, смежные19PASS. [GREEN](evidence/2026-11-01/upload-preflight-green.txt) |
+| MACHINE-TARGETED-LEASE | PASS | be1ca58: unknown/invalid/denied не меняют очередь, конкретный второй job выдаётся без изменения первого. [14PASS](evidence/2026-11-01/target-lease-green.txt); review finding closed |
+| LIVE-WORKER-FAULTS | PASS | 95ec8f2: [6-test block](evidence/2026-11-01/live-worker-contour-faults.txt): unavailable/connection, auth401, CAS409, real Qt cancel/errors, actual plugin failure/bad PNG, real lease expiry/reclaim/fencing, duplicate result, TCP disconnect after commit, no duplicate versions; protected project/jobs unchanged |
+| MACHINE-TOKEN-REVOKE | PASS | Dedicated Contour token revoked after block; [HTTP401](evidence/2026-11-01/machine-token-revocation-check.json). No secret in evidence |
 | AGT-REGISTRY-CONFIDENCE / D4 | PASS | `test_karakal_agent_headless.py`: headless принимается, worker subprocess завершается, новый DurableJobStore читает результат, result.json и confidence.json перечитаны, SHA-256 совпал. Действие Hub доступно. `d4-focused.log`: 7 PASS вместе с режимами агента |
 | KARAKAL-CONFIDENCE-METRICS | PARTIAL | Выход legacy confidence содержит только operation/job_id/input_count; запуск и JSON не доказывают расчёт уверенности |
 | SRV-BACKUP-RESTORE-ISOLATED | PASS | Собственный временный кластер PostgreSQL 16 на loopback:55439. 20 + 6 PASS в `p0-backup-live.log`, `p0-backup-remaining.log`. Native backup/verify/restore, CLI, защита непустой цели, испорченные архивы, восстановление путей и барьеры шлюза. Рабочая база не использовалась |
@@ -41,7 +46,7 @@
 | REAL-PROJECT-SERVER-QT | PASS | Реальный Hub/DualCatalog/HTTP, два открытия двойным щелчком после закрытия окна; слой и две репрезентации, нет uncaught/errors, ревизия сохранена. [Квитанция](evidence/2026-11-01/real-project-qt-view.json) |
 | HUB-QUEUE-HTTP-FAILURE / D7 | PASS | Прежний native abort воспроизведён; ошибка plugin_jobs теперь внутри try. [36 PASS](evidence/2026-11-01/hub-resume-green.txt), повторный успешный запрос200, независимое ревью |
 | REAL-SERVER-JOBS-SCHEMA | PASS | После явного согласия0011 применена транзакционно; оба задания сохранены, JSON nullable, очередь HTTP200. [Квитанция](evidence/2026-11-01/schema-upgrade-working.json), [Qt после миграции](evidence/2026-11-01/real-project-qt-after-migration.json) |
-| REAL-PROJECT-SERVER-ACCEPTANCE | PARTIAL | Чтение, очередь и Qt PASS; leased worker рабочего сервера BLOCKED: 0 machine tokens и нет KRAKEN_AGENT_TOKEN; выполнение на этом сервере NOT TESTED. Качество модели и электрическая приёмка реального прибора NOT TESTED |
+| REAL-PROJECT-SERVER-ACCEPTANCE | PARTIAL | Чтение, очередь и Qt PASS; Contour machine worker PASS на отдельном qualityproject; остальные обязательные worker/plugin/fault/GUI-запуск сценарии этого нового этапа ещё NOT TESTED. Качество модели и электрическая приёмка реального прибора NOT TESTED |
 
 Остальные непройденные части исторических групп сохраняют NOT TESTED/PARTIAL.
 Kraken пока не объявляется готовым.

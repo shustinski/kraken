@@ -1,0 +1,191 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 1 item
+
+tests/test_live_server_worker_acceptance.py::test_contour_machine_worker_publishes_versions_and_hub_reopens FAILED [100%]
+
+================================== FAILURES ===================================
+_______ test_contour_machine_worker_publishes_versions_and_hub_reopens ________
+
+self = <kraken_hub.infrastructure.remote.client.RemoteHttpClient object at 0x000002A0C893F230>
+method = 'POST'
+path = '/api/v1/projects/dbf04703-c391-53b4-87d8-221cb8dbb87f/artifacts/a336da41-0e37-5972-af80-5026aa95e993/uploads'
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str,
+        payload: Mapping[str, object] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        url = f"{self.base_url}{path}"
+        body = (
+            None
+            if payload is None
+            else json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+        )
+        request_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        if body is not None:
+            request_headers["Content-Type"] = "application/json"
+        if headers:
+            request_headers.update(headers)
+        request = urllib.request.Request(
+            url, data=body, headers=request_headers, method=method.upper()
+        )
+        try:
+>           with urllib.request.urlopen(
+                request, timeout=self.timeout if timeout is None else timeout
+            ) as response:
+
+src\kraken_hub\infrastructure\remote\parts\request.py:42: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Program Files\Python314\Lib\urllib\request.py:187: in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python314\Lib\urllib\request.py:493: in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python314\Lib\urllib\request.py:602: in http_response
+    response = self.parent.error(
+C:\Program Files\Python314\Lib\urllib\request.py:531: in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\Python314\Lib\urllib\request.py:464: in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <urllib.request.HTTPDefaultErrorHandler object at 0x000002A0C893F8C0>
+req = <urllib.request.Request object at 0x000002A0C8B08050>
+fp = <http.client.HTTPResponse object at 0x000002A0C8B03280>, code = 500
+msg = 'Internal Server Error'
+hdrs = <http.client.HTTPMessage object at 0x000002A0C8AA6210>
+
+    def http_error_default(self, req, fp, code, msg, hdrs):
+>       raise HTTPError(req.full_url, code, msg, hdrs, fp)
+E       urllib.error.HTTPError: HTTP Error 500: Internal Server Error
+
+C:\Program Files\Python314\Lib\urllib\request.py:611: HTTPError
+
+The above exception was the direct cause of the following exception:
+
+live_worker = namespace(config={'server_url': 'http://127.0.0.1:8080', 'session_secret': 'D:\\code\\kraken\\.test_runtime\\live-serv...04703-c391-53b4-87d8-221cb8dbb87f'}, output=WindowsPath('D:/code/kraken/.test_runtime/live-server/contour-acceptance'))
+qtbot = <pytestqt.qtbot.QtBot object at 0x000002A0C8A8CD70>
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/live-worker-contour/test_contour_machine_worker_pu0')
+
+    def test_contour_machine_worker_publishes_versions_and_hub_reopens(live_worker, qtbot, tmp_path):
+        env = live_worker
+        remote, worker = env.remote, env.worker
+        principal = remote.auth.principal
+        with pytest.raises(HTTPError) as denied:
+            worker._request("POST", "/api/v1/agent/lease", {"capabilities": ["karakal.analyze.v1"]})
+        assert denied.value.code == 403
+        env.receipt["checks"].append("machine capability boundary:403")
+        project = remote.create_project(principal=principal, name=f"quality-worker-{uuid4().hex[:12]}",
+            width=2, height=1, orientation=GridOrientation.Y_DOWN, idempotency_key=str(uuid4()))
+        env.receipt["project_id"] = str(project.id)
+        layer = remote.create_layer(principal=principal, project=project, name="Controlled metal",
+            layer_type=LayerType.METAL, order=0, idempotency_key=str(uuid4()))
+        image_rep = remote.create_representation(principal=principal, project=project, layer=layer,
+            name="Source", kind=RepresentationKind.IMAGE, active=True, idempotency_key=str(uuid4()))
+        layer = remote.list_layers(project.id)[0]
+        vector_rep = remote.create_representation(principal=principal, project=project, layer=layer,
+            name="Contour result", kind=RepresentationKind.VECTOR, source_image_representation_id=image_rep.id,
+            active=True, idempotency_key=str(uuid4()))
+        input_ids = set()
+        for x in (1, 2):
+            source = tmp_path / f"{x}_1.png"
+            image = Image.new("RGB", (64, 64), "black")
+            ImageDraw.Draw(image).rectangle((8, 8, 44 + x, 44), fill="white")
+            image.save(source)
+            frame_id = FrameCoordinate(x, 1).frame_id(project.id)
+            series = remote._call("POST", f"/api/v1/projects/{project.id}/artifacts",
+                payload={"name": source.stem, "scope": "frame_representation", "layer_id": str(layer.id),
+                         "representation_id": str(image_rep.id), "frame_id": str(frame_id),
+                         "series_id": str(deterministic_frame_series_id(image_rep.id, frame_id))},
+                idempotency_key=str(uuid4()))
+>           version = remote.add_managed_artifact_version(principal=principal, project_id=project.id,
+                series_id=series["id"], source=source, idempotency_key=str(uuid4()))
+
+tests\test_live_server_worker_acceptance.py:163: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\kraken_hub\infrastructure\remote\parts\add_managed_artifact_version.py:119: in add_managed_artifact_version
+    transfer = self._call(
+src\kraken_hub\infrastructure\remote\parts\call.py:53: in _call
+    return self._http.request(method, path, **request_arguments)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <kraken_hub.infrastructure.remote.client.RemoteHttpClient object at 0x000002A0C893F230>
+method = 'POST'
+path = '/api/v1/projects/dbf04703-c391-53b4-87d8-221cb8dbb87f/artifacts/a336da41-0e37-5972-af80-5026aa95e993/uploads'
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str,
+        payload: Mapping[str, object] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        url = f"{self.base_url}{path}"
+        body = (
+            None
+            if payload is None
+            else json.dumps(dict(payload), ensure_ascii=False).encode("utf-8")
+        )
+        request_headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        if body is not None:
+            request_headers["Content-Type"] = "application/json"
+        if headers:
+            request_headers.update(headers)
+        request = urllib.request.Request(
+            url, data=body, headers=request_headers, method=method.upper()
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout if timeout is None else timeout
+            ) as response:
+                raw = response.read()
+                if not raw:
+                    return None
+                return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            message = detail
+            parsed: Mapping[str, object] | None = None
+            try:
+                candidate = json.loads(detail)
+                parsed = candidate if isinstance(candidate, Mapping) else None
+                if parsed is not None:
+                    message = str(parsed.get("detail") or parsed.get("title") or detail)
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                message = detail
+>           raise RemoteServerError(
+                f"{method.upper()} {path} returned HTTP {exc.code}: {message}",
+                status=exc.code,
+                body=detail,
+                problem=parsed,
+            ) from exc
+E           kraken_hub.application.remote_error.RemoteServerError: POST /api/v1/projects/dbf04703-c391-53b4-87d8-221cb8dbb87f/artifacts/a336da41-0e37-5972-af80-5026aa95e993/uploads returned HTTP 500: Internal Server Error
+
+src\kraken_hub\infrastructure\remote\parts\request.py:60: RemoteServerError
+- generated xml file: D:\code\kraken\.test_runtime\live-server\contour-acceptance-junit.xml -
+=========================== short test summary info ===========================
+FAILED tests/test_live_server_worker_acceptance.py::test_contour_machine_worker_publishes_versions_and_hub_reopens
+============================== 1 failed in 2.30s ==============================

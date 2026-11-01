@@ -123,3 +123,91 @@ require_escalated. Эти отказы среды не объявлялись д
 
 В завершённых блоках воспроизведённые отказы исправлены. PARTIAL, BLOCKED и NOT TESTED
 остаются: стабилизация не завершена, Kraken готовым не объявляется.
+
+## Новый серверный блок: 393bca4
+
+По новому заданию и явному согласованию пользователя создан временный machine token
+только frames.vectorize.v1. Секрет — DPAPI вне git, receipt содержит только identity.
+Прежний BLOCKED «нет токена» для этого capability снят. Токен ещё действует до конца
+блока отказоустойчивости; затем штатный revoke. Полномочия на остальные необходимые
+тестовые операции пользователь дал сообщением «делай, всё, что надо и меняй всё что надо».
+Защита проекта test и существующих jobs этим не отменяется.
+
+Найден D8: persistent upload gateway preflight вызывался у function после перехода
+на ProjectCommandService. [Реальный HTTP RED](evidence/2026-11-01/live-upload-red.txt),
+[PG RED](evidence/2026-11-01/upload-preflight-red.txt),
+[PG GREEN](evidence/2026-11-01/upload-preflight-green.txt),
+[JUnit](evidence/2026-11-01/upload-preflight-junit.xml).
+Исправлена передача preflight зарегистрированному handler. Смежные gateway/command
+transport:19 PASS; отдельная новая регрессия:1 PASS. Server/Gateway перезапущены с
+сохранённой конфигурацией, без миграций и изменений настроек.
+
+[Полный Server→machine worker→Contour→версии→Hub](evidence/2026-11-01/live-contour-worker-receipt.json)
+PASS, [лог](evidence/2026-11-01/live-contour-worker.txt),
+[JUnit](evidence/2026-11-01/live-contour-worker-junit.xml), 1 PASS за7.77s.
+Новый project 8aaee5c1-b3d6-5bd0-b624-7ccf74b18d66, 2×1, два PNG64×64;
+headless Contour действительно запущен subprocess. Две CIF-version87bytes каждая,
+SHA/size/application-x-cif/parse/dimensions/input lineage, heartbeat/upload/publication/
+complete подтверждены. Два новых HTTP-клиента и два Qt-окна открыли проект двойным
+щелчком и перечитали результаты/историю. Это не проверка качества реального прибора.
+Protected test revision2, history и оба jobs полными payload-хешами не изменились.
+
+Промежуточные отказы нового тестового драйвера: не переданы x/y в upload metadata;
+суффикс проверялся у hash-cache path вместо version.filename. Это исправления фикстуры,
+не дефекты продукта. Первая неуспешная receipt ошибочно писала passed из teardown;
+успех теперь устанавливается только последней строкой сценария. Доказательством RED
+остаётся pytest/JUnit, а не прежнее неверное поле.
+
+**Точный следующий шаг:** добавить и исполнить тесты отказов на отдельном quality
+проекте, затем NeuralImage/Karakal/stitch через machine worker, пользовательский GUI
+запуск и история. Пользовательский test и два прежних jobs не изменять. Независимое
+ревью393bca4 запрошено; весь новый этап пока PARTIAL, не COMPLETED.
+Текущий план: [server worker acceptance](server-worker-acceptance-plan.md).
+
+## Адресный lease и отказоустойчивость: be1ca58 / 95ec8f2
+
+Независимое ревью D8 приняло production-fix и выявило Important в самой live-приёмке:
+глобальный lease менял очередь до проверки ID, предварительное чтение не атомарно.
+Это устранено в be1ca58: отдельный POST /agent/jobs/{UUID}/lease фильтрует SQL до
+выбора/изменения; capability auth остаётся прежней. На старом Server маршрут даст404,
+не превратится в незаметный global polling. run_once(job_id=...) использует этот маршрут.
+[2RED](evidence/2026-11-01/target-lease-red.txt),
+[14PASS со смежными queue/stitch](evidence/2026-11-01/target-lease-green.txt),
+[JUnit](evidence/2026-11-01/target-lease-junit.xml).
+Minor о lineage закрыт: теперь source-version проверяется для конкретной координаты,
+MIME CIF проверяется явно. Рецензент перечитал изменения и закрыл оба finding, новых нет.
+
+После этого полный блок: [6PASS за55.40s](evidence/2026-11-01/live-worker-contour-faults.txt),
+[JUnit](evidence/2026-11-01/live-worker-contour-faults-junit.xml), source tests —95ec8f2.
+Результаты: normal Contour/Gateway/versions/2HTTP+Qt reopen;
+worker unavailable/connection refusal → queued без output; wrong token401;
+stale cancel409; настоящий Hub cancel → cancelled и lease не выдаётся;
+реальные ошибки Contour (неверный тип параметров, не-PNG с корректным blob-hash)
+→ failed+diagnostic, MyWork показывает ошибку; неконтрактный retry failed409 без изменения;
+15s lease реально истёк, old owner403, новый worker получил новый claim и завершил;
+повторные complete и та же фактическая publication403 без новых history/versions;
+TCP proxy оборвал ответ после серверного complete200 — результат остался succeeded,
+повторное подключение не пересчитало и не продублировало его.
+
+[Все output-поля и protected hashes](evidence/2026-11-01/live-contour-targeted-receipt.json).
+Каждый fault receipt сохранён рядом, prefix worker-fault-. Пользовательский test и оба
+прежних jobs сохранили revision/history/payload hashes. Предыдущие partial attempts
+оставлены в отдельных quality-проектах для разбора, пользовательские файлы не удалялись.
+
+Contour machine token отозван: [receipt](evidence/2026-11-01/contour-machine-credential-revoked.json),
+[HTTP401 подтверждён](evidence/2026-11-01/machine-token-revocation-check.json).
+Секреты и исходные пользовательские артефакты в git не копировались.
+
+Воспроизведение: gateway-preflight/targeted-lease/live-worker в существующем PS script.
+live-worker требует явного KRAKEN_LIVE_WORKER_CONFIG: server_url, пути session_secret и
+machine_secret (DPAPI), protected_project_id, results_directory. Значения секретов вJSON
+запрещены. Для нового live-run нужен новый действующий frames.vectorize.v1 token;
+отозванный не восстанавливать. Запуск на общей очереди только через targeted route.
+
+**Следующий шаг:** scoped NeuralImage token и настоящая CPU inference через
+frames.binary-segment.v2 с уже обученной моделью из прежнего E2E (повторное обучение
+без причины не нужно); затем Karakal через настоящий диалог Hub и machine worker,
+сшивка. Точная модель-кандидат:
+.test_runtime/pytest-e2e/test_single_project_twenty_sta0/export/
+479fcf1a-b71d-5725-9755-6acaaad6c5ae-S 660k_shift_128_epoch1.pth.
+Перед использованием сверить hash/receipt и безопасную загрузку. Общий этап PARTIAL.

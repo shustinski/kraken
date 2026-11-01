@@ -1,0 +1,56 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 23 items
+
+tests/test_statistics_reports.py::test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions PASSED [  4%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_application_event_names_are_classified_from_payload PASSED [  8%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_calendar_series_use_local_boundaries_and_project_filter PASSED [ 13%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_csv_can_stream_an_already_sorted_cursor PASSED [ 17%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_csv_is_utf8_normalized_event_journal PASSED [ 21%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_csv_neutralizes_spreadsheet_formulas PASSED [ 26%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_first_vectorization_is_computed_over_complete_supplied_history PASSED [ 30%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_human_readable_metric_values PASSED [ 34%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_metric_serialization_preserves_fractional_values_and_integer_counts PASSED [ 39%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_metrics_distinguish_unique_frames_and_operations PASSED [ 43%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_real_review_events_and_binary_purpose_are_counted PASSED [ 47%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_remote_history_event_supplies_project_id PASSED [ 52%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_repeated_stages_are_counted_per_vector_layer PASSED [ 56%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_series_first_vectorization_uses_complete_history PASSED [ 60%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_xlsx_contains_human_readable_summary_and_series PASSED [ 65%]
+tests/test_statistics_reports.py::StatisticsReportTests::test_xlsx_neutralizes_spreadsheet_formulas PASSED [ 69%]
+tests/test_statistics_reports.py::test_csv_preserves_nested_immutable_event_payload FAILED [ 73%]
+tests/test_remaining_qt_acceptance.py::test_role_buttons_assign_reopen_and_revoke_on_real_service PASSED [ 78%]
+tests/test_remaining_qt_acceptance.py::test_performer_add_button_persists_and_reopens PASSED [ 82%]
+tests/test_remaining_qt_acceptance.py::test_integrity_button_reports_clean_and_corrupt_blob_in_real_messagebox PASSED [ 86%]
+tests/test_remaining_qt_acceptance.py::test_issue_work_dialog_validates_destination_and_persists_package PASSED [ 91%]
+tests/test_remaining_qt_acceptance.py::test_review_return_preview_import_accept_and_reopen PASSED [ 95%]
+tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history PASSED [100%]
+
+================================== FAILURES ===================================
+______________ test_csv_preserves_nested_immutable_event_payload ______________
+
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/statistics-final-green/test_csv_preserves_nested_immu0')
+
+    def test_csv_preserves_nested_immutable_event_payload(tmp_path):
+        from types import MappingProxyType
+    
+        now = datetime.now(UTC)
+        record = ActivityRecord("immutable", now, "ArtifactVersionCreated", "p", payload=MappingProxyType({
+            "parameters": MappingProxyType({"mapping": "preflight", "x": 1}),
+            "inputs": (MappingProxyType({"id": "input-version"}),),
+        }))
+        output = ReportService().write_csv(tmp_path / "nested.csv", (record,),
+            ReportFilters(now - timedelta(seconds=1), now + timedelta(seconds=1)))
+        with output.open(encoding="utf-8", newline="") as stream:
+>           rows = list(csv.DictReader(stream))
+                        ^^^
+E           NameError: name 'csv' is not defined. Did you forget to import 'csv'?
+
+tests\test_statistics_reports.py:404: NameError
+=========================== short test summary info ===========================
+FAILED tests/test_statistics_reports.py::test_csv_preserves_nested_immutable_event_payload
+======================== 1 failed, 22 passed in 5.07s =========================

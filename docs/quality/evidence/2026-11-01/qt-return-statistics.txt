@@ -1,0 +1,55 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 6 items / 4 deselected / 2 selected
+
+tests/test_remaining_qt_acceptance.py::test_review_return_preview_import_accept_and_reopen PASSED [ 50%]
+tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history FAILED [100%]
+
+================================== FAILURES ===================================
+________ test_statistics_calculate_and_export_buttons_use_real_history ________
+
+qtbot = <pytestqt.qtbot.QtBot object at 0x000001DB59545D10>
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/qt-return-statistics/test_statistics_calculate_and_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001DB555DE3F0>
+
+    def test_statistics_calculate_and_export_buttons_use_real_history(qtbot, tmp_path, monkeypatch):
+        from PyQt6.QtWidgets import QComboBox
+        from openpyxl import load_workbook
+        from kraken_hub.presentation.qt.parts.statistics_panel import _statistics_panel
+        from tests.test_work_orders import _project_with_frames
+    
+        service = _service(tmp_path)
+        _, _, project, _, _, _ = _project_with_frames(service, tmp_path / "source", with_vectors=False)
+        panel = _statistics_panel(service, async_reads=True)
+        qtbot.addWidget(panel)
+        panel.show()
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda _p, _t, name, filt: (str(tmp_path / name), filt))
+        timer, messages = message_pump()
+    
+        def click(text):
+            button = next(b for b in panel.findChildren(QPushButton) if b.text() == text)
+            assert button.isVisible() and button.isEnabled()
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+            qtbot.waitUntil(lambda: panel._report_worker is None, timeout=10000)
+    
+        try:
+            qtbot.waitUntil(lambda: panel._report_worker is None, timeout=10000)
+            combo = panel.findChild(QComboBox, "statisticsProjectFilter")
+            combo.setCurrentIndex(combo.findData(str(project.id)))
+            click("����������")
+>           assert panel.findChild(QTableWidget, "statisticsSummary").item(0, 1).text() == "2"
+E           AssertionError: assert '0' == '2'
+E             
+E             - 2
+E             + 0
+
+tests\test_remaining_qt_acceptance.py:277: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+=========================== short test summary info ===========================
+FAILED tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history
+================== 1 failed, 1 passed, 4 deselected in 2.58s ==================

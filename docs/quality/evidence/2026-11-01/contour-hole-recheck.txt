@@ -1,0 +1,8 @@
+.                                                                        [100%]
+============================== warnings summary ===============================
+plugins\contour\tests\conftest.py:92
+  D:\code\kraken\plugins\contour\tests\conftest.py:92: PytestUnknownMarkWarning: Unknown pytest.mark.full - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    item.add_marker(pytest.mark.full)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 1 warning in 0.99s

@@ -1,0 +1,12 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 6 items / 4 deselected / 2 selected
+
+tests/test_remaining_qt_acceptance.py::test_role_buttons_assign_reopen_and_revoke_on_real_service PASSED [ 50%]
+tests/test_remaining_qt_acceptance.py::test_performer_add_button_persists_and_reopens PASSED [100%]
+
+======================= 2 passed, 4 deselected in 1.30s =======================

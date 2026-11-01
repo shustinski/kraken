@@ -1,0 +1,56 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 26 items
+
+tests/test_server_backup.py::test_native_consistent_backup_restore_and_repeat PASSED [  3%]
+tests/test_server_backup.py::test_configured_workspace_trees_relocate_and_preserve_empty_folders PASSED [  7%]
+tests/test_server_backup.py::test_exported_snapshot_excludes_a_later_database_commit PASSED [ 11%]
+tests/test_server_backup.py::test_restore_recovers_rollback_or_a_committed_reply_loss[False] PASSED [ 15%]
+tests/test_server_backup.py::test_restore_recovers_rollback_or_a_committed_reply_loss[True] PASSED [ 19%]
+tests/test_server_backup.py::test_nonempty_database_refused_before_creating_target PASSED [ 23%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[checksum] PASSED [ 26%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[storage-traversal] PASSED [ 30%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[directory-traversal] PASSED [ 34%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[duplicate] PASSED [ 38%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[row-count] PASSED [ 42%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[relative-root] PASSED [ 46%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[incorrect-alias] PASSED [ 50%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[duplicate-directory] PASSED [ 53%]
+tests/test_server_backup.py::test_bad_archives_fail_before_target_mutation[unexpected] PASSED [ 57%]
+tests/test_server_backup.py::test_equal_and_nested_storage_roots_keep_their_aliases[False] PASSED [ 61%]
+tests/test_server_backup.py::test_equal_and_nested_storage_roots_keep_their_aliases[True] PASSED [ 65%]
+tests/test_server_backup.py::test_changed_restore_bytes_and_existing_function_are_preserved PASSED [ 69%]
+tests/test_server_backup.py::test_mutating_source_does_not_publish_completed_manifest PASSED [ 73%]
+tests/test_server_backup.py::test_second_generation_recovery_composes_historic_roots PASSED [ 76%]
+tests/test_server_backup.py::test_restored_pending_cleanup_never_deletes_original_trees FAILED [ 80%]
+
+================================== FAILURES ===================================
+_________ test_restored_pending_cleanup_never_deletes_original_trees __________
+
+recovery = {'archive': WindowsPath('D:/code/kraken/.test_runtime/p0-backup-live/test_restored_pending_cleanup_0/archive'), 'blob'..., 'restored': WindowsPath('D:/code/kraken/.test_runtime/p0-backup-live/test_restored_pending_cleanup_0/restored'), ...}
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/p0-backup-live/test_restored_pending_cleanup_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001DBF64EBCE0>
+
+    def test_restored_pending_cleanup_never_deletes_original_trees(recovery, tmp_path, monkeypatch):
+        import sqlalchemy as sa
+        from types import SimpleNamespace
+        from kraken_admin.infrastructure.composition import open_project_services
+        from kraken_admin.application.project_deletion import ProjectDeletion
+>       from kraken_admin import project_deletion
+E       ImportError: cannot import name 'project_deletion' from 'kraken_admin' (D:\code\kraken\src\kraken_admin\__init__.py)
+
+tests\test_server_backup.py:291: ImportError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\code\kraken\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_server_backup.py::test_restored_pending_cleanup_never_deletes_original_trees
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+================== 1 failed, 20 passed, 1 warning in 37.79s ===================

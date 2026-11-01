@@ -1,0 +1,46 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 30 items
+
+tests/test_agent_queue_admission.py::test_concurrent_admission_serializes_across_projects_and_process_gateways PASSED [  3%]
+tests/test_agent_queue_admission.py::test_reservations_released_by_terminal_transition_or_crash_expiry[cancel] PASSED [  6%]
+tests/test_agent_queue_admission.py::test_reservations_released_by_terminal_transition_or_crash_expiry[complete] PASSED [ 10%]
+tests/test_agent_queue_admission.py::test_reservations_released_by_terminal_transition_or_crash_expiry[fail] PASSED [ 13%]
+tests/test_agent_queue_admission.py::test_reservations_released_by_terminal_transition_or_crash_expiry[expiry] PASSED [ 16%]
+tests/test_agent_queue_admission.py::test_oversized_head_does_not_starve_a_fitting_job_after_100_rows PASSED [ 20%]
+tests/test_agent_queue_admission.py::test_expiry_reclaim_by_same_credential_rejects_every_old_generation_write PASSED [ 23%]
+tests/test_agent_queue_admission.py::test_partial_environment_is_rejected_and_unbounded_is_explicit PASSED [ 26%]
+tests/test_agent_queue_admission.py::test_invalid_resource_request_rejected_before_enqueue PASSED [ 30%]
+tests/test_agent_queue_admission.py::test_http_claim_fencing_with_real_postgres_and_agent_credential PASSED [ 33%]
+tests/test_agent_queue_admission.py::test_latest_telemetry_is_generation_fenced_and_survives_completion PASSED [ 36%]
+tests/test_server_services.py::ServerServiceTests::test_bulk_layer_order_requires_complete_revision_map PASSED [ 40%]
+tests/test_server_services.py::ServerServiceTests::test_create_is_idempotent_and_grid_is_sparse PASSED [ 43%]
+tests/test_server_services.py::ServerServiceTests::test_layer_and_representation_commands_are_optimistic_and_idempotent PASSED [ 46%]
+tests/test_server_services.py::ServerServiceTests::test_project_and_layer_lifecycle_are_optimistic_idempotent_and_audited PASSED [ 50%]
+tests/test_server_services.py::ServerServiceTests::test_viewport_validates_project_bounds PASSED [ 53%]
+tests/test_server_vector_stitch.py::test_actual_remote_contour_vector_stitch_and_bounded_overlay_api PASSED [ 56%]
+tests/test_quality_postgres.py::test_postgres_quality_create_replay_reverse_lookup_and_concurrent_cas PASSED [ 60%]
+tests/test_quality_postgres.py::test_postgres_quality_write_failure_rolls_back_event_outbox_and_command_key PASSED [ 63%]
+tests/test_quality_postgres.py::test_postgres_quality_full_http_correction_recheck_accept_and_rbac PASSED [ 66%]
+tests/test_multilayer_postgres.py::test_postgres_affine_contact_review_reopen_outbox_and_concurrent_cas PASSED [ 70%]
+tests/test_multilayer_postgres.py::test_postgres_failed_physical_event_rolls_back_idempotency_and_outbox PASSED [ 73%]
+tests/test_electrical_postgres.py::test_postgres_http_electrical_netlist_reopen_and_real_concurrent_cas PASSED [ 76%]
+tests/test_electrical_postgres.py::test_postgres_electrical_failure_rolls_back_snapshot_idempotency_and_outbox PASSED [ 80%]
+tests/test_work_templates_postgres.py::test_postgres_template_materialization_is_atomic_under_concurrent_plan_updates PASSED [ 83%]
+tests/test_work_templates_postgres.py::test_postgres_failed_plan_append_rolls_back_entire_materialization PASSED [ 86%]
+tests/test_work_templates_postgres.py::test_postgres_templates_are_versioned_and_cannot_be_hijacked_from_another_project PASSED [ 90%]
+tests/test_work_plan_analytics_postgres.py::test_postgres_reports_are_historical_versioned_and_do_not_mutate_plans PASSED [ 93%]
+tests/test_planning_postgres.py::test_postgres_plan_persists_replays_and_rejects_concurrent_stale_update PASSED [ 96%]
+tests/test_planning_postgres.py::test_postgres_work_order_metadata_and_event_commit_with_rbac_and_cas PASSED [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\code\kraken\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 30 passed, 1 warning in 32.14s ========================

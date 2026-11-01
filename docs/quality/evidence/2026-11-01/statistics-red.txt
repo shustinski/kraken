@@ -1,0 +1,25 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+_ test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions _
+
+    def test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions():
+        from datetime import UTC, datetime, timedelta
+        from kraken_manager.application.reporting import ActivityRecord, ReportFilters, ReportService
+    
+        now = datetime.now(UTC)
+        records = (
+            ActivityRecord("import-1", now, "ArtifactVersionCreated", "p", bytes_count=7,
+                           payload={"parameters": {"mapping": "preflight", "x": 1, "y": 1}}),
+            ActivityRecord("import-2", now, "ArtifactVersionCreated", "p", bytes_count=7,
+                           payload={"parameters": {"mapping": "preflight", "x": 2, "y": 1}}),
+            ActivityRecord("generated", now, "ArtifactVersionCreated", "p", bytes_count=99,
+                           payload={"parameters": {"mapping": "generated"}}),
+        )
+        metrics = ReportService().aggregate(records, ReportFilters(now - timedelta(seconds=1), now + timedelta(seconds=1)))
+>       assert metrics.values["imported_files"] == 2
+E       assert 0 == 2
+
+tests\test_statistics_reports.py:18: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_statistics_reports.py::test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions
+1 failed in 0.30s

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -174,6 +175,30 @@ def test_png_disk_import_survives_reopen(tmp_path: Path) -> None:
     stored = reopened.managed_artifact_path(project.id, again[0].artifact_version_id)
     assert stored.is_file()
     assert stored.read_bytes() == image.read_bytes()
+
+    # Compare both public import paths on the exact same PNG, not two fixtures.
+    from kraken_manager.application.imports import ImportMappingMode, ImportPlanner, ImportSource
+
+    managed = service.create_representation(
+        principal=session.principal, project=service.get_project(project.id),
+        layer=service.list_layers(project.id)[0], name="Managed PNG", kind=RepresentationKind.IMAGE,
+        active=False, idempotency_key="managed-png",
+    )
+    plan = ImportPlanner().plan(
+        width=project.width, height=project.height,
+        sources=(ImportSource(str(image), image.name, image.stat().st_size,
+                              hashlib.sha256(image.read_bytes()).hexdigest()),),
+        mode=ImportMappingMode.EXPLICIT, explicit={str(image): (1, 1)},
+    )
+    service.commit_managed_import(
+        principal=session.principal, project=service.get_project(project.id),
+        layer=service.list_layers(project.id)[0], representation=managed, plan=plan,
+        idempotency_key="same-png-import",
+    )
+    managed_cells = EmbeddedProjectService(tmp_path / "data").frame_cells(project.id, layer.id, managed.id)
+    assert len(managed_cells) == 1
+    assert managed_cells[0].sha256 == again[0].sha256
+    assert reopened.read_project_blob(project.id, managed_cells[0].sha256) == image.read_bytes()
 
 
 def test_project_rename_rolls_back_both_workspace_roots_on_domain_failure(

@@ -1,0 +1,128 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+_ test_retry_preserves_files_in_workspace_left_before_project_journal[False] __
+
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/d1-review-red-edges/test_retry_preserves_files_in_0')
+reject_first = False
+
+    @pytest.mark.parametrize("reject_first", [False, True])
+    def test_retry_preserves_files_in_workspace_left_before_project_journal(tmp_path: Path, reject_first) -> None:
+        service = _service(tmp_path)
+        owner = service.create_initial_account("owner", "Owner", "secret")
+        project_id = project_id_for_idempotency_key(owner.principal.id, "project-audit")
+        binding = service.workspace_files.create_project(
+            project_id=project_id, project_name="�����",
+            source_root=service.default_source_root, derived_root=service.default_derived_root,
+        )
+        original = Path(binding.source_project_dir) / "img" / "source.png"
+        derived = Path(binding.derived_project_dir) / "result" / "result.json"
+        original.write_bytes(b"irreplaceable source")
+        derived.write_bytes(b"irreplaceable result")
+        reopened = _service(tmp_path)
+        if reject_first:
+            with pytest.raises(ValueError):
+                reopened.create_project(principal=owner.principal, name="�����", width=0, height=1,
+                                        orientation=GridOrientation.Y_DOWN, idempotency_key="project-audit")
+            assert original.read_bytes() == b"irreplaceable source"
+            assert derived.read_bytes() == b"irreplaceable result"
+        project = _create(reopened, owner.principal, name="�����", key="project-audit")
+        assert str(project.id) == project_id
+>       assert original.read_bytes() == b"irreplaceable source"
+               ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_project_create_idempotency.py:143: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Program Files\Python314\Lib\pathlib\__init__.py:777: in read_bytes
+    with self.open(mode='rb', buffering=0) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('D:/code/kraken/.test_runtime/d1-review-red-edges/test_retry_preserves_files_in_0/data/workspace-source/�����/img/source.png')
+mode = 'rb', buffering = 0, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'D:\\code\\kraken\\.test_runtime\\d1-review-red-edges\\test_retry_preserves_files_in_0\\data\\workspace-source\\�����\\img\\source.png'
+
+C:\Program Files\Python314\Lib\pathlib\__init__.py:771: FileNotFoundError
+__ test_retry_preserves_files_in_workspace_left_before_project_journal[True] __
+
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/d1-review-red-edges/test_retry_preserves_files_in_1')
+reject_first = True
+
+    @pytest.mark.parametrize("reject_first", [False, True])
+    def test_retry_preserves_files_in_workspace_left_before_project_journal(tmp_path: Path, reject_first) -> None:
+        service = _service(tmp_path)
+        owner = service.create_initial_account("owner", "Owner", "secret")
+        project_id = project_id_for_idempotency_key(owner.principal.id, "project-audit")
+        binding = service.workspace_files.create_project(
+            project_id=project_id, project_name="�����",
+            source_root=service.default_source_root, derived_root=service.default_derived_root,
+        )
+        original = Path(binding.source_project_dir) / "img" / "source.png"
+        derived = Path(binding.derived_project_dir) / "result" / "result.json"
+        original.write_bytes(b"irreplaceable source")
+        derived.write_bytes(b"irreplaceable result")
+        reopened = _service(tmp_path)
+        if reject_first:
+            with pytest.raises(ValueError):
+                reopened.create_project(principal=owner.principal, name="�����", width=0, height=1,
+                                        orientation=GridOrientation.Y_DOWN, idempotency_key="project-audit")
+>           assert original.read_bytes() == b"irreplaceable source"
+                   ^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_project_create_idempotency.py:139: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Program Files\Python314\Lib\pathlib\__init__.py:777: in read_bytes
+    with self.open(mode='rb', buffering=0) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('D:/code/kraken/.test_runtime/d1-review-red-edges/test_retry_preserves_files_in_1/data/workspace-source/�����/img/source.png')
+mode = 'rb', buffering = 0, encoding = None, errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: 'D:\\code\\kraken\\.test_runtime\\d1-review-red-edges\\test_retry_preserves_files_in_1\\data\\workspace-source\\�����\\img\\source.png'
+
+C:\Program Files\Python314\Lib\pathlib\__init__.py:771: FileNotFoundError
+________ test_retry_with_changed_name_preserves_uncommitted_workspace _________
+
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/d1-review-red-edges/test_retry_with_changed_name_p0')
+
+    def test_retry_with_changed_name_preserves_uncommitted_workspace(tmp_path: Path) -> None:
+        service = _service(tmp_path)
+        owner = service.create_initial_account("owner", "Owner", "secret")
+        project_id = project_id_for_idempotency_key(owner.principal.id, "project-audit")
+        binding = service.workspace_files.create_project(
+            project_id=project_id, project_name="�����",
+            source_root=service.default_source_root, derived_root=service.default_derived_root,
+        )
+        marker = Path(binding.source_project_dir) / "img" / "keep.txt"
+        marker.write_bytes(b"keep")
+>       with pytest.raises(ValueError, match="workspace"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'ValueError'>
+
+tests\test_project_create_idempotency.py:159: Failed
+=========================== short test summary info ===========================
+FAILED tests/test_project_create_idempotency.py::test_retry_preserves_files_in_workspace_left_before_project_journal[False]
+FAILED tests/test_project_create_idempotency.py::test_retry_preserves_files_in_workspace_left_before_project_journal[True]
+FAILED tests/test_project_create_idempotency.py::test_retry_with_changed_name_preserves_uncommitted_workspace
+3 failed, 7 deselected in 1.61s

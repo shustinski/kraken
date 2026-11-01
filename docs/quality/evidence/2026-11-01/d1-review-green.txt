@@ -1,0 +1,47 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 37 items
+
+tests/test_project_create_idempotency.py::test_same_idempotency_key_returns_the_stored_project PASSED [  2%]
+tests/test_project_create_idempotency.py::test_retry_replaces_a_workspace_left_without_a_project_journal PASSED [  5%]
+tests/test_project_create_idempotency.py::test_same_key_returns_a_project_created_under_a_random_id PASSED [  8%]
+tests/test_project_create_idempotency.py::test_retry_preserves_files_in_workspace_left_before_project_journal[False] PASSED [ 10%]
+tests/test_project_create_idempotency.py::test_retry_preserves_files_in_workspace_left_before_project_journal[True] PASSED [ 13%]
+tests/test_project_create_idempotency.py::test_retry_with_changed_name_preserves_uncommitted_workspace PASSED [ 16%]
+tests/test_project_create_idempotency.py::test_retry_writes_the_workspace_event_missed_after_the_journal PASSED [ 18%]
+tests/test_project_create_idempotency.py::test_overlapping_creates_append_one_workspace_event PASSED [ 21%]
+tests/test_project_create_idempotency.py::test_retry_finishes_a_layer_template_interrupted_after_the_project PASSED [ 24%]
+tests/test_project_create_idempotency.py::test_a_different_key_still_refuses_an_existing_project_folder PASSED [ 27%]
+tests/test_create_project_dialog_retry.py::test_dialog_reuses_the_idempotency_key_until_the_project_identity_changes PASSED [ 29%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_authenticated_local_project_vertical_slice PASSED [ 32%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_backup_restore_requires_explicit_ownership_on_new_workstation PASSED [ 35%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_delete_project_removes_kraken_cache_but_preserves_workspace_files PASSED [ 37%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_desktop_review_package_round_trip_uses_manifest_routing PASSED [ 40%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_directory_import_is_preflighted_managed_immutable_and_idempotent PASSED [ 43%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_event_first_commit_failure_is_recovered_before_next_read PASSED [ 45%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_export_artifact_version_supports_managed_and_verified_external_files PASSED [ 48%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_image_and_vector_representations_can_be_added_to_a_layer PASSED [ 51%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_initial_account_cannot_be_created_when_an_account_exists PASSED [ 54%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_initial_account_is_created_with_identity_and_authenticated_session PASSED [ 56%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_last_project_owner_cannot_be_revoked PASSED [ 59%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_legacy_directory_representation_provides_viewport_assets PASSED [ 62%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_local_profile_accepts_more_than_one_million_frames PASSED [ 64%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_managed_vector_keeps_external_image_thumbnail_source PASSED [ 67%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_manual_performer_can_be_updated_and_archived PASSED [ 70%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_manual_performer_catalog_is_persistent PASSED [ 72%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_notes_and_artifact_lifecycle_are_rebuildable PASSED [ 75%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_project_acl_changes_are_optimistic_idempotent_and_audited PASSED [ 78%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_project_and_layer_lifecycle_is_audited_temporal_and_rebuildable PASSED [ 81%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_representation_lifecycle_switches_active_variant_and_rebuilds PASSED [ 83%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_sparse_managed_vector_keeps_raster_asset_in_viewport PASSED [ 86%]
+tests/test_hub_embedded_service.py::EmbeddedProjectServiceTests::test_v2_publications_are_merged_before_domain_import PASSED [ 89%]
+tests/test_remaining_qt_acceptance.py::test_role_buttons_assign_reopen_and_revoke_on_real_service PASSED [ 91%]
+tests/test_remaining_qt_acceptance.py::test_performer_add_button_persists_and_reopens PASSED [ 94%]
+tests/test_remaining_qt_acceptance.py::test_integrity_button_reports_clean_and_corrupt_blob_in_real_messagebox PASSED [ 97%]
+tests/test_remaining_qt_acceptance.py::test_issue_work_dialog_validates_destination_and_persists_package PASSED [100%]
+
+============================= 37 passed in 36.60s =============================

@@ -1,5 +1,42 @@
 # Матрица приёмки
 
+## Продолжение 2026-11-01 (база `8cf3ea6`, исправления `71ce8dc`)
+
+Прежние PASS ниже сохраняются. Уточнения этой секции имеют приоритет над историческим
+«Не прогнано». Сырые журналы и команды: [checkpoint](checkpoint-2026-11-01.md).
+
+| ID / блок | Статус | Подтверждение и граница |
+|---|---|---|
+| AGT-REGISTRY-CONFIDENCE / D4 | PASS | `test_karakal_agent_headless.py`: headless принимается, worker subprocess завершается, новый DurableJobStore читает результат, result.json и confidence.json перечитаны, SHA-256 совпал. Действие Hub доступно. `d4-focused.log`: 7 PASS вместе с режимами агента |
+| KARAKAL-CONFIDENCE-METRICS | PARTIAL | Выход legacy confidence содержит только operation/job_id/input_count; запуск и JSON не доказывают расчёт уверенности |
+| SRV-BACKUP-RESTORE-ISOLATED | PASS | Собственный временный кластер PostgreSQL 16 на loopback:55439. 20 + 6 PASS в `p0-backup-live.log`, `p0-backup-remaining.log`. Native backup/verify/restore, CLI, защита непустой цели, испорченные архивы, восстановление путей и барьеры шлюза. Рабочая база не использовалась |
+| SRV-REGISTRATION-POLICY | PASS | Политика репозитория допускает самостоятельную ordinary-регистрацию: нет global roles, чужие проекты скрыты, неверный пароль отклонён. `test_server_administration.py` в `p0-policy-network.log`. Приглашения не являются текущим контрактом |
+| QT-PLAN / QT-PHYSICS / QT-ELECTRICAL / QT-COMPUTED-STITCH | PASS | `qt-acceptance.log`: реальные показанные окна, щелчки, запись/переоткрытие и ошибочные данные. Весь блок 33 PASS; часть вспомогательных проверок использует адаптеры, они не подменяют тесты настоящего сервиса |
+| QT-QUALITY | PASS | `quality-clicks.log`: видимые кнопки создания/назначения/ошибочного исправления, refresh, новый EmbeddedProjectService и повторное окно читают assigned и историю |
+| SRV-AGENT-KARAKAL / SRV-AGENT-STITCH | PASS | `server-acceptance.log`: настоящий PostgreSQL, HTTP, ServerAgentWorker, subprocess Karakal/сшивка, повторное чтение, retry/cancel/runtime refusal, Qt удалённой сшивки. Блок 127 PASS |
+| PLUGIN-CSLISER-COPY-CANCEL-RECOVERY | PASS | `plugins-acceptance-importlib.log`: показанное окно, копирование с проверкой байтов, отказ перезаписи, отмена, карантин/восстановление, архив и повторное открытие проекта |
+| PLUGIN-KATEGB-CALCULATION | PASS | `test_calculate_author_quality_results`: Alice/Bob — по 50%; зашифрованный манифест перечитан. Полный пользовательский путь окна расчёта остаётся PARTIAL |
+| PLUGIN-KRONA-LOGIC-VIEWER | PASS | `test_explicit_connectivity.py`, `test_quality_qt.py`: реальный CLI на EDF, таблица NOT, hash исходника; показанный viewer отображает неопределённость. Не приёмка реального прибора |
+| PLUGIN-KARAKAL-COMPARE-MAP | PASS | `test_headless_analysis.py`, `test_server_analysis_workflow.py`: контролируемые пары масок, численные XOR/IoU/Dice, карта кадра и повторное чтение |
+| PLUGIN-CONTOUR-DATASET-INTERACTIVE | PARTIAL | Интерактивные proxy/gateway пути до возврата прошли в `server-acceptance.log`; headless выборка не заявлена и отдельно не выполнена |
+| LOCAL-PROJECT-ORPHAN-RECOVERY | PASS | Независимое ревью нашло удаление файлов orphan workspace. Три RED; исправлено сохранением совпадающей привязки. `d1-review-green`: 37 PASS с регрессиями создания |
+| QT-ROLES / QT-PERFORMER / QT-ISSUE-WORK / QT-REVIEW-RETURN | PASS | `test_remaining_qt_acceptance.py`: реальные модальные окна, assign/revoke и reread, исполнитель после reopen, отказ без каталога, пакет с байтами; изменённый CIF через preview → принять → подтверждение → completed и новый blob после reopen |
+| QT-INTEGRITY-MESSAGES | PASS | Настоящие QMessageBox «Проверка завершена» и «Обнаружены ошибки» после порчи собственного временного blob, видимая кнопка |
+| QT-STATISTICS-EXPORT | PASS | Два подтверждённых отказа исправлены (D6): импорт 2 файлов считался как 0, CSV падал на nested mappingproxy. `statistics-verified`: 18 PASS, включая calculate/CSV/XLSX кнопками |
+| HUB-DUAL-LIVE-WS-DELETE-REQUEST | PASS | `live-catalog`: PostgreSQL + живой HTTP + DualCatalogService, local/remote вместе, websocket/outbox wake и catalog_changed, rename не трогает local; заявка pending, проект не удалён |
+| SRV-QUALITY-PHYSICS-ELECTRICAL-PLANNING-QUEUE | PASS | `server-domain-remaining`: 30 PASS на отдельном кластере, HTTP/RBAC/reopen/CAS/rollback; 11 пропусков queue из первого agent-прогона затем исполнены |
+| AGENT-REGRESSION | PASS | `agent-regression`: 74 PASS, 2 subtests; 11 PG skips закрыты отдельным `server-domain-remaining` |
+| CONTOUR-EDITOR-FILTERS | PARTIAL | `contour-editor-full`: 323 PASS, 1 FAIL теста преждевременного доступа к async display, 1 skip отсутствующего 0518.cif. Ожидание теста исправлено; отдельный `contour-hole-recheck` PASS. Отсутствующая фикстура не подменена |
+| KRONA-JSON-OUT | PASS | CLI `--json-out` на `resources/test_edifs/explicit_cmos_inverter.edf`, JSON повторно прочитан, содержит cell/design/instances/library/nets/ports/view |
+| PNG-SCANNER-MANAGED-PARITY | PASS | Один PNG через два публичных пути импорта, после нового сервиса одинаковые SHA-256 и байты; `png-parity` |
+| WINDOWS-SERVICE-INSTALL | BLOCKED | `WindowsPrincipal.IsInRole(Administrator)=False` вне sandbox. Служба рабочего сервера не изменялась; отдельная elevated VM/учётная запись не предоставлена |
+| WINDOWS-HELLO-CREDENTIALS | BLOCKED | Аппаратное/пользовательское подтверждение Hello невозможно заменить offscreen. Нужен интерактивный пользовательский проход; тесты с подменой проверки не считаются приёмкой Hello |
+| UPDATER-INSTALL / REMOTE-HTTPS | BLOCKED | Не предоставлены отдельный тестовый установщик и удалённый TLS-стенд. Проверки контракта URL/секрета прошли, скачивание/запуск реального установщика и удалённый HTTPS не выполнялись |
+| KATEGB-FULL-EXCEL-UI / REAL-DEVICE-ACCEPTANCE | NOT TESTED | Доменный расчёт KateGB и модельный синтетический E2E подтверждены. Отдельная эталонная Excel-разметка и приёмочный реальный прибор/проект не предоставлены. Запрошен безопасный путь к фикстурам |
+
+Остальные непройденные части исторических групп сохраняют NOT TESTED/PARTIAL.
+Kraken пока не объявляется готовым.
+
 Дата прогона: 2026-10-30. Среда: Windows, Python 3.14.4 из `uv`, PyQt 6.11.0, платформа Qt `offscreen`, PostgreSQL 16 запущен локально, пароль администратора не задан, Rust-сборки в PATH нет, готовый `blob_gateway/target/release/kraken-blob-gateway.exe` есть.
 
 Проверялись настоящие `EmbeddedProjectService`, диалоги Qt, процесс Blob Gateway, `kraken-server --development`, `kraken-agent` и процессы плагинов. Основные сервисы моками не подменялись. Успешный старый тест сам по себе здесь не считается готовностью функции.
@@ -8,7 +45,7 @@
 
 Аудит всего реестра не закончен. Группы со статусом NOT TESTED ещё нужно пройти.
 
-## Прогнано в этом сеансе
+## Исторический прогон 2026-10-30–31
 
 | ID | Сценарий и критерий | Статус | Факт |
 |---|---|---|---|
@@ -48,9 +85,9 @@
 
 Первый щелчок «Проверить целостность» попал в невидимую кнопку. Повтор на открытой странице «Администрирование» дал статус завершения.
 
-## Не прогнано
+## Исторический список пробелов 2026-10-30
 
-Эти строки нельзя считать успешными. Причина указана, чтобы следующий проход продолжался отсюда.
+Исходный список сохранён для трассировки. Его текущие статусы уточнены в секции 2026-11-01 выше; он не является вторым актуальным набором NOT TESTED.
 
 | Группа | Почему NOT TESTED |
 |---|---|

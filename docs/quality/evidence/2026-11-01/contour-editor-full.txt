@@ -1,0 +1,413 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 325 items
+
+plugins/contour/tests/unit/test_widget_interactions.py::ViaCandidateOverlayTests::test_rejected_candidate_is_drawn_and_can_be_cleared PASSED [  0%]
+plugins/contour/tests/unit/test_widget_interactions.py::ViaCandidateOverlayTests::test_show_rejected_checkbox_controls_candidate_overlay PASSED [  0%]
+plugins/contour/tests/unit/test_widget_interactions.py::ViaCandidateOverlayTests::test_via_color_changes_from_red_to_green_with_score PASSED [  0%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetLoadImageTests::test_load_image_keeps_prepared_preview_flow_when_auto_apply_enabled PASSED [  1%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetLoadImageTests::test_load_image_preserves_prepared_preview_flow_when_auto_apply_disabled PASSED [  1%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetColorPickTests::test_clicking_image_adds_color_to_color_binarize_step PASSED [  1%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_brush_mode_combo_exposes_all_brush_modes PASSED [  2%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_contact_tool_uses_plain_width_and_height_labels PASSED [  2%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_editor_tool_modes_default_to_rectangle_angled_and_area PASSED [  2%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_polygon_mode_indicator_is_hidden_but_mode_switch_stays_operational PASSED [  3%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_shift_key_cycles_active_tool_mode_and_updates_combo PASSED [  3%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_space_hold_hides_vectors_after_selecting_drawing_tool_button PASSED [  3%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_tool_mode_cycle_matches_shift_click_targets PASSED [  4%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_toolbar_hides_incompatible_tools_and_falls_back_to_select PASSED [  4%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetBrushModeUiTests::test_trace_pen_width_control_updates_editor PASSED [  4%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_additional_layer_loading_is_blocked_without_base_layer PASSED [  4%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_additional_layer_plus_is_disabled_without_base_and_enabled_with_base PASSED [  5%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_antialias_settings_are_only_visible_for_antialias_tool PASSED [  5%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_antialias_tool_is_exposed_in_toolbar PASSED [  5%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_append_images_keeps_existing_rows_skips_duplicates_and_underscore_files PASSED [  6%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_apply_cached_neighbors_skips_clear_while_neighbor_loads_are_queued PASSED [  6%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_applying_new_frame_clears_stale_neighbor_layout_before_sync PASSED [  6%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_asset_tabs_and_venn_filter_split_image_vector_sets_without_reordering_workspace PASSED [  7%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_auto_tune_preserves_manual_contact_thresholds PASSED [  7%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_build_preview_request_ignores_cached_preprocessed_image_for_changed_pipeline PASSED [  7%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_build_preview_request_reuses_cached_preprocessed_image_for_same_pipeline PASSED [  8%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_cached_first_frame_is_applied_when_switching_back_from_second_frame PASSED [  8%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_cached_frame_switch_holds_previous_frame_until_vectors_reload PASSED [  8%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_cached_frame_with_stale_pipeline_is_reprocessed_on_switch PASSED [  8%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_center_editor_on_main_image_skips_when_frame_mostly_visible PASSED [  9%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_checked_toolbar_tool_has_explicit_high_contrast_style PASSED [  9%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_cif_index_completion_queues_vectors_for_inflight_initial_frame PASSED [  9%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_clear_frame_vectors_marks_overlay_cleared_without_deleting_files PASSED [ 10%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_click_does_not_repeat_pending_current_change_request PASSED [ 10%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_completed_background_load_does_not_replace_newer_selection PASSED [ 10%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_conductor_contrast_slider_and_hole_settings_feed_recognition_settings PASSED [ 11%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_conductor_display_filters_apply_only_during_recognition PASSED [ 11%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_contacts_are_normalized_to_output_diameter_for_saving PASSED [ 11%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_ctrl_arrow_does_not_navigate_when_frame_matrix_disabled PASSED [ 12%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_ctrl_arrow_navigates_selected_frame_when_frame_matrix_enabled PASSED [ 12%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_delete_polygon_tool_is_not_exposed_in_toolbar PASSED [ 12%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_dialog_start_directory_uses_line_edit_path_parent_for_files PASSED [ 12%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_directory_session_restore_rescans_and_loads_current_vectors PASSED [ 13%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_disabling_frame_matrix_clears_and_skips_matrix_work PASSED [ 13%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_disabling_frame_matrix_thumbnails_keeps_items_without_queueing_loads PASSED [ 13%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_display_settings_are_saved_when_changed PASSED [ 14%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_editor_display_cache_key_tracks_pipeline_config PASSED [ 14%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_enabling_frame_matrix_thumbnails_restarts_loading_existing_items PASSED [ 14%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_every_heuristic_expert_parameter_schedules_via_rerecognition PASSED [ 15%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_explicit_preview_result_is_saved_with_processed_polygons PASSED [ 15%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_extra_layer_row_controls_have_tooltips_and_compact_labels PASSED [ 15%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_extraction_change_does_not_process_when_auto_apply_disabled PASSED [ 16%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_extraction_change_processes_when_auto_apply_enabled PASSED [ 16%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_extraction_mode_defaults_to_no_extraction PASSED [ 16%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_file_list_uses_stems_and_thumbnail_click_navigates PASSED [ 16%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_filter_change_queues_preprocessing_without_starting_recognition PASSED [ 17%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_filter_has_priority_when_recognition_worker_finishes PASSED [ 17%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_apply_defers_vectors_until_pixmap_ready PASSED [ 17%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_matrix_load_suppresses_deferred_editor_centering PASSED [ 18%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_matrix_navigation_cancel_keeps_current_frame PASSED [ 18%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_matrix_navigation_does_not_center_editor_scene PASSED [ 18%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_matrix_navigation_loads_main_editor_frame PASSED [ 19%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_matrix_navigation_uses_image_list_signal_and_starts_loading PASSED [ 19%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_matrix_rebuild_yields_before_adding_items PASSED [ 19%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_matrix_uses_editor_view_render_optimizations PASSED [ 20%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_frame_switch_interactive_does_not_wait_for_background_geometry_validation PASSED [ 20%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_graphics_matrix_cover_crops_square_thumbnail_to_fill_cell PASSED [ 20%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_graphics_matrix_keeps_high_lod_pixmap_scaled_to_cell PASSED [ 20%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_hotkey_tool_switch_updates_toolbar_checked_state PASSED [ 21%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_image_path_for_cif_stem_uses_indexed_lookup PASSED [ 21%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_image_recognition_profile_finishes_after_result_is_applied PASSED [ 21%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_image_row_navigation_recenters_editor_view PASSED [ 22%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_ingest_dropped_paths_appends_images_and_vectors_without_replacing PASSED [ 22%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_inner_hole_stays_a_hole_after_switching_frames_and_back FAILED [ 22%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_large_frame_matrix_count_matches_images_tab_count PASSED [ 23%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_large_thumbnail_matrix_keeps_all_frames PASSED [ 23%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_leaving_recognition_reloads_cif_for_current_image PASSED [ 23%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_loaded_thumbnail_refreshes_graphics_matrix_pixmap PASSED [ 24%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_lod_store_does_not_replace_main_editor_neighbor_overlay PASSED [ 24%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_main_and_neighbor_scene_loads_share_full_resolution_cache PASSED [ 24%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_main_image_update_does_not_clear_neighbors_when_pending_list_empty PASSED [ 24%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_manual_tool_postprocess_settings_are_exposed_in_help_menu PASSED [ 25%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_frame_border_is_hidden_when_neighbors_are_disabled PASSED [ 25%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_frame_overlap_moves_tiles_closer PASSED [ 25%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_frames_render_around_current_image PASSED [ 26%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_frames_render_when_main_image_arrives_after_neighbor_request PASSED [ 26%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_grid_size_controls_displayed_neighbor_ring_count PASSED [ 26%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_load_finished_applies_when_queue_drains PASSED [ 27%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_overlay_navigation_loads_main_editor_frame PASSED [ 27%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_request_clears_existing_neighbors_when_disabled PASSED [ 27%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_neighbor_sync_drops_stale_queued_paths_before_queueing_current_neighbors PASSED [ 28%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_output_diameter_redraws_recognized_contacts_without_processing PASSED [ 28%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_pending_filter_waits_until_running_recognition_finishes PASSED [ 28%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_pending_recognition_starts_after_filter_worker_finishes PASSED [ 28%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_pipeline_preview_request_is_built_in_no_extraction_mode PASSED [ 29%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_prepared_filter_result_is_displayed_when_recognition_is_disabled PASSED [ 29%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_preview_result_does_not_resync_neighbors_or_recenter_view PASSED [ 29%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_process_selected_button_requests_processing_and_save PASSED [ 30%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_radial_thumbnail_fill_keeps_visible_thumbnail_queue PASSED [ 30%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_rapid_image_row_navigation_loads_only_latest_selection PASSED [ 30%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_reapplying_same_image_paths_preserves_full_scene_cache PASSED [ 31%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_recognition_does_not_start_while_filter_worker_is_running PASSED [ 31%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_recognition_mode_hides_loaded_vector_overlay PASSED [ 31%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_recognition_mode_shows_red_frame_around_editor_scene PASSED [ 32%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_recognition_setting_change_does_not_process_when_recognition_is_disabled PASSED [ 32%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_recognition_view_sync_preserves_editor_scroll PASSED [ 32%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_refresh_image_list_item_states_does_not_rebuild_asset_lists PASSED [ 32%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_refresh_preserves_explicit_image_subset PASSED [ 33%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_remove_images_drops_frame_from_project_but_keeps_file_on_disk PASSED [ 33%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_reorder_extra_layers_updates_render_order_model PASSED [ 33%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_reset_project_clears_loaded_state_without_resetting_display_settings PASSED [ 34%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_restore_persisted_session_selection_loads_images_vectors_and_current_file PASSED [ 34%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_restored_frame_matrix_build_does_not_wait_for_cif_index PASSED [ 34%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_scan_finish_restores_persisted_current_file_when_present PASSED [ 35%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_select_input_directory_replaces_instead_of_appending PASSED [ 35%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_stale_neighbor_apply_does_not_redraw_when_disabled PASSED [ 35%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_geometry_keeps_space_for_filtered_late_slots PASSED [ 36%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_grid_applies_frame_overlap PASSED [ 36%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_grid_uses_display_frames_per_row PASSED [ 36%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_grid_uses_graphics_view_scroll_surface PASSED [ 36%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_lod_change_does_not_cancel_large_matrix_build PASSED [ 37%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_lod_change_requeues_visible_frames_at_new_size PASSED [ 37%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_matrix_rebuild_reuses_cached_icons PASSED [ 37%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_request_size_follows_matrix_lod PASSED [ 38%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_request_size_scales_to_max_matrix_lod PASSED [ 38%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_requeues_after_generation_bump_without_icon_apply PASSED [ 38%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_result_during_frame_load_is_applied_after_load_finishes PASSED [ 39%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_thumbnail_stale_background_result_is_ignored PASSED [ 39%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_tool_settings_strip_stays_in_fixed_toolbar_position PASSED [ 39%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_toolbar_icons_use_the_complete_button_area PASSED [ 40%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_trace_pen_settings_are_only_visible_for_trace_pen_tool PASSED [ 40%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_trace_pen_tool_is_exposed_in_toolbar PASSED [ 40%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_via_roundness_is_included_in_current_settings PASSED [ 40%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_via_search_range_and_output_size_have_separate_controls PASSED [ 41%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_via_threshold_ui_exposes_only_white_and_black_ranges PASSED [ 41%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_view_sync_does_not_postprocess_untouched_vectors_or_mark_dirty PASSED [ 41%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_visible_thumbnail_scheduler_prioritizes_viewport_and_current_frame PASSED [ 42%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_work_simulation_restores_loaded_vectors_without_saving PASSED [ 42%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_work_simulation_toggle_stops_running_simulation PASSED [ 42%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_x_hold_shows_source_image_and_combines_with_space_vector_hide PASSED [ 43%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_add_vertex_click_on_unselected_polygon_selects_and_edits_it PASSED [ 43%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_angled_brush_pan_preserves_endpoint_drawn_before_pan PASSED [ 43%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_antialias_click_on_outer_also_smooths_hole PASSED [ 44%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_antialias_tool_drag_simplifies_polygons_in_area PASSED [ 44%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_antialias_tool_hover_shows_vertices_and_click_simplifies_polygon PASSED [ 44%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_area_selection_emits_selected_contact_count PASSED [ 44%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_box_and_via_items_display_as_ellipses PASSED [ 45%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_and_trace_width_reject_one_pixel PASSED [ 45%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_crossing_inner_contour_updates_hole_geometry PASSED [ 45%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_drag_skips_conductor_hover_sync_on_mouse_move PASSED [ 46%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_drops_vertices_closer_than_one_pixel PASSED [ 46%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_editing_outer_ring_keeps_inner_object_if_not_touched PASSED [ 46%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_erase_fills_hole_below_manual_min_hole_area PASSED [ 47%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_erase_keeps_hole_above_manual_min_hole_area PASSED [ 47%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_records_movement_of_at_least_one_pixel_as_segment PASSED [ 47%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_tool_hover_syncs_conductor_highlight_on_mouse_move PASSED [ 48%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_brush_vertex_spacing_rule_is_one_image_pixel PASSED [ 48%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_can_draw_polygon_inside_existing_cutout PASSED [ 48%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_closed_brush_contour_fills_center_below_manual_min_hole_area PASSED [ 48%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_closed_brush_contour_preserves_empty_center PASSED [ 49%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_closing_view_finishes_active_zoom_profile PASSED [ 49%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_conductor_hover_fills_polygon_instead_of_outline_only PASSED [ 49%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_conductor_recognition_mode_blocks_vector_edit_tools PASSED [ 50%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_contact_delete_key_emits_separate_profiling_boundaries PASSED [ 50%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_contact_drag_commit_updates_only_contact_and_is_undoable PASSED [ 50%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_contact_drag_skips_hover_hit_testing_on_mouse_move PASSED [ 51%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_contact_tool_click_on_existing_via_requests_diagnostics PASSED [ 51%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_contact_undo_and_redo_emit_profiling_boundaries PASSED [ 51%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_copy_and_paste_emit_profile_boundaries_and_counts PASSED [ 52%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_ctrl_wheel_keeps_scene_point_under_cursor_stable PASSED [ 52%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_cutting_shape_with_hole_keeps_center_empty PASSED [ 52%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_delete_key_still_deletes_selected_polygon PASSED [ 52%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_delete_vertices_area_affects_unselected_polygons_too PASSED [ 53%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_delete_vertices_area_collapses_axis_aligned_extra_points PASSED [ 53%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_delete_vertices_area_deletes_polygon_when_all_vertices_are_inside PASSED [ 53%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_delete_vertices_area_preview_highlights_all_touched_polygons PASSED [ 54%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_delete_vertices_area_removes_vector_when_ring_cannot_survive PASSED [ 54%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_delete_vertices_area_uses_incremental_commit_without_global_union PASSED [ 54%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_escape_cancels_in_progress_rectangle_polygon PASSED [ 55%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_f_key_fits_main_image_to_view PASSED [ 55%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_finished_point_polygon_is_cropped_to_image_bounds PASSED [ 55%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_finished_rectangle_polygon_is_cropped_to_image_bounds PASSED [ 56%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_hole_hover_highlights_inner_polygon_not_parent PASSED [ 56%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_middle_button_temporarily_hides_vectors_while_panning PASSED [ 56%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_middle_pan_during_brush_at_image_edge_keeps_brush_anchor PASSED [ 56%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_middle_pan_during_brush_does_not_shift_brush_position PASSED [ 57%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_move_edge_translates_both_endpoints PASSED [ 57%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_move_target_preview_highlights_edge_near_cursor PASSED [ 57%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_move_target_preview_prefers_vertex_near_corner PASSED [ 58%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_move_vertex_click_inside_selected_polygon_moves_nearest_vertex PASSED [ 58%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_move_vertex_keeps_closed_duplicate_endpoint_together PASSED [ 58%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_move_vertex_merges_overlapping_conductors PASSED [ 59%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_neighbor_frame_navigation_requires_double_click PASSED [ 59%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_neighbor_frame_path_at_overlap_prefers_neighbor_without_main_vectors PASSED [ 59%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_neighbor_frame_vectors_are_rendered_over_neighbor_image PASSED [ 60%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_nested_polygon_hover_highlights_smaller_inner_polygon PASSED [ 60%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_noop_brush_erase_does_not_create_undo_action PASSED [ 60%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_overlay_preview_draws_box_and_via_as_ellipse PASSED [ 60%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_paste_preview_reuses_items_while_pointer_moves PASSED [ 61%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_polygon_tool_right_click_inside_existing_erases_area PASSED [ 61%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_polygon_tool_right_click_on_existing_starts_erase_not_delete PASSED [ 61%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_polygon_tool_right_click_while_drawing_keeps_erase_drawing_behavior PASSED [ 62%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_rectangle_polygon_hold_and_release_does_not_finish PASSED [ 62%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_rectangle_polygon_is_created_with_two_clicks PASSED [ 62%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_repeated_inner_edge_edits_do_not_expand_hole_bbox PASSED [ 63%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_repeated_outer_edits_do_not_expand_untouched_inner_contour PASSED [ 63%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_right_button_brush_erases_existing_polygon_area PASSED [ 63%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_right_button_rectangle_polygon_erases_existing_polygon_area PASSED [ 64%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_right_click_cancels_in_progress_left_rectangle_polygon PASSED [ 64%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_ruler_shift_snaps_measurement_to_45_degree_step PASSED [ 64%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_ruler_tool_reports_measurement_without_changing_polygons PASSED [ 64%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_select_click_computes_additive_mode_before_picking_polygon PASSED [ 65%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_small_independent_erase_is_rejected_when_existing_hole_is_above_min_area PASSED [ 65%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_small_rectangle_fully_inside_existing_contour_is_not_drawn PASSED [ 65%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_small_rectangle_fully_inside_existing_cutout_is_not_drawn PASSED [ 66%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_space_hold_hides_recognition_mask_overlay PASSED [ 66%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_space_hold_hides_vectors_without_mutating_polygon_data PASSED [ 66%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_trace_pen_allows_self_intersecting_chain PASSED [ 67%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_trace_pen_commits_polygonal_chain_on_enter PASSED [ 67%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_trace_pen_tool_hover_syncs_conductor_highlight_on_mouse_move PASSED [ 67%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_vertex_edit_tools_show_all_polygon_vertices PASSED [ 68%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_zoom_requests_one_managed_viewport_update_per_frame PASSED [ 68%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_zoom_skips_hover_hit_testing_on_mouse_move PASSED [ 68%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorViewMiddleClickTests::test_zoom_uses_visible_composite_contact_layer_and_restores_items PASSED [ 68%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_dataset_mode_exports_changed_frame_when_switching_frames PASSED [ 69%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_extraction_mode_switch_does_not_prompt_save_or_mark_viewed PASSED [ 69%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_fast_switch_before_editor_apply_does_not_mark_loaded_frame_dirty PASSED [ 69%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_persist_failure_without_target_sets_visible_error PASSED [ 70%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_persist_resolves_missing_loaded_cif_path_from_index PASSED [ 70%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_switching_frames_after_loading_cif_overlay_does_not_prompt PASSED [ 70%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_switching_frames_autosaves_loaded_cif_when_polygons_changed PASSED [ 71%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_switching_frames_does_not_save_when_autosave_disabled_even_if_dialog_discards PASSED [ 71%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetAutosaveTests::test_switching_frames_without_edits_does_not_prompt_or_save PASSED [ 71%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_append_brush_vertex_does_not_densify_long_jump PASSED [ 72%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_brush_preview_keeps_configured_width_across_mouse_updates PASSED [ 72%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_contact_drag_preview_refreshes_only_moved_contact PASSED [ 72%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_contact_recognition_mode_protects_only_recognized_vias PASSED [ 72%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_delete_via_at_deletes_only_vias PASSED [ 73%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_fully_filtered_contact_paste_does_not_create_undo_entry PASSED [ 73%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_hover_hit_testing_passes_only_spatial_candidates PASSED [ 73%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_local_polygon_add_does_not_run_full_frame_postprocess PASSED [ 74%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_manual_via_uses_configured_color_and_recognized_via_keeps_score_color PASSED [ 74%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_multi_selection_does_not_resolve_edit_families_for_contacts PASSED [ 74%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_nonintersecting_paste_preserves_points_without_shapely_rebuild PASSED [ 75%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_paste_cannot_create_mixed_content PASSED [ 75%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_paste_clips_conductor_to_three_pixel_image_inset PASSED [ 75%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_paste_filters_contacts_against_contacts_accepted_in_same_batch PASSED [ 76%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_paste_merges_intersecting_conductors_and_is_undoable PASSED [ 76%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_paste_refreshes_and_emits_once_per_undo_operation PASSED [ 76%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_paste_rejects_conductor_fully_outside_image_inset PASSED [ 76%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_paste_skips_contacts_closer_than_minimum_distance PASSED [ 77%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_polygon_and_via_creation_are_mutually_exclusive PASSED [ 77%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_polygon_cursor_preview_defers_exact_commit_validation PASSED [ 77%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_selection_refreshes_only_previous_and_next_contacts PASSED [ 78%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_trace_pen_adds_fixed_width_conductor_polygon PASSED [ 78%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_trace_pen_clips_new_polygon_to_image_bounds PASSED [ 78%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_via_cursor_turns_red_when_placement_overlaps_existing_via PASSED [ 79%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_via_deletion_and_undo_skip_full_scene_refresh PASSED [ 79%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_via_display_mode_switches_between_circle_and_rectangle_paths PASSED [ 79%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_via_placement_rejects_overlapping_existing_via PASSED [ 80%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_via_placement_rejects_rect_outside_image_bounds PASSED [ 80%]
+plugins/contour/tests/unit/test_widget_interactions.py::PolygonEditorSceneBrushPreviewTests::test_via_placement_skips_global_cleanup_and_refreshes_only_new_selection PASSED [ 80%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_diagonal_pinch_is_repaired_without_dropping_connected_conductor PASSED [ 80%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_epsilon_simplifies_binary_contours_without_corner_preservation PASSED [ 81%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_excludes_border_touching_contours PASSED [ 81%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_filters_by_bbox_and_perimeter_limits PASSED [ 81%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_filters_by_hierarchy_depth_and_hole_ratio PASSED [ 82%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_filters_by_solidity_and_extent PASSED [ 82%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_filters_small_inner_contours_by_min_inner_hole_area PASSED [ 82%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_finalize_rounds_recognized_vertices_to_integer_coordinates PASSED [ 83%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_invalid_bow_tie_repaired_using_filled_lattice PASSED [ 83%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_keeps_8px_strip_when_min_polygon_width_2_5 PASSED [ 83%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_keeps_trace_wider_than_the_width_limit PASSED [ 84%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_min_polygon_angle_removes_acute_vertices PASSED [ 84%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_preserve_corners_keeps_notch_while_removing_jitter_vertices PASSED [ 84%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_rejects_thin_strip_by_min_polygon_width PASSED [ 84%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_via_profile_filters_by_roundness PASSED [ 85%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_via_roundness_rejects_moderately_elongated_boxes PASSED [ 85%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_width_estimate_matches_the_real_thickness 
+plugins/contour/tests/unit/test_contour_extractor_filters.py::ContourExtractorFilterTests::test_width_estimate_matches_the_real_thickness PASSED [ 85%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::AxisAlignedVertexCompressionTests::test_collapses_more_than_two_vertices_on_same_axis PASSED [ 86%]
+plugins/contour/tests/unit/test_contour_extractor_filters.py::AxisAlignedVertexCompressionTests::test_finalize_limits_axis_runs_for_conductors PASSED [ 86%]
+plugins/contour/tests/unit/test_cif_via_support.py::TestKLayoutCifLoader::test_klayout_reader_loads_sample_cif PASSED [ 86%]
+plugins/contour/tests/unit/test_cif_via_support.py::TestLibOpenCifLoader::test_opencif_loader_matches_python_fallback_for_sample_cif PASSED [ 87%]
+plugins/contour/tests/unit/test_cif_via_support.py::BoundaryVertexSnapTests::test_snap_picks_nearest_boundary_vertex_by_x_window PASSED [ 87%]
+plugins/contour/tests/unit/test_cif_via_support.py::BoundaryVertexSnapTests::test_snap_prefers_closest_right_side_vertex_in_local_x_window PASSED [ 87%]
+plugins/contour/tests/unit/test_cif_via_support.py::BoundaryVertexSnapTests::test_snap_returns_none_for_degenerate_boundary PASSED [ 88%]
+plugins/contour/tests/unit/test_cif_via_support.py::BoundaryVertexSnapTests::test_snap_searches_x_sorted_neighbors_outside_hull PASSED [ 88%]
+plugins/contour/tests/unit/test_cif_via_support.py::BoundaryVertexSnapTests::test_vertex_slit_can_attach_to_linked_neighbor_hole PASSED [ 88%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_keyhole_round_trip_preserves_multiple_blocking_holes PASSED [ 88%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_keeps_concave_island_notch_under_covering_frame PASSED [ 89%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_keeps_nested_outer_overlap_like_klayout PASSED [ 89%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_keeps_self_crossing_ring_as_invalid_description PASSED [ 89%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_matches_klayout_fill_for_authored_keyhole PASSED [ 90%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_normalizes_keyhole_fill_like_make_valid PASSED [ 90%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_opt_in_punch_nested_outer_empties_island_window PASSED [ 90%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_preserves_valid_multi_hole_frame_0518 SKIPPED [ 91%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_reads_b_commands_as_vias PASSED [ 91%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_recovers_unmarked_standard_keyhole PASSED [ 91%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_skips_legacy_raster_recovery_for_plain_polygons PASSED [ 92%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_splits_keyhole_with_out_and_back_spike PASSED [ 92%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_splits_keyhole_without_private_metadata PASSED [ 92%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_splits_offset_two_hole_keyhole_without_span_edge PASSED [ 92%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_loader_splits_right_edge_keyholes_instead_of_wrapping_them PASSED [ 93%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_round_trip_restores_hole_topology_from_standard_cutline PASSED [ 93%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_round_trip_restores_outer_hole_topology_by_default PASSED [ 93%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_saves_box_shapes_using_b_records PASSED [ 94%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_saves_polygon_holes_as_single_linked_polygon PASSED [ 94%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_vector_display_path_uses_authored_ring_for_keyhole PASSED [ 94%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_via_round_trip_preserves_odd_size_and_position_exactly PASSED [ 95%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cif_writer_splits_material_when_no_single_slit_exists PASSED [ 95%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_contour_settings_parse_fixed_via_values_from_dict PASSED [ 95%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cv_loader_generates_hole_ids_without_colliding_with_object_ids PASSED [ 96%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cv_loader_reads_rectangle_point PASSED [ 96%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cv_round_trip_saves_via_as_ellipse_point PASSED [ 96%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cv_saves_polygon_holes_as_coordinate_rings PASSED [ 96%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cv_via_round_trip_preserves_odd_size_and_position_exactly PASSED [ 97%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_cv_writes_up_to_eight_vertices_per_line PASSED [ 97%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_dataset_export_writes_image_and_cif_subdirectories PASSED [ 97%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_result_bundle_can_save_cv_without_legacy_text_formats PASSED [ 98%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_via_profile_applies_fixed_single_size PASSED [ 98%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_via_profile_applies_fixed_size_sets PASSED [ 98%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_via_profile_applies_via_size_limits PASSED [ 99%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_via_profile_extracts_box_shapes PASSED [ 99%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_via_profile_fixed_size_allows_small_mask_variation PASSED [ 99%]
+plugins/contour/tests/unit/test_cif_via_support.py::CifViaSupportTests::test_via_profile_suppresses_intersecting_boxes PASSED [100%]
+
+================================== FAILURES ===================================
+_ PolygonExtractionWidgetExtractionAutoApplyTests.test_inner_hole_stays_a_hole_after_switching_frames_and_back _
+
+self = <tests.unit.test_widget_interactions.PolygonExtractionWidgetExtractionAutoApplyTests testMethod=test_inner_hole_stays_a_hole_after_switching_frames_and_back>
+
+    def test_inner_hole_stays_a_hole_after_switching_frames_and_back(self) -> None:
+        self.widget._set_default_extraction_disabled()
+        self.widget.vector_geom_min_outer_spin.setValue(0.0)
+        self.widget.vector_geom_min_hole_spin.setValue(0.0)
+    
+        def wait_for_frame(path: str) -> None:
+            for _ in range(300):
+                self.widget._editor_display_thread_pool.waitForDone(10)
+                self._app.processEvents()
+                if self.widget._last_editor_display_path == path:
+                    return
+                QTest.qWait(10)
+            self.assertEqual(self.widget._last_editor_display_path, path)
+    
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        first_path = str(Path(directory.name) / "frame_with_hole.png")
+        second_path = str(Path(directory.name) / "frame_plain.png")
+        cv2.imwrite(first_path, np.zeros((80, 80), dtype=np.uint8))
+        cv2.imwrite(second_path, np.full((80, 80), 9, dtype=np.uint8))
+        outer = _rectangle_polygon(0, 0, 80, 80)
+        outer.id = 1
+        hole = _rectangle_polygon(20, 20, 40, 40)
+        hole.id = 2
+        hole.is_hole = True
+        hole.parent_id = 1
+        plain = _rectangle_polygon(4, 4, 12, 12)
+        self.widget._workspace.replace_image_selection(
+            [first_path, second_path],
+            is_supported_image=lambda _path: True,
+        )
+        self.widget._workspace.apply_loaded_frame(
+            first_path,
+            source_image=np.zeros((80, 80), dtype=np.uint8),
+            polygons=[outer.clone(), hole.clone()],
+        )
+        self.widget._workspace.apply_loaded_frame(
+            second_path,
+            source_image=np.full((80, 80), 9, dtype=np.uint8),
+            polygons=[plain.clone()],
+        )
+        with patch.object(self.widget, "_try_extract_if_recognition_enabled"):
+            self.widget.load_image(first_path, load_vectors=True)
+>       wait_for_frame(first_path)
+
+plugins\contour\tests\unit\test_widget_interactions_parts\inner_hole_stays.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = 'C:\\Users\\shust\\AppData\\Local\\Temp\\tmp20rya9fp\\frame_with_hole.png'
+
+    def wait_for_frame(path: str) -> None:
+        for _ in range(300):
+            self.widget._editor_display_thread_pool.waitForDone(10)
+            self._app.processEvents()
+>           if self.widget._last_editor_display_path == path:
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'PolygonExtractionWidget' object has no attribute '_last_editor_display_path'
+
+plugins\contour\tests\unit\test_widget_interactions_parts\inner_hole_stays.py:24: AttributeError
+============================== warnings summary ===============================
+plugins\contour\tests\conftest.py:92
+  D:\code\kraken\plugins\contour\tests\conftest.py:92: PytestUnknownMarkWarning: Unknown pytest.mark.full - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    item.add_marker(pytest.mark.full)
+
+plugins\contour\tests\conftest.py:94
+  D:\code\kraken\plugins\contour\tests\conftest.py:94: PytestUnknownMarkWarning: Unknown pytest.mark.vectorization - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    item.add_marker(pytest.mark.vectorization)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] plugins\contour\tests\unit\test_cif_via_support_parts\cif_loader_matches.py:64: 0518.cif fixture not available
+FAILED plugins/contour/tests/unit/test_widget_interactions.py::PolygonExtractionWidgetExtractionAutoApplyTests::test_inner_hole_stays_a_hole_after_switching_frames_and_back
+== 1 failed, 323 passed, 1 skipped, 2 warnings, 4 subtests passed in 33.18s ===

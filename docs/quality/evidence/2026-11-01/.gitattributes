@@ -1,0 +1,4 @@
+# Preserve captured bytes so checksums remain valid after checkout on any OS.
+*.txt -text
+*.json -text
+*.xml -text

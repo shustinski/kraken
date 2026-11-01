@@ -80,6 +80,27 @@ def test_role_buttons_assign_reopen_and_revoke_on_real_service(qtbot, tmp_path):
     controller.service = EmbeddedProjectService(service.data_dir)
     assert ProjectRole.VIEWER in controller.service.project_roles(project.id, target.id)
 
+    # A real viewer pressing Assign must see the authorization error, without a write.
+    controller.session = SimpleNamespace(principal=target)
+    timer, messages = message_pump()
+
+    def denied(dialog):
+        row = next(i for i in range(dialog.people.count())
+                   if dialog.people.item(i).data(Qt.ItemDataRole.UserRole).id == owner.principal.id)
+        rect = dialog.people.visualItemRect(dialog.people.item(row))
+        QTest.mouseClick(dialog.people.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        assert dialog.assign_button.isEnabled()
+        QTest.mouseClick(dialog.assign_button, Qt.MouseButton.LeftButton)
+
+    try:
+        modal_action(qtbot, lambda: controller.manage_project_participants(SimpleNamespace(project_id=project.id)),
+                     RoleManagementDialog, denied)
+        assert messages and messages[-1][0] == "Недостаточно прав"
+        assert ProjectRole.VIEWER not in controller.service.project_roles(project.id, owner.principal.id)
+    finally:
+        timer.stop()
+        controller.session = owner
+
     def revoke(dialog):
         select_target(dialog)
         assert dialog.revoke_button.isEnabled()
@@ -97,6 +118,19 @@ def test_performer_add_button_persists_and_reopens(qtbot, tmp_path):
     qtbot.addWidget(panel)
     panel.show()
     add = next(b for b in panel.findChildren(QPushButton) if b.text() == "Добавить исполнителя")
+
+    timer, messages = message_pump()
+
+    def empty(dialog):
+        buttons = dialog.findChild(QDialogButtonBox)
+        QTest.mouseClick(buttons.button(QDialogButtonBox.StandardButton.Ok), Qt.MouseButton.LeftButton)
+
+    try:
+        modal_action(qtbot, lambda: QTest.mouseClick(add, Qt.MouseButton.LeftButton), QDialog, empty)
+        assert messages and messages[-1][0] == "Не удалось создать исполнителя"
+        assert not service.list_performers()
+    finally:
+        timer.stop()
 
     def enter(dialog):
         dialog.findChild(QLineEdit).setText("Qt reviewer")

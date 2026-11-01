@@ -1,0 +1,44 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+__________ test_confidence_runs_headless_and_result_survives_reopen ___________
+
+tmp_path = WindowsPath('D:/code/kraken/.test_runtime/d4-red/test_confidence_runs_headless_0')
+
+    def test_confidence_runs_headless_and_result_survives_reopen(tmp_path):
+        plugin = load_plugin_metadata_from_directory(Path(__file__).resolve().parents[1] / "plugins/karakal")
+        runtime = LocalAgentRuntime(tmp_path / "agent", (PluginInventoryItem(plugin),))
+        registry_path, _ = runtime._registry()
+        registry = PluginRegistry.from_json(registry_path)
+        spec = registry.get("layer.confidence.analyze.v1")
+        # Explicit headless admission also catches the old interactive-only metadata.
+>       assert not spec.for_execution({"execution_mode": "headless"}).interactive
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_karakal_agent_headless.py:23: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = PluginProcessSpec(operation='layer.confidence.analyze.v1', command=('D:\\code\\kraken\\.venv\\Scripts\\python.exe', '-...), working_directory=WindowsPath('D:/code/kraken/plugins/karakal'), interactive=True, modes=frozenset({'interactive'}))
+parameters = {'execution_mode': 'headless'}
+
+    def for_execution(self, parameters: Mapping[str, object]) -> PluginProcessSpec:
+        mode = parameters.get("execution_mode")
+        if mode is None:
+            return self
+        if not isinstance(mode, str) or mode not in self.modes:
+>           raise ValueError("Requested execution mode is not supported by the registered process")
+E           ValueError: Requested execution mode is not supported by the registered process
+
+src\kraken_agent\runner.py:59: ValueError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\_pytest\cacheprovider.py:475
+  D:\code\kraken\.venv\Lib\site-packages\_pytest\cacheprovider.py:475: PytestCacheWarning: could not create cache path D:\code\kraken\.pytest_cache\v\cache\nodeids: [WinError 183] ���������� ������� ����, ��� ��� �� ��� ����������: 'D:\\code\\kraken\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+.venv\Lib\site-packages\_pytest\cacheprovider.py:429
+  D:\code\kraken\.venv\Lib\site-packages\_pytest\cacheprovider.py:429: PytestCacheWarning: could not create cache path D:\code\kraken\.pytest_cache\v\cache\lastfailed: [WinError 183] ���������� ������� ����, ��� ��� �� ��� ����������: 'D:\\code\\kraken\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/lastfailed", self.lastfailed)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_karakal_agent_headless.py::test_confidence_runs_headless_and_result_survives_reopen
+1 failed, 2 warnings in 0.43s

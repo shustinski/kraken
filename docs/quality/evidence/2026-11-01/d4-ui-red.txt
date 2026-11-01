@@ -1,0 +1,24 @@
+F.                                                                       [100%]
+================================== FAILURES ===================================
+_____________ test_hub_accepts_installed_headless_karakal_action ______________
+
+    def test_hub_accepts_installed_headless_karakal_action():
+        from types import SimpleNamespace
+        from kraken_hub.presentation.qt.manager_app import DesktopController
+    
+        plugin = load_plugin_metadata_from_directory(Path(__file__).resolve().parents[1] / "plugins/karakal")
+        controller = object.__new__(DesktopController)
+        controller._project_id = "project"
+        controller.service = SimpleNamespace(is_remote_project=lambda _: False)
+        controller.plugin_items = {"karakal": PluginInventoryItem(plugin)}
+        controller._has_permission = lambda _: True
+>       assert controller._action_availability("karakal") == (True, "")
+E       AssertionError: assert (False, '����... interactive') == (True, '')
+E         
+E         At index 0 diff: False != True
+E         Use -v to get more diff
+
+tests\test_karakal_agent_headless.py:24: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_karakal_agent_headless.py::test_hub_accepts_installed_headless_karakal_action
+1 failed, 1 passed in 1.35s

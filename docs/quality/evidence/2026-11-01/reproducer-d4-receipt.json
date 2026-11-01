@@ -1,0 +1,20 @@
+{
+  "block": "d4",
+  "arguments": [
+    "-m",
+    "pytest",
+    "tests/test_karakal_agent_headless.py",
+    "tests/test_agent_execution_modes.py",
+    "-v",
+    "-p",
+    "no:cacheprovider",
+    "-o",
+    "faulthandler_timeout=60",
+    "--basetemp=D:\\code\\kraken\\.test_runtime\\quality-12cc2a69015245308907b5502affeebe\\pytest",
+    "--junitxml=D:\\code\\kraken\\.test_runtime\\quality-12cc2a69015245308907b5502affeebe\\junit.xml"
+  ],
+  "python": "D:\\code\\kraken\\.venv\\Scripts\\python.exe",
+  "exit_code": 0,
+  "results": "D:\\code\\kraken\\.test_runtime\\quality-12cc2a69015245308907b5502affeebe",
+  "git_head": "8cf3ea63c8752d20788d886ef66180693ff4805e"
+}

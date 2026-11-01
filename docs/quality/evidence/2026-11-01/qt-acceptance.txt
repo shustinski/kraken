@@ -1,0 +1,49 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0 -- D:\code\kraken\.venv\Scripts\python.exe
+PyQt6 6.11.0 -- Qt runtime 6.11.0 -- Qt compiled 6.11.0
+rootdir: D:\code\kraken
+configfile: pyproject.toml
+plugins: anyio-4.13.0, cov-7.1.0, qt-4.5.0
+collecting ... collected 33 items
+
+tests/test_kraken_usability_contracts.py::test_dual_catalog_project_identity_uses_the_known_catalog PASSED [  3%]
+tests/test_work_planning_dialog.py::test_shown_dialog_full_acceptance_baseline_completion_and_reopen PASSED [  6%]
+tests/test_work_planning_dialog.py::test_failure_preserves_state_and_reuses_idempotency_key_for_same_retry PASSED [  9%]
+tests/test_work_planning_dialog.py::test_stale_revision_rejected_then_explicit_refresh_recovers PASSED [ 12%]
+tests/test_work_planning_dialog.py::test_real_embedded_service_accepts_versioned_evidence_and_reopens_durable_plan PASSED [ 15%]
+tests/test_work_planning_dialog.py::test_plan_operation_participates_in_hub_close_guard PASSED [ 18%]
+tests/test_quality_dialog.py::test_quality_dialog_drives_real_local_issue_assignment_and_history PASSED [ 21%]
+tests/test_quality_dialog.py::test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold PASSED [ 24%]
+tests/test_multilayer_dialog.py::test_real_dialog_calibration_manual_registration_contact_review_and_reopen[English] PASSED [ 27%]
+tests/test_multilayer_dialog.py::test_real_dialog_calibration_manual_registration_contact_review_and_reopen[\u0420\u0443\u0441\u0441\u043a\u0438\u0439] PASSED [ 30%]
+tests/test_multilayer_dialog.py::test_dialog_preserves_unknown_degenerate_result_and_reports_invalid_ui_input PASSED [ 33%]
+tests/test_electrical_dialog.py::test_shown_electrical_panel_reviews_material_binds_contact_terminals_exports_and_reopens[English] PASSED [ 36%]
+tests/test_electrical_dialog.py::test_shown_electrical_panel_reviews_material_binds_contact_terminals_exports_and_reopens[\u0420\u0443\u0441\u0441\u043a\u0438\u0439] PASSED [ 39%]
+tests/test_electrical_dialog.py::test_panel_requires_explicit_foreground_and_adjacency_without_silent_defaults PASSED [ 42%]
+tests/test_computed_stitch_dialog.py::test_real_qt_request_builtin_agent_import_and_bounded_view PASSED [ 45%]
+tests/test_computed_stitch_dialog.py::test_observation_document_is_exact_managed_evidence_and_idempotent PASSED [ 48%]
+tests/test_computed_stitch_dialog.py::test_lost_mutation_reply_reuses_key_and_does_not_duplicate_request PASSED [ 51%]
+tests/test_computed_stitch_dialog.py::test_deleting_dialog_during_background_read_keeps_worker_alive PASSED [ 54%]
+tests/test_computed_stitch_dialog.py::test_definitive_validation_rejection_releases_mutation_for_correction PASSED [ 57%]
+tests/test_analysis_qt_ui.py::test_analysis_setup_builds_supported_recipes[direct-source-required_sources0] PASSED [ 60%]
+tests/test_analysis_qt_ui.py::test_analysis_setup_builds_supported_recipes[xor_a-xor-required_sources1] PASSED [ 63%]
+tests/test_analysis_qt_ui.py::test_analysis_setup_builds_supported_recipes[xor_c-xor-required_sources2] PASSED [ 66%]
+tests/test_analysis_qt_ui.py::test_analysis_setup_builds_supported_recipes[subtract_c-subtract-required_sources3] PASSED [ 69%]
+tests/test_analysis_qt_ui.py::test_analysis_setup_requires_selection_and_distinct_a_b PASSED [ 72%]
+tests/test_analysis_qt_ui.py::test_analysis_runs_panel_accepts_progressive_rows_and_emits_actions PASSED [ 75%]
+tests/test_analysis_qt_ui.py::test_project_workspace_exposes_operator_analysis_actions PASSED [ 78%]
+tests/test_local_analysis_map_ui.py::test_map_and_cancel_calls_leave_qt_responsive PASSED [ 81%]
+tests/test_local_analysis_map_ui.py::test_parent_destruction_retains_running_local_map_thread PASSED [ 84%]
+tests/test_work_templates_dialog.py::test_shown_template_editor_validates_steps_and_preserves_acceptance PASSED [ 87%]
+tests/test_work_templates_dialog.py::test_shown_hub_dialog_generates_version_pinned_work_and_authors_new_template_version PASSED [ 90%]
+tests/test_work_templates_dialog.py::test_shown_editor_rejects_parent_acceptance_deadlock PASSED [ 93%]
+tests/test_vector_stitch_dialog.py::test_shown_editor_selects_actual_vector_producer_and_saves_typed_edge PASSED [ 96%]
+tests/test_vector_stitch_dialog.py::test_shown_block_viewer_marks_vector_disagreement_as_unverified PASSED [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\code\kraken\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 33 passed, 1 warning in 28.38s ========================

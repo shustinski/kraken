@@ -618,6 +618,21 @@ class PostgresAgentGateway:
 
     def publications_for(self, job_id: str, agent: AgentIdentity) -> tuple[dict[str, Any], ...]:
         self.manifest(job_id, agent)
+        return self._stored_publications(job_id)
+
+    def completed_publications_for(self, job_id: str) -> tuple[dict[str, Any], ...]:
+        """Internal lookup after project and initiating-user authorization."""
+        import sqlalchemy as sa
+
+        with self.engine.connect() as connection:
+            state = connection.execute(
+                sa.select(self.jobs.c.state).where(self.jobs.c.job_id == job_id)
+            ).scalar_one_or_none()
+        if state != "completed":
+            raise RuntimeError("The Agent job has not completed")
+        return self._stored_publications(job_id)
+
+    def _stored_publications(self, job_id: str) -> tuple[dict[str, Any], ...]:
         import sqlalchemy as sa
 
         with self.engine.connect() as connection:

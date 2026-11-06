@@ -220,7 +220,7 @@ class LocalAgentRuntime:
         if self.base_url and self.token:
             try:
                 health = self._request("GET", "/api/v1/health")
-            except OSError, ValueError, TypeError:
+            except (OSError, ValueError, TypeError):
                 self._discard_process()
             else:
                 if health.get("status") == "ok":
@@ -279,7 +279,7 @@ class LocalAgentRuntime:
             if connection.is_file():
                 try:
                     loaded = json.loads(connection.read_text(encoding="utf-8"))
-                except OSError, json.JSONDecodeError:
+                except (OSError, json.JSONDecodeError):
                     time.sleep(0.05)
                     continue
                 if isinstance(loaded, dict):

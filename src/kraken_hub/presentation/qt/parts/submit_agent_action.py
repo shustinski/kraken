@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections.abc import Mapping
 from uuid import uuid4
+from kraken_manager.domain.layer_board import next_cif_representation_name
 from kraken_manager.domain.project import RepresentationKind, RepresentationPurpose
 
 
@@ -13,6 +14,7 @@ class SubmitAgentActionMixin:
         source_representation_id: str,
         capability: str,
         parameters: Mapping[str, object],
+        coordinates: tuple[tuple[int, int], ...] | None = None,
     ):
         from kraken_hub.presentation.qt.manager_app import AgentPluginGateway
         workspace = self._workspace
@@ -34,20 +36,35 @@ class SubmitAgentActionMixin:
             capabilities = self.agent_runtime.ensure_started()
             if capability not in capabilities:
                 raise ValueError(f"Установленные плагины не поддерживают {capability}")
-        coordinates = workspace.matrix_view.selected_coordinates(
-            maximum=self.service.profile.capabilities.max_frames
-        )
-        if not coordinates:
-            coordinates = tuple(
-                (cell.x, cell.y)
-                for cell in self.service.frame_cells(
-                    project.id,
-                    layer_id,
-                    source_representation_id,
-                )
+        if coordinates is None:
+            coordinates = workspace.matrix_view.selected_coordinates(
+                maximum=self.service.profile.capabilities.max_frames
             )
+            if not coordinates:
+                coordinates = tuple(
+                    (cell.x, cell.y)
+                    for cell in self.service.frame_cells(
+                        project.id,
+                        layer_id,
+                        source_representation_id,
+                    )
+                )
         if not coordinates:
             raise ValueError("В выбранном слое нет изображений для запуска задания")
+        if capability == "frames.dataset.prepare.v1":
+            vectors = [
+                item for item in self.service.list_representations(project.id, layer_id)
+                if item.kind is RepresentationKind.VECTOR
+                and str(item.source_image_representation_id or "") == source_representation_id
+            ]
+            selected_id = str(workspace.vector_representation_combo.currentData() or "")
+            selected = next((item for item in vectors if str(item.id) == selected_id), None)
+            if selected is None and len(vectors) == 1:
+                selected = vectors[0]
+            if selected is None and vectors:
+                raise ValueError("Выберите векторное представление для подготовки выборки")
+            if selected is not None:
+                parameters = {**parameters, "vector_representation_id": str(selected.id)}
         coordinate_by_frame = {
             str(project.frame_id_at(x, y)): (x, y)
             for x, y in coordinates
@@ -56,19 +73,40 @@ class SubmitAgentActionMixin:
             vector_output = capability == "frames.vectorize.v1"
             output_purpose = RepresentationPurpose.CONFIDENCE if capability == "frames.confidence.v1" else RepresentationPurpose.BINARY
             representations = self.service.list_representations(project.id, layer_id)
-            targets = [
+            targets = [] if vector_output else [
                 item
                 for item in representations
-                if item.kind is (RepresentationKind.VECTOR if vector_output else RepresentationKind.IMAGE)
-                and (vector_output or item.purpose is output_purpose)
+                if item.kind is RepresentationKind.IMAGE
+                and item.purpose is output_purpose
                 and str(item.source_image_representation_id or "") == source_representation_id
             ]
-            selected_id = str(workspace.vector_representation_combo.currentData() or "") if vector_output else ""
-            target = next(
-                (item for item in targets if str(item.id) == selected_id),
-                targets[0] if targets else None,
-            )
-            if target is None:
+            target = targets[0] if targets else None
+            if vector_output:
+                source = next(
+                    (item for item in representations if str(item.id) == source_representation_id),
+                    None,
+                )
+                layer = next(
+                    (item for item in self.service.list_layers(project.id) if str(item.id) == layer_id),
+                    None,
+                )
+                if layer is None or source is None or source.kind is not RepresentationKind.IMAGE:
+                    raise ValueError("Исходный слой изображений больше не доступен")
+                target = self.service.create_representation(
+                    principal=self.session.principal,
+                    project=project,
+                    layer=layer,
+                    name=next_cif_representation_name(
+                        (item.name for item in representations if item.kind is RepresentationKind.VECTOR),
+                        source.name,
+                    ),
+                    kind=RepresentationKind.VECTOR,
+                    purpose=RepresentationPurpose.VECTOR,
+                    source_image_representation_id=source.id,
+                    idempotency_key=str(uuid4()),
+                    active=True,
+                )
+            elif target is None:
                 layer = next(
                     (item for item in self.service.list_layers(project.id) if str(item.id) == layer_id),
                     None,

@@ -28,7 +28,7 @@ def test_remote_quality_and_dual_catalog_use_server_identity_and_contract(qualit
             assert response.status_code < 400, response.text
             return response.json()
         remote._call = call
-        remote.list_projects = lambda **kwargs: (q.project,)
+        remote.list_projects = lambda *, include_archived=False: (q.project,)
         dual = DualCatalogService(q.service, remote)
         monkeypatch.setattr(q.service, "create_quality_issue", lambda **kwargs: pytest.fail("Remote write routed locally"))
         created = dual.create_quality_issue(project_id=q.project.id, principal=q.reviewer,

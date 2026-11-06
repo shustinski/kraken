@@ -98,7 +98,7 @@ class MonitorAgentResultMixin:
             QMessageBox.information(
                 self.shell,
                 "Распознавание опубликовано",
-                f"Запуск {published.run_id[:8]} сохранён как бинарное представление.",
+                "Результат сохранён как бинарное представление.",
             )
 
         timer.timeout.connect(poll)

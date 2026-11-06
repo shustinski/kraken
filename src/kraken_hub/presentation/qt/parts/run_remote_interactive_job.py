@@ -1,5 +1,7 @@
 """manager_app: run remote interactive job."""
 from __future__ import annotations
+from collections.abc import Callable
+from functools import partial
 from kraken_core.plugins import is_plugin_launchable
 from kraken_manager.domain.identity import Permission
 
@@ -59,9 +61,21 @@ class RunRemoteInteractiveJobMixin:
             "karakal": ("karakal", "layer.confidence.analyze.v1", "headless"),
         }.get(action, ("", "", ""))
 
-    def _action_availability(self, action: str) -> tuple[bool, str]:
+    def _menu_action_availability(self) -> Callable[[str], tuple[bool, str]]:
+        """Use one fresh permission snapshot for this menu preparation only."""
+        permissions = (
+            frozenset(self.service.project_permissions(self._project_id, self.session.principal))
+            if self._project_id is not None
+            else frozenset()
+        )
+        return partial(self._action_availability, permissions=permissions)
+
+    def _action_availability(
+        self, action: str, *, permissions: frozenset[Permission] | None = None,
+    ) -> tuple[bool, str]:
+        has_permission = self._has_permission if permissions is None else permissions.__contains__
         if action == "issue_work":
-            if not self._has_permission(Permission.ASSIGN_WORK):
+            if not has_permission(Permission.ASSIGN_WORK):
                 return False, "Недостаточно прав для выдачи работы"
             return True, ""
         if action in {
@@ -79,16 +93,16 @@ class RunRemoteInteractiveJobMixin:
             "archive_layer",
             "assign_review_layers",
         }:
-            if not self._has_permission(Permission.MANAGE_STRUCTURE):
+            if not has_permission(Permission.MANAGE_STRUCTURE):
                 return False, "Недостаточно прав для изменения структуры проекта"
             return True, ""
         if action == "export_selection":
-            if not self._has_permission(Permission.VIEW_PROJECT):
+            if not has_permission(Permission.VIEW_PROJECT):
                 return False, "Недостаточно прав для выгрузки"
             return True, ""
         if action == "open_in_contour":
             action = "vectorize"
-        if not self._has_permission(Permission.RUN_PLUGIN):
+        if not has_permission(Permission.RUN_PLUGIN):
             return False, "Недостаточно прав для запуска плагинов"
         if action == "continue_pipeline_step":
             return True, ""

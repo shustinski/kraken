@@ -1,5 +1,7 @@
 """User actions on persisted roles and performers, beyond service-only checks."""
+from collections.abc import Iterator
 from types import SimpleNamespace
+import pytest
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtTest import QTest
@@ -9,8 +11,19 @@ from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.presentation.qt.manager_app import DesktopController, _performer_panel
 from kraken_manager.domain.identity import Principal, ProjectRole
 from kraken_manager.domain.project import GridOrientation
+from kraken_manager.domain.roles import reset_acting_role, set_acting_role
 from kraken_manager.presentation.qt.role_management import RoleManagementDialog
 from tests.test_work_orders import _service
+
+
+@pytest.fixture
+def desktop_acting_role() -> Iterator[None]:
+    """A role-selection UI session must not leave its identity in later tests."""
+    token = set_acting_role(None)
+    try:
+        yield
+    finally:
+        reset_acting_role(token)
 
 
 def message_pump():
@@ -49,7 +62,7 @@ def modal_action(qtbot, call, kind, action):
     assert not errors, errors
 
 
-def test_role_buttons_assign_reopen_and_revoke_on_real_service(qtbot, tmp_path):
+def test_role_buttons_assign_reopen_and_revoke_on_real_service(qtbot, tmp_path, desktop_acting_role):
     service = _service(tmp_path)
     owner = service.create_initial_account("owner", "Owner", "")
     target = Principal.local(subject="reviewer", display_name="Reviewer")

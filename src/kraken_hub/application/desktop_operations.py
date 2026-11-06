@@ -92,6 +92,10 @@ class DesktopOperations(Protocol):
         self, *, principal: Principal, publications: Iterable[Mapping[str, object]], staging_root: PathLike[str] | str
     ) -> object: ...
 
+    def confirm_partial_plugin_job(
+        self, *, principal: Principal, job: object, idempotency_key: str
+    ) -> object: ...
+
     def import_agent_result(
         self,
         *,

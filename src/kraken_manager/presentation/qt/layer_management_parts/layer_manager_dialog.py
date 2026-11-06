@@ -34,6 +34,7 @@ class LayerManagerDialog(QDialog):
         parent: QWidget | None = None,
         *,
         action_availability: Callable[[str], tuple[bool, str]] | None = None,
+        action_availability_factory: Callable[[], Callable[[str], tuple[bool, str]]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.project_id = str(project_id)
@@ -48,7 +49,10 @@ class LayerManagerDialog(QDialog):
         layer_panel = QWidget(splitter)
         layer_layout = QVBoxLayout(layer_panel)
         layer_layout.setContentsMargins(0, 0, 0, 0)
-        self.layer_list = LayerOrderList(action_availability=action_availability)
+        self.layer_list = LayerOrderList(
+            action_availability=action_availability,
+            action_availability_factory=action_availability_factory,
+        )
         self.add_layer_button = QPushButton("Добавить слой", layer_panel)
         self.add_layer_button.setObjectName("layerManagerAddLayer")
         self.add_layer_button.setToolTip("Создать слой из папки или подключить внешние каталоги")
@@ -62,7 +66,11 @@ class LayerManagerDialog(QDialog):
             if item is not None:
                 self.layerActionRequested.emit(str(item.data(Qt.ItemDataRole.UserRole)), "edit_workflow")
         self.workflow_button.clicked.connect(open_workflow)
-        self.graph = PipelineGraphView(self.settings, action_availability=action_availability)
+        self.graph = PipelineGraphView(
+            self.settings,
+            action_availability=action_availability,
+            action_availability_factory=action_availability_factory,
+        )
         splitter.addWidget(layer_panel)
         splitter.addWidget(self.graph)
         splitter.setSizes([270, 910])

@@ -106,7 +106,7 @@ def _forecast(rows, plans, capacities, as_of):
     days = max(finish.values(), default=0)
     try:
         predicted = as_of + timedelta(days=days)
-    except OverflowError, ValueError:
+    except (OverflowError, ValueError):
         return {
             "execution_finish_at": None,
             "remaining_calendar_days": None,

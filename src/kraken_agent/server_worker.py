@@ -135,7 +135,7 @@ class ServerAgentWorker:
                 current = checked.lstat()
                 if (current.st_dev, current.st_ino) == created_identity:
                     checked.unlink()
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 LOGGER.warning("Could not safely remove partial input %s", destination)
 
         try:
@@ -296,6 +296,12 @@ class ServerAgentWorker:
                 )
             )
         parameters = encode_model(manifest.parameters)
+        for vector in parameters.get("vector_inputs", ()):
+            self._download(
+                f"/api/v1/agent/jobs/{manifest.job_id}/inputs/{vector['artifact_version_id']}",
+                workspace.resolve(vector["relative_path"]), expected_sha256=vector["sha256"],
+                staging_root=workspace.path,
+            )
         parameters.pop("input_media_types", None)
         if stream_inputs:
             parameters["server_url"] = self.server_url
@@ -408,7 +414,7 @@ class ServerAgentWorker:
                 else:
                     self._cancel_lost_lease(job_id, lost)
                     return
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 LOGGER.exception("Server heartbeat failed for job %s", job_id)
             if done.wait(min(max(10, self.lease_seconds // 3), max(0, deadline - monotonic()))):
                 return
@@ -653,7 +659,7 @@ class ServerAgentWorker:
         while not self._stop.is_set():
             try:
                 worked = self.run_once()
-            except OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError:
+            except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
                 worked = False
             if not worked:
                 self._stop.wait(idle_seconds)

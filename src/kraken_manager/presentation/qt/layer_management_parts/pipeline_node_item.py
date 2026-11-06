@@ -1,5 +1,6 @@
 """layer_management: pipeline node item."""
 from __future__ import annotations
+from .menu_profiling import profile_menu_open
 from typing import TYPE_CHECKING
 from typing import Callable
 from PyQt6.QtCore import Qt
@@ -47,6 +48,7 @@ class PipelineNodeItem(QGraphicsRectItem):
         collapse: Callable[[], None] | None,
         action_availability: Callable[[str], tuple[bool, str]],
         position_changed: Callable[[], None],
+        action_availability_factory: Callable[[], Callable[[str], tuple[bool, str]]] | None = None,
         request_selection_action: Callable[[tuple[PipelineNode, ...], str], None] | None = None,
         selected_nodes: Callable[[], tuple[PipelineNode, ...]] | None = None,
     ) -> None:
@@ -70,6 +72,7 @@ class PipelineNodeItem(QGraphicsRectItem):
         self._expand = expand
         self._collapse = collapse
         self._action_availability = action_availability
+        self._action_availability_factory = action_availability_factory
         self._position_changed = position_changed
         self._request_selection_action = request_selection_action
         self._selected_nodes = selected_nodes or (lambda: ())
@@ -143,88 +146,108 @@ class PipelineNodeItem(QGraphicsRectItem):
         super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event) -> None:  # type: ignore[override]
-        actions = {
-            "source": (
-                ("Выдать работу…", "issue_work"),
-                ("Подготовить выборку в Contour", "prepare_dataset"),
-                ("Распознать готовой моделью", "recognize_external"),
-                ("Получить уверенность модели", "confidence"),
-                ("Получить CIF в Contour", "vectorize"),
-                (
-                    "Удалить слой изображений из проекта",
-                    "archive_representation",
+        with profile_menu_open("pipeline") as checkpoint:
+            actions = {
+                "source": (
+                    ("Выдать работу…", "issue_work"),
+                    ("Подготовить выборку в Contour", "prepare_dataset"),
+                    ("Распознать готовой моделью", "recognize_external"),
+                    ("Получить уверенность модели", "confidence"),
+                    ("Получить CIF в Contour", "vectorize"),
+                    (
+                        "Удалить слой изображений из проекта",
+                        "archive_representation",
+                    ),
                 ),
-            ),
-            "dataset": (
-                ("Выдать работу…", "issue_work"),
-                ("Обучить модель в NeuralImage", "train"),
-            ),
-            "model": (("Распознать исходники", "recognize"), ("Получить уверенность модели", "confidence")),
-            "binary": (("Получить CIF в Contour", "vectorize"),),
-            "vector": (
-                ("Выдать работу…", "issue_work"),
-                ("Назначить слои для проверки", "assign_review_layers"),
-                ("Добавить CIF из внешнего источника…", "add_external_vector"),
-            ),
-            "missing": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
-            "stitching": (
-                ("Выдать работу…", "issue_work"),
-                ("Управление сшивкой…", "manage_stitching"),
-            ),
-        }.get(self.node.kind, ())
-        if (
-            self.node.kind in {"job", "operation"}
-            and self.node.state not in {"", "succeeded", "cancelled", "failed"}
-            and (self.node.details.get("job_id") or self.node.details.get("workflow_operation"))
-        ):
-            actions = (*actions, ("Продолжить выполнение", "continue_pipeline_step"))
-        if not self.node.representation_id:
-            actions = (*actions, ("Изменить заметку…", "edit_node_note"))
-        if bool(self.node.details.get("deletable", False)):
-            actions = (*actions, ("Удалить шаг из pipeline", "delete_pipeline_step"))
-        if self.node.representation_id:
-            lifecycle = (
-                ("Переименовать…", "rename_representation"),
-                ("Изменить заметку…", "edit_representation_note"),
-                (
-                    "Деактивировать" if self.node.active else "Активировать",
-                    "deactivate_representation" if self.node.active else "activate_representation",
+                "dataset": (
+                    ("Выдать работу…", "issue_work"),
+                    ("Обучить модель в NeuralImage", "train"),
                 ),
-                ("Архивировать", "archive_representation"),
+                "model": (("Распознать исходники", "recognize"), ("Получить уверенность модели", "confidence")),
+                "binary": (("Получить CIF в Contour", "vectorize"),),
+                "vector": (
+                    ("Выдать работу…", "issue_work"),
+                    ("Назначить слои для проверки", "assign_review_layers"),
+                    ("Добавить CIF из внешнего источника…", "add_external_vector"),
+                ),
+                "missing": (("Добавить CIF из внешнего источника…", "add_external_vector"),),
+                "stitching": (
+                    ("Выдать работу…", "issue_work"),
+                    ("Управление сшивкой…", "manage_stitching"),
+                ),
+            }.get(self.node.kind, ())
+            if (
+                self.node.kind in {"job", "operation"}
+                and self.node.state not in {"", "succeeded", "cancelled", "failed"}
+                and (self.node.details.get("job_id") or self.node.details.get("workflow_operation"))
+            ):
+                actions = (*actions, ("Продолжить выполнение", "continue_pipeline_step"))
+            if not self.node.representation_id:
+                actions = (*actions, ("Изменить заметку…", "edit_node_note"))
+            if bool(self.node.details.get("deletable", False)):
+                actions = (*actions, ("Удалить шаг из pipeline", "delete_pipeline_step"))
+            if self.node.representation_id:
+                if self.node.kind == "vector":
+                    primary_action = (
+                        ("Снять основной", "deactivate_representation")
+                        if self.node.active
+                        else ("Сделать основным", "activate_representation")
+                    )
+                else:
+                    primary_action = (
+                        ("Деактивировать", "deactivate_representation")
+                        if self.node.active
+                        else ("Активировать", "activate_representation")
+                    )
+                lifecycle = (
+                    ("Переименовать…", "rename_representation"),
+                    ("Изменить заметку…", "edit_representation_note"),
+                    primary_action,
+                    ("Архивировать", "archive_representation"),
+                )
+                actions = (*actions, *lifecycle)
+            if self._collapse is not None:
+                actions = (*actions, ("Свернуть", "collapse_pipeline"))
+            selected = self._selected_nodes()
+            multi = None if self not in self.scene().selectedItems() else multi_selection_actions(
+                tuple(
+                    BoardNode(node.node_id, selection_kind(node.kind, node.subtitle), node.title)
+                    for node in selected
+                )
             )
-            actions = (*actions, *lifecycle)
-        if self._collapse is not None:
-            actions = (*actions, ("Свернуть", "collapse_pipeline"))
-        selected = self._selected_nodes()
-        multi = None if self not in self.scene().selectedItems() else multi_selection_actions(
-            tuple(
-                BoardNode(node.node_id, selection_kind(node.kind, node.subtitle), node.title)
-                for node in selected
+            selection_menu = bool(multi)
+            if selection_menu:
+                actions = tuple((item.label, item.code) for item in multi)
+            checkpoint("selection_and_actions")
+            menu = QMenu()
+            by_action = {}
+            menu.setToolTipsVisible(True)
+            action_availability = (
+                self._action_availability_factory()
+                if self._action_availability_factory is not None
+                and any(code not in {"collapse_pipeline", "edit_node_note"} for _, code in actions)
+                else self._action_availability
             )
-        )
-        selection_menu = bool(multi)
-        if selection_menu:
-            actions = tuple((item.label, item.code) for item in multi)
-        menu = QMenu()
-        by_action = {}
-        menu.setToolTipsVisible(True)
-        for label, code in actions:
-            menu_action = menu.addAction(label)
-            enabled, reason = (
-                (True, "")
-                if code in {"collapse_pipeline", "edit_node_note"}
-                else self._action_availability(code)
-            )
-            menu_action.setEnabled(enabled)
-            if not enabled and reason.startswith("Недостаточно прав"):
-                menu_action.setVisible(False)
-            if reason:
-                menu_action.setToolTip(reason)
-                menu_action.setStatusTip(reason)
-            by_action[menu_action] = code
-        if actions and not selection_menu:
-            menu.addSeparator()
-        properties = None if selection_menu else menu.addAction("Свойства")
+            checkpoint("permission_snapshot")
+            for label, code in actions:
+                menu_action = menu.addAction(label)
+                checkpoint("action_setup")
+                enabled, reason = (
+                    (True, "")
+                    if code in {"collapse_pipeline", "edit_node_note"}
+                    else action_availability(code)
+                )
+                checkpoint(f"availability:{code}")
+                menu_action.setEnabled(enabled)
+                if not enabled and reason.startswith("Недостаточно прав"):
+                    menu_action.setVisible(False)
+                if reason:
+                    menu_action.setToolTip(reason)
+                    menu_action.setStatusTip(reason)
+                by_action[menu_action] = code
+            if actions and not selection_menu:
+                menu.addSeparator()
+            properties = None if selection_menu else menu.addAction("Свойства")
         chosen = menu.exec(event.screenPos())
         if properties is not None and chosen is properties:
             self._request_properties(self.node)

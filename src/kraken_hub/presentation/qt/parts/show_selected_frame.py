@@ -76,7 +76,7 @@ class ShowSelectedFrameMixin:
                     "_series": series,
                     "name": series.name,
                     "scope": series.scope.value,
-                    "active_version": None if active is None else str(active.id),
+                    "active_version": None if active is None else active.filename,
                     "archived": series.archived,
                 }
             )

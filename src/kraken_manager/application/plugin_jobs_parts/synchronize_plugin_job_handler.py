@@ -57,6 +57,13 @@ class SynchronizePluginJobHandler:
             )
             if job.revision != command.expected_revision:
                 raise ConflictError("Plugin job revision changed")
+            if job.state is PluginJobState.PARTIAL and any(
+                event.event_type == "PluginResultImported"
+                for event in uow.event_store.load_stream(_job_stream(job.id))
+            ):
+                # Accepted output coverage is authoritative after import. The
+                # Agent's completed delivery does not mean every frame succeeded.
+                return job
             if job.state is target and (command.progress is None or command.progress == job.progress):
                 return job
             now = self._clock.now()

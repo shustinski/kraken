@@ -1,5 +1,6 @@
 """layer_management: layer order list."""
 from __future__ import annotations
+from .menu_profiling import profile_menu_open
 from typing import Callable
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -22,9 +23,11 @@ class LayerOrderList(QListWidget):
         parent: QWidget | None = None,
         *,
         action_availability: Callable[[str], tuple[bool, str]] | None = None,
+        action_availability_factory: Callable[[], Callable[[str], tuple[bool, str]]] | None = None,
     ) -> None:
         super().__init__(parent)
         self._action_availability = action_availability or (lambda _action: (True, ""))
+        self._action_availability_factory = action_availability_factory
         self.setObjectName("layerManagerList")
         self.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
@@ -64,36 +67,46 @@ class LayerOrderList(QListWidget):
             self.layerSelected.emit(str(current.data(Qt.ItemDataRole.UserRole)))
 
     def _context_menu(self, position) -> None:
-        item = self.itemAt(position)
-        if item is None:
-            return
-        layer_id = str(item.data(Qt.ItemDataRole.UserRole))
-        menu = QMenu(self)
-        add_images = menu.addAction("Добавить слой изображений…")
-        karakal = menu.addAction("Отправить слой в Karakal")
-        stitching = menu.addAction("Управление сшивкой…")
-        menu.addSeparator()
-        rename_layer = menu.addAction("Переименовать…")
-        archive_layer = menu.addAction("Архивировать")
-        delete_layer = menu.addAction("Удалить слой…")
-        menu.addSeparator()
-        properties = menu.addAction("Свойства")
-        by_action = {
-            add_images: "add_image_representation",
-            karakal: "karakal",
-            stitching: "manage_stitching",
-            rename_layer: "rename_layer",
-            archive_layer: "archive_layer",
-            delete_layer: "delete_layer",
-        }
-        for menu_action, code in by_action.items():
-            enabled, reason = self._action_availability(code)
-            menu_action.setEnabled(enabled)
-            if not enabled and reason.startswith("Недостаточно прав"):
-                menu_action.setVisible(False)
-            if reason:
-                menu_action.setToolTip(reason)
-                menu_action.setStatusTip(reason)
+        with profile_menu_open("layer") as checkpoint:
+            item = self.itemAt(position)
+            if item is None:
+                return
+            layer_id = str(item.data(Qt.ItemDataRole.UserRole))
+            menu = QMenu(self)
+            add_images = menu.addAction("Добавить слой изображений…")
+            karakal = menu.addAction("Отправить слой в Karakal")
+            stitching = menu.addAction("Управление сшивкой…")
+            menu.addSeparator()
+            rename_layer = menu.addAction("Переименовать…")
+            archive_layer = menu.addAction("Архивировать")
+            delete_layer = menu.addAction("Удалить слой…")
+            menu.addSeparator()
+            properties = menu.addAction("Свойства")
+            by_action = {
+                add_images: "add_image_representation",
+                karakal: "karakal",
+                stitching: "manage_stitching",
+                rename_layer: "rename_layer",
+                archive_layer: "archive_layer",
+                delete_layer: "delete_layer",
+            }
+            checkpoint("selection_and_actions")
+            action_availability = (
+                self._action_availability_factory()
+                if self._action_availability_factory is not None
+                else self._action_availability
+            )
+            checkpoint("permission_snapshot")
+            for menu_action, code in by_action.items():
+                checkpoint("action_setup")
+                enabled, reason = action_availability(code)
+                checkpoint(f"availability:{code}")
+                menu_action.setEnabled(enabled)
+                if not enabled and reason.startswith("Недостаточно прав"):
+                    menu_action.setVisible(False)
+                if reason:
+                    menu_action.setToolTip(reason)
+                    menu_action.setStatusTip(reason)
         selected = menu.exec(self.viewport().mapToGlobal(position))
         if selected is properties:
             self.layerPropertiesRequested.emit(layer_id)

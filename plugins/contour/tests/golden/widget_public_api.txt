@@ -15,6 +15,7 @@ workSimulationActiveChanged
 
 [methods]
 append_images
+apply_launch_frames_per_row
 attach_help_menu
 clear_all_loaded_vectors
 clear_frame_vectors

@@ -148,6 +148,11 @@ class AgentPluginGateway:
                 expected_sha256=item.sha256,
             )
         parameters = encode_model(manifest.parameters)
+        for vector in parameters.get("vector_inputs", ()):
+            workspace.stage_file(
+                self.source_for_version(vector["artifact_version_id"]),
+                vector["relative_path"], expected_sha256=vector["sha256"],
+            )
         model = PinnedModelInput.from_parameters(parameters)
         if model is None:
             parameters = _stage_model(workspace, parameters)
@@ -217,6 +222,8 @@ class AgentPluginGateway:
 
     def complete_import(self, job_id: PluginJobId | str) -> dict[str, Any]:
         current = self.get_job(job_id)
+        if current.get("state") == "succeeded":
+            return current
         return self._request(
             "POST",
             f"/api/v1/jobs/{job_id}/complete-import",
@@ -225,6 +232,8 @@ class AgentPluginGateway:
 
     def confirm_partial(self, job_id: PluginJobId | str) -> dict[str, Any]:
         current = self.get_job(job_id)
+        if current.get("state") in {"importing", "succeeded"}:
+            return current
         return self._request(
             "POST",
             f"/api/v1/jobs/{job_id}/confirm-partial",

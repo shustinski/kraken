@@ -417,7 +417,8 @@ async fn cleanup_staging(staging_root: &FsPath) -> io::Result<()> {
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok", "service": "kraken-blob-gateway", "version": 1,
-                          "project_deletion_barrier": 1, "storage_backup_barrier": 1}))
+                          "project_deletion_barrier": 1, "storage_backup_barrier": 1,
+                          "filesystem_path_safety": 1}))
 }
 
 async fn put_blob(

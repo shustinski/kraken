@@ -44,12 +44,12 @@ def remote(tmp_path):
     return client, service, project, arguments, requested
 
 
-def test_external_remote_vectorization_downloads_by_version_uuid(remote):
+def test_external_remote_stitch_downloads_by_version_uuid(remote):
     client, _service, _project, arguments, requested = remote
-    order = client.issue_work(kind='vectorize', **arguments)
+    order = client.issue_work(kind='stitch', **arguments)
     assert isinstance(order, WorkOrder)
     assert len(requested) == 1 and len(requested[0]) == 36
-    assert (Path(order.destination) / 'images/1_1.png').read_bytes() == b'image-a'
+    assert (Path(order.destination) / 'sources/1_1.png').read_bytes() == b'image-a'
 
 
 def test_external_remote_review_is_signed_and_links_issued_review_batch(remote):

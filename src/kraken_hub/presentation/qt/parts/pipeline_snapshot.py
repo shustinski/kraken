@@ -339,8 +339,13 @@ class PipelineSnapshotMixin:
             for value in lane_vectors:
                 lane_nodes.append(
                     PipelineNode(
-                        str(value.id), value.name, "vector", "CIF",
-                        str(value.id), value.active, details={"создан": value.created_at.isoformat(), "note": value.note},
+                        str(value.id),
+                        value.name,
+                        "vector",
+                        "CIF · основной" if value.active else "CIF",
+                        str(value.id),
+                        value.active,
+                        details={"создан": value.created_at.isoformat(), "note": value.note},
                     )
                 )
                 if not any(target == str(value.id) for _, target in lane_edges):

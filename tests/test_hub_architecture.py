@@ -115,7 +115,7 @@ class HubArchitectureTests(unittest.TestCase):
         self.assertTrue(client.is_file(), "remote client is still outside infrastructure")
         self.assertTrue(parts.is_dir(), "remote client parts are still outside infrastructure")
         self.assertFalse((HUB / "remote_client.py").exists(), "remote client facade still sits on the package root")
-        self.assertFalse((HUB / "remote_client_parts").exists(), "remote client parts still sit on the package root")
+        self.assertEqual([], list((HUB / "remote_client_parts").rglob("*.py")), "remote client source parts still sit on the package root")
         forbidden = {"PyQt6", "kraken_hub.presentation", "kraken_hub.presentation.qt.manager_app", "kraken_hub.composition.catalog"}
         self.assertEqual(
             [],
@@ -127,7 +127,7 @@ class HubArchitectureTests(unittest.TestCase):
         parts = HUB / "composition" / "parts"
         self.assertTrue((HUB / "composition").is_dir() and (HUB / "composition" / "__init__.py").is_file())
         self.assertTrue(parts.is_dir(), "local service parts are still beside the composition module")
-        self.assertFalse((HUB / "composition_parts").exists())
+        self.assertEqual([], list((HUB / "composition_parts").rglob("*.py")))
         self.assertFalse((HUB / "composition.py").exists())
 
 

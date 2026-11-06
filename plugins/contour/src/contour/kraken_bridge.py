@@ -142,6 +142,7 @@ class ContourKrakenSession:
     input_paths: tuple[Path, ...]
     output_directory: Path
     server_source: ServerAssetSource | None = None
+    vector_paths: tuple[Path, ...] = ()
 
     @classmethod
     def load(
@@ -200,6 +201,18 @@ class ContourKrakenSession:
         output_directory = output_directory.resolve(strict=True)
         if output_directory.parent != root or not output_directory.is_dir():
             raise KrakenBridgeError("Kraken output directory escapes staging")
+        vector_paths = []
+        frames = {item.frame_id: item for item in manifest.inputs}
+        for vector in manifest.parameters.get("vector_inputs", ()):
+            frame = frames.get(vector["frame_id"])
+            if frame is None:
+                raise KrakenBridgeError("CIF input belongs to an unknown image frame")
+            path = _resolve_relative_file(root, vector["relative_path"])
+            if path.stem != Path(frame.relative_path).stem or path.suffix.casefold() != ".cif":
+                raise KrakenBridgeError("CIF input does not match its image filename")
+            if _sha256(path) != vector["sha256"]:
+                raise KrakenBridgeError("Staged CIF input checksum mismatch")
+            vector_paths.append(path)
         return cls(
             manifest=manifest,
             staging_root=root,
@@ -208,6 +221,7 @@ class ContourKrakenSession:
             input_paths=tuple(inputs),
             output_directory=output_directory,
             server_source=server_source,
+            vector_paths=tuple(vector_paths),
         )
 
     def build_result(self) -> PluginResultManifest:
@@ -255,11 +269,12 @@ class ContourKrakenSession:
             for path in self.output_directory.rglob("*")
             if path.is_file() and not path.is_symlink() and path.suffix.casefold() == ".zip"
         )
-        if not archives:
+        images = self.output_directory / "images"
+        labels = self.output_directory / "cif"
+        # Sample folders are authoritative; a previous ZIP is only a snapshot.
+        if images.exists() or labels.exists() or not archives:
             from zipfile import ZIP_DEFLATED, ZipFile
 
-            images = self.output_directory / "images"
-            labels = self.output_directory / "cif"
             pairs = [(path, labels / f"{path.stem}.cif") for path in sorted(images.glob("*")) if path.is_file()]
             if not pairs or any(not label.is_file() for _image, label in pairs):
                 raise KrakenBridgeError("Export samples with images and CIF labels before returning the dataset")
@@ -317,6 +332,7 @@ class ContourKrakenSession:
 
         if not isinstance(window, QMainWindow):
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
+        window._pending_persisted_session_restore = False
         # Staging names contain coordinates, not unique numeric frame suffixes.
         # Always use the manifest identity, including for local Agent jobs.
         if self.input_paths:
@@ -324,6 +340,10 @@ class ContourKrakenSession:
             from .infrastructure.settings_store import IMAGE_LIST_MODE_EXPLICIT
 
             widget = window._widget
+            widget._pending_restore_vector_paths = []
+            widget._pending_cif_directory_state = None
+            if hasattr(widget, "_workspace"):
+                widget._workspace.set_cif_index({path.stem.casefold(): str(path) for path in self.vector_paths})
             if self.server_source is not None:
                 loader = AssetImageLoader(self.server_source, self.staging_root)
                 widget._source_image_loader = loader
@@ -350,6 +370,8 @@ class ContourKrakenSession:
         def return_results() -> None:
             try:
                 _ensure_processing_finished(window)
+                if not window._widget.confirm_ok_to_leave_current_vectors():
+                    return
                 result = replace(self.build_result(), applied_parameters=recognition_parameters(window))
                 if result.outcome == PluginJobOutcome.PARTIAL.value:
                     answer = QMessageBox.question(
@@ -367,7 +389,7 @@ class ContourKrakenSession:
             QMessageBox.information(
                 window,
                 "Kraken",
-                f"Результат задания {self.manifest.job_id} записан. Contour можно закрыть.",
+                "Результат записан. Contour можно закрыть.",
             )
             window.close()
 
@@ -385,6 +407,7 @@ class ContourWorkspaceSession:
     input_directory: Path
     output_directory: Path
     result_manifest_path: Path
+    vector_directory: Path | None = None
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> ContourWorkspaceSession:
@@ -424,12 +447,24 @@ class ContourWorkspaceSession:
         result_manifest_path = Path(context.result_manifest_path).resolve(strict=False)
         if result_manifest_path.exists() or result_manifest_path.is_symlink():
             raise KrakenBridgeError("Workspace result manifest already exists")
+        vector_directory = None
+        if vectors := context.input_directories.get("vectors"):
+            raw_vectors = Path(vectors)
+            if raw_vectors.is_symlink():
+                raise KrakenBridgeError("Workspace vector directory must be a regular directory")
+            try:
+                vector_directory = raw_vectors.resolve(strict=True)
+            except OSError as exc:
+                raise KrakenBridgeError("Workspace vector directory is unavailable") from exc
+            if not vector_directory.is_dir():
+                raise KrakenBridgeError("Workspace vector directory must be a regular directory")
         return cls(
             context,
             context_path,
             input_directory,
             output_directory,
             result_manifest_path,
+            vector_directory,
         )
 
     def _selected_output_directory(self, window: object) -> Path:
@@ -456,6 +491,19 @@ class ContourWorkspaceSession:
 
         if not isinstance(window, QMainWindow):
             raise TypeError("Contour Kraken bridge requires a QMainWindow")
+        window._pending_persisted_session_restore = False
+        widget = window._widget
+        widget._pending_restore_vector_paths = []
+        widget._pending_cif_directory_state = None
+        widget._pending_cif_directory_path_after_images = None
+        widget._indexed_cif_directory = str(self.vector_directory) if self.vector_directory else None
+        if hasattr(widget, "cif_dir_edit"):
+            widget.cif_dir_edit.setText(str(self.vector_directory) if self.vector_directory else "")
+        if hasattr(widget, "_workspace"):
+            vector_paths = self.vector_directory.glob("*.cif") if self.vector_directory else ()
+            widget._workspace.set_cif_index(
+                {path.stem.casefold(): str(path) for path in vector_paths if path.is_file()}
+            )
         menu_bar = window.menuBar()
         assert menu_bar is not None
         menu = QMenu("Kraken", window)
@@ -466,6 +514,8 @@ class ContourWorkspaceSession:
         def return_results() -> None:
             try:
                 _ensure_processing_finished(window)
+                if not window._widget.confirm_ok_to_leave_current_vectors():
+                    return
                 output = self._selected_output_directory(window)
                 if self.context.operation == PluginOperation.PREPARE_DATASET.value:
                     outputs = tuple(
@@ -575,6 +625,8 @@ def prepare_contour_launch(
             destination_option,
             str(workspace_session.output_directory),
         ]
+        if workspace_session.vector_directory is not None:
+            controlled.extend(("--cif-dir", str(workspace_session.vector_directory)))
         return workspace_session, controlled
     if not any(values.values()):
         return None, list(argv)

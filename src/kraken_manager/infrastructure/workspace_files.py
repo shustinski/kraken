@@ -209,6 +209,29 @@ class WorkspaceRegistry:
         raw = self._read(project_id).get("project")
         return ProjectWorkspaceBinding(**raw) if isinstance(raw, dict) else None
 
+    def plugin_result_directories(self, project_id: str) -> dict[str, str]:
+        return dict(self._read(project_id).get("plugin_result_directories", {}))
+
+    def save_plugin_result_directory(self, project_id: str, job_id: str, relative_path: str) -> None:
+        payload = self._read(project_id)
+        payload.setdefault("plugin_result_directories", {})[job_id] = relative_path
+        _atomic_json(self._path(project_id), payload)
+
+    def plugin_result_removed(self, project_id: str, job_id: str) -> bool:
+        return job_id in self._read(project_id).get("removed_plugin_results", [])
+
+    def mark_plugin_result_removed(self, project_id: str, job_id: str) -> None:
+        payload = self._read(project_id)
+        removed = set(payload.get("removed_plugin_results", []))
+        removed.add(job_id)
+        payload["removed_plugin_results"] = sorted(removed)
+        _atomic_json(self._path(project_id), payload)
+
+    def forget_plugin_result_directory(self, project_id: str, job_id: str) -> None:
+        payload = self._read(project_id)
+        payload.get("plugin_result_directories", {}).pop(job_id, None)
+        _atomic_json(self._path(project_id), payload)
+
     def save_layer(self, project_id: str, binding: LayerFileBinding) -> None:
         payload = self._read(project_id)
         value = asdict(binding)
@@ -858,9 +881,18 @@ class WorkspaceFileService:
             raise WorkspaceValidationError("Проект не привязан к двухдисковому хранилищу.")
         name = validate_workspace_name(layer_name, field_name="Название слоя")
         run_id = str(uuid4())
-        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        path = Path(project.derived_project_dir) / kind.value / name / f"{timestamp}_{run_id[:8]}"
-        path.mkdir(parents=True, exist_ok=False)
+        timestamp = datetime.now(UTC).astimezone().strftime("%d.%m.%Y %H-%M-%S.%f")
+        parent = Path(project.derived_project_dir) / kind.value / name
+        label = f"{validate_workspace_name(plugin_id, field_name='Название плагина')} — {timestamp}"
+        path = parent / label
+        index = 2
+        while True:
+            try:
+                path.mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                path = parent / f"{label} ({index})"
+                index += 1
         run = DerivedRun(
             run_id=run_id,
             layer_id=layer_id,

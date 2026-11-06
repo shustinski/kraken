@@ -2,6 +2,7 @@
 from __future__ import annotations
 import base64
 import json
+from collections.abc import Mapping, Sequence
 from typing import Any
 from kraken_manager.application.dto import (
     CancelPluginJobCommand,
@@ -29,7 +30,8 @@ from kraken_manager.domain.workflows import (
 from kraken_core.plugin_protocol import PluginResultManifest
 from kraken_manager.infrastructure.plugin.result_reader import domain_result_from_transport
 from kraken_manager.infrastructure.filesystem._codec import encode_model
-from kraken_server.services import CommandContext, ConflictError, ValidationError
+from kraken_manager.infrastructure.plugin.vector_workspace import materialize_vector_result
+from kraken_server.services import CommandContext, ConflictError, ForbiddenError, NotFoundError, ValidationError
 
 from kraken_server.persistent_services_parts.layer_source_scan import (
     SystemClock,
@@ -88,6 +90,33 @@ class ImportAgentResultMixin:
         if self.agent_gateway is None:
             raise ConflictError("Server agent queue is not configured")
         publications = self.agent_gateway.publications_for(job_id, agent)
+        return self._import_agent_publications(job_id, publications)
+
+    def confirm_partial_plugin_job(
+        self, project_id: str, job_id: str, context: CommandContext,
+    ) -> dict[str, Any]:
+        if self.agent_gateway is None:
+            raise ConflictError("Server agent queue is not configured")
+        job = self.projections.get_plugin_job(PluginJobId(validate_uuid(job_id, field="job_id")))
+        if job is None or str(job.project_id) != project_id:
+            raise NotFoundError("Plugin job was not found in the project")
+        if str(job.actor_principal_id) != context.actor_id:
+            raise ForbiddenError("Only the initiating principal may authorize plugin result import")
+        if job.state.value != "partial":
+            raise ConflictError("The plugin job has no partial result to confirm")
+        application_context = self._application_context(context)
+        try:
+            publications = self.agent_gateway.completed_publications_for(job_id)
+        except RuntimeError as exc:
+            raise ConflictError(str(exc)) from exc
+        return self._import_agent_publications(
+            job_id, publications, context=application_context, confirm_partial=True,
+        )
+
+    def _import_agent_publications(
+        self, job_id: str, publications: Sequence[Mapping[str, Any]], *,
+        context: ApplicationCommandContext | None = None, confirm_partial: bool = False,
+    ) -> dict[str, Any]:
         if len(publications) != 1:
             raise ConflictError("Exactly one final V1 publication is required")
         try:
@@ -105,22 +134,35 @@ class ImportAgentResultMixin:
                 output.relative_path: self.agent_gateway.output_blob(job_id, output.output_id)
                 for output in transport.outputs
             }
+            reader = _AgentBlobResultReader(self.uow_factory.blobs, references)
             imported = ImportPluginResultHandler(
                 self.uow_factory,
                 self.profiles,
                 SystemClock(),
-                _AgentBlobResultReader(self.uow_factory.blobs, references),
+                reader,
             )(
                 ImportPluginResultCommand(
-                    context=ApplicationCommandContext(
+                    context=context or ApplicationCommandContext(
                         actor=actor,
                         idempotency_key=f"server-agent-import:{job_id}:{transport.completed_at}",
                         gitlab_identity_verified=True,
                     ),
                     manifest=result_manifest,
-                    confirm_partial=False,
+                    confirm_partial=confirm_partial,
                 )
             )
+            if (
+                job.capability == "frames.vectorize.v1"
+                and not imported.requires_partial_confirmation
+                and not imported.awaiting_authorization
+            ):
+                layer = self.projections.get_layer(job.layer_id)
+                if layer is None:
+                    raise ApplicationNotFoundError("Plugin job layer was not found")
+                materialize_vector_result(
+                    self.workspace_files, job=job, layer_name=layer.name,
+                    manifest=result_manifest, reader=reader,
+                )
             return {
                 "job": encode_model(imported.job),
                 "versions": [encode_model(item) for item in imported.versions],

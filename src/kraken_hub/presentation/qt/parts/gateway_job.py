@@ -1,7 +1,22 @@
 """manager_app: gateway job."""
 from __future__ import annotations
+from collections.abc import Iterable
 from uuid import uuid4
+from kraken_manager.domain.work_orders import WorkOrder
 from kraken_manager.infrastructure.plugin import AgentPluginGateway
+
+
+def _file_work_job_ids(orders: Iterable[WorkOrder]) -> frozenset[str]:
+    return frozenset(
+        str(order.related_job_id) for order in orders
+        if order.transport == "files" and order.related_job_id
+    )
+
+
+def _require_agent_job(service, job) -> None:
+    orders = getattr(service, "work_orders", lambda: ())()
+    if str(getattr(job, "id", "")) in _file_work_job_ids(orders):
+        raise ValueError("Управляйте этим заданием через карточку выданной работы.")
 
 
 class GatewayJobMixin:
@@ -23,6 +38,7 @@ class GatewayJobMixin:
         return True
 
     def _gateway_for_job(self, job) -> AgentPluginGateway:
+        _require_agent_job(self.service, job)
         from kraken_hub.presentation.qt.manager_app import AgentPluginGateway
         project = self.service.get_project(job.project_id)
         if project is None:
@@ -67,7 +83,11 @@ class GatewayJobMixin:
         return gateway
 
     def cancel_agent_job(self, job) -> None:
-        gateway = None if self.service.is_remote_project(job.project_id) else self._gateway_for_job(job)
+        if self.service.is_remote_project(job.project_id):
+            _require_agent_job(self.service, job)
+            gateway = None
+        else:
+            gateway = self._gateway_for_job(job)
         self.service.cancel_plugin_job(
             principal=self.session.principal,
             gateway=gateway,
@@ -96,7 +116,11 @@ class GatewayJobMixin:
             self.my_work_refresh()
 
     def retry_agent_job(self, job) -> None:
-        gateway = None if self.service.is_remote_project(job.project_id) else self._gateway_for_job(job)
+        if self.service.is_remote_project(job.project_id):
+            _require_agent_job(self.service, job)
+            gateway = None
+        else:
+            gateway = self._gateway_for_job(job)
         self.service.retry_plugin_job(
             principal=self.session.principal,
             gateway=gateway,
@@ -107,6 +131,27 @@ class GatewayJobMixin:
             self.my_work_refresh()
 
     def import_partial_agent_job(self, job) -> None:
-        gateway = self._gateway_for_job(job)
-        gateway.confirm_partial(job.id)
-        self._poll_agent_jobs()
+        if self.service.is_remote_project(job.project_id):
+            _require_agent_job(self.service, job)
+            self.service.confirm_partial_plugin_job(
+                principal=self.session.principal, job=job, idempotency_key=str(uuid4()),
+            )
+        else:
+            gateway = self._gateway_for_job(job)
+            gateway.confirm_partial(job.id)
+            publications = gateway.get_publications(job.id)
+            if publications:
+                imported = self.service.import_agent_publications(
+                    principal=self.session.principal, publications=publications,
+                    staging_root=self.service.data_dir / "agent" / "staging",
+                )
+            else:
+                imported = self.service.import_agent_result(
+                    principal=self.session.principal, result_payload=gateway.get_result(job.id),
+                    staging_root=self.service.data_dir / "agent" / "staging", confirm_partial=True,
+                )
+            if not imported.requires_partial_confirmation and not imported.awaiting_authorization:
+                gateway.complete_import(job.id)
+        self._refresh_current_matrix()
+        if self.my_work_refresh is not None:
+            self.my_work_refresh()

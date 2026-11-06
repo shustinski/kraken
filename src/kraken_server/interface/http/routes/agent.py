@@ -51,6 +51,13 @@ def register(ctx: HttpContext) -> None:
             return metadata
         if version_id in {str(item.artifact_version_id) for item in manifest.inputs}:
             return backend.get_artifact_version(str(manifest.project_id), version_id)
+        vector = next((item for item in manifest.parameters.get("vector_inputs", ())
+                       if item["artifact_version_id"] == version_id), None)
+        if vector is not None:
+            metadata = backend.get_artifact_version(str(manifest.project_id), version_id)
+            if metadata["sha256"] != vector["sha256"] or metadata["media_type"] != "application/x-cif":
+                raise HTTPException(status_code=409, detail="CIF input does not match its pinned version")
+            return metadata
         if str(manifest.parameters.get("model_version_id", "")) != version_id:
             raise HTTPException(status_code=403, detail="Artifact is not an input of the leased job")
         from kraken_server.model_inputs import model_input_metadata

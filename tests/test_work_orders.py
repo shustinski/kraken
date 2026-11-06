@@ -269,7 +269,7 @@ def test_stitch_completion_requires_a_result_file_and_cancel_is_terminal(tmp_pat
         principal=owner.principal,
         project_id=project.id,
         layer_id=layer.id,
-        kind="stitch",
+        kind="vectorize",
         placement="server",
         assignee_id=performer.id,
         coordinates=((1, 1),),

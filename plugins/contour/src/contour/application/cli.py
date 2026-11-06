@@ -68,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             configure_batch_runtime()
 
         bridge_import_started_at = perf_counter()
-        from ..kraken_bridge import prepare_contour_launch
+        from ..kraken_bridge import ContourKrakenSession, prepare_contour_launch
 
         if startup_profile is not None:
             startup_profile.mark_interval("launch_bridge_import", bridge_import_started_at)
@@ -78,7 +78,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         else:
             kraken_session, args = startup_profile.measure("prepare_launch", lambda: prepare_contour_launch(args))
 
-        if kraken_session is not None and kraken_session.manifest.parameters.get("execution_mode") == "headless":
+        if (
+            isinstance(kraken_session, ContourKrakenSession)
+            and kraken_session.manifest.parameters.get("execution_mode") == "headless"
+        ):
             from ..worker import run
 
             run(kraken_session.job_manifest_path, kraken_session.result_manifest_path, kraken_session.staging_root)

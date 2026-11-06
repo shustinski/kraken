@@ -44,6 +44,12 @@ class CallMixin:
                 raise NotFoundError("Plugin job was not found")
             if command.context.actor.id != job.actor_principal_id:
                 raise AuthorizationError("Only the initiating principal may authorize plugin result import")
+            if any(
+                event.event_type == "LayerPipelineActionRemoved"
+                and str(event.payload.get("plugin_job_id", "")) == str(job.id)
+                for event in uow.event_store.load_stream(f"layer-pipeline:{job.layer_id}")
+            ):
+                raise ConflictError("The processing step was removed; its result cannot be imported")
             original = self._created_manifest(uow, job)
             if manifest.job_id != original.job_id or manifest.protocol_version != original.protocol_version:
                 raise ConflictError("Plugin result does not match the submitted job/protocol")
@@ -294,7 +300,9 @@ class CallMixin:
                         if aggregate_output
                         else (input_item.artifact_version_id,)
                     ) + (() if not original.parameters.get("model_version_id") else
-                         (ArtifactVersionId(str(original.parameters["model_version_id"])),)),
+                         (ArtifactVersionId(str(original.parameters["model_version_id"])),))
+                    + tuple(ArtifactVersionId(str(item["artifact_version_id"]))
+                            for item in original.parameters.get("vector_inputs", ())),
                     tool_name=manifest.plugin_name,
                     tool_version=manifest.plugin_version,
                     parameters=parameters,

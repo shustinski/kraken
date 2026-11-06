@@ -36,6 +36,7 @@ from kraken_manager.infrastructure.plugin import (
     AgentStagingResultContentReader,
     domain_result_from_transport,
 )
+from kraken_manager.infrastructure.plugin.vector_workspace import materialize_vector_result
 
 
 class ImportAgentResultMixin:
@@ -46,6 +47,7 @@ class ImportAgentResultMixin:
         result_payload: Mapping[str, object],
         staging_root: Path | str,
         confirm_partial: bool = False,
+        job_directory: Path | str | None = None,
     ):
         parsed = parse_plugin_result_json(
             json.dumps(dict(result_payload), ensure_ascii=False)
@@ -100,11 +102,12 @@ class ImportAgentResultMixin:
         )
         if source_job is None:
             raise ValueError("Agent result belongs to an unknown plugin job")
+        reader = AgentStagingResultContentReader(staging_root, job_directory=job_directory)
         result = ImportPluginResultHandler(
             self._uow(str(source_job.project_id)),
             self.profiles,
             self.clock,
-            AgentStagingResultContentReader(staging_root),
+            reader,
         )(
             ImportPluginResultCommand(
                 context=CommandContext(
@@ -115,6 +118,18 @@ class ImportAgentResultMixin:
                 confirm_partial=confirm_partial or publication is not None,
             )
         )
+        if (
+            source_job.capability == "frames.vectorize.v1"
+            and not result.requires_partial_confirmation
+            and not result.awaiting_authorization
+        ):
+            layer = self._projection(source_job.project_id).get_layer(source_job.layer_id)
+            if layer is None:
+                raise ValueError("Plugin job layer was not found")
+            materialize_vector_result(
+                self.workspace_files, job=source_job, layer_name=layer.name,
+                manifest=manifest, reader=reader,
+            )
         if publication is None:
             return result
         job = result.job
@@ -131,11 +146,8 @@ class ImportAgentResultMixin:
                     f"agent-v2-series:{publication.publication_id}:{asset.asset_id}"
                 ),
             )
-            source = (
-                Path(staging_root)
-                / str(publication.job_id)
-                / Path(asset.relative_path)
-            )
+            root = Path(job_directory) if job_directory is not None else Path(staging_root) / str(publication.job_id)
+            source = root / Path(asset.relative_path)
             self.add_managed_artifact_version(
                 principal=principal,
                 project_id=job.project_id,

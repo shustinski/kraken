@@ -343,7 +343,7 @@ class LayerManagerActionMixin:
         QMessageBox.information(
             self.shell,
             "Задание создано",
-            f"Задание {job.id} передано Kraken Agent и продолжит работу независимо от окна проекта.",
+            "Задание передано Kraken Agent и продолжит работу независимо от окна проекта.",
         )
 
     def _continue_pipeline_step(self, layer_id: str, node: PipelineNode) -> None:

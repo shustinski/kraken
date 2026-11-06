@@ -65,7 +65,7 @@ class WorkPlanBoardWidget(QWidget):
         try:
             restored = json.loads(str(self._settings.value(self._state_key, "{}")))
             self._initial_filters = restored if isinstance(restored, dict) else {}
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             self._initial_filters = {}
         self.report = None
         self._end_follows_now = True
@@ -273,7 +273,7 @@ class WorkPlanBoardWidget(QWidget):
         if self._fixed_project:
             try:
                 self._capacities = self._capacity_preferences()
-            except ValueError, TypeError:
+            except (ValueError, TypeError):
                 self._capacities = {}
         self.refresh()
 
@@ -733,7 +733,7 @@ class WorkPlanBoardWidget(QWidget):
             combo.blockSignals(False)
         try:
             self._capacities = self._capacity_preferences()
-        except ValueError, TypeError:
+        except (ValueError, TypeError):
             self._capacities = {}
         self._drilldown = None
         self.refresh()

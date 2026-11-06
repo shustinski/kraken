@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from uuid import uuid4
+from dataclasses import replace
+from datetime import datetime
+
+from kraken_core.plugin_protocol import WorkspacePluginContextV1
 
 from kraken_manager.domain.layer_board import ASSIGNMENT_ACTION, BoardNode
 from kraken_manager.domain.project import RepresentationKind
@@ -106,32 +109,68 @@ class LayerBoardActionsMixin:
                 action="vectorize",
                 source_representation_id=str(primary.representation_id or primary.node_id),
             )
-            input_directory = Path(str(launch.get("input_directory", "")))
-            if input_directory.is_dir():
-                self._copy_board_frames(layer_id, images[1:], input_directory, suffix="png")
-                if vector.representation_id:
-                    self._copy_board_frames(layer_id, (vector,), input_directory, suffix="cif")
+            stage = Path(launch["result_directory"]).parent / (
+                "Contour inputs " + datetime.now().strftime("%Y-%m-%d %H-%M-%S.%f")
+            )
+            input_directory, vector_directory = self._stage_board_frames(layer_id, images, vector, stage)
+            if "--kraken-workspace-context" in arguments:
+                context_path = Path(arguments[arguments.index("--kraken-workspace-context") + 1])
+                context = WorkspacePluginContextV1.read(context_path)
+                replace(context, input_directories={
+                    **context.input_directories, "images": str(input_directory), "vectors": str(vector_directory),
+                }).write(context_path)
+            else:
+                updated = list(arguments)
+                updated[updated.index("--input-dir") + 1] = str(input_directory)
+                arguments = (*updated, "--cif-dir", str(vector_directory))
             process = self._launch_managed_plugin("contour", arguments=arguments)
         except Exception as exc:
             self._error(str(exc))
             return
         if process is not None:
+            if launch.get("workspace_result_manifest"):
+                self._monitor_workspace_result(
+                    process, result_manifest=str(launch["workspace_result_manifest"]),
+                    workspace_run_id=str(launch["workspace_run_id"]), layer_id=str(layer_id),
+                )
             self.shell.statusBar().showMessage("Contour открыт с выбранными изображениями и CIF.", 10000)
 
-    def _copy_board_frames(self, layer_id: str, nodes: tuple[PipelineNode, ...], directory: Path, *, suffix: str) -> None:
-        for node in nodes:
+    def _stage_board_frames(
+        self, layer_id: str, images: list[PipelineNode], vector: PipelineNode, stage: Path,
+    ) -> tuple[Path, Path]:
+        image_directory, vector_directory = stage / "images", stage / "vectors"
+        image_directory.mkdir(parents=True, exist_ok=False)
+        vector_directory.mkdir()
+        vector_id = str(vector.representation_id or vector.node_id)
+        vector_layer = self._layer_id_for_representation(vector_id) or layer_id
+        vectors = {
+            (cell.x, cell.y): cell.sha256
+            for cell in self.service.frame_cells(self._project_id, vector_layer, vector_id) if cell.sha256
+        }
+        count = 0
+        for index, node in enumerate(images):
             representation_id = str(node.representation_id or "")
             if not representation_id:
                 continue
-            prefix = representation_id[:8]
-            for cell in self.service.frame_cells(self._project_id, layer_id, representation_id):
+            image_layer = self._layer_id_for_representation(representation_id) or layer_id
+            prefix = "" if index == 0 else f"Image {index + 1} - "
+            for cell in self.service.frame_cells(self._project_id, image_layer, representation_id):
                 if not cell.sha256:
                     continue
-                destination = directory / f"{prefix}_{cell.x}_{cell.y}.{suffix}"
-                if destination.exists():
-                    continue
+                stem = f"{prefix}{cell.x}_{cell.y}"
+                destination = image_directory / f"{stem}.png"
                 with destination.open("xb") as stream:
                     stream.write(self.service.read_project_blob(self._project_id, cell.sha256))
+                count += 1
+                digest = vectors.get((cell.x, cell.y))
+                if digest:
+                    with (vector_directory / f"{stem}.cif").open("xb") as stream:
+                        stream.write(self.service.read_project_blob(self._project_id, digest))
+        if not count:
+            raise ValueError("В выбранных слоях нет доступных изображений.")
+        if not any(vector_directory.iterdir()):
+            raise ValueError("В выбранном CIF нет векторов для выбранных изображений.")
+        return image_directory, vector_directory
 
     def _export_board_nodes(self, layer_id: str, nodes: tuple[PipelineNode, ...]) -> None:
         from datetime import UTC, datetime
@@ -144,7 +183,7 @@ class LayerBoardActionsMixin:
         if not parent:
             return
         destination = Path(parent) / (
-            "Слой_" + datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S-") + uuid4().hex[:6]
+            "Слой_" + datetime.now(UTC).astimezone().strftime("%d.%m.%Y %H-%M-%S.%f")
         )
         exported = 0
         try:

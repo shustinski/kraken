@@ -597,12 +597,12 @@ class LayerPipelineDialog(QDialog):
         self.model_input.clear()
         self.model_input.addItem(self._t("Существующие параметры / без модели", "Existing parameters / no model"), None)
         for name, version in self._published_models:
-            self.model_input.addItem(f"{name} — {version.filename} — {version.created_at.isoformat()} — {str(version.id)[:8]}", f"version:{version.id}")
+            self.model_input.addItem(f"{name} — {version.filename} — {version.created_at.isoformat()}", f"version:{version.id}")
         for operation in self._operations:
             if operation["id"] != selected and operation["output_kind"] == "model":
                 self.model_input.addItem(self._t("Результат этапа: ", "Step output: ") + operation["title"], f"producer:{operation['id']}")
         if selected_model and self.model_input.findData(selected_model) < 0:
-            self.model_input.addItem(self._t("Недоступная закреплённая версия: ", "Unavailable pinned version: ") + selected_model, selected_model)
+            self.model_input.addItem(self._t("Закреплённая версия недоступна", "Pinned version unavailable"), selected_model)
         self.model_input.setCurrentIndex(max(0, self.model_input.findData(selected_model)))
         self.model_input.blockSignals(False)
         self._model_changed()
@@ -611,7 +611,7 @@ class LayerPipelineDialog(QDialog):
         selected = self.model_input.currentData() or ""
         version = next((version for _, version in self._published_models if selected == f"version:{version.id}"), None)
         self.model_details.setText(
-            f"{version.id}\nSHA-256: {version.sha256}" if version is not None else
+            f"{version.filename}\n{version.created_at.isoformat()}" if version is not None else
             self._t("Версия будет закреплена после публикации результата обучения.", "Version is pinned after the training result is published.")
             if selected.startswith("producer:") else "—"
         )

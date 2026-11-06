@@ -10,6 +10,7 @@ from kraken_manager.domain.layer_board import (
     matrix_legend,
     multi_selection_actions,
     selection_kind,
+    next_cif_representation_name,
     next_image_representation_name,
     order_review_images,
     parameter_lines,
@@ -110,6 +111,10 @@ def test_thumbnail_legend_uses_only_present_fields() -> None:
 def test_image_representation_name_and_workflow_signature() -> None:
     assert next_image_representation_name(()) == "Исходные изображения"
     assert next_image_representation_name(("Исходные изображения",)) == "Исходные изображения (2)"
+    assert next_cif_representation_name((), "Исходные изображения") == "CIF — Исходные изображения"
+    assert next_cif_representation_name(("CIF — Исходные изображения",), "Исходные изображения") == (
+        "CIF — Исходные изображения (2)"
+    )
     first = workflow_view_signature(
         project_revision=1,
         representation_ids=("a",),

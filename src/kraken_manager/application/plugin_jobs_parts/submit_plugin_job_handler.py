@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections.abc import Mapping
 from kraken_manager.application.authorization import AuthorizationPolicy
+from kraken_manager.application.plugin_jobs_parts.archive_outputs import removed_output_version_ids
 from kraken_manager.application.dto import (
     SubmitPluginJobCommand,
 )
@@ -14,9 +15,10 @@ from kraken_manager.application.ports import (
 )
 from kraken_manager.domain.artifacts import (
     ArtifactScope,
+    deterministic_frame_series_id,
     is_training_dataset_artifact,
 )
-from kraken_manager.domain.common import PluginJobId
+from kraken_manager.domain.common import PluginJobId, RepresentationId
 from kraken_manager.domain.events import ActorSnapshot, EventEnvelope
 from kraken_manager.domain.identity import Permission
 from kraken_manager.domain.project import ProjectState, RepresentationKind, StructureState
@@ -97,6 +99,41 @@ class SubmitPluginJobHandler:
                 raise ConflictError(f"Plugin capability requires a {required_kind.value} target representation")
             command.selection.validate_bounds(width=project.width, height=project.height)
             parameters = dict(command.parameters)
+            if "vector_inputs" in parameters:
+                raise ConflictError("Vector input versions are pinned by Kraken, not by the client")
+            vector_id = parameters.get("vector_representation_id")
+            if vector_id:
+                if command.capability != "frames.dataset.prepare.v1":
+                    raise ConflictError("This capability has no vector input port")
+                vectors = uow.projections.get_representation(RepresentationId(str(vector_id)))
+                if (vectors is None or vectors.kind is not RepresentationKind.VECTOR
+                    or vectors.project_id != project.id or vectors.layer_id != layer.id
+                    or vectors.state is StructureState.ARCHIVED):
+                    raise ConflictError("Vector representation was not found in this layer")
+                pinned = []
+                removed_versions = removed_output_version_ids(uow, layer.id)
+                for image in command.inputs:
+                    image_version = uow.projections.get_artifact_version(image.artifact_version_id)
+                    image_series = None if image_version is None else uow.projections.get_artifact_series(image_version.series_id)
+                    if (image_series is None or image_series.representation_id != vectors.source_image_representation_id):
+                        raise ConflictError("Vector representation belongs to different source images")
+                    series_id = deterministic_frame_series_id(vectors.id, image.frame_id)
+                    series = uow.projections.get_artifact_series(series_id)
+                    if series is None or series.archived:
+                        continue
+                    version = uow.projections.get_active_artifact_version(series_id)
+                    if version is None or version.id in removed_versions:
+                        continue
+                    if version.blob is None or version.media_type != "application/x-cif":
+                        raise ConflictError("Dataset preparation requires managed CIF inputs")
+                    stem = image.relative_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+                    pinned.append({
+                        "frame_id": str(image.frame_id), "artifact_version_id": str(version.id),
+                        "sha256": version.sha256, "relative_path": f"inputs/vectors/{stem}.cif",
+                    })
+                if not pinned:
+                    raise ConflictError("No published CIF versions are available; accept the returned vector result first")
+                parameters["vector_inputs"] = pinned
             if "model_version_id" in parameters:
                 from kraken_manager.application.model_inputs import resolve_model_input
                 from kraken_manager.application.quality import QualityService

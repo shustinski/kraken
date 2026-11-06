@@ -278,7 +278,7 @@ class SubprocessPluginRunner:
                 payload = json.loads(stream.read(1024 * 1024).decode("utf-8"))
             if isinstance(payload, dict) and payload.get("job_id") == job_id:
                 self.store.record_progress(job_id, payload)
-        except OSError, ValueError, json.JSONDecodeError:
+        except (OSError, ValueError, json.JSONDecodeError):
             return
 
     def run_once(self, *, job_id: str | None = None, cancel_event: threading.Event | None = None) -> bool:
@@ -429,7 +429,7 @@ class SubprocessPluginRunner:
                 target_state=target,
                 allowed_states=(AgentJobState.RUNNING, AgentJobState.WAITING_FOR_USER),
             )
-        except JobStateError, KeyError:
+        except (JobStateError, KeyError):
             return True
         except Exception as exc:
             current = self.store.get(job.job_id)

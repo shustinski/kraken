@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 from kraken_manager.application.authorization import AuthorizationPolicy
+from kraken_manager.application.plugin_jobs_parts.archive_outputs import archive_removed_job_outputs
 from kraken_manager.application.errors import (
     ConcurrencyError as ApplicationConcurrencyError,
 )
@@ -83,6 +84,8 @@ class AppendAuxiliaryEventMixin:
                 uow.event_store.append(
                     stream_id, expected_revision=revision, events=(event,)
                 )
+                if event_type == "LayerPipelineActionRemoved":
+                    archive_removed_job_outputs(uow, event)
                 uow.commit()
                 return encode_model(event)
         except Exception as exc:

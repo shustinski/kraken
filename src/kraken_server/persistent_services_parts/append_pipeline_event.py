@@ -6,6 +6,7 @@ from kraken_manager.domain.common import (
     PluginJobId,
 )
 from kraken_manager.domain.events import ProgramSnapshot
+from kraken_manager.infrastructure.plugin.vector_workspace import remove_vector_result
 from kraken_server.services import CommandContext, ConflictError, NotFoundError, ValidationError
 
 from kraken_server.persistent_services_parts.layer_source_scan import _layer_id
@@ -69,6 +70,7 @@ class AppendPipelineEventMixin:
         event_type = str(payload.get("event_type", ""))
         if event_type not in {"LayerPipelineActionRequested", "LayerPipelineActionRemoved", "LayerStitchingStatusChangedV1"}:
             raise ValidationError("Unsupported pipeline event type")
+        removed_job_id = ""
         if event_type == "LayerPipelineActionRemoved":
             if not isinstance(payload.get("remove_task", False), bool):
                 raise ValidationError("remove_task must be a boolean")
@@ -85,13 +87,17 @@ class AppendPipelineEventMixin:
             target_layer = target.payload.get("layer_id", target.payload.get("manifest", {}).get("layer_id", ""))
             if str(target_layer) != layer_id:
                 raise ValidationError("Pipeline step belongs to another layer")
+            removed_job_id = str(target.payload.get("plugin_job_id") or target.payload.get("parameters", {}).get("plugin_job_id") or "")
+            job = self.projections.get_plugin_job(PluginJobId(removed_job_id)) if removed_job_id else None
+            if removed_job_id and (job is None or str(job.project_id) != project_id or str(job.layer_id) != layer_id):
+                raise ValidationError("Pipeline job does not belong to this layer")
+            payload = {**payload, "plugin_job_id": removed_job_id}
             if payload.get("remove_task"):
-                job_id = str(target.payload.get("plugin_job_id", ""))
-                job = self.projections.get_plugin_job(PluginJobId(job_id))
+                job_id = removed_job_id
                 if job is None or job.state.value not in {"succeeded", "failed", "cancelled"}:
                     raise ConflictError("Cancel the task before deleting it")
                 payload = {**payload, "plugin_job_id": job_id}
-        return self._append_auxiliary_event(
+        result = self._append_auxiliary_event(
             project_id,
             stream_id=f"layer-pipeline:{layer_id}",
             event_type=event_type,
@@ -99,3 +105,6 @@ class AppendPipelineEventMixin:
             program=ProgramSnapshot(str(payload.get("plugin_id") or "Kraken")),
             context=context,
         )
+        if removed_job_id:
+            remove_vector_result(self.workspace_files, project_id=project_id, job_id=removed_job_id)
+        return result

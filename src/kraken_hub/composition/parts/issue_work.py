@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 
 from kraken_manager.application.authorization import AuthorizationPolicy
@@ -73,6 +74,7 @@ class IssueWorkMixin:
         self._authorize_work(principal, project)
         existing = self._work_order_for_key(project.id, idempotency_key)
         if existing is not None:
+            self._register_external_vector_job(principal, existing)
             return existing
         performer = self.performers.get(PerformerId(str(assignee_id)))
         if performer is None or not performer.active:
@@ -100,6 +102,24 @@ class IssueWorkMixin:
             image = representation_of(representations, image_representation_id, RepresentationKind.IMAGE)
             if image is None:
                 raise ValueError("Выберите репрезентацию изображений этого слоя")
+        if work_kind is WorkKind.VECTORIZE and work_placement is WorkPlacement.EXTERNAL:
+            target = representation_of(representations, vector_representation_id, RepresentationKind.VECTOR)
+            if vector_representation_id and target is None:
+                raise ValueError("Векторное представление не найдено в этом слое")
+            if target is None:
+                from kraken_manager.domain.layer_board import next_cif_representation_name
+
+                target = self.create_representation(
+                    principal=principal, project=project, layer=layer,
+                    name=next_cif_representation_name(
+                        (item.name for item in representations if item.kind is RepresentationKind.VECTOR), image.name,
+                    ),
+                    kind=RepresentationKind.VECTOR, source_image_representation_id=image.id,
+                    idempotency_key=f"{idempotency_key}:vector-target", active=True,
+                )
+            elif target.source_image_representation_id not in {None, image.id}:
+                raise ValueError("Выбранные CIF принадлежат другим исходным изображениям")
+            vector_representation_id = str(target.id)
         now = self.clock.now()
         companions = self._review_companion_plan(
             project.id,
@@ -147,7 +167,44 @@ class IssueWorkMixin:
             read_bytes=read_bytes,
             dataset_version=dataset,
         )
-        return self._record_work_order(principal, order, idempotency_key, "issue")
+        if order.kind is WorkKind.VECTORIZE and order.transport == "files":
+            order = replace(order, related_job_id=order.id)
+        order = self._record_work_order(principal, order, idempotency_key, "issue")
+        self._register_external_vector_job(principal, order)
+        return order
+
+    def _register_external_vector_job(self, principal, order) -> None:
+        if order.kind is not WorkKind.VECTORIZE or order.transport != "files":
+            return
+        from kraken_manager.application.dto import CommandContext, SubmitPluginJobCommand
+        from kraken_manager.application.plugin_jobs import SubmitPluginJobHandler
+        from kraken_manager.domain.common import ArtifactVersionId, FrameId, PluginJobId, RepresentationId
+        from kraken_manager.domain.workflows import PluginInputV1
+        from kraken_manager.infrastructure.work_package import WorkPackagePluginGateway
+
+        if self._projection(order.project_id).get_plugin_job(PluginJobId(order.id)) is not None:
+            return
+        # Issue is recoverable if interrupted between persisting the order and
+        # registering the exported job. Retrying uses the same package and ID.
+        gateway = WorkPackagePluginGateway(Path(order.destination))
+        manifest = gateway.manifest
+        if (manifest.job_id != order.id or manifest.project_id != str(order.project_id)
+            or manifest.layer_id != str(order.layer_id)
+            or manifest.target_representation_id != order.vector_representation_id):
+            raise ValueError("Exported work package does not match its work order")
+        SubmitPluginJobHandler(self._uow(str(order.project_id)), self.profiles, self.clock, gateway)(
+            SubmitPluginJobCommand(
+                context=CommandContext(actor=principal, idempotency_key=f"work-job:{order.id}"),
+                project_id=order.project_id, layer_id=order.layer_id,
+                target_representation_id=RepresentationId(order.vector_representation_id),
+                selection=order.selection, capability=order.capability,
+                inputs=tuple(PluginInputV1(
+                    frame_id=FrameId(item.frame_id), artifact_version_id=ArtifactVersionId(item.artifact_version_id),
+                    sha256=item.sha256, relative_path=item.relative_path,
+                ) for item in manifest.inputs),
+                parameters=manifest.parameters, job_id=PluginJobId(order.id),
+            )
+        )
 
     def mark_work_running(self, order: WorkOrder, *, job_id: str = "", idempotency_key: str, principal=None) -> WorkOrder:
         return self._mutate_work_order(
@@ -161,11 +218,46 @@ class IssueWorkMixin:
         )
 
     def complete_work_order(self, order: WorkOrder, *, idempotency_key: str, principal=None) -> WorkOrder:
+        from kraken_core.plugin_protocol import PluginResultManifest
+        from kraken_core.safe_files import open_regular_read
+        from kraken_manager.application.errors import ConcurrencyError
+        from kraken_manager.domain.workflows import PluginJobState
+
+        principal = principal or self.identities.get(order.created_by)
+        verified_job_id = ""
+        current = self._projection(order.project_id).get_work_order(order.id)
+        if current is None:
+            raise ValueError("Задание не найдено")
+        if current.kind is WorkKind.VECTORIZE and current.transport == "files" and current.state not in {
+            WorkOrderState.COMPLETED, WorkOrderState.CANCELLED,
+        }:
+            if principal is None or str(principal.id) != str(current.created_by):
+                raise ValueError("Принять результат векторизации может автор выдачи задания. Передайте ему папку результата.")
+            self._authorize_work(principal, self.get_project(current.project_id))
+            if current.revision != order.revision:
+                raise ConcurrencyError("Work order revision changed")
+            destination = Path(current.destination)
+            with open_regular_read(destination / "result.json", root=destination) as stream:
+                result = PluginResultManifest.from_json(stream.read().decode("utf-8"))
+            if result.job_id != current.related_job_id or result.job_id != current.id:
+                raise ValueError("Результат не принадлежит этому заданию")
+            imported = self.import_agent_result(
+                principal=principal, result_payload=result.to_dict(), staging_root=destination.parent,
+                job_directory=destination,
+            )
+            if imported.job.state is not PluginJobState.SUCCEEDED:
+                raise ValueError("Результат задания ещё не импортирован полностью")
+            verified_job_id = str(imported.job.id)
+
         def change(current):
             if current.kind is WorkKind.VECTOR_REVIEW:
                 raise ValueError("Исправление векторов завершается принятием пакета проверки")
             if current.transport == "http":
                 raise ValueError("Результат HTTP-задания возвращается из Contour в проект")
+            if current.kind is WorkKind.VECTORIZE:
+                if not verified_job_id or verified_job_id != current.related_job_id:
+                    raise ValueError("Результат задания ещё не импортирован полностью")
+                return current.complete(at=self.clock.now())
             if not package_has_result(Path(current.destination), current.kind):
                 raise ValueError("В папке работы ещё нет файла результата")
             return current.complete(at=self.clock.now())

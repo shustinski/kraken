@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application.use_cases import AddArtifactVersionHandler, CreateArtifactSeriesHandler
-from kraken_manager.domain.project import GridOrientation, LayerType
+from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.infrastructure.filesystem import FilesystemEventStore
 from kraken_server.app import create_app
 from kraken_server.persistent_services import PostgresServerServices
@@ -111,6 +111,31 @@ def test_server_linked_source_has_previews_and_stable_inputs(tmp_path, orientati
     )
     assert local.history(project.id) == history
     assert len(tuple(Path(binding.image_directory).iterdir())) == 2
+
+def test_additional_image_directory_is_prepared_on_its_own(tmp_path):
+    server, local, session, project, layer, binding, representation, context = _server_layer(tmp_path)
+    extra = tmp_path / "extra-images"
+    extra.mkdir()
+    Image.new("RGB", (8, 8), "blue").save(extra / "0001.jpg")
+    added = local.create_representation(
+        principal=session.principal,
+        project=project,
+        layer=layer,
+        name="Исходные изображения (2)",
+        kind=RepresentationKind.IMAGE,
+        idempotency_key="extra-images",
+        source=str(extra),
+        active=True,
+    )
+    result = server.materialize_representation_inputs(str(project.id), str(layer.id), str(added.id), context)
+    assert result == {"prepared_frames": 1}
+    cells = local.frame_cells(project.id, layer.id, added.id)
+    assert len(cells) == 1
+    assert cells[0].sha256
+    original = local.frame_cells(project.id, layer.id, representation.id)
+    assert original == ()
+    assert Path(binding.image_directory) != extra.resolve()
+
 
 def test_attached_layer_replay_reuses_storage_and_authorizes_existing_layer(tmp_path):
     from kraken_manager.application.use_cases import CreateLayerHandler, CreateRepresentationHandler

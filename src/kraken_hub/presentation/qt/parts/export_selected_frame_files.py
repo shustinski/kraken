@@ -1,7 +1,6 @@
 """manager_app: export selected frame files."""
 from __future__ import annotations
 from pathlib import Path
-from uuid import uuid4
 
 
 class ExportSelectedFrameFilesMixin:
@@ -19,8 +18,7 @@ class ExportSelectedFrameFilesMixin:
         coordinates = tuple(context.selection.coordinates(maximum=10_000))
         destination = Path(parent) / (
             "Кадры_"
-            + datetime.now(UTC).astimezone().strftime("%Y%m%d-%H%M%S-")
-            + uuid4().hex[:6]
+            + datetime.now(UTC).astimezone().strftime("%d.%m.%Y %H-%M-%S.%f")
         )
         exported = 0
         try:

@@ -11,8 +11,10 @@ from kraken_server.services import CommandContext
 from test_server_workspace_inputs_parts.desktop_job import _desktop_job
 
 @pytest.mark.parametrize("transfer_mode", ["proxy", "gateway"])
-@pytest.mark.parametrize("capability", ["frames.vectorize.v1", "frames.dataset.prepare.v1"])
-def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, monkeypatch, capability, transfer_mode):
+@pytest.mark.parametrize("capability,partial", [
+    ("frames.vectorize.v1", False), ("frames.dataset.prepare.v1", False), ("frames.vectorize.v1", True),
+])
+def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, monkeypatch, capability, transfer_mode, partial):
     import os
     import hashlib
     import socket
@@ -32,6 +34,47 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
     )
 
     server, local, session, project, layer, target, gateway, payload = _desktop_job(tmp_path, capability)
+    if capability == "frames.dataset.prepare.v1":
+        from kraken_manager.domain.project import RepresentationKind
+
+        vectors = local.create_representation(
+            principal=session.principal, project=project, layer=layer, name="Latest CIF",
+            kind=RepresentationKind.VECTOR, source_image_representation_id=target.id,
+            active=True, idempotency_key="latest-cif",
+        )
+        cif_directory = tmp_path / "latest-cif"
+        cif_directory.mkdir()
+        for name in ("1_1.cif", "1_2.cif"):
+            (cif_directory / name).write_text("DS 1 1 1; L M1; ( S 16 12 ); P 0 0 8 0 8 8 0 8; DF; E;\n", encoding="utf-8")
+        local.commit_managed_import(
+            principal=session.principal, project=project, layer=layer, representation=vectors,
+            plan=local.plan_import_directory(project=project, directory=cif_directory),
+            idempotency_key="latest-cif-import",
+        )
+        payload = server.submit_plugin_job(
+            str(project.id),
+            {"layer_id": str(layer.id), "source_representation_id": str(target.id),
+             "target_representation_id": str(target.id), "coordinates": [[1, 1], [1, 2]],
+             "capability": capability, "parameters": {"execution_host": "desktop", "input_transport": "server",
+                                                       "vector_representation_id": str(vectors.id)}},
+            CommandContext(str(session.principal.id), "dataset-pinned-cif", None),
+        )
+        # Updating the representation after submission must not change the
+        # immutable CIF versions delivered to the already-created job.
+        for name in ("1_1.cif", "1_2.cif"):
+            (cif_directory / name).write_text("DS 1 1 1; L M1; ( S 16 12 ); P 0 0 3 0 3 3 0 3; DF; E;\n", encoding="utf-8")
+        local.commit_managed_import(
+            principal=session.principal, project=project, layer=layer, representation=vectors,
+            plan=local.plan_import_directory(project=project, directory=cif_directory),
+            idempotency_key="newer-cif-import",
+        )
+    source_root, derived_root = tmp_path / "workspace-source", tmp_path / "workspace-derived"
+    source_root.mkdir()
+    derived_root.mkdir()
+    workspace = local.bind_project_workspace(
+        principal=session.principal, project=project, source_root=source_root,
+        derived_root=derived_root, idempotency_key="workspace",
+    )
     downloads = []
     input_tickets = []
     original_request = ServerAgentWorker._request
@@ -86,7 +129,7 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
     assert http_server.started
     script = tmp_path / "contour_interactive.py"
     script.write_text(
-        """
+        f"PARTIAL = {partial!r}\n" + """
 import os
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 import faulthandler
@@ -107,6 +150,10 @@ original_build = bootstrap.build_application
 def build(argv):
     global app, window
     app, window = original_build([*argv, "--no-qss", "--log-file", str(session.staging_root / "contour.log")])
+    stale = session.staging_root / "0000.cif"
+    stale.write_text("L OLD; E;", encoding="utf-8")
+    window._widget._workspace.set_cif_index({"0000": str(stale)})
+    window._widget._pending_restore_vector_paths = [str(stale)]
     QTimer.singleShot(1000, publish)
     return app, window
 bootstrap.build_application = build
@@ -114,18 +161,30 @@ def publish():
     try:
         assert window.isVisible()
         assert window._widget._image_list_model.rowCount() == 2
+        index = window._widget._workspace.cif_paths_by_stem
+        if session.manifest.operation == "frames.dataset.prepare.v1":
+            assert set(index) == {"0000", "0002"}, index
+            assert all("8 8" in Path(path).read_text(encoding="utf-8") for path in index.values())
+        else:
+            assert not index, index
         window.grab().save(str(session.staging_root / "contour-window.png"))
         if session.manifest.operation == "frames.vectorize.v1":
-            for image in session.input_paths:
+            for image in (session.input_paths[:1] if PARTIAL else session.input_paths):
                 (session.output_directory / (image.stem + ".cif")).write_text("L M1; P 0 0 10 0 10 10 0 10; E;\\n")
         else:
             import shutil
             (session.output_directory / "images").mkdir(exist_ok=True)
             (session.output_directory / "cif").mkdir(exist_ok=True)
             for image in session.input_paths:
-                shutil.copyfile(image, session.output_directory / "images" / image.name)
+                image_output = session.output_directory / "images" / image.name
+                if session.server_source is not None:
+                    with session.server_source.open(image.relative_to(session.staging_root).as_posix()) as stream:
+                        image_output.write_bytes(stream.read())
+                else:
+                    shutil.copyfile(image, image_output)
                 (session.output_directory / "cif" / (image.stem + ".cif")).write_text("L M1; E;")
         QMessageBox.information = lambda *args: QMessageBox.StandardButton.Ok
+        QMessageBox.question = lambda *args: QMessageBox.StandardButton.Yes
         window._kraken_return_action.trigger()
     finally:
         app.quit()
@@ -141,10 +200,32 @@ main([])
     )
     try:
         result = remote.run_interactive_job(project.id, payload["id"], registry=registry)
-        assert result["imported"]["job"]["state"] == "succeeded"
+        assert result["imported"]["job"]["state"] == ("partial" if partial else "succeeded")
         assert len(downloads) == (2 if transfer_mode == "gateway" else 0)
+        # Streamed images are read by the Contour subprocess; only eager
+        # inputs (the pinned CIFs for dataset jobs) use this worker's client.
         assert len(input_tickets) == 2
-        assert result["imported"]["requires_partial_confirmation"] is False
+        assert result["imported"]["requires_partial_confirmation"] is partial
+        if partial:
+            assert not result["imported"]["versions"]
+            assert not local.frame_cells(project.id, layer.id, target.id)
+            assert str(payload["id"]) not in local.workspace_registry.plugin_result_directories(str(project.id))
+            approved = remote.confirm_partial_plugin_job(
+                principal=session.principal, job=decode_model(PluginJob, result["imported"]["job"]),
+                idempotency_key="accept-partial",
+            )
+            assert approved["requires_partial_confirmation"] is False
+            assert len(approved["versions"]) == 1
+        if capability == "frames.vectorize.v1":
+            relative = local.workspace_registry.plugin_result_directories(str(project.id))[str(payload["id"])]
+            output = Path(workspace.derived_project_dir) / relative
+            assert str(payload["id"]) not in output.name
+            assert output.name.startswith("Contour — ")
+            assert len(list(output.glob("*.cif"))) == (1 if partial else 2)
+            assert all(path.read_bytes() for path in output.glob("*.cif"))
+        if partial:
+            assert len(local.frame_cells(project.id, layer.id, target.id)) == 1
+            return
         job = decode_model(PluginJob, payload)
         cells = local.frame_cells(project.id, layer.id, target.id)
         assert len(cells) == 2
@@ -158,7 +239,7 @@ main([])
             )
             series = local._projection(project.id).get_artifact_series(versions[0]["series_id"])
             assert series.scope.value == "layer_attachment"
-            assert len(versions[0]["input_version_ids"]) == 2
+            assert len(versions[0]["input_version_ids"]) == 4
             training = server.submit_plugin_job(
                 str(project.id),
                 {

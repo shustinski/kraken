@@ -1,5 +1,6 @@
 """composition: publish workspace plugin result."""
 from __future__ import annotations
+from datetime import datetime
 from kraken_core.plugin_protocol import (
     WorkspacePluginResultV1,
 )
@@ -77,7 +78,10 @@ class PublishWorkspacePluginResultMixin:
                 principal=principal,
                 project=current_project,
                 layer=current_layer,
-                name=f"{layer.name} · {published.kind.value} · {published.run_id[:8]}",
+                name=(
+                    f"{layer.name} · {published.kind.value} · "
+                    f"{datetime.fromisoformat(published.created_at).astimezone():%d.%m.%Y %H-%M-%S}"
+                ),
                 kind=kind,
                 idempotency_key=f"workspace-run:{published.run_id}",
                 source=published.path,

@@ -16,14 +16,15 @@ from pathlib import Path
 
 from kraken_core.plugin_protocol import PluginFrameInput, PluginJobManifest, safe_relative_path
 from kraken_core.safe_files import (
-    contained_path, ensure_regular_directory, make_contained_directories, open_exclusive_write,
+    contained_path, ensure_regular_directory, make_contained_directories, open_exclusive_write, open_regular_read,
 )
 from kraken_manager.infrastructure.review.package import ReviewPackageLimits, _zip_members
 from kraken_manager.domain.artifacts import deterministic_frame_series_id, is_training_dataset_artifact
-from kraken_manager.domain.common import PerformerId, new_uuid
+from kraken_manager.domain.common import PerformerId, PluginJobId, new_uuid
 from kraken_manager.domain.project import RepresentationKind
 from kraken_manager.domain.selection import FrameRowRange, FrameSelectionV1
 from kraken_manager.domain.work_orders import WorkKind, WorkOrder, WorkPlacement
+from kraken_manager.domain.workflows import PluginJobManifestV1
 
 
 _KIND_DIRECTORY = {
@@ -33,6 +34,29 @@ _KIND_DIRECTORY = {
     WorkKind.STITCH: "Сшивка",
 }
 _IGNORED_RESULT_NAMES = {"kraken-work.json", "frames.json", "job.json"}
+
+
+class WorkPackagePluginGateway:
+    """Deliver a persisted PluginJob through an already exported file package."""
+
+    def __init__(self, destination: Path) -> None:
+        self.destination = destination
+        with open_regular_read(destination / "job.json", root=destination) as stream:
+            self.manifest = PluginJobManifest.from_json(stream.read().decode("utf-8"))
+
+    def is_available(self, capability: str, protocol_version: str) -> bool:
+        return capability == self.manifest.operation and protocol_version == self.manifest.protocol_version
+
+    def submit(self, manifest: PluginJobManifestV1) -> None:
+        if str(manifest.job_id) != self.manifest.job_id:
+            raise ValueError("Exported work package does not match the registered plugin job")
+        for item in self.manifest.inputs:
+            with open_regular_read(self.destination / item.relative_path, root=self.destination) as stream:
+                if hashlib.file_digest(stream, "sha256").hexdigest() != item.sha256:
+                    raise ValueError("Exported work package input hash does not match the plugin job")
+
+    def cancel(self, job_id: PluginJobId) -> None:
+        raise ValueError("Остановите внешнюю программу вручную: файловый пакет не управляет её процессом")
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +399,8 @@ def _place_work_order(request, *, active_version, read_bytes, dataset_version, a
 
     kind = WorkKind(request.kind)
     placement = WorkPlacement(request.placement)
+    if kind is WorkKind.STITCH and (placement is WorkPlacement.SERVER or request.transport == "http"):
+        raise ValueError("Серверная сшивка (stitch) пока не поддерживается. Выберите внешний накопитель.")
     transport = resolve_transport(
         placement=placement, kind=kind, remote=request.remote, requested=request.transport
     )

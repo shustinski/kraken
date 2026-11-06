@@ -55,6 +55,8 @@ class IssueWorkMixin:
         companion_representations: tuple[tuple[str, str], ...] | None = None,
     ) -> WorkOrder:
         work_placement = WorkPlacement(placement)
+        if WorkKind(kind) is WorkKind.VECTORIZE and work_placement is WorkPlacement.EXTERNAL:
+            raise ValueError("Для серверного проекта векторизация доступна по HTTP. Выберите размещение на сервере.")
         companions = (
             self._review_companion_plan(project_id, vector_representation_id, image_representation_id)
             if companion_representations is None

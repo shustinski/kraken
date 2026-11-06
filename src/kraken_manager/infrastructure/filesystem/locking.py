@@ -223,7 +223,7 @@ class ProjectFileLock:
                         if old_bytes is not None:
                             try:
                                 owner = json.loads(old_bytes)
-                            except ValueError, UnicodeError:
+                            except (ValueError, UnicodeError):
                                 owner = None
                             inactive_kernel_owner = (
                                 isinstance(owner, dict)
@@ -281,7 +281,7 @@ class ProjectFileLock:
         try:
             try:
                 current = json.loads(self.path.read_text(encoding="utf-8"))
-            except FileNotFoundError, OSError, ValueError:
+            except (FileNotFoundError, OSError, ValueError):
                 return
             if isinstance(current, dict) and current.get("token") == token:
                 try:

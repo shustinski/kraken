@@ -295,7 +295,7 @@ def test_server_issue_preserves_due_at_and_ignores_client_destination(setup):
     due_at = datetime.now(UTC) + timedelta(days=3)
     client_path = setup.tmp_path / "do-not-touch-client"
     issued = server.issue_work_order(str(setup.project.id), {
-        "kind": "stitch", "placement": "server", "assignee_id": str(setup.performer.id),
+        "kind": "vectorize", "placement": "server", "assignee_id": str(setup.performer.id),
         "layer_id": str(setup.layer.id), "coordinates": [[1, 1]],
         "image_representation_id": str(setup.images.id), "due_at": due_at.isoformat(),
         "destination": str(client_path), "destination_parent": str(client_path),
@@ -306,6 +306,14 @@ def test_server_issue_preserves_due_at_and_ignores_client_destination(setup):
     assert not client_path.exists()
     assert order.transport == "http"
     assert Path(order.destination, "kraken-work.json").is_file()
+
+
+def test_server_rejects_external_vectorize_registration_without_import_path(setup):
+    server = Server(setup)
+    order = replace(setup.order, kind=WorkKind.VECTORIZE, capability="frames.vectorize.v1")
+    with pytest.raises(ValidationError, match="HTTP"):
+        server.issue_work_order(str(setup.project.id), {"record": encode_model(order)}, context(setup))
+    assert server.projections.list_work_orders(setup.project.id) == ()
 
 
 @pytest.mark.parametrize("kind", ["stitch", "vector_review"])

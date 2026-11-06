@@ -225,6 +225,8 @@ class BlobGatewayManager:
                 return False
             if health.get("project_deletion_barrier") != 1:
                 raise RuntimeError("Обновите Kraken Blob Gateway: требуется поддержка удаления проектов")
+            if health.get("storage_backup_barrier") != 1 or health.get("filesystem_path_safety") != 1:
+                raise RuntimeError("Обновите Kraken Blob Gateway: требуется защита путей и резервного копирования")
             probe = self.signer.issue("download", "0" * 64, 0)
             request = urllib.request.Request(
                 f"{self.public_url}/v1/blobs/{'0' * 64}",

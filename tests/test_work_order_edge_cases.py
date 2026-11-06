@@ -21,7 +21,7 @@ setup = helpers.setup
 
 def issue_payload(setup, **changes):
     return {
-        "kind": "stitch",
+        "kind": "vectorize",
         "placement": "server",
         "assignee_id": str(setup.performer.id),
         "layer_id": str(setup.layer.id),

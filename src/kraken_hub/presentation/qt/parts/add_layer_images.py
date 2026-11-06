@@ -85,7 +85,7 @@ class AddLayerImagesMixin:
                 name=representation_name,
                 kind=RepresentationKind.IMAGE,
                 idempotency_key=operation_id,
-                source="managed-import",
+                source=str(scan.working_directory),
                 active=True,
                 purpose=RepresentationPurpose.SOURCE,
             )

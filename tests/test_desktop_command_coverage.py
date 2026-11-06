@@ -20,6 +20,7 @@ DESKTOP_COMMAND_ROUTES = {
     "ReorderLayerCommand": ("reorder_layer", "def _layer_manager_reorder"),
     "ReorderLayersCommand": ("reorder_layers", "def _layer_manager_reorder"),
     "ArchiveLayerCommand": ("archive_layer", '"archive_layer"'),
+    "DeleteLayerCommand": ("delete_layer", '"delete_layer"'),
     "AssignProjectRoleCommand": ("assign_project_role", "def manage_project_participants"),
     "RevokeProjectRoleCommand": ("revoke_project_role", "def manage_project_participants"),
     "RenameRepresentationCommand": ("rename_representation", '"rename_representation"'),

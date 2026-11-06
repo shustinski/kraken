@@ -47,7 +47,9 @@ def test_workflow_editor_preserves_named_model_binding_and_shows_pinned_attempt_
     dialog._redraw()
     dialog.operations.selectRow(0)
     assert "published.pth" in dialog.model_input.currentText()
-    assert model.sha256 in dialog.model_details.text()
+    assert model.filename in dialog.model_details.text()
+    assert model.created_at.isoformat() in dialog.model_details.text()
+    assert model.sha256 not in dialog.model_details.text()
     assert dialog._operation_payload(op.id)["model_input"] == {"version_id": model.id}
     assert model.id in dialog.attempts.item(0, 4).text()
     assert "image-version" in dialog.attempts.item(0, 4).text()

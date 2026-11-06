@@ -60,6 +60,7 @@ class OpenLayerManagerMixin:
                 project_id,
                 self.shell,
                 action_availability=self._action_availability,
+                action_availability_factory=self._menu_action_availability,
             )
             dialog.layerSelected.connect(self._layer_manager_select)
             dialog.orderChanged.connect(self._layer_manager_reorder)

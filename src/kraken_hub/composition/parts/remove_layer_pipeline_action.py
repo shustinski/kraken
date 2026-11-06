@@ -1,6 +1,7 @@
 """composition: remove layer pipeline action."""
 from __future__ import annotations
 from kraken_manager.application.authorization import AuthorizationPolicy
+from kraken_manager.application.plugin_jobs_parts.archive_outputs import archive_removed_job_outputs
 from kraken_manager.domain.common import (
     LayerId,
     PluginJobId,
@@ -14,6 +15,7 @@ from kraken_manager.domain.identity import (
 from kraken_manager.infrastructure.filesystem import (
     FilesystemEventStore,
 )
+from kraken_manager.infrastructure.plugin.vector_workspace import remove_vector_result
 
 
 class RemoveLayerPipelineActionMixin:
@@ -48,8 +50,11 @@ class RemoveLayerPipelineActionMixin:
         )
         if target is None:
             raise ValueError("Pipeline step does not exist in this layer")
+        job_id = str(target.payload.get("plugin_job_id") or target.payload.get("parameters", {}).get("plugin_job_id") or "")
+        job = self._projection(project.id).get_plugin_job(PluginJobId(job_id)) if job_id else None
+        if job_id and (job is None or job.project_id != project.id or str(job.layer_id) != str(layer_id)):
+            raise ValueError("Pipeline job does not belong to this layer")
         if remove_task:
-            job = self._projection(project.id).get_plugin_job(PluginJobId(str(target.payload.get("plugin_job_id", ""))))
             if job is None or job.state.value not in {"succeeded", "failed", "cancelled"}:
                 raise ValueError("Cancel the task before deleting it")
         prior = next(
@@ -63,6 +68,8 @@ class RemoveLayerPipelineActionMixin:
             None,
         )
         if prior is not None:
+            if job_id:
+                remove_vector_result(self.workspace_files, project_id=str(project.id), job_id=job_id)
             return prior
         stream_id = f"layer-pipeline:{layer_id}"
         store = FilesystemEventStore(self.catalog_root, str(project.id))
@@ -76,11 +83,16 @@ class RemoveLayerPipelineActionMixin:
                 "layer_id": str(layer_id),
                 "action_event_id": target.event_id,
                 "remove_task": remove_task,
-                "plugin_job_id": str(target.payload.get("plugin_job_id", "")),
+                "plugin_job_id": job_id,
                 "action": str(target.payload.get("action", "")),
             },
             actor=ActorSnapshot.from_principal(principal),
             program=ProgramSnapshot("Kraken"),
         )
-        store.append(stream_id, expected_revision=revision, events=(event,))
+        with self._uow(str(project.id))() as uow:
+            uow.event_store.append(stream_id, expected_revision=revision, events=(event,))
+            archive_removed_job_outputs(uow, event)
+            uow.commit()
+        if job_id:
+            remove_vector_result(self.workspace_files, project_id=str(project.id), job_id=job_id)
         return event

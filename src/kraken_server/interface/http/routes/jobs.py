@@ -138,6 +138,21 @@ def register(ctx: HttpContext) -> None:
             raise HTTPException(status_code=503, detail="Server job retry is unavailable")
         return operation(project_id, job_id, context)
 
+    @app.post(f"{API_PREFIX}/projects/{{project_id}}/jobs/{{job_id}}/confirm-partial")
+    def confirm_partial_project_job(
+        project_id: str,
+        job_id: str,
+        actor: SessionPrincipal = Depends(shared_mutation_actor),
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    ) -> dict[str, Any]:
+        operation = getattr(backend, "confirm_partial_plugin_job", None)
+        if operation is None:
+            raise HTTPException(status_code=503, detail="Server partial confirmation is unavailable")
+        return operation(
+            project_id, job_id,
+            command_context(actor, idempotency_key, None, revision_required=False),
+        )
+
     @app.post(f"{API_PREFIX}/agent/jobs/{{job_id}}/heartbeat")
     def heartbeat_agent_job(
         job_id: str,

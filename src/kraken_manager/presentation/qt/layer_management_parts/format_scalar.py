@@ -70,7 +70,21 @@ class ObjectPropertiesSnapshot:
         ObjectPropertiesSnapshot | None,
     ] | None = field(default=None, compare=False, repr=False)
 
+def _without_identifiers(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            key: _without_identifiers(item) for key, item in value.items()
+            if str(key) != "id" and not str(key).endswith(("_id", "_ids"))
+            and not any(part in str(key).casefold() for part in ("sha256", "fingerprint", "token"))
+            and not _is_uuid_like(item)
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_without_identifiers(item) for item in value if not _is_uuid_like(item)]
+    return None if _is_uuid_like(value) else value
+
+
 def _display_value(value: object) -> str:
+    value = _without_identifiers(value)
     if value is None or value == "":
         return "—"
     if isinstance(value, (Mapping, list, tuple, set)):

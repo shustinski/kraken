@@ -20,6 +20,7 @@ from kraken_manager.domain.project import (
     GridOrientation,
     RepresentationKind,
 )
+from kraken_manager.workspace import WorkspaceValidationError, map_frame_positions
 from kraken_manager.domain.artifacts import deterministic_frame_series_id
 from kraken_server.services import CommandContext, ValidationError
 
@@ -28,6 +29,38 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
     _project_id,
     resolve_storage_path,
 )
+
+
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".bmp", ".png"}
+
+
+def _input_directory(service, representation, binding, frame_count: int):
+    """Directory and frame map for one image representation.
+
+    The layer's registered folder is the default. Another image set on the same
+    layer may point at its own folder; that folder is prepared on its own.
+    """
+
+    registered = ensure_regular_directory(binding.image_directory)
+    source = str(representation.source or "").strip()
+    if not source or source == "managed-import":
+        return registered, dict(binding.frame_positions)
+    try:
+        candidate = ensure_regular_directory(resolve_storage_path(service, source))
+    except (OSError, ValueError):
+        raise ValueError(
+            "У слоя изображений не указана папка с кадрами. Сохраните изображения в проект."
+        ) from None
+    if candidate == registered:
+        return registered, dict(binding.frame_positions)
+    images = tuple(
+        path
+        for path in candidate.iterdir()
+        if path.is_file() and not path.is_symlink() and path.suffix.casefold() in _IMAGE_SUFFIXES
+    )
+    if not images:
+        raise ValueError("В папке дополнительного слоя изображений нет кадров JPG, PNG или BMP")
+    return candidate, map_frame_positions(images, maximum=frame_count)
 
 
 class MaterializeRepresentationInputsMixin:
@@ -56,12 +89,10 @@ class MaterializeRepresentationInputsMixin:
             binding = None if files is None else files.registry.get_layer(project_id, layer_id)
             if binding is None or not binding.frame_positions:
                 raise ValueError("The source layer has no registered image files")
-            root = ensure_regular_directory(binding.image_directory)
-            if resolve_storage_path(self, str(representation.source or "")).resolve() != root:
-                raise ValueError("The representation does not use the registered layer image directory")
+            root, frame_positions = _input_directory(self, representation, binding, project.frame_count)
             application_context = self._application_context(context)
             prepared = 0
-            for filename, position in sorted(binding.frame_positions.items(), key=lambda item: item[1]):
+            for filename, position in sorted(frame_positions.items(), key=lambda item: item[1]):
                 if Path(filename).name != filename or not 1 <= position <= project.frame_count:
                     raise ValueError("Invalid registered image position or filename")
                 x = (position - 1) % project.width + 1
@@ -105,7 +136,7 @@ class MaterializeRepresentationInputsMixin:
                     )
                 prepared += 1
             return {"prepared_frames": prepared}
-        except OSError as exc:
+        except (OSError, WorkspaceValidationError) as exc:
             raise ValidationError(f"Не удалось подготовить исходные изображения: {exc}") from exc
         except Exception as exc:
             self._translate_lifecycle_error(exc)

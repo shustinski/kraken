@@ -15,6 +15,7 @@ from kraken_manager.presentation.qt.layer_management_parts.format_scalar import 
     _display_value,
     _event_type_label,
     _local_timestamp,
+    _is_uuid_like,
 )
 from kraken_manager.presentation.qt.text_bounds import bounded_popup_text, cap_table_row_heights
 
@@ -36,8 +37,14 @@ class ConstructionMixin:
         tabs.setObjectName("objectPropertiesTabs")
         self.properties_table = self._table(("Свойство", "Значение"))
         self.properties_table.setObjectName("objectPropertiesTable")
-        self.properties_table.setRowCount(len(snapshot.properties))
-        for row, (name, value) in enumerate(snapshot.properties):
+        properties = tuple(
+            (name, value) for name, value in snapshot.properties
+            if not str(name).startswith("Идентификатор")
+            and not _is_uuid_like(value)
+            and not any(part in str(name).casefold() for part in ("sha-256", "sha256", "fingerprint", "token"))
+        )
+        self.properties_table.setRowCount(len(properties))
+        for row, (name, value) in enumerate(properties):
             self.properties_table.setItem(row, 0, QTableWidgetItem(str(name)))
             value_item = QTableWidgetItem(_display_value(value))
             value_item.setToolTip(bounded_popup_text(value_item.text()))
@@ -116,7 +123,6 @@ class ConstructionMixin:
             (
                 ("filename", "Имя"),
                 ("size", "Размер"),
-                ("sha256", "SHA-256"),
                 ("author", "Автор"),
                 ("created_at", "Дата"),
                 ("parent", "Родитель"),

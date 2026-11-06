@@ -81,21 +81,32 @@ def test_contour_launch_creates_or_reuses_empty_output(tmp_path, monkeypatch, re
         and item.purpose is output_purpose
         and item.source_image_representation_id == source.id
     ]
-    assert len(vectors) == 1
-    assert vectors[0].source_image_representation_id == source.id
-    assert job.target_representation_id == vectors[0].id
-    if existing_target == "linked":
-        assert vectors[0].id == target.id
+    created = next(item for item in vectors if item.id == job.target_representation_id)
+    assert created.source_image_representation_id == source.id
+    if capability == "frames.vectorize.v1":
+        assert len(vectors) == (2 if existing_target == "linked" else 1)
+        assert created.id != (None if target is None else target.id)
+        assert created.active
+        if existing_target == "linked":
+            previous = next(item for item in vectors if item.id == target.id)
+            assert not previous.active
+    else:
+        assert len(vectors) == 1
+        if existing_target == "linked":
+            assert created.id == target.id
     assert len(manifests) == 1
     assert len(manifests[0].inputs) == 2
-    assert local.frame_cells(project.id, layer.id, vectors[0].id) == ()
+    assert local.frame_cells(project.id, layer.id, created.id) == ()
     retry = controller._submit_agent_action(
         layer_id=str(layer.id),
         source_representation_id=str(source.id),
         capability=capability,
         parameters={},
     )
-    assert retry.target_representation_id == job.target_representation_id
+    if capability == "frames.vectorize.v1":
+        assert retry.target_representation_id != job.target_representation_id
+    else:
+        assert retry.target_representation_id == job.target_representation_id
     assert len(manifests) == 2
     assert len(launched) == (2 if remote else 0)
     if remote:

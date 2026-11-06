@@ -112,6 +112,8 @@ class IssueWorkMixin:
                     return expected
                 if order.placement is not WorkPlacement.EXTERNAL or order.transport != "files":
                     raise ValidationError("Clients may register only external file packages")
+                if order.kind is WorkKind.VECTORIZE:
+                    raise ValidationError("Векторизация серверного проекта доступна по HTTP; внешний импорт не поддерживается")
                 if order.created_by != context.actor_id or order.state is not WorkOrderState.ISSUED or order.revision != 0:
                     raise ValidationError("New work order identity or state is invalid")
                 layer = projections.get_layer(order.layer_id)

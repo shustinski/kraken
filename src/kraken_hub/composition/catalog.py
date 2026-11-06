@@ -67,7 +67,7 @@ class DualCatalogService(ProjectApplication):
             try:
                 for project in remote.list_projects(include_archived=True):
                     self._remote_ids.add(str(project.id))
-            except OSError, RemoteServerError, ValueError:
+            except (OSError, RemoteServerError, ValueError):
                 # Server may be temporarily unreachable; catalog refresh will retry.
                 LOGGER.exception("Could not load the initial remote project catalog")
                 self._remote_ids = set()
@@ -175,7 +175,7 @@ class DualCatalogService(ProjectApplication):
             try:
                 remote_projects = list(self.remote.list_projects(include_archived=include_archived))
                 self._remote_ids = {str(project.id) for project in self.remote.list_projects(include_archived=True)}
-            except OSError, RemoteServerError, ValueError:
+            except (OSError, RemoteServerError, ValueError):
                 LOGGER.exception("Could not refresh the remote project catalog")
                 remote_projects = []
         merged = {str(project.id): project for project in local_projects}
@@ -630,6 +630,13 @@ class DualCatalogService(ProjectApplication):
             confirm_partial=confirm_partial,
         )
 
+    def confirm_partial_plugin_job(self, *, principal, job, idempotency_key):
+        if not self.is_remote_project(job.project_id) or self.remote is None:
+            raise ValueError("Server partial confirmation requires a remote project")
+        return self.remote.confirm_partial_plugin_job(
+            principal=principal, job=job, idempotency_key=idempotency_key,
+        )
+
     def import_backup(self, bundle_root, *, principal=None, take_ownership=False):
         return self.local.import_backup(bundle_root, principal=principal, take_ownership=take_ownership)
 
@@ -662,7 +669,7 @@ def build_workspace_service(
 
     try:
         remote = build_remote_service(data_dir=local.data_dir)
-    except OSError, RemoteServerError, ValueError:
+    except (OSError, RemoteServerError, ValueError):
         LOGGER.exception("Could not configure the remote Kraken service")
         remote = None
     try:

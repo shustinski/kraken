@@ -6,7 +6,9 @@ from uuid import uuid4
 from kraken_manager.domain.identity import Permission
 from kraken_manager.application.results import UserSession as DesktopSession
 from kraken_hub.application.workspace import ProjectWorkspaceService
+from kraken_hub.application.remote_error import RemoteServerError
 from kraken_manager.presentation.qt.text_bounds import TABLE_ROW_HEIGHT_LIMIT, bounded_popup_text
+from kraken_hub.presentation.qt.parts.gateway_job import _file_work_job_ids
 
 def _my_work_panel(
     service: ProjectWorkspaceService,
@@ -20,6 +22,7 @@ def _my_work_panel(
         QHBoxLayout,
         QHeaderView,
         QInputDialog,
+        QLabel,
         QMessageBox,
         QPushButton,
         QTableWidget,
@@ -37,6 +40,12 @@ def _my_work_panel(
     actions.addWidget(launch_button)
     actions.addStretch(1)
     layout.addLayout(actions)
+    load_error = QLabel(host)
+    load_error.setWordWrap(True)
+    load_error.setTextFormat(Qt.TextFormat.PlainText)
+    load_error.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    load_error.hide()
+    layout.addWidget(load_error)
     headers = (
         "Тип",
         "Проект",
@@ -90,10 +99,12 @@ def _my_work_panel(
     }
 
     def repeat_export(batch) -> None:
+        from datetime import datetime
+
         parent = QFileDialog.getExistingDirectory(host, "Каталог для повторной выгрузки")
         if not parent:
             return
-        destination = Path(parent) / f"Проверка_{batch.id}_{uuid4().hex[:8]}"
+        destination = Path(parent) / ("Проверка_" + datetime.now().strftime("%d.%m.%Y %H-%M-%S.%f"))
         try:
             service.export_review_batch(
                 principal=session.principal,
@@ -239,6 +250,18 @@ def _my_work_panel(
             QMessageBox.warning(host, "Не удалось запустить плагин", str(exc))
 
     def refresh() -> None:
+        try:
+            populate()
+        except RemoteServerError as exc:
+            load_error.setText(f"Не удалось обновить список работ. Нажмите «Обновить», чтобы повторить.\n{exc}")
+            load_error.show()
+            launch_button.setEnabled(False)
+            return
+        load_error.clear()
+        load_error.hide()
+        launch_button.setEnabled(True)
+
+    def populate() -> None:
         projects = {
             str(project.id): project.name
             for project in service.list_projects(include_archived=True)
@@ -262,6 +285,8 @@ def _my_work_panel(
         batches = service.review_batches()
         jobs = service.plugin_jobs()
         orders = service.work_orders() if hasattr(service, "work_orders") else ()
+        file_jobs = _file_work_job_ids(orders)
+        jobs = tuple(job for job in jobs if str(job.id) not in file_jobs)
         work_states = {
             "issued": "Выдано",
             "running": "Выполняется",

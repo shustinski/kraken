@@ -26,6 +26,13 @@ from kraken_hub.infrastructure.remote.parts.remote_history_event import _RemoteH
 
 
 class SubmitPluginJobMixin:
+    def confirm_partial_plugin_job(self, *, principal, job, idempotency_key):
+        del principal
+        return self._call(
+            "POST", f"/api/v1/projects/{job.project_id}/jobs/{job.id}/confirm-partial",
+            payload={}, idempotency_key=idempotency_key,
+        )
+
     def retry_plugin_job(self, *, principal, gateway, job, idempotency_key):
         del principal, gateway
         payload = self._call(

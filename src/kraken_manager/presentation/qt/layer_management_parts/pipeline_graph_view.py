@@ -32,6 +32,7 @@ class PipelineGraphView(QGraphicsView):
         parent: QWidget | None = None,
         *,
         action_availability: Callable[[str], tuple[bool, str]] | None = None,
+        action_availability_factory: Callable[[], Callable[[str], tuple[bool, str]]] | None = None,
     ) -> None:
         self.graph_scene = PipelineScene()
         super().__init__(self.graph_scene, parent)
@@ -44,6 +45,7 @@ class PipelineGraphView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self._settings = settings
         self._action_availability = action_availability or (lambda _action: (True, ""))
+        self._action_availability_factory = action_availability_factory
         self._snapshot: LayerPipelineSnapshot | None = None
         self._expanded_lane_id = ""
         self._items: dict[str, PipelineNodeItem] = {}
@@ -112,6 +114,7 @@ class PipelineGraphView(QGraphicsView):
                         else None
                     ),
                     action_availability=self._action_availability,
+                    action_availability_factory=self._action_availability_factory,
                     position_changed=self._update_edges,
                 )
                 saved = self._settings.value(self._key(f"node/{node.node_id}"))

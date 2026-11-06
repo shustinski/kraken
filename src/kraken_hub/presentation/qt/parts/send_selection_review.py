@@ -10,7 +10,10 @@ def _issued_work_message(order) -> str:
     summary = f"{order.kind.title}\nКадров: {order.frame_count}"
     if order.placement.value == "server" or order.transport == "http":
         return summary + "\nПапка на сервере создана автоматически. Доступ к работе — по HTTP."
-    return summary + f"\nПапка: {order.destination}"
+    message = summary + f"\nПапка: {order.destination}"
+    if order.kind.value == "vectorize":
+        message += "\nПосле сохранения результата автор выдачи принимает его кнопкой «Завершить»."
+    return message
 
 
 _KIND_CHOICES = (
@@ -107,6 +110,18 @@ class SendSelectionReviewMixin:
                 label.setVisible(external)
 
         placement.currentIndexChanged.connect(lambda _index: toggle_directory())
+
+        def update_placements() -> None:
+            server_index = placement.findData("server")
+            server_item = placement.model().item(server_index)
+            supported = kind_box.currentData() != "stitch"
+            server_item.setEnabled(supported)
+            server_item.setToolTip("" if supported else "Серверная сшивка пока не поддерживается")
+            if not supported and placement.currentData() == "server":
+                placement.setCurrentIndex(placement.findData("external"))
+
+        kind_box.currentIndexChanged.connect(lambda _index: update_placements())
+        update_placements()
         launch_now = QCheckBox("Запустить сейчас", dialog)
         form.addRow("Работа", kind_box)
         form.addRow("Исполнитель", assignee)
@@ -183,6 +198,7 @@ class SendSelectionReviewMixin:
                     source_representation_id=order.image_representation_id or order.vector_representation_id,
                     capability=order.capability,
                     parameters=parameters,
+                    coordinates=tuple((cell.x, cell.y) for cell in order.selection.iter_coordinates()),
                 )
                 self.service.mark_work_running(order, job_id=str(job.id), idempotency_key=str(uuid4()), principal=self.session.principal)
             except Exception as exc:

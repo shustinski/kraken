@@ -74,8 +74,12 @@ class SynchronizePluginJobsMixin:
         gateway: object,
     ) -> tuple[object, ...]:
         synchronized: list[object] = []
+        external_jobs = {
+            order.related_job_id for order in self.work_orders()
+            if order.transport == "files" and order.related_job_id
+        }
         for job in self.plugin_jobs():
-            if job.state.value in {"succeeded", "failed", "cancelled"}:
+            if str(job.id) in external_jobs or job.state.value in {"succeeded", "failed", "cancelled"}:
                 synchronized.append(job)
                 continue
             try:

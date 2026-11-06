@@ -56,19 +56,28 @@ def domain_result_from_transport(transport: PluginResultManifest) -> PluginResul
 class AgentStagingResultContentReader:
     """PluginResultContentReader over one Agent staging root."""
 
-    def __init__(self, staging_root: Path | str, *, chunk_size: int = 1024 * 1024) -> None:
+    def __init__(
+        self, staging_root: Path | str, *, chunk_size: int = 1024 * 1024,
+        job_directory: Path | str | None = None,
+    ) -> None:
         if chunk_size < 1:
             raise ValueError("chunk_size must be positive")
         self.staging_root = Path(staging_root)
         self.chunk_size = chunk_size
+        self.job_directory = None if job_directory is None else Path(job_directory)
 
     def iter_output(self, manifest: PluginResultManifestV1, relative_path: str) -> Iterator[bytes]:
         normalized = safe_relative_path(relative_path)
         if not normalized.startswith("outputs/"):
             raise ValueError("Plugin result content must be below outputs/")
-        workspace = StagingWorkspace(self.staging_root, str(manifest.job_id))
-        candidate = workspace.resolve(normalized)
-        with open_regular_read(candidate, root=workspace.path) as stream:
+        if self.job_directory is None:
+            workspace = StagingWorkspace(self.staging_root, str(manifest.job_id))
+            root = workspace.path
+            candidate = workspace.resolve(normalized)
+        else:
+            root = self.job_directory
+            candidate = root / normalized
+        with open_regular_read(candidate, root=root) as stream:
             while chunk := stream.read(self.chunk_size):
                 yield chunk
 

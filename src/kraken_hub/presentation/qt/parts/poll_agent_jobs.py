@@ -7,6 +7,7 @@ from kraken_core.frame_matrix import (
 from kraken_manager.domain.identity import Permission
 from kraken_manager.presentation.qt.models import ProjectListItem
 from kraken_hub.application.workspace import ProjectEventWake
+from kraken_hub.presentation.qt.parts.gateway_job import _file_work_job_ids
 
 
 class PollAgentJobsMixin:
@@ -110,12 +111,19 @@ class PollAgentJobsMixin:
 
     def _resume_agent_jobs(self) -> None:
         try:
+            local_jobs = tuple(
+                job for job in self.service.plugin_jobs()
+                if job.state.value not in {"succeeded", "failed", "cancelled"}
+                and not getattr(self.service, "is_remote_project", lambda _: False)(job.project_id)
+            )
+            if not local_jobs:
+                return
+            file_jobs = _file_work_job_ids(getattr(self.service, "work_orders", lambda: ())())
             active = next(
                 (
                     job
-                    for job in self.service.plugin_jobs()
-                    if job.state.value not in {"succeeded", "failed", "cancelled"}
-                    and not getattr(self.service, "is_remote_project", lambda _: False)(job.project_id)
+                    for job in local_jobs
+                    if str(job.id) not in file_jobs
                 ),
                 None,
             )
@@ -143,8 +151,9 @@ class PollAgentJobsMixin:
                 principal=self.session.principal,
                 gateway=gateway,
             )
+            file_jobs = _file_work_job_ids(getattr(self.service, "work_orders", lambda: ())())
             for job in jobs:
-                if job.state.value != "importing":
+                if job.state.value != "importing" or str(job.id) in file_jobs:
                     continue
                 remote_project = getattr(self.service, "is_remote_project", lambda _project_id: False)
                 if remote_project(job.project_id):

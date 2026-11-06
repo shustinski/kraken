@@ -102,7 +102,7 @@ class MonitorWorkspaceResultMixin:
             QMessageBox.information(
                 self.shell,
                 "Результат опубликован",
-                f"Запуск {published.run_id[:8]} сохранён во втором хранилище.",
+                f"Результат сохранён: {published.path}",
             )
 
         timer.timeout.connect(poll)

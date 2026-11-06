@@ -495,7 +495,7 @@ def _run_recognition(
         try:
             source = Path(str(payload["source_path"])).resolve(strict=session.server_source is None)
             output = Path(str(payload["output_path"])).resolve(strict=True)
-        except KeyError, OSError:
+        except (KeyError, OSError):
             return
         completed[source] = output
 
@@ -567,7 +567,7 @@ def _run_recognition(
                     raise KrakenBridgeError("Confidence должен быть одноканальным изображением JPEG")
         try:
             position = int(frame_positions.get(frame.frame_id, index - 1))
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             position = index - 1
         if position < 0:
             raise KrakenBridgeError(f"Frame {frame.frame_id} has an invalid negative filename position")

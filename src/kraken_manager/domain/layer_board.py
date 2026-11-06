@@ -226,7 +226,17 @@ def companion_export_plan(
 
 
 def next_image_representation_name(existing: Iterable[str]) -> str:
-    base = "Исходные изображения"
+    return _next_numbered_name("Исходные изображения", existing)
+
+
+def next_cif_representation_name(existing: Iterable[str], source_name: str) -> str:
+    """Name a new CIF result so each acquisition stays a separate block."""
+
+    source = str(source_name).strip() or "изображения"
+    return _next_numbered_name(f"CIF — {source}", existing)
+
+
+def _next_numbered_name(base: str, existing: Iterable[str]) -> str:
     names = {str(item).strip() for item in existing}
     if base not in names:
         return base

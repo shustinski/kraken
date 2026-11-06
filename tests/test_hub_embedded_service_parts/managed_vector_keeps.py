@@ -56,10 +56,14 @@ class ManagedVectorKeepsMixin:
             vector_directory = root / "vectors"
             vector_directory.mkdir()
             (vector_directory / "1_1.cif").write_text("CIF", encoding="utf-8")
+            (vector_directory / "1_1.ssc").write_bytes(b"sidecar")
             vector_plan = service.plan_import_directory(
                 project=project,
                 directory=vector_directory,
+                kind=RepresentationKind.VECTOR,
             )
+            self.assertTrue(vector_plan.ready)
+            self.assertEqual(("1_1.cif",), tuple(item.source.display_name for item in vector_plan.items))
             vector_result = service.commit_managed_import(
                 principal=session.principal,
                 project=project,

@@ -58,27 +58,58 @@ class CreateRepresentationMixin:
         return project, actor
 
     def plan_import_directory(self, project_id, payload, context):
+        from dataclasses import replace
         from kraken_core.safe_files import ensure_regular_directory, open_regular_read
-        from kraken_manager.application.imports import ImportMappingMode, ImportPlanner, ImportSource
+        from kraken_manager.application.imports import (
+            ImportIssue,
+            ImportMappingMode,
+            ImportPlanner,
+            ImportSource,
+            import_source_suffixes,
+        )
+        from kraken_manager.domain.project import RepresentationKind
         from kraken_manager.infrastructure.filesystem._codec import encode_model
         import hashlib
 
         try:
             project, _actor = self._authorize_representation_import(project_id, context)
             root = ensure_regular_directory(self.resolve_storage_path(payload["directory"]))
+            kind = RepresentationKind(payload.get("kind", "image"))
+            suffixes = import_source_suffixes(kind)
             sources = []
+            ignored = 0
             for path in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
                 if not path.is_file():
+                    continue
+                if path.suffix.casefold() not in suffixes:
+                    ignored += 1
                     continue
                 digest = hashlib.sha256()
                 with open_regular_read(path, root=root) as stream:
                     while chunk := stream.read(1024 * 1024):
                         digest.update(chunk)
                 sources.append(ImportSource(str(path), path.name, path.stat().st_size, digest.hexdigest()))
-            return encode_model(ImportPlanner().plan(
+            plan = ImportPlanner().plan(
                 width=project.width, height=project.height, sources=tuple(sources),
                 mode=ImportMappingMode(payload.get("mode", "xy_filename")), regex=payload.get("regex"),
-            ))
+            )
+            label = (
+                "vector files (CIF)"
+                if kind is RepresentationKind.VECTOR
+                else "frame images (JPG, JPEG, PNG or BMP)"
+            )
+            issues = list(plan.issues)
+            if not sources:
+                issues.append(
+                    ImportIssue("no_import_sources", f"No {label} were found in the folder", True)
+                )
+            elif ignored:
+                issues.append(
+                    ImportIssue("ignored_files", f"Ignored {ignored} file(s) that are not {label}", False)
+                )
+            if issues != list(plan.issues):
+                plan = replace(plan, issues=tuple(issues))
+            return encode_model(plan)
         except Exception as exc:
             self._translate_lifecycle_error(exc)
             raise AssertionError("unreachable")

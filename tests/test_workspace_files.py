@@ -18,6 +18,7 @@ from kraken_manager.workspace import (
 from kraken_manager.infrastructure.workspace_files import (
     WorkspaceFileService,
     WorkspaceRegistry,
+    _directory_target,
     validate_workspace_roots,
 )
 
@@ -144,9 +145,9 @@ def test_project_layout_and_versioned_run_paths(tmp_path: Path) -> None:
     )
 
     for category in ("img", "ssc", "prv", "aux"):
-        assert (Path(binding.source_project_dir) / category).is_dir()
+        assert os.path.isdir(_directory_target(Path(binding.source_project_dir) / category))
     for category in ("dataset", "result", "vector"):
-        assert (Path(binding.derived_project_dir) / category).is_dir()
+        assert os.path.isdir(_directory_target(Path(binding.derived_project_dir) / category))
 
     first = service.begin_run(
         project_id="project-1",
@@ -483,4 +484,58 @@ def test_server_project_places_folder_types_in_one_root(tmp_path: Path) -> None:
     assert Path(binding.source_project_dir) == project_dir
     assert Path(binding.derived_project_dir) == project_dir
     for folder_type in ("img", "ssc", "prv", "aux", "dataset", "result", "vector"):
-        assert (project_dir / folder_type).is_dir()
+        assert os.path.isdir(_directory_target(project_dir / folder_type))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reserved DOS device names only break Win32 paths")
+def test_windows_reserved_aux_category_survives_win32_name_check(tmp_path: Path) -> None:
+    """Regression: Win32 APIs reject a final path component named ``aux`` (WinError 267)."""
+    source, derived = _roots(tmp_path)
+    service = _service(tmp_path)
+    binding = service.create_server_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=source,
+        derived_root=derived,
+    )
+    aux = Path(binding.source_project_dir) / "aux"
+    assert os.path.isdir(_directory_target(aux))
+    probe = aux / "probe.txt"
+    probe.write_text("ok", encoding="utf-8")
+    assert probe.is_file()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reserved DOS device names only break Win32 paths")
+def test_import_layer_survives_reserved_aux_subdirectory(tmp_path: Path) -> None:
+    """Regression: a source tree with a ``con`` subfolder used to crash the aux copy (WinError 267)."""
+    source_root, derived_root = _roots(tmp_path)
+    microscope = tmp_path / "microscope"
+    microscope.mkdir()
+    Image.new("RGB", (2, 2), "white").save(microscope / "frame_0.png")
+    reserved = microscope / "con"
+    os.mkdir(_directory_target(reserved))
+    (reserved / "data.txt").write_text("keep", encoding="utf-8")
+    scan = scan_layer_source(microscope, maximum_frames=4)
+    service = _service(tmp_path)
+    project = service.create_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=source_root,
+        derived_root=derived_root,
+    )
+
+    binding = service.import_layer(
+        project=project,
+        layer_id="layer-1",
+        layer_name="Metal",
+        scan=scan,
+        conversion=ImageConversionSettings(),
+    )
+
+    assert (Path(binding.image_directory) / "frame_0.png").is_file()
+    assert os.path.isdir(_directory_target(Path(binding.aux_directory) / "con"))
+    assert not list(Path(project.source_project_dir).glob(".import-*"))
+
+    service.remove_managed_layer_layout(binding, project)
+    assert not os.path.isdir(_directory_target(Path(binding.aux_directory) / "con"))
+    assert not os.path.isdir(_directory_target(Path(project.source_project_dir) / "aux" / "Metal"))

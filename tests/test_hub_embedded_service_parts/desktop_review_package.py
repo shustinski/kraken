@@ -80,6 +80,7 @@ class DesktopReviewPackageMixin:
                 plan=service.plan_import_directory(
                     project=project,
                     directory=source_vectors,
+                    kind=RepresentationKind.VECTOR,
                 ),
                 idempotency_key="import-vectors",
             )

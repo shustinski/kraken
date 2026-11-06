@@ -33,6 +33,11 @@ def import_setup(tmp_path):
     root.mkdir()
     (root / "1_1.jpg").write_bytes(b"image-one")
     (root / "2_1.jpg").write_bytes(b"image-two")
+    (root / "1_1.prv").write_bytes(b"preview-one")
+    (root / "1_1.ssc").write_bytes(b"sidecar-one")
+    (root / "2_1.ssc").write_bytes(b"sidecar-two")
+    (root / "Heggs_M1_FS.bdt").write_bytes(b"binary")
+    (root / "Thumbs.db").write_bytes(b"thumbnails")
     return server, local, session, project, layer, representation, context, root
 
 

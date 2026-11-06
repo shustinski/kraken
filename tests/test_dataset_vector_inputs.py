@@ -6,6 +6,7 @@ import pytest
 import sqlalchemy as sa
 from types import SimpleNamespace
 
+from kraken_manager.domain.project import RepresentationKind
 from kraken_server.services import CommandContext
 from test_server_workspace_inputs_parts.desktop_job import _desktop_job
 
@@ -22,7 +23,7 @@ def vector_job(tmp_path):
         project=project,
         layer=layer,
         representation=vectors,
-        plan=local.plan_import_directory(project=project, directory=source),
+        plan=local.plan_import_directory(project=project, directory=source, kind=RepresentationKind.VECTOR),
         idempotency_key="new-vectors",
     )
     return server, local, session, project, layer, vectors, gateway, imported

@@ -20,7 +20,11 @@ from kraken_manager.domain.project import (
     GridOrientation,
     RepresentationKind,
 )
-from kraken_manager.workspace import WorkspaceValidationError, map_frame_positions
+from kraken_manager.workspace import (
+    FRAME_IMAGE_SUFFIXES,
+    WorkspaceValidationError,
+    map_frame_positions,
+)
 from kraken_manager.domain.artifacts import deterministic_frame_series_id
 from kraken_server.services import CommandContext, ValidationError
 
@@ -29,9 +33,6 @@ from kraken_server.persistent_services_parts.layer_source_scan import (
     _project_id,
     resolve_storage_path,
 )
-
-
-_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".bmp", ".png"}
 
 
 def _input_directory(service, representation, binding, frame_count: int):
@@ -56,7 +57,7 @@ def _input_directory(service, representation, binding, frame_count: int):
     images = tuple(
         path
         for path in candidate.iterdir()
-        if path.is_file() and not path.is_symlink() and path.suffix.casefold() in _IMAGE_SUFFIXES
+        if path.is_file() and not path.is_symlink() and path.suffix.casefold() in FRAME_IMAGE_SUFFIXES
     )
     if not images:
         raise ValueError("В папке дополнительного слоя изображений нет кадров JPG, PNG или BMP")

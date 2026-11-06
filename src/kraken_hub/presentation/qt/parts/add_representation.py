@@ -54,6 +54,7 @@ class AddRepresentationMixin:
                         project=project,
                         directory=source_directory,
                         mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
+                        kind=kind,
                     )
                 except Exception as exc:
                     QMessageBox.warning(form.dialog, "Ошибка проверки файлов", str(exc))

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
+# The only raster formats Kraken treats as microscope frame images.
+FRAME_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".bmp", ".png"})
 _FORBIDDEN_NAME_CHARS = frozenset('<>:"/\\|?*')
 _WINDOWS_DEVICES = {
     "CON",
@@ -245,9 +247,7 @@ def scan_layer_source(root: Path | str, *, maximum_frames: int) -> LayerSourceSc
             total_files += 1
             total_bytes += metadata.st_size
             fingerprints[str(path.resolve())] = (metadata.st_size, metadata.st_mtime_ns)
-        image_count = sum(
-            path.suffix.casefold() in {".jpg", ".jpeg", ".bmp", ".png"} for path in files
-        )
+        image_count = sum(path.suffix.casefold() in FRAME_IMAGE_SUFFIXES for path in files)
         if image_count:
             depth = len(current.relative_to(selected).parts)
             candidates.append((-len(files), depth, str(current).casefold(), current, tuple(files)))
@@ -310,6 +310,7 @@ __all__ = [
     "DerivedRun",
     "DerivedRunKind",
     "DerivedRunState",
+    "FRAME_IMAGE_SUFFIXES",
     "ImageConversionSettings",
     "LayerFileBinding",
     "LayerSourceMode",

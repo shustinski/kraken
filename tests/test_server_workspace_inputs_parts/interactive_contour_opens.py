@@ -48,7 +48,7 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
             (cif_directory / name).write_text("DS 1 1 1; L M1; ( S 16 12 ); P 0 0 8 0 8 8 0 8; DF; E;\n", encoding="utf-8")
         local.commit_managed_import(
             principal=session.principal, project=project, layer=layer, representation=vectors,
-            plan=local.plan_import_directory(project=project, directory=cif_directory),
+            plan=local.plan_import_directory(project=project, directory=cif_directory, kind=RepresentationKind.VECTOR),
             idempotency_key="latest-cif-import",
         )
         payload = server.submit_plugin_job(
@@ -65,7 +65,7 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
             (cif_directory / name).write_text("DS 1 1 1; L M1; ( S 16 12 ); P 0 0 3 0 3 3 0 3; DF; E;\n", encoding="utf-8")
         local.commit_managed_import(
             principal=session.principal, project=project, layer=layer, representation=vectors,
-            plan=local.plan_import_directory(project=project, directory=cif_directory),
+            plan=local.plan_import_directory(project=project, directory=cif_directory, kind=RepresentationKind.VECTOR),
             idempotency_key="newer-cif-import",
         )
     source_root, derived_root = tmp_path / "workspace-source", tmp_path / "workspace-derived"

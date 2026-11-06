@@ -9,6 +9,7 @@ from kraken_manager.domain.project import (
     Layer,
     Project,
     Representation,
+    RepresentationKind,
 )
 
 
@@ -33,6 +34,7 @@ class MaterializeRepresentationInputsMixin:
             project=project,
             directory=source,
             mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
+            kind=RepresentationKind.IMAGE,
         )
         if not plan.ready or not plan.items:
             details = "; ".join(issue.message for issue in plan.issues)

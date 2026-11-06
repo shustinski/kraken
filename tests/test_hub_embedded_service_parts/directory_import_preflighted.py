@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
+from kraken_manager.application.imports import ImportMappingMode
 from kraken_manager.domain.artifacts import deterministic_frame_series_id
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 
@@ -121,3 +122,82 @@ class DirectoryImportPreflightedMixin:
             scan = service.scan_integrity()
             self.assertTrue(scan.valid)
             self.assertEqual(2, scan.blobs)
+
+    def _sidecar_project(self, root: Path):
+        service = EmbeddedProjectService(root / "data")
+        session = service.create_initial_account("owner", "Owner", "")
+        project = service.create_project(
+            principal=session.principal,
+            name="Sidecars",
+            width=2,
+            height=1,
+            orientation=GridOrientation.Y_DOWN,
+            idempotency_key="project",
+        )
+        return service, project
+
+    def test_directory_import_plans_only_frame_images_and_ignores_sidecar_files(self) -> None:
+        # ignore_cleanup_errors: the catalog tree contains an "aux" directory that
+        # shutil.rmtree cannot remove on Windows (DOS reserved name, WinError 145).
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            source = root / "img"
+            source.mkdir()
+            for index in (0, 1):
+                (source / f"Heggs_M1_FS_{index:03d}.jpg").write_bytes(f"image-{index}".encode())
+                (source / f"Heggs_M1_FS_{index:03d}.prv").write_bytes(f"preview-{index}".encode())
+                (source / f"Heggs_M1_FS_{index:03d}.ssc").write_bytes(f"sidecar-{index}".encode())
+            (source / "Heggs_M1_FS.bdt").write_bytes(b"binary")
+            (source / "Thumbs.db").write_bytes(b"thumbnails")
+            service, project = self._sidecar_project(root)
+            plan = service.plan_import_directory(
+                project=project,
+                directory=source,
+                mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
+            )
+            self.assertTrue(plan.ready)
+            self.assertEqual(
+                (("Heggs_M1_FS_000.jpg", 1, 1), ("Heggs_M1_FS_001.jpg", 2, 1)),
+                tuple((item.source.display_name, item.x, item.y) for item in plan.items),
+            )
+            self.assertEqual({"ignored_files"}, {issue.code for issue in plan.issues})
+            self.assertFalse(plan.issues[0].blocking)
+
+    def test_directory_import_without_frame_images_blocks(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            source = root / "img"
+            source.mkdir()
+            (source / "Heggs_M1_FS.bdt").write_bytes(b"binary")
+            (source / "Thumbs.db").write_bytes(b"thumbnails")
+            service, project = self._sidecar_project(root)
+            plan = service.plan_import_directory(
+                project=project,
+                directory=source,
+                mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
+            )
+            self.assertFalse(plan.ready)
+            self.assertEqual((), plan.items)
+            self.assertEqual(
+                ["no_import_sources"],
+                [issue.code for issue in plan.issues if issue.blocking],
+            )
+
+    def test_directory_import_plans_only_cif_for_vector_kind(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+            root = Path(temporary)
+            source = root / "vectors"
+            source.mkdir()
+            for index in (1, 2):
+                (source / f"{index}_1.cif").write_text(f"DS {index} 1 1;\nDF;\nE\n", encoding="utf-8")
+            (source / "1_1.ssc").write_bytes(b"sidecar")
+            (source / "Thumbs.db").write_bytes(b"thumbnails")
+            service, project = self._sidecar_project(root)
+            plan = service.plan_import_directory(
+                project=project,
+                directory=source,
+                kind=RepresentationKind.VECTOR,
+            )
+            self.assertTrue(plan.ready)
+            self.assertEqual(("1_1.cif", "2_1.cif"), tuple(item.source.display_name for item in plan.items))
+            self.assertEqual({"ignored_files"}, {issue.code for issue in plan.issues})

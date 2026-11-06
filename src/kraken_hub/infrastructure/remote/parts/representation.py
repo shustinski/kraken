@@ -25,14 +25,14 @@ from kraken_hub.infrastructure.remote.parts.extract_review_archive import (
 
 
 class RepresentationMixin:
-    def plan_import_directory(self, *, project, directory, mode=None, regex=None):
+    def plan_import_directory(self, *, project, directory, mode=None, regex=None, kind=None):
         from kraken_manager.application.imports import ImportMappingMode, ImportPlan
         from kraken_manager.infrastructure.filesystem._codec import decode_model
 
         payload = self._call(
             "POST", f"/api/v1/projects/{project.id}/import-plan",
             payload={"directory": str(directory), "mode": (mode or ImportMappingMode.XY_FILENAME).value,
-                     "regex": regex},
+                     "regex": regex, "kind": (kind or RepresentationKind.IMAGE).value},
         )
         return decode_model(ImportPlan, payload)
 

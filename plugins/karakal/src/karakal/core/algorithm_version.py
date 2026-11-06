@@ -6,6 +6,6 @@ reused) and into the app version: 0.2.<number>-betaN.
 
 from __future__ import annotations
 
-GRID_ALGORITHM_NUMBER = 96
+GRID_ALGORITHM_NUMBER = 97
 GRID_ALGORITHM_TAG = "grid_free_normal_bank"
 GRID_DAMAGE_ALGORITHM_VERSION = f"grid_damage_v{GRID_ALGORITHM_NUMBER}_{GRID_ALGORITHM_TAG}"

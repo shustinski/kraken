@@ -4,6 +4,18 @@
 
 ## Воспроизведено
 
+### D9. Ход по папкам с зарезервированными именами Windows теряет данные (con, aux, …)
+
+- Компонент: `kraken_manager` — скан источника `scan_layer_source`, импорт слоя `import_layer`, копирование серверного слоя `create_external_layer` → `place_server_layer` → `_copy_directory`/`_copy_children`, помощники `_make_directory`/`_directory_target` (`src/kraken_manager/workspace.py`, `src/kraken_manager/infrastructure/workspace_files.py`).
+- Статус: исправлен 2026-11-06.
+- Воспроизведение: исходное дерево с изображением в корне и подпапкой `con`, внутри которой `con/data.txt` (папка создаётся только с завершающим разделителем: `os.mkdir("...con\")`). Прогнать `scan_layer_source` и `import_layer`; отдельно — `place_server_layer` (серверный поток `create_external_layer`) по дереву с подпапкой `con/`.
+- Ожидание: скан видит все файлы дерева; импорт и копирование сохраняют байты файлов под подпапками с зарезервированными именами.
+- Факт: `scan_layer_source` возвращает `total_files=1` — `con/data.txt` невидим; `import_layer` создаёт пустую `aux/<слой>/con` без `data.txt` (тихая потеря данных); `_copy_children` пропускает подпапку `con/` целиком — `Path.is_dir()` по «голому» зарезервированному пути попадает в устройство CON и даёт `False`, а при достижении `destination.mkdir()` — WinError 267.
+- Место и причина: `os.walk`/`os.scandir` на Windows не открывают папку, если её последний компонент — зарезервированное DOS-имя без завершающего разделителя (WinError 1168); `mkdir` формы «stem+extension» (`con.log`) падает с WinError 267; `_make_directory` молча завершался успешно, когда конечный путь уже существовал (контракт `Path.mkdir` нарушен).
+- Исправление: новый `walk_directory_tree` в `kraken_manager/workspace.py` — аналог `os.walk`, открывающий каждую папку через `_directory_target` (с завершающим разделителем); им пользуются `scan_layer_source` и aux-ход `import_layer`. `_directory_target` перенесён в `kraken_manager.workspace` и теперь сопоставляет stem компонента (как `validate_workspace_name`), покрывая `con.log` и подобные. `_copy_children` классифицирует дочерние записи по кэшированным атрибутам `os.scandir` (для зарезервированных имён они корректны) и создаёт целевую папку через `_make_directory`. `_make_directory` теперь поднимает `FileExistsError` на уже существующем конечном пути при `exist_ok=False` и поверх существующего файла при `exist_ok=True` (совпадает с `Path.mkdir(parents=True, exist_ok=...)`). `os.walk`/`shutil.copytree` в `publish_run` по выводам плагинов — известное ограничение (имена контролируемые), помечено комментарием в коде.
+- Регрессии (маркер `kraken_defect = "D9"`): `tests/test_workspace_files.py::test_scan_counts_files_inside_reserved_subdirectory`, `::test_import_layer_preserves_bytes_under_reserved_aux_subdirectory`, `::test_place_server_layer_copies_reserved_subdirectory_bytes`, `::test_make_directory_and_remove_tree_handle_stem_extension_reserved_names`, `::test_make_directory_exist_ok_contract`.
+- Доказательства (добавить позже): RED→GREEN прогоны регрессионных тестов, перечисленных выше.
+
 ### D8. Persistent upload через Gateway возвращает HTTP500
 
 После унификации команд `_add_artifact_version` стал `commands.execute`, а preflight

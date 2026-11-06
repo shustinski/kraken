@@ -25,10 +25,11 @@ from kraken_manager.workspace import (
     LayerSourceScan,
     ProjectWorkspaceBinding,
     WorkspaceValidationError,
-    _WINDOWS_DEVICES,
+    _directory_target,
     map_frame_positions,
     scan_layer_source,
     validate_workspace_name,
+    walk_directory_tree,
 )
 
 
@@ -67,25 +68,17 @@ def _same_or_nested(first: Path, second: Path) -> bool:
     return first == second or first in second.parents or second in first.parents
 
 
-def _directory_target(path: Path) -> str:
-    """Path string for Win32 calls that target the directory itself.
-
-    Windows rejects a final path component that is a reserved DOS device
-    name (``aux``, ``con``, ...) unless the path ends with a directory
-    separator. Operations on entries *inside* the directory are unaffected.
-    """
-    text = str(path).rstrip(os.sep)
-    if os.name == "nt" and text.rsplit(os.sep, 1)[-1].upper() in _WINDOWS_DEVICES:
-        return text + os.sep
-    return text
-
-
 def _make_directory(path: Path, *, exist_ok: bool = False) -> None:
     """Create *path* and any missing ancestors.
 
     Windows rejects reserved DOS device names (``aux``, ``con``, ...) as a
     final path component, so every component is created through
     ``_directory_target`` instead of ``Path.mkdir``.
+
+    The final path follows ``Path.mkdir(parents=True, exist_ok=...)``: when
+    it already exists, ``exist_ok=False`` raises ``FileExistsError`` for both
+    directories and files, and ``exist_ok=True`` tolerates an existing
+    directory but still raises ``FileExistsError`` over an existing file.
     """
     missing: list[Path] = []
     probe = path
@@ -101,6 +94,11 @@ def _make_directory(path: Path, *, exist_ok: bool = False) -> None:
         except FileExistsError:
             if index == len(missing) - 1 and not exist_ok:
                 raise
+    target = _directory_target(path)
+    if os.path.exists(target) and not os.path.isdir(target):
+        raise FileExistsError(f"Путь существует и не является папкой: {path}")
+    if not missing and not exist_ok:
+        raise FileExistsError(f"Папка уже существует: {path}")
 
 
 def _remove_tree(root: Path, *, ignore_errors: bool = False) -> None:
@@ -207,15 +205,15 @@ def _copy_directory(source: Path, destination: Path) -> None:
 
 
 def _copy_children(source: Path, destination: Path) -> None:
-    destination.mkdir()
-    for child in source.iterdir():
-        if child.is_symlink():
-            raise WorkspaceValidationError(f"Символические ссылки недопустимы: {child}")
-        target = destination / child.name
-        if child.is_dir():
-            _copy_children(child, target)
-        elif child.is_file():
-            shutil.copy2(child, target)
+    _make_directory(destination)
+    for entry in os.scandir(_directory_target(source)):
+        if entry.is_symlink():
+            raise WorkspaceValidationError(f"Символические ссылки недопустимы: {entry.path}")
+        target = destination / entry.name
+        if entry.is_dir(follow_symlinks=False):
+            _copy_children(Path(entry.path), target)
+        elif entry.is_file(follow_symlinks=False):
+            shutil.copy2(entry.path, target)
 
 
 def validate_workspace_roots(source_root: Path | str, derived_root: Path | str) -> tuple[Path, Path]:
@@ -796,8 +794,7 @@ class WorkspaceFileService:
             for raw in values:
                 source = Path(raw)
                 tasks.append((self._copy_file, (source, stage / category / source.name), source.name))
-        for current_text, directory_names, file_names in os.walk(selected_root, followlinks=False):
-            current = Path(current_text)
+        for current, directory_names, file_names in walk_directory_tree(selected_root):
             for directory_name in directory_names:
                 candidate = current / directory_name
                 if candidate.is_symlink():
@@ -1005,6 +1002,12 @@ class WorkspaceFileService:
             stage = destination.parent / f".publish-{run.run_id}"
             if stage.exists():
                 raise FileExistsError(f"Временная папка публикации уже существует: {stage}")
+            # Known limitation (defect D9): os.walk and shutil.copytree below
+            # cannot descend into subdirectories named after reserved DOS
+            # devices (con, aux, ...) on Windows. Plugin output names are
+            # controlled, so this is accepted for now; route through
+            # walk_directory_tree and _copy_directory if plugin outputs
+            # become untrusted.
             for current_text, directory_names, file_names in os.walk(
                 source, followlinks=False
             ):

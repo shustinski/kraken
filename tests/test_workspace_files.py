@@ -19,8 +19,14 @@ from kraken_manager.infrastructure.workspace_files import (
     WorkspaceFileService,
     WorkspaceRegistry,
     _directory_target,
+    _make_directory,
+    _remove_tree,
     validate_workspace_roots,
 )
+
+
+# Regression tests for defect D9 (docs/quality/defects.md) live in this module.
+kraken_defect = "D9"
 
 
 def _service(tmp_path: Path) -> WorkspaceFileService:
@@ -539,3 +545,124 @@ def test_import_layer_survives_reserved_aux_subdirectory(tmp_path: Path) -> None
     service.remove_managed_layer_layout(binding, project)
     assert not os.path.isdir(_directory_target(Path(binding.aux_directory) / "con"))
     assert not os.path.isdir(_directory_target(Path(project.source_project_dir) / "aux" / "Metal"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reserved DOS device names only break Win32 paths")
+def test_scan_counts_files_inside_reserved_subdirectory(tmp_path: Path) -> None:
+    """D9: ``os.walk`` used to skip the contents of a ``con`` subfolder entirely."""
+    microscope = tmp_path / "microscope"
+    microscope.mkdir()
+    Image.new("RGB", (2, 2), "white").save(microscope / "frame_0.png")
+    reserved = microscope / "con"
+    os.mkdir(_directory_target(reserved))
+    (reserved / "data.txt").write_text("keep", encoding="utf-8")
+
+    scan = scan_layer_source(microscope, maximum_frames=4)
+
+    assert scan.ready
+    assert scan.total_files == 2
+    assert scan.total_bytes == (microscope / "frame_0.png").stat().st_size + 4
+    assert str((reserved / "data.txt").resolve()) in scan.file_fingerprints
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reserved DOS device names only break Win32 paths")
+def test_import_layer_preserves_bytes_under_reserved_aux_subdirectory(tmp_path: Path) -> None:
+    """D9: files under a ``con`` subfolder were imported as an empty aux dir (silent data loss)."""
+    source_root, derived_root = _roots(tmp_path)
+    microscope = tmp_path / "microscope"
+    microscope.mkdir()
+    Image.new("RGB", (2, 2), "white").save(microscope / "frame_0.png")
+    reserved = microscope / "con"
+    os.mkdir(_directory_target(reserved))
+    payload = "keep-bytes"
+    (reserved / "data.txt").write_text(payload, encoding="utf-8")
+    scan = scan_layer_source(microscope, maximum_frames=4)
+    service = _service(tmp_path)
+    project = service.create_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=source_root,
+        derived_root=derived_root,
+    )
+
+    binding = service.import_layer(
+        project=project,
+        layer_id="layer-1",
+        layer_name="Metal",
+        scan=scan,
+        conversion=ImageConversionSettings(),
+    )
+
+    copied = Path(binding.aux_directory) / "con" / "data.txt"
+    assert copied.is_file()
+    assert copied.read_text(encoding="utf-8") == payload
+    assert not list(Path(project.source_project_dir).glob(".import-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reserved DOS device names only break Win32 paths")
+def test_place_server_layer_copies_reserved_subdirectory_bytes(tmp_path: Path) -> None:
+    """D9: ``_copy_children`` silently dropped a ``con`` subfolder (``Path.is_dir()``
+    hits the CON device; ``mkdir`` on the bare name raises WinError 267)."""
+    shared = tmp_path / "data"
+    shared.mkdir()
+    service = _service(tmp_path)
+    project = service.create_server_project(
+        project_id="project-1",
+        project_name="Chip",
+        source_root=shared,
+        derived_root=shared,
+    )
+    images = tmp_path / "microscope"
+    images.mkdir()
+    (images / "frame_0.png").write_bytes(b"frame")
+    reserved = images / "con"
+    os.mkdir(_directory_target(reserved))
+    (reserved / "data.txt").write_text("keep", encoding="utf-8")
+
+    binding, created = service.place_server_layer(
+        project=project,
+        layer_id="layer-1",
+        layer_name="Metal",
+        image_directory=images,
+        ssc_directory=None,
+        prv_directory=None,
+        maximum_frames=1,
+    )
+
+    stored = Path(project.source_project_dir) / "img" / "Metal"
+    assert binding.mode is LayerSourceMode.MANAGED_COPY
+    assert (stored / "frame_0.png").read_bytes() == b"frame"
+    assert (stored / "con" / "data.txt").read_text(encoding="utf-8") == "keep"
+    assert (images / "con" / "data.txt").is_file()
+    assert created == (stored.resolve(),)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reserved DOS device names only break Win32 paths")
+def test_make_directory_and_remove_tree_handle_stem_extension_reserved_names(
+    tmp_path: Path,
+) -> None:
+    """Windows also reserves stem+extension forms such as ``con.log`` (mkdir: WinError 267)."""
+    target = tmp_path / "nested" / "con.log"
+    _make_directory(target)
+    (target / "file.txt").write_text("data", encoding="utf-8")
+    assert os.path.isdir(_directory_target(target))
+
+    _remove_tree(target)
+    assert not os.path.exists(_directory_target(target))
+    assert os.path.isdir(_directory_target(tmp_path / "nested"))
+
+
+def test_make_directory_exist_ok_contract(tmp_path: Path) -> None:
+    """``_make_directory`` must match ``Path.mkdir(parents=True, exist_ok=...)`` on an existing path."""
+    target = tmp_path / "new-dir"
+    _make_directory(target)
+    with pytest.raises(FileExistsError):
+        _make_directory(target)
+    _make_directory(target, exist_ok=True)
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("file", encoding="utf-8")
+    with pytest.raises(FileExistsError):
+        _make_directory(blocker)
+    with pytest.raises(FileExistsError):
+        _make_directory(blocker, exist_ok=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -203,14 +204,70 @@ def map_frame_positions(paths: tuple[Path, ...], *, maximum: int) -> dict[str, i
     return positions
 
 
-def _is_reparse_or_symlink(path: Path) -> bool:
-    if path.is_symlink():
+def _directory_target(path: Path) -> str:
+    """Path string for Win32 calls that target the directory itself.
+
+    Windows rejects a final path component whose stem is a reserved DOS
+    device name (``aux``, ``con``, and stem+extension forms such as
+    ``con.log``) unless the path ends with a directory separator.
+    Operations on entries *inside* the directory are unaffected.
+    """
+    text = str(path).rstrip(os.sep)
+    component = text.rsplit(os.sep, 1)[-1]
+    if os.name == "nt" and component.split(".", 1)[0].upper() in _WINDOWS_DEVICES:
+        return text + os.sep
+    return text
+
+
+def _is_reparse_or_symlink(path: Path | str) -> bool:
+    """True if *path* is a symbolic link or another reparse point (junction).
+
+    Accepts the directory-target strings produced by ``_directory_target``
+    so reserved DOS device names are inspected through their
+    trailing-separator form, which ``Path`` cannot preserve.
+    """
+    if os.path.islink(path):
         return True
     try:
-        attributes = int(getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0))
+        attributes = int(getattr(os.lstat(path), "st_file_attributes", 0))
     except OSError:
         return True
     return bool(attributes & int(getattr(os.stat_result, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)))
+
+
+def walk_directory_tree(root: Path | str) -> Iterator[tuple[Path, list[str], list[str]]]:
+    """Yield ``(directory, dir_names, file_names)`` triples like ``os.walk``.
+
+    Every directory is opened through ``_directory_target`` so a directory
+    named after a reserved DOS device (``con``, ``aux``, ...) is descended
+    into instead of being silently skipped by ``os.walk`` (defect D9).
+    Filtering ``dir_names`` still controls descent; unreadable directories
+    are ignored, matching ``os.walk(onerror=None)``.
+    """
+
+    def walk(text: str) -> Iterator[tuple[Path, list[str], list[str]]]:
+        try:
+            with os.scandir(text) as iterator:
+                entries = list(iterator)
+        except OSError:
+            return
+        dir_names: list[str] = []
+        file_names: list[str] = []
+        for entry in entries:
+            try:
+                is_directory = entry.is_dir()
+            except OSError:
+                is_directory = False
+            if is_directory:
+                dir_names.append(entry.name)
+            else:
+                file_names.append(entry.name)
+        yield Path(text), dir_names, file_names
+        for name in dir_names:
+            if not os.path.islink(_directory_target(Path(text) / name)):
+                yield from walk(_directory_target(Path(text) / name))
+
+    yield from walk(_directory_target(Path(root)))
 
 
 def scan_layer_source(root: Path | str, *, maximum_frames: int) -> LayerSourceScan:
@@ -224,12 +281,11 @@ def scan_layer_source(root: Path | str, *, maximum_frames: int) -> LayerSourceSc
     total_files = 0
     total_bytes = 0
     fingerprints: dict[str, tuple[int, int]] = {}
-    for current_text, directory_names, file_names in os.walk(selected, followlinks=False):
-        current = Path(current_text)
+    for current, directory_names, file_names in walk_directory_tree(selected):
         safe_directories: list[str] = []
         for name in directory_names:
             child = current / name
-            if _is_reparse_or_symlink(child):
+            if _is_reparse_or_symlink(_directory_target(child)):
                 raise WorkspaceValidationError(
                     f"Символические ссылки и junction-папки недопустимы: {child}"
                 )

@@ -113,6 +113,7 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.split_cell", "split_cell"),
     ("grid_error.unknown_anomaly", "unknown_anomaly"),
     ("grid_error.class_conflict", "class_conflict"),
+    ("grid_error.network_only", "network_only"),
     ("grid_error.conductor_zone", "conductor_zone"),
 )
 # Types whose checkbox has a "grid_error.<type>_hint" tooltip.
@@ -125,6 +126,7 @@ GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "split_cell": "#f97316",
     "unknown_anomaly": "#eab308",
     "class_conflict": "#e11d48",
+    "network_only": "#14b8a6",
     "conductor_zone": "#64748b",
 }
 
@@ -158,8 +160,10 @@ GRID_INSPECTION_DEFAULT_ERROR_TYPES = tuple(
     not in {
         # A cell cut by the frame edge is not a defect until the operator turns this layer on.
         "edge_clipped_cell",
+        # The zone leaves everything inside it unchecked, broken cells too: only on request.
+        "conductor_zone",
     }
-)
+) + ("network_only",)  # Not a reason of the cell analysis: pairs of one cell class give it.
 DEFAULT_ANALYSIS_MODE = INTER_MODEL_ANALYSIS_MODE
 DEFAULT_METRIC_SCOPE = ""
 DEFAULT_MATRIX_LAYOUT_MODE = "indexed_grid"

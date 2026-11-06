@@ -24,6 +24,7 @@ EXPECTED_ERROR_TYPES = (
     "split_cell",
     "unknown_anomaly",
     "class_conflict",
+    "network_only",
     "conductor_zone",
 )
 
@@ -142,7 +143,7 @@ def test_old_settings_drop_removed_reasons_and_comparison_layer() -> None:
     types = KarakalPresenter._normalize_grid_error_types(
         ["filled_cell", "partial_filled_cell", "small_artifact", "geometry_mismatch", "class_conflict"]
     )
-    assert types == ("small_artifact", "class_conflict", "conductor_zone")
+    assert types == ("small_artifact", "class_conflict")
     assert KarakalPresenter._normalize_grid_layers(["confidence", "comparison", "binary"]) == ("confidence", "binary")
     softer = KarakalPresenter._grid_damage_config_from_payload({"disagreement_sensitivity": 0})
     stricter = KarakalPresenter._grid_damage_config_from_payload({"disagreement_sensitivity": 100})
@@ -177,3 +178,15 @@ def test_unchecked_class_conflict_is_left_out_of_the_matrix() -> None:
     merged = KarakalPresenter._merge_grid_layer_results(host, {"binary": _binary(), PAIR_MARKS_LAYER: conflict})
     assert merged is not None
     assert merged.cells == ()
+
+
+def test_the_conductor_zone_is_off_unless_asked_for() -> None:
+    from karakal.core.grid_anomaly import GridDamageAnalysisConfig, conductor_zone_on
+    from karakal.ui.ui_constants import GRID_INSPECTION_DEFAULT_ERROR_TYPES
+
+    assert "conductor_zone" not in GRID_INSPECTION_DEFAULT_ERROR_TYPES
+    off = KarakalPresenter._grid_damage_config_from_payload({"enabled_error_types": ["small_artifact"]})
+    on = KarakalPresenter._grid_damage_config_from_payload({"enabled_error_types": ["small_artifact", "conductor_zone"]})
+    assert not conductor_zone_on(off)
+    assert conductor_zone_on(on)
+    assert conductor_zone_on(GridDamageAnalysisConfig(enabled_reason_types=None))

@@ -22,10 +22,12 @@ from .grid_anomaly import (
     analyze_grid_frame_sources_chunk,
     configure_grid_worker_process,
     load_cached_grid_frame_result,
+    conductor_zone_on,
     resolve_reference_profile,
 )
 from .performance import PerformanceConfig, load_performance_config
-from .pair_conflict import analyze_class_conflict_chunk
+from .pair_agreement import analyze_network_disagreement_chunk
+from .pair_conflict import analyze_class_conflict_chunk, is_agreement_key
 from .profiling import ProfileSnapshot, ProfilerRun, WorkerProfilePacket, activate_profiler, export_profile
 from .analytics import collect_frame_records, compute_build_result_analytics
 from .frame_details import load_frame_detail_base, load_frame_detail_model_confidence
@@ -887,7 +889,10 @@ class PairedGridInspectionWorker(GridInspectionWorker):
 
 
 class MultiModelGridInspectionWorker(WorkerBase):
-    """Compute grid matrices for several model layers, then the conflicts of ones/zeros pairs, in one job.
+    """Compute grid matrices for several model layers, then the pairs of layers, in one job.
+
+    A ones/zeros pair gives conflicts, a pair of one cell class the cells only one network found;
+    the key of the pair tells which.
 
     Emits ``multiModelResultsReady`` with every finished batch and ``finished`` with all results.
     The output shape is ``{model_id: {frame_key: {layer_key: GridFrameAnalysisResult}}}``; a pair
@@ -927,7 +932,7 @@ class MultiModelGridInspectionWorker(WorkerBase):
         self._reference_profiles: dict[str, GridCellReferenceProfile | None] = {
             str(key): value for key, value in (reference_profiles or {}).items()
         }
-        # (pair key, ones model id, zeros model id)
+        # (pair key, first model id, second model id)
         self._conflict_pairs = tuple((str(key), str(ones), str(zeros)) for key, ones, zeros in conflict_pairs)
         self._analysis_errors: dict[str, str] = {}
 
@@ -969,6 +974,38 @@ class MultiModelGridInspectionWorker(WorkerBase):
         for model_id in self._model_ids:
             plans.append((model_id, self._paired_records_for(model_id)))
         return plans
+
+    def _layer_bank(self, model_id: str):
+        """Ready bank of normal cells of a layer (built now when the run only asked for it), or None."""
+
+        requested = self._reference_profiles.get(model_id)
+        with self._profiler.stage("validation.grid.normal_bank"):
+            profile = resolve_reference_profile(requested, self._config)
+        if profile is not requested:
+            self._reference_profiles[model_id] = profile
+            self.referenceProfileReady.emit(model_id, profile)
+        bank = getattr(profile, "normal_bank", None)
+        return bank if bank is not None and bank.ready else None
+
+    def _pair_analysis(self, key: str):
+        """The chunk function of a pair; None for networks of one class without a bank of normal
+        cells: without it nothing tells a cell from dirt, and such a pair is not computed."""
+
+        if not is_agreement_key(key):
+            return partial(analyze_class_conflict_chunk, use_cache=self._use_cache)
+        _key, first_id, second_id = next(item for item in self._conflict_pairs if item[0] == key)
+        first_bank, second_bank = self._layer_bank(first_id), self._layer_bank(second_id)
+        if first_bank is None or second_bank is None:
+            self._analysis_errors[key] = "no_normal_bank"
+            self.analysisErrors.emit({key: "no_normal_bank"})
+            return None
+        return partial(
+            analyze_network_disagreement_chunk,
+            first_bank=first_bank,
+            second_bank=second_bank,
+            use_cache=self._use_cache,
+            conductor_zone=conductor_zone_on(self._config),
+        )
 
     def _pair_plans(self) -> list[tuple[str, list[tuple[str, str, str]]]]:
         return [
@@ -1036,10 +1073,13 @@ class MultiModelGridInspectionWorker(WorkerBase):
                     combined[key] = per_pair_payloads
                     if not paired:
                         continue
+                    analyze = self._pair_analysis(key)
+                    if analyze is None:
+                        continue
                     with self._profiler.stage("validation.grid.pair_conflict", frame_count=len(paired)):
                         completed_total = self._run_plan(
                             paired,
-                            partial(analyze_class_conflict_chunk, use_cache=self._use_cache),
+                            analyze,
                             per_pair_payloads,
                             key=key,
                             completed_total=completed_total,

@@ -9,6 +9,7 @@ import re
 import shutil
 from bisect import bisect_right
 from dataclasses import dataclass, replace
+from functools import partial
 from datetime import datetime
 from heapq import heappush, heapreplace
 from math import isfinite
@@ -24,6 +25,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QCheckBox,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -100,6 +102,12 @@ from ..core.domain import (
     ModelSpec,
 )
 from ..core.grid_narrowing import GridNarrowing, can_narrow, default_run_debris_min_area, narrow_grid_frame_result
+from ..core.pair_agreement import (
+    AGREEMENT_MAX_COVER,
+    AGREEMENT_REASON,
+    AgreementThresholds,
+    filter_network_disagreement,
+)
 from ..core.pair_conflict import (
     CONFLICT_ANALYSIS_FLOOR_PX,
     CONFLICT_MIN_AREA_PX,
@@ -108,6 +116,8 @@ from ..core.pair_conflict import (
     ConflictThresholds,
     filter_class_conflicts,
     pair_key,
+    agreement_key,
+    is_agreement_key,
     parse_pair_key,
 )
 from ..core.grid_calibration import GridCalibration, GridCellExample, reference_from_normal_examples, reference_pairs
@@ -241,14 +251,21 @@ PAIR_MARKS_LAYER = "pair_conflict"
 
 
 @dataclass(frozen=True, slots=True)
-class GridConflictPair:
-    """A layer of ones cells and a layer of zero cells of one object: a place both paint is an error."""
+class GridLayerPair:
+    """Two layers of one object: a ones and a zeros layer (a place both paint is an error), or two
+    layers of one cell class (a cell only one of them found is a place to check)."""
 
     key: str
-    ones_id: str
-    zeros_id: str
-    ones_name: str
-    zeros_name: str
+    first_id: str
+    second_id: str
+    first_name: str
+    second_name: str
+    # "" for ones/zeros; "ones" or "zeros" for two networks of that class.
+    same_class: str = ""
+
+    @property
+    def is_agreement(self) -> bool:
+        return bool(self.same_class)
 
 
 def _example_pairs(value: object) -> tuple[tuple[str, tuple[tuple[str, float], ...]], ...]:
@@ -304,6 +321,12 @@ class KarakalPresenter(QObject):
         self._grid_debris_min_area_px = int(DEBRIS_MIN_AREA_PX)
         self._pair_conflict_min_area_px = int(CONFLICT_MIN_AREA_PX)
         self._pair_conflict_min_share = float(CONFLICT_MIN_CELL_SHARE)
+        self._pair_agreement_max_cover = float(AGREEMENT_MAX_COVER)
+        # Pairs the operator took out of the next run in the pair matrix; every other pair is computed.
+        self._pair_skipped: set[str] = set()
+        # Pairs of one class the last run could not compute: a layer has no bank of normal cells.
+        self._pair_no_bank: set[str] = set()
+        self._pair_matrix_auto_opened = False
         self._grid_pair_buttons: dict[str, QPushButton] = {}
         self._active_grid_pair_only = False
         # Slider drags and typing settle before the open frames are re-analyzed.
@@ -510,8 +533,6 @@ class KarakalPresenter(QObject):
             for error_type in allowed
             if error_type in {str(item) for item in raw_values} and error_type in allowed_set
         )
-        if selected and "conductor_zone" not in selected:
-            selected = (*selected, "conductor_zone")
         return selected
 
     def _grid_tuning_values(self) -> dict[str, int]:
@@ -541,7 +562,10 @@ class KarakalPresenter(QObject):
 
     def _grid_inspection_config_payload(self) -> dict[str, object]:
         payload: dict[str, object] = dict(self._grid_tuning_values())
-        payload["enabled_error_types"] = list(self._selected_grid_error_types())
+        # Disagreement of two networks is no finding of the cell analysis.
+        payload["enabled_error_types"] = [
+            item for item in self._selected_grid_error_types() if item != AGREEMENT_REASON
+        ]
         payload["requested_layers"] = list(self._selected_grid_compute_layers())
         payload["display_layer"] = "unified"
         payload["tuning_preset"] = str(getattr(self, "_grid_tuning_preset", "balanced") or "balanced")
@@ -551,10 +575,15 @@ class KarakalPresenter(QObject):
         # Shown conflicts of ones/zeros pairs; applied on display, never a reason for a new run.
         payload["conflict_min_area_px"] = int(getattr(self, "_pair_conflict_min_area_px", CONFLICT_MIN_AREA_PX))
         payload["conflict_min_cell_share"] = float(getattr(self, "_pair_conflict_min_share", CONFLICT_MIN_CELL_SHARE))
+        payload["agreement_max_cover"] = float(getattr(self, "_pair_agreement_max_cover", AGREEMENT_MAX_COVER))
+        payload["skipped_pairs"] = sorted(getattr(self, "_pair_skipped", ()) or ())
         if tester_build():
             payload["enabled_error_types"] = [
                 item for item in payload["enabled_error_types"] if str(item) != "conductor_zone"
             ]
+        # Stored apart from the types: settings of older versions always list the zone there.
+        payload["conductor_zone_enabled"] = "conductor_zone" in payload["enabled_error_types"]
+        if tester_build():
             return payload
         calibration = getattr(self, "_grid_calibration_confirmed", None)
         self._put_calibration_in_payload(payload, calibration)
@@ -578,7 +607,10 @@ class KarakalPresenter(QObject):
                 if checkbox is None:
                     continue
                 blocker = QSignalBlocker(checkbox)
-                checkbox.setChecked(str(error_type) in enabled_error_types)
+                if str(error_type) == "conductor_zone":
+                    checkbox.setChecked(bool(values.get("conductor_zone_enabled", False)))
+                else:
+                    checkbox.setChecked(str(error_type) in enabled_error_types or str(error_type) == AGREEMENT_REASON)
                 del blocker
         raw_types = values.get("enabled_error_types")
         if raw_types is not None:
@@ -602,6 +634,14 @@ class KarakalPresenter(QObject):
                 )
             except (TypeError, ValueError):
                 pass
+        if values.get("agreement_max_cover") is not None:
+            try:
+                self._apply_pair_agreement_cover(float(values["agreement_max_cover"]), refresh=False)
+            except (TypeError, ValueError):
+                pass
+        skipped = values.get("skipped_pairs")
+        if isinstance(skipped, (list, tuple)):
+            self._pair_skipped = {str(key) for key in skipped}
         requested_layers = self._normalize_grid_layers(values.get("requested_layers"))
         layer_checks = getattr(self, "grid_layer_compute_checks", {}) or {}
         if isinstance(layer_checks, dict) and layer_checks:
@@ -775,8 +815,8 @@ class KarakalPresenter(QObject):
                 combo.addItem(label, model_id)
         pairs = tuple(
             pair
-            for pair in self._grid_conflict_pairs()
-            if combo.findData(pair.ones_id) >= 0 and combo.findData(pair.zeros_id) >= 0
+            for pair in self._grid_layer_pairs()
+            if combo.findData(pair.first_id) >= 0 and combo.findData(pair.second_id) >= 0
         )
         if pairs:
             combo.insertSeparator(combo.count())
@@ -827,7 +867,7 @@ class KarakalPresenter(QObject):
                 self.folder_list.setCurrentItem(item)
         else:
             # A pair is shown on its ones layer; no layer row keeps the frame.
-            self._set_details_preferred_model_id(pair.ones_id)
+            self._set_details_preferred_model_id(pair.first_id)
             if self.folder_list.currentItem() is not None:
                 self.folder_list.selectionModel().clearCurrentIndex()
                 self.folder_list.clearSelection()
@@ -839,17 +879,17 @@ class KarakalPresenter(QObject):
             self._ensure_grid_pair_computed(state, pair)
         self._on_grid_content_tab_changed(-1)
 
-    # --- Ones/zeros pairs -----------------------------------------------------------
+    # --- Pairs of layers -------------------------------------------------------------
 
     def _folder_cell_class(self, model_id: str) -> str:
         item = self._folder_item_for_model_id(model_id)
         return str(item.data(FOLDER_CELL_CLASS_ROLE) or "") if item is not None else ""
 
     def _grid_pair_unavailable_reason(self, spec_a: ModelSpec, spec_b: ModelSpec) -> str:
-        """Empty when the two layers make a ones/zeros pair; otherwise the i18n key of why not."""
+        """Empty when the two layers make a pair of any kind; otherwise the i18n key of why not."""
 
         classes = {self._folder_cell_class(str(spec_a.model_id)), self._folder_cell_class(str(spec_b.model_id))}
-        if classes != {"ones", "zeros"}:
+        if "" in classes:
             return "pairs.unavailable.classes"
         originals = [spec.original_folder for spec in (spec_a, spec_b)]
         if all(folder is not None for folder in originals):
@@ -861,11 +901,11 @@ class KarakalPresenter(QObject):
                 return "pairs.unavailable.projects"
         return ""
 
-    def _grid_conflict_pairs(self) -> tuple[GridConflictPair, ...]:
+    def _grid_conflict_pairs(self) -> tuple[GridLayerPair, ...]:
         """Every checked ones layer with every checked zeros layer of the same source frames."""
 
         specs = self._active_pair_model_specs()
-        pairs: list[GridConflictPair] = []
+        pairs: list[GridLayerPair] = []
         for ones in specs:
             if self._folder_cell_class(str(ones.model_id)) != "ones":
                 continue
@@ -875,25 +915,74 @@ class KarakalPresenter(QObject):
                 if self._grid_pair_unavailable_reason(ones, zeros):
                     continue
                 pairs.append(
-                    GridConflictPair(
+                    GridLayerPair(
                         key=pair_key(str(ones.model_id), str(zeros.model_id)),
-                        ones_id=str(ones.model_id),
-                        zeros_id=str(zeros.model_id),
-                        ones_name=str(ones.display_name or ones.model_id),
-                        zeros_name=str(zeros.display_name or zeros.model_id),
+                        first_id=str(ones.model_id),
+                        second_id=str(zeros.model_id),
+                        first_name=str(ones.display_name or ones.model_id),
+                        second_name=str(zeros.display_name or zeros.model_id),
                     )
                 )
         return tuple(pairs)
 
-    def _grid_pair(self, key: object) -> GridConflictPair | None:
+    def _grid_agreement_pairs(self) -> tuple[GridLayerPair, ...]:
+        """Every two checked layers of one cell class and of the same source frames."""
+
+        specs = self._active_pair_model_specs()
+        pairs: list[GridLayerPair] = []
+        for index, first in enumerate(specs):
+            cell_class = self._folder_cell_class(str(first.model_id))
+            if not cell_class:
+                continue
+            for second in specs[index + 1 :]:
+                if self._folder_cell_class(str(second.model_id)) != cell_class:
+                    continue
+                if self._grid_pair_unavailable_reason(first, second):
+                    continue
+                pairs.append(
+                    GridLayerPair(
+                        key=agreement_key(str(first.model_id), str(second.model_id)),
+                        first_id=str(first.model_id),
+                        second_id=str(second.model_id),
+                        first_name=str(first.display_name or first.model_id),
+                        second_name=str(second.display_name or second.model_id),
+                        same_class=cell_class,
+                    )
+                )
+        return tuple(pairs)
+
+    def _grid_layer_pairs(self) -> tuple[GridLayerPair, ...]:
+        return self._grid_conflict_pairs() + self._grid_agreement_pairs()
+
+    def _grid_pairs_to_compute(self) -> tuple[GridLayerPair, ...]:
+        """The pairs left ticked in the pair matrix."""
+
+        return tuple(pair for pair in self._grid_layer_pairs() if pair.key not in self._pair_skipped)
+
+    def _on_grid_pair_compute_toggled(self, key: str, checked: bool) -> None:
+        if checked:
+            self._pair_skipped.discard(str(key))
+        else:
+            self._pair_skipped.add(str(key))
+        self._refresh_pair_matrix()
+        self._persist_state()
+
+    def _grid_pair(self, key: object) -> GridLayerPair | None:
         if parse_pair_key(key) is None:
             return None
-        return next((pair for pair in self._grid_conflict_pairs() if pair.key == str(key)), None)
+        return next((pair for pair in self._grid_layer_pairs() if pair.key == str(key)), None)
 
-    def _grid_pair_label(self, pair: GridConflictPair) -> str:
-        return self._t("pairs.label", ones=pair.ones_name, zeros=pair.zeros_name)
+    def _grid_pair_label(self, pair: GridLayerPair) -> str:
+        if pair.is_agreement:
+            return self._t(
+                "pairs.agreement_label",
+                first=pair.first_name,
+                second=pair.second_name,
+                cells=self._t(f"pairs.class.{pair.same_class}"),
+            )
+        return self._t("pairs.label", ones=pair.first_name, zeros=pair.second_name)
 
-    def _shown_grid_pair(self, state: ExtendMatrixTabState | None) -> GridConflictPair | None:
+    def _shown_grid_pair(self, state: ExtendMatrixTabState | None) -> GridLayerPair | None:
         return self._grid_pair(self._grid_inspection_matrix_selection(state)) if state is not None else None
 
     def _pair_conflict_thresholds(self) -> ConflictThresholds:
@@ -902,6 +991,24 @@ class KarakalPresenter(QObject):
             min_cell_share=float(getattr(self, "_pair_conflict_min_share", CONFLICT_MIN_CELL_SHARE)),
         ).normalized()
 
+    def _pair_agreement_thresholds(self) -> AgreementThresholds:
+        return AgreementThresholds(
+            max_cover=float(getattr(self, "_pair_agreement_max_cover", AGREEMENT_MAX_COVER))
+        ).normalized()
+
+    def _pair_findings_filter(self, key: str):
+        """(thresholds, function of a frame result and the thresholds) of one pair."""
+
+        if not is_agreement_key(key):
+            return self._pair_conflict_thresholds(), filter_class_conflicts
+        pair = self._grid_pair(key)
+        labels = (
+            (self._t("pairs.only_in", name=pair.first_name), self._t("pairs.only_in", name=pair.second_name))
+            if pair is not None
+            else ("", "")
+        )
+        return self._pair_agreement_thresholds(), partial(filter_network_disagreement, labels=labels)
+
     def _filtered_pair_conflicts(
         self,
         state: ExtendMatrixTabState,
@@ -909,10 +1016,10 @@ class KarakalPresenter(QObject):
         *,
         changed_keys: set[str] | None = None,
     ) -> dict[str, object]:
-        """Conflicts of one pair at the live thresholds; streamed batches only filter their frames."""
+        """Findings of one pair at the live thresholds; streamed batches only filter their frames."""
 
         raw = (getattr(state, "grid_inspection_payloads_by_pair", {}) or {}).get(str(key)) or {}
-        thresholds = self._pair_conflict_thresholds()
+        thresholds, keep = self._pair_findings_filter(str(key))
         cache = state.grid_inspection_pair_filtered
         cached = cache.get(str(key))
         if cached is not None and cached[0] == thresholds and cached[1] is raw:
@@ -920,9 +1027,9 @@ class KarakalPresenter(QObject):
             frames = changed_keys if changed_keys is not None else (set(raw) - set(filtered))
             for frame_key in frames:
                 if frame_key in raw:
-                    filtered[frame_key] = filter_class_conflicts(raw[frame_key], thresholds)
+                    filtered[frame_key] = keep(raw[frame_key], thresholds)
             return filtered
-        filtered = {frame_key: filter_class_conflicts(result, thresholds) for frame_key, result in raw.items()}
+        filtered = {frame_key: keep(result, thresholds) for frame_key, result in raw.items()}
         cache[str(key)] = (thresholds, raw, filtered)
         return filtered
 
@@ -936,9 +1043,9 @@ class KarakalPresenter(QObject):
 
         marks: dict[str, object] = {}
         for pair in self._grid_conflict_pairs():
-            if model_id not in (pair.ones_id, pair.zeros_id):
+            if model_id not in (pair.first_id, pair.second_id):
                 continue
-            other = pair.zeros_name if model_id == pair.ones_id else pair.ones_name
+            other = pair.second_name if model_id == pair.first_id else pair.first_name
             label = self._t("pairs.conflict_with", name=other)
             filtered = self._filtered_pair_conflicts(state, pair.key)
             keys = filtered.keys() if frame_keys is None else (key for key in frame_keys if key in filtered)
@@ -960,7 +1067,7 @@ class KarakalPresenter(QObject):
                 marks[frame_key] = labelled
         return marks
 
-    def _grid_pair_conflict_frame_count(self, state: ExtendMatrixTabState | None, pair: GridConflictPair) -> int | None:
+    def _grid_pair_conflict_frame_count(self, state: ExtendMatrixTabState | None, pair: GridLayerPair) -> int | None:
         """Frames of the pair with a shown conflict; None while the pair is not computed."""
 
         if state is None or not (getattr(state, "grid_inspection_payloads_by_pair", {}) or {}).get(pair.key):
@@ -968,13 +1075,13 @@ class KarakalPresenter(QObject):
         filtered = self._filtered_pair_conflicts(state, pair.key)
         return sum(1 for result in filtered.values() if getattr(result, "per_cell_results", ()))
 
-    def _grid_pair_common_frame_count(self, state: ExtendMatrixTabState | None, pair: GridConflictPair) -> int:
+    def _grid_pair_common_frame_count(self, state: ExtendMatrixTabState | None, pair: GridLayerPair) -> int:
         if state is None:
             return 0
         return sum(
             1
             for record in tuple(getattr(state.build_result, "records", ()) or ())
-            if (record.model_mask_paths or {}).get(pair.ones_id) and (record.model_mask_paths or {}).get(pair.zeros_id)
+            if (record.model_mask_paths or {}).get(pair.first_id) and (record.model_mask_paths or {}).get(pair.second_id)
         )
 
     def _apply_pair_conflict_thresholds(self, min_area_px: int, min_share: float, *, refresh: bool = True) -> None:
@@ -998,6 +1105,28 @@ class KarakalPresenter(QObject):
             self._apply_grid_inspection_active_layer_view(state, streaming=False)
             self._refresh_grid_pair_details(state)
         self._refresh_pair_matrix()
+
+    def _apply_pair_agreement_cover(self, max_cover: float, *, refresh: bool = True) -> None:
+        self._pair_agreement_max_cover = AgreementThresholds(max_cover=float(max_cover)).normalized().max_cover
+        control = getattr(self._view, "grid_agreement_cover_spin", None)
+        value = int(round(self._pair_agreement_max_cover * 100.0))
+        if control is not None and control.value() != value:
+            blocker = QSignalBlocker(control)
+            control.setValue(value)
+            del blocker
+        if not refresh:
+            return
+        state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        if state is not None and getattr(state, "grid_inspection_payloads_by_pair", None):
+            self._apply_grid_inspection_active_layer_view(state, streaming=False)
+            self._refresh_grid_pair_details(state)
+        self._refresh_pair_matrix()
+
+    def _on_pair_agreement_cover_changed(self, *_args) -> None:
+        control = getattr(self._view, "grid_agreement_cover_spin", None)
+        if control is not None:
+            self._apply_pair_agreement_cover(float(control.value()) / 100.0)
+            self._persist_state()
 
     def _on_pair_conflict_thresholds_changed(self, *_args) -> None:
         view = self._view
@@ -1036,10 +1165,13 @@ class KarakalPresenter(QObject):
             except RuntimeError:
                 continue
 
-    def _ensure_grid_pair_computed(self, state: ExtendMatrixTabState, pair: GridConflictPair | None) -> None:
-        """A pair chosen after the run (cells marked later) gets a short pass of its own."""
+    def _ensure_grid_pair_computed(self, state: ExtendMatrixTabState, pair: GridLayerPair | None) -> None:
+        """A ticked pair chosen after the run (cells marked later) gets a short pass of its own.
+        Before the run nothing is computed by a click: what to compute is chosen in the pair matrix."""
 
-        if pair is None or self._worker_thread is not None:
+        if pair is None or self._worker_thread is not None or pair.key in self._pair_skipped:
+            return
+        if not getattr(state, "grid_inspection_payloads_by_model", None):
             return
         if (getattr(state, "grid_inspection_payloads_by_pair", {}) or {}).get(pair.key):
             return
@@ -1141,7 +1273,7 @@ class KarakalPresenter(QObject):
         touched = False
         for key, frame_keys in changed.items():
             filtered = self._filtered_pair_conflicts(state, key, changed_keys=frame_keys)
-            pair = parse_pair_key(key)
+            pair = None if is_agreement_key(key) else parse_pair_key(key)
             if selection == key:
                 if not state.grid_inspection_payload_by_key:
                     self._apply_grid_pair_view(state, streaming=True)
@@ -1915,10 +2047,23 @@ class KarakalPresenter(QObject):
         self._persist_state()
         self._sync_action_buttons()
 
+    def _sync_grid_pair_group(self) -> None:
+        """The pair matrix of the defect search follows the layers: what to compute is chosen in it
+        before the run, so with two layers checked it shows and opens (once: it can be closed)."""
+
+        enough = len(self._checked_model_specs()) >= 2
+        self.pair_matrix_group.setVisible(enough)
+        if not enough:
+            self._pair_matrix_auto_opened = False
+        elif not self._pair_matrix_auto_opened:
+            self._pair_matrix_auto_opened = True
+            self.pair_matrix_group.setChecked(True)
+
     def _refresh_pair_matrix(self) -> None:
         if not hasattr(self, "pair_matrix_table"):
             return
         if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
+            self._sync_grid_pair_group()
             self._refresh_grid_pair_table()
             return
         if hasattr(self, "active_pair_list"):
@@ -2025,7 +2170,8 @@ class KarakalPresenter(QObject):
         return "Dice"
 
     def _refresh_grid_pair_table(self) -> None:
-        """Defect search: a cell per two layers; a ones/zeros pair shows its conflict frames and is chosen by a click."""
+        """Defect search: a cell per two layers. Its tick puts the pair into the next run; once computed,
+        the button shows the frames with findings and puts the pair on the matrix."""
 
         table = self.pair_matrix_table
         specs = self._active_pair_model_specs()
@@ -2034,7 +2180,10 @@ class KarakalPresenter(QObject):
             self.pair_matrix_group.setTitle(self._t("pairs.grid_title"))
         if hasattr(self, "active_pair_list"):
             self.active_pair_list.setVisible(False)
-        pairs = {(pair.ones_id, pair.zeros_id): pair for pair in self._grid_conflict_pairs()}
+        pairs: dict[tuple[str, str], GridLayerPair] = {}
+        for pair in self._grid_layer_pairs():
+            pairs[(pair.first_id, pair.second_id)] = pair
+        run_done = bool(state is not None and getattr(state, "grid_inspection_payloads_by_model", None))
         self._grid_pair_buttons = {}
         self._pair_matrix_guard = True
         try:
@@ -2045,9 +2194,11 @@ class KarakalPresenter(QObject):
             table.setRowCount(len(row_specs))
             table.setColumnCount(len(column_specs))
             table.setHorizontalHeaderLabels(
-                [self._pair_header_label(index + 1, spec) for index, spec in enumerate(column_specs)]
+                [self._grid_pair_header_label(index + 1, spec) for index, spec in enumerate(column_specs)]
             )
-            table.setVerticalHeaderLabels([self._pair_header_label(index, spec) for index, spec in enumerate(row_specs)])
+            table.setVerticalHeaderLabels(
+                [self._grid_pair_header_label(index, spec) for index, spec in enumerate(row_specs)]
+            )
             for row, spec_a in enumerate(row_specs):
                 for column, spec_b in enumerate(column_specs):
                     if column + 1 <= row:
@@ -2070,31 +2221,60 @@ class KarakalPresenter(QObject):
                         item.setForeground(QBrush(QColor("#6f7a86")))
                         table.setItem(row, column, item)
                         continue
-                    count = self._grid_pair_conflict_frame_count(state, pair)
-                    button = QPushButton(
-                        self._t("pairs.conflict_cell_pending")
-                        if count is None
-                        else self._t("pairs.conflict_cell", count=count),
-                        table,
-                    )
-                    button.setProperty("pairCell", True)
-                    button.setProperty("selected", False)
-                    button.setToolTip(
-                        self._t("pairs.conflict_pending_tooltip", ones=pair.ones_name, zeros=pair.zeros_name)
-                        if count is None
-                        else self._t(
-                            "pairs.conflict_tooltip", ones=pair.ones_name, zeros=pair.zeros_name, count=count, total=common
-                        )
-                    )
-                    button.clicked.connect(lambda _checked=False, key=pair.key: self._select_grid_pair(key))
-                    self._grid_pair_buttons[pair.key] = button
-                    table.setCellWidget(row, column, button)
+                    table.setCellWidget(row, column, self._grid_pair_cell(table, state, pair, common, run_done))
+            for column in range(len(column_specs)):
+                # Room for the class mark of the header and for the tick beside the button.
+                table.setColumnWidth(column, 124)
             table.resizeRowsToContents()
             header_height = max(28, table.horizontalHeader().height())
             table.setMinimumHeight(min(520, max(100, header_height + 28 * max(1, len(row_specs)) + 34)))
         finally:
             self._pair_matrix_guard = False
+        legend = getattr(self._view, "pair_matrix_legend", None)
+        if legend is not None:
+            legend.setText(self._t("pairs.legend" if pairs else "pairs.legend_no_classes"))
         self._sync_grid_pair_table_selection()
+
+    def _grid_pair_header_label(self, index: int, spec: ModelSpec) -> str:
+        """Header of a layer with its cell class: 1 for ones, 0 for zeros."""
+
+        mark = {"ones": "[1] ", "zeros": "[0] "}.get(self._folder_cell_class(str(spec.model_id)), "")
+        return f"{mark}{self._pair_header_label(index, spec)}"
+
+    def _grid_pair_cell(
+        self, table: QTableWidget, state: ExtendMatrixTabState | None, pair: GridLayerPair, common: int, run_done: bool
+    ) -> QWidget:
+        """Tick (compute this pair) and button (show it) of one pair."""
+
+        ticked = pair.key not in self._pair_skipped
+        count = self._grid_pair_conflict_frame_count(state, pair)
+        kind = "agreement" if pair.is_agreement else "conflict"
+        names = {"first": pair.first_name, "second": pair.second_name}
+        cell = QWidget(table)
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(4, 1, 1, 1)
+        layout.setSpacing(3)
+        check = QCheckBox(cell)
+        check.setChecked(ticked)
+        check.setToolTip(self._t("pairs.compute_tooltip"))
+        check.toggled.connect(lambda checked, key=pair.key: self._on_grid_pair_compute_toggled(key, bool(checked)))
+        layout.addWidget(check)
+        if pair.key in self._pair_no_bank:
+            text, tooltip = self._t(f"pairs.{kind}_cell_pending") + " !", self._t("pairs.no_bank", **names)
+        elif count is None:
+            text, tooltip = self._t(f"pairs.{kind}_cell_pending"), self._t(f"pairs.{kind}_pending_tooltip", **names)
+        else:
+            text = self._t(f"pairs.{kind}_cell", count=count)
+            tooltip = self._t(f"pairs.{kind}_tooltip", count=count, total=common, **names)
+        button = QPushButton(text, cell)
+        button.setProperty("pairCell", True)
+        button.setProperty("selected", False)
+        button.setToolTip(tooltip)
+        button.setEnabled(count is not None or (run_done and ticked))
+        button.clicked.connect(lambda _checked=False, key=pair.key: self._select_grid_pair(key))
+        layout.addWidget(button, stretch=1)
+        self._grid_pair_buttons[pair.key] = button
+        return cell
 
     def _pair_matrix_title(self) -> str:
         if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
@@ -6228,11 +6408,12 @@ class KarakalPresenter(QObject):
             multi_model_ids if use_multi_model else ()
         )
         self._active_grid_pair_only = False
-        # Ones/zeros pairs are computed in the same job, after the layers.
+        # The pairs ticked in the pair matrix are computed in the same job, after the layers.
+        self._pair_no_bank = set()
         conflict_pairs = tuple(
-            (pair.key, pair.ones_id, pair.zeros_id)
-            for pair in self._grid_conflict_pairs()
-            if pair.ones_id in multi_model_ids and pair.zeros_id in multi_model_ids
+            (pair.key, pair.first_id, pair.second_id)
+            for pair in self._grid_pairs_to_compute()
+            if pair.first_id in multi_model_ids and pair.second_id in multi_model_ids
         )
         if use_multi_model:
             base_layers = tuple(requested_layers)
@@ -6282,7 +6463,7 @@ class KarakalPresenter(QObject):
             # Dirt needs no cells: it is looked for while the cells are checked.
             dirt.analysis_started()
 
-    def _start_grid_pair_conflict_pass(self, state: ExtendMatrixTabState, pairs: tuple[GridConflictPair, ...]) -> None:
+    def _start_grid_pair_conflict_pass(self, state: ExtendMatrixTabState, pairs: tuple[GridLayerPair, ...]) -> None:
         """Conflicts of pairs whose layers are already analysed: no layer is analysed again."""
 
         if self._worker_thread is not None or not pairs:
@@ -6300,13 +6481,31 @@ class KarakalPresenter(QObject):
         self._active_multi_model_run_ids = ()
         self._active_grid_pair_only = True
         self._worker_thread = QThread()
+        # Pairs of one class need the banks of their layers to tell cells from dirt.
+        grid_config = self._grid_damage_config_from_payload(self._grid_inspection_config_payload())
+        model_ids = {model_id for pair in pairs if pair.is_agreement for model_id in (pair.first_id, pair.second_id)}
         self._worker = MultiModelGridInspectionWorker(
             records,
             (),
+            grid_config,
+            reference_profiles={
+                model_id: self._estimate_run_cell_reference_profile_for_state(
+                    state, grid_config, model_id=model_id, records=records
+                )
+                for model_id in sorted(model_ids)
+            },
             performance_config=self._view.performance_config,
-            conflict_pairs=tuple((pair.key, pair.ones_id, pair.zeros_id) for pair in pairs),
+            conflict_pairs=tuple((pair.key, pair.first_id, pair.second_id) for pair in pairs),
         )
         self._launch_grid_inspection_worker(state)
+
+    def _on_grid_pair_errors(self, errors: object) -> None:
+        """A pair of one class without a bank of normal cells says so in its cell of the pair matrix."""
+
+        missing = {str(key) for key, value in dict(errors or {}).items() if value == "no_normal_bank"}
+        if missing:
+            self._pair_no_bank |= missing
+            self._refresh_pair_matrix()
 
     def _launch_grid_inspection_worker(self, state: ExtendMatrixTabState) -> None:
         self._connect_worker_profiling(self._worker)
@@ -6328,6 +6527,8 @@ class KarakalPresenter(QObject):
             self._worker.partialResultsReady.connect(
                 lambda payloads, g=generation: self._on_grid_inspection_batch(payloads, generation=g)
             )
+        if hasattr(self._worker, "analysisErrors"):
+            self._worker.analysisErrors.connect(self._on_grid_pair_errors)
         if hasattr(self._worker, "referenceProfileReady"):
             self._worker.referenceProfileReady.connect(
                 lambda model_id, profile, g=generation, s=state: self._on_grid_reference_profile_ready(
@@ -6408,7 +6609,9 @@ class KarakalPresenter(QObject):
         if state is None or not frame_key:
             return False
         by_pair = getattr(state, "grid_inspection_payloads_by_pair", {}) or {}
-        return any(str(frame_key) in (payloads or {}) for payloads in by_pair.values())
+        return any(
+            str(frame_key) in (payloads or {}) for key, payloads in by_pair.items() if not is_agreement_key(key)
+        )
 
     def _sync_class_conflict_checkbox(self, checkbox, *, available: bool) -> None:
         if checkbox is None:
@@ -6434,7 +6637,7 @@ class KarakalPresenter(QObject):
 
     def _sync_class_conflict_controls(self, state) -> None:
         by_pair = getattr(state, "grid_inspection_payloads_by_pair", {}) or {}
-        run_ready = any(bool(payloads) for payloads in by_pair.values())
+        run_ready = any(bool(payloads) for key, payloads in by_pair.items() if not is_agreement_key(key))
         checks = getattr(self, "grid_error_type_checks", {}) or {}
         checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
         self._sync_class_conflict_checkbox(checkbox, available=run_ready)
@@ -6490,7 +6693,7 @@ class KarakalPresenter(QObject):
         for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
             setter = getattr(dialog, "set_grid_pair_partner", None)
             if callable(setter):
-                setter(pair.zeros_id if pair is not None else None, pair.zeros_name if pair is not None else "")
+                setter(pair.second_id if pair is not None else None, pair.second_name if pair is not None else "")
             if pair is None:
                 continue
             record = getattr(dialog, "_record", None)
@@ -6602,6 +6805,12 @@ class KarakalPresenter(QObject):
                 return True
         # Another markup folder means another bank of normal cells.
         if tuple(getattr(state, "grid_inspection_markup_signature", ()) or ()) != self._grid_markup_signature():
+            return True
+        # The zone decides what is checked at all: turning it off cannot be narrowed from a run with
+        # it. Runs of older versions do not say; they stay as they are until recomputed.
+        if "conductor_zone_enabled" in stored and bool(stored["conductor_zone_enabled"]) != bool(
+            live.get("conductor_zone_enabled")
+        ):
             return True
         run_types = stored.get("enabled_error_types")
         return not can_narrow(
@@ -8332,7 +8541,7 @@ class KarakalPresenter(QObject):
             self._frame_sets_controller.install_card_actions(dialog)
         self._sync_class_conflict_for_dialog(dialog, state)
         if shown_pair is not None:
-            dialog.set_grid_pair_partner(shown_pair.zeros_id, shown_pair.zeros_name)
+            dialog.set_grid_pair_partner(shown_pair.second_id, shown_pair.second_name)
         if grid_detail_message:
             dialog.show_grid_preview_message(grid_detail_message)
         record_key = str(getattr(record, "key", "") or "")

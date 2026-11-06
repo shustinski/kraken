@@ -69,6 +69,8 @@ CONFLICT_CELL_BOX_FEATURES = (
 )
 
 _PAIR_KEY_PREFIX = "pair::"
+# Two networks of one cell class (core/pair_agreement.py): the same pipeline, another kind of finding.
+_AGREEMENT_KEY_PREFIX = "same::"
 
 
 def pair_key(ones_model_id: str, zeros_model_id: str) -> str:
@@ -77,13 +79,24 @@ def pair_key(ones_model_id: str, zeros_model_id: str) -> str:
     return f"{_PAIR_KEY_PREFIX}{ones_model_id}::{zeros_model_id}"
 
 
+def agreement_key(first_model_id: str, second_model_id: str) -> str:
+    """Matrix selection key of a pair of networks of one cell class."""
+
+    return f"{_AGREEMENT_KEY_PREFIX}{first_model_id}::{second_model_id}"
+
+
+def is_agreement_key(value: object) -> bool:
+    return str(value or "").startswith(_AGREEMENT_KEY_PREFIX) and parse_pair_key(value) is not None
+
+
 def parse_pair_key(value: object) -> tuple[str, str] | None:
-    """(ones model id, zeros model id) of a pair key, None for anything else."""
+    """The two model ids of a pair key of any kind, None for anything else."""
 
     text = str(value or "")
-    if not text.startswith(_PAIR_KEY_PREFIX):
+    prefix = next((item for item in (_PAIR_KEY_PREFIX, _AGREEMENT_KEY_PREFIX) if text.startswith(item)), None)
+    if prefix is None:
         return None
-    parts = text[len(_PAIR_KEY_PREFIX) :].split("::")
+    parts = text[len(prefix) :].split("::")
     if len(parts) != 2 or not all(parts):
         return None
     return parts[0], parts[1]

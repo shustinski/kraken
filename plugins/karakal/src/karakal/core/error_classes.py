@@ -55,6 +55,7 @@ LEGACY_REASON_CLASSES: dict[str, int] = {
     "merged_contour": MERGE,
     "conductor_zone": IGNORE,
     "class_conflict": UNKNOWN,
+    "network_only": UNKNOWN,
 }
 # Reasons that are flags on an object, never its class.
 LEGACY_FLAG_REASONS = frozenset({"edge_clipped_cell"})

@@ -71,7 +71,8 @@ def test_template_is_built_from_reference_frames_only(tmp_path, qtbot) -> None:
 
 
 def test_tester_entry_point_runs_the_tester_profile_with_its_own_settings(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("KARAKAL_BUILD_PROFILE", raising=False)
+    # setenv, not delenv: the import below sets the profile, and it must not outlive this test.
+    monkeypatch.setenv("KARAKAL_BUILD_PROFILE", "dev")
     monkeypatch.setenv("KARAKAL_SETTINGS_DIR", str(tmp_path / "tester"))
     sys.modules.pop("karakal.debug.tester_run", None)
     importlib.import_module("karakal.debug.tester_run")

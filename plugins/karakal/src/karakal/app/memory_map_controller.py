@@ -96,10 +96,10 @@ class MemoryMapController(QObject):
         if not shown:
             return None
         pair = presenter._shown_grid_pair(state)
-        if pair is None:
-            pair = next((p for p in presenter._grid_conflict_pairs() if shown in (p.ones_id, p.zeros_id)), None)
+        if pair is None or pair.is_agreement:
+            pair = next((p for p in presenter._grid_conflict_pairs() if shown in (p.first_id, p.second_id)), None)
         if pair is not None:
-            mode, ones_id, zeros_id = MODE_PAIR, pair.ones_id, pair.zeros_id
+            mode, ones_id, zeros_id = MODE_PAIR, pair.first_id, pair.second_id
         elif presenter._folder_cell_class(shown) == "zeros":
             mode, ones_id, zeros_id = MODE_ZEROS, "", shown
         else:

@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - OpenCV is a hard dependency of the app
 
 from . import error_classes as ec
 from .cell_components import CellComponent, ComponentSet, extract_components
-from .conductor_ignore import ConductorConfig, final_ignore
+from .conductor_ignore import ConductorConfig, ConductorZones, final_ignore
 from .grid_merge_cores import (
     _convexity_has_opposing_dents,
     filled_contour_roi,
@@ -96,6 +96,9 @@ class CellErrorConfig:
     # How far uncertainty moves the score; never across the error threshold.
     confidence_weight: float = 0.25
     conductor: ConductorConfig = field(default_factory=ConductorConfig)
+    # Off: no piece is left unchecked as conductor grain. The zone also takes broken cells with it
+    # (only normal ones are cut out of it), so the operator turns it on only for grainy frames.
+    conductor_zone: bool = True
     normalization: MaskNormalizationConfig = field(default_factory=MaskNormalizationConfig)
 
     def effective_shape_limit(self) -> float:
@@ -497,6 +500,50 @@ def _find_splits(judge: _FrameJudge, verdicts: dict[int, _Verdict], candidates: 
     return count
 
 
+def _conductor_zones(components: ComponentSet, bank: NormalBank, judge: _FrameJudge, cfg: CellErrorConfig) -> ConductorZones:
+    if not cfg.conductor_zone:
+        return ConductorZones(zone=np.zeros(components.shape, dtype=bool))
+    return final_ignore(
+        components,
+        cell_area=bank.cell_area,
+        is_cell_like=judge.protected_from_conductor,
+        config=cfg.conductor,
+    )
+
+
+def cells_among(
+    components: ComponentSet,
+    bank: NormalBank,
+    labels: Sequence[int],
+    *,
+    shape_factor: float,
+    config: CellErrorConfig | None = None,
+) -> set[int]:
+    """Those of ``labels`` that are cells: outside conductor fields, with the sides of a whole cell or
+    of a clear part of one, and within ``shape_factor`` shape limits of the normal shape; a piece cut
+    by the frame edge counts too. Stricter than the cell-likeness of the defect search, which keeps
+    anything of a cell's area for the error classes to sort out."""
+
+    cfg = config or CellErrorConfig()
+    judge = _FrameJudge(components, bank, cfg)
+    by_label = components.by_label()
+    items = [by_label[label] for label in labels if label in by_label]
+    if not items:
+        return set()
+    judge.distances(items)
+    ignored = set(_conductor_zones(components, bank, judge, cfg).ignored_labels)
+    limit = float(shape_factor) * judge.shape_limit
+    return {
+        item.label
+        for item in items
+        if item.label not in ignored
+        and (
+            judge.clipped_by_edge(item)
+            or ((judge.full_size(item) or judge.partial_size(item)) and judge.distance(item) <= limit)
+        )
+    }
+
+
 def analyze_cell_errors(
     mask_image: np.ndarray,
     bank: NormalBank,
@@ -550,12 +597,7 @@ def analyze_cell_errors(
     sized = [item for item in components.components if item.area >= max(8, int(0.15 * bank.cell_area))]
     judge.distances(sized)
 
-    zones = final_ignore(
-        components,
-        cell_area=bank.cell_area,
-        is_cell_like=judge.protected_from_conductor,
-        config=cfg.conductor,
-    )
+    zones = _conductor_zones(components, bank, judge, cfg)
     ignored = set(zones.ignored_labels)
     near = set(zones.near_labels) | set(zones.protected_labels)
     diagnostics["conductor_window"] = zones.window

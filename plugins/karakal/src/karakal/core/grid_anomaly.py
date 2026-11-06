@@ -838,7 +838,9 @@ def detect_grid_cell_anomalies(
     zone_skipped = 0
     zone_supplied = conductor_zones is not None
     with profile_stage("validation.grid.contours.features", frame_id=frame_id):
-        if conductor_zones is not None:
+        if not conductor_zone_on(cfg):
+            zone_map = _empty_conductor_zone_map()
+        elif conductor_zones is not None:
             zone_map = conductor_zones
         elif str(cfg.cell_representation) == "confidence":
             # Rings on a confidence map are cell outlines, not conductor grain.
@@ -1470,6 +1472,7 @@ def detect_grid_cell_anomalies(
         not zone_map.zones
         and not zone_supplied
         and str(cfg.cell_representation) != "confidence"
+        and conductor_zone_on(cfg)
     ):
         zone_map = _conductor_zone_map(
             candidates,
@@ -1655,6 +1658,12 @@ def uses_normal_bank(
     return config is None or str(config.normalized().scoring_mode) == "calibrated"
 
 
+def conductor_zone_on(cfg: GridDamageAnalysisConfig) -> bool:
+    """The conductor zone is looked for only when its type is on: pieces in it are not checked."""
+
+    return cfg.enabled_reason_types is None or "conductor_zone" in set(cfg.enabled_reason_types)
+
+
 def _cell_error_config(cfg: GridDamageAnalysisConfig):
     from .cell_error_analysis import CellErrorConfig
 
@@ -1662,6 +1671,7 @@ def _cell_error_config(cfg: GridDamageAnalysisConfig):
         geometry_sensitivity=int(cfg.geometry_sensitivity),
         merge_sensitivity=int(cfg.merge_sensitivity),
         debris_min_area_px=int(DEBRIS_ANALYSIS_FLOOR_PX),
+        conductor_zone=conductor_zone_on(cfg),
     )
 
 

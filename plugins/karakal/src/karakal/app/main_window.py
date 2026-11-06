@@ -53,6 +53,7 @@ from .update_flow import STATE_AVAILABLE, STATE_DOWNLOADING, KarakalUpdateManage
 from ..core.analysis_modes import ANALYSIS_MODE_OPTIONS, default_confidence_model_id
 from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_PROFILE
 from ..core.domain import BuildResult
+from ..core.pair_agreement import AGREEMENT_MAX_COVER, AGREEMENT_RUN_MAX_COVER
 from ..core.pair_conflict import CONFLICT_ANALYSIS_FLOOR_PX, CONFLICT_MIN_AREA_PX, CONFLICT_MIN_CELL_SHARE
 from ..core.performance import PerformanceConfig
 from ..ui.toolbar_icons import toolbar_icon
@@ -681,6 +682,12 @@ class KarakalWidget(QWidget):
         self.grid_conflict_min_share_spin.setSuffix(" %")
         self.grid_conflict_min_share_spin.setKeyboardTracking(False)
         self.grid_conflict_min_share_spin.setToolTip(self._t("grid_tuning.conflict_min_share_hint"))
+        self.grid_agreement_cover_spin = _NoWheelSpinBox(self)
+        self.grid_agreement_cover_spin.setRange(5, int(round(AGREEMENT_RUN_MAX_COVER * 100)))
+        self.grid_agreement_cover_spin.setValue(int(round(AGREEMENT_MAX_COVER * 100)))
+        self.grid_agreement_cover_spin.setSuffix(" %")
+        self.grid_agreement_cover_spin.setKeyboardTracking(False)
+        self.grid_agreement_cover_spin.setToolTip(self._t("grid_tuning.agreement_cover_hint"))
         self.metric_group_combo = _NoWheelComboBox(self)
         for label, key in MATRIX_METRIC_GROUP_OPTIONS:
             self.metric_group_combo.addItem(self._t(label), key)
@@ -814,6 +821,10 @@ class KarakalWidget(QWidget):
         self.pair_matrix_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.pair_matrix_table.setMinimumHeight(120)
         pair_body_layout.addWidget(self.pair_matrix_table)
+        self.pair_matrix_legend = QLabel("", self.pair_matrix_body)
+        self.pair_matrix_legend.setWordWrap(True)
+        self.pair_matrix_legend.setStyleSheet("color: #8a97a5;")
+        pair_body_layout.addWidget(self.pair_matrix_legend)
         self.active_pair_list = QListWidget(self.pair_matrix_body)
         self.active_pair_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.active_pair_list.setSpacing(2)
@@ -1869,6 +1880,11 @@ class KarakalWidget(QWidget):
             self.grid_conflict_min_share_spin,
         )
         grid_tuning_layout.addWidget(self._grid_conflict_min_share_row)
+        self._grid_agreement_cover_row = self._build_setting_row(
+            self._t("grid_tuning.agreement_cover"),
+            self.grid_agreement_cover_spin,
+        )
+        grid_tuning_layout.addWidget(self._grid_agreement_cover_row)
         layout.addWidget(self._matrix_view_group)
         layout.addWidget(self._grid_inspection_tuning_group)
         layout.addWidget(self._analysis_task_group)
@@ -1947,6 +1963,7 @@ class KarakalWidget(QWidget):
                 "_grid_debris_min_area_row": "grid_tuning.debris_min_area",
                 "_grid_conflict_min_area_row": "grid_tuning.conflict_min_area",
                 "_grid_conflict_min_share_row": "grid_tuning.conflict_min_share",
+                "_grid_agreement_cover_row": "grid_tuning.agreement_cover",
             }
             for row_name, label_key in grid_tuning_labels.items():
                 row = getattr(self, row_name, None)
@@ -2115,6 +2132,7 @@ class KarakalWidget(QWidget):
         if hasattr(self, "grid_conflict_min_area_spin"):
             self.grid_conflict_min_area_spin.setToolTip(self._t("grid_tuning.conflict_min_area_hint"))
             self.grid_conflict_min_share_spin.setToolTip(self._t("grid_tuning.conflict_min_share_hint"))
+            self.grid_agreement_cover_spin.setToolTip(self._t("grid_tuning.agreement_cover_hint"))
         for metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "title_label"):
                 card.title_label.setText(self._metric_text_for_key(metric_key, None))
@@ -2376,6 +2394,7 @@ class KarakalWidget(QWidget):
             checkbox.toggled.connect(self._presenter._on_grid_layer_compute_selection_changed)
         self.grid_conflict_min_area_spin.valueChanged.connect(self._presenter._on_pair_conflict_thresholds_changed)
         self.grid_conflict_min_share_spin.valueChanged.connect(self._presenter._on_pair_conflict_thresholds_changed)
+        self.grid_agreement_cover_spin.valueChanged.connect(self._presenter._on_pair_agreement_cover_changed)
         conflict = self.grid_error_type_checks.get("class_conflict")
         if conflict is not None:
             conflict.toggled.connect(self._presenter._on_class_conflict_checkbox_toggled)

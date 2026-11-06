@@ -341,6 +341,9 @@ class ExtendFrameDetailsDialog(QDialog):
         selected = tuple(error_type for error_type in allowed if error_type in raw_set)
         if selected and "conductor_zone" not in selected:
             selected = (*selected, "conductor_zone")
+        if selected and "network_only" not in selected:
+            # Stored settings do not name it: it is no type of the cell analysis.
+            selected = (*selected, "network_only")
         return selected
 
     def __init__(

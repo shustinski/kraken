@@ -206,7 +206,7 @@ def test_cell_class_of_a_layer_is_saved_and_makes_a_pair(tmp_path, qtbot) -> Non
     presenter._set_folder_item_cell_class(items[0], "ones")
     presenter._set_folder_item_cell_class(items[1], "zeros")
     (pair,) = presenter._grid_conflict_pairs()
-    assert (pair.ones_id, pair.zeros_id) == tuple(presenter._model_id_for_folder_item(item) for item in items)
+    assert (pair.first_id, pair.second_id) == tuple(presenter._model_id_for_folder_item(item) for item in items)
     assert widget.grid_matrix_layer_combo.findData(pair.key) >= 0
     assert pair.key in presenter._grid_pair_buttons
     assert widget.pair_matrix_group.isVisibleTo(widget) or not widget.isVisible()
@@ -258,10 +258,10 @@ def test_a_pair_is_computed_with_the_layers_shown_in_the_matrix_and_marked_on_it
 
     # The ones layer is shown: its own result plus the conflict, named after the zeros network.
     widget.folder_list.setCurrentItem(items[0])
-    assert presenter._grid_inspection_matrix_selection(state) == pair.ones_id
+    assert presenter._grid_inspection_matrix_selection(state) == pair.first_id
     entries = [entry for entry in presenter._iter_grid_inspection_error_payloads(state) if entry["error_type"] == "class_conflict"]
     assert [entry["record_key"] for entry in entries] == ["F_0001.png"]
-    assert entries[0]["feature_cluster_label"] == presenter._t("pairs.conflict_with", name=pair.zeros_name)
+    assert entries[0]["feature_cluster_label"] == presenter._t("pairs.conflict_with", name=pair.second_name)
 
     # The pair is shown: its frames are coloured by conflicts; no layer row keeps the frame.
     presenter._select_grid_pair(pair.key)
@@ -285,7 +285,7 @@ def test_a_pair_is_computed_with_the_layers_shown_in_the_matrix_and_marked_on_it
 
     # Back to a layer by its row.
     widget.folder_list.setCurrentItem(items[1])
-    assert presenter._grid_inspection_matrix_selection(state) == pair.zeros_id
+    assert presenter._grid_inspection_matrix_selection(state) == pair.second_id
     assert presenter._grid_pair_buttons[pair.key].property("selected") is False
 
 

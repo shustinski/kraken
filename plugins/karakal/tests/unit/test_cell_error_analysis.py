@@ -11,6 +11,7 @@ import pytest
 from karakal.core import error_classes as ec
 from karakal.core.cell_components import extract_components
 from karakal.core.cell_error_analysis import (
+    CellErrorConfig,
     MODE_MASK,
     MODE_MASK_CONF,
     MODE_MASK_CONF_REF,
@@ -355,3 +356,37 @@ def test_frame_set_export_writes_lossless_error_maps(tmp_path) -> None:
     manifest = json.loads((folder / "frame_0_manifest.json").read_text(encoding="utf-8"))
     assert manifest["normal_model_status"] == "ok"
     assert not report.missing and report.written == 15
+
+
+def test_without_the_conductor_zone_nothing_is_left_unchecked() -> None:
+    frames = [add_defect(normal_frame(seed=seed), "conductor", seed=seed) for seed in range(4)]
+    bank_with_grain = build_normal_bank([extract_components(frame.mask) for frame in frames])
+    off = CellErrorConfig(conductor_zone=False)
+    for frame in frames:
+        result = analyze_cell_errors(frame.mask, bank_with_grain, config=off)
+        class_map = result.class_map()
+        assert not result.ignore_regions
+        assert not np.any(class_map == ec.IGNORE)
+        grain = frame.ignore & (frame.mask > 0)
+        assert np.mean(class_map[grain] != ec.OK) > 0.5, "the grain is checked like everything else"
+
+
+def test_a_broken_cell_inside_a_conductor_zone_is_reported_only_without_the_zone() -> None:
+    frame = add_defect(normal_frame(seed=1), "conductor", seed=1)
+    bank_with_grain = build_normal_bank([extract_components(frame.mask)])
+    ys, xs = np.nonzero(frame.ignore)
+    x, y = int(xs.mean()), int(ys.mean())
+    mask = frame.mask.copy()
+    # A cell with a bite out of it, in the middle of the grain: not normal, so not protected.
+    width, height = int(bank_with_grain.cell_width), int(bank_with_grain.cell_height)
+    mask[y : y + height, x : x + width] = 255
+    mask[y + 6 : y + height - 6, x + width // 2 : x + width] = 0
+    mask[y - 3 : y, x - 3 : x + width + 3] = 0
+    mask[y + height : y + height + 3, x - 3 : x + width + 3] = 0
+    mask[y - 3 : y + height + 3, x - 3 : x] = 0
+    mask[y - 3 : y + height + 3, x + width : x + width + 3] = 0
+
+    with_zone = analyze_cell_errors(mask, bank_with_grain).class_map()
+    without = analyze_cell_errors(mask, bank_with_grain, config=CellErrorConfig(conductor_zone=False)).class_map()
+    assert with_zone[y + 2, x + 2] == ec.IGNORE
+    assert without[y + 2, x + 2] not in (ec.IGNORE, ec.OK)

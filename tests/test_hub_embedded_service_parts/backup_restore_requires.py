@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test backup restore requires."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.identity import ProjectRole
@@ -10,7 +10,7 @@ from kraken_manager.infrastructure.filesystem import SQLiteProjectionStore
 
 class BackupRestoreRequiresMixin:
     def test_backup_restore_requires_explicit_ownership_on_new_workstation(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             source_service = EmbeddedProjectService(root / "source-data")
             source_owner = source_service.create_initial_account(
@@ -61,7 +61,7 @@ class BackupRestoreRequiresMixin:
             )
 
     def test_representation_lifecycle_switches_active_variant_and_rebuilds(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             session = service.create_initial_account("owner", "Owner", "")
             project = service.create_project(

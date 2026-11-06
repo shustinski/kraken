@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test notes artifact lifecycle."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.artifacts import ArtifactScope
@@ -10,7 +10,7 @@ from kraken_manager.infrastructure.filesystem import SQLiteProjectionStore
 
 class NotesArtifactLifecycleMixin:
     def test_notes_and_artifact_lifecycle_are_rebuildable(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             service = EmbeddedProjectService(root / "data")
             session = service.create_initial_account("owner", "Owner", "")

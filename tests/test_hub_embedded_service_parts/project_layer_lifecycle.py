@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test project layer lifecycle."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.project import GridOrientation, LayerType
@@ -9,7 +9,7 @@ from kraken_manager.infrastructure.filesystem import SQLiteProjectionStore
 
 class ProjectLayerLifecycleMixin:
     def test_project_and_layer_lifecycle_is_audited_temporal_and_rebuildable(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             session = service.create_initial_account("owner", "Owner", "")
             project = service.create_project(

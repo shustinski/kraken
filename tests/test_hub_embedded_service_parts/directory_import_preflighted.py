@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test directory import preflighted."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application.imports import ImportMappingMode
@@ -10,7 +10,7 @@ from kraken_manager.domain.project import GridOrientation, LayerType, Representa
 
 class DirectoryImportPreflightedMixin:
     def test_directory_import_is_preflighted_managed_immutable_and_idempotent(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             source = root / "source"
             source.mkdir()
@@ -137,9 +137,7 @@ class DirectoryImportPreflightedMixin:
         return service, project
 
     def test_directory_import_plans_only_frame_images_and_ignores_sidecar_files(self) -> None:
-        # ignore_cleanup_errors: the catalog tree contains an "aux" directory that
-        # shutil.rmtree cannot remove on Windows (DOS reserved name, WinError 145).
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             source = root / "img"
             source.mkdir()
@@ -164,7 +162,7 @@ class DirectoryImportPreflightedMixin:
             self.assertFalse(plan.issues[0].blocking)
 
     def test_directory_import_without_frame_images_blocks(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             source = root / "img"
             source.mkdir()
@@ -184,7 +182,7 @@ class DirectoryImportPreflightedMixin:
             )
 
     def test_directory_import_plans_only_cif_for_vector_kind(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             source = root / "vectors"
             source.mkdir()

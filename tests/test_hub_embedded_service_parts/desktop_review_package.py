@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test desktop review package."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
@@ -8,7 +8,7 @@ from kraken_manager.domain.project import GridOrientation, LayerType, Representa
 
 class DesktopReviewPackageMixin:
     def test_desktop_review_package_round_trip_uses_manifest_routing(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             service = EmbeddedProjectService(
                 root / "data",

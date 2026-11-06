@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test managed vector keeps."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
@@ -8,7 +8,7 @@ from kraken_manager.domain.project import GridOrientation, LayerType, Representa
 
 class ManagedVectorKeepsMixin:
     def test_managed_vector_keeps_external_image_thumbnail_source(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             root = Path(directory)
             service = EmbeddedProjectService(root / "data")
             session = service.create_initial_account("owner", "Owner", "")

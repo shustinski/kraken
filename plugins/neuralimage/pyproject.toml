@@ -23,6 +23,8 @@ dependencies = [
 
 [tool.uv.sources]
 kraken = { workspace = true }
+# Windows and Linux must resolve these pins from the CUDA 13.2 index.
+# A +cpu wheel is a different build and must not replace +cu132.
 torch = [
   { index = "pytorch-cu132", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]

@@ -43,8 +43,8 @@ class CifReviewLayersDialog(QDialog):
         columns = QHBoxLayout()
         self.available = self._list("cifReviewAvailable")
         self.assigned = self._list("cifReviewAssigned")
-        columns.addWidget(self._column("Все изображения", self.available))
-        columns.addWidget(self._column(f"Слой «{source_layer_name}»", self.assigned))
+        columns.addLayout(self._column("Все изображения", self.available))
+        columns.addLayout(self._column(f"Слой «{source_layer_name}»", self.assigned))
         root.addLayout(columns, 1)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,

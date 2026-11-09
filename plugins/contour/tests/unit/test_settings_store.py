@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PyQt6.QtCore import QSettings
 
+from contour.application.dto import PersistedPaths
 from contour.infrastructure.settings_store import (
+    IMAGE_LIST_MODE_EXPLICIT,
     WidgetAppearanceSettingsStore,
     WidgetDisplaySettingsStore,
     WidgetGamificationProfileStore,
+    WidgetPathSettingsStore,
     WidgetSessionSettingsStore,
 )
+
+# Regression tests for defect D13 (docs/quality/defects.md) live in this module.
+kraken_defect = "D13"
 
 
 class WidgetDisplaySettingsStoreTests(unittest.TestCase):
@@ -157,6 +165,83 @@ class WidgetSessionSettingsStoreTests(unittest.TestCase):
 
             self.assertEqual(store.load_image_paths(), [])
             self.assertEqual(store.load_vector_paths(), [])
+
+
+class ManagedJobSettingsStoreTests(unittest.TestCase):
+    """D13: a managed Kraken job (KRAKEN_JOB_MANIFEST set by the agent runner) must
+    not persist job staging paths into the host user's settings profile."""
+
+    @staticmethod
+    def _stores(directory: str) -> tuple[WidgetPathSettingsStore, WidgetSessionSettingsStore, Path]:
+        settings_path = Path(directory) / "settings.ini"
+
+        def _settings_factory() -> QSettings:
+            return QSettings(str(settings_path), QSettings.Format.IniFormat)
+
+        return (
+            WidgetPathSettingsStore(settings_factory=_settings_factory),
+            WidgetSessionSettingsStore(settings_factory=_settings_factory),
+            settings_path,
+        )
+
+    def _job_environment(self, settings_path: Path):
+        return mock.patch.dict(os.environ, {"KRAKEN_JOB_MANIFEST": str(settings_path / "job.json")})
+
+    def test_managed_job_does_not_persist_job_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path_store, session_store, settings_path = self._stores(directory)
+            with self._job_environment(settings_path):
+                path_store.save(
+                    PersistedPaths(
+                        input_directory=str(Path(directory) / "staging" / "inputs"),
+                        cif_directory=str(Path(directory) / "staging" / "vectors"),
+                        output_directory=str(Path(directory) / "staging" / "outputs"),
+                        dataset_directory=str(Path(directory) / "staging" / "dataset"),
+                    )
+                )
+                session_store.save_image_paths([str(Path(directory) / "staging" / "inputs" / "1_1.jpg")])
+                session_store.save_vector_paths([str(Path(directory) / "staging" / "vectors" / "1_1.cif")])
+                session_store.save_current_image_path(str(Path(directory) / "staging" / "inputs" / "1_1.jpg"))
+                session_store.save_viewed_image_paths([str(Path(directory) / "staging" / "inputs" / "1_1.jpg")])
+                session_store.save_image_list_mode(IMAGE_LIST_MODE_EXPLICIT)
+
+            settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+            written_keys = set(settings.allKeys())
+            for key in (
+                "paths/input_directory",
+                "paths/cif_directory",
+                "paths/output_directory",
+                "paths/dataset_directory",
+                "session/image_paths",
+                "session/vector_paths",
+                "session/viewed_image_paths",
+                "session/current_image_path",
+                "session/image_list_mode",
+            ):
+                self.assertNotIn(key, written_keys)
+            settings.sync()
+
+    def test_persistence_still_writes_outside_managed_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path_store, session_store, settings_path = self._stores(directory)
+            with mock.patch.dict(os.environ, {"KRAKEN_JOB_MANIFEST": ""}):
+                path_store.save(
+                    PersistedPaths(
+                        input_directory=str(Path(directory) / "inputs"),
+                        output_directory=str(Path(directory) / "outputs"),
+                    )
+                )
+                session_store.save_image_paths([str(Path(directory) / "inputs" / "1_1.jpg")])
+                session_store.save_current_image_path(str(Path(directory) / "inputs" / "1_1.jpg"))
+                session_store.save_image_list_mode(IMAGE_LIST_MODE_EXPLICIT)
+
+            settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+            self.assertEqual(settings.value("paths/input_directory", "", type=str), str(Path(directory) / "inputs"))
+            self.assertEqual(settings.value("paths/output_directory", "", type=str), str(Path(directory) / "outputs"))
+            self.assertEqual(settings.value("session/image_paths", "", type=str) != "", True)
+            self.assertEqual(settings.value("session/current_image_path", "", type=str), str(Path(directory) / "inputs" / "1_1.jpg"))
+            self.assertEqual(settings.value("session/image_list_mode", "", type=str), IMAGE_LIST_MODE_EXPLICIT)
+            settings.sync()
 
 
 if __name__ == "__main__":

@@ -342,10 +342,13 @@ class ContourKrakenSession:
             widget = window._widget
             widget._pending_restore_vector_paths = []
             widget._pending_cif_directory_state = None
-            # The job's vector context is the manifest's pinned CIFs, not the
-            # host's persisted CIF directory. Drop any in-flight directory
-            # index and clear the directory so the image-list rebuild cannot
-            # replace the job index with unrelated host vectors.
+            # Mirror the workspace bridge's robustness resets: drop any pending
+            # directory re-index and clear the indexed-directory pin so a stale
+            # host CIF directory cannot resurface during the image-list rebuild.
+            # The managed job has no CIF directory: its vector context is the
+            # manifest's pinned CIFs, not the host's persisted CIF directory.
+            widget._pending_cif_directory_path_after_images = None
+            widget._indexed_cif_directory = None
             if hasattr(widget, "_vector_indexer"):
                 widget._vector_indexer.invalidate_pending_results()
             if hasattr(widget, "cif_dir_edit"):

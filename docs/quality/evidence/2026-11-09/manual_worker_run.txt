@@ -4,7 +4,7 @@ Note that Qt no longer ships fonts. Deploy some (from https://dejavu-fonts.githu
 2026-11-09 07:09:51 WARNING contour.infrastructure.logging: Qt: This plugin does not support propagateSizeHints()
 2026-11-09 07:09:51 WARNING contour.infrastructure.logging: Qt: This plugin does not support propagateSizeHints()
 2026-11-09 07:09:51 WARNING contour.infrastructure.logging: Qt: This plugin does not support propagateSizeHints()
-2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\shustinsky.m.a\AppData\Local\Temp\pytest-of-shustinsky.m.a\pytest-50\test_interactive_contour_opens0\desktop\desktop-jobs\77d6c21f-6298-4fda-966c-25226c9b0dff\staging\547e27bbd93975803f698b3a248e36a6d9a38d8a237f35e2931c1648727087e0\77d6c21f-6298-4fda-966c-25226c9b0dff\inputs\1_1.jpg
+2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\...\Temp\tmpXXXX
 Traceback (most recent call last):
   File "C:\code\kraken\plugins\contour\src\contour\adapters\qt\editor_display.py", line 51, in run
     qimage = profile_callable("editor_display", self._profile_session, _convert)
@@ -15,7 +15,7 @@ Traceback (most recent call last):
     profiler.enable()
     ~~~~~~~~~~~~~~~^^
 ValueError: tool 2 is already in use
-2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\shustinsky.m.a\AppData\Local\Temp\pytest-of-shustinsky.m.a\pytest-50\test_interactive_contour_opens0\desktop\desktop-jobs\77d6c21f-6298-4fda-966c-25226c9b0dff\staging\547e27bbd93975803f698b3a248e36a6d9a38d8a237f35e2931c1648727087e0\77d6c21f-6298-4fda-966c-25226c9b0dff\inputs\1_1.jpg
+2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\...\Temp\tmpXXXX
 Traceback (most recent call last):
   File "C:\code\kraken\plugins\contour\src\contour\adapters\qt\editor_display.py", line 51, in run
     qimage = profile_callable("editor_display", self._profile_session, _convert)
@@ -26,7 +26,7 @@ Traceback (most recent call last):
     profiler.enable()
     ~~~~~~~~~~~~~~~^^
 ValueError: tool 2 is already in use
-2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\shustinsky.m.a\AppData\Local\Temp\pytest-of-shustinsky.m.a\pytest-50\test_interactive_contour_opens0\desktop\desktop-jobs\77d6c21f-6298-4fda-966c-25226c9b0dff\staging\547e27bbd93975803f698b3a248e36a6d9a38d8a237f35e2931c1648727087e0\77d6c21f-6298-4fda-966c-25226c9b0dff\inputs\1_1.jpg
+2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\...\Temp\tmpXXXX
 Traceback (most recent call last):
   File "C:\code\kraken\plugins\contour\src\contour\adapters\qt\editor_display.py", line 51, in run
     qimage = profile_callable("editor_display", self._profile_session, _convert)
@@ -37,7 +37,7 @@ Traceback (most recent call last):
     profiler.enable()
     ~~~~~~~~~~~~~~~^^
 ValueError: tool 2 is already in use
-2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\shustinsky.m.a\AppData\Local\Temp\pytest-of-shustinsky.m.a\pytest-50\test_interactive_contour_opens0\desktop\desktop-jobs\77d6c21f-6298-4fda-966c-25226c9b0dff\staging\547e27bbd93975803f698b3a248e36a6d9a38d8a237f35e2931c1648727087e0\77d6c21f-6298-4fda-966c-25226c9b0dff\inputs\1_1.jpg
+2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\...\Temp\tmpXXXX
 Traceback (most recent call last):
   File "C:\code\kraken\plugins\contour\src\contour\adapters\qt\editor_display.py", line 51, in run
     qimage = profile_callable("editor_display", self._profile_session, _convert)
@@ -48,7 +48,7 @@ Traceback (most recent call last):
     profiler.enable()
     ~~~~~~~~~~~~~~~^^
 ValueError: tool 2 is already in use
-2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\shustinsky.m.a\AppData\Local\Temp\pytest-of-shustinsky.m.a\pytest-50\test_interactive_contour_opens0\desktop\desktop-jobs\77d6c21f-6298-4fda-966c-25226c9b0dff\staging\547e27bbd93975803f698b3a248e36a6d9a38d8a237f35e2931c1648727087e0\77d6c21f-6298-4fda-966c-25226c9b0dff\inputs\1_1.jpg
+2026-11-09 07:09:52 ERROR   contour.adapters.qt.editor_display: Editor image conversion failed for C:\Users\...\Temp\tmpXXXX
 Traceback (most recent call last):
   File "C:\code\kraken\plugins\contour\src\contour\adapters\qt\editor_display.py", line 51, in run
     qimage = profile_callable("editor_display", self._profile_session, _convert)
@@ -61,8 +61,8 @@ Traceback (most recent call last):
 ValueError: tool 2 is already in use
 2026-11-09 07:09:52 CRITICAL contour.application.bootstrap: Unhandled exception
 Traceback (most recent call last):
-  File "C:\Users\shustinsky.m.a\AppData\Local\Temp\pytest-of-shustinsky.m.a\pytest-50\test_interactive_contour_opens0\contour_interactive.py", line 39, in publish
+  File "C:\Users\...\Temp\tmpXXXX\contour_interactive.py", line 39, in publish
     assert not index, index
            ^^^^^^^^^
-AssertionError: {'stm32l_tarakan1_00026': 'Z:\\SDE\\2026\\NN\\STM32L_TARAKAN1\\conductors\\10082026_test_inv\\cif_sample_new\\STM32L_TARAKAN1_00026.cif', 'stm32l_tarakan1_00199': 'Z:\\SDE\\2026\\NN\\STM32L_TARAKAN1\\conductors\\10082026_test_inv\\cif_sample_new\\STM32L_TARAKAN1_00199.cif', 'stm32l_tarakan1_00312': 'Z:\\SDE\\2026\\NN\\STM32L_TARAKAN1\\conductors\\10082026_test_inv\\cif_sample_new\\STM32L_TARAKAN1_00312.cif', 'stm32l_tarakan1_01854': 'Z:\\SDE\\2026\\NN\\STM32L_TARAKAN1\\conductors\\10082026_test_inv\\cif_sample_new\\STM32L_TARAKAN1_01854.cif', 'stm32l_tarakan1_03272': 'Z:\\SDE\\2026\\NN\\STM32L_TARAKAN1\\conductors\\10082026_test_inv\\cif_sample_new\\STM32L_TARAKAN1_03272.cif'}
+AssertionError: {'stm32l_*': 'Z:\\SDE\\...\\cif_sample_new (5 files)'}
 2026-11-09 07:09:52 WARNING contour.infrastructure.logging: Qt: This plugin does not support propagateSizeHints()

@@ -1,11 +1,11 @@
 RED evidence, D11: pytest tests/test_server_workspace_inputs.py -q -k interactive_contour
 Repro run: 2026-11-09. Failure set is pre-existing: identical on the pristine tree and after 2eeb877/3e0f080 (verified by the prior session).
-Full raw log: C:\Users\shustinsky.m.a\AppData\Local\Temp\opencode\interactive_contour_repro.log
+Full raw log: C:\Users\...\Temp\opencode\interactive_contour_repro.log
 
 --- representative traceback (tail, to the raising frame) ---
 _ test_interactive_contour_opens_with_images_and_returns_results[frames.vectorize.v1-True-gateway] _
 
-tmp_path = WindowsPath('C:/Users/shustinsky.m.a/AppData/Local/Temp/pytest-of-shustinsky.m.a/pytest-50/test_interactive_contour_opens5')
+tmp_path = WindowsPath('C:/Users/.../Temp/tmpXXXX')
 monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001EECE412250>
 capability = 'frames.vectorize.v1', transfer_mode = 'gateway', partial = True
 
@@ -212,7 +212,7 @@ src\kraken_agent\server_worker.py:493: in run_leased_job
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 self = <kraken_agent.server_worker.ServerAgentWorker object at 0x000001EECEB0D490>
-lease = {'execution_state': {}, 'job_id': 'ce116a13-9844-4159-9ea4-dcd06d4d7b00', 'lease_claim': 'zsS3iXddgHZvpBCDWIG6mXSAh6DAsbsbYLC6A9-UTfY', 'lease_until': '2026-11-06T15:42:53.202923+00:00', ...}
+lease = {'execution_state': {}, 'job_id': '...', 'lease_claim': '...', 'lease_until': '2026-11-06T15:42:53.202923+00:00', ...}
 
     def _run_leased_job(self, lease: dict[str, Any]) -> dict[str, Any]:
         job_id = str(lease["job_id"])
@@ -305,7 +305,7 @@ lease = {'execution_state': {}, 'job_id': 'ce116a13-9844-4159-9ea4-dcd06d4d7b00'
                 return {"imported": {"job": {"state": "cancelled"}}}
             if job.result is None:
 >               raise RuntimeError(job.error or "Plugin finished without a result")
-E               RuntimeError: [WinError 2] ═х єфрхЄё  эрщЄш єърчрээ√щ Їрщы: 'C:\\Users\\shustinsky.m.a\\AppData\\Local\\Temp\\pytest-of-shustinsky.m.a\\pytest-50\\test_interactive_contour_opens5\\desktop\\desktop-jobs\\ce116a13-9844-4159-9ea4-dcd06d4d7b00\\staging\\2d6214d41fdb4c46455a2df790b0d2988114d2b20a6c1afe5ab75e4718b512f9\\ce116a13-9844-4159-9ea4-dcd06d4d7b00\\result.json'
+E               RuntimeError: [WinError 2] ═х єфрхЄё  эрщЄш єърчрээ√щ Їрщы: 'C:\\Users\\...\\Temp\\tmpXXXX\\desktop\\desktop-jobs\\...\\staging\\...\\result.json'
 
 src\kraken_agent\server_worker.py:585: RuntimeError
 

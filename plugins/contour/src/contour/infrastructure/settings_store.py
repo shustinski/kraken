@@ -45,6 +45,16 @@ def _build_contour_settings() -> QSettings:
     return QSettings("ViaLaNet", "Contour")
 
 
+def _managed_job_active() -> bool:
+    """True inside a Kraken agent job subprocess.
+
+    The agent runner sets ``KRAKEN_JOB_MANIFEST`` in the managed plugin
+    process; that process works on per-job staging files, and its paths and
+    session state must not be persisted into the host user's settings profile.
+    """
+    return bool((os.getenv("KRAKEN_JOB_MANIFEST") or "").strip())
+
+
 class WidgetPathSettingsStore:
     def __init__(self, settings_factory: Callable[[], QSettings] | None = None) -> None:
         self._settings_factory = settings_factory or _build_contour_settings
@@ -61,6 +71,8 @@ class WidgetPathSettingsStore:
         return paths
 
     def save(self, paths: PersistedPaths) -> None:
+        if _managed_job_active():
+            return
         settings = self._settings_factory()
         settings.setValue("paths/input_directory", paths.input_directory)
         settings.setValue("paths/cif_directory", paths.cif_directory)
@@ -218,6 +230,8 @@ class WidgetSessionSettingsStore:
         return text or None
 
     def save_current_image_path(self, path: str | Path | None) -> None:
+        if _managed_job_active():
+            return
         settings = self._settings_factory()
         if path:
             settings.setValue(SESSION_CURRENT_IMAGE_PATH_KEY, str(Path(path)))
@@ -265,6 +279,8 @@ class WidgetSessionSettingsStore:
         return IMAGE_LIST_MODE_DIRECTORY
 
     def save_image_list_mode(self, mode: str) -> None:
+        if _managed_job_active():
+            return
         settings = self._settings_factory()
         normalized = IMAGE_LIST_MODE_EXPLICIT if mode == IMAGE_LIST_MODE_EXPLICIT else IMAGE_LIST_MODE_DIRECTORY
         settings.setValue(SESSION_IMAGE_LIST_MODE_KEY, normalized)
@@ -317,6 +333,8 @@ class WidgetSessionSettingsStore:
         return normalized
 
     def _save_path_list(self, key: str, paths: Iterable[str | Path]) -> None:
+        if _managed_job_active():
+            return
         normalized: list[str] = []
         seen: set[str] = set()
         for raw_path in paths:

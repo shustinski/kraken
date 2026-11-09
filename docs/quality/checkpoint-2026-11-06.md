@@ -52,7 +52,7 @@ scan/create/import/delete.
   слоя `Heggs_M3_FS`.
 - `kraken-admin doctor`: `.venv\Scripts\python.exe -m kraken_admin doctor` — exit 2,
   `[ERROR] configuration: [WinError 2] Не удается найти указанный файл:
-  'C:\Users\shustinsky.m.a\AppData\Local\Kraken\LocalServer\server.toml'`. Ожидается:
+  'C:\Users\shust*\AppData\Local\Kraken\LocalServer\server.toml'`. Ожидается:
   путь по умолчанию на этой машине не существует; запуск идёт через
   `kraken-server --config config/local/server.toml`. Никуда `server.toml` не создавался
   и не копировался.

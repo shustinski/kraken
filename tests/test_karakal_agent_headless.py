@@ -10,6 +10,9 @@ from kraken_core.plugins import PluginInventoryItem, load_plugin_metadata_from_d
 from kraken_hub.infrastructure.agent.runtime import LocalAgentRuntime
 from tests.test_agent_execution_safety import manifest
 
+# Regression tests for defect D4 (docs/quality/defects.md) live in this module.
+kraken_defect = "D4"
+
 
 def test_hub_accepts_installed_headless_karakal_action():
     from types import SimpleNamespace

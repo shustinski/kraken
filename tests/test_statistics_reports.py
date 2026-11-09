@@ -17,6 +17,9 @@ from kraken_manager.infrastructure.reports import (
     metric_definition,
 )
 
+# Regression tests for defect D6 (docs/quality/defects.md).
+kraken_defect = "D6"
+
 
 class StatisticsReportTests(unittest.TestCase):
     def test_real_review_events_and_binary_purpose_are_counted(self) -> None:

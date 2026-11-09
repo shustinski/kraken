@@ -19,6 +19,8 @@ from kraken_manager.application.dto import CommandContext, CreateProjectCommand
 from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.project import GridOrientation, LayerType
 from kraken_manager.infrastructure.filesystem.event_store import FilesystemEventStore
+# Regression tests for defect D1 (docs/quality/defects.md).
+kraken_defect = "D1"
 
 
 def _service(tmp_path: Path) -> EmbeddedProjectService:

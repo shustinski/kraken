@@ -1,0 +1,223 @@
+{
+  "defects": [
+    {
+      "id": "D1",
+      "component": "kraken_manager",
+      "title": "Повтор создания проекта с тем же ключом идемпотентности падает",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_project_create_idempotency.py",
+        "tests/test_create_project_dialog_retry.py"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/d1-review-red-edges.txt",
+        "docs/quality/evidence/2026-11-01/d1-review-green.txt"
+      ],
+      "fixed_in": "",
+      "repro": "Создать локальный проект «Аудит» с ключом project-audit и повторить create_project с тем же ключом, именем и размерами — FileExistsError: папка уже существует."
+    },
+    {
+      "id": "D2",
+      "component": "kraken_manager",
+      "title": "Слой без файловой привязки нельзя удалить, даже после импорта PNG",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_metadata_layer_deletion.py"
+      ],
+      "evidence": [],
+      "fixed_in": "",
+      "repro": "create_layer «M1», репрезентация изображений, commit_managed_import 1_1.png, удаление слоя по имени — WorkspaceValidationError: Layer has no two-root file binding."
+    },
+    {
+      "id": "D3",
+      "component": "kraken_manager",
+      "title": "Сканер нового слоя не принимает PNG",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images",
+        "tests/test_two_root_service.py::test_png_disk_import_survives_reopen",
+        "tests/test_layer_creation_dialog.py::test_png_scan_is_ready_without_bmp_conversion"
+      ],
+      "evidence": [],
+      "fixed_in": "",
+      "repro": "scan_layer_source по каталогу с одним frame_0.png — scan.ready False и текст «не найдены изображения JPG/JPEG или BMP»."
+    },
+    {
+      "id": "D4",
+      "component": "plugins/karakal",
+      "title": "Уверенность слоя Karakal регистрируется как интерактивная",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_karakal_agent_headless.py"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/d4-red.txt",
+        "docs/quality/evidence/2026-11-01/d4-ui-red.txt",
+        "docs/quality/evidence/2026-11-01/d4-focused.txt"
+      ],
+      "fixed_in": "",
+      "repro": "Собрать LocalAgentRuntime._registry() для исходных плагинов — layer.confidence.analyze.v1 записана с interactive: true и modes [\"interactive\"], команда python -m karakal.worker."
+    },
+    {
+      "id": "D5",
+      "component": "kraken_server",
+      "title": "Роль нельзя назначить новой учётной записи, пока та сама не обратится к API",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_registered_principal_before_session.py"
+      ],
+      "evidence": [],
+      "fixed_in": "",
+      "repro": "POST /auth/accounts, затем от имени владельца PUT /projects/{id}/acl/{principal}/viewer до первого запроса с токеном нового аккаунта — 404 Principal … was not found or is inactive."
+    },
+    {
+      "id": "D6",
+      "component": "kraken_hub",
+      "title": "Статистика не считает managed import и не экспортирует вложенный payload в CSV",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/test_statistics_reports.py::test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions",
+        "tests/test_statistics_reports.py::test_csv_preserves_nested_immutable_event_payload",
+        "tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/statistics-red.txt",
+        "docs/quality/evidence/2026-11-01/statistics-csv-red.txt",
+        "docs/quality/evidence/2026-11-01/statistics-verified.txt",
+        "docs/quality/evidence/2026-11-01/review.md"
+      ],
+      "fixed_in": "",
+      "repro": "commit_managed_import двух кадров — расчёт показывает 0 импортированных файлов; экспорт CSV падает: Object of type mappingproxy is not JSON serializable."
+    },
+    {
+      "id": "D7",
+      "component": "kraken_hub",
+      "title": "HTTP500 списка заданий завершает Hub из Qt callback",
+      "status": "RESOLVED",
+      "severity": "critical",
+      "regression_tests": [
+        "tests/test_hub_resume_remote_failure.py::test_resume_survives_jobs_http_failure_and_can_retry"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/hub-resume-red.txt",
+        "docs/quality/evidence/2026-11-01/hub-resume-green.txt",
+        "docs/quality/evidence/2026-11-01/schema-upgrade-working.json"
+      ],
+      "fixed_in": "f749893",
+      "repro": "На сервере со старой схемой _resume_agent_jobs: выбор active выполнялся вне try, исключение выходило из QTimer callback, процесс завершался с 0xc0000409."
+    },
+    {
+      "id": "D8",
+      "component": "kraken_server",
+      "title": "Persistent upload через Gateway возвращает HTTP500",
+      "status": "RESOLVED",
+      "severity": "critical",
+      "regression_tests": [
+        "tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/upload-preflight-red.txt",
+        "docs/quality/evidence/2026-11-01/upload-preflight-green.txt",
+        "docs/quality/evidence/2026-11-01/upload-preflight-junit.xml"
+      ],
+      "fixed_in": "393bca4",
+      "repro": "Первый persistent upload после унификации команд: preflight вызывался как атрибут handler — AttributeError function.preflight и HTTP500."
+    },
+    {
+      "id": "D9",
+      "component": "kraken_manager",
+      "title": "Ход по папкам с зарезервированными именами Windows теряет данные (con, aux, …)",
+      "status": "RESOLVED",
+      "severity": "critical",
+      "regression_tests": [
+        "tests/test_workspace_files.py::test_scan_counts_files_inside_reserved_subdirectory",
+        "tests/test_workspace_files.py::test_import_layer_preserves_bytes_under_reserved_aux_subdirectory",
+        "tests/test_workspace_files.py::test_place_server_layer_copies_reserved_subdirectory_bytes",
+        "tests/test_workspace_files.py::test_make_directory_and_remove_tree_handle_stem_extension_reserved_names",
+        "tests/test_workspace_files.py::test_make_directory_exist_ok_contract"
+      ],
+      "evidence": [],
+      "fixed_in": "3e0f080",
+      "repro": "scan_layer_source по дереву с подпапкой con/data.txt — total_files=1 (файл невидим); import_layer создаёт пустую aux/<слой>/con без data.txt."
+    },
+    {
+      "id": "D10",
+      "component": "test_harness",
+      "title": "Teardown тестовой обвязки не может удалить дерево Kraken с зарезервированным именем (aux)",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/test_hub_embedded_service.py"
+      ],
+      "evidence": [],
+      "fixed_in": "f98c55f",
+      "repro": "На Windows pytest tests/test_hub_embedded_service.py — 16 тестов FAIL: в teardown WinError 145 (reserved DOS device name) при shutil.rmtree дерева с aux-категорией."
+    },
+    {
+      "id": "D11",
+      "component": "contour",
+      "title": "Интерактивное задание Contour не даёт result.json: сохранённый на хосте CIF-каталог перезаписывает векторный индекс задания",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_server_workspace_inputs.py::test_interactive_contour_opens_with_images_and_returns_results"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-09/interactive_contour_repro.txt",
+        "docs/quality/evidence/2026-11-09/manual_worker_run.txt",
+        "docs/quality/evidence/2026-11-09/interactive_contour_green.txt",
+        "docs/quality/evidence/2026-11-09/neighbor_suites_green.txt"
+      ],
+      "fixed_in": "103cce1",
+      "repro": "На машине, где профиль Contour содержит paths/cif_directory: pytest tests/test_server_workspace_inputs.py -q -k interactive_contour — 6 тестов FAIL, subprocess завершается с 0 без result.json."
+    },
+    {
+      "id": "D12",
+      "component": "contour",
+      "title": "Конфликт занятого слота профайлера узнаётся только по легаси-сообщению, и конвертация изображений редактора логирует ошибки",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "plugins/contour/tests/unit/test_frame_switch_profiler.py::FrameSwitchProfilerTests::test_conflict_detection_matches_the_real_cpython_slot_error"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-09/manual_worker_run.txt"
+      ],
+      "fixed_in": "f260105",
+      "repro": "В процессе, где слот cProfile-профайлера уже занят, конвертация изображений редактора с профайлингом логирует ERROR: ValueError: tool 2 is already in use (CPython 3.13+)."
+    },
+    {
+      "id": "D13",
+      "component": "contour",
+      "title": "Управляемый прогон Contour дописывает staging-пути задания в профиль настроек хоста",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "plugins/contour/tests/unit/test_settings_store.py::ManagedJobSettingsStoreTests",
+        "plugins/contour/tests/unit/test_kraken_return.py::test_agent_attach_resets_cif_directory_state_like_workspace_sibling"
+      ],
+      "evidence": [],
+      "fixed_in": "f260105",
+      "repro": "Управляемое задание Contour на машине с профилем хоста: после прогона HKCU\\Software\\ViaLaNet\\Contour содержит staging-пути задания (paths/*, session/*); agent-мост не делал двух robustness-сбросов workspace-близнеца."
+    },
+    {
+      "id": "D14",
+      "component": "test_harness",
+      "title": "Обвязка интерактивных тестов Contour строит несуществующие PYTHONPATH для subprocess плагинов",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/test_server_workspace_inputs.py::test_subprocess_resolves_contour_from_harness_pythonpath"
+      ],
+      "evidence": [],
+      "fixed_in": "f260105",
+      "repro": "tests/test_server_workspace_inputs_parts/interactive_contour_opens.py брала корень parents[1] = <repo>/tests — все три корня PYTHONPATH не существуют, subprocess молча резолвил editable-установку venv."
+    }
+  ]
+}

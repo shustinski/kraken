@@ -10,6 +10,12 @@ from kraken_server.services import CommandContext
 
 from test_server_workspace_inputs_parts.desktop_job import _desktop_job
 
+# Regression test for defect D11 (docs/quality/defects.md): the interactive
+# Contour subprocess must run against an isolated settings profile whose only
+# pre-existing state is a persisted host CIF directory, and the managed job
+# must still open with its own vector context and return result.json.
+kraken_defect = "D11"
+
 @pytest.mark.parametrize("transfer_mode", ["proxy", "gateway"])
 @pytest.mark.parametrize("capability,partial", [
     ("frames.vectorize.v1", False), ("frames.dataset.prepare.v1", False), ("frames.vectorize.v1", True),
@@ -32,6 +38,20 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
         "PYTHONPATH",
         os.pathsep.join((str(root / "src"), str(root / "plugins/contour/src"), str(root / "plugins/neuralimage/src"))),
     )
+    # Isolate the plugin subprocess from the host user's QSettings profile
+    # (Windows registry by default) and seed it with a persisted host CIF
+    # directory: the managed job's vector index must stay job-scoped even
+    # when the host session state references unrelated CIF files.
+    settings_dir = tmp_path / "contour-settings"
+    settings_dir.mkdir()
+    host_cif = tmp_path / "host-cif"
+    host_cif.mkdir()
+    (host_cif / "host-stray.cif").write_text("L M1; E;\n", encoding="utf-8")
+    (settings_dir / "ViaLaNet_Contour.ini").write_text(
+        "[paths]\ncif_directory = {0}\n".format(str(host_cif).replace("\\", "/")),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VIALANET_SETTINGS_DIR", str(settings_dir))
 
     server, local, session, project, layer, target, gateway, payload = _desktop_job(tmp_path, capability)
     if capability == "frames.dataset.prepare.v1":

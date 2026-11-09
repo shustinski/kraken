@@ -3,11 +3,19 @@ from __future__ import annotations
 import torch
 import torch.distributed as dist
 
+from neuralimage.infrastructure.profiling import set_profile_base_dir
+
 from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.combined_optimizer import _TrainingPauseRequested
+
+from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.train_step_profile import train_profiling_notice_line
 
 
 class RunImplMixin:
     def _run_impl(self, device: torch.device, rank: int, world_size: int, distributed: bool):
+        set_profile_base_dir(self._save_path.parent)
+        notice = train_profiling_notice_line()
+        if notice is not None:
+            self._bus.put(['logging', notice])
         del world_size
         runtime_state = self._initialize_training_runtime(
             device=device,

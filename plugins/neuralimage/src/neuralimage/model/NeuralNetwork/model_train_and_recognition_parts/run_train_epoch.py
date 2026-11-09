@@ -14,6 +14,8 @@ from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.stop_proc
     _SupportsSetEpoch,
 )
 
+from neuralimage.model.NeuralNetwork.model_train_and_recognition_parts.train_step_profile import train_step_profile_context
+
 
 class RunTrainEpochMixin:
     def _run_train_epoch(
@@ -66,98 +68,99 @@ class RunTrainEpochMixin:
         train_iterator = iter(self._train_dataloader)
         batch_index = 0
         while True:
-            data_wait_started_at = time.perf_counter()
-            try:
-                with self._profile_region('data_wait_and_cut'):
-                    batch = next(train_iterator)
-            except StopIteration:
-                break
-            if batch_index < self._resume_batch:
-                batch_index += 1
-                continue
-            if self._periodic_validation_due(
-                self._global_batch,
-                last_automatic_check_batch,
-                validation_check_interval,
-            ):
-                epoch_stats.early_stop_requested = self._run_automatic_early_stopping_check(
-                    epoch=epoch,
-                    device=device,
-                    run_context=run_context,
-                    is_main_process=is_main_process,
-                    distributed=distributed,
-                )
-                last_automatic_check_batch = self._global_batch
-                if epoch_stats.early_stop_requested:
+            with train_step_profile_context(epoch=epoch, batch_index=batch_index, global_batch=self._global_batch):
+                data_wait_started_at = time.perf_counter()
+                try:
+                    with self._profile_region('data_wait_and_cut'):
+                        batch = next(train_iterator)
+                except StopIteration:
                     break
-            if self._resume_runtime_torch_rng_state is not None:
-                torch.set_rng_state(self._resume_runtime_torch_rng_state)
-                self._resume_runtime_torch_rng_state = None
-            enable_cuda_event_timing = bool(getattr(run_context, 'enable_cuda_event_timing', True))
-            with self._profile_region('transfer_and_augment'):
-                prepared_batch, skipped_here = self._prepare_train_batch(
-                    batch=batch,
-                    device=device,
-                    data_wait_started_at=data_wait_started_at,
-                    enable_cuda_event_timing=enable_cuda_event_timing,
+                if batch_index < self._resume_batch:
+                    batch_index += 1
+                    continue
+                if self._periodic_validation_due(
+                    self._global_batch,
+                    last_automatic_check_batch,
+                    validation_check_interval,
+                ):
+                    epoch_stats.early_stop_requested = self._run_automatic_early_stopping_check(
+                        epoch=epoch,
+                        device=device,
+                        run_context=run_context,
+                        is_main_process=is_main_process,
+                        distributed=distributed,
+                    )
+                    last_automatic_check_batch = self._global_batch
+                    if epoch_stats.early_stop_requested:
+                        break
+                if self._resume_runtime_torch_rng_state is not None:
+                    torch.set_rng_state(self._resume_runtime_torch_rng_state)
+                    self._resume_runtime_torch_rng_state = None
+                enable_cuda_event_timing = bool(getattr(run_context, 'enable_cuda_event_timing', True))
+                with self._profile_region('transfer_and_augment'):
+                    prepared_batch, skipped_here = self._prepare_train_batch(
+                        batch=batch,
+                        device=device,
+                        data_wait_started_at=data_wait_started_at,
+                        enable_cuda_event_timing=enable_cuda_event_timing,
+                    )
+                if skipped_here > 0:
+                    epoch_stats.skipped_uniform_count += skipped_here
+
+                if prepared_batch is None:
+                    self._step_training_profiler(active_profiler)
+                    self._global_batch += 1
+                    batch_index += 1
+                    continue
+
+                with self._profile_region('model_train_step'):
+                    step_result = self._run_train_step(run_context=run_context, batch=prepared_batch)
+                if step_result is None:
+                    epoch_stats.skipped_non_finite_count += 1
+                    self._step_training_profiler(active_profiler)
+                    self._global_batch += 1
+                    batch_index += 1
+                    continue
+                batch_total_ms = (time.perf_counter() - prepared_batch.batch_start) * 1000.0
+
+                epoch_stats.add_batch(
+                    batch_samples=step_result.batch_samples,
+                    batch_loss=step_result.metric_loss,
+                    data_wait_ms=prepared_batch.data_wait_ms,
+                    augmentation_ms=prepared_batch.augmentation_ms,
+                    forward_ms=step_result.forward_ms,
+                    backward_ms=step_result.backward_ms,
+                    optimizer_ms=step_result.optimizer_ms,
+                    total_ms=batch_total_ms,
                 )
-            if skipped_here > 0:
-                epoch_stats.skipped_uniform_count += skipped_here
-
-            if prepared_batch is None:
+                self._update_loss_aware_sampling(
+                    run_context=run_context,
+                    sample_indices=prepared_batch.sample_indices,
+                    per_sample_loss=step_result.per_sample_loss,
+                    mixup_pair_indices=prepared_batch.mixup_pair_indices,
+                    mixup_lambdas=prepared_batch.mixup_lambdas,
+                )
+                self._publish_train_batch_runtime(
+                    epoch=epoch,
+                    batch_index=batch_index,
+                    run_context=run_context,
+                    batch=prepared_batch,
+                    step_result=step_result,
+                    batch_total_ms=batch_total_ms,
+                )
+                self._record_random_patch_profile_batch(
+                    epoch=epoch,
+                    batch_index=batch_index,
+                    batch=prepared_batch,
+                    step_result=step_result,
+                    batch_total_ms=batch_total_ms,
+                )
                 self._step_training_profiler(active_profiler)
                 self._global_batch += 1
                 batch_index += 1
-                continue
-
-            with self._profile_region('model_train_step'):
-                step_result = self._run_train_step(run_context=run_context, batch=prepared_batch)
-            if step_result is None:
-                epoch_stats.skipped_non_finite_count += 1
-                self._step_training_profiler(active_profiler)
-                self._global_batch += 1
-                batch_index += 1
-                continue
-            batch_total_ms = (time.perf_counter() - prepared_batch.batch_start) * 1000.0
-
-            epoch_stats.add_batch(
-                batch_samples=step_result.batch_samples,
-                batch_loss=step_result.metric_loss,
-                data_wait_ms=prepared_batch.data_wait_ms,
-                augmentation_ms=prepared_batch.augmentation_ms,
-                forward_ms=step_result.forward_ms,
-                backward_ms=step_result.backward_ms,
-                optimizer_ms=step_result.optimizer_ms,
-                total_ms=batch_total_ms,
-            )
-            self._update_loss_aware_sampling(
-                run_context=run_context,
-                sample_indices=prepared_batch.sample_indices,
-                per_sample_loss=step_result.per_sample_loss,
-                mixup_pair_indices=prepared_batch.mixup_pair_indices,
-                mixup_lambdas=prepared_batch.mixup_lambdas,
-            )
-            self._publish_train_batch_runtime(
-                epoch=epoch,
-                batch_index=batch_index,
-                run_context=run_context,
-                batch=prepared_batch,
-                step_result=step_result,
-                batch_total_ms=batch_total_ms,
-            )
-            self._record_random_patch_profile_batch(
-                epoch=epoch,
-                batch_index=batch_index,
-                batch=prepared_batch,
-                step_result=step_result,
-                batch_total_ms=batch_total_ms,
-            )
-            self._step_training_profiler(active_profiler)
-            self._global_batch += 1
-            batch_index += 1
-            pause_event = getattr(self, '_pause_event', None)
-            if pause_event is not None and pause_event.is_set():
-                raise _TrainingPauseRequested(epoch, batch_index)
+                pause_event = getattr(self, '_pause_event', None)
+                if pause_event is not None and pause_event.is_set():
+                    raise _TrainingPauseRequested(epoch, batch_index)
 
         if (
             not epoch_stats.early_stop_requested

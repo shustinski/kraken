@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Callable
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QSize, Qt, pyqtSignal
 from kraken_core.settings import QSettings
-from PyQt6.QtGui import QAction, QActionGroup
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -16,8 +16,11 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMenu,
+    QPushButton,
     QSizePolicy,
     QStackedWidget,
+    QTabBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -31,6 +34,23 @@ from .pages import (
     ProjectWorkspacePage,
     StatisticsPage,
 )
+
+
+class _ProjectTabBar(QTabBar):
+    """Project tab bar that reports re-selection of the current tab.
+
+    ``QTabBar.setCurrentIndex`` is a silent no-op when the index does not
+    change, and a bar with tabs cannot be deselected (``-1`` is ignored).
+    Re-selecting an already-current project tab after a section page has been
+    shown must still re-activate the project page, so the same-index set is
+    reported by re-emitting ``currentChanged``.
+    """
+
+    def setCurrentIndex(self, index: int) -> None:  # type: ignore[override]
+        previous = self.currentIndex()
+        super().setCurrentIndex(index)
+        if index == previous and index >= 0:
+            self.currentChanged.emit(index)
 
 
 class ProjectManagerShell(QMainWindow):
@@ -47,6 +67,9 @@ class ProjectManagerShell(QMainWindow):
     preferencesRequested = pyqtSignal()
     reviewReturnRequested = pyqtSignal()
     framePropertiesRequested = pyqtSignal()
+    project_tab_activated = pyqtSignal(object)
+    project_tab_close_requested = pyqtSignal(str)
+    addProjectRequested = pyqtSignal()
 
     DEFAULT_NAVIGATION = (
         ("projects", "Проекты"),
@@ -64,6 +87,7 @@ class ProjectManagerShell(QMainWindow):
         self.resize(1280, 800)
         self._pages: dict[str, QWidget] = {}
         self._navigation_items: dict[str, QListWidgetItem] = {}
+        self._selection_counts: dict[str, int] = {}
         self.close_guard: Callable[[], bool] | None = None
 
         central = QWidget()
@@ -73,14 +97,23 @@ class ProjectManagerShell(QMainWindow):
         self.sidebar = self._build_sidebar()
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("managerPageStack")
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(0)
+        content_layout.addLayout(self._build_project_tab_row())
+        content_layout.addWidget(self.page_stack, 1)
         root.addWidget(self.sidebar)
-        root.addWidget(self.page_stack, 1)
+        root.addWidget(content, 1)
         self.setCentralWidget(central)
         self._build_workspace_menus()
 
         self._register_default_pages()
         self.navigation_list.currentRowChanged.connect(self._on_navigation_row_changed)
         self.navigation_list.itemClicked.connect(self._on_navigation_item_clicked)
+        self.projectTabs.currentChanged.connect(self._on_project_tab_changed)
+        self.projectTabs.tabCloseRequested.connect(self._on_project_tab_close_requested)
+        self.add_project_button.clicked.connect(self._on_add_project_button_clicked)
         self.show_page("projects")
 
     def _build_workspace_menus(self) -> None:
@@ -193,6 +226,67 @@ class ProjectManagerShell(QMainWindow):
         layout.addWidget(self.sync_status_label)
         return sidebar
 
+    def _build_project_tab_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        self.projectTabs = _ProjectTabBar()
+        self.projectTabs.setObjectName("projectTabs")
+        self.projectTabs.setShape(QTabBar.Shape.RoundedNorth)
+        self.projectTabs.setExpanding(False)
+        self.projectTabs.setDrawBase(True)
+        self.projectTabs.setMovable(False)
+        self.projectTabs.setTabsClosable(False)
+        self._tab_close_icon = self._paint_tab_close_icon()
+        row.addWidget(self.projectTabs, 1)
+        self.add_project_button = QPushButton()
+        self.add_project_button.setObjectName("addProjectButton")
+        self.add_project_button.setToolTip("Открыть проект")
+        self.add_project_button.setFixedSize(38, 38)
+        plus_pixmap = QPixmap(20, 20)
+        plus_pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(plus_pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        plus_pen = QPen(QColor("#f5f9ff"), 2.5)
+        plus_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(plus_pen)
+        painter.drawLine(QPointF(4, 10), QPointF(16, 10))
+        painter.drawLine(QPointF(10, 4), QPointF(10, 16))
+        painter.end()
+        self.add_project_button.setIcon(QIcon(plus_pixmap))
+        self.add_project_button.setIconSize(plus_pixmap.size())
+        self.add_project_button.setStyleSheet(
+            """
+            QPushButton#addProjectButton {
+                padding: 0;
+            }
+            """
+        )
+        row.addWidget(self.add_project_button)
+        return row
+
+    @staticmethod
+    def _paint_tab_close_icon() -> QIcon:
+        pixmap = QPixmap(12, 12)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#647d9c"), 1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(2, 2), QPointF(10, 10))
+        painter.drawLine(QPointF(10, 2), QPointF(2, 10))
+        painter.end()
+        return QIcon(pixmap)
+
+    def _build_tab_close_button(self) -> QToolButton:
+        button = QToolButton()
+        button.setAutoRaise(True)
+        button.setFixedSize(16, 16)
+        button.setIcon(self._tab_close_icon)
+        button.setIconSize(QSize(12, 12))
+        button.setToolTip("Закрыть проект")
+        return button
+
     def _register_default_pages(self) -> None:
         pages: Mapping[str, QWidget] = {
             "projects": ProjectCatalogPage(),
@@ -262,13 +356,9 @@ class ProjectManagerShell(QMainWindow):
             self.navigation_list.setCurrentItem(navigation_item)
         if changed:
             self.pageChanged.emit(normalized)
-        workspace_active = normalized == "workspace"
-        self.layers_action.setEnabled(workspace_active)
-        for menu in self._visual_menus.values():
-            menu.setEnabled(workspace_active)
-        self.actions_menu.setEnabled(workspace_active)
-        if not workspace_active:
-            self.frame_properties_action.setEnabled(False)
+        self._sync_chrome_for_current_page()
+        if not normalized.startswith("project:"):
+            self.project_tab_activated.emit(None)
 
     def set_page_visible(self, key: str, visible: bool) -> None:
         item = self._navigation_items.get(str(key))
@@ -294,6 +384,130 @@ class ProjectManagerShell(QMainWindow):
         self.statusBar().showMessage("Выбрано кадров: 0")
         self.show_page("workspace")
         return page
+
+    def open_project_tab(self, project_id: str, name: str, page: QWidget) -> QWidget:
+        key = f"project:{project_id}"
+        existing = self._pages.get(key)
+        if existing is not None:
+            index = self._tab_index_for_project(project_id)
+            if index >= 0:
+                # _ProjectTabBar reports even the already-current index, so a
+                # re-open always runs the activation sync.
+                self.projectTabs.setCurrentIndex(index)
+            return existing
+        self.register_page(key, name, page, navigation=False)
+        # The tab bar does not auto-activate the added tab; keep its signals
+        # blocked until the tab data is in place, then activate it explicitly.
+        self.projectTabs.blockSignals(True)
+        try:
+            index = self.projectTabs.addTab(str(name))
+            self.projectTabs.setTabData(index, str(project_id))
+            self.projectTabs.setTabToolTip(index, str(name))
+        finally:
+            self.projectTabs.blockSignals(False)
+        close_button = self._build_tab_close_button()
+        self.projectTabs.setTabButton(index, QTabBar.ButtonPosition.RightSide, close_button)
+        close_button.clicked.connect(
+            lambda _checked=False, tab_index=index: self.projectTabs.tabCloseRequested.emit(tab_index)
+        )
+        # The first added tab becomes current silently; _ProjectTabBar
+        # re-emits currentChanged for that case, driving the activation.
+        self.projectTabs.setCurrentIndex(index)
+        if hasattr(page, "selectionCountChanged"):
+            page.selectionCountChanged.connect(
+                lambda count, pid=project_id: self._on_project_selection(pid, int(count))
+            )
+        return page
+
+    def close_project_tab(self, project_id: str) -> None:
+        index = self._tab_index_for_project(project_id)
+        if index < 0:
+            return
+        key = f"project:{project_id}"
+        page = self._pages.pop(key)
+        was_current = self.page_stack.currentWidget() is page
+        self.page_stack.removeWidget(page)
+        page.close()
+        page.setParent(None)
+        self._selection_counts.pop(project_id, None)
+        self.projectTabs.blockSignals(True)
+        try:
+            self.projectTabs.removeTab(index)
+        finally:
+            self.projectTabs.blockSignals(False)
+        if was_current:
+            if self.projectTabs.count() > 0:
+                # removeTab already moved the bar (its signals were blocked);
+                # _ProjectTabBar re-emits currentChanged for that index.
+                self.projectTabs.setCurrentIndex(min(index, self.projectTabs.count() - 1))
+            else:
+                self.show_page("projects")
+
+    def rename_project_tab(self, project_id: str, name: str) -> None:
+        index = self._tab_index_for_project(project_id)
+        if index >= 0:
+            self.projectTabs.setTabText(index, str(name))
+
+    def current_project_id(self) -> str | None:
+        key = self.current_page_key()
+        if key.startswith("project:"):
+            return key[len("project:"):]
+        return None
+
+    def _sync_chrome_for_current_page(self) -> None:
+        key = self.current_page_key()
+        project_active = key == "workspace" or key.startswith("project:")
+        self.layers_action.setEnabled(project_active)
+        for menu in self._visual_menus.values():
+            menu.setEnabled(project_active)
+        self.actions_menu.setEnabled(project_active)
+        if not project_active:
+            self.frame_properties_action.setEnabled(False)
+
+    def _tab_index_for_project(self, project_id: str) -> int:
+        for index in range(self.projectTabs.count()):
+            if self.projectTabs.tabData(index) == project_id:
+                return index
+        return -1
+
+    def _on_project_tab_changed(self, index: int) -> None:
+        if index < 0:
+            self.project_tab_activated.emit(None)
+            return
+        project_id = str(self.projectTabs.tabData(index) or "")
+        page = self._pages.get(f"project:{project_id}")
+        if page is None:
+            return
+        self.page_stack.setCurrentWidget(page)
+        self._sync_chrome_for_current_page()
+        self._push_selection_count()
+        self.project_tab_activated.emit(project_id)
+
+    def _on_project_tab_close_requested(self, index: int) -> None:
+        project_id = str(self.projectTabs.tabData(index) or "")
+        if project_id:
+            self.project_tab_close_requested.emit(project_id)
+
+    def _on_add_project_button_clicked(self) -> None:
+        self.addProjectRequested.emit()
+        self.show_page("projects")
+
+    def _on_project_selection(self, project_id: str, count: int) -> None:
+        # Only the active project drives the status bar; an inactive
+        # project's emissions neither update the bar nor its stored count.
+        if self.current_project_id() != project_id:
+            return
+        self._selection_counts[project_id] = count
+        self.statusBar().showMessage(f"Выбрано кадров: {count:n}")
+        self.frame_properties_action.setEnabled(count == 1)
+
+    def _push_selection_count(self) -> None:
+        project_id = self.current_project_id()
+        if project_id is None:
+            return
+        count = self._selection_counts.get(project_id, 0)
+        self.statusBar().showMessage(f"Выбрано кадров: {count:n}")
+        self.frame_properties_action.setEnabled(count == 1)
 
     def set_session_summary(self, text: str) -> None:
         self.session_label.setText(str(text) or "Нет активной сессии")

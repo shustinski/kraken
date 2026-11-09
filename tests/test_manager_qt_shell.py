@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from kraken_manager.presentation.qt import (
@@ -142,3 +142,129 @@ def test_workspace_uses_bottom_layer_tabs_and_status_bar_selection(qapp):
     assert "8" in workspace.matrix_minimap.toolTip()
     assert shell.statusBar().currentMessage() == "Выбрано кадров: 1"
     assert shell.windowTitle() == "Kraken"
+
+
+class _SelectionPage(QWidget):
+    selectionCountChanged = pyqtSignal(int)
+
+
+def test_shell_project_tabs_open_and_switch_project_pages(qapp):
+    shell = ProjectManagerShell()
+    page_a = QWidget()
+    page_b = QWidget()
+    shell.open_project_tab("p-a", "Alpha", page_a)
+    shell.open_project_tab("p-b", "Beta", page_b)
+    assert shell.projectTabs.count() == 2
+    assert shell.current_project_id() == "p-b"
+    assert shell.page_stack.currentWidget() is page_b
+    shell.projectTabs.setCurrentIndex(0)
+    assert shell.current_project_id() == "p-a"
+    assert shell.page_stack.currentWidget() is page_a
+    assert shell.page("project:p-b") is page_b
+
+
+def test_shell_reopening_project_returns_existing_page_without_new_tab(qapp):
+    shell = ProjectManagerShell()
+    page_a = QWidget()
+    first = shell.open_project_tab("p-a", "Alpha", page_a)
+    again = shell.open_project_tab("p-a", "Alpha (renamed)", QWidget())
+    assert first is page_a
+    assert again is page_a
+    assert shell.projectTabs.count() == 1
+    assert shell.projectTabs.tabText(0) == "Alpha"
+    assert shell.current_project_id() == "p-a"
+
+
+def test_shell_close_project_tab_falls_back_to_neighbor_then_catalog(qapp):
+    shell = ProjectManagerShell()
+    for pid, name in (("p-a", "Alpha"), ("p-b", "Beta"), ("p-c", "Gamma")):
+        shell.open_project_tab(pid, name, QWidget())
+    shell.close_project_tab("p-c")
+    assert shell.current_project_id() == "p-b"  # right neighbor
+    shell.close_project_tab("p-b")
+    assert shell.current_project_id() == "p-a"  # left neighbor (last one left)
+    shell.close_project_tab("p-a")
+    assert shell.current_project_id() is None
+    assert shell.current_page_key() == "projects"  # no tabs left -> catalog
+    assert shell.page("project:p-a") is None
+
+
+def test_shell_closing_all_tabs_while_section_is_shown_keeps_section(qapp):
+    shell = ProjectManagerShell()
+    shell.open_project_tab("p-a", "Alpha", QWidget())
+    shell.show_page("statistics")
+    shell.close_project_tab("p-a")  # closed tab was not the active page
+    assert shell.current_project_id() is None
+    assert shell.current_page_key() == "statistics"  # section stays, no crash on empty tab bar
+
+
+def test_shell_rename_project_tab_updates_label(qapp):
+    shell = ProjectManagerShell()
+    shell.open_project_tab("p-a", "Alpha", QWidget())
+    shell.rename_project_tab("p-a", "Alfa")
+    assert shell.projectTabs.tabText(0) == "Alfa"
+
+
+def test_shell_project_tab_close_button_requests_close(qapp):
+    shell = ProjectManagerShell()
+    shell.open_project_tab("p-a", "Alpha", QWidget())
+    requested = []
+    shell.project_tab_close_requested.connect(requested.append)
+    shell.projectTabs.tabCloseRequested.emit(shell.projectTabs.currentIndex())
+    assert requested == ["p-a"]
+    assert shell.current_project_id() == "p-a"  # page stays until the controller closes it
+
+
+def test_shell_menu_enablement_follows_active_project_tab(qapp):
+    shell = ProjectManagerShell()
+    assert not shell.actions_menu.isEnabled()
+    shell.open_project_tab("p-a", "Alpha", QWidget())
+    assert shell.actions_menu.isEnabled()
+    assert shell.layers_action.isEnabled()
+    shell.show_page("statistics")
+    assert not shell.actions_menu.isEnabled()
+    assert not shell.layers_action.isEnabled()
+    shell.projectTabs.setCurrentIndex(0)
+    assert shell.actions_menu.isEnabled()
+
+
+def test_shell_selection_count_tracks_active_project_tab_only(qapp):
+    shell = ProjectManagerShell()
+    page_a = _SelectionPage()
+    page_b = _SelectionPage()
+    shell.open_project_tab("p-a", "Alpha", page_a)
+    shell.open_project_tab("p-b", "Beta", page_b)
+    page_b.selectionCountChanged.emit(3)
+    assert "3" in shell.statusBar().currentMessage()
+    shell.projectTabs.setCurrentIndex(0)
+    assert "0" in shell.statusBar().currentMessage()  # A has no selection yet -> re-push 0
+    page_b.selectionCountChanged.emit(5)
+    assert "5" not in shell.statusBar().currentMessage()  # inactive project must not drive the bar
+    page_a.selectionCountChanged.emit(1)
+    assert "1" in shell.statusBar().currentMessage()
+    assert shell.frame_properties_action.isEnabled()
+    shell.projectTabs.setCurrentIndex(1)
+    assert "3" in shell.statusBar().currentMessage()  # B's last count re-pushed
+
+
+def test_shell_add_project_button_shows_catalog_and_emits_request(qapp):
+    shell = ProjectManagerShell()
+    shell.open_project_tab("p-a", "Alpha", QWidget())
+    requests = []
+    shell.addProjectRequested.connect(lambda: requests.append(True))
+    shell.add_project_button.click()
+    assert requests == [True]
+    assert shell.current_page_key() == "projects"
+    assert shell.current_project_id() is None
+
+
+def test_shell_many_project_tabs_switch_stably(qapp):
+    shell = ProjectManagerShell()
+    pages = [
+        shell.open_project_tab(f"p-{i}", "Проект с достаточно длинным названием " + "x" * 24, QWidget())
+        for i in range(8)
+    ]
+    for index in range(8):
+        shell.projectTabs.setCurrentIndex(index)
+        assert shell.page_stack.currentWidget() is pages[index]
+        assert shell.current_project_id() == f"p-{index}"

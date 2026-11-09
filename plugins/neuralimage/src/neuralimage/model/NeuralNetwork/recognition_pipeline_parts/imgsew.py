@@ -7,6 +7,7 @@ import torch
 from multiprocessing.synchronize import Event as MpEvent
 from PIL import Image
 from neuralimage.active_learning.config import ActiveLearningConfig
+from neuralimage.infrastructure import profiling
 
 from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import _QUEUE_EMPTY
 
@@ -42,27 +43,33 @@ def imgsew(
             continue
         if item == stop_token:
             break
-        restored_item = _restore_payload_array_from_multiprocessing(item, 'predicted_image')
-        restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'confidence_image')
-        restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'variance_image')
-        restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'disagreement_image')
-        output_path = sew(
-            output_dir,
-            restored_item,
-            jpeg_quality=jpeg_quality,
-            threshold=threshold,
-            postprocess_kernel_size=postprocess_kernel_size,
-            confidence_save_mode=confidence_save_mode,
-            active_learning=active_learning,
-            active_learning_metadata=active_learning_metadata,
-        )
-        sewed_queue.put(
-            {
-                'name': restored_item['name'],
-                'source_path': restored_item.get('source_path'),
-                'output_path': output_path,
-            }
-        )
+        with profiling.cprofile_region(
+            "recognition",
+            label="recognition sew",
+            extra=f"name={item.get('name', '')}",
+            enabled=profiling.recognition_profiling_enabled(),
+        ):
+            restored_item = _restore_payload_array_from_multiprocessing(item, 'predicted_image')
+            restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'confidence_image')
+            restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'variance_image')
+            restored_item = _restore_payload_array_from_multiprocessing(restored_item, 'disagreement_image')
+            output_path = sew(
+                output_dir,
+                restored_item,
+                jpeg_quality=jpeg_quality,
+                threshold=threshold,
+                postprocess_kernel_size=postprocess_kernel_size,
+                confidence_save_mode=confidence_save_mode,
+                active_learning=active_learning,
+                active_learning_metadata=active_learning_metadata,
+            )
+            sewed_queue.put(
+                {
+                    'name': restored_item['name'],
+                    'source_path': restored_item.get('source_path'),
+                    'output_path': output_path,
+                }
+            )
 
 def sew_from_queue(
     output_dir: Path | str,

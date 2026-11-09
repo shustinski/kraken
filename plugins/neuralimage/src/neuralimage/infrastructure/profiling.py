@@ -217,8 +217,10 @@ def _format_cprofile_report(
 
 
 @contextmanager
-def cprofile_region(kind: str, *, label: str, extra: str = "") -> Iterator[None]:
-    if not profiling_enabled(kind, default=False):
+def cprofile_region(kind: str, *, label: str, extra: str = "", enabled: bool | None = None) -> Iterator[None]:
+    if enabled is None:
+        enabled = profiling_enabled(kind, default=False)
+    if not enabled:
         yield
         return
     profiler = cProfile.Profile()
@@ -230,7 +232,14 @@ def cprofile_region(kind: str, *, label: str, extra: str = "") -> Iterator[None]
         wall_ms = (perf_counter() - started) * 1000.0
         if active:
             try_disable_profiler(profiler)
-        write_profile_report(*_format_cprofile_report(kind, label=label, extra=extra, wall_ms=wall_ms, profiler=profiler if active else None))
+        try:
+            messages = _format_cprofile_report(kind, label=label, extra=extra, wall_ms=wall_ms, profiler=profiler if active else None)
+        except TypeError:
+            # A non-cProfile.Profile object (e.g. a test double substituted for
+            # ``cProfile``) cannot be passed to pstats.Stats. Degrade to the
+            # wall-clock-only summary instead of crashing the host code.
+            messages = (f"[neuralimage {label}] {extra} wall_ms={wall_ms:.3f} cprofile_skipped=yes",)
+        write_profile_report(*messages)
 
 
 def write_profile_report(*messages: object) -> None:

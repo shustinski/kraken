@@ -143,3 +143,44 @@ def test_cprofile_region_busy_falls_back_wallclock(monkeypatch):
 def test_training_profile_stride_default(monkeypatch):
     from neuralimage.infrastructure import profiling
     assert profiling.training_profile_stride() == 1
+
+
+def test_cprofile_region_enabled_override_writes_report(monkeypatch):
+    from neuralimage.infrastructure import profiling
+    calls = []
+    monkeypatch.setattr(profiling, "write_profile_report", lambda *m: calls.append(m))
+    # Standard gate is off (no env, ini default false); enabled=True must override it.
+    with profiling.cprofile_region("recognition", label="recognition frame", extra="x", enabled=True):
+        sum(range(1000))
+    assert calls
+    output = "\n".join(str(m) for c in calls for m in c)
+    assert "[neuralimage recognition frame]" in output
+    assert "wall_ms=" in output
+
+
+def test_cprofile_region_enabled_override_noop_when_gate_on(monkeypatch):
+    from neuralimage.infrastructure import profiling
+    calls = []
+    monkeypatch.setattr(profiling, "profiling_enabled", lambda *a, **k: True)
+    monkeypatch.setattr(profiling, "write_profile_report", lambda *m: calls.append(m))
+    # enabled=False must be a no-op even though the standard gate reports enabled.
+    with profiling.cprofile_region("recognition", label="recognition frame", extra="x", enabled=False):
+        sum(range(100))
+    assert calls == []
+
+
+def test_cprofile_region_formatter_crash_falls_back_wallclock(monkeypatch):
+    from neuralimage.infrastructure import profiling
+    calls = []
+    monkeypatch.setattr(profiling, "write_profile_report", lambda *m: calls.append(m))
+
+    def boom(*args, **kwargs):
+        raise TypeError("not a real cProfile.Profile object")
+
+    monkeypatch.setattr(profiling, "_format_cprofile_report", boom)
+    with profiling.cprofile_region("recognition", label="recognition frame", extra="x", enabled=True):
+        pass
+    assert calls
+    output = "\n".join(str(m) for c in calls for m in c)
+    assert "wall_ms=" in output
+    assert "cprofile_skipped=yes" in output

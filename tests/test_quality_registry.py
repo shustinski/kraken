@@ -10,13 +10,20 @@ of the defect-to-regression policy. These tests make the build fail when:
 * a ``kraken_defect = "D<n>"`` module marker in ``tests/`` references a
   defect that is not registered;
 * a mandatory action is untracked (NOT_TESTED without ``exception_reason``)
-  or lists test node ids that do not resolve.
+  or lists test node ids that do not resolve;
+* the generated sections of the markdown quality documents drift from the
+  registries (enforced by running the generator in ``--check`` mode; a tampered
+  section on a temp copy must be rejected).
 """
 from __future__ import annotations
 
 import ast
 import json
+import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 from tools.quality.registry_schema import validate_registry
@@ -26,6 +33,8 @@ REGISTRY_DIR = REPO_ROOT / "docs" / "quality" / "registry"
 DEFECTS_JSON = REGISTRY_DIR / "defects.json"
 ACTIONS_JSON = REGISTRY_DIR / "actions.json"
 TESTS_DIR = REPO_ROOT / "tests"
+GENERATOR = REPO_ROOT / "tools" / "quality" / "generate_quality_docs.py"
+QUALITY_DOCS = ("defects.md", "functional-inventory.md", "acceptance-matrix.md")
 
 _AST_CACHE: dict[Path, ast.AST] = {}
 
@@ -177,3 +186,52 @@ def test_mandatory_actions_tracked():
         for node_id in action.get("tests", []):
             problems.extend(f"{action['id']}: {problem}" for problem in _resolve_node_id(node_id))
     assert not problems, "untracked mandatory actions:\n" + "\n".join(problems)
+
+
+def _repo_python() -> Path:
+    """The repo's own interpreter (the venv this repo runs with), falling back to the current one."""
+    venv = REPO_ROOT / ".venv"
+    for candidate in (venv / "Scripts" / "python.exe", venv / "bin" / "python"):
+        if candidate.is_file():
+            return candidate
+    return Path(sys.executable)
+
+
+def _run_generator(*args: str) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    return subprocess.run(
+        [str(_repo_python()), str(GENERATOR), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        cwd=REPO_ROOT,
+        timeout=60,
+    )
+
+
+def test_markdown_in_sync_with_json():
+    result = _run_generator("--check")
+    assert result.returncode == 0, "generator --check reported drift:\n" + result.stdout + result.stderr
+
+
+def test_tampered_generated_section_fails_check(tmp_path: Path):
+    """Tampering one rendered table on a temp copy of the docs must make --check exit 1."""
+    quality_dir = tmp_path / "docs" / "quality"
+    registry_dir = quality_dir / "registry"
+    registry_dir.mkdir(parents=True)
+    for name in QUALITY_DOCS:
+        shutil.copy(REPO_ROOT / "docs" / "quality" / name, quality_dir / name)
+    for name in ("defects.json", "actions.json"):
+        shutil.copy(REGISTRY_DIR / name, registry_dir / name)
+    doc_path = quality_dir / "defects.md"
+    doc = doc_path.read_text(encoding="utf-8")
+    begin = doc.index("quality-registry:generated-begin")
+    end = doc.index("quality-registry:generated-end")
+    section = doc[begin:end]
+    tampered = section.replace("RESOLVED", "OPEN", 1)
+    assert tampered != section, "expected a RESOLVED status cell in the generated defects table"
+    doc_path.write_text(doc[:begin] + tampered + doc[end:], encoding="utf-8")
+    result = _run_generator("--check", "--root", str(tmp_path))
+    assert result.returncode == 1, "generator --check accepted a tampered generated section:\n" + result.stdout
+    assert "defects.md" in result.stdout

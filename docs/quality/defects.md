@@ -2,6 +2,27 @@
 
 Дата: 2026-10-30. В раздел «Воспроизведено» попадает только то, что повторно получено на компонентах приложения в этом сеансе. Наблюдения по коду без прогона вынесены отдельно и готовыми дефектами исполнения не называются.
 
+<!-- quality-registry:generated-begin (source: docs/quality/registry/defects.json — do not edit inside) -->
+## Автоматическая сводка из реестра (generated)
+
+| ID | Компонент | Статус | Регрессии | Коммит | Доказательства |
+|---|---|---|---|---|---|
+| D1 | kraken_manager | RESOLVED | tests/test_project_create_idempotency.py, tests/test_create_project_dialog_retry.py | — | docs/quality/evidence/2026-11-01/d1-review-red-edges.txt, docs/quality/evidence/2026-11-01/d1-review-green.txt |
+| D2 | kraken_manager | RESOLVED | tests/test_metadata_layer_deletion.py | — | — |
+| D3 | kraken_manager | RESOLVED | tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images, tests/test_two_root_service.py::test_png_disk_import_survives_reopen, tests/test_layer_creation_dialog.py::test_png_scan_is_ready_without_bmp_conversion | — | — |
+| D4 | plugins/karakal | RESOLVED | tests/test_karakal_agent_headless.py | — | docs/quality/evidence/2026-11-01/d4-red.txt, docs/quality/evidence/2026-11-01/d4-ui-red.txt, docs/quality/evidence/2026-11-01/d4-focused.txt |
+| D5 | kraken_server | RESOLVED | tests/test_registered_principal_before_session.py | — | — |
+| D6 | kraken_hub | RESOLVED | tests/test_statistics_reports.py::test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions, tests/test_statistics_reports.py::test_csv_preserves_nested_immutable_event_payload, tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history | — | docs/quality/evidence/2026-11-01/statistics-red.txt, docs/quality/evidence/2026-11-01/statistics-csv-red.txt, docs/quality/evidence/2026-11-01/statistics-verified.txt, docs/quality/evidence/2026-11-01/review.md |
+| D7 | kraken_hub | RESOLVED | tests/test_hub_resume_remote_failure.py::test_resume_survives_jobs_http_failure_and_can_retry | f749893 | docs/quality/evidence/2026-11-01/hub-resume-red.txt, docs/quality/evidence/2026-11-01/hub-resume-green.txt, docs/quality/evidence/2026-11-01/schema-upgrade-working.json |
+| D8 | kraken_server | RESOLVED | tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version | 393bca4 | docs/quality/evidence/2026-11-01/upload-preflight-red.txt, docs/quality/evidence/2026-11-01/upload-preflight-green.txt, docs/quality/evidence/2026-11-01/upload-preflight-junit.xml |
+| D9 | kraken_manager | RESOLVED | tests/test_workspace_files.py::test_scan_counts_files_inside_reserved_subdirectory, tests/test_workspace_files.py::test_import_layer_preserves_bytes_under_reserved_aux_subdirectory, tests/test_workspace_files.py::test_place_server_layer_copies_reserved_subdirectory_bytes, tests/test_workspace_files.py::test_make_directory_and_remove_tree_handle_stem_extension_reserved_names, tests/test_workspace_files.py::test_make_directory_exist_ok_contract | 3e0f080 | — |
+| D10 | test_harness | RESOLVED | tests/test_hub_embedded_service.py | f98c55f | — |
+| D11 | contour | RESOLVED | tests/test_server_workspace_inputs.py::test_interactive_contour_opens_with_images_and_returns_results | 103cce1 | docs/quality/evidence/2026-11-09/interactive_contour_repro.txt, docs/quality/evidence/2026-11-09/manual_worker_run.txt, docs/quality/evidence/2026-11-09/interactive_contour_green.txt, docs/quality/evidence/2026-11-09/neighbor_suites_green.txt |
+| D12 | contour | RESOLVED | plugins/contour/tests/unit/test_frame_switch_profiler.py::FrameSwitchProfilerTests::test_conflict_detection_matches_the_real_cpython_slot_error | f260105 | docs/quality/evidence/2026-11-09/manual_worker_run.txt |
+| D13 | contour | RESOLVED | plugins/contour/tests/unit/test_settings_store.py::ManagedJobSettingsStoreTests, plugins/contour/tests/unit/test_kraken_return.py::test_agent_attach_resets_cif_directory_state_like_workspace_sibling | f260105 | — |
+| D14 | test_harness | RESOLVED | tests/test_server_workspace_inputs.py::test_subprocess_resolves_contour_from_harness_pythonpath | f260105 | — |
+<!-- quality-registry:generated-end -->
+
 ## Воспроизведено
 
 ### D14. Обвязка интерактивных тестов Contour строит несуществующие PYTHONPATH для subprocess плагинов

@@ -221,7 +221,8 @@ def test_recent_selections_put_their_paths_back_and_stay_after_a_restart(tmp_pat
     page.snapshot_edit.setText(str(second))
     page.snapshot_edit.returnPressed.emit()
     assert controller._layout.root == second and page.errors_format() == "jpg"
-    assert page.output_dir() == str(second)
+    # A new snapshot exports into its project's «Выгрузки» unless a folder is chosen.
+    assert page.output_dir() == ""
     assert [page.selections.item(row).text().splitlines()[0] for row in range(page.selections.count())] == ["second", "first"]
     page.selections.itemClicked.emit(page.selections.item(1))
     assert page.snapshot_dir() == str(first) and page.errors_format() == "jpg"
@@ -242,3 +243,52 @@ def test_the_matrix_button_with_no_snapshot_opens_an_empty_matrix(tmp_path, qtbo
     assert page.matrix_button.state == MATRIX_EMPTY and not page.run_button.isEnabled()
     page.matrix_button.click()
     assert widget.root_stack.currentWidget() is widget.workspace
+
+
+
+def test_without_a_chosen_folder_the_maps_go_into_the_project(tmp_path, qtbot) -> None:
+    from karakal.core.data_folder import EXPORTS
+
+    snapshot = _snapshot(tmp_path / "snap", pair=False, frames=1)
+    widget, controller, page = _home(tmp_path, qtbot)
+    controller.choose_snapshot(str(snapshot))
+    assert page.output_dir() == ""
+    report = _run_home(qtbot, controller, page)[0]
+    assert report.project is not None and report.output_dir is not None
+    assert report.output_dir.parent == report.project / EXPORTS
+    assert any((report.output_dir).rglob("*.png"))
+
+
+def test_an_unrecognised_folder_is_told_by_hand_and_remembered(tmp_path, qtbot) -> None:
+    from karakal.core.snapshot_layout import KIND_MASKS, KIND_SKIP, KIND_UNKNOWN, MANIFEST_FILE
+
+    snapshot = _snapshot(tmp_path / "snap", pair=False, frames=1)
+    (snapshot / "binary_cif").rename(snapshot / "сеть_v2")
+    _write(snapshot / "notes" / "x.png", lattice())
+    layout = discover_snapshot(snapshot)
+    assert set(layout.unrecognized) == {"notes", "сеть_v2"} and not layout.ready
+    widget, controller, page = _home(tmp_path, qtbot)
+    controller.choose_snapshot(str(snapshot))
+    # The run waits; the table of folders is open by itself.
+    assert not page.run_button.isEnabled() and page.folders_table.isVisibleTo(page)
+    controller.set_folder("сеть_v2", KIND_MASKS, "Единицы", "ones")
+    controller.set_folder("notes", KIND_SKIP, "", "")
+    assert page.run_button.isEnabled() and controller._layout.ready
+    ones = controller._layout.layers[0]
+    assert (ones.label, ones.cell_class, ones.mask_folder.name) == ("Единицы", "ones", "сеть_v2")
+    assert ones.confidence_folder.name == "confidence" and ones.source_folder.name == "jpg"
+    # Next time the snapshot is recognised at once.
+    assert (snapshot / MANIFEST_FILE).is_file()
+    again = discover_snapshot(snapshot)
+    assert again.ready and again.from_manifest and again.layers[0].label == "Единицы"
+    assert {folder.name: folder.kind for folder in again.folders}["notes"] == KIND_SKIP
+    assert KIND_UNKNOWN not in {folder.kind for folder in again.folders}
+
+
+def test_folders_named_after_the_cell_class_make_a_pair(tmp_path) -> None:
+    root = tmp_path / "snap"
+    _write(root / "ones" / "A.png", lattice())
+    _write(root / "zeros" / "A.png", 255 - lattice())
+    layout = discover_snapshot(root)
+    assert layout.ready and layout.is_pair
+    assert [(layer.label, layer.cell_class) for layer in layout.layers] == [("ones", "ones"), ("zeros", "zeros")]

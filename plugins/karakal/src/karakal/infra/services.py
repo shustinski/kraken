@@ -153,6 +153,21 @@ class KarakalSettingsService:
             {"mask_suffix": normalized.mask_suffix, "confidence_suffix": normalized.confidence_suffix},
         )
 
+    def load_data_folder(self) -> str:
+        """Karakal's own folder (projects, profiles, exports); empty: the default one."""
+
+        value = self._settings.value("data/folder", "", str)
+        return str(value or "")
+
+    def save_data_folder(self, path: str) -> None:
+        self._settings.setValue("data/folder", str(path or ""))
+
+    def legacy_projects_moved(self) -> bool:
+        return str(self._settings.value("data/legacy_projects_moved", "")).strip().lower() in {"1", "true"}
+
+    def mark_legacy_projects_moved(self) -> None:
+        self._settings.setValue("data/legacy_projects_moved", True)
+
     def load_recent_projects(self) -> list[str]:
         """Project folders opened or saved last, newest first."""
 

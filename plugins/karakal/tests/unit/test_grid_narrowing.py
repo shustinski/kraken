@@ -80,3 +80,27 @@ def test_only_narrower_settings_skip_a_new_run() -> None:
         debris_min_area_px=24,
         enabled_reason_types=types,
     )
+
+
+def test_display_only_types_never_ask_for_a_new_run() -> None:
+    from karakal.core.grid_narrowing import DISPLAY_ONLY_REASON_TYPES
+
+    types = ("small_artifact", "broken_geometry")
+    # The pair and the sparse cells are computed every run: switching them on is only showing them.
+    assert can_narrow(
+        run_debris_min_area_px=24,
+        run_reason_types=types,
+        debris_min_area_px=24,
+        enabled_reason_types=types + tuple(DISPLAY_ONLY_REASON_TYPES),
+    )
+
+
+def test_conflict_checkbox_does_not_change_the_frame_cache() -> None:
+    from karakal.app.presenter import KarakalPresenter
+
+    off = KarakalPresenter._grid_damage_config_from_payload({"enabled_error_types": ["broken_geometry"]})
+    on = KarakalPresenter._grid_damage_config_from_payload(
+        {"enabled_error_types": ["broken_geometry", "class_conflict", "sparse_cell"]}
+    )
+    assert off.cache_payload() == on.cache_payload()
+    assert {"class_conflict", "sparse_cell"} <= set(off.enabled_reason_types)

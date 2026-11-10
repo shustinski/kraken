@@ -22,6 +22,12 @@ from .grid_anomaly import (
 )
 
 
+# Types every run computes whatever the filter says: conflicts of a ones/zeros pair (the pair is
+# computed after the layers) and sparse cells (marked over the whole layer after its frames). Their
+# checkbox only shows or hides them: it never asks for a new run and is not part of the frame cache.
+DISPLAY_ONLY_REASON_TYPES = frozenset({"class_conflict", "sparse_cell"})
+
+
 @dataclass(frozen=True, slots=True)
 class GridNarrowing:
     """What the matrix shows on top of the stored run."""
@@ -46,7 +52,7 @@ def can_narrow(
         return run_reason_types is None
     if run_reason_types is None:
         return True
-    return set(enabled_reason_types) <= set(run_reason_types)
+    return set(enabled_reason_types) - DISPLAY_ONLY_REASON_TYPES <= set(run_reason_types)
 
 
 def _cell_like(features: dict[str, float]) -> bool:

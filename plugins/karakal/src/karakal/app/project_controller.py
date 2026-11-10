@@ -119,6 +119,28 @@ class ProjectController(QObject):
         self._folders: dict[object, Path] = {}
         self._thread: _SaveThread | None = None
         self._pending: tuple | None = None
+        self._move_legacy_projects()
+
+    def _move_legacy_projects(self) -> None:
+        """Projects of versions before 0.4.98 lay beside karakal.exe: moved to the data folder once."""
+
+        from ..core.data_folder import legacy_projects_dir, move_projects
+
+        legacy = legacy_projects_dir()
+        if legacy is None or self._settings.legacy_projects_moved():
+            return
+        moved = move_projects(legacy, self.projects_dir())
+        if moved:
+            recent = [moved.get(path, path) for path in self._settings.load_recent_projects()]
+            self._settings.save_recent_projects(recent)
+        if not find_projects(legacy):
+            self._settings.mark_legacy_projects_moved()
+        self._settings.sync()
+
+    def data_folder_changed(self) -> None:
+        """The data folder was chosen anew: the home page lists the projects of the new one."""
+
+        self.recentChanged.emit()
 
     # Folders and the recent list --------------------------------------------------------------
 
@@ -142,12 +164,51 @@ class ProjectController(QObject):
         self._settings.save_recent_projects(paths)
         self.recentChanged.emit()
 
+    # How deep in «Проекты» projects are looked for: «Проекты\Изделие\2026-11\прогон.karakal».
+    FOLDER_DEPTH = 4
+
+    def folder_entries(self) -> list[dict]:
+        """Every project of the data folder («Проекты» and its subfolders), newest first, with the
+        subfolder it lies in; also the ones still beside karakal.exe that could not be moved."""
+
+        from ..core.data_folder import legacy_projects_dir
+
+        root = self.projects_dir()
+        legacy = legacy_projects_dir()
+        folders = find_projects(root, depth=self.FOLDER_DEPTH) + (find_projects(legacy) if legacy else [])
+        entries = []
+        for folder in folders:
+            entry = {"path": folder, "name": folder.name[: -len(PROJECT_SUFFIX)] if folder.suffix == PROJECT_SUFFIX else folder.name}
+            try:
+                where = folder.parent.relative_to(root)
+                entry["where"] = "" if str(where) == "." else str(where)
+            except ValueError:
+                entry["where"] = str(folder.parent)
+            try:
+                manifest = read_manifest(folder)
+            except (OSError, ValueError):
+                entry["missing"] = True
+                entries.append(entry)
+                continue
+            entry.update(
+                saved_at=str(manifest.get("saved_at") or ""),
+                frames=int(manifest.get("frames") or 0),
+                layers=[str(layer.get("label") or "") for layer in manifest.get("layers") or ()],
+            )
+            entries.append(entry)
+        entries.sort(key=lambda entry: str(entry.get("saved_at") or ""), reverse=True)
+        return entries
+
     def entries(self) -> list[dict]:
         """Projects for the home page: the recent ones first, then the rest of the projects folder."""
 
         seen: set[str] = set()
         entries = []
-        for folder in self.recent() + find_projects(self.projects_dir()):
+        from ..core.data_folder import legacy_projects_dir
+
+        legacy = legacy_projects_dir()
+        # Projects that could not be moved from beside karakal.exe are still listed.
+        for folder in self.recent() + find_projects(self.projects_dir()) + (find_projects(legacy) if legacy else []):
             key = str(folder).lower()
             if key in seen:
                 continue

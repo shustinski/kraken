@@ -48,6 +48,16 @@ def _own_projects_folder(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _own_data_folder(tmp_path_factory, monkeypatch):
+    """Profiles and exports of the tests go to a data folder of the test run, not to Documents."""
+
+    import karakal.core.data_folder as data_folder
+
+    monkeypatch.setenv("KARAKAL_DATA_DIR", str(tmp_path_factory.mktemp("karakal_data")))
+    monkeypatch.setattr(data_folder, "_root", None)
+
+
+@pytest.fixture(autouse=True)
 def _skip_update_checks(monkeypatch):
     """No background look into the real update folder; update tests call check() themselves."""
 

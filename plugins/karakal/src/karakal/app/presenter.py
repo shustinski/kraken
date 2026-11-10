@@ -101,7 +101,13 @@ from ..core.domain import (
     FrameRecord,
     ModelSpec,
 )
-from ..core.grid_narrowing import GridNarrowing, can_narrow, default_run_debris_min_area, narrow_grid_frame_result
+from ..core.grid_narrowing import (
+    DISPLAY_ONLY_REASON_TYPES,
+    GridNarrowing,
+    can_narrow,
+    default_run_debris_min_area,
+    narrow_grid_frame_result,
+)
 from ..core.sparse_cells import DEFAULT_SPARSE_REACH_SITES, SPARSE_REACH_RANGE, SPARSE_REASON, copy_sparse_marks
 from ..core.pair_agreement import (
     AGREEMENT_MAX_COVER,
@@ -286,10 +292,17 @@ def _example_pairs(value: object) -> tuple[tuple[str, tuple[tuple[str, float], .
 class KarakalPresenter(QObject):
     """Coordinate UI state, background workers and matrix tabs."""
 
+    # A profile was saved or loaded: the home page lists the profiles again.
+    profilesChanged = pyqtSignal()
+
     def __init__(self, view, settings_service: KarakalSettingsService) -> None:
         super().__init__(view)
         self._view = view
         self._settings_service = settings_service
+        from ..core.data_folder import set_data_root
+
+        # Projects, profiles and exports live in the data folder chosen in the settings.
+        set_data_root(self._settings_service.load_data_folder() or None)
         self._worker_thread: QThread | None = None
         self._worker = None
         self._worker_kind: str | None = None
@@ -706,6 +719,11 @@ class KarakalPresenter(QObject):
         geometry = KarakalPresenter._slider_unit(values, "geometry_sensitivity", 40)
         disagreement = KarakalPresenter._slider_unit(values, "disagreement_sensitivity", 50)
         enabled_error_types = KarakalPresenter._normalize_grid_error_types(values.get("enabled_error_types"))
+        # Conflicts and sparse cells are computed whatever their checkbox says; it only shows them.
+        # Kept out of the filter's say here, switching them never misses the frame cache.
+        enabled_error_types = tuple(enabled_error_types) + tuple(
+            sorted(DISPLAY_ONLY_REASON_TYPES - set(enabled_error_types))
+        )
         return GridDamageAnalysisConfig(
             include_debug_payload=False,
             debug=False,
@@ -6655,11 +6673,13 @@ class KarakalPresenter(QObject):
         )
 
     def _sync_class_conflict_controls(self, state) -> None:
-        by_pair = getattr(state, "grid_inspection_payloads_by_pair", {}) or {}
-        run_ready = any(bool(payloads) for key, payloads in by_pair.items() if not is_agreement_key(key))
         checks = getattr(self, "grid_error_type_checks", {}) or {}
         checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
-        self._sync_class_conflict_checkbox(checkbox, available=run_ready)
+        # Always switchable, before a run too: the pair is computed in the same run as its layers.
+        self._sync_class_conflict_checkbox(checkbox, available=True)
+        if checkbox is not None and not self._grid_conflict_pairs():
+            # No ones/zeros pair among the layers: say what makes one.
+            checkbox.setToolTip(self._class_conflict_tooltip())
         for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
             self._sync_class_conflict_for_dialog(dialog, state)
 
@@ -7136,6 +7156,90 @@ class KarakalPresenter(QObject):
         for control in controls:
             if control is not None and control is not source and control.value() != self._grid_debris_min_area_px:
                 control.set_value(self._grid_debris_min_area_px)
+
+    # Profiles (core.profiles) -----------------------------------------------------------------
+
+    def _profile_settings(self) -> dict:
+        """What a profile keeps: the analysis settings, the error picture format, the export's types."""
+
+        settings = dict(self._grid_inspection_config_payload())
+        for key in ("calibration_reference", "calibration_examples", "calibration_frame_keys", "calibration_fingerprint", "example_influence"):
+            # Operator examples belong to a run, not to a profile.
+            settings.pop(key, None)
+        settings["tuning_values"] = dict(self._grid_tuning_values())
+        batch = getattr(self, "_batch_controller", None)
+        page = getattr(batch, "_page", None)
+        if page is not None:
+            settings["errors_format"] = page.errors_format()
+        frame_sets = getattr(self, "_frame_sets_controller", None)
+        chosen = getattr(frame_sets, "_export_error_types", None)
+        settings["export_error_types"] = None if chosen is None else sorted(chosen)
+        return settings
+
+    def apply_profile_settings(self, settings: dict, name: str = "") -> None:
+        values = dict(settings or {})
+        preset = str(values.get("tuning_preset") or "balanced")
+        combo = getattr(self, "grid_tuning_preset_combo", None)
+        tuning = values.get("tuning_values")
+        if preset == "custom" and isinstance(tuning, dict):
+            self._grid_custom_tuning = {key: int(tuning.get(key, 0)) for key in GRID_INSPECTION_TUNING_KEYS}
+        else:
+            self._grid_custom_tuning = None
+        self._grid_tuning_preset = preset
+        self._grid_preview_tuning = None
+        if combo is not None:
+            index = combo.findData(preset)
+            if index >= 0:
+                blocker = QSignalBlocker(combo)
+                combo.setCurrentIndex(index)
+                del blocker
+        self._set_grid_inspection_config_controls(values)
+        batch = getattr(self, "_batch_controller", None)
+        page = getattr(batch, "_page", None)
+        if page is not None and values.get("errors_format"):
+            page.set_errors_format(str(values["errors_format"]))
+        frame_sets = getattr(self, "_frame_sets_controller", None)
+        if frame_sets is not None:
+            types = values.get("export_error_types")
+            frame_sets._export_error_types = None if types is None else frozenset(str(item) for item in types)
+        self._active_profile_name = str(name or "")
+        self._persist_state()
+        self._grid_types_refresh_timer.start()
+        self.profilesChanged.emit()
+
+    def load_profile(self, path) -> bool:
+        from ..core.profiles import read_profile
+
+        try:
+            settings = read_profile(path)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self._view, self._t("profiles.title"), self._t("profiles.read_failed", error=str(error)))
+            return False
+        self.apply_profile_settings(settings, Path(path).stem)
+        return True
+
+    def save_profile_dialog(self, parent=None) -> Path | None:
+        from ..core.profiles import profile_path, save_profile
+
+        name, accepted = QInputDialog.getText(
+            parent or self._view,
+            self._t("profiles.save_title"),
+            self._t("profiles.save_prompt"),
+            text=str(getattr(self, "_active_profile_name", "") or ""),
+        )
+        name = str(name or "").strip()
+        if not accepted or not name:
+            return None
+        if profile_path(name).exists():
+            answer = QMessageBox.question(
+                parent or self._view, self._t("profiles.save_title"), self._t("profiles.replace", name=profile_path(name).stem)
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return None
+        path = save_profile(name, self._profile_settings())
+        self._active_profile_name = path.stem
+        self.profilesChanged.emit()
+        return path
 
     def _apply_grid_sparse_reach(self, value: int) -> None:
         low, high = SPARSE_REACH_RANGE

@@ -5,8 +5,8 @@ import os
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPainter, QPen, QShortcut
+from PyQt6.QtCore import QEvent, QSettings, QRectF, QSignalBlocker, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QDesktopServices, QKeySequence, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -1288,6 +1288,19 @@ class KarakalWidget(QWidget):
         file_naming_action = QAction(self._t("menu.settings.file_naming"), settings_menu)
         file_naming_action.triggered.connect(self._show_file_naming_dialog)
         settings_menu.addAction(file_naming_action)
+        settings_menu.addSeparator()
+        data_folder_action = QAction(self._t("menu.settings.data_folder"), settings_menu)
+        data_folder_action.triggered.connect(self._choose_data_folder)
+        settings_menu.addAction(data_folder_action)
+        open_data_action = QAction(self._t("menu.settings.open_data_folder"), settings_menu)
+        open_data_action.triggered.connect(self._open_data_folder)
+        settings_menu.addAction(open_data_action)
+        settings_menu.addSeparator()
+        save_profile_action = QAction(self._t("menu.settings.save_profile"), settings_menu)
+        save_profile_action.triggered.connect(lambda _checked=False: self._presenter.save_profile_dialog())
+        settings_menu.addAction(save_profile_action)
+        self._profiles_menu = settings_menu.addMenu(self._t("menu.settings.profiles"))
+        self._profiles_menu.aboutToShow.connect(self._fill_profiles_menu)
         diagnostics_menu = self._menu_bar.addMenu("Diagnostics" if self._i18n.language == "en" else "Диагностика")
         profiling_action = QAction(
             "Validation profiling…" if self._i18n.language == "en" else "Профилирование Validation…",
@@ -1344,6 +1357,50 @@ class KarakalWidget(QWidget):
 
     def show_workspace(self) -> None:
         self.root_stack.setCurrentWidget(self.workspace)
+
+    def _choose_data_folder(self) -> None:
+        """Karakal's own folder: projects, profiles and exports (core.data_folder)."""
+
+        from ..core.data_folder import EXPORTS, PROFILES, PROJECTS, data_root, set_data_root
+
+        from PyQt6.QtWidgets import QFileDialog
+
+        chosen = QFileDialog.getExistingDirectory(self, self._t("data_folder.choose"), str(data_root()))
+        if not chosen:
+            return
+        set_data_root(chosen)
+        self._settings_service.save_data_folder(chosen)
+        self._settings_service.sync()
+        projects = getattr(self._presenter, "_project_controller", None)
+        if projects is not None:
+            projects.data_folder_changed()
+        QMessageBox.information(
+            self,
+            self._t("menu.settings.data_folder"),
+            self._t("data_folder.chosen", path=str(data_root()), projects=PROJECTS, profiles=PROFILES, exports=EXPORTS),
+        )
+
+    def _fill_profiles_menu(self) -> None:
+        from ..core.data_folder import profiles_dir
+        from ..core.profiles import list_profiles
+
+        menu = self._profiles_menu
+        menu.clear()
+        profiles = list_profiles()
+        for path in profiles:
+            action = menu.addAction(path.stem)
+            action.triggered.connect(lambda _checked=False, path=path: self._presenter.load_profile(path))
+        if not profiles:
+            empty = menu.addAction(self._t("profiles.none"))
+            empty.setEnabled(False)
+        menu.addSeparator()
+        folder = menu.addAction(self._t("profiles.open_folder"))
+        folder.triggered.connect(lambda _checked=False: QDesktopServices.openUrl(QUrl.fromLocalFile(str(profiles_dir()))))
+
+    def _open_data_folder(self) -> None:
+        from ..core.data_folder import data_root
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(data_root())))
 
     def _show_file_naming_dialog(self) -> None:
         from ..ui.file_naming_dialog import FileNamingDialog

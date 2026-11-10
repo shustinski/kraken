@@ -539,7 +539,18 @@ class FrameSetsController(QObject):
     # Export ----------------------------------------------------------------------
 
     def _output_dir(self) -> Path:
-        return Path(getattr(self._p, "_export_folder", None) or Path.cwd())
+        """The folder chosen for exports, else «Выгрузки» of the open project (of the data folder
+        when the run is not a project yet)."""
+
+        chosen = getattr(self._p, "_export_folder", None)
+        if chosen:
+            return Path(chosen)
+        from ..core.data_folder import exports_dir
+
+        state = self._state()
+        projects = getattr(self._p, "_project_controller", None)
+        project = projects.project_of(state) if projects is not None and state is not None else None
+        return exports_dir(project)
 
     def _on_export_opened(self) -> None:
         state = self._state()

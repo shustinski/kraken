@@ -26,7 +26,6 @@ import json
 import os
 import pickle
 import re
-import sys
 from collections.abc import Callable
 from dataclasses import fields, is_dataclass, replace
 from datetime import datetime
@@ -43,16 +42,16 @@ VIEW_FILE = "view.pickle"
 
 
 def default_projects_dir() -> Path:
-    """``projects`` beside the installed karakal.exe; from source, ``KARAKAL_PROJECTS_DIR`` or the
-    working folder. Falls back to the user's local app data when the install folder is read-only."""
+    """«Проекты» of the data folder (core.data_folder); ``KARAKAL_PROJECTS_DIR`` overrides it (tests).
+    Falls back to the user's local app data when the folder cannot be written."""
 
     override = str(os.environ.get("KARAKAL_PROJECTS_DIR", "") or "").strip()
     if override:
         candidates = [Path(override)]
-    elif getattr(sys, "frozen", False):
-        candidates = [Path(sys.executable).resolve().parent / "projects"]
     else:
-        candidates = [Path.cwd() / "projects"]
+        from .data_folder import projects_dir
+
+        candidates = [projects_dir()]
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
     if base:
         candidates.append(Path(base) / "Karakal" / "projects")
@@ -90,11 +89,29 @@ def is_project(path: Path | str) -> bool:
     return (Path(path) / MANIFEST_FILE).is_file()
 
 
-def find_projects(folder: Path | str) -> list[Path]:
+def find_projects(folder: Path | str, *, depth: int = 0) -> list[Path]:
+    """Projects in ``folder``; with ``depth`` also in its subfolders that many levels down (a project
+    folder is not looked into). A folder without project.json is not a project."""
+
     root = Path(folder)
-    if not root.is_dir():
-        return []
-    return sorted((item for item in root.iterdir() if item.suffix == PROJECT_SUFFIX and is_project(item)), key=str)
+    found: list[Path] = []
+    try:
+        items = sorted(root.iterdir(), key=lambda item: str(item).lower()) if root.is_dir() else []
+    except OSError:
+        return found
+    for item in items:
+        try:
+            if not item.is_dir():
+                continue
+        except OSError:
+            continue
+        if item.suffix == PROJECT_SUFFIX or is_project(item):
+            if is_project(item):
+                found.append(item)
+            continue
+        if depth > 0 and not item.name.startswith("."):
+            found.extend(find_projects(item, depth=depth - 1))
+    return found
 
 
 # Paths ----------------------------------------------------------------------------------------

@@ -37,6 +37,7 @@ from ..core.frame_set_export import (
 from ..core.grid_anomaly import GRID_DAMAGE_ALGORITHM_VERSION, RunProfileRequest
 from ..core.grid_narrowing import GridNarrowing, narrow_grid_frame_result
 from ..core.pair_conflict import PAIR_CONFLICT_LAYER, filter_class_conflicts, pair_key
+from ..core.data_folder import exports_dir
 from ..core.project_store import (
     VIEW_FILE,
     default_projects_dir,
@@ -50,7 +51,8 @@ from ..core.project_store import (
     write_results,
 )
 from ..core.recent_selections import Selection
-from ..core.snapshot_layout import SnapshotLayout, discover_snapshot
+from ..core.snapshot_layout import SnapshotLayout, discover_snapshot, with_folder
+from ..core.snapshot_layout import write_manifest as write_snapshot_settings
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,7 +63,8 @@ SET_NAME = "Весь прогон"
 @dataclass(slots=True)
 class BatchJob:
     layout: SnapshotLayout
-    output_dir: Path
+    # None: «Выгрузки» of the run's project in the data folder.
+    output_dir: Path | None
     errors_format: str
     specs: tuple[ModelSpec, ...]
     cell_classes: dict[str, str]
@@ -359,7 +362,10 @@ class _BatchThread(QThread):
             progress.update("export", int(done) * written_per_frame, int(total) * written_per_frame, str(name))
             self._emit()
 
-        export = export_frame_set(plan, job.output_dir, progress=export_progress, cancelled=self._checkpoint)
+        # The project folder is named first: unless another folder was chosen, the maps go into it.
+        project_dir = project_folder(default_projects_dir(), f"{job.layout.root.name} {datetime.now().strftime('%Y-%m-%d %H-%M')}")
+        output_dir = job.output_dir or exports_dir(project_dir)
+        export = export_frame_set(plan, output_dir, progress=export_progress, cancelled=self._checkpoint)
         if export.cancelled:
             raise BatchCancelled()
         known = {frame for frame, _layer, _why in self._problems}
@@ -371,7 +377,7 @@ class _BatchThread(QThread):
         # 4. The run as a project, to open in the matrix without recomputing.
         progress.start("project")
         self._emit(force=True)
-        project = write_batch_project(job, build, by_model, by_pair, profiles)
+        project = write_batch_project(job, build, by_model, by_pair, profiles, folder=project_dir)
         progress.finish_all()
         self._emit(force=True)
         return BatchReport(
@@ -432,11 +438,15 @@ def export_results(layers: dict, by_pair: dict, job: BatchJob, model_id: str, pa
     return results
 
 
-def write_batch_project(job: BatchJob, build, by_model: dict, by_pair: dict, profiles: dict) -> Path:
-    """A project of the run, as the matrix saves one after its cell check."""
+def write_batch_project(
+    job: BatchJob, build, by_model: dict, by_pair: dict, profiles: dict, *, folder: Path | None = None
+) -> Path:
+    """A project of the run, as the matrix saves one after its cell check (into ``folder`` when the
+    run named it already: its exports may lie in it)."""
 
     first = job.specs[0].model_id
-    folder = project_folder(default_projects_dir(), f"{job.layout.root.name} {datetime.now().strftime('%Y-%m-%d %H-%M')}")
+    if folder is None:
+        folder = project_folder(default_projects_dir(), f"{job.layout.root.name} {datetime.now().strftime('%Y-%m-%d %H-%M')}")
     from ..version import APP_VERSION
 
     layers = []
@@ -518,9 +528,18 @@ class BatchController(QObject):
         page.matrixRequested.connect(self.open_matrix)
         page.selectionPicked.connect(self.pick)
         page.forgetRequested.connect(self.forget)
+        page.folderChanged.connect(self.set_folder)
+        page.projectOpenRequested.connect(self.open_project)
+        page.profileChosen.connect(self._profile_chosen)
+        page.profileSaveRequested.connect(lambda: self._p.save_profile_dialog(page))
+        if hasattr(self._p, "profilesChanged"):
+            self._p.profilesChanged.connect(self._show_profiles)
+        self._show_profiles()
         project = self._projects()
         if project is not None:
             project.projectStored.connect(self._project_stored)
+            # Another data folder, a project saved or removed: the list of projects is read again.
+            project.recentChanged.connect(self._show_projects)
             if not self._selections:
                 # The projects of earlier versions become selections once.
                 for entry in reversed(project.entries()[: selections.RECENT_LIMIT]):
@@ -563,7 +582,25 @@ class BatchController(QObject):
         self._save()
         self._page.set_selections(self._selections, selection.snapshot)
 
+    def _show_projects(self) -> None:
+        project = self._projects()
+        if project is None:
+            return
+        self._page.set_projects(project.folder_entries(), str(project.projects_dir()))
+
+    def open_project(self, folder: str) -> bool:
+        """A project of the data folder opened in the matrix from its list."""
+
+        project = self._projects()
+        if project is None or self._thread is not None:
+            return False
+        if project.open(folder):
+            self._show_workspace()
+            return True
+        return False
+
     def _show(self) -> None:
+        self._show_projects()
         page = self._page
         page.set_selections(self._selections, str(self._layout.root) if self._layout is not None else "")
         selection = self.current()
@@ -636,10 +673,37 @@ class BatchController(QObject):
             self._page.set_output_dir(chosen)
             self._keep_inputs()
 
+    def _show_profiles(self) -> None:
+        from ..core.profiles import list_profiles
+
+        self._page.set_profiles(list_profiles(), str(getattr(self._p, "_active_profile_name", "") or ""))
+
+    def _profile_chosen(self, path: str) -> None:
+        if path:
+            self._p.load_profile(path)
+        else:
+            self._p._active_profile_name = ""
+            self._show_profiles()
+
+    def set_folder(self, name: str, kind: str, layer: str, cell_class: str) -> SnapshotLayout | None:
+        """A subfolder told by hand on the page: the layers made again, the setting kept in the
+        snapshot folder (karakal.json) so the snapshot is recognised next time."""
+
+        if self._thread is not None or self._layout is None:
+            return self._layout
+        layout = with_folder(self._layout, name, kind=kind, layer=layer, cell_class=cell_class)
+        written = write_snapshot_settings(layout)
+        self._apply_layout(layout)
+        if written is None:
+            self._page.show_message("home.folders.not_saved")
+        return layout
+
     def choose_snapshot(self, path: str) -> SnapshotLayout | None:
         if self._thread is not None:
             return self._layout
-        layout = discover_snapshot(path)
+        return self._apply_layout(discover_snapshot(path))
+
+    def _apply_layout(self, layout: SnapshotLayout) -> SnapshotLayout:
         self._layout = layout
         self._report = None
         page = self._page
@@ -651,10 +715,11 @@ class BatchController(QObject):
                 selection = Selection(
                     snapshot=str(layout.root),
                     errors_format=previous.errors_format if previous is not None else page.errors_format(),
-                    output_dir=str(layout.root),
+                    output_dir="",
                 )
-            if not selection.output_dir:
-                selection.output_dir = str(layout.root)
+            if selections.same_folder(selection.output_dir, str(layout.root)):
+                # Older versions put the maps into the snapshot by default; now the project keeps them.
+                selection.output_dir = ""
             page.set_errors_format(selection.errors_format)
             page.set_output_dir(selection.output_dir)
             self._put(selection)
@@ -663,7 +728,7 @@ class BatchController(QObject):
 
     def _job(self) -> BatchJob | None:
         layout = self._layout
-        if layout is None or not layout.layers:
+        if layout is None or not layout.ready:
             return None
         p = self._p
         specs = tuple(
@@ -689,7 +754,7 @@ class BatchController(QObject):
         skip = {"conductor_zone", "normal"}
         return BatchJob(
             layout=layout,
-            output_dir=Path(self._page.output_dir() or layout.root),
+            output_dir=Path(self._page.output_dir()) if self._page.output_dir() else None,
             errors_format=self._page.errors_format(),
             specs=specs,
             cell_classes={spec.model_id: layer.cell_class for spec, layer in zip(specs, layout.layers)},

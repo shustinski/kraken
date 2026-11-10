@@ -14,9 +14,11 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -43,6 +45,15 @@ from ..core.recent_selections import (
     RUN_FAILED,
     RUN_STOPPED,
     Selection,
+)
+from ..core.snapshot_layout import (
+    ALL_LAYERS,
+    KIND_CONFIDENCE,
+    KIND_MASKS,
+    KIND_SKIP,
+    KIND_SOURCES,
+    KIND_UNKNOWN,
+    ROOT_FOLDER,
 )
 from .toolbar_icons import toolbar_icon
 
@@ -245,6 +256,13 @@ class HomePage(QWidget):
     forgetRequested = pyqtSignal(str)
     otherProjectRequested = pyqtSignal()
     projectsFolderRequested = pyqtSignal()
+    # A subfolder told by hand: name, what it is, its layer, its cell class (snapshot_layout).
+    folderChanged = pyqtSignal(str, str, str, str)
+    # A profile picked (its path; empty: the current settings) or the current settings to save.
+    profileChosen = pyqtSignal(str)
+    profileSaveRequested = pyqtSignal()
+    # A project of the data folder picked in its list: its folder.
+    projectOpenRequested = pyqtSignal(str)
 
     def __init__(self, translate: Translate, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -303,6 +321,32 @@ class HomePage(QWidget):
         self.layers_note.setStyleSheet(_MUTED)
         self.layers_note.setVisible(False)
         left.addWidget(self.layers_note)
+        # Every subfolder and what it is; shown at once when one is not recognised.
+        self.folders_title = QLabel(self)
+        self.folders_title.setWordWrap(True)
+        self.folders_title.setVisible(False)
+        left.addWidget(self.folders_title)
+        self.folders_table = QTableWidget(0, 5, self)
+        self.folders_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.folders_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.folders_table.verticalHeader().setVisible(False)
+        folders_header = self.folders_table.horizontalHeader()
+        for column in range(5):
+            folders_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        folders_header.setStretchLastSection(True)
+        self.folders_table.setVisible(False)
+        left.addWidget(self.folders_table)
+        self._building_folders = False
+        profile_row = QHBoxLayout()
+        self.profile_label = QLabel(self)
+        self.profile_label.setStyleSheet(_MUTED)
+        self.profile_combo = QComboBox(self)
+        self.profile_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.profile_save_button = QPushButton(self)
+        profile_row.addWidget(self.profile_label)
+        profile_row.addWidget(self.profile_combo, 1)
+        profile_row.addWidget(self.profile_save_button)
+        left.addLayout(profile_row)
         format_row = QHBoxLayout()
         format_row.setSpacing(0)
         self.format_label = QLabel(self)
@@ -418,6 +462,18 @@ class HomePage(QWidget):
         forget_row.addStretch(1)
         forget_row.addWidget(self.forget_button)
         right.addLayout(forget_row)
+        # Every project of the data folder, its subfolders too: copied in or saved elsewhere.
+        right.addSpacing(6)
+        self.projects_title = QLabel(self)
+        self.projects_title.setStyleSheet("font-size: 14px; font-weight: 600;")
+        right.addWidget(self.projects_title)
+        self.projects_list = QListWidget(self)
+        self.projects_list.setSpacing(2)
+        right.addWidget(self.projects_list, 1)
+        self.projects_hint = QLabel(self)
+        self.projects_hint.setWordWrap(True)
+        self.projects_hint.setStyleSheet(_MUTED)
+        right.addWidget(self.projects_hint)
 
         self.drop_zone.folderDropped.connect(self.snapshotChosen)
         self.snapshot_edit.returnPressed.connect(self._snapshot_typed)
@@ -436,8 +492,16 @@ class HomePage(QWidget):
         self.selections.itemActivated.connect(self._pick_item)
         self.selections.currentItemChanged.connect(lambda *_args: self._sync_forget())
         self.forget_button.clicked.connect(self._forget_current)
+        self.projects_list.itemActivated.connect(self._open_project_item)
+        self.projects_list.itemDoubleClicked.connect(self._open_project_item)
+        self.profile_combo.activated.connect(lambda index: self.profileChosen.emit(str(self.profile_combo.itemData(index) or "")))
+        self.profile_save_button.clicked.connect(self.profileSaveRequested)
 
         self._layout = None
+        self._projects: list[dict] = []
+        self._projects_root = ""
+        self._profiles: list = []
+        self._active_profile = ""
         self._has_layers = False
         self._running = False
         self._paused = False
@@ -469,7 +533,21 @@ class HomePage(QWidget):
             ]
         )
         self.format_label.setText(self._t("batch.format"))
+        self.profile_label.setText(self._t("home.profile"))
+        self.profile_save_button.setText(self._t("home.profile_save"))
+        self.profile_save_button.setToolTip(self._t("home.profile_save_hint"))
+        self.folders_table.setHorizontalHeaderLabels(
+            [
+                self._t("home.folders.name"),
+                self._t("home.folders.count"),
+                self._t("home.folders.kind"),
+                self._t("home.folders.layer"),
+                self._t("home.folders.class"),
+            ]
+        )
+        self.set_profiles(self._profiles, self._active_profile)
         self.output_label.setText(self._t("home.output"))
+        self.output_edit.setPlaceholderText(self._t("home.output_placeholder"))
         self.output_button.setText(self._t("home.change"))
         self.open_folder_button.setText(self._t("batch.open_folder"))
         self.other_button.setText(self._t("home.other_project"))
@@ -477,6 +555,7 @@ class HomePage(QWidget):
         self.recent_title.setText(self._t("home.recent"))
         self.empty_hint.setText(self._t("home.empty"))
         self.forget_button.setText(self._t("home.forget"))
+        self.set_projects(self._projects, self._projects_root)
         self._show_details(self.details_button.isChecked())
         if self._layout is not None:
             self._show_summary(self._layout)
@@ -535,8 +614,12 @@ class HomePage(QWidget):
             notes.insert(0, self._t("batch.note.pair"))
         self.layers_note.setText(" ".join(notes))
         self._show_summary(layout)
-        self._has_layers = bool(layout.layers)
-        self.set_status("" if self._has_layers else "batch.no_layers")
+        self._fill_folders(layout)
+        self._has_layers = bool(layout.ready)
+        if layout.unrecognized:
+            self.set_status("home.folders.unrecognized_status", count=len(layout.unrecognized))
+        else:
+            self.set_status("" if self._has_layers else "batch.no_layers")
         self.open_folder_button.setVisible(False)
         self._problems = []
         self.problems_list.clear()
@@ -563,6 +646,161 @@ class HomePage(QWidget):
         self.details_button.setText(self._t("home.details_hide" if shown else "home.details"))
         self.layers_table.setVisible(bool(shown) and self._layout is not None and bool(self._layout.layers))
         self.layers_note.setVisible(bool(shown) and bool(self.layers_note.text()))
+        self._show_folders()
+
+    def _show_folders(self) -> None:
+        layout = self._layout
+        has_folders = layout is not None and bool(getattr(layout, "folders", ()))
+        # Unrecognised folders are shown at once: the run waits for them.
+        shown = has_folders and (self.details_button.isChecked() or bool(layout.unrecognized))
+        self.folders_table.setVisible(bool(shown))
+        self.folders_title.setVisible(bool(shown))
+        if shown:
+            if layout.unrecognized:
+                self.folders_title.setText(self._t("home.folders.unrecognized", count=len(layout.unrecognized)))
+                self.folders_title.setStyleSheet(f"color: {_WARN}; font-weight: 600;")
+            else:
+                self.folders_title.setText(self._t("home.folders.title"))
+                self.folders_title.setStyleSheet(_MUTED)
+
+    # Subfolders -----------------------------------------------------------------------------------
+
+    _KINDS = (KIND_UNKNOWN, KIND_MASKS, KIND_CONFIDENCE, KIND_SOURCES, KIND_SKIP)
+
+    def _fill_folders(self, layout) -> None:
+        """One row per subfolder: what it is, its layer and (masks) cell class, all changeable."""
+
+        self._building_folders = True
+        table = self.folders_table
+        folders = tuple(getattr(layout, "folders", ()) or ())
+        layer_names = [folder.layer or folder.name for folder in folders if folder.kind == KIND_MASKS]
+        table.setRowCount(len(folders))
+        for row, folder in enumerate(folders):
+            name = layout.root.name if folder.name == ROOT_FOLDER else folder.name
+            item = QTableWidgetItem(name + ("  •" if not folder.guessed else ""))
+            if folder.kind == KIND_UNKNOWN:
+                item.setForeground(QColor(_WARN))
+            item.setToolTip(self._t("home.folders.told") if not folder.guessed else self._t("home.folders.guessed"))
+            table.setItem(row, 0, item)
+            table.setItem(row, 1, QTableWidgetItem(str(folder.count)))
+            kind_combo = QComboBox(table)
+            for kind in self._KINDS:
+                kind_combo.addItem(self._t(f"home.folders.kind.{kind or 'unknown'}"), kind)
+            kind_combo.setCurrentIndex(max(0, kind_combo.findData(folder.kind)))
+            table.setCellWidget(row, 2, kind_combo)
+            layer_combo = QComboBox(table)
+            class_combo = QComboBox(table)
+            if folder.kind == KIND_MASKS:
+                layer_combo.setEditable(True)
+                for layer_name in dict.fromkeys(layer_names):
+                    layer_combo.addItem(layer_name, layer_name)
+                layer_combo.setCurrentText(folder.layer or folder.name)
+                for value in ("", "ones", "zeros"):
+                    class_combo.addItem(self._t(f"batch.class.{value}" if value else "batch.class.single"), value)
+                class_combo.setCurrentIndex(max(0, class_combo.findData(folder.cell_class)))
+            elif folder.kind in (KIND_CONFIDENCE, KIND_SOURCES):
+                layer_combo.addItem(self._t("home.folders.all_layers"), ALL_LAYERS)
+                for layer_name in dict.fromkeys(layer_names):
+                    layer_combo.addItem(layer_name, layer_name)
+                layer_combo.setCurrentIndex(max(0, layer_combo.findData(folder.layer)))
+                class_combo.setEnabled(False)
+            else:
+                layer_combo.setEnabled(False)
+                class_combo.setEnabled(False)
+            table.setCellWidget(row, 3, layer_combo)
+            table.setCellWidget(row, 4, class_combo)
+            folder_name = folder.name
+            kind_combo.activated.connect(lambda _index, name=folder_name: self._folder_edited(name))
+            layer_combo.activated.connect(lambda _index, name=folder_name: self._folder_edited(name))
+            if layer_combo.isEditable() and layer_combo.lineEdit() is not None:
+                layer_combo.lineEdit().editingFinished.connect(lambda name=folder_name: self._folder_edited(name))
+            class_combo.activated.connect(lambda _index, name=folder_name: self._folder_edited(name))
+        table.resizeRowsToContents()
+        height = table.horizontalHeader().height() + 2 * table.frameWidth() + 4
+        height += sum(table.rowHeight(row) for row in range(table.rowCount()))
+        table.setFixedHeight(max(height, table.horizontalHeader().height() + 36))
+        self._building_folders = False
+        self._show_folders()
+
+    def _folder_edited(self, name: str) -> None:
+        if self._building_folders or self._layout is None:
+            return
+        folders = tuple(getattr(self._layout, "folders", ()) or ())
+        row = next((index for index, folder in enumerate(folders) if folder.name == name), -1)
+        if row < 0:
+            return
+        current = folders[row]
+        kind = str(self.folders_table.cellWidget(row, 2).currentData() or "")
+        layer_combo = self.folders_table.cellWidget(row, 3)
+        class_combo = self.folders_table.cellWidget(row, 4)
+        if kind != current.kind:
+            # Another kind: its layer and class start over (a new mask folder is a layer of its own).
+            layer = name if kind == KIND_MASKS else ALL_LAYERS
+            cell_class = ""
+        elif kind == KIND_MASKS:
+            layer = layer_combo.currentText().strip() or name
+            cell_class = str(class_combo.currentData() or "")
+        else:
+            layer = str(layer_combo.currentData() or "")
+            cell_class = ""
+        if (kind, layer, cell_class) == (current.kind, current.layer, current.cell_class):
+            return
+        self.folderChanged.emit(name, kind, layer, cell_class)
+
+    # Projects of the data folder ------------------------------------------------------------------
+
+    def set_projects(self, entries, root: str = "") -> None:
+        """Projects of the data folder (ProjectController.folder_entries), newest first."""
+
+        self._projects = list(entries or ())
+        self._projects_root = str(root or "")
+        self.projects_title.setText(self._t("home.projects", count=len(self._projects)))
+        self.projects_list.clear()
+        for entry in self._projects:
+            details = []
+            if entry.get("where"):
+                details.append(str(entry["where"]))
+            if entry.get("missing"):
+                details.append(self._t("home.projects.unreadable"))
+            else:
+                if entry.get("saved_at"):
+                    details.append(_when(str(entry["saved_at"])))
+                if entry.get("frames"):
+                    details.append(self._t("home.projects.frames", count=int(entry["frames"])))
+                layers = [name for name in entry.get("layers") or () if name]
+                if layers:
+                    details.append(", ".join(layers))
+            item = QListWidgetItem(str(entry.get("name") or "") + ("\n" + " · ".join(details) if details else ""))
+            item.setData(SELECTION_ROLE, str(entry.get("path") or ""))
+            item.setToolTip(str(entry.get("path") or ""))
+            if entry.get("missing"):
+                item.setForeground(QColor(_MUTED_COLOR))
+            self.projects_list.addItem(item)
+        self.projects_hint.setText(self._t("home.projects.empty", root=self._projects_root) if not self._projects else self._t("home.projects.hint"))
+
+    def _open_project_item(self, item: QListWidgetItem | None) -> None:
+        if item is None or self._running:
+            return
+        path = str(item.data(SELECTION_ROLE) or "")
+        if path:
+            self.projectOpenRequested.emit(path)
+
+    # Profiles -------------------------------------------------------------------------------------
+
+    def set_profiles(self, paths, active: str = "") -> None:
+        """Saved profiles to pick; ``active``: the name of the one last taken."""
+
+        self._profiles = list(paths or ())
+        self._active_profile = str(active or "")
+        combo = self.profile_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem(self._t("profiles.current"), "")
+        for path in self._profiles:
+            combo.addItem(Path(path).stem, str(path))
+        index = next((row for row in range(1, combo.count()) if combo.itemText(row) == self._active_profile), 0)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
 
     # The run ------------------------------------------------------------------------------------
 
@@ -574,6 +812,9 @@ class HomePage(QWidget):
             self.snapshot_edit,
             self.output_button,
             self.output_edit,
+            self.folders_table,
+            self.profile_combo,
+            self.profile_save_button,
             self.drop_zone,
             self.selections,
             self.forget_button,

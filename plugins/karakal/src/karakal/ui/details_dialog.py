@@ -83,6 +83,7 @@ from ..ui.ui_constants import (
     attention_issue_type_color,
     attention_issue_type_icon,
     grid_inspection_error_type_color,
+    sparse_frame_width,
     grid_inspection_error_type_icon,
 )
 
@@ -3604,17 +3605,29 @@ class ExtendFrameDetailsDialog(QDialog):
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawPolygon(polygon)
                 continue
-            alpha = int(np.clip(round(55.0 + 145.0 * float(getattr(cell, "score", 0.0))), 55.0, 220.0))
-            fill = QColor(color)
-            fill.setAlpha(alpha)
-            painter.fillRect(QRectF(x, y, w, h), fill)
-            contour_color = QColor(color)
-            contour_color.setAlpha(245)
-            pen = QPen(contour_color, 2.0)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
+            fill_color, frame_color = self._grid_cell_fill_and_frame(cell)
+            if fill_color is None and frame_color is None:
+                fill_color = color
+            if fill_color is not None:
+                alpha = int(np.clip(round(55.0 + 145.0 * float(getattr(cell, "score", 0.0))), 55.0, 220.0))
+                fill = QColor(fill_color)
+                fill.setAlpha(alpha)
+                painter.fillRect(QRectF(x, y, w, h), fill)
+                contour_color = QColor(fill_color)
+                contour_color.setAlpha(245)
+                pen = QPen(contour_color, 2.0)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
+            if frame_color is not None:
+                # A sparse cell: a thick frame inside its box, as in the exported picture.
+                side = float(sparse_frame_width(w, h))
+                pen = QPen(QColor(frame_color), side)
+                pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(QRectF(x + side / 2.0, y + side / 2.0, max(1.0, w - side), max(1.0, h - side)))
         for example in self._grid_examples:
             bbox = tuple(example.get("bbox", ()))
             if len(bbox) < 4:
@@ -3631,15 +3644,36 @@ class ExtendFrameDetailsDialog(QDialog):
         return pixmap
 
     def _grid_cell_color(self, cell) -> QColor:
+        from .ui_constants import grid_display_error_type
+
         reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
-        for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
-            if str(error_type) in reasons:
-                return grid_inspection_error_type_color(error_type)
+        checks = getattr(self, "grid_error_type_checks", None) if self is not None else None
+        # A switched-off type does not colour the cell: the next finding of it does.
+        enabled = (
+            {key for key, checkbox in checks.items() if checkbox.isChecked()} if isinstance(checks, dict) and checks else None
+        )
+        shown = grid_display_error_type(reasons, enabled) or grid_display_error_type(reasons)
+        if shown is not None:
+            return grid_inspection_error_type_color(shown)
         if str(getattr(cell, "status", "") or "") == "artifact":
             return grid_inspection_error_type_color("small_artifact")
         if str(getattr(cell, "status", "") or "") == "suspicious":
             return QColor(251, 191, 36)
         return QColor(148, 163, 184)
+
+    def _grid_cell_fill_and_frame(self, cell) -> tuple[QColor | None, QColor | None]:
+        """Colours of a mark: the fill of its first visible finding and, for a sparse cell, its frame."""
+
+        from .ui_constants import grid_fill_and_frame
+
+        reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()))
+        checks = getattr(self, "grid_error_type_checks", None)
+        enabled = {key for key, checkbox in checks.items() if checkbox.isChecked()} if isinstance(checks, dict) and checks else None
+        fill, frame = grid_fill_and_frame(reasons, enabled)
+        return (
+            grid_inspection_error_type_color(fill) if fill is not None else None,
+            grid_inspection_error_type_color(frame) if frame is not None else None,
+        )
 
     def _grid_cell_error_type_visible(self, cell) -> bool:
         reasons = tuple(str(reason) for reason in (getattr(cell, "reasons", ()) or ()))
@@ -4442,9 +4476,30 @@ class ExtendFrameDetailsDialog(QDialog):
                 else:
                     item = scene.addPolygon(polygon, pen, QBrush(fill, Qt.BrushStyle.BDiagPattern))
             else:
-                pen = QPen(color, 3.0)
-                pen.setCosmetic(True)
-                item = scene.addRect(rect, pen, QBrush(QColor(color.red(), color.green(), color.blue(), 70)))
+                fill_color, frame_color = self._grid_cell_fill_and_frame(cell)
+                if fill_color is None and frame_color is None:
+                    fill_color = color
+                item = None
+                if fill_color is not None:
+                    fill_color = QColor(fill_color)
+                    fill_color.setAlpha(230)
+                    pen = QPen(fill_color, 3.0)
+                    pen.setCosmetic(True)
+                    item = scene.addRect(rect, pen, QBrush(QColor(fill_color.red(), fill_color.green(), fill_color.blue(), 70)))
+                    item.setZValue(30.0)
+                    items.append(item)
+                if frame_color is not None:
+                    # A sparse cell: a thick frame inside its box, over the fill of its other finding.
+                    side_x = float(sparse_frame_width(getattr(cell, "width", 1), getattr(cell, "height", 1))) * scale_x
+                    side_y = float(sparse_frame_width(getattr(cell, "width", 1), getattr(cell, "height", 1))) * scale_y
+                    side = min(side_x, side_y)
+                    pen = QPen(QColor(frame_color), side)
+                    pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+                    inner = rect.adjusted(side / 2.0, side / 2.0, -side / 2.0, -side / 2.0)
+                    frame_item = scene.addRect(inner, pen, QBrush(Qt.BrushStyle.NoBrush))
+                    frame_item.setZValue(31.0)
+                    items.append(frame_item)
+                continue
             item.setZValue(30.0)
             items.append(item)
         for example in self._grid_examples:

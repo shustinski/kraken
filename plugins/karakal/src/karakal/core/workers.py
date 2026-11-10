@@ -26,7 +26,15 @@ from .grid_anomaly import (
     resolve_reference_profile,
 )
 from .performance import PerformanceConfig, load_performance_config
-from .sparse_cells import DEFAULT_SPARSE_REACH_SITES, SPARSE_REASON, layer_frames, mark_sparse_cells
+from .sparse_cells import (
+    DEFAULT_SPARSE_FREE_SIDES,
+    DEFAULT_SPARSE_REACH_SITES,
+    SPARSE_REASON,
+    layer_frames,
+    mark_sparse_cells,
+    normalize_free_sides,
+    normalize_reach,
+)
 from .pair_agreement import analyze_network_disagreement_chunk
 from .pair_conflict import analyze_class_conflict_chunk, is_agreement_key
 from .profiling import ProfileSnapshot, ProfilerRun, WorkerProfilePacket, activate_profiler, export_profile
@@ -127,8 +135,10 @@ def settle_sparse_layer(
     model_id: str,
     *,
     frames_per_row: int,
-    reach_sites: float,
+    reach_sites: float | tuple[float, float],
+    min_free_sides: int = DEFAULT_SPARSE_FREE_SIDES,
     cancelled=None,
+    info_out: dict | None = None,
 ) -> dict[str, object]:
     """Sparse cells of one layer, marked once all its frames are analysed (core.sparse_cells).
 
@@ -165,8 +175,12 @@ def settle_sparse_layer(
             results = {key: value for key, value in payloads.items() if not isinstance(value, dict)}
         else:
             results = {key: value.get(layer) for key, value in payloads.items() if isinstance(value, dict)}
-        updated, info = mark_sparse_cells(results, frames, reach_sites=reach_sites, cancelled=cancelled)
+        updated, info = mark_sparse_cells(
+            results, frames, reach_sites=reach_sites, min_free_sides=min_free_sides, cancelled=cancelled
+        )
         _LOGGER.info("sparse cells layer=%s/%s %s", model_id, layer or "", info)
+        if info_out is not None and info.get("pitch") and (layer in (None, "binary") or model_id not in info_out):
+            info_out[model_id] = dict(info)
         for key, result in updated.items():
             if layer is None:
                 changed[key] = result
@@ -430,14 +444,18 @@ class GridInspectionWorker(WorkerBase):
         use_cache: bool = True,
         performance_config: PerformanceConfig | None = None,
         frames_per_row: int = 0,
-        sparse_reach_sites: float = DEFAULT_SPARSE_REACH_SITES,
+        sparse_reach_sites: float | tuple[float, float] = DEFAULT_SPARSE_REACH_SITES,
+        sparse_free_sides: int = DEFAULT_SPARSE_FREE_SIDES,
     ) -> None:
         super().__init__(performance_config=performance_config, analysis_type="validation_grid")
         self._records = tuple(records)
         self._config = (config or GridDamageAnalysisConfig()).normalized()
         self._model_id = str(model_id or "")
         self._frames_per_row = int(frames_per_row)
-        self._sparse_reach_sites = float(sparse_reach_sites)
+        self._sparse_reach_sites = normalize_reach(sparse_reach_sites)
+        self._sparse_free_sides = normalize_free_sides(sparse_free_sides)
+        # What the sparse step found per layer (its lattice pitch for the settings hint).
+        self.sparse_info: dict[str, dict] = {}
         self._reference_profile = reference_profile
         self._use_cache = bool(use_cache)
         self._partial_result_buffer: dict[str, GridFrameAnalysisResult] = {}
@@ -464,7 +482,9 @@ class GridInspectionWorker(WorkerBase):
                 self._model_id,
                 frames_per_row=self._frames_per_row,
                 reach_sites=self._sparse_reach_sites,
+                min_free_sides=self._sparse_free_sides,
                 cancelled=self._is_cancelled,
+                info_out=self.sparse_info,
             )
         if changed:
             self._queue_partial_results(changed, force=True)
@@ -751,7 +771,8 @@ class PairedGridInspectionWorker(GridInspectionWorker):
         performance_config: PerformanceConfig | None = None,
         requested_layers: tuple[str, ...] | None = None,
         frames_per_row: int = 0,
-        sparse_reach_sites: float = DEFAULT_SPARSE_REACH_SITES,
+        sparse_reach_sites: float | tuple[float, float] = DEFAULT_SPARSE_REACH_SITES,
+        sparse_free_sides: int = DEFAULT_SPARSE_FREE_SIDES,
     ) -> None:
         super().__init__(
             records,
@@ -761,6 +782,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
             performance_config=performance_config,
             frames_per_row=frames_per_row,
             sparse_reach_sites=sparse_reach_sites,
+            sparse_free_sides=sparse_free_sides,
         )
         self._model_id = str(model_id)
         layers = tuple(
@@ -1009,7 +1031,8 @@ class MultiModelGridInspectionWorker(WorkerBase):
         requested_layers: tuple[str, ...] | None = None,
         conflict_pairs: tuple[tuple[str, str, str], ...] = (),
         frames_per_row: dict[str, int] | int = 0,
-        sparse_reach_sites: float = DEFAULT_SPARSE_REACH_SITES,
+        sparse_reach_sites: float | tuple[float, float] = DEFAULT_SPARSE_REACH_SITES,
+        sparse_free_sides: int = DEFAULT_SPARSE_FREE_SIDES,
     ) -> None:
         super().__init__(performance_config=performance_config, analysis_type="validation_grid")
         self._records = tuple(records)
@@ -1030,7 +1053,10 @@ class MultiModelGridInspectionWorker(WorkerBase):
         self._analysis_errors: dict[str, str] = {}
         # Frames per row of each layer (or one for all): neighbour frames of the sparse cells.
         self._frames_per_row = frames_per_row
-        self._sparse_reach_sites = float(sparse_reach_sites)
+        self._sparse_reach_sites = normalize_reach(sparse_reach_sites)
+        self._sparse_free_sides = normalize_free_sides(sparse_free_sides)
+        # What the sparse step found per layer (its lattice pitch for the settings hint).
+        self.sparse_info: dict[str, dict] = {}
 
     def _paired_records_for(self, model_id: str) -> list[tuple[str, str, str]]:
         records: list[tuple[str, str, str]] = []
@@ -1216,7 +1242,9 @@ class MultiModelGridInspectionWorker(WorkerBase):
                 model_id,
                 frames_per_row=self._layer_frames_per_row(model_id),
                 reach_sites=self._sparse_reach_sites,
+                min_free_sides=self._sparse_free_sides,
                 cancelled=self._is_cancelled,
+                info_out=self.sparse_info,
             )
         if changed:
             self.multiModelResultsReady.emit({model_id: {str(frame): dict(value) for frame, value in changed.items()}})

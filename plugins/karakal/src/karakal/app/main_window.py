@@ -55,7 +55,8 @@ from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_P
 from ..core.domain import BuildResult
 from ..core.pair_agreement import AGREEMENT_MAX_COVER, AGREEMENT_RUN_MAX_COVER
 from ..core.pair_conflict import CONFLICT_ANALYSIS_FLOOR_PX, CONFLICT_MIN_AREA_PX, CONFLICT_MIN_CELL_SHARE
-from ..core.sparse_cells import DEFAULT_SPARSE_REACH_SITES, SPARSE_REACH_RANGE
+from ..core.sparse_cells import DEFAULT_SPARSE_FREE_SIDES, DEFAULT_SPARSE_REACH_SITES, SPARSE_FREE_SIDES_RANGE, SPARSE_REACH_RANGE
+from PyQt6.QtWidgets import QDoubleSpinBox as _SparseSpin, QGridLayout
 from ..core.performance import PerformanceConfig
 from ..ui.toolbar_icons import toolbar_icon
 from ..ui.app_icon import apply_karakal_icon
@@ -670,12 +671,45 @@ class KarakalWidget(QWidget):
             self.grid_tuning_preset_combo.addItem(self._t(f"grid_tuning.preset.{preset_key}"), preset_key)
         self.grid_tuning_preset_combo.setCurrentIndex(self.grid_tuning_preset_combo.findData("balanced"))
         self.grid_debris_min_area_control = DebrisMinAreaControl(self._t, parent=self)
-        # Sparse cell: no other cell along its row and column within this many lattice pitches.
-        self.grid_sparse_reach_spin = _NoWheelSpinBox(self)
-        self.grid_sparse_reach_spin.setRange(int(SPARSE_REACH_RANGE[0]), int(SPARSE_REACH_RANGE[1]))
-        self.grid_sparse_reach_spin.setValue(int(DEFAULT_SPARSE_REACH_SITES))
-        self.grid_sparse_reach_spin.setKeyboardTracking(False)
-        self.grid_sparse_reach_spin.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
+        # Sparse cell search window: «auto» (DEFAULT_SPARSE_REACH_SITES pitches on both axes) or the
+        # operator's X (along the row) and Y (along the column), in lattice pitches.
+        self.grid_sparse_reach_box = QWidget(self)
+        sparse_layout = QGridLayout(self.grid_sparse_reach_box)
+        sparse_layout.setContentsMargins(0, 0, 0, 0)
+        sparse_layout.setHorizontalSpacing(6)
+        sparse_layout.setVerticalSpacing(2)
+        self.grid_sparse_reach_auto_check = QCheckBox(self._t("grid_tuning.sparse_reach_auto"), self.grid_sparse_reach_box)
+        self.grid_sparse_reach_auto_check.setChecked(True)
+        sparse_layout.addWidget(self.grid_sparse_reach_auto_check, 0, 0, 1, 4)
+        self._grid_sparse_reach_axis_labels = []
+        for column, (axis, name) in enumerate((("x", "grid_sparse_reach_x_spin"), ("y", "grid_sparse_reach_y_spin"))):
+            label = QLabel(self._t(f"grid_tuning.sparse_reach_{axis}"), self.grid_sparse_reach_box)
+            self._grid_sparse_reach_axis_labels.append((label, f"grid_tuning.sparse_reach_{axis}"))
+            spin = _SparseSpin(self.grid_sparse_reach_box)
+            spin.setRange(float(SPARSE_REACH_RANGE[0]), float(SPARSE_REACH_RANGE[1]))
+            spin.setDecimals(1)
+            spin.setSingleStep(0.5)
+            spin.setValue(float(DEFAULT_SPARSE_REACH_SITES))
+            spin.setKeyboardTracking(False)
+            spin.setEnabled(False)
+            spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            setattr(self, name, spin)
+            sparse_layout.addWidget(label, 1, 2 * column)
+            sparse_layout.addWidget(spin, 1, 2 * column + 1)
+        free_label = QLabel(self._t("grid_tuning.sparse_free_sides"), self.grid_sparse_reach_box)
+        self._grid_sparse_reach_axis_labels.append((free_label, "grid_tuning.sparse_free_sides"))
+        self.grid_sparse_free_spin = _NoWheelSpinBox(self.grid_sparse_reach_box)
+        self.grid_sparse_free_spin.setRange(int(SPARSE_FREE_SIDES_RANGE[0]), int(SPARSE_FREE_SIDES_RANGE[1]))
+        self.grid_sparse_free_spin.setValue(int(DEFAULT_SPARSE_FREE_SIDES))
+        self.grid_sparse_free_spin.setKeyboardTracking(False)
+        self.grid_sparse_free_spin.setSuffix(" / 4")
+        sparse_layout.addWidget(free_label, 2, 0, 1, 3)
+        sparse_layout.addWidget(self.grid_sparse_free_spin, 2, 3)
+        self.grid_sparse_reach_hint = QLabel(self.grid_sparse_reach_box)
+        self.grid_sparse_reach_hint.setWordWrap(True)
+        self.grid_sparse_reach_hint.setStyleSheet("color: #8a94a3;")
+        sparse_layout.addWidget(self.grid_sparse_reach_hint, 3, 0, 1, 4)
+        self.grid_sparse_reach_box.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
         # Conflicts of a ones/zeros pair: shown from this area and this share of the smaller cell.
         self.grid_conflict_min_area_spin = _NoWheelSpinBox(self)
         self.grid_conflict_min_area_spin.setRange(int(CONFLICT_ANALYSIS_FLOOR_PX), 2000)
@@ -1936,7 +1970,7 @@ class KarakalWidget(QWidget):
         grid_tuning_layout.addWidget(self._grid_debris_min_area_row)
         self._grid_sparse_reach_row = self._build_setting_row(
             self._t("grid_tuning.sparse_reach"),
-            self.grid_sparse_reach_spin,
+            self.grid_sparse_reach_box,
         )
         grid_tuning_layout.addWidget(self._grid_sparse_reach_row)
         self._grid_conflict_min_area_row = self._build_setting_row(
@@ -2199,8 +2233,12 @@ class KarakalWidget(QWidget):
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))
         if hasattr(self, "grid_matrix_layer_label"):
             self.grid_matrix_layer_label.setText(self._t("grid_matrix_layer.label"))
-        if hasattr(self, "grid_sparse_reach_spin"):
-            self.grid_sparse_reach_spin.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
+        if hasattr(self, "grid_sparse_reach_box"):
+            self.grid_sparse_reach_box.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
+            self.grid_sparse_reach_auto_check.setText(self._t("grid_tuning.sparse_reach_auto"))
+            for label, key in self._grid_sparse_reach_axis_labels:
+                label.setText(self._t(key))
+            self._presenter._refresh_grid_sparse_reach_hint()
         if hasattr(self, "grid_conflict_min_area_spin"):
             self.grid_conflict_min_area_spin.setToolTip(self._t("grid_tuning.conflict_min_area_hint"))
             self.grid_conflict_min_share_spin.setToolTip(self._t("grid_tuning.conflict_min_share_hint"))
@@ -2480,7 +2518,11 @@ class KarakalWidget(QWidget):
         )
         self.grid_tuning_preset_combo.currentIndexChanged.connect(self._presenter._on_grid_tuning_preset_changed)
         self.grid_debris_min_area_control.valueChanged.connect(self._presenter._on_grid_debris_min_area_changed)
-        self.grid_sparse_reach_spin.valueChanged.connect(self._presenter._on_grid_sparse_reach_changed)
+        self.grid_sparse_reach_auto_check.toggled.connect(self._presenter._on_grid_sparse_reach_changed)
+        self.grid_sparse_reach_x_spin.valueChanged.connect(self._presenter._on_grid_sparse_reach_changed)
+        self.grid_sparse_reach_y_spin.valueChanged.connect(self._presenter._on_grid_sparse_reach_changed)
+        self.grid_sparse_free_spin.valueChanged.connect(self._presenter._on_grid_sparse_free_sides_changed)
+        self._presenter._refresh_grid_sparse_reach_hint()
         for _metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "binClicked"):
                 card.binClicked.connect(

@@ -515,8 +515,8 @@ _DEFECT_REASON_PRIORITY: dict[str, int] = {
     "small_artifact": 30,
     "confidence_only_cell": 28,
     "binary_only_cell": 26,
-    # A flag next to the class of a broken cell: the class keeps the colour and the rank.
-    "sparse_cell": 5,
+    # A lone cell is shown as sparse even when it is broken too (ui_constants.GRID_ERROR_DISPLAY_FIRST).
+    "sparse_cell": 95,
 }
 
 

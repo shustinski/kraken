@@ -93,7 +93,11 @@ def render_grid_error_image(
     color_mode: str = "color",
     single_color: tuple[int, int, int] | None = None,
 ) -> np.ndarray:
-    """Filled cell rectangles on black. Color follows only the selected types."""
+    """Filled cell rectangles on black. Color follows only the selected types.
+
+    A sparse cell is a thick frame of its colour inside its box, over the fill of its other finding
+    (if it has one): a program reading the picture pixel by pixel finds both colours in that cell.
+    """
 
     selected = {str(item) for item in selected_types if str(item) and str(item) not in _EXCLUDED_EXPORT_TYPES}
     height = max(1, int(getattr(result, "image_height", 0) or 1))
@@ -121,6 +125,9 @@ def render_grid_error_image(
         rank = max((_DEFECT_REASON_PRIORITY.get(reason, 10) for reason in reasons if reason in selected), default=0)
         cells.append((rank, cell, reasons))
     cells.sort(key=lambda item: item[0])
+    from ..ui.ui_constants import grid_fill_and_frame, sparse_frame_width
+
+    frames: list[tuple[int, int, int, int, str]] = []
     for _rank, cell, reasons in cells:
         x = max(0, min(width - 1, int(getattr(cell, "left", 0))))
         y = max(0, min(height - 1, int(getattr(cell, "top", 0))))
@@ -130,14 +137,33 @@ def render_grid_error_image(
         y1 = min(height, y + h)
         if x1 <= x or y1 <= y:
             continue
+        fill, frame = grid_fill_and_frame(reasons, selected)
+        if frame is not None:
+            frames.append((x, y, x1, y1, frame))
+        if fill is None:
+            continue
         if grayscale:
             image[y:y1, x:x1] = 255
             continue
         if paint_bgr is not None:
             image[y:y1, x:x1] = paint_bgr
             continue
-        red, green, blue = _grid_defect_reason_rgb(reasons, selected_types=selected)
+        red, green, blue = _grid_defect_reason_rgb((fill,), selected_types=selected)
         image[y:y1, x:x1] = (blue, green, red)
+    # Frames last: a neighbour's fill never covers them.
+    for x, y, x1, y1, frame in frames:
+        if grayscale:
+            value = 255
+        elif paint_bgr is not None:
+            value = paint_bgr
+        else:
+            red, green, blue = _grid_defect_reason_rgb((frame,), selected_types=selected)
+            value = (blue, green, red)
+        side = sparse_frame_width(x1 - x, y1 - y)
+        image[y : min(y1, y + side), x:x1] = value
+        image[max(y, y1 - side) : y1, x:x1] = value
+        image[y:y1, x : min(x1, x + side)] = value
+        image[y:y1, max(x, x1 - side) : x1] = value
     return image
 
 

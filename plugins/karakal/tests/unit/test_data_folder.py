@@ -51,15 +51,17 @@ def test_profile_round_trip_through_the_presenter(tmp_path, qtbot) -> None:
     widget = KarakalWidget(settings=QSettings(str(tmp_path / "k.ini"), QSettings.Format.IniFormat))
     qtbot.addWidget(widget)
     presenter = widget._presenter
-    presenter._apply_grid_sparse_reach(7)
+    presenter._apply_grid_sparse_reach(False, (7, 2.5))
     presenter._batch_controller._page.set_errors_format("tif")
     settings = presenter._profile_settings()
-    assert settings["sparse_reach_sites"] == 7 and settings["errors_format"] == "tif"
+    assert settings["sparse_reach_auto"] is False and (settings["sparse_reach_x"], settings["sparse_reach_y"]) == (7, 2.5)
+    assert settings["errors_format"] == "tif"
     path = save_profile("Мой", settings)
-    presenter._apply_grid_sparse_reach(3)
+    presenter._apply_grid_sparse_reach(True)
     presenter._batch_controller._page.set_errors_format("png")
     assert presenter.load_profile(path)
-    assert presenter._grid_sparse_reach_sites == 7
+    assert presenter._grid_sparse_reach_effective() == (7, 2.5)
+    assert not widget.grid_sparse_reach_auto_check.isChecked() and widget.grid_sparse_reach_y_spin.value() == 2.5
     assert presenter._batch_controller._page.errors_format() == "tif"
     assert widget.home_page.profile_combo.currentText() == "Мой"
 

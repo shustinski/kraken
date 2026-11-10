@@ -724,10 +724,11 @@ def _grid_defect_reason_rgb(
             return (0, 0, 0)
         hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get(ranked[0], "#94a3b8")
     else:
-        for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
-            if str(error_type) in reason_set:
-                hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get(str(error_type), "#94a3b8")
-                break
+        from ..ui.ui_constants import grid_display_error_type
+
+        shown = grid_display_error_type(reason_set)
+        if shown is not None:
+            hex_color = GRID_INSPECTION_ERROR_TYPE_COLORS.get(shown, "#94a3b8")
         else:
             if str(status) == "suspicious":
                 hex_color = "#fbbf24"
@@ -754,6 +755,9 @@ def grid_cell_defect_color_layer(
     enabled_set = (
         None if enabled_reason_types is None else {str(reason) for reason in enabled_reason_types if str(reason)}
     )
+    from ..ui.ui_constants import grid_fill_and_frame, sparse_frame_width
+
+    frames: list[tuple[int, int, int, int, tuple[int, int, int]]] = []
     for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ():
         if str(getattr(cell, "status", "") or "") == "normal":
             continue
@@ -768,12 +772,24 @@ def grid_cell_defect_color_layer(
         y1 = min(height, y + h)
         if x1 <= x or y1 <= y:
             continue
+        fill, frame = grid_fill_and_frame(reasons, enabled_set)
+        if frame is not None:
+            frames.append((x, y, x1, y1, _grid_defect_reason_rgb((frame,), selected_types=enabled_set)))
+            if fill is None:
+                continue
         color = _grid_defect_reason_rgb(
-            reasons,
+            (fill,) if fill is not None else reasons,
             status=str(getattr(cell, "status", "") or ""),
             selected_types=enabled_set,
         )
         layer[y:y1, x:x1] = color
+    # A sparse cell: a thick frame of its colour, over the fill of its other finding.
+    for x, y, x1, y1, color in frames:
+        side = sparse_frame_width(x1 - x, y1 - y)
+        layer[y : min(y1, y + side), x:x1] = color
+        layer[max(y, y1 - side) : y1, x:x1] = color
+        layer[y:y1, x : min(x1, x + side)] = color
+        layer[y:y1, max(x, x1 - side) : x1] = color
     return layer
 
 

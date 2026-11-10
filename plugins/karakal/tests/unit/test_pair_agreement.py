@@ -299,3 +299,55 @@ def test_the_conductor_zone_switch_starts_off_and_old_settings_do_not_turn_it_on
     )
     assert box.isChecked()
     assert presenter._grid_inspection_config_payload()["conductor_zone_enabled"] is True
+
+
+def test_the_pair_filters_follow_the_kinds_of_ticked_pairs(tmp_path, qtbot) -> None:
+    widget, presenter, items = _loaded(tmp_path, qtbot, ("ones", "ones", "zeros"))
+    checks = widget.grid_error_type_checks
+    conflict, network_only = checks["class_conflict"], checks[AGREEMENT_REASON]
+
+    def on(checkbox) -> bool:
+        return checkbox.isEnabledTo(checkbox.parentWidget())
+
+    # Mixed layers: both kinds of pairs, both filters.
+    assert on(conflict) and on(network_only)
+    # Only the pair of one class ticked: only its filter.
+    for pair in presenter._grid_conflict_pairs():
+        presenter._on_grid_pair_compute_toggled(pair.key, False)
+    assert on(network_only) and not on(conflict)
+    assert conflict.toolTip() == presenter._t("grid_error.class_conflict_unavailable")
+    # The operator's choice of an unavailable filter still holds for the export and the next run.
+    assert "class_conflict" in presenter._selected_grid_error_types()
+    # Only ones against zeros: only 1∩0.
+    for pair in presenter._grid_conflict_pairs():
+        presenter._on_grid_pair_compute_toggled(pair.key, True)
+    (same,) = presenter._grid_agreement_pairs()
+    presenter._on_grid_pair_compute_toggled(same.key, False)
+    assert on(conflict) and not on(network_only)
+
+
+def test_the_network_only_filter_hides_the_pair_findings_and_is_kept(tmp_path, qtbot) -> None:
+    from karakal.core.analytics import collect_frame_records
+    from karakal.core.domain import BuildOptions
+
+    widget, presenter, _items = _loaded(tmp_path, qtbot, ("ones", "ones"))
+    (same,) = presenter._grid_agreement_pairs()
+    presenter._on_build_finished(collect_frame_records(presenter._checked_model_specs(), BuildOptions(union_layer_frames=True)))
+    qtbot.waitUntil(lambda: presenter._worker_thread is None, timeout=60000)
+    state = presenter._current_tab_state()
+    if not state.grid_inspection_payloads_by_pair:
+        presenter._start_compute_grid_inspection(state)
+        qtbot.waitUntil(lambda: presenter._worker_thread is None, timeout=60000)
+    presenter._select_grid_pair(same.key)
+    assert list(presenter._iter_grid_inspection_error_payloads(state))
+    checkbox = widget.grid_error_type_checks[AGREEMENT_REASON]
+    checkbox.setChecked(False)
+    presenter._apply_grid_view_settings()
+    assert not list(presenter._iter_grid_inspection_error_payloads(state)), "hidden at once"
+    assert presenter._worker_thread is None and not presenter._grid_matrix_needs_rerun(state)
+    # The pair matrix still counts what the pair found.
+    assert presenter._grid_pair_conflict_frame_count(state, same) == 1
+    assert presenter._grid_inspection_config_payload()["network_only_enabled"] is False
+    checkbox.setChecked(True)
+    presenter._apply_grid_view_settings()
+    assert list(presenter._iter_grid_inspection_error_payloads(state))

@@ -96,6 +96,8 @@ class ExtendMatrixTabState:
     grid_inspection_reference_record_keys: tuple[str, ...] = ()
     # Normal-cell profile of the last run per model (bank built in the worker), for the frame window.
     grid_inspection_run_profiles: dict[str, object] = field(default_factory=dict)
+    # Lattice pitch (px) the run's sparse cells were found with, per layer (core.sparse_cells).
+    grid_inspection_sparse_pitch: dict[str, tuple[float, float]] = field(default_factory=dict)
     excluded_record_keys: set[str] = field(default_factory=set)
     # Drop rules and frame sets of the grid inspection matrix (no recompute needed).
     frame_sets: FrameSetModel = field(default_factory=FrameSetModel)

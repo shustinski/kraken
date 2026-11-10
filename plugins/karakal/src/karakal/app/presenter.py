@@ -108,13 +108,22 @@ from ..core.grid_narrowing import (
     default_run_debris_min_area,
     narrow_grid_frame_result,
 )
-from ..core.sparse_cells import DEFAULT_SPARSE_REACH_SITES, SPARSE_REACH_RANGE, SPARSE_REASON, copy_sparse_marks
+from ..core.sparse_cells import (
+    DEFAULT_SPARSE_FREE_SIDES,
+    DEFAULT_SPARSE_REACH_SITES,
+    SPARSE_REASON,
+    copy_sparse_marks,
+    normalize_free_sides,
+    normalize_reach,
+    run_pitch,
+)
 from ..core.pair_agreement import (
     AGREEMENT_MAX_COVER,
     AGREEMENT_REASON,
     AgreementThresholds,
     filter_network_disagreement,
 )
+from ..core.pair_conflict import _recount as _recount_pair
 from ..core.pair_conflict import (
     CONFLICT_ANALYSIS_FLOOR_PX,
     CONFLICT_MIN_AREA_PX,
@@ -289,6 +298,20 @@ def _example_pairs(value: object) -> tuple[tuple[str, tuple[tuple[str, float], .
     return tuple(pairs)
 
 
+# The pair-type filters and where the operator's choice is kept while the filter is unavailable.
+PAIR_FILTER_WISHES = {"class_conflict": "_class_conflict_user_wants", "network_only": "_network_only_user_wants"}
+
+
+def _own_enabled(checkbox) -> bool:
+    """The checkbox's own switch, whatever its group says (the group is off while nothing is loaded)."""
+
+    test = getattr(checkbox, "testAttribute", None)
+    if not callable(test):
+        return bool(checkbox.isEnabled())
+    # WA_Disabled is set by a disabled parent too; WA_ForceDisabled only by the checkbox itself.
+    return not test(Qt.WidgetAttribute.WA_ForceDisabled)
+
+
 class KarakalPresenter(QObject):
     """Coordinate UI state, background workers and matrix tabs."""
 
@@ -330,11 +353,17 @@ class KarakalPresenter(QObject):
         self._grid_calibration_confirmed = stored
         self._grid_calibration = stored
         self._class_conflict_user_wants = True
+        # The operator's wish for «Only one network found», kept while its checkbox is unavailable.
+        self._network_only_user_wants = True
         self._grid_custom_tuning = None
         self._grid_preview_tuning = None
         self._grid_debris_min_area_px = int(DEBRIS_MIN_AREA_PX)
         # Sparse cell: no other cell along its row and column within this many lattice pitches.
-        self._grid_sparse_reach_sites = int(DEFAULT_SPARSE_REACH_SITES)
+        # «Auto» searches DEFAULT_SPARSE_REACH_SITES pitches on both axes; off, the operator's X and Y.
+        self._grid_sparse_reach_auto = True
+        self._grid_sparse_reach = (float(DEFAULT_SPARSE_REACH_SITES), float(DEFAULT_SPARSE_REACH_SITES))
+        # Sparse when at least this many of the four sides have no neighbour in the area.
+        self._grid_sparse_free_sides = int(DEFAULT_SPARSE_FREE_SIDES)
         self._pair_conflict_min_area_px = int(CONFLICT_MIN_AREA_PX)
         self._pair_conflict_min_share = float(CONFLICT_MIN_CELL_SHARE)
         self._pair_agreement_max_cover = float(AGREEMENT_MAX_COVER)
@@ -454,8 +483,9 @@ class KarakalPresenter(QObject):
         selected: list[str] = []
         for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             checkbox = checks.get(str(error_type)) if isinstance(checks, dict) else None
-            if str(error_type) == "class_conflict" and checkbox is not None and not checkbox.isEnabled():
-                if getattr(self, "_class_conflict_user_wants", True):
+            if str(error_type) in PAIR_FILTER_WISHES and checkbox is not None and not _own_enabled(checkbox):
+                # Unavailable now (no such pair ticked): the operator's choice still holds.
+                if getattr(self, PAIR_FILTER_WISHES[str(error_type)], True):
                     selected.append(str(error_type))
                 continue
             if checkbox is None:
@@ -588,7 +618,11 @@ class KarakalPresenter(QObject):
         payload["debris_min_area_px"] = int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX))
         # The run keeps debris down to this size; the operator's size is applied on display.
         payload["debris_analysis_floor_px"] = float(DEBRIS_ANALYSIS_FLOOR_PX)
-        payload["sparse_reach_sites"] = int(getattr(self, "_grid_sparse_reach_sites", DEFAULT_SPARSE_REACH_SITES))
+        payload["sparse_reach_auto"] = bool(getattr(self, "_grid_sparse_reach_auto", True))
+        manual = tuple(getattr(self, "_grid_sparse_reach", (DEFAULT_SPARSE_REACH_SITES, DEFAULT_SPARSE_REACH_SITES)))
+        payload["sparse_reach_x"] = float(manual[0])
+        payload["sparse_reach_y"] = float(manual[1])
+        payload["sparse_free_sides"] = int(getattr(self, "_grid_sparse_free_sides", DEFAULT_SPARSE_FREE_SIDES))
         # Shown conflicts of ones/zeros pairs; applied on display, never a reason for a new run.
         payload["conflict_min_area_px"] = int(getattr(self, "_pair_conflict_min_area_px", CONFLICT_MIN_AREA_PX))
         payload["conflict_min_cell_share"] = float(getattr(self, "_pair_conflict_min_share", CONFLICT_MIN_CELL_SHARE))
@@ -600,6 +634,8 @@ class KarakalPresenter(QObject):
             ]
         # Stored apart from the types: settings of older versions always list the zone there.
         payload["conductor_zone_enabled"] = "conductor_zone" in payload["enabled_error_types"]
+        # A pair's finding, never a type of the cell analysis: kept apart from the run's types.
+        payload["network_only_enabled"] = AGREEMENT_REASON in set(self._selected_grid_error_types())
         if tester_build():
             return payload
         calibration = getattr(self, "_grid_calibration_confirmed", None)
@@ -626,8 +662,11 @@ class KarakalPresenter(QObject):
                 blocker = QSignalBlocker(checkbox)
                 if str(error_type) == "conductor_zone":
                     checkbox.setChecked(bool(values.get("conductor_zone_enabled", False)))
+                elif str(error_type) == AGREEMENT_REASON:
+                    self._network_only_user_wants = bool(values.get("network_only_enabled", True))
+                    checkbox.setChecked(self._network_only_user_wants)
                 else:
-                    checkbox.setChecked(str(error_type) in enabled_error_types or str(error_type) == AGREEMENT_REASON)
+                    checkbox.setChecked(str(error_type) in enabled_error_types)
                 del blocker
         raw_types = values.get("enabled_error_types")
         if raw_types is not None:
@@ -642,11 +681,20 @@ class KarakalPresenter(QObject):
                 self._apply_grid_debris_min_area(int(values["debris_min_area_px"]))
             except (TypeError, ValueError):
                 pass
-        if values.get("sparse_reach_sites") is not None:
-            try:
-                self._apply_grid_sparse_reach(int(values["sparse_reach_sites"]))
-            except (TypeError, ValueError):
-                pass
+        try:
+            if "sparse_reach_auto" in values:
+                self._apply_grid_sparse_reach(
+                    bool(values["sparse_reach_auto"]),
+                    (float(values.get("sparse_reach_x", DEFAULT_SPARSE_REACH_SITES)), float(values.get("sparse_reach_y", DEFAULT_SPARSE_REACH_SITES))),
+                )
+            elif values.get("sparse_reach_sites") is not None:
+                # 0.4.9803-0.4.9804: one distance for both axes.
+                value = float(values["sparse_reach_sites"])
+                self._apply_grid_sparse_reach(value == DEFAULT_SPARSE_REACH_SITES, (value, value))
+            if values.get("sparse_free_sides") is not None:
+                self._apply_grid_sparse_free_sides(int(values["sparse_free_sides"]))
+        except (TypeError, ValueError):
+            pass
         if values.get("conflict_min_area_px") is not None or values.get("conflict_min_cell_share") is not None:
             try:
                 self._apply_pair_conflict_thresholds(
@@ -1060,6 +1108,27 @@ class KarakalPresenter(QObject):
         cache[str(key)] = (thresholds, raw, filtered)
         return filtered
 
+    def _pair_filter_shown(self, key: str) -> bool:
+        """Whether a pair's findings are shown: its filter (1∩0 or «Only one network found») is on."""
+
+        error_type = AGREEMENT_REASON if is_agreement_key(key) else "class_conflict"
+        try:
+            return error_type in set(self._selected_grid_error_types())
+        except Exception:
+            return True
+
+    def _shown_pair_findings(self, state: ExtendMatrixTabState, key: str, *, changed_keys: set[str] | None = None) -> dict[str, object]:
+        """Findings of a pair as the matrix, the error list and the export show them: none while
+        the pair's filter is off (the pair matrix still counts them)."""
+
+        filtered = self._filtered_pair_conflicts(state, key, changed_keys=changed_keys)
+        if self._pair_filter_shown(key):
+            return filtered
+        return {
+            frame: _recount_pair(result, []) if isinstance(result, GridFrameAnalysisResult) else result
+            for frame, result in filtered.items()
+        }
+
     def _layer_conflict_marks(
         self,
         state: ExtendMatrixTabState,
@@ -1265,6 +1334,7 @@ class KarakalPresenter(QObject):
         if not streaming:
             for view in views.values():
                 view.finalize_grid_inspection_payloads()
+            self._refresh_grid_sparse_reach_hint(state)
         if self._current_app_mode() == "grid_inspection" and hasattr(self, "grid_inspection_matrix_view"):
             self.grid_inspection_matrix_view.viewport().update()
         self._refresh_grid_inspection_errors_panel(state)
@@ -1273,7 +1343,7 @@ class KarakalPresenter(QObject):
     def _apply_grid_pair_view(self, state: ExtendMatrixTabState, *, streaming: bool) -> None:
         """The matrix of a ones/zeros pair: its common frames, coloured by their conflicts."""
 
-        conflicts = dict(self._filtered_pair_conflicts(state, self._grid_inspection_matrix_selection(state)))
+        conflicts = dict(self._shown_pair_findings(state, self._grid_inspection_matrix_selection(state)))
         layers: dict[str, dict[str, object]] = {key: {} for key in self._grid_inspection_layer_keys()}
         # The conflicts stand in for the shown layer: lists, frame window and export read it.
         layers["binary"] = conflicts
@@ -1299,7 +1369,7 @@ class KarakalPresenter(QObject):
         views = self._grid_inspection_views()
         touched = False
         for key, frame_keys in changed.items():
-            filtered = self._filtered_pair_conflicts(state, key, changed_keys=frame_keys)
+            filtered = self._shown_pair_findings(state, key, changed_keys=frame_keys)
             pair = None if is_agreement_key(key) else parse_pair_key(key)
             if selection == key:
                 if not state.grid_inspection_payload_by_key:
@@ -2087,6 +2157,8 @@ class KarakalPresenter(QObject):
             self.pair_matrix_group.setChecked(True)
 
     def _refresh_pair_matrix(self) -> None:
+        # The ticked pairs decide which pair filters can be switched (1∩0, «Only one network found»).
+        self._sync_pair_filter_checks()
         if not hasattr(self, "pair_matrix_table"):
             return
         if self._analysis_profile == AnalysisProfileKind.GRID_DEFECTS:
@@ -5533,11 +5605,9 @@ class KarakalPresenter(QObject):
         self._later(50, lambda s=state: self._finish_grid_inspection_summary_refresh(s))
 
     def _grid_inspection_error_type(self, status: str, reasons: tuple[str, ...]) -> str:
-        reason_set = {str(reason) for reason in reasons}
-        for _label_key, reason in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
-            if reason in reason_set:
-                return reason
-        return str(status or "broken")
+        from ..ui.ui_constants import grid_display_error_type
+
+        return grid_display_error_type(reasons) or str(status or "broken")
 
     def _grid_inspection_error_type_label(self, error_type: str) -> str:
         labels = {str(value): self._t(label_key) for label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
@@ -6466,7 +6536,8 @@ class KarakalPresenter(QObject):
                 requested_layers=base_layers or ("confidence", "binary"),
                 conflict_pairs=conflict_pairs,
                 frames_per_row=self._grid_sparse_frames_per_row(state, multi_model_ids),
-                sparse_reach_sites=self._grid_sparse_reach_sites,
+                sparse_reach_sites=self._grid_sparse_reach_effective(),
+                sparse_free_sides=self._grid_sparse_free_sides,
             )
         elif has_selected_sources and model_id:
             base_layers = tuple(requested_layers)
@@ -6478,7 +6549,8 @@ class KarakalPresenter(QObject):
                 performance_config=self._view.performance_config,
                 requested_layers=base_layers or ("confidence", "binary"),
                 frames_per_row=self._grid_sparse_frames_per_row(state, (model_id,)).get(str(model_id), 0),
-                sparse_reach_sites=self._grid_sparse_reach_sites,
+                sparse_reach_sites=self._grid_sparse_reach_effective(),
+                sparse_free_sides=self._grid_sparse_free_sides,
             )
         else:
             self._worker = GridInspectionWorker(
@@ -6492,7 +6564,8 @@ class KarakalPresenter(QObject):
                     if model_id
                     else int(getattr(state.layout_config, "frames_per_row", 0) or 0)
                 ),
-                sparse_reach_sites=self._grid_sparse_reach_sites,
+                sparse_reach_sites=self._grid_sparse_reach_effective(),
+                sparse_free_sides=self._grid_sparse_free_sides,
             )
         self._launch_grid_inspection_worker(state)
         dirt = getattr(self, "_dirt_controller", None)
@@ -6673,23 +6746,47 @@ class KarakalPresenter(QObject):
         )
 
     def _sync_class_conflict_controls(self, state) -> None:
-        checks = getattr(self, "grid_error_type_checks", {}) or {}
-        checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
-        # Always switchable, before a run too: the pair is computed in the same run as its layers.
-        self._sync_class_conflict_checkbox(checkbox, available=True)
-        if checkbox is not None and not self._grid_conflict_pairs():
-            # No ones/zeros pair among the layers: say what makes one.
-            checkbox.setToolTip(self._class_conflict_tooltip())
+        self._sync_pair_filter_checks()
         for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
             self._sync_class_conflict_for_dialog(dialog, state)
 
+    def _sync_pair_filter_checks(self) -> None:
+        """«Conflict 1∩0» is switchable when a ones/zeros pair is ticked in the pair matrix, «Only one
+        network found» when a pair of one cell class is; both with mixed layers, neither with one.
+        Before a run too: the pairs are computed in the same run as their layers."""
+
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        if not isinstance(checks, dict):
+            return
+        pairs = self._grid_pairs_to_compute() if hasattr(self, "_grid_pairs_to_compute") else ()
+        available = {
+            "class_conflict": any(not pair.is_agreement for pair in pairs),
+            AGREEMENT_REASON: any(pair.is_agreement for pair in pairs),
+        }
+        tooltips = {
+            "class_conflict": self._t("grid_error.class_conflict_unavailable"),
+            AGREEMENT_REASON: self._t("grid_error.network_only_unavailable"),
+        }
+        for error_type, wish in PAIR_FILTER_WISHES.items():
+            checkbox = checks.get(error_type)
+            if checkbox is None:
+                continue
+            apply_class_conflict_checkbox(
+                checkbox,
+                available=available[error_type],
+                user_wants=bool(getattr(self, wish, True)),
+                tooltip=tooltips[error_type],
+            )
     def _on_class_conflict_checkbox_toggled(self, checked: bool) -> None:
         checks = getattr(self, "grid_error_type_checks", {}) or {}
         checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
-        if checkbox is None or not checkbox.isEnabled():
+        if checkbox is None or not _own_enabled(checkbox):
             return
         self._class_conflict_user_wants = bool(checked)
         state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        if self._shown_grid_pair(state) is not None:
+            # A shown ones/zeros pair hides or shows its own conflicts.
+            self._apply_grid_inspection_active_layer_view(state, streaming=False)
         self._rebuild_unified_grid_view(state)
         for dialog in list(getattr(self, "_details_dialogs", ()) or ()):
             self._sync_class_conflict_for_dialog(dialog, state)
@@ -6780,6 +6877,9 @@ class KarakalPresenter(QObject):
     def _rebuild_unified_grid_view(self, state) -> None:
         if state is None:
             return
+        if self._shown_grid_pair(state) is not None:
+            # A shown pair's findings are the matrix's own data (_apply_grid_pair_view).
+            return
         layers = getattr(state, "grid_inspection_payloads_by_layer", {}) or {}
         if not layers:
             return
@@ -6851,8 +6951,15 @@ class KarakalPresenter(QObject):
             live.get("conductor_zone_enabled")
         ):
             return True
-        # Sparse cells are marked over the whole layer: another distance needs the run again.
-        if "sparse_reach_sites" in stored and int(stored["sparse_reach_sites"]) != int(live.get("sparse_reach_sites", 0)):
+        # Sparse cells are marked over the whole layer: another search window needs the run again.
+        if ("sparse_reach_auto" in stored or "sparse_reach_sites" in stored) and (
+            self._sparse_reach_from_payload(stored) != self._sparse_reach_from_payload(live)
+        ):
+            return True
+        # Runs before the free sides were a setting searched along the axes: they ask for a run too.
+        if "sparse_reach_auto" in stored and normalize_free_sides(
+            stored.get("sparse_free_sides", 4)
+        ) != normalize_free_sides(live.get("sparse_free_sides", DEFAULT_SPARSE_FREE_SIDES)):
             return True
         run_types = stored.get("enabled_error_types")
         return not can_narrow(
@@ -7241,21 +7348,109 @@ class KarakalPresenter(QObject):
         self.profilesChanged.emit()
         return path
 
-    def _apply_grid_sparse_reach(self, value: int) -> None:
-        low, high = SPARSE_REACH_RANGE
-        self._grid_sparse_reach_sites = max(int(low), min(int(high), int(value)))
-        control = getattr(self._view, "grid_sparse_reach_spin", None)
-        if control is not None and control.value() != self._grid_sparse_reach_sites:
-            blocker = QSignalBlocker(control)
-            control.setValue(self._grid_sparse_reach_sites)
+    @staticmethod
+    def _sparse_reach_from_payload(payload: dict | None) -> tuple[float, float]:
+        """The (X, Y) search window, in pitches, a stored or live settings payload stands for."""
+
+        values = dict(payload or {})
+        if "sparse_reach_auto" in values:
+            if bool(values["sparse_reach_auto"]):
+                return normalize_reach(DEFAULT_SPARSE_REACH_SITES)
+            return normalize_reach(
+                (values.get("sparse_reach_x", DEFAULT_SPARSE_REACH_SITES), values.get("sparse_reach_y", DEFAULT_SPARSE_REACH_SITES))
+            )
+        return normalize_reach(values.get("sparse_reach_sites", DEFAULT_SPARSE_REACH_SITES))
+
+    def _grid_sparse_reach_effective(self) -> tuple[float, float]:
+        if bool(getattr(self, "_grid_sparse_reach_auto", True)):
+            return normalize_reach(DEFAULT_SPARSE_REACH_SITES)
+        return normalize_reach(getattr(self, "_grid_sparse_reach", DEFAULT_SPARSE_REACH_SITES))
+
+    def _apply_grid_sparse_reach(self, auto: bool, reach=None) -> None:
+        """«Auto» or the operator's X and Y (pitches) of the sparse cell search, shown on the panel."""
+
+        self._grid_sparse_reach_auto = bool(auto)
+        if reach is not None:
+            self._grid_sparse_reach = normalize_reach(reach)
+        view = self._view
+        check = getattr(view, "grid_sparse_reach_auto_check", None)
+        if check is not None and check.isChecked() != self._grid_sparse_reach_auto:
+            blocker = QSignalBlocker(check)
+            check.setChecked(self._grid_sparse_reach_auto)
+            del blocker
+        shown = self._grid_sparse_reach_effective()
+        for name, value in (("grid_sparse_reach_x_spin", shown[0]), ("grid_sparse_reach_y_spin", shown[1])):
+            spin = getattr(view, name, None)
+            if spin is None:
+                continue
+            blocker = QSignalBlocker(spin)
+            spin.setValue(float(value))
+            del blocker
+            spin.setEnabled(not self._grid_sparse_reach_auto)
+        self._refresh_grid_sparse_reach_hint()
+
+    def _apply_grid_sparse_free_sides(self, value: int) -> None:
+        self._grid_sparse_free_sides = normalize_free_sides(value)
+        spin = getattr(self._view, "grid_sparse_free_spin", None)
+        if spin is not None and spin.value() != self._grid_sparse_free_sides:
+            blocker = QSignalBlocker(spin)
+            spin.setValue(self._grid_sparse_free_sides)
             del blocker
 
-    def _on_grid_sparse_reach_changed(self, value: int) -> None:
-        """Another distance marks other cells: the run is recounted (frames come from the cache)."""
+    def _on_grid_sparse_free_sides_changed(self, value: int) -> None:
+        """Another number of free sides marks other cells: the run is recounted from the cache."""
 
-        self._apply_grid_sparse_reach(int(value))
+        self._apply_grid_sparse_free_sides(int(value))
         self._persist_state()
         self._grid_types_refresh_timer.start()
+
+    def _on_grid_sparse_reach_changed(self, *_args) -> None:
+        """Another search window marks other cells: the run is recounted (frames come from the cache)."""
+
+        view = self._view
+        check = getattr(view, "grid_sparse_reach_auto_check", None)
+        auto = bool(check.isChecked()) if check is not None else True
+        x_spin = getattr(view, "grid_sparse_reach_x_spin", None)
+        y_spin = getattr(view, "grid_sparse_reach_y_spin", None)
+        reach = None
+        if not auto and x_spin is not None and y_spin is not None and self._grid_sparse_reach_auto == auto:
+            reach = (float(x_spin.value()), float(y_spin.value()))
+        self._apply_grid_sparse_reach(auto, reach)
+        self._persist_state()
+        self._grid_types_refresh_timer.start()
+
+    def _refresh_grid_sparse_reach_hint(self, state=None) -> None:
+        """Under the X and Y: the shown run's lattice pitch and the window it makes, in pixels."""
+
+        label = getattr(self._view, "grid_sparse_reach_hint", None)
+        if label is None:
+            return
+        if state is None:
+            state = self._current_tab_state() if hasattr(self, "matrix_tabs") else None
+        pitch = None
+        if state is not None:
+            model_id = str(self._grid_inspection_model_id_for_state(state) or "")
+            known = getattr(state, "grid_inspection_sparse_pitch", {}) or {}
+            pitch = known.get(model_id) or next(iter(known.values()), None)
+            if pitch is None and getattr(state, "grid_inspection_results_ready", False):
+                pitch = run_pitch(getattr(state, "grid_inspection_payload_by_key", {}) or {})
+                if pitch is not None:
+                    known = dict(known)
+                    known[model_id] = pitch
+                    state.grid_inspection_sparse_pitch = known
+        if pitch is None:
+            label.setText(self._t("grid_tuning.sparse_reach_no_pitch"))
+            return
+        reach = self._grid_sparse_reach_effective()
+        label.setText(
+            self._t(
+                "grid_tuning.sparse_reach_pitch",
+                px=f"{pitch[0]:.1f}",
+                py=f"{pitch[1]:.1f}",
+                wx=f"{reach[0] * pitch[0]:.0f}",
+                wy=f"{reach[1] * pitch[1]:.0f}",
+            )
+        )
 
     def _grid_sparse_frames_per_row(self, state, model_ids) -> dict[str, int]:
         """Frames per row of each layer as its matrix lays them: the neighbour frames of sparse cells."""
@@ -7274,6 +7469,10 @@ class KarakalPresenter(QObject):
         self._apply_grid_view_settings(refresh_details=True)
 
     def _on_grid_error_types_changed(self, *_args) -> None:
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        network_only = checks.get(AGREEMENT_REASON) if isinstance(checks, dict) else None
+        if network_only is not None and _own_enabled(network_only):
+            self._network_only_user_wants = bool(network_only.isChecked())
         self._grid_types_refresh_timer.start()
 
     def _apply_grid_view_settings(self, *, refresh_details: bool = False) -> None:
@@ -7283,6 +7482,9 @@ class KarakalPresenter(QObject):
             self._update_grid_calibration_status()
             return
         state = self._current_tab_state()
+        if state is not None and self._shown_grid_pair(state) is not None:
+            # A shown pair follows its filter (1∩0 or «Only one network found») at once.
+            self._apply_grid_inspection_active_layer_view(state, streaming=False)
         if state is not None and bool(getattr(state, "grid_inspection_results_ready", False)):
             self._rebuild_unified_grid_view(state)
             self._refresh_grid_inspection_errors_panel(state)
@@ -7840,6 +8042,11 @@ class KarakalPresenter(QObject):
                 view.finalize_grid_inspection_payloads()
             self._sync_action_buttons()
             return
+        sparse_info = dict(getattr(self._worker, "sparse_info", {}) or {}) if self._worker is not None else {}
+        pitches = {str(key): tuple(info["pitch"]) for key, info in sparse_info.items() if info.get("pitch")}
+        if pitches:
+            state.grid_inspection_sparse_pitch = pitches
+        self._refresh_grid_sparse_reach_hint(state)
         confirmed = getattr(self, "_grid_calibration_confirmed", None)
         if confirmed is not None and hasattr(confirmed, "fingerprint"):
             self._grid_analyzed_fingerprint = confirmed.fingerprint()
@@ -8582,7 +8789,7 @@ class KarakalPresenter(QObject):
         pair = parse_pair_key(getattr(state, "grid_inspection_matrix_selection", ""))
         if pair is not None:
             # Conflicts depend on the two masks only, not on the cell analysis settings.
-            stored = self._filtered_pair_conflicts(state, self._grid_inspection_matrix_selection(state))
+            stored = self._shown_pair_findings(state, self._grid_inspection_matrix_selection(state))
             return stored.get(str(getattr(record, "key", "") or ""))
         if str(getattr(state, "grid_inspection_algorithm_version", "") or "") != GRID_DAMAGE_ALGORITHM_VERSION:
             return None

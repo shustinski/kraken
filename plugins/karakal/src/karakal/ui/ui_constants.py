@@ -117,6 +117,64 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.network_only", "network_only"),
     ("grid_error.conductor_zone", "conductor_zone"),
 )
+# A cell with several findings is shown (colour, type in the error list) by the first of them in this
+# order. A sparse cell comes first: a lone cell is mostly of a wrong shape too (cut, short), and it is
+# its loneliness that makes it suspicious; the other finding stays a reason of it, shown when the
+# sparse type is switched off.
+GRID_ERROR_DISPLAY_FIRST = ("sparse_cell",)
+
+
+def grid_error_display_order() -> tuple[str, ...]:
+    rest = tuple(str(value) for _label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS if value not in GRID_ERROR_DISPLAY_FIRST)
+    return GRID_ERROR_DISPLAY_FIRST + rest
+
+
+def grid_display_error_type(reasons, enabled=None) -> str | None:
+    """The type a cell with these reasons is shown as; ``enabled``: only these types count."""
+
+    present = {str(reason) for reason in reasons or ()}
+    for error_type in grid_error_display_order():
+        if error_type in present and (enabled is None or error_type in enabled):
+            return error_type
+    return None
+
+
+# Drawn as a thick frame, not a fill: a cell that is also broken keeps the fill of its other finding,
+# so a picture read pixel by pixel holds the colours of both (and a sparse cell alone only a frame).
+GRID_ERROR_FRAME_TYPES = ("sparse_cell",)
+
+
+def sparse_frame_width(width: float, height: float) -> int:
+    """Width of the frame of a sparse cell, in image pixels: thick, inside the cell's box."""
+
+    return int(max(3, min(6, round(min(float(width), float(height)) / 6.0))))
+
+
+def grid_fill_and_frame(reasons, enabled=None) -> tuple[str | None, str | None]:
+    """(type that fills the cell, type drawn as its frame); None when there is none of the kind.
+
+    The fill is the first finding of the filter's order that is not a frame type; ``enabled``: only
+    these types count.
+    """
+
+    present = {str(reason) for reason in reasons or ()}
+    if enabled is not None:
+        present &= {str(item) for item in enabled}
+    frame = next((kind for kind in GRID_ERROR_FRAME_TYPES if kind in present), None)
+    fill = next(
+        (
+            str(value)
+            for _label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS
+            if str(value) in present and str(value) not in GRID_ERROR_FRAME_TYPES
+        ),
+        None,
+    )
+    if fill is None:
+        # A reason of older runs outside the filter (filled cells of the lattice analysis) still fills.
+        fill = next((reason for reason in sorted(present) if reason not in GRID_ERROR_FRAME_TYPES), None)
+    return fill, frame
+
+
 # Types whose checkbox has a "grid_error.<type>_hint" tooltip.
 GRID_ERROR_TYPE_HINTS = frozenset({"small_artifact", "sparse_cell", "conductor_zone"})
 # Debris, geometry and merge keep their colours from the first versions; the sparse cell is bright

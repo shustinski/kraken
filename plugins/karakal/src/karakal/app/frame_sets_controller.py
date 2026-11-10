@@ -646,7 +646,7 @@ class FrameSetsController(QObject):
 
     def _results_for_model(self, state, model_id: str, single: bool) -> dict[str, object]:
         if parse_pair_key(model_id) is not None:
-            return dict(self._p._filtered_pair_conflicts(state, model_id))
+            return dict(self._p._shown_pair_findings(state, model_id))
         layer = self._p._grid_export_analysis_layer(state)
         model_layers = dict((getattr(state, "grid_inspection_payloads_by_model", {}) or {}).get(model_id) or {})
         results = dict(model_layers.get(layer) or model_layers.get("binary") or {})

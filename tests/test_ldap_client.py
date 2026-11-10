@@ -167,6 +167,75 @@ def test_display_name_falls_back_to_cn_then_username() -> None:
     assert identity.display_name == "someone"
 
 
+class _FakeStrategy:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    def close(self) -> None:
+        self.calls.append("strategy.close")
+
+
+class _FakeLdap3Connection:
+    def __init__(self, calls: list[str], *, bind_result: bool = True, start_tls_result: bool = True) -> None:
+        self.calls = calls
+        self.bind_result = bind_result
+        self.start_tls_result = start_tls_result
+        self.strategy = _FakeStrategy(calls)
+
+    def start_tls(self, read_server_info: bool = False) -> bool:
+        self.calls.append("start_tls")
+        return self.start_tls_result
+
+    def bind(self, read_server_info: bool = False) -> bool:
+        self.calls.append("bind")
+        return self.bind_result
+
+    def unbind(self) -> None:
+        self.calls.append("unbind")
+
+
+def test_ldap3_transport_tears_down_when_service_bind_rejected(monkeypatch) -> None:
+    pytest.importorskip("ldap3")
+    import ldap3
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ldap3, "Connection", lambda server, **kwargs: _FakeLdap3Connection(calls, bind_result=False)
+    )
+    transport = Ldap3Transport(
+        "ldap://dc:389",
+        base_dn="DC=ad,DC=inme",
+        bind_dn="CN=kraken-svc,DC=ad,DC=inme",
+        bind_password="svc-password",
+        allow_insecure=True,
+    )
+    with pytest.raises(LdapAuthenticationError):
+        transport.connect()
+    assert transport._connection is None
+    assert "unbind" in calls and "strategy.close" in calls
+
+
+def test_ldap3_transport_tears_down_when_starttls_fails(monkeypatch) -> None:
+    pytest.importorskip("ldap3")
+    import ldap3
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ldap3, "Connection", lambda server, **kwargs: _FakeLdap3Connection(calls, start_tls_result=False)
+    )
+    transport = Ldap3Transport(
+        "ldap://dc:389",
+        base_dn="DC=ad,DC=inme",
+        bind_dn="CN=kraken-svc,DC=ad,DC=inme",
+        bind_password="svc-password",
+        start_tls=True,
+    )
+    with pytest.raises(LdapUnavailable):
+        transport.connect()
+    assert transport._connection is None
+    assert "unbind" in calls and "strategy.close" in calls
+
+
 def test_ldap3_transport_constructs_without_network() -> None:
     pytest.importorskip("ldap3")
     transport = Ldap3Transport(

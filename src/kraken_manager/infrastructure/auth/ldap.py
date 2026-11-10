@@ -217,6 +217,11 @@ class Ldap3Transport:
         except (LDAPBindError, LDAPCommunicationError, LDAPResponseTimeoutError, LDAPStartTLSError, OSError) as exc:
             self._teardown()
             raise LdapUnavailable("LDAP server is unavailable") from exc
+        except (LdapAuthenticationError, LdapUnavailable):
+            # Bind/StartTLS reported failure via return value: release the
+            # connection before the typed error reaches the client.
+            self._teardown()
+            raise
 
     def search_user(self, search_filter: str) -> tuple[str, dict[str, Any]] | None:
         from ldap3.core.exceptions import (

@@ -221,8 +221,10 @@ Owner decisions (conversation of 2026-11-09):
 - **Delete/archive project that has a tab** (existing delete/archive/restore flows):
   close its tab with the same semantics as a tab close before proceeding; restore
   re-enables re-opening (no tab is auto-recreated).
-- **Window title:** active project name when a project tab is active, else "Kraken"
-  (current behavior).
+- **Window title:** shows the active project's name when a project tab is
+  active. When a section page is showing, the title is NOT reset — it retains
+  the last active project's name (existing behavior, kept as-is by decision
+  2026-11-10).
 - **Menus:** Управление / Действия / Вид (cell-visual submenus) are enabled exactly
   when the current page is a project workspace — the condition becomes
   "current page key starts with `project:`" (replacing `== "workspace"`). The

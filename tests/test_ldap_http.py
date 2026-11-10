@@ -124,6 +124,26 @@ def test_ldap_token_passes_mutation_gate(database):
     assert created.status_code == 201, created.text
 
 
+def test_ldap_session_reports_granted_global_roles(database):
+    """An LDAP principal's system roles come from the identity catalog (uuid5 id)."""
+    services, accounts, _owner, _config = database
+    fake = FakeLdap({"role.user": _ldap_identity("role.user", display="Role User")})
+    broker = make_broker(accounts, services.identities, fake, PostgresPerformerStore(services.engine))
+    resolver = HybridSessionResolver(accounts, services.identities, None,
+                                     performers=PostgresPerformerStore(services.engine))
+    client = TestClient(create_app(services=services, account_store=accounts,
+                                   session_resolver=resolver, project_access_mode="acl",
+                                   domain_auth=broker))
+    login = client.post("/api/v1/auth/sessions", json={"username": "role.user", "password": "pw"})
+    assert login.status_code == 200, login.text
+    token = login.json()["access_token"]
+    account = accounts.get_by_username("role.user")
+    accounts.grant_global_role(account.account_id, "server_admin")
+    me = client.get("/api/v1/session", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200, me.text
+    assert "server_admin" in me.json()["system_roles"]
+
+
 def test_existing_session_survives_ad_outage(database):
     services, accounts, _owner, _config = database
     fake = FakeLdap({"outage.user": _ldap_identity("outage.user", display="Outage User")})

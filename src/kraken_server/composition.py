@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
@@ -156,6 +157,12 @@ class HybridSessionResolver:
         """
         principal = self.identities.get_by_external_key(f"ldap:{account.username.casefold()}")
         if principal is not None:
+            live_roles = frozenset(SystemRole(role) for role in self.accounts.global_roles_for(account.account_id))
+            if live_roles != principal.system_roles:
+                # Roles are granted/revoked on the account row; keep the catalog
+                # principal in sync (only on change) so the session and the
+                # principals list report the live role set without a re-login.
+                self.identities.save(replace(principal, system_roles=live_roles))
             return principal
         if self.ldap_issuer is None:
             logger.error(
@@ -196,11 +203,16 @@ class HybridSessionResolver:
             # The domain user already owns this login: the local principal keeps
             # working but does not claim it (no lockout, no IntegrityError).
             login = None
-            self.accounts.record_audit(
-                action="login_claim_conflict_local_skipped",
-                target_account_id=account.account_id,
-                details={"login": account.username, "holder": str(holder.id)},
-            )
+            existing = self.identities.get(PrincipalId(account.account_id))
+            if existing is None or existing.login is not None:
+                # The audit marks the transition (first claim yield). This runs on
+                # every session resolution; re-resolving an already yielded
+                # principal (login already NULL) must not grow the audit log.
+                self.accounts.record_audit(
+                    action="login_claim_conflict_local_skipped",
+                    target_account_id=account.account_id,
+                    details={"login": account.username, "holder": str(holder.id)},
+                )
         principal = Principal(
             id=PrincipalId(account.account_id),
             provider=PrincipalProvider.LOCAL,
@@ -402,24 +414,35 @@ def postgresql_composition() -> dict[str, Any]:
     ldap_url = os.environ.get("KRAKEN_LDAP_URL", "").strip()
     domain_auth = None
     if ldap_url:
+        if importlib.util.find_spec("ldap3") is None:
+            # Fail at deploy time with a clear message, not at first login with a 500.
+            raise RuntimeError("LDAP is configured (KRAKEN_LDAP_URL) but the ldap3 package is not installed")
         from kraken_manager.infrastructure.auth.ldap import DEFAULT_USER_FILTER, LdapClient
         from kraken_server.configuration import unprotect_secret
 
-        bind_secret_file = Path(os.environ.get("KRAKEN_LDAP_BIND_SECRET_FILE", ""))
+        bind_secret_file = Path(os.environ.get("KRAKEN_LDAP_BIND_SECRET_FILE", "").strip())
         if not bind_secret_file.is_file():
-            raise RuntimeError("KRAKEN_LDAP_BIND_SECRET_FILE is configured but the secret file is missing")
-        ldap_client = LdapClient(
-            ldap_url,
-            base_dn=os.environ["KRAKEN_LDAP_BASE_DN"],
-            bind_dn=os.environ["KRAKEN_LDAP_BIND_DN"],
-            bind_password=unprotect_secret(bind_secret_file),
-            user_filter=os.environ.get("KRAKEN_LDAP_USER_FILTER", "").strip() or DEFAULT_USER_FILTER,
-            start_tls=os.environ.get("KRAKEN_LDAP_START_TLS") == "1",
-            allow_insecure=os.environ.get("KRAKEN_LDAP_ALLOW_INSECURE") == "1",
-            ca_file=os.environ.get("KRAKEN_LDAP_CA_FILE") or None,
-            timeout=float(os.environ.get("KRAKEN_LDAP_TIMEOUT", "5")),
-        )
-        domain_auth = DomainAuthBroker(accounts, identities, ldap_client, performers=performers)
+            # Spec §1: LDAP is enabled only when the URL, the bind DN and the bind
+            # secret are ALL present. A partial configuration must not kill server
+            # startup: domain authentication stays off and the login path behaves
+            # exactly as today.
+            logger.warning(
+                "LDAP identity is configured (KRAKEN_LDAP_URL) but the bind secret file "
+                "is missing or absent — domain authentication is disabled"
+            )
+        else:
+            ldap_client = LdapClient(
+                ldap_url,
+                base_dn=os.environ["KRAKEN_LDAP_BASE_DN"],
+                bind_dn=os.environ["KRAKEN_LDAP_BIND_DN"],
+                bind_password=unprotect_secret(bind_secret_file),
+                user_filter=os.environ.get("KRAKEN_LDAP_USER_FILTER", "").strip() or DEFAULT_USER_FILTER,
+                start_tls=os.environ.get("KRAKEN_LDAP_START_TLS") == "1",
+                allow_insecure=os.environ.get("KRAKEN_LDAP_ALLOW_INSECURE") == "1",
+                ca_file=os.environ.get("KRAKEN_LDAP_CA_FILE") or None,
+                timeout=float(os.environ.get("KRAKEN_LDAP_TIMEOUT", "5")),
+            )
+            domain_auth = DomainAuthBroker(accounts, identities, ldap_client, performers=performers)
     lan_gate = None
     cidrs = json.loads(os.environ.get("KRAKEN_LAN_CIDRS", "[]"))
     if cidrs:
@@ -437,7 +460,9 @@ def postgresql_composition() -> dict[str, Any]:
             timeout=float(os.environ.get("KRAKEN_GITLAB_TIMEOUT", "5")),
         )
     federated_cache = PostgresFederatedSessionCache(engine)
-    resolver = HybridSessionResolver(accounts, identities, oidc, federated_cache, performers)
+    # The issuer (KRAKEN_LDAP_URL) enables the resolver's repair branch for the
+    # data anomaly "LDAP account row without principal" (Task 6 design).
+    resolver = HybridSessionResolver(accounts, identities, oidc, federated_cache, performers, ldap_issuer=ldap_url or None)
     from .outbox import ConnectionHub, OutboxPublisher
 
     hub = ConnectionHub()

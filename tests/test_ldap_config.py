@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +11,8 @@ from unittest.mock import patch
 import pytest
 
 from kraken_server.configuration import ServerConfig, protect_secret, write_config
+
+pytest_plugins = ["tests.test_admin_project_workflows"]
 
 LDAP_VARS = (
     "KRAKEN_LDAP_URL",
@@ -146,3 +149,63 @@ def test_apply_to_environment_sets_and_pops(tmp_path: Path) -> None:
         for name in LDAP_VARS:
             assert name not in os.environ
         assert json.loads(os.environ["KRAKEN_LAN_CIDRS"]) == []
+
+
+def _composition_env(monkeypatch, tmp_path: Path, *, secret_file: Path | None) -> None:
+    """Env for a real postgresql_composition() run on the test schema (database fixture)."""
+    monkeypatch.setenv("KRAKEN_BLOB_ROOT", str(tmp_path / "composition-blobs"))
+    monkeypatch.setenv("KRAKEN_SOURCE_ROOT", str(tmp_path / "source"))
+    monkeypatch.setenv("KRAKEN_DERIVED_ROOT", str(tmp_path / "derived"))
+    monkeypatch.setenv("KRAKEN_LDAP_URL", "ldap://DC.ad.inme:389")
+    monkeypatch.setenv("KRAKEN_LDAP_BASE_DN", "DC=ad,DC=inme")
+    monkeypatch.setenv("KRAKEN_LDAP_BIND_DN", "CN=kraken,CN=Users,DC=ad,DC=inme")
+    if secret_file is None:
+        monkeypatch.delenv("KRAKEN_LDAP_BIND_SECRET_FILE", raising=False)
+    else:
+        monkeypatch.setenv("KRAKEN_LDAP_BIND_SECRET_FILE", str(secret_file))
+
+
+def test_partial_ldap_config_disables_domain_auth_without_failing(database, monkeypatch, tmp_path):
+    """Spec §1: URL + bind DN present but the bind secret file absent — no startup
+    failure, domain_auth stays None and the login path behaves exactly as today."""
+    _composition_env(monkeypatch, tmp_path, secret_file=None)
+    from kraken_server.composition import postgresql_composition
+
+    # A direct handler on the composition logger. Note: the database fixture's
+    # alembic run executes migrations/env.py, whose fileConfig() call disables
+    # every logger that already exists — so re-enable the target logger first;
+    # neither pytest's caplog nor a bare handler sees a disabled logger.
+    captured: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = captured.append
+    logger = logging.getLogger("kraken_server.composition")
+    logger.addHandler(handler)
+    old_level = logger.level
+    old_disabled = logger.disabled
+    logger.setLevel(logging.WARNING)
+    logger.disabled = False
+    try:
+        composed = postgresql_composition()
+    finally:
+        logger.setLevel(old_level)
+        logger.disabled = old_disabled
+        logger.removeHandler(handler)
+    assert composed["domain_auth"] is None
+    assert any("domain authentication is disabled" in record.getMessage() for record in captured)
+
+
+def test_ldap_configured_but_ldap3_missing_fails_startup(database, monkeypatch, tmp_path):
+    """Deploy-time failure with a clear message when ldap3 is absent (not a 500 at login)."""
+    _composition_env(monkeypatch, tmp_path, secret_file=None)
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        return None if name == "ldap3" else real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    from kraken_server.composition import postgresql_composition
+
+    with pytest.raises(RuntimeError, match="ldap3 package is not installed"):
+        postgresql_composition()

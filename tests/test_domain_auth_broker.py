@@ -99,13 +99,18 @@ def test_domain_login_shares_row_with_never_signed_in_local_account(database):
     assert fake.calls == ["shared.user"]  # local sign-in above did not touch AD
     # the LDAP principal holds the claim
     assert services.identities.find_by_login("shared.user").provider is PrincipalProvider.LDAP
-    # the local user's first-login provisioning yields the claim
+    # the local user's first-login provisioning yields the claim; session
+    # resolution re-runs provisioning on EVERY request, so drive it three times
     resolver = HybridSessionResolver(accounts, services.identities, None)
     local_session = accounts.authenticate("shared.user", "localpw")
-    resolver.provision_local_account(local_session.account)
+    for _ in range(3):
+        resolver.provision_local_account(local_session.account)
     local_principal = services.identities.get(PrincipalId(local_session.account.account_id))
     assert local_principal.login is None
-    assert any(r["action"] == "login_claim_conflict_local_skipped" for r in accounts.administration_audit(limit=20))
+    # the audit marks the transition: exactly one row across the repeated calls
+    claims = [r for r in accounts.administration_audit(limit=20)
+              if r["action"] == "login_claim_conflict_local_skipped"]
+    assert len(claims) == 1
 
 
 def test_repeat_domain_login_on_shared_row_keeps_local_user_working(database):

@@ -346,8 +346,11 @@ def build_http_context(
         return subject
 
     def system_roles(subject: SessionPrincipal) -> frozenset[str]:
+        # Only local sessions carry an account id as their principal id; an LDAP
+        # session's principal id is the principal's uuid5, so the catalog is the
+        # source of truth for every non-local provider.
         if (
-            subject.provider in {"local", "ldap"}
+            subject.provider == "local"
             and account_store is not None
             and hasattr(account_store, "global_roles_for")
         ):

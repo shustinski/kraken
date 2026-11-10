@@ -9,9 +9,9 @@ from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteHttpClient
 from kraken_manager.application.plugin_jobs import SubmitPluginJobHandler
 from kraken_manager.domain.project import RepresentationKind
 from kraken_server.app import SessionPrincipal, create_app
-from kraken_server.services import CommandContext
+from kraken_server.services import CommandContext, ValidationError
 
-from test_server_workspace_inputs_parts.server_layer import _server_layer
+from test_server_workspace_inputs_parts.server_layer import _server_layer, _unbound_server_layer
 
 def test_remote_source_preparation_calls_server_and_returns_frames(tmp_path):
     _server, _local, session, project, layer, _binding, representation, _context = _server_layer(tmp_path)
@@ -38,6 +38,37 @@ def test_remote_source_preparation_calls_server_and_returns_frames(tmp_path):
     assert calls[0][0] == "POST"
     assert calls[0][1].endswith(f"/{representation.id}/prepare-inputs")
     assert calls[0][2]["timeout"] == 600
+
+def test_unbound_layer_prepares_frames_from_representation_source(tmp_path):
+    server, local, _session, project, layer, representation, context = _unbound_server_layer(tmp_path)
+    assert local.workspace_files.registry.get_layer(str(project.id), str(layer.id)) is None
+    result = server.materialize_representation_inputs(
+        str(project.id), str(layer.id), str(representation.id), context
+    )
+    assert result == {"prepared_frames": 2}
+    cells = local.frame_cells(project.id, layer.id, representation.id)
+    assert {(cell.x, cell.y) for cell in cells} == {(1, 1), (1, 2)}
+    assert all(cell.sha256 for cell in cells)
+    history = local.history(project.id)
+    assert (
+        server.materialize_representation_inputs(str(project.id), str(layer.id), str(representation.id), context)
+        == result
+    )
+    assert local.history(project.id) == history
+
+def test_unbound_layer_without_source_folder_is_rejected(tmp_path):
+    server, local, session, project, layer, _representation, context = _unbound_server_layer(tmp_path)
+    bare = local.create_representation(
+        principal=session.principal,
+        project=project,
+        layer=layer,
+        name="Без источника",
+        kind=RepresentationKind.IMAGE,
+        idempotency_key="bare",
+        active=True,
+    )
+    with pytest.raises(ValidationError, match="no registered image files"):
+        server.materialize_representation_inputs(str(project.id), str(layer.id), str(bare.id), context)
 
 def test_selecting_linked_server_images_starts_preview_preparation(tmp_path, qapp):
     from kraken_manager.presentation.qt import ProjectManagerShell, ProjectWorkspacePage

@@ -32,6 +32,8 @@ from test_server_workspace_inputs_parts.server_preview_uses import (
 )
 from test_server_workspace_inputs_parts.prepared_server_images import (
     test_remote_source_preparation_calls_server_and_returns_frames,
+    test_unbound_layer_prepares_frames_from_representation_source,
+    test_unbound_layer_without_source_folder_is_rejected,
     test_selecting_linked_server_images_starts_preview_preparation,
     test_source_preparation_api_requires_session_and_passes_registered_ids,
     test_server_contour_actions_require_the_interactive_client_plugin,
@@ -70,6 +72,8 @@ _FACADE_EXPORTS = (
     test_server_source_preparation_preserves_import_permissions,
     test_server_preview_uses_version_id_and_decodes_linked_image,
     test_remote_source_preparation_calls_server_and_returns_frames,
+    test_unbound_layer_prepares_frames_from_representation_source,
+    test_unbound_layer_without_source_folder_is_rejected,
     test_selecting_linked_server_images_starts_preview_preparation,
     test_source_preparation_api_requires_session_and_passes_registered_ids,
     test_server_contour_actions_require_the_interactive_client_plugin,

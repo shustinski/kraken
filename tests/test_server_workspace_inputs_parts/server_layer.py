@@ -80,6 +80,52 @@ def _server_layer(tmp_path: Path, orientation=GridOrientation.Y_DOWN, *, images:
     context = CommandContext(str(session.principal.id), "prepare", None)
     return server, local, session, project, layer, binding, representation, context
 
+def _unbound_server_layer(tmp_path: Path):
+    """A layer created without images: no workspace binding, source folder on the representation."""
+    images = tmp_path / "linked-images"
+    images.mkdir()
+    for number in (0, 2):
+        Image.new("RGB", (16, 12), "red").save(images / f"{number:04d}.jpg")
+    local = EmbeddedProjectService(tmp_path / "data")
+    session = local.create_initial_account("owner", "Owner", "")
+    project = local.create_project(
+        principal=session.principal,
+        name="Server layer",
+        width=2,
+        height=2,
+        orientation=GridOrientation.Y_DOWN,
+        idempotency_key="project",
+    )
+    layer = local.create_layer(
+        principal=session.principal,
+        project=project,
+        name="Metal",
+        layer_type=LayerType.METAL,
+        order=1,
+        idempotency_key="layer",
+    )
+    representation = local.create_representation(
+        principal=session.principal,
+        project=project,
+        layer=layer,
+        name="Исходные изображения",
+        kind=RepresentationKind.IMAGE,
+        idempotency_key="images",
+        source=str(images),
+        active=True,
+    )
+    server = object.__new__(PostgresServerServices)
+    server.projections = local._projection(project.id)
+    server.workspace_files = local.workspace_files
+    server.events = FilesystemEventStore(local.catalog_root, str(project.id))
+    server._actor = lambda _id: session.principal
+    server._create_artifact_series = CreateArtifactSeriesHandler(
+        local._uow(str(project.id)), local.profiles, local.clock
+    )
+    server._add_artifact_version = AddArtifactVersionHandler(local._uow(str(project.id)), local.profiles, local.clock)
+    context = CommandContext(str(session.principal.id), "prepare", None)
+    return server, local, session, project, layer, representation, context
+
 @pytest.mark.parametrize("orientation", list(GridOrientation))
 def test_server_linked_source_has_previews_and_stable_inputs(tmp_path, orientation):
     server, local, _session, project, layer, binding, representation, context = _server_layer(tmp_path, orientation)

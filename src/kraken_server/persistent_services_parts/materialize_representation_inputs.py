@@ -39,21 +39,25 @@ def _input_directory(service, representation, binding, frame_count: int):
     """Directory and frame map for one image representation.
 
     The layer's registered folder is the default. Another image set on the same
-    layer may point at its own folder; that folder is prepared on its own.
+    layer may point at its own folder; that folder is prepared on its own. A
+    layer without a registered folder must point at its own folder.
     """
 
-    registered = ensure_regular_directory(binding.image_directory)
     source = str(representation.source or "").strip()
     if not source or source == "managed-import":
-        return registered, dict(binding.frame_positions)
+        if binding is None or not binding.frame_positions:
+            raise ValueError("The source layer has no registered image files")
+        return ensure_regular_directory(binding.image_directory), dict(binding.frame_positions)
     try:
         candidate = ensure_regular_directory(resolve_storage_path(service, source))
     except (OSError, ValueError):
         raise ValueError(
             "У слоя изображений не указана папка с кадрами. Сохраните изображения в проект."
         ) from None
-    if candidate == registered:
-        return registered, dict(binding.frame_positions)
+    if binding is not None and binding.frame_positions:
+        registered = ensure_regular_directory(binding.image_directory)
+        if candidate == registered:
+            return registered, dict(binding.frame_positions)
     images = tuple(
         path
         for path in candidate.iterdir()
@@ -88,8 +92,6 @@ class MaterializeRepresentationInputsMixin:
                 raise ValueError("The source representation must contain images")
             files = self.workspace_files
             binding = None if files is None else files.registry.get_layer(project_id, layer_id)
-            if binding is None or not binding.frame_positions:
-                raise ValueError("The source layer has no registered image files")
             root, frame_positions = _input_directory(self, representation, binding, project.frame_count)
             application_context = self._application_context(context)
             prepared = 0

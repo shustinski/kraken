@@ -13,6 +13,9 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   02 = «Heuristic check» of chip photos in validation (risk, verdicts, findings on the frame, error
        maps); the pair matrix shown before the run with a tick per pair, pairs of one cell class
        (≠, cells only one network found), the conductor zone off until its box is ticked;
+  03 = sparse cells: a defect type of their own (and a flag on broken cells), the setting of the
+       sparse cell distance; split and unknown pieces shown as broken geometry (out of the filter);
+       the error types of the export picked in the export;
   releases 0.2 and 0.3:
   01 = gradient panel with drop rules, frame sets and set export;
   02 = drop by the colour scale only, no defect sets, set note and badge above the matrix;
@@ -66,7 +69,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.4"
-INTERFACE_NUMBER = 2
+INTERFACE_NUMBER = 3
 BETA = 0
 
 

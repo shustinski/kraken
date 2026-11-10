@@ -23,3 +23,9 @@ class FakeLdap:
 
 def make_broker(accounts, identities, fake, performers):
     return DomainAuthBroker(accounts, identities, fake, performers=performers)
+
+
+def _ldap_identity(username, display="Ivan Petrov", email=None, avatar=None):
+    from kraken_manager.infrastructure.auth.ldap import LdapIdentity
+
+    return LdapIdentity(username, display, email, avatar)

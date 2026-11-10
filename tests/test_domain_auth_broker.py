@@ -9,15 +9,9 @@ from kraken_manager.domain.identity import Principal, PrincipalProvider
 from kraken_manager.infrastructure.auth.ldap import LdapUnavailable
 from kraken_manager.infrastructure.postgres.performer_store import PostgresPerformerStore
 from kraken_server.composition import HybridSessionResolver
-from tests.ldap_fixtures import FakeLdap, make_broker
+from tests.ldap_fixtures import FakeLdap, _ldap_identity, make_broker
 
 pytest_plugins = ["tests.test_admin_project_workflows"]
-
-
-def _ldap_identity(username, display="Ivan Petrov", email=None, avatar=None):
-    from kraken_manager.infrastructure.auth.ldap import LdapIdentity
-
-    return LdapIdentity(username, display, email, avatar)
 
 
 def test_jit_first_domain_login_creates_account_principal_performer(database):

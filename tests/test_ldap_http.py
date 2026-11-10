@@ -17,8 +17,7 @@ from kraken_manager.infrastructure.auth.ldap import LdapUnavailable
 from kraken_manager.infrastructure.postgres.performer_store import PostgresPerformerStore
 from kraken_server.app import create_app
 from kraken_server.composition import HybridSessionResolver
-from tests.ldap_fixtures import FakeLdap, make_broker
-from tests.test_domain_auth_broker import _ldap_identity
+from tests.ldap_fixtures import FakeLdap, _ldap_identity, make_broker
 
 pytest_plugins = ["tests.test_admin_project_workflows"]
 

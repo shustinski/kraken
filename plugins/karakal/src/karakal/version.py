@@ -16,6 +16,9 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
   03 = sparse cells: a defect type of their own (and a flag on broken cells), the setting of the
        sparse cell distance; split and unknown pieces shown as broken geometry (out of the filter);
        the error types of the export picked in the export;
+  04 = the data folder (projects, profiles, exports) with every project of it on the home page,
+       profiles of settings, the folders of a snapshot told by hand (karakal.json), the ones/zeros
+       conflict checkbox switchable before a run and never asking for a new one;
   releases 0.2 and 0.3:
   01 = gradient panel with drop rules, frame sets and set export;
   02 = drop by the colour scale only, no defect sets, set note and badge above the matrix;
@@ -69,7 +72,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.4"
-INTERFACE_NUMBER = 3
+INTERFACE_NUMBER = 4
 BETA = 0
 
 

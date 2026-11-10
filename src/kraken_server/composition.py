@@ -143,6 +143,7 @@ class HybridSessionResolver:
             display_name=account.display_name,
             active=account.enabled,
             system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(account.account_id)),
+            login=account.username,
         )
         self.identities.save(principal)
         if self.performers is not None:

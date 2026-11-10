@@ -42,7 +42,12 @@ def _identity_tables() -> tuple[Any, Any, Any]:
         sa.Column("status_text", sa.Text),
         sa.Column("profile_updated_at", sa.DateTime(timezone=True)),
     )
-    sa.Index("ux_principals_login_key", principals.c.login_key, unique=True, postgresql_where=sa.text("login_key IS NOT NULL"))
+    sa.Index(
+        "ux_principals_login_key",
+        principals.c.login_key,
+        unique=True,
+        postgresql_where=sa.text("login_key IS NOT NULL"),
+    )
     acl = sa.Table(
         "project_acl",
         metadata,

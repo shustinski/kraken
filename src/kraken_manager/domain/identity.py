@@ -24,6 +24,7 @@ from .common import (
 class PrincipalProvider(StrEnum):
     LOCAL = "local"
     GITLAB = "gitlab"
+    LDAP = "ldap"
 
 
 class SystemRole(StrEnum):
@@ -89,6 +90,10 @@ class Principal:
     email: str | None = None
     active: bool = True
     system_roles: frozenset[SystemRole] = frozenset()
+    login: str | None = None
+    avatar_url: str | None = None
+    avatar_source: str | None = None
+    status_text: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "id", PrincipalId(validate_uuid(str(self.id), field="principal.id")))
@@ -102,6 +107,10 @@ class Principal:
             if self.issuer is None:
                 raise DomainValidationError("GitLab principal requires an OIDC issuer")
             object.__setattr__(self, "issuer", require_non_empty(self.issuer, field="principal.issuer", maximum=2048))
+        elif self.provider is PrincipalProvider.LDAP:
+            if self.issuer is None:
+                raise DomainValidationError("LDAP principal requires an issuer")
+            object.__setattr__(self, "issuer", require_non_empty(self.issuer, field="principal.issuer", maximum=2048))
         elif self.issuer is not None:
             raise DomainValidationError("local principal must not have an OIDC issuer")
         if self.email is not None:
@@ -111,6 +120,16 @@ class Principal:
             object.__setattr__(self, "email", email)
         roles = frozenset(SystemRole(role) for role in self.system_roles)
         object.__setattr__(self, "system_roles", roles)
+        if self.login is not None:
+            object.__setattr__(self, "login", require_non_empty(self.login, field="principal.login", maximum=128))
+        if self.avatar_url is not None:
+            object.__setattr__(
+                self, "avatar_url", require_non_empty(self.avatar_url, field="principal.avatar_url", maximum=2048)
+            )
+        if self.avatar_source is not None and self.avatar_source not in ("ldap", "manual"):
+            raise DomainValidationError("principal.avatar_source must be 'ldap' or 'manual'")
+        if self.status_text is not None and len(self.status_text) > 255:
+            raise DomainValidationError("principal.status_text must be at most 255 characters")
 
     @classmethod
     def local(
@@ -120,6 +139,10 @@ class Principal:
         display_name: str,
         principal_id: PrincipalId | str | None = None,
         email: str | None = None,
+        login: str | None = None,
+        avatar_url: str | None = None,
+        avatar_source: str | None = None,
+        status_text: str | None = None,
     ) -> Principal:
         return cls(
             id=PrincipalId(str(principal_id) if principal_id is not None else new_uuid()),
@@ -127,6 +150,10 @@ class Principal:
             subject=subject,
             display_name=display_name,
             email=email,
+            login=login,
+            avatar_url=avatar_url,
+            avatar_source=avatar_source,
+            status_text=status_text,
         )
 
     @classmethod
@@ -148,10 +175,47 @@ class Principal:
             email=email,
         )
 
+    @classmethod
+    def ldap(
+        cls,
+        *,
+        issuer: str,
+        subject: str,
+        display_name: str,
+        principal_id: PrincipalId | str | None = None,
+        email: str | None = None,
+        login: str | None = None,
+        avatar_url: str | None = None,
+        avatar_source: str | None = None,
+        status_text: str | None = None,
+        system_roles: frozenset[SystemRole] | None = None,
+    ) -> Principal:
+        return cls(
+            id=PrincipalId(str(principal_id) if principal_id is not None else new_uuid()),
+            provider=PrincipalProvider.LDAP,
+            issuer=issuer,
+            subject=subject,
+            display_name=display_name,
+            email=email,
+            login=login if login is not None else subject,
+            avatar_url=avatar_url,
+            avatar_source=avatar_source,
+            status_text=status_text,
+            system_roles=system_roles if system_roles is not None else frozenset(),
+        )
+
+    @property
+    def login_key(self) -> str | None:
+        if self.login is None:
+            return None
+        return self.login.casefold()
+
     @property
     def external_key(self) -> str:
         if self.provider is PrincipalProvider.GITLAB:
             return f"gitlab:{self.issuer}:{self.subject}"
+        if self.provider is PrincipalProvider.LDAP:
+            return f"ldap:{self.subject.casefold()}"
         return f"local:{self.subject}"
 
 

@@ -111,6 +111,38 @@ def test_selected_projects_navigation_can_return_from_workspace(qtbot):
     assert shell.current_project_id() is None
 
 
+def test_shell_mouse_click_on_current_project_tab_returns_to_project(qtbot, qapp):
+    shell = ProjectManagerShell()
+    shell.open_project_tab("p-a", "Alpha", QWidget())
+    shell.open_project_tab("p-b", "Beta", QWidget())
+    activated: list = []
+    shell.project_tab_activated.connect(activated.append)
+    shell.show()
+    qapp.processEvents()
+    shell.show_page("statistics")
+    assert shell.current_page_key() == "statistics"
+
+    def click_tab(index: int) -> None:
+        rect = shell.projectTabs.tabRect(index)
+        qtbot.mouseClick(shell.projectTabs, Qt.MouseButton.LeftButton, pos=rect.center())
+
+    # Clicking a different tab still switches normally (Qt's own currentChanged).
+    click_tab(0)
+    assert shell.current_page_key() == "project:p-a"
+    assert shell.current_project_id() == "p-a"
+
+    # Clicking the already-current tab from a section page re-activates the project.
+    shell.show_page("statistics")
+    click_tab(0)
+    assert shell.current_page_key() == "project:p-a"
+    assert shell.current_project_id() == "p-a"
+
+    # An idle click on the current tab while its page is showing does not re-activate.
+    emissions = len(activated)
+    click_tab(0)
+    assert len(activated) == emissions
+
+
 def test_project_catalog_delete_action_emits_selected_project(qapp):
     shell = ProjectManagerShell()
     page = shell.page("projects")
@@ -236,6 +268,7 @@ def test_shell_rename_project_tab_updates_label(qapp):
     shell.open_project_tab("p-a", "Alpha", QWidget())
     shell.rename_project_tab("p-a", "Alfa")
     assert shell.projectTabs.tabText(0) == "Alfa"
+    assert shell.projectTabs.tabToolTip(0) == "Alfa"
 
 
 def test_shell_project_tab_close_button_requests_close(qapp):

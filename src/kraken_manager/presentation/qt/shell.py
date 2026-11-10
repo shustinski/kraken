@@ -127,6 +127,7 @@ class ProjectManagerShell(QMainWindow):
 
         self._register_default_pages()
         self.projectTabs.currentChanged.connect(self._on_project_tab_changed)
+        self.projectTabs.tabBarClicked.connect(self._on_project_tab_clicked)
         self.projectTabs.tabCloseRequested.connect(self._on_project_tab_close_requested)
         self.add_project_button.clicked.connect(self._on_add_project_button_clicked)
         self.show_page("projects")
@@ -480,6 +481,7 @@ class ProjectManagerShell(QMainWindow):
         index = self._tab_index_for_project(project_id)
         if index >= 0:
             self.projectTabs.setTabText(index, str(name))
+            self.projectTabs.setTabToolTip(index, str(name))
 
     def current_project_id(self) -> str | None:
         key = self.current_page_key()
@@ -517,6 +519,18 @@ class ProjectManagerShell(QMainWindow):
         self._sync_chrome_for_current_page()
         self._push_selection_count()
         self.project_tab_activated.emit(project_id)
+
+    def _on_project_tab_clicked(self, index: int) -> None:
+        # Qt's mouse path bypasses _ProjectTabBar.setCurrentIndex, so a click
+        # on the already-current tab never re-emits currentChanged. Re-drive
+        # the activation only when a section page is showing; clicks on a
+        # different tab are handled by Qt's own currentChanged.
+        if (
+            index >= 0
+            and self.projectTabs.currentIndex() == index
+            and not self.current_page_key().startswith("project:")
+        ):
+            self.projectTabs.setCurrentIndex(index)
 
     def _on_project_tab_close_requested(self, index: int) -> None:
         project_id = str(self.projectTabs.tabData(index) or "")

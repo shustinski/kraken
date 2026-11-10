@@ -41,31 +41,18 @@ class PollAgentJobsMixin:
         if not self._sync_timer.isActive():
             self._sync_timer.start(50)
 
-    def _drain_live_wakes(self) -> None:
-        wakes = list(self._pending_wakes.values())
-        self._pending_wakes.clear()
-        catalog_changed = self._pending_catalog_refresh or any(
-            wake.event_type.startswith("Project") or wake.event_type.startswith("project.")
-            for wake in wakes
-        )
-        self._pending_catalog_refresh = False
-        if catalog_changed:
-            self.refresh_projects()
-        if self._project_id is None or self._workspace is None:
+    def _apply_wake_to_active(self, project_id: str) -> None:
+        workspace = self._project_workspaces.get(str(project_id))
+        project = self.service.get_project(project_id)
+        if workspace is None or project is None:
             return
-        relevant = [
-            wake
-            for wake in wakes
-            if wake is not None and wake.project_id == self._project_id
-        ]
-        if catalog_changed or relevant:
-            project = self.service.get_project(self._project_id)
-            if project is None:
-                return
-            self._workspace.set_project_title(project.name)
-            matrix = getattr(self._workspace, "matrix_view", None)
-            if matrix is not None:
-                session = getattr(matrix, "session", None)
+        workspace.set_project_title(project.name)
+        matrix = getattr(workspace, "matrix_view", None)
+        if matrix is not None:
+            session = getattr(matrix, "session", None)
+            if session is not None:
+                if callable(session):
+                    session = session()
                 if session is not None:
                     matrix.set_session(
                         MatrixSession(
@@ -76,10 +63,43 @@ class PollAgentJobsMixin:
                             orientation=project.orientation.value,
                             generation=getattr(session, "generation", 0) + 1,
                         ),
-                        data_source=getattr(self._workspace, "_matrix_data_source", None),
-                        asset_source=getattr(self._workspace, "_matrix_asset_source", None),
+                        data_source=getattr(workspace, "_matrix_data_source", None),
+                        asset_source=getattr(workspace, "_matrix_asset_source", None),
                     )
-            self._load_layers(self._workspace, project)
+        self._load_layers(workspace, project)
+
+    def _apply_retained_wakes(self, project_id: str) -> None:
+        project_id = str(project_id)
+        retained = [wake for key, wake in self._pending_wakes.items() if key[0] == project_id]
+        for key in [key for key in self._pending_wakes if key[0] == project_id]:
+            del self._pending_wakes[key]
+        if retained:
+            self._apply_wake_to_active(project_id)
+
+    def _drain_live_wakes(self) -> None:
+        wakes = list(self._pending_wakes.values())
+        self._pending_wakes.clear()
+        catalog_changed = self._pending_catalog_refresh or any(
+            wake.event_type.startswith("Project") or wake.event_type.startswith("project.")
+            for wake in wakes
+        )
+        self._pending_catalog_refresh = False
+        if catalog_changed:
+            self.refresh_projects()
+        active = self._project_id
+        if active is not None and active in self._project_workspaces:
+            has_wakes = any(wake.project_id == active for wake in wakes)
+            if catalog_changed or has_wakes:
+                self._apply_wake_to_active(active)
+        for wake in wakes:
+            if wake.project_id in self._project_workspaces and wake.project_id != active:
+                self._pending_wakes[
+                    (
+                        wake.project_id,
+                        wake.entity_kind or wake.stream_id,
+                        wake.entity_id or wake.stream_id,
+                    )
+                ] = wake
 
     def _sync_project_permissions(self, item: ProjectListItem | None) -> None:
         permissions = (

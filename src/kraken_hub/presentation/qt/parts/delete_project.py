@@ -60,17 +60,8 @@ class DeleteProjectMixin:
             )
             return
 
-        if self._project_id == str(project.id) and self._workspace is not None:
-            try:
-                self._workspace.matrix_view.clear_thumbnail_cache()
-                self._workspace.matrix_view.close()
-            finally:
-                self._workspace = None
-                self._project_id = None
-                if self._layer_dialog is not None:
-                    self._layer_dialog.hide()
-                    self._layer_dialog.deleteLater()
-                    self._layer_dialog = None
+        if str(project.id) in self._project_workspaces:
+            self._on_project_tab_close_requested(str(project.id))
         try:
             self._clear_configured_thumbnail_cache(str(project.id))
             self.service.delete_project(

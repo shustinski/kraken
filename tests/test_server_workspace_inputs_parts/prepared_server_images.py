@@ -40,7 +40,7 @@ def test_remote_source_preparation_calls_server_and_returns_frames(tmp_path):
     assert calls[0][2]["timeout"] == 600
 
 def test_selecting_linked_server_images_starts_preview_preparation(tmp_path, qapp):
-    from kraken_manager.presentation.qt import ProjectManagerShell
+    from kraken_manager.presentation.qt import ProjectManagerShell, ProjectWorkspacePage
 
     _server, _local, _session, project, layer, _binding, representation, _context = _server_layer(tmp_path)
     controller = object.__new__(DesktopController)
@@ -55,7 +55,7 @@ def test_selecting_linked_server_images_starts_preview_preparation(tmp_path, qap
     prepared = []
     controller._ensure_agent_source_ready = lambda **kwargs: prepared.append(kwargs)
     shell = ProjectManagerShell()
-    workspace = shell.open_project_workspace()
+    workspace = shell.open_project_tab("p-1", "P1", ProjectWorkspacePage())
     controller._load_representations(workspace, str(project.id), str(layer.id))
     assert workspace.image_representation_combo.currentData() == str(representation.id)
     assert len(prepared) == 1

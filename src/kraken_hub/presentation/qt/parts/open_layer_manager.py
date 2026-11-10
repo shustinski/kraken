@@ -53,7 +53,7 @@ class OpenLayerManagerMixin:
     def open_layer_manager(self) -> None:
         workspace = self._workspace
         project_id = self._project_id
-        if workspace is None or not project_id or self.shell.current_page_key() != "workspace":
+        if workspace is None or not project_id or not self.shell.current_page_key().startswith("project:"):
             return
         if self._layer_dialog is None:
             dialog = LayerManagerDialog(

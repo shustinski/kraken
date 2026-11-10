@@ -49,6 +49,7 @@ def test_delete_project_confirmation_calls_cache_only_service(qapp, monkeypatch,
     controller._project_id = None
     controller._workspace = None
     controller._layer_dialog = None
+    controller._project_workspaces = {}
     refreshed = []
     controller.refresh_projects = lambda: refreshed.append(True)
     controller._error = pytest.fail

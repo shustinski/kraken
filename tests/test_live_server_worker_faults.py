@@ -51,9 +51,7 @@ def _work_ui(env, qtbot, project):
     session = type("Session", (), {"principal": env.remote.auth.principal})()
     panel = _my_work_panel(dual, session, controller)
     shell.page("my_work").set_content(panel)
-    item = shell._navigation_items["my_work"]
-    QTest.mouseClick(shell.navigation_list.viewport(), Qt.MouseButton.LeftButton,
-        pos=shell.navigation_list.visualItemRect(item).center())
+    shell.rail_actions["my_work"].click()
     qtbot.waitUntil(lambda: panel.isVisible())
     table = panel.findChild(QTableWidget)
     return shell, controller, dual, table

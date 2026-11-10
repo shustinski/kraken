@@ -24,6 +24,10 @@ class OpenProjectMixin:
             self.refresh_projects()
             return
         is_remote = bool(getattr(self.service, "is_remote_project", lambda _id: False)(project.id))
+        project_id = str(project.id)
+        if project_id in self._project_workspaces:
+            self.shell.open_project_tab(project_id, project.name, self._project_workspaces[project_id])
+            return
         workspace_binding = self.service.project_workspace(project.id)
         if (
             workspace_binding is None
@@ -81,23 +85,14 @@ class OpenProjectMixin:
             asset_source=asset_source,
             thumbnail_store=thumbnail_store,
         )
-        workspace = self.shell.open_project_workspace(ProjectWorkspacePage(matrix_view=matrix_view))
-        self._workspace = workspace
-        if self._project_id is not None:
-            unsubscribe = getattr(self.service, "unsubscribe_project", None)
-            if callable(unsubscribe):
-                unsubscribe(self._project_id)
-        self._project_id = str(project.id)
+        page = ProjectWorkspacePage(matrix_view=matrix_view)
+        self._project_workspaces[project_id] = page
         subscribe = getattr(self.service, "subscribe_project", None)
         if is_remote and callable(subscribe):
             subscribe(project.id)
-        if self._layer_dialog is not None:
-            self._layer_dialog.hide()
-            self._layer_dialog.deleteLater()
-            self._layer_dialog = None
+        workspace = self.shell.open_project_tab(project_id, project.name, page)
         workspace._matrix_data_source = data_source
         workspace._matrix_asset_source = asset_source
-        workspace.set_project_title(project.name)
         workspace.matrix_view.set_session(
             MatrixSession(
                 namespace=str(project.id),
@@ -110,8 +105,6 @@ class OpenProjectMixin:
             data_source=data_source,
             asset_source=asset_source,
         )
-        workspace.matrix_view.set_visual_modes(*self.shell.visual_modes())
-        self._load_layers(workspace, project)
 
         def add_layer() -> None:
             self._add_layer(workspace, project.id)
@@ -135,8 +128,43 @@ class OpenProjectMixin:
         workspace.matrix_view.contextMenuRequested.connect(
             self._show_matrix_context_menu
         )
+        layers = self.service.list_layers(project.id)
+        if layers:
+            first = workspace.layer_model.layer_by_id(str(layers[0].id))
+            if first is not None:
+                workspace.layer_tabs.setCurrentIndex(0)
+                self._select_layer(workspace, project.id, first)
+        self._configure_analysis(workspace, project.id)
+
+    def _on_project_tab_activated(self, project_id: str | None) -> None:
+        if project_id is None:
+            self._project_id = None
+            self._workspace = None
+            return
+        self._activate_project(str(project_id))
+
+    def _activate_project(self, project_id: str) -> None:
+        project_id = str(project_id)
+        if self._layer_dialog is not None:
+            self._layer_dialog.hide()
+            self._layer_dialog.deleteLater()
+            self._layer_dialog = None
+        project = self.service.get_project(project_id)
+        if project is None:
+            self._on_project_tab_close_requested(project_id)
+            return
+        self._project_id = project_id
+        self._workspace = self._project_workspaces[project_id]
+        self._workspace.set_project_title(project.name)
+        self._workspace.matrix_view.set_visual_modes(*self.shell.visual_modes())
+        self._sync_review_return_visibility(project_id)
+        self._load_layers(self._workspace, project)
+        self._apply_retained_wakes(project_id)
+
+    def _sync_review_return_visibility(self, project_id: str) -> None:
+        is_remote = bool(getattr(self.service, "is_remote_project", lambda _id: False)(project_id))
         permissions = self.service.project_permissions(
-            project.id,
+            project_id,
             self.session.principal if not is_remote else getattr(
                 getattr(self.service, "remote", None),
                 "auth",
@@ -146,10 +174,3 @@ class OpenProjectMixin:
         self.shell.review_return_action.setVisible(
             Permission.RETURN_REVIEW in permissions
         )
-        layers = self.service.list_layers(project.id)
-        if layers:
-            first = workspace.layer_model.layer_by_id(str(layers[0].id))
-            if first is not None:
-                workspace.layer_tabs.setCurrentIndex(0)
-                self._select_layer(workspace, project.id, first)
-        self._configure_analysis(workspace, project.id)

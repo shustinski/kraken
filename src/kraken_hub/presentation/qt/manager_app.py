@@ -81,6 +81,7 @@ from kraken_hub.presentation.qt.parts.gateway_job import GatewayJobMixin
 from kraken_hub.presentation.qt.parts.manage_project_participants import ManageProjectParticipantsMixin
 from kraken_hub.presentation.qt.parts.rename_project import RenameProjectMixin
 from kraken_hub.presentation.qt.parts.delete_project import DeleteProjectMixin
+from kraken_hub.presentation.qt.parts.close_project_tab import CloseProjectTabMixin
 from kraken_hub.presentation.qt.parts.connect_program_account import ConnectProgramAccountMixin
 from kraken_hub.presentation.qt.parts.create_project import CreateProjectMixin
 from kraken_hub.presentation.qt.parts.open_project import OpenProjectMixin
@@ -181,6 +182,7 @@ class DesktopController(
     ManageProjectParticipantsMixin,
     RenameProjectMixin,
     DeleteProjectMixin,
+    CloseProjectTabMixin,
     ConnectProgramAccountMixin,
     CreateProjectMixin,
     OpenProjectMixin,

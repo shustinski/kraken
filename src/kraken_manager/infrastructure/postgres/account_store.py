@@ -28,6 +28,7 @@ def _account_tables() -> tuple[Any, Any, Any, Any, Any]:
         sa.Column("failed_attempts", sa.Integer, nullable=False, server_default="0"),
         sa.Column("blocked_until", sa.DateTime(timezone=True)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("auth_provider", sa.Text, nullable=False, server_default="local"),
     )
     sessions = sa.Table(
         "server_sessions",
@@ -93,6 +94,7 @@ class PostgresAccountStore:
             str(row["display_name"]),
             bool(row["enabled"]),
             created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+            str(row["auth_provider"] or "local"),
         )
 
     def create_account(

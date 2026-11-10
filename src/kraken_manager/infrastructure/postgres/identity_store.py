@@ -35,7 +35,14 @@ def _identity_tables() -> tuple[Any, Any, Any]:
         sa.Column("email", sa.Text),
         sa.Column("enabled", sa.Boolean, nullable=False),
         sa.Column("system_roles", sa.JSON, nullable=False),
+        sa.Column("login", sa.Text),
+        sa.Column("login_key", sa.Text),
+        sa.Column("avatar_url", sa.Text),
+        sa.Column("avatar_source", sa.Text),
+        sa.Column("status_text", sa.Text),
+        sa.Column("profile_updated_at", sa.DateTime(timezone=True)),
     )
+    sa.Index("ux_principals_login_key", principals.c.login_key, unique=True, postgresql_where=sa.text("login_key IS NOT NULL"))
     acl = sa.Table(
         "project_acl",
         metadata,
@@ -77,6 +84,10 @@ class PostgresIdentityAclStore:
             email=row["email"],
             active=bool(row["enabled"]),
             system_roles=frozenset(SystemRole(value) for value in row["system_roles"]),
+            login=row.get("login"),
+            avatar_url=row.get("avatar_url"),
+            avatar_source=row.get("avatar_source"),
+            status_text=row.get("status_text"),
         )
 
     def get(self, principal_id: PrincipalId) -> Principal | None:
@@ -120,6 +131,11 @@ class PostgresIdentityAclStore:
             "email": principal.email,
             "enabled": principal.active,
             "system_roles": sorted(role.value for role in principal.system_roles),
+            "login": principal.login,
+            "login_key": principal.login_key,
+            "avatar_url": principal.avatar_url,
+            "avatar_source": principal.avatar_source,
+            "status_text": principal.status_text,
         }
         with self._scope(write=True) as connection:
             connection.execute(

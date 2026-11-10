@@ -1,33 +1,30 @@
 {
-  "generated_at": "2026-11-10T06:53:38+00:00",
+  "generated_at": "2026-11-10T11:23:46+00:00",
   "registry": "docs\\quality\\registry",
   "junit_files": [
-    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-01\\contour-targeted-junit.xml",
-    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-01\\live-contour-worker-junit.xml",
-    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-01\\live-worker-contour-faults-junit.xml",
-    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-01\\reproducer-d4-junit.xml",
-    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-01\\target-lease-junit.xml",
-    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-01\\upload-preflight-junit.xml"
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-integration\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-registry\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-regression\\junit(1).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-regression\\junit(2).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-smoke\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(2).xml"
   ],
   "base": "HEAD~1",
   "metrics": {
     "ui_actions": {
-      "covered": 2,
+      "covered": 11,
       "total": 61,
       "status_breakdown": {
-        "PASS": 2,
+        "PASS": 11,
         "FAIL": 0,
         "PARTIAL": 0,
         "BLOCKED": 1,
-        "NOT_TESTED": 58,
+        "NOT_TESTED": 49,
         "NOT_APPLICABLE": 0
       },
       "uncovered": [
         "AGT-HEALTH",
         "BLOB-PUT-GET-RESTART",
-        "HUB-ADD-LAYER",
-        "HUB-ADD-PERFORMER",
-        "HUB-ADD-REPRESENTATION",
         "HUB-ADMIN-REFRESH",
         "HUB-ANALYSIS",
         "HUB-ARCHIVE-PROJECT",
@@ -38,16 +35,11 @@
         "HUB-COMPUTED-STITCH",
         "HUB-CONFIGURE-ROOTS",
         "HUB-CONNECT-SAVED-SERVER",
-        "HUB-CREATE-PROJECT",
-        "HUB-DELETE-PERFORMER",
         "HUB-DELETE-PROJECT",
         "HUB-DEV-SESSION",
-        "HUB-EDIT-PERFORMER",
         "HUB-ELECTRICAL",
         "HUB-EXPORT-BACKUP",
         "HUB-IMPORT-BACKUP",
-        "HUB-ISSUE-WORK",
-        "HUB-LAYER-CONTEXT",
         "HUB-LAYER-WORKFLOW",
         "HUB-LOGIN",
         "HUB-MATRIX-CONTEXT",
@@ -66,13 +58,12 @@
         "HUB-REORDER-LAYERS",
         "HUB-REPRESENTATION-LIFECYCLE",
         "HUB-RESTORE-PROJECT",
-        "HUB-REVIEW-RETURN",
         "HUB-SCAN-INTEGRITY",
-        "HUB-STATISTICS",
         "HUB-STITCH-FILES",
         "HUB-UPDATE-SOURCE",
         "HUB-WORK-PLAN",
         "MGR-MATRIX-VISUAL",
+        "PERSISTENT-GATEWAY-UPLOAD",
         "PLUGIN-CONTOUR-DATASET-INTERACTIVE",
         "PLUGIN-CONTOUR-HELP",
         "PLUGIN-CSLISER-CAPABILITIES",
@@ -85,18 +76,19 @@
       ]
     },
     "api_operations": {
-      "covered": 1,
+      "covered": 0,
       "total": 17,
       "status_breakdown": {
-        "PASS": 1,
+        "PASS": 0,
         "FAIL": 0,
         "PARTIAL": 0,
         "BLOCKED": 0,
-        "NOT_TESTED": 16,
+        "NOT_TESTED": 17,
         "NOT_APPLICABLE": 0
       },
       "uncovered": [
         "SRV-ANALYSIS",
+        "SRV-ARTIFACTS",
         "SRV-COMMANDS",
         "SRV-ELECTRICAL",
         "SRV-HEALTH-SESSION",
@@ -190,35 +182,29 @@
         "NOT_APPLICABLE": 0
       },
       "uncovered": [
-        "regression",
-        "smoke",
+        "e2e",
+        "extended",
         "stateful"
       ]
     },
     "defect_regressions": {
-      "covered": 2,
+      "covered": 8,
       "total": 14,
       "status_breakdown": {
-        "PASS": 2,
+        "PASS": 8,
         "FAIL": 0,
         "PARTIAL": 0,
         "BLOCKED": 0,
-        "NOT_TESTED": 12,
+        "NOT_TESTED": 6,
         "NOT_APPLICABLE": 0
       },
       "uncovered": [
-        "D1",
-        "D10",
         "D11",
         "D12",
         "D13",
         "D14",
-        "D2",
-        "D3",
         "D5",
-        "D6",
-        "D7",
-        "D9"
+        "D8"
       ]
     },
     "source": {
@@ -234,14 +220,9 @@
       },
       "uncovered": [],
       "changed_files": [
-        "plugins/neuralimage/src/neuralimage/model/NeuralNetwork/recognition_pipeline_parts/cut_image_process.py",
-        "plugins/neuralimage/src/neuralimage/model/NeuralNetwork/recognition_pipeline_parts/imgpredict.py",
-        "plugins/neuralimage/src/neuralimage/model/NeuralNetwork/recognition_pipeline_parts/imgsew.py",
-        "plugins/neuralimage/src/neuralimage/model/NeuralNetwork/recognition_pipeline_parts/run.py",
-        "plugins/neuralimage/src/neuralimage/model/NeuralNetwork/recognition_pipeline_parts/run_cut_worker.py",
-        "plugins/neuralimage/tests/test_recognition_worker_profile.py",
-        "pyproject.toml",
-        "tests/test_quality_registry.py"
+        "docs/quality/evidence/2026-11-10/coverage-report.json",
+        "docs/quality/evidence/2026-11-10/coverage-report.md",
+        "docs/superpowers/specs/2026-11-09-main-window-project-tabs-design.md"
       ]
     }
   }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,19 @@ from contour.application.frame_asset_sync import (
     foreground_hex_vector_status_for_theme,
     index_cif_file_paths,
 )
+
+kraken_defect = "D15"
+
+
+def _canonical_path(path: str) -> str:
+    """Canonical path form for comparison (D15.2): ``normcase(realpath(...))``.
+
+    %TEMP% may be an 8.3 short name (``C:\\Users\\SHUSTI~1.A\\...``) on this
+    machine while the product returns resolved (long) paths; ``realpath`` maps
+    both forms to the same long path here and is the identity where there is
+    no 8.3 mangling, so the comparison keeps verifying the same logical path.
+    """
+    return os.path.normcase(os.path.realpath(path))
 
 
 class FrameAssetSyncTests(unittest.TestCase):
@@ -51,7 +65,10 @@ class FrameAssetSyncTests(unittest.TestCase):
             kept_cv.write_text("placeholder", encoding="utf-8")
             missing = root / "gone.cif"
             indexed = index_cif_file_paths([str(kept), str(kept_cv), str(missing)])
-        self.assertEqual(indexed, {"one": str(kept.resolve()), "two": str(kept_cv.resolve())})
+        self.assertEqual(
+            {stem: _canonical_path(path) for stem, path in indexed.items()},
+            {"one": _canonical_path(str(kept)), "two": _canonical_path(str(kept_cv))},
+        )
 
     def test_vector_status_prioritizes_missing_image_then_error_then_dirty(self) -> None:
         status_no_image = classify_vector_side_status(

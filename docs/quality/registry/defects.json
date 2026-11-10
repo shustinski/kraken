@@ -218,6 +218,24 @@
       "evidence": [],
       "fixed_in": "f260105",
       "repro": "tests/test_server_workspace_inputs_parts/interactive_contour_opens.py брала корень parents[1] = <repo>/tests — все три корня PYTHONPATH не существуют, subprocess молча резолвил editable-установку venv."
+    },
+    {
+      "id": "D15",
+      "component": "test_harness",
+      "title": "Юнит-слой: CUDA-вызов torch роняет весь pytest-процесс, и два юнит-теста Contour зависят от 8.3-коротких путей",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_pipeline_stitch_live_content.py",
+        "plugins/contour/tests/unit/test_frame_asset_sync.py::FrameAssetSyncTests::test_index_selected_cif_file_paths_requires_existing_files",
+        "plugins/contour/tests/unit/test_frames_per_row_launch.py::FramesPerRowLaunchTests::test_open_command_forwards_project_width_and_does_not_invent_one"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d15-red.txt",
+        "docs/quality/evidence/2026-11-10/d15-green.txt"
+      ],
+      "fixed_in": "",
+      "repro": "Прогон unit-слоя quality-гейта (scripts/quality-gates.ps1 -Tier unit, коммит 0356120) на машине, где %TEMP% в 8.3-короткой форме (C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp) и CUDA-инициализация torch падает: первый вызов слоя (pytest tests) завершается с exit -1073741819 (STATUS_ACCESS_VIOLATION) в torch.cuda.is_available() теста tests/test_pipeline_stitch_live_content.py и не доходит до остальных тестов; второй вызов (plugins/contour/tests/unit) — 2 failed на ассертах путей (short/long форма %TEMP%), 262 passed."
     }
   ]
 }

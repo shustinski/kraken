@@ -236,6 +236,74 @@
       ],
       "fixed_in": "",
       "repro": "Прогон unit-слоя quality-гейта (scripts/quality-gates.ps1 -Tier unit, коммит 0356120) на машине, где %TEMP% в 8.3-короткой форме (C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp) и CUDA-инициализация torch падает: первый вызов слоя (pytest tests) завершается с exit -1073741819 (STATUS_ACCESS_VIOLATION) в torch.cuda.is_available() теста tests/test_pipeline_stitch_live_content.py и не доходит до остальных тестов; второй вызов (plugins/contour/tests/unit) — 2 failed на ассертах путей (short/long форма %TEMP%), 262 passed."
+    },
+    {
+      "id": "D16",
+      "component": "test_harness",
+      "title": "Тесты офлайн-экспорта, требующие настоящий PyPI-индекс, не гейтятся для офлайн-машин",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/offline/test_offline_sync.py::test_verify_installs_from_transfer_cache_and_empty_cache_fails",
+        "tests/offline/test_offline_sync.py::test_repeated_export_reuses_dependency_cache"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-offline-sync.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На машине без интернета pytest tests/offline/test_offline_sync.py -q -k \"verify_installs_from_transfer_cache or repeated_export_reuses_dependency_cache\" — 2 failed: uv lock / export-режим uv sync не достают https://pypi.org/simple/ (dns error, os error 11001/11002) после 3 ретраев."
+    },
+    {
+      "id": "D17",
+      "component": "test_harness",
+      "title": "Dry-run ассерты PyTorch-резолвции зависят от состояния локального .venv и детерминированно падают на dev-машине",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch",
+        "tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-pytorch.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На машине, где .venv полностью заполнен (torch==2.12.0+cu132 установлен): pytest tests/offline/test_pytorch_resolution.py -q — 2 failed: root-прогон (all-groups all-extras) показывает torch в списке \"Would uninstall\", а workspace-прогон (all-packages) не показывает его вовсе (уже установлен, дифф пуст)."
+    },
+    {
+      "id": "D18",
+      "component": "test_harness",
+      "title": "Тесты Contour-моста сравнивают staging-пути без канонизации: 8.3-короткая и длинная формы %TEMP% расходятся",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif",
+        "tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_dataset_preparation_fills_dataset_path_instead_of_result_path"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-bridges.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На машине, где %TEMP% в 8.3-короткой форме (C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp): pytest tests/test_plugin_app_v1_bridges.py -q — 2 failed: путь tempfile.TemporaryDirectory() обвязки короткий, а ContourKrakenSession резолвит staging-пути в длинную форму (Path.resolve), и ассерты argv/input_paths расходятся."
+    },
+    {
+      "id": "D19",
+      "component": "test_harness",
+      "title": "Teardown тестов QualityDialog не может удалить дерево проекта: stdlib rmtree не удаляет aux-каталог с зарезервированным именем",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_quality_dialog.py::test_quality_dialog_drives_real_local_issue_assignment_and_history",
+        "tests/test_quality_dialog.py::test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-quality-dialog.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-quality-dialog.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На Windows pytest tests/test_quality_dialog.py -q — 2 failed в TemporaryDirectory-cleanup (тело теста зелёное): после создания продуктом data\\workspace-source\\new_test\\aux — os.rmdir(new_test) падает WinError 145 «Папка не пуста»."
     }
   ]
 }

@@ -2,16 +2,47 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SYNC = ROOT / "scripts" / "offline" / "sync.ps1"
+
+kraken_defect = "D16"
+
+
+@functools.lru_cache(maxsize=1)
+def _pypi_is_reachable() -> bool:
+    """Whether the real PyPI index is reachable from this machine (D16).
+
+    The dependency-cache tests below run ``uv lock``/``uv sync`` against the
+    real PyPI simple index (no local wheelhouse is configured). On an offline
+    machine those calls fail with connection errors only after slow retries,
+    so reachability is probed once in a disposable subprocess first (same
+    idiom as the D15.1 CUDA probe): a failed probe means the tests must skip
+    with an explicit reason instead of failing the gate.
+    """
+    probe = "import socket; socket.create_connection(('pypi.org', 443), timeout=10)"
+    try:
+        result = subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def _require_pypi() -> None:
+    if not _pypi_is_reachable():
+        pytest.skip(
+            "pypi.org is not reachable from this machine (offline); the test "
+            "needs the real PyPI index to build the uv transfer cache"
+        )
 
 
 def _git_env() -> dict[str, str]:
@@ -354,6 +385,7 @@ def test_paths_with_spaces_and_non_ascii_characters(tmp_path: Path) -> None:
 
 
 def test_verify_installs_from_transfer_cache_and_empty_cache_fails(tmp_path: Path) -> None:
+    _require_pypi()
     source = tmp_path / "source"
     _init_repo(source)
     _pyproject(source, ["packaging==26.1"])
@@ -389,6 +421,7 @@ def test_verify_installs_from_transfer_cache_and_empty_cache_fails(tmp_path: Pat
 
 
 def test_repeated_export_reuses_dependency_cache(tmp_path: Path) -> None:
+    _require_pypi()
     source = tmp_path / "source"
     _init_repo(source)
     _pyproject(source)

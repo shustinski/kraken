@@ -2,30 +2,45 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
+kraken_defect = "D17"
+
 
 def _dry_run(*extra: str) -> str:
-    completed = subprocess.run(
-        [
-            "uv",
-            "sync",
-            "--directory",
-            str(ROOT),
-            "--locked",
-            "--dry-run",
-            "--offline",
-            *extra,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    """``uv sync --dry-run`` against a throwaway empty project environment (D17).
+
+    The dry run reports the difference between the locked resolution and the
+    current project environment. Diffing against the machine's real ``.venv``
+    makes the assertions state-dependent: with torch already installed it
+    appears in the "Would uninstall" list (and with it missing from a
+    workspace sync it appears in none). Pointing ``UV_PROJECT_ENVIRONMENT`` at
+    a fresh empty directory makes the result depend only on ``uv.lock``.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        completed = subprocess.run(
+            [
+                "uv",
+                "sync",
+                "--directory",
+                str(ROOT),
+                "--locked",
+                "--dry-run",
+                "--offline",
+                *extra,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=dict(os.environ, UV_PROJECT_ENVIRONMENT=scratch),
+        )
     assert completed.returncode == 0, completed.stderr
     return completed.stdout + completed.stderr
 

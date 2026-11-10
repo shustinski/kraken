@@ -22,9 +22,61 @@
 | D13 | contour | RESOLVED | plugins/contour/tests/unit/test_settings_store.py::ManagedJobSettingsStoreTests, plugins/contour/tests/unit/test_kraken_return.py::test_agent_attach_resets_cif_directory_state_like_workspace_sibling | f260105 | — |
 | D14 | test_harness | RESOLVED | tests/test_server_workspace_inputs.py::test_subprocess_resolves_contour_from_harness_pythonpath | f260105 | — |
 | D15 | test_harness | RESOLVED | tests/test_pipeline_stitch_live_content.py, plugins/contour/tests/unit/test_frame_asset_sync.py::FrameAssetSyncTests::test_index_selected_cif_file_paths_requires_existing_files, plugins/contour/tests/unit/test_frames_per_row_launch.py::FramesPerRowLaunchTests::test_open_command_forwards_project_width_and_does_not_invent_one | — | docs/quality/evidence/2026-11-10/d15-red.txt, docs/quality/evidence/2026-11-10/d15-green.txt |
+| D16 | test_harness | RESOLVED | tests/offline/test_offline_sync.py::test_verify_installs_from_transfer_cache_and_empty_cache_fails, tests/offline/test_offline_sync.py::test_repeated_export_reuses_dependency_cache | — | docs/quality/evidence/2026-11-10/d16-red-offline-sync.txt, docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt |
+| D17 | test_harness | RESOLVED | tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch, tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu | — | docs/quality/evidence/2026-11-10/d16-red-pytorch.txt, docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt |
+| D18 | test_harness | RESOLVED | tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif, tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_dataset_preparation_fills_dataset_path_instead_of_result_path | — | docs/quality/evidence/2026-11-10/d16-red-bridges.txt, docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt |
+| D19 | test_harness | RESOLVED | tests/test_quality_dialog.py::test_quality_dialog_drives_real_local_issue_assignment_and_history, tests/test_quality_dialog.py::test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold | — | docs/quality/evidence/2026-11-10/d16-red-quality-dialog.txt, docs/quality/evidence/2026-11-10/d16-green-quality-dialog.txt |
 <!-- quality-registry:generated-end -->
 
 ## Воспроизведено
+
+### D19. Teardown тестов QualityDialog не может удалить дерево проекта: stdlib rmtree не удаляет aux-каталог с зарезервированным именем
+
+- Компонент: тестовая обвязка — `tests/test_quality_dialog.py` (оба дочерних скрипта использовали `tempfile.TemporaryDirectory()`, чей cleanup идёт через stdlib `shutil.rmtree`).
+- Статус: исправлен 2026-11-10.
+- Воспроизведение: на Windows `pytest tests/test_quality_dialog.py -q` (unit-слой quality-гейта): `2 failed`. Тела тестов зелёные — все ассерты сценария проходят; падение в `TemporaryDirectory.__exit__` → `shutil.rmtree` → `os.rmdir('...\\data\\workspace-source\\new_test')` → `OSError: [WinError 145] Папка не пуста`.
+- Ожидание: временное дерево Kraken-проекта удаляется после теста, оба теста проходят.
+- Факт: `new_test` содержит продуктовую `aux`-категорию (обычная часть двухкорневой раскладки). В stdlib `rmtree` `os.scandir('...\\aux')` без завершающего разделителя даёт WinError 3 (FileNotFoundError — молча глотается onerror у `os.walk`), затем `os.rmdir('...\\aux')` даёт WinError 2 (тоже глотается как FileNotFoundError), и aux-каталог остаётся, из-за чего `rmdir(new_test)` падает с 145. Проверено по живому остатку: единственное, что выживало в `new_test`, — `aux` (пустой; `scandir('aux\\')` с разделителем работает, `rmdir('aux\\')` удаляет его). Тот же класс дефекта, что D9/D10 (зарезервированное DOS-имя на стороне обвязки), но эти тесты на помощника D10 не были переведены.
+- Место и причина: обвязка чистила дерево stdlib-`shutil.rmtree`, который не умеет удалять дочерние папки с зарезервированными DOS-именами (без завершающего разделителя путь резолвится в устройство AUX). Поведение продукта корректно: `aux` — first-class категория проекта (D9), изменению не подлежит.
+- Исправление: оба дочерних скрипта используют `kraken_tempdir()` (`tests/test_hub_embedded_service_parts/kraken_tempdir.py`, помощник D10) вместо `tempfile.TemporaryDirectory()`: cleanup через продуктовый reserved-name-safe `_remove_tree` (`kraken_manager.infrastructure.workspace_files`) с 3 повторами на транзитный WinError 145, путь выдаётся полностью разрешённым. Тела и ассерты тестов не менялись.
+- Регрессии (маркер `kraken_defect = "D19"`): `tests/test_quality_dialog.py::test_quality_dialog_drives_real_local_issue_assignment_and_history`, `tests/test_quality_dialog.py::test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold`.
+- Доказательства: RED — [d16-red-quality-dialog.txt](evidence/2026-11-10/d16-red-quality-dialog.txt) (2 failed: WinError 145 на `new_test`; по живому остатку выживший элемент — `new_test\aux`); GREEN — [d16-green-quality-dialog.txt](evidence/2026-11-10/d16-green-quality-dialog.txt) (2 passed, дерево удалено).
+
+### D18. Тесты Contour-моста сравнивают staging-пути без канонизации: 8.3-короткая и длинная формы %TEMP% расходятся
+
+- Компонент: тестовая обвязка — `tests/test_plugin_app_v1_bridges.py` (ContourBridgeV1Tests).
+- Статус: исправлен 2026-11-10.
+- Воспроизведение: на машине, где `%TEMP%` в 8.3-короткой форме (`C:\Users\SHUSTI~1.A\AppData\Local\Temp`), `pytest tests/test_plugin_app_v1_bridges.py -q` — `2 failed, 6 passed`.
+- Ожидание: ассерты моста не зависят от короткой/длинной формы пути (на машинах без 8.3-мэнгла это идентичные строки).
+- Факт: путь `tempfile.TemporaryDirectory()` обвязки — короткий (`SHUSTI~1.A`), а `ContourKrakenSession.load` резолвит staging-пути в длинную форму (`Path.resolve(strict=True)` — требуется для symlink/escape-проверок), и `prepare_contour_launch` отдаёт именно резолвлённые пути в argv и `session.input_paths` → `AssertionError` (short != long) в обоих тестах. Тот же класс, что D15.2/D15.3. Продуктовое поведение (строгий резолв staging-путей) — намеренный контракт моста (D11/D13), изменению не подлежит; правка D11 (103cce1) дефектом не является.
+- Место и причина: обвязка сравнивала сырые строки путей без канонизации.
+- Исправление: модульный хелпер `_canonical_path` (идиома D15: `os.path.normcase(os.path.realpath(...))`); все пять path-ассертов ContourBridgeV1Tests (`input_paths`, `argv[-1]`, `argv[-2]`, значение `--dataset-dir`) сравнивают каноническую форму обеих сторон — тот же логический путь, точное совпадение, без ослабления.
+- Регрессии (маркер `kraken_defect = "D18"`): `tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif`, `tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_dataset_preparation_fills_dataset_path_instead_of_result_path`.
+- Доказательства: RED — [d16-red-bridges.txt](evidence/2026-11-10/d16-red-bridges.txt) (2 failed: `SHUSTI~1.A` != `shustinsky.m.a`); GREEN — [d16-green-bridges-pytorch-offline.txt](evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt) (файл целиком passed).
+
+### D17. Dry-run ассерты PyTorch-резолвции зависят от состояния локального .venv и детерминированно падают на dev-машине
+
+- Компонент: тестовая обвязка — `tests/offline/test_pytorch_resolution.py` (`uv sync --locked --dry-run --offline`).
+- Статус: исправлен 2026-11-10.
+- Воспроизведение: на машине, где project-`.venv` полностью заполнен (включая `torch==2.12.0+cu132`), `pytest tests/offline/test_pytorch_resolution.py -q` — `2 failed`. Сети не требуется: резолв идёт из `uv.lock` (`--locked --offline`, «Resolved 143 packages in 7ms»).
+- Ожидание: ассерты (root-синк не выбирает torch; workspace-синк выбирает `torch==2.12.0+cu132` и не выбирает `+cpu`) зависят только от резолвции `uv.lock`, а не от того, что уже установлено в окружении машины.
+- Факт: `uv sync --dry-run` отчитывается о разнице между locked-резолвцией и текущим project-окружением. При заполненном `.venv` root-прогон (`--all-groups --all-extras`) выводит torch в список «Would uninstall» (→ подстрока `torch==` присутствует), а workspace-прогон (`--all-packages`) не выводит его ни в одном списке (уже установлен, дифф пуст) → оба ассерта падают. На чистом окружении оба проходят — тест state-dependent.
+- Место и причина: обвязка запускала dry-run против реального `.venv` машины.
+- Исправление: `_dry_run` задаёт `UV_PROJECT_ENVIRONMENT` на свежий временный каталог — дифф считается против пустого окружения, результат зависит только от `uv.lock`, и тесты проходят и на dev-машине, и на чистой (проверено вручную: root-прогон — 0 упоминаний torch/+cpu, workspace-прогон — `+ torch==2.12.0+cu132`, `+ torchvision==0.27.0+cu132`).
+- Регрессии (маркер `kraken_defect = "D17"`): `tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch`, `tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu`.
+- Доказательства: RED — [d16-red-pytorch.txt](evidence/2026-11-10/d16-red-pytorch.txt) (2 failed: torch в «Would uninstall» / отсутствует); GREEN — [d16-green-bridges-pytorch-offline.txt](evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt) (2 passed).
+
+### D16. Тесты офлайн-экспорта, требующие настоящий PyPI-индекс, не гейтятся для офлайн-машин
+
+- Компонент: тестовая обвязка — `tests/offline/test_offline_sync.py` (два теста, запускающие `uv lock`/`uv sync` против настоящего PyPI-индекса).
+- Статус: исправлен 2026-11-10.
+- Воспроизведение: на машине без интернета `pytest tests/offline/test_offline_sync.py -q -k "verify_installs_from_transfer_cache or repeated_export_reuses_dependency_cache"` — `2 failed`: `uv lock` (`Failed to fetch: https://pypi.org/simple/packaging/`) и export-режим `uv sync` (подготовка transfer-кэша: `Failed to resolve ... setuptools>=69`, dns error, os error 11001/11002) — после 3 ретраев.
+- Ожидание: тестам нужен настоящий PyPI-индекс (колёса в transfer-кэш; локальный wheelhouse в них не сконфигурирован). На офлайн-машине они должны пропускаться с явной причиной (в гейте — PARTIAL, а не FAIL), на онлайн-машине — работать без изменений.
+- Факт: гейта нет: на офлайн-машине тесты падают сетевой ошибкой uv, а на онлайн-машине работают.
+- Место и причина: тесты написаны под машину с доступом к PyPI; unit-слой гейта прогоняется и на офлайн-машинах (D15).
+- Исправление: модульная проверка `_pypi_is_reachable()` (идиома D15.1: одноразовый subprocess-проб `socket.create_connection(('pypi.org', 443), timeout=10)` с `lru_cache`, чтобы проб был не более одного на прогон) и `_require_pypi()` первой строкой в обоих тестах: недостижимо → `pytest.skip("pypi.org is not reachable from this machine (offline); the test needs the real PyPI index to build the uv transfer cache")`. Переменное окружения по образцу KRAKEN_TEST_POSTGRES_URL не использовано намеренно: оп-ин гейт пропустил бы тесты и на онлайн-машине без выставленной переменной, а требование — «на онлайн-машине работают без изменений»; проб делает гейт самонастраивающимся.
+- Регрессии (маркер `kraken_defect = "D16"`): `tests/offline/test_offline_sync.py::test_verify_installs_from_transfer_cache_and_empty_cache_fails`, `tests/offline/test_offline_sync.py::test_repeated_export_reuses_dependency_cache` (на этой машине — skipped с причиной проба; на онлайн-машине — работают как прежде, тело не менялось).
+- Доказательства: RED — [d16-red-offline-sync.txt](evidence/2026-11-10/d16-red-offline-sync.txt) (2 failed: uv не достает pypi.org); GREEN — [d16-green-bridges-pytorch-offline.txt](evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt) (2 skipped с явной причиной, остальные 13 тестов файла passed).
 
 ### D15. Юнит-слой: CUDA-вызов torch роняет весь pytest-процесс, и два юнит-теста Contour зависят от 8.3-коротких путей
 

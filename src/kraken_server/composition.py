@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
@@ -15,7 +17,8 @@ from kraken_manager.infrastructure.auth.gitlab import (
     GitLabOidcClient,
     GitLabUnavailable,
 )
-from kraken_manager.infrastructure.auth.local import Argon2PasswordHasher
+from kraken_manager.infrastructure.auth.ldap import LdapUnavailable
+from kraken_manager.infrastructure.auth.local import Argon2PasswordHasher, LocalSession
 from kraken_manager.infrastructure.blob import FilesystemBlobStore
 from kraken_manager.infrastructure.postgres import (
     PostgresAccountStore,
@@ -28,6 +31,8 @@ from kraken_manager.infrastructure.review.crypto import Ed25519KeyPair
 
 from .app import SessionPrincipal
 from .persistent_services import PostgresServerServices, ServerStorageProfiles
+
+logger = logging.getLogger(__name__)
 
 
 def _required(name: str) -> str:
@@ -64,6 +69,11 @@ def _review_key_pair(blob_root: Path) -> Ed25519KeyPair:
     return Ed25519KeyPair(raw[:32], raw[32:])
 
 
+def _ldap_principal_id(username: str) -> PrincipalId:
+    """Stable principal id for a domain login (the same id on every JIT and re-login)."""
+    return PrincipalId(str(uuid5(NAMESPACE_URL, f"kraken:ldap:{username.casefold()}")))
+
+
 class HybridSessionResolver:
     """Resolve server-local opaque sessions and GitLab access tokens.
 
@@ -79,12 +89,14 @@ class HybridSessionResolver:
         oidc: GitLabOidcClient | None,
         federated_cache: PostgresFederatedSessionCache | None = None,
         performers: PostgresPerformerStore | None = None,
+        ldap_issuer: str | None = None,
     ) -> None:
         self.accounts = accounts
         self.identities = identities
         self.oidc = oidc
         self.federated_cache = federated_cache
         self.performers = performers
+        self.ldap_issuer = ldap_issuer
 
     @staticmethod
     def _gitlab_principal_id(issuer: str, subject: str) -> PrincipalId:
@@ -95,6 +107,11 @@ class HybridSessionResolver:
             return None
         local = self.accounts.resolve_session(token)
         if local is not None:
+            if getattr(local, "auth_provider", "local") == "ldap":
+                principal = self._resolve_ldap_account(local)
+                if principal is None:
+                    return None
+                return SessionPrincipal(str(principal.id), "ldap", token)
             self.provision_local_account(local)
             return SessionPrincipal(local.account_id, "local", token)
         if self.oidc is None:
@@ -128,6 +145,42 @@ class HybridSessionResolver:
             self.federated_cache.save(token, principal.id)
         return SessionPrincipal(str(principal.id), "gitlab", token)
 
+    def _resolve_ldap_account(self, account: Any) -> Principal | None:
+        """Resolve the stable LDAP principal of an LDAP-backed account row.
+
+        JIT and claim transfer always create the row, so a missing one is a
+        data anomaly: it is repaired without AD only when the issuer is
+        configured, otherwise the session resolves to nothing (401 on the
+        account's first API call) and the error is logged.
+        """
+        principal = self.identities.get_by_external_key(f"ldap:{account.username.casefold()}")
+        if principal is not None:
+            return principal
+        if self.ldap_issuer is None:
+            logger.error(
+                "LDAP account %s has no principal and no LDAP issuer is configured; "
+                "the session resolves without a principal until the row is repaired",
+                account.username,
+            )
+            return None
+        principal_id = _ldap_principal_id(account.username)
+        principal = Principal.ldap(
+            principal_id=principal_id,
+            issuer=self.ldap_issuer,
+            subject=account.username,
+            display_name=account.display_name,
+            login=account.username,
+            system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(account.account_id)),
+        )
+        holder = self.identities.find_by_login(account.username.casefold())
+        if holder is not None and str(holder.id) != str(principal_id):
+            # Same claim safety net as DomainAuthBroker: no silent rename, no overwrite.
+            raise LdapUnavailable("conflicting principals for one login")
+        self.identities.save(principal)
+        if self.performers is not None:
+            ensure_linked_performer(principal, self.performers)
+        return principal
+
     def provision_local_account(self, account: Any) -> None:
         """Mirror a server account into the identity catalog.
 
@@ -136,6 +189,17 @@ class HybridSessionResolver:
         authenticated request.
         """
 
+        login = account.username
+        holder = self.identities.find_by_login(account.username.casefold())
+        if holder is not None and str(holder.id) != str(account.account_id) and holder.provider is PrincipalProvider.LDAP:
+            # The domain user already owns this login: the local principal keeps
+            # working but does not claim it (no lockout, no IntegrityError).
+            login = None
+            self.accounts.record_audit(
+                action="login_claim_conflict_local_skipped",
+                target_account_id=account.account_id,
+                details={"login": account.username, "holder": str(holder.id)},
+            )
         principal = Principal(
             id=PrincipalId(account.account_id),
             provider=PrincipalProvider.LOCAL,
@@ -143,7 +207,7 @@ class HybridSessionResolver:
             display_name=account.display_name,
             active=account.enabled,
             system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(account.account_id)),
-            login=account.username,
+            login=login,
         )
         self.identities.save(principal)
         if self.performers is not None:
@@ -158,6 +222,129 @@ class HybridSessionResolver:
             return False
         expected = self._gitlab_principal_id(identity.issuer, identity.subject)
         return str(expected) == session.principal_id
+
+
+class DomainAuthBroker:
+    """Direct domain (LDAP/AD) sign-in at login time only.
+
+    Providers are strictly separate: an LDAP row is verified against AD (the
+    stored hash is structurally unusable), and a successful local password
+    login never touches AD. A failed local login falls through to AD so a
+    domain user holding the same login is never locked out; the claim rules
+    (spec section 4) then decide what happens to the row.
+    """
+
+    def __init__(self, accounts: Any, identities: Any, ldap: Any | None, *, performers: Any | None = None) -> None:
+        self.accounts = accounts
+        self.identities = identities
+        self.ldap = ldap
+        self.performers = performers
+
+    def authenticate(self, username: str, password: str) -> LocalSession | None:
+        try:
+            account = self.accounts.get_by_username(username)
+        except ValueError:
+            return None
+        if account is None:
+            return self._authenticate_new_domain_user(username, password)
+        if getattr(account, "auth_provider", "local") == "ldap":
+            return self._authenticate_ldap_account(account, username, password)
+        return self._authenticate_local_account(account, username, password)
+
+    def _authenticate_ldap_account(self, account: Any, username: str, password: str) -> LocalSession | None:
+        identity = self.ldap.verify(username, password)  # Ldap* errors propagate
+        ok = identity is not None
+        session = self.accounts.authenticate(username, password, verifier=lambda _stored, _pw: ok)
+        if session is not None and identity is not None:
+            self._provision_ldap(account, identity)  # refresh path, idempotent
+        return session
+
+    def _authenticate_local_account(self, account: Any, username: str, password: str) -> LocalSession | None:
+        session = self.accounts.authenticate(username, password)
+        if session is not None:
+            return session  # a successful local login never touches AD
+        if self.ldap is None:
+            return None
+        identity = self.ldap.verify(username, password)  # Ldap* errors propagate
+        if identity is None:
+            return None
+        account = self._resolve_login_claim(account)
+        session = self.accounts.issue_session(username)
+        self._provision_ldap(account, identity)
+        return session
+
+    def _authenticate_new_domain_user(self, username: str, password: str) -> LocalSession | None:
+        if self.ldap is None:
+            return None
+        identity = self.ldap.verify(username, password)  # Ldap* errors propagate
+        if identity is None:
+            return None
+        try:
+            from sqlalchemy.exc import IntegrityError
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("Install Kraken with the 'postgres' extra") from exc
+        try:
+            account = self.accounts.create_ldap_account(username, identity.display_name)
+        except IntegrityError:
+            # A concurrent first login won the JIT race; continue with its row.
+            account = self.accounts.get_by_username(username)
+        session = self.accounts.issue_session(username)
+        self._provision_ldap(account, identity)
+        return session
+
+    def _resolve_login_claim(self, account: Any) -> Any:
+        """Claim rules (spec section 4) when an AD-verified domain user holds a local login."""
+        holder = self.identities.find_by_login(account.username.casefold())
+        if holder is not None:
+            if holder.provider is PrincipalProvider.LDAP:
+                # A different principal already owns this login: fail closed (503 upstream).
+                raise LdapUnavailable("conflicting LDAP principals for one login")
+            if holder.provider is PrincipalProvider.LOCAL:
+                return self._takeover_squatting_local_row(account, holder)
+            return account  # any other holder is caught by the _provision_ldap safety net
+        if not account.enabled:
+            # A disabled local row is unusable by its owner; the domain user takes it.
+            return self.accounts.convert_to_ldap_account(account.account_id)
+        return account  # the local user never signed in: the row is shared, both keep working
+
+    def _takeover_squatting_local_row(self, account: Any, holder: Any) -> Any:
+        """The squatted local identity stops working; the domain user takes the row."""
+        self.accounts.set_enabled(account.account_id, False)  # revokes the local user's sessions
+        account = self.accounts.convert_to_ldap_account(account.account_id)
+        self.accounts.record_audit(
+            action="login_conflict_local_disabled",
+            target_account_id=account.account_id,
+            details={
+                "login": account.username,
+                "local_principal": str(holder.id),
+                "ldap_principal": str(_ldap_principal_id(account.username)),
+            },
+        )
+        self.identities.save(replace(holder, login=None))  # release the claim (login_key=NULL)
+        return account
+
+    def _provision_ldap(self, account: Any, identity: Any) -> None:
+        """Upsert the stable LDAP principal (uuid5 of the domain login) and its performer."""
+        principal_id = _ldap_principal_id(account.username)
+        principal = Principal.ldap(
+            principal_id=principal_id,
+            issuer=self.ldap.issuer,
+            subject=account.username,
+            display_name=identity.display_name,
+            email=identity.email,
+            login=account.username,
+            avatar_url=identity.avatar_url,
+            system_roles=frozenset(SystemRole(role) for role in self.accounts.global_roles_for(account.account_id)),
+        )
+        holder = self.identities.find_by_login(account.username.casefold())
+        if holder is not None and str(holder.id) != str(principal_id):
+            # The DB unique index is the final net: no silent rename, no silent overwrite.
+            raise LdapUnavailable("conflicting principals for one login")
+        self.identities.save(principal)
+        if identity.avatar_url is not None:
+            self.identities.sync_avatar(principal_id, identity.avatar_url)
+        if self.performers is not None:
+            ensure_linked_performer(principal, self.performers)
 
 
 def postgresql_composition() -> dict[str, Any]:
@@ -254,4 +441,4 @@ def postgresql_composition() -> dict[str, Any]:
     }
 
 
-__all__ = ["HybridSessionResolver", "postgresql_composition"]
+__all__ = ["DomainAuthBroker", "HybridSessionResolver", "postgresql_composition"]

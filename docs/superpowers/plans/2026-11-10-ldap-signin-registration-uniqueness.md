@@ -992,23 +992,31 @@ git commit -m "feat(hub): explicit server-side account creation, no implicit aut
     ldap_url = os.environ.get("KRAKEN_LDAP_URL", "").strip()
     domain_auth = None
     if ldap_url:
+        if importlib.util.find_spec("ldap3") is None:
+            # Fail at deploy time, not at first login with a 500.
+            raise RuntimeError("LDAP is configured (KRAKEN_LDAP_URL) but the ldap3 package is not installed")
         from kraken_manager.infrastructure.auth.ldap import LdapClient
         from kraken_server.configuration import unprotect_secret
         bind_secret_file = Path(os.environ.get("KRAKEN_LDAP_BIND_SECRET_FILE", ""))
         if not bind_secret_file.is_file():
-            raise RuntimeError("KRAKEN_LDAP_BIND_SECRET_FILE is configured but the secret file is missing")
-        ldap_client = LdapClient(
-            ldap_url,
-            base_dn=os.environ["KRAKEN_LDAP_BASE_DN"],
-            bind_dn=os.environ["KRAKEN_LDAP_BIND_DN"],
-            bind_password=unprotect_secret(bind_secret_file),
-            user_filter=os.environ.get("KRAKEN_LDAP_USER_FILTER", "") or None,  # None -> LdapClient default
-            start_tls=os.environ.get("KRAKEN_LDAP_START_TLS") == "1",
-            allow_insecure=os.environ.get("KRAKEN_LDAP_ALLOW_INSECURE") == "1",
-            ca_file=os.environ.get("KRAKEN_LDAP_CA_FILE") or None,
-            timeout=float(os.environ.get("KRAKEN_LDAP_TIMEOUT", "5")),
-        )
-        domain_auth = DomainAuthBroker(accounts, identities, ldap_client, performers=performers)
+            # Ruled (final review): a partial LDAP configuration must not kill server
+            # startup — spec §1 enables LDAP only when URL + bind DN + the bind secret
+            # are ALL present. Warn and continue with domain_auth = None (the login
+            # path behaves exactly as today).
+            logger.warning("LDAP identity is configured but the bind secret file is missing or absent — domain authentication is disabled")
+        else:
+            ldap_client = LdapClient(
+                ldap_url,
+                base_dn=os.environ["KRAKEN_LDAP_BASE_DN"],
+                bind_dn=os.environ["KRAKEN_LDAP_BIND_DN"],
+                bind_password=unprotect_secret(bind_secret_file),
+                user_filter=os.environ.get("KRAKEN_LDAP_USER_FILTER", "") or None,  # None -> LdapClient default
+                start_tls=os.environ.get("KRAKEN_LDAP_START_TLS") == "1",
+                allow_insecure=os.environ.get("KRAKEN_LDAP_ALLOW_INSECURE") == "1",
+                ca_file=os.environ.get("KRAKEN_LDAP_CA_FILE") or None,
+                timeout=float(os.environ.get("KRAKEN_LDAP_TIMEOUT", "5")),
+            )
+            domain_auth = DomainAuthBroker(accounts, identities, ldap_client, performers=performers)
     import json as _json
     lan_gate = None
     cidrs = _json.loads(os.environ.get("KRAKEN_LAN_CIDRS", "[]"))

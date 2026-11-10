@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QTabBar, QWidget
 
 from kraken_manager.presentation.qt import (
     FrameSelection,
@@ -68,14 +68,14 @@ def test_project_manager_shell_can_hide_administration_navigation(qapp):
 def test_selected_projects_navigation_can_return_from_workspace(qtbot):
     shell = ProjectManagerShell()
     qtbot.addWidget(shell)
-    shell.register_page("workspace", "Project", QWidget(), navigation=False)
-    shell.show_page("workspace")
+    shell.open_project_tab("p-1", "Project", QWidget())
     shell.show()
     item = shell._navigation_items["projects"]
     assert shell.navigation_list.currentItem() is item
     qtbot.mouseClick(shell.navigation_list.viewport(), Qt.MouseButton.LeftButton,
                      pos=shell.navigation_list.visualItemRect(item).center())
     assert shell.current_page_key() == "projects"
+    assert shell.current_project_id() is None
 
 
 def test_project_catalog_delete_action_emits_selected_project(qapp):
@@ -96,7 +96,7 @@ def test_project_catalog_delete_action_emits_selected_project(qapp):
 
 def test_shell_opens_lightweight_project_workspace(qapp):
     shell = ProjectManagerShell()
-    workspace = shell.open_project_workspace()
+    workspace = shell.open_project_tab("p-1", "P1", ProjectWorkspacePage())
 
     image_requests = []
     vector_requests = []
@@ -106,7 +106,7 @@ def test_shell_opens_lightweight_project_workspace(qapp):
     workspace.add_vector_representation_button.click()
 
     assert isinstance(workspace, ProjectWorkspacePage)
-    assert shell.current_page_key() == "workspace"
+    assert shell.current_page_key() == "project:p-1"
     assert workspace.matrix_view.matrix_size() == (1, 1)
     assert image_requests == [True]
     assert vector_requests == [True]
@@ -114,7 +114,7 @@ def test_shell_opens_lightweight_project_workspace(qapp):
 
 def test_workspace_uses_bottom_layer_tabs_and_status_bar_selection(qapp):
     shell = ProjectManagerShell()
-    workspace = shell.open_project_workspace()
+    workspace = shell.open_project_tab("p-1", "P1", ProjectWorkspacePage())
     workspace.layer_model.replace_items(
         [
             LayerListItem("l-1", "Metal 1", "metal"),
@@ -210,7 +210,10 @@ def test_shell_project_tab_close_button_requests_close(qapp):
     shell.open_project_tab("p-a", "Alpha", QWidget())
     requested = []
     shell.project_tab_close_requested.connect(requested.append)
-    shell.projectTabs.tabCloseRequested.emit(shell.projectTabs.currentIndex())
+    close_button = shell.projectTabs.tabButton(
+        shell.projectTabs.currentIndex(), QTabBar.ButtonPosition.RightSide
+    )
+    close_button.click()
     assert requested == ["p-a"]
     assert shell.current_project_id() == "p-a"  # page stays until the controller closes it
 

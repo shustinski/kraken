@@ -91,7 +91,7 @@ def test_layer_manager_reports_history_failure_without_opening_dialog() -> None:
     controller = object.__new__(DesktopController)
     controller._workspace = SimpleNamespace(layer_model=SimpleNamespace(items=lambda: ()), _selected_layer_id="layer")
     controller._project_id = "project"
-    controller.shell = SimpleNamespace(current_page_key=lambda: "workspace")
+    controller.shell = SimpleNamespace(current_page_key=lambda: "project:project")
     shown = []
     pipelines = []
     controller._layer_dialog = SimpleNamespace(

@@ -31,7 +31,6 @@ from .pages import (
     PerformersPage,
     PluginsPage,
     ProjectCatalogPage,
-    ProjectWorkspacePage,
     StatisticsPage,
 )
 
@@ -46,7 +45,7 @@ class _ProjectTabBar(QTabBar):
     reported by re-emitting ``currentChanged``.
     """
 
-    def setCurrentIndex(self, index: int) -> None:  # type: ignore[override]
+    def setCurrentIndex(self, index: int) -> None:
         previous = self.currentIndex()
         super().setCurrentIndex(index)
         if index == previous and index >= 0:
@@ -368,23 +367,6 @@ class ProjectManagerShell(QMainWindow):
         if not visible and self.current_page_key() == str(key):
             self.show_page("projects")
 
-    def open_project_workspace(self, workspace: ProjectWorkspacePage | None = None) -> ProjectWorkspacePage:
-        """Register or replace the non-sidebar workspace and display it."""
-        page = workspace or ProjectWorkspacePage()
-        if "workspace" in self._pages:
-            self.replace_page("workspace", page)
-        else:
-            self.register_page("workspace", "Проект", page, navigation=False)
-        page.selectionCountChanged.connect(
-            lambda count: self.statusBar().showMessage(f"Выбрано кадров: {count:n}")
-        )
-        page.selectionCountChanged.connect(
-            lambda count: self.frame_properties_action.setEnabled(count == 1)
-        )
-        self.statusBar().showMessage("Выбрано кадров: 0")
-        self.show_page("workspace")
-        return page
-
     def open_project_tab(self, project_id: str, name: str, page: QWidget) -> QWidget:
         key = f"project:{project_id}"
         existing = self._pages.get(key)
@@ -456,7 +438,7 @@ class ProjectManagerShell(QMainWindow):
 
     def _sync_chrome_for_current_page(self) -> None:
         key = self.current_page_key()
-        project_active = key == "workspace" or key.startswith("project:")
+        project_active = key.startswith("project:")
         self.layers_action.setEnabled(project_active)
         for menu in self._visual_menus.values():
             menu.setEnabled(project_active)

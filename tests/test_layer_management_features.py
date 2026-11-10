@@ -203,6 +203,7 @@ from kraken_manager.presentation.qt import (  # noqa: E402
     PipelineLane,
     PipelineNode,
     ProjectManagerShell,
+    ProjectWorkspacePage,
 )
 
 
@@ -216,7 +217,7 @@ def test_workspace_menus_and_modeless_layer_manager(qapp, monkeypatch) -> None:
     settings.remove("matrix/border-mode")
     settings.remove("matrix/fill-mode")
     shell = ProjectManagerShell()
-    workspace = shell.open_project_workspace()
+    workspace = shell.open_project_tab("p-1", "P1", ProjectWorkspacePage())
 
     assert shell.layers_action.text().startswith("Слои")
     assert shell.layers_action.isEnabled()

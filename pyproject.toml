@@ -116,6 +116,7 @@ markers = [
 ]
 testpaths = ["tests", "plugins"]
 pythonpath = [
+    ".",
     "src",
     "plugins/neuralimage/src",
     "plugins/contour/src",

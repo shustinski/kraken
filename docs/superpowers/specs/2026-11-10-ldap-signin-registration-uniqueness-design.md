@@ -218,8 +218,8 @@ optional fields `login`, `avatar_url`, `status_text` (profile groundwork, §5).
      (`provider=ldap`, `login=sAMAccountName`, `display_name=displayName`,
      `email=mail`, `avatar_url=thumbnailPhoto`) plus its linked performer —
      generalizing the existing local-account provisioning path.
-  3. **Found, `auth_provider='local'`** → existing hash path, unchanged. A
-     local account never falls through to AD.
+  3. **Found, `auth_provider='local'`** → existing hash path first. A
+     account's credentials are never verified against AD as the local path. If local authentication fails and LDAP is configured, the same attempt is verified against AD (a domain user may hold the same login) and the §4 claim rules then decide what happens to the row — this is the mechanism that keeps the domain user from ever being locked out.
   4. **Found, `auth_provider='ldap'`** → `LdapClient.verify`; on success
      create a session and refresh profile attributes (§4). AD is consulted on
      every domain login, never on authenticated requests.
@@ -339,7 +339,10 @@ login in between; the rules below make every interleaving safe.)
 - LDAP JIT provisioning: if `login_key` is already held by a **local**
   principal → disable that local account (`enabled=false`), revoke its
   sessions, write an `administration_audit` record
-  (`login_conflict_local_disabled` with both principal ids), then provision the
+  (`login_conflict_local_disabled` with both principal ids); the account row is
+      then converted for the domain user (`auth_provider='ldap'`, structurally
+      unusable hash, enabled again — the local identity is what stops
+      working, and the domain user's session is a fresh one); then provision the
   LDAP principal normally. The domain user is never locked out; the local
   account that squatted the corporate login is the one that stops working, and
   the audit row records what happened (admin can restore/rename via

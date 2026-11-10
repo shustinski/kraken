@@ -319,6 +319,7 @@ git commit -m "feat(schema): principal logins/profiles and account auth_provider
   - `create_ldap_account(username: str, display_name: str) -> LocalAccount` — inserts `auth_provider="ldap"`, `password_hash = self.hasher.hash(secrets.token_urlsafe(32))` (structurally unusable), `enabled=True`.
   - `authenticate(username, password, *, lifetime: timedelta = timedelta(hours=12), verifier: Callable[[str, str], bool] | None = None) -> LocalSession | None` — `verifier(stored_hash, password)` replaces `self.hasher.verify` when provided; all existing lockout behavior unchanged.
   - `issue_session(username: str, *, lifetime: timedelta = timedelta(hours=12)) -> LocalSession | None` — same as `authenticate` without any password check; still honors `enabled` and `blocked_until`; resets `failed_attempts` on success. Used only right after an external (LDAP) verification.
+  - `convert_to_ldap_account(account_id: str) -> LocalAccount | None` — `UPDATE server_accounts SET auth_provider='ldap', password_hash=<hash of fresh 32 random bytes>, enabled=true WHERE account_id=:id`; returns the re-fetched `LocalAccount`, or `None` if no row. Used by the broker's claim-transfer flow (the row's previous local sessions must already be revoked via `set_enabled(False)` before this call).
   - `record_audit(*, action: str, target_account_id: str | None = None, details: dict[str, object] | None = None, actor_id: str | None = None) -> None` — public wrapper that opens its own transaction and inserts an `administration_audit` row.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_ldap_account_store.py` (`database` fixture):
@@ -355,6 +356,16 @@ def test_record_audit_persists(database):
     accounts.record_audit(action="test.action", details={"k": "v"})
     rows = accounts.administration_audit(limit=10)
     assert any(r["action"] == "test.action" and r["details"] == {"k": "v"} for r in rows)
+
+
+def test_convert_to_ldap_account(database):
+    services, accounts, _o, _c = database
+    account = accounts.create_account("conv.user", "Conv", "localpw")
+    accounts.set_enabled(account.account_id, False)
+    converted = accounts.convert_to_ldap_account(account.account_id)
+    assert converted is not None and converted.auth_provider == "ldap" and converted.enabled is True
+    assert accounts.authenticate("conv.user", "localpw") is None  # old local hash is gone
+    assert accounts.convert_to_ldap_account("00000000-0000-0000-0000-000000000000") is None
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -491,19 +502,27 @@ git commit -m "feat(identities): login claims and profile field updates"
         def __init__(self, accounts: Any, identities: Any, ldap: Any | None, *, performers: Any | None = None) -> None
         def authenticate(self, username: str, password: str) -> "LocalSession | None": ...
     ```
-    Routing (pinned):
+    Routing (pinned — supersedes the earlier "local never falls through to AD" draft; see ledger ruling R1):
     1. `account = accounts.get_by_username(username)` (a `ValueError` from username normalization → return `None`).
-    2. **Not found** → `self.ldap is None` → `None`. `identity = self.ldap.verify(username, password)` (`LdapUnavailable`/`LdapAuthenticationError` propagate to the caller). `identity is None` → `None`. `accounts.create_ldap_account(username, identity.display_name)`; on `IntegrityError` (concurrent JIT) re-fetch via `get_by_username` and continue through the "found ldap account" path with `identity` in hand. `session = accounts.issue_session(username)`; `self._provision_ldap(account, identity)`; return `session`.
-    3. **Found, `auth_provider == "local"`** → `accounts.authenticate(username, password)` (LDAP client is never touched).
-    4. **Found, `auth_provider == "ldap"`** → `identity = self.ldap.verify(...)`; `ok = identity is not None`; `session = accounts.authenticate(username, password, verifier=lambda _stored, _pw: ok)`; if `session` and `identity`: `self._provision_ldap(account, identity)` (refresh path — idempotent).
+    2. **Found, `auth_provider == "ldap"`** → `identity = self.ldap.verify(...)` (`Ldap*` propagate); `ok = identity is not None`; `session = accounts.authenticate(username, password, verifier=lambda _stored, _pw: ok)` (lockout counts AD failures); if `session` and `identity`: `self._provision_ldap(account, identity)` (refresh path — idempotent); return `session`.
+    3. **Found, `auth_provider == "local"`** → `session = accounts.authenticate(username, password)`. If `session` → return it (a successful local login never touches AD). If `None`:
+       - `self.ldap is None` → `None`.
+       - `identity = self.ldap.verify(username, password)` (`Ldap*` propagate); `identity is None` → `None`.
+       - AD-verified domain user whose login is held by a local row → claim resolution (spec §4, "domain user is never locked out"):
+         - `holder = self.identities.find_by_login(username.casefold())`.
+         - **`holder` is a LOCAL principal** (a different principal — the squatter case): `self.accounts.set_enabled(account.account_id, False)` (revokes the local user's sessions + audits `account.disabled`), `account = self.accounts.convert_to_ldap_account(account.account_id)` (row becomes the domain user's LDAP account: unusable hash, `enabled=True`), `self.accounts.record_audit(action="login_conflict_local_disabled", target_account_id=account.account_id, details={"login": account.username, "local_principal": str(holder.id), "ldap_principal": <uuid5 id>})`, then release the claim: `self.identities.save(dataclasses.replace(holder, login=None))` (full principal re-read via `find_by_login`, so `system_roles` survive; `save()` writes `login_key=NULL`).
+         - **`holder is None` and the row is enabled** (local user never signed in — spec: "keeps working", no lockout in either direction): leave the row local and enabled; the domain user's session is issued from the shared row; the local user can still sign in with the local password.
+         - **`holder is None` and the row is disabled**: `account = self.accounts.convert_to_ldap_account(account.account_id)` (a disabled local row is unusable by its owner; the domain user takes it).
+         - **`holder` is an LDAP principal** (a different principal) → raise `LdapUnavailable("conflicting LDAP principals for one login")` (503 upstream; never a silent rename).
+       - `session = accounts.issue_session(username)`; `self._provision_ldap(account, identity)`; return `session`.
+    4. **Not found** → `self.ldap is None` → `None`. `identity = self.ldap.verify(username, password)` (`Ldap*` propagate); `identity is None` → `None`. `accounts.create_ldap_account(username, identity.display_name)`; on `IntegrityError` (concurrent JIT) re-fetch via `get_by_username` and continue with the re-fetched account. `session = accounts.issue_session(username)`; `self._provision_ldap(account, identity)`; return `session`.
   - `_provision_ldap(account, identity)`:
     - `principal_id = PrincipalId(str(uuid5(NAMESPACE_URL, f"kraken:ldap:{account.username.casefold()}")))`
     - `principal = Principal.ldap(principal_id=principal_id, issuer=self.ldap.issuer, subject=account.username, display_name=identity.display_name, email=identity.email, login=account.username, avatar_url=identity.avatar_url, system_roles=frozenset(SystemRole(r) for r in self.accounts.global_roles_for(account.account_id)))`
       (system_roles MUST be read from the store — `save()` overwrites the column; same pattern as `provision_local_account`.)
-    - Claim check: `holder = self.identities.find_by_login(account.username.casefold())`. If `holder is not None` and `str(holder.id) != str(principal_id)`:
-      - `holder.provider is PrincipalProvider.LOCAL` → `self.accounts.set_enabled(str(holder.id), False)` (revokes sessions + audits `account.disabled`) then `self.accounts.record_audit(action="login_conflict_local_disabled", target_account_id=str(holder.id), details={"login": account.username, "ldap_principal": str(principal_id)})`.
-      - otherwise → raise `LdapUnavailable("conflicting LDAP principals for one login")` (503 upstream; never a silent rename).
+    - Claim safety net (the transfer/release above already ran for the broker paths): `holder = self.identities.find_by_login(account.username.casefold())`; if `holder is not None` and `str(holder.id) != str(principal_id)` → raise `LdapUnavailable("conflicting principals for one login")` (the DB unique index is the final net; no silent rename, no silent overwrite).
     - `self.identities.save(principal)`; if `identity.avatar_url is not None`: `self.identities.sync_avatar(principal_id, identity.avatar_url)`; if `self.performers is not None`: `ensure_linked_performer(principal, self.performers)`.
+  - `HybridSessionResolver` (ctor gains keyword-only `performers: Any | None = None, ldap_issuer: str | None = None` — appended, existing positional call sites unchanged): in session resolution, an account with `auth_provider == "ldap"` resolves its principal via `self.identities.get_by_external_key(f"ldap:{account.username.casefold()}")`; if that row is missing (data anomaly — JIT and transfer always create it) and `ldap_issuer` is set → provision it without AD: `Principal.ldap(principal_id=<same uuid5>, issuer=ldap_issuer, subject=account.username, display_name=account.display_name, login=account.username, system_roles=<from store>)` + save + performer (same claim safety net); if `ldap_issuer` is None → log an error and return the no-principal result (401 on first API call).
   - `HybridSessionResolver.provision_local_account` (reverse direction): before building the principal, `holder = self.identities.find_by_login(account.username.casefold())`; if `holder is not None and str(holder.id) != str(account.account_id) and holder.provider is PrincipalProvider.LDAP` → build the principal with `login=None` (claim yielded) and `self.accounts.record_audit(action="login_claim_conflict_local_skipped", target_account_id=account.account_id, details={"login": account.username, "holder": str(holder.id)})`; otherwise `login=account.username`.
 
 - [ ] **Step 1: Write `tests/ldap_fixtures.py`** (the `FakeLdap` above, plus a `make_broker(accounts, identities, fake, performers)` helper returning `DomainAuthBroker(accounts, identities, fake, performers=performers)`).
@@ -564,19 +583,50 @@ def test_ldap_account_reverified_each_login_and_ad_down_propagates(database):
         broker.authenticate("re.user", "ok")
 
 
-def test_login_conflict_disables_squatting_local_account(database):
+def test_login_conflict_transfers_claim_from_squatting_local_account(database):
     services, accounts, _o, _c = database
     # local account "squatter" already logged in once -> principal holds the login claim
-    accounts.create_account("squatter", "Squatter", "pw")
+    account = accounts.create_account("squatter", "Squatter", "pw")
+    local_pid = PrincipalId(str(account.account_id))
     services.identities.save(Principal.local(subject="squatter", display_name="Squatter",
-                                             principal_id=accounts.get_by_username("squatter").account_id,
-                                             login="squatter"))
+                                             principal_id=local_pid, login="squatter"))
     broker = make_broker(accounts, services.identities, FakeLdap({"squatter": _ldap_identity("squatter")}), None)
     session = broker.authenticate("squatter", "domain-pw")
     assert session is not None
-    assert accounts.get_by_username("squatter").enabled is False
-    assert any(r["action"] == "login_conflict_local_disabled" for r in accounts.administration_audit(limit=20))
+    # the row is converted for the domain user (the local identity is what stops working)
+    converted = accounts.get_by_username("squatter")
+    assert converted.auth_provider == "ldap" and converted.enabled is True
+    assert accounts.authenticate("squatter", "pw") is None  # local password no longer works
+    # claim released from the local principal, held by the LDAP principal
+    assert services.identities.get(local_pid).login is None
     assert services.identities.find_by_login("squatter").provider is PrincipalProvider.LDAP
+    assert any(r["action"] == "login_conflict_local_disabled" for r in accounts.administration_audit(limit=20))
+    # the old local user is out: a fresh local sign-in is impossible, the domain session works
+    assert session.account.account_id == converted.account_id
+
+
+def test_domain_login_shares_row_with_never_signed_in_local_account(database):
+    services, accounts, _o, _c = database
+    # local account exists but its user never signed in: no principal, no claim
+    accounts.create_account("shared.user", "Shared Local", "localpw")
+    fake = FakeLdap({"shared.user": _ldap_identity("shared.user")})
+    broker = make_broker(accounts, services.identities, fake, None)
+    session = broker.authenticate("shared.user", "domain-pw")
+    assert session is not None
+    # the row stays LOCAL and enabled — the local user keeps working (no lockout in either direction)
+    row = accounts.get_by_username("shared.user")
+    assert row.auth_provider == "local" and row.enabled is True
+    assert accounts.authenticate("shared.user", "localpw") is not None
+    assert fake.calls == ["shared.user"]  # local sign-in above did not touch AD
+    # the LDAP principal holds the claim
+    assert services.identities.find_by_login("shared.user").provider is PrincipalProvider.LDAP
+    # the local user's first-login provisioning yields the claim
+    resolver = HybridSessionResolver(accounts, services.identities, None)
+    local_session = accounts.authenticate("shared.user", "localpw")
+    resolver.provision_local_account(local_session.account)
+    local_principal = services.identities.get(PrincipalId(local_session.account.account_id))
+    assert local_principal.login is None
+    assert any(r["action"] == "login_claim_conflict_local_skipped" for r in accounts.administration_audit(limit=20))
 
 
 def test_reverse_interleave_local_login_keeps_working(database):

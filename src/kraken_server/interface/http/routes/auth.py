@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import Request
 
+from kraken_manager.domain.identity import PrincipalProvider
 from kraken_manager.infrastructure.auth.ldap import LdapAuthenticationError, LdapUnavailable
 from kraken_server.interface.http.context import HttpContext
 from kraken_server.interface.http.prefix import API_PREFIX
@@ -21,6 +22,7 @@ def register(ctx: HttpContext) -> None:
     domain_auth = ctx.domain_auth
     lan_gate = ctx.lan_gate
     client_ip = ctx.client_ip
+    identities = ctx.identities
     HTTPException = ctx.HTTPException
     problem = ctx.problem
 
@@ -83,6 +85,10 @@ def register(ctx: HttpContext) -> None:
         display_name = str(payload.get("display_name", "")).strip() or username
         if not username or not password:
             raise ValidationError("Username and password are required")
+        if identities is not None:
+            holder = identities.find_by_login(username.strip().casefold())
+            if holder is not None and holder.provider is not PrincipalProvider.LOCAL:
+                raise HTTPException(status_code=409, detail=f"Логин «{username}» уже занят")
         try:
             store.create_account(username, display_name, password)
         except ValueError as exc:

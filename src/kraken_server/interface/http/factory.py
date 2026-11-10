@@ -43,6 +43,10 @@ def create_app(
     agent_token_store: Any | None = None,
     agent_gateway: Any | None = None,
     blob_gateway: Any | None = None,
+    domain_auth: Any | None = None,
+    lan_gate: Callable[[str], bool] | None = None,
+    client_ip: Callable[[Any], str] | None = None,
+    identities: Any | None = None,
 ) -> Any:
     context = build_http_context(
         services,
@@ -56,6 +60,10 @@ def create_app(
         agent_token_store,
         agent_gateway,
         blob_gateway,
+        domain_auth,
+        lan_gate,
+        client_ip,
+        identities,
     )
     register_session(context)
     register_auth(context)

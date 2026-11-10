@@ -29,7 +29,7 @@ def register(ctx: HttpContext) -> None:
         if actor is None:
             return {
                 "principal_id": subject.principal_id,
-                "provider": (subject.provider if subject.provider in {"local", "gitlab"} else "local"),
+                "provider": (subject.provider if subject.provider in {"local", "gitlab", "ldap"} else "local"),
                 "subject": subject.principal_id,
                 "issuer": None,
                 "display_name": subject.principal_id,

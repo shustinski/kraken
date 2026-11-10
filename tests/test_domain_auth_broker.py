@@ -114,6 +114,29 @@ def test_domain_login_shares_row_with_never_signed_in_local_account(database):
     assert any(r["action"] == "login_claim_conflict_local_skipped" for r in accounts.administration_audit(limit=20))
 
 
+def test_repeat_domain_login_on_shared_row_keeps_local_user_working(database):
+    services, accounts, _o, _c = database
+    # local account exists but its user never signed in: no principal, no claim
+    accounts.create_account("repeat.user", "Repeat Local", "localpw")
+    fake = FakeLdap({"repeat.user": _ldap_identity("repeat.user")})
+    broker = make_broker(accounts, services.identities, fake, None)
+    first = broker.authenticate("repeat.user", "domain-pw")
+    assert first is not None
+    # first domain login: the row stays local+enabled, the LDAP principal holds the claim
+    row = accounts.get_by_username("repeat.user")
+    assert row.auth_provider == "local" and row.enabled is True
+    assert services.identities.find_by_login("repeat.user").provider is PrincipalProvider.LDAP
+    # the second domain login must not hit the conflicting-principals net (no lockout)
+    second = broker.authenticate("repeat.user", "domain-pw")
+    assert second is not None
+    row = accounts.get_by_username("repeat.user")
+    assert row.auth_provider == "local" and row.enabled is True
+    # the local user can still sign in with the local password, without touching AD
+    calls_after_second_login = list(fake.calls)
+    assert accounts.authenticate("repeat.user", "localpw") is not None
+    assert fake.calls == calls_after_second_login
+
+
 def test_reverse_interleave_local_login_keeps_working(database):
     services, accounts, _o, _c = database
     from uuid import NAMESPACE_URL, uuid5

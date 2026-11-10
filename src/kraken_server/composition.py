@@ -297,8 +297,10 @@ class DomainAuthBroker:
         holder = self.identities.find_by_login(account.username.casefold())
         if holder is not None:
             if holder.provider is PrincipalProvider.LDAP:
-                # A different principal already owns this login: fail closed (503 upstream).
-                raise LdapUnavailable("conflicting LDAP principals for one login")
+                if str(holder.id) != str(_ldap_principal_id(account.username)):
+                    # A *different* LDAP principal already owns this login: fail closed (503 upstream).
+                    raise LdapUnavailable("conflicting LDAP principals for one login")
+                return account  # the domain user's own claim: re-login on a shared row, refresh only
             if holder.provider is PrincipalProvider.LOCAL:
                 return self._takeover_squatting_local_row(account, holder)
             return account  # any other holder is caught by the _provision_ldap safety net

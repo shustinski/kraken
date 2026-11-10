@@ -1,0 +1,55 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-10T11:18:16.6282612Z",
+    "tier":  "unit",
+    "command":  [
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests --ignore=tests/test_live_server_plugin_chain.py --ignore=tests/test_live_server_worker_acceptance.py --ignore=tests/test_live_server_worker_faults.py --ignore=tests/test_live_ui_workflow.py --ignore=tests/test_neuralimage_headless_training.py --ignore=tests/test_pipeline_live_contour.py --ignore=tests/test_pipeline_live_neural_model.py --ignore=tests/test_end_to_end_functional.py --ignore=tests/test_admin_project_workflows.py --ignore=tests/test_agent_execution_schema_upgrade.py --ignore=tests/test_agent_queue_admission.py --ignore=tests/test_cif_media_upload.py --ignore=tests/test_device_candidate_postgres.py --ignore=tests/test_electrical_postgres.py --ignore=tests/test_legacy_work_order_postgres.py --ignore=tests/test_live_catalog_acceptance.py --ignore=tests/test_model_input_postgres.py --ignore=tests/test_multilayer_postgres.py --ignore=tests/test_performer_store.py --ignore=tests/test_pipeline_postgres.py --ignore=tests/test_pipeline_stitch_failures.py --ignore=tests/test_pipeline_stitch_postgres.py --ignore=tests/test_planning_named_selection.py --ignore=tests/test_planning_postgres.py --ignore=tests/test_planning_required_arguments.py --ignore=tests/test_quality_analysis_postgres.py --ignore=tests/test_quality_postgres.py --ignore=tests/test_registered_principal_before_session.py --ignore=tests/test_remote_stitch_dialog.py --ignore=tests/test_server_analysis_acceptance.py --ignore=tests/test_server_analysis_workflow.py --ignore=tests/test_server_backup.py --ignore=tests/test_server_managed_upload_preflight.py --ignore=tests/test_server_stitch_workflow.py --ignore=tests/test_server_vector_stitch.py --ignore=tests/test_stitch_plan_postgres.py --ignore=tests/test_targeted_machine_lease.py --ignore=tests/test_worker_runtime_postgres.py --ignore=tests/test_work_plan_analytics_postgres.py --ignore=tests/test_work_templates_postgres.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-3bfe6f5b3e4a488983e6388d1b7eed0e\\basetemp-unit(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(1).xml",
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-3bfe6f5b3e4a488983e6388d1b7eed0e\\basetemp-unit(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(2).xml"
+                ],
+    "exit_code":  -1073741819,
+    "tests":  264,
+    "passed":  262,
+    "failed":  2,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  72.469,
+    "status":  "FAIL",
+    "note":  "no readable JUnit produced (the suite may have crashed)",
+    "runs":  [
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests --ignore=tests/test_live_server_plugin_chain.py --ignore=tests/test_live_server_worker_acceptance.py --ignore=tests/test_live_server_worker_faults.py --ignore=tests/test_live_ui_workflow.py --ignore=tests/test_neuralimage_headless_training.py --ignore=tests/test_pipeline_live_contour.py --ignore=tests/test_pipeline_live_neural_model.py --ignore=tests/test_end_to_end_functional.py --ignore=tests/test_admin_project_workflows.py --ignore=tests/test_agent_execution_schema_upgrade.py --ignore=tests/test_agent_queue_admission.py --ignore=tests/test_cif_media_upload.py --ignore=tests/test_device_candidate_postgres.py --ignore=tests/test_electrical_postgres.py --ignore=tests/test_legacy_work_order_postgres.py --ignore=tests/test_live_catalog_acceptance.py --ignore=tests/test_model_input_postgres.py --ignore=tests/test_multilayer_postgres.py --ignore=tests/test_performer_store.py --ignore=tests/test_pipeline_postgres.py --ignore=tests/test_pipeline_stitch_failures.py --ignore=tests/test_pipeline_stitch_postgres.py --ignore=tests/test_planning_named_selection.py --ignore=tests/test_planning_postgres.py --ignore=tests/test_planning_required_arguments.py --ignore=tests/test_quality_analysis_postgres.py --ignore=tests/test_quality_postgres.py --ignore=tests/test_registered_principal_before_session.py --ignore=tests/test_remote_stitch_dialog.py --ignore=tests/test_server_analysis_acceptance.py --ignore=tests/test_server_analysis_workflow.py --ignore=tests/test_server_backup.py --ignore=tests/test_server_managed_upload_preflight.py --ignore=tests/test_server_stitch_workflow.py --ignore=tests/test_server_vector_stitch.py --ignore=tests/test_stitch_plan_postgres.py --ignore=tests/test_targeted_machine_lease.py --ignore=tests/test_worker_runtime_postgres.py --ignore=tests/test_work_plan_analytics_postgres.py --ignore=tests/test_work_templates_postgres.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-3bfe6f5b3e4a488983e6388d1b7eed0e\\basetemp-unit(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(1).xml",
+                     "exit_code":  -1073741819,
+                     "tests":  0,
+                     "passed":  0,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  null,
+                     "junit":  "junit(1).xml",
+                     "log":  "pytest(1).txt",
+                     "note":  "no readable JUnit produced (the suite may have crashed)"
+                 },
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-3bfe6f5b3e4a488983e6388d1b7eed0e\\basetemp-unit(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(2).xml",
+                     "exit_code":  1,
+                     "tests":  264,
+                     "passed":  262,
+                     "failed":  2,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  72.469,
+                     "junit":  "junit(2).xml",
+                     "log":  "pytest(2).txt",
+                     "note":  "tests failed"
+                 }
+             ]
+}

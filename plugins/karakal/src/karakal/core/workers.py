@@ -26,6 +26,7 @@ from .grid_anomaly import (
     resolve_reference_profile,
 )
 from .performance import PerformanceConfig, load_performance_config
+from .sparse_cells import DEFAULT_SPARSE_REACH_SITES, SPARSE_REASON, layer_frames, mark_sparse_cells
 from .pair_agreement import analyze_network_disagreement_chunk
 from .pair_conflict import analyze_class_conflict_chunk, is_agreement_key
 from .profiling import ProfileSnapshot, ProfilerRun, WorkerProfilePacket, activate_profiler, export_profile
@@ -113,6 +114,69 @@ def _profiled_grid_sources_chunk(
         processed_frames=len(chunk),
         processed_batches=1,
     )
+
+
+def sparse_cells_on(config: GridDamageAnalysisConfig) -> bool:
+    types = config.enabled_reason_types
+    return types is None or SPARSE_REASON in set(types)
+
+
+def settle_sparse_layer(
+    payloads: dict[str, object],
+    records,
+    model_id: str,
+    *,
+    frames_per_row: int,
+    reach_sites: float,
+    cancelled=None,
+) -> dict[str, object]:
+    """Sparse cells of one layer, marked once all its frames are analysed (core.sparse_cells).
+
+    ``payloads`` hold a result per frame, or results per layer of a frame; the entries that changed
+    are updated in place and returned in the same shape.
+    """
+
+    keys_paths: list[tuple[str, str]] = []
+    tiles: dict[str, tuple[int, int]] = {}
+    for record in records:
+        key = str(getattr(record, "key", "") or "")
+        if not key or key not in payloads:
+            continue
+        masks = getattr(record, "model_mask_paths", {}) or {}
+        probs = getattr(record, "model_prob_paths", {}) or {}
+        if model_id:
+            path = str(masks.get(model_id) or probs.get(model_id) or "")
+        else:
+            path = str(next(iter(masks.values()), "") or getattr(record, "first_path", "") or "")
+        keys_paths.append((key, path))
+        identity = getattr(record, "identity", None)
+        if identity is not None and getattr(identity, "tile_x", None) is not None and getattr(identity, "tile_y", None) is not None:
+            tiles[key] = (int(identity.tile_x), int(identity.tile_y))
+    frames = layer_frames(keys_paths, int(frames_per_row), tiles)
+    layers: list[str | None] = []
+    for value in payloads.values():
+        names = list(value) if isinstance(value, dict) else [None]
+        for name in names:
+            if name not in layers:
+                layers.append(name)
+    changed: dict[str, object] = {}
+    for layer in layers:
+        if layer is None:
+            results = {key: value for key, value in payloads.items() if not isinstance(value, dict)}
+        else:
+            results = {key: value.get(layer) for key, value in payloads.items() if isinstance(value, dict)}
+        updated, info = mark_sparse_cells(results, frames, reach_sites=reach_sites, cancelled=cancelled)
+        _LOGGER.info("sparse cells layer=%s/%s %s", model_id, layer or "", info)
+        for key, result in updated.items():
+            if layer is None:
+                changed[key] = result
+            else:
+                entry = changed.get(key)
+                if entry is None:
+                    entry = changed[key] = dict(payloads[key])
+                entry[layer] = result
+    payloads.update(changed)
+    return changed
 
 
 class WorkerBase(QObject):
@@ -365,11 +429,15 @@ class GridInspectionWorker(WorkerBase):
         reference_profile: GridCellReferenceProfile | None = None,
         use_cache: bool = True,
         performance_config: PerformanceConfig | None = None,
+        frames_per_row: int = 0,
+        sparse_reach_sites: float = DEFAULT_SPARSE_REACH_SITES,
     ) -> None:
         super().__init__(performance_config=performance_config, analysis_type="validation_grid")
         self._records = tuple(records)
         self._config = (config or GridDamageAnalysisConfig()).normalized()
         self._model_id = str(model_id or "")
+        self._frames_per_row = int(frames_per_row)
+        self._sparse_reach_sites = float(sparse_reach_sites)
         self._reference_profile = reference_profile
         self._use_cache = bool(use_cache)
         self._partial_result_buffer: dict[str, GridFrameAnalysisResult] = {}
@@ -383,6 +451,23 @@ class GridInspectionWorker(WorkerBase):
             self._reference_profile = resolve_reference_profile(before, self._config)
         if self._reference_profile is not before:
             self.referenceProfileReady.emit(self._model_id, self._reference_profile)
+
+    def _settle_sparse(self, payloads: dict) -> None:
+        """Sparse cells need every frame of the layer: marked after the frames, then sent again."""
+
+        if self._is_cancelled() or not payloads or not sparse_cells_on(self._config):
+            return
+        with self._profiler.stage("validation.grid.sparse_cells", frame_count=len(payloads)):
+            changed = settle_sparse_layer(
+                payloads,
+                self._records,
+                self._model_id,
+                frames_per_row=self._frames_per_row,
+                reach_sites=self._sparse_reach_sites,
+                cancelled=self._is_cancelled,
+            )
+        if changed:
+            self._queue_partial_results(changed, force=True)
 
     def _source_path(self, record: FrameRecord) -> str:
         model_masks = getattr(record, "model_mask_paths", {}) or {}
@@ -443,6 +528,7 @@ class GridInspectionWorker(WorkerBase):
                                 completed=len(payloads),
                             )
                 self._flush_partial_results()
+                self._settle_sparse(payloads)
                 if self._is_cancelled():
                     self._profiler.increment("runs.cancelled")
                     self.cancelled.emit()
@@ -664,6 +750,8 @@ class PairedGridInspectionWorker(GridInspectionWorker):
         use_cache: bool = True,
         performance_config: PerformanceConfig | None = None,
         requested_layers: tuple[str, ...] | None = None,
+        frames_per_row: int = 0,
+        sparse_reach_sites: float = DEFAULT_SPARSE_REACH_SITES,
     ) -> None:
         super().__init__(
             records,
@@ -671,6 +759,8 @@ class PairedGridInspectionWorker(GridInspectionWorker):
             reference_profile=reference_profile,
             use_cache=use_cache,
             performance_config=performance_config,
+            frames_per_row=frames_per_row,
+            sparse_reach_sites=sparse_reach_sites,
         )
         self._model_id = str(model_id)
         layers = tuple(
@@ -791,6 +881,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                             single_source_layer=single_source_layer,
                         )
                 self._flush_partial_results()
+                self._settle_sparse(payloads)
                 if self._is_cancelled():
                     self._profiler.increment("runs.cancelled")
                     self.cancelled.emit()
@@ -917,6 +1008,8 @@ class MultiModelGridInspectionWorker(WorkerBase):
         performance_config: PerformanceConfig | None = None,
         requested_layers: tuple[str, ...] | None = None,
         conflict_pairs: tuple[tuple[str, str, str], ...] = (),
+        frames_per_row: dict[str, int] | int = 0,
+        sparse_reach_sites: float = DEFAULT_SPARSE_REACH_SITES,
     ) -> None:
         super().__init__(performance_config=performance_config, analysis_type="validation_grid")
         self._records = tuple(records)
@@ -935,6 +1028,9 @@ class MultiModelGridInspectionWorker(WorkerBase):
         # (pair key, first model id, second model id)
         self._conflict_pairs = tuple((str(key), str(ones), str(zeros)) for key, ones, zeros in conflict_pairs)
         self._analysis_errors: dict[str, str] = {}
+        # Frames per row of each layer (or one for all): neighbour frames of the sparse cells.
+        self._frames_per_row = frames_per_row
+        self._sparse_reach_sites = float(sparse_reach_sites)
 
     def _paired_records_for(self, model_id: str) -> list[tuple[str, str, str]]:
         records: list[tuple[str, str, str]] = []
@@ -1064,6 +1160,7 @@ class MultiModelGridInspectionWorker(WorkerBase):
                         max_workers=max_workers,
                         opencv_threads=opencv_threads,
                     )
+                    self._settle_sparse(model_id, per_model_payloads, config)
                 for key, paired in pair_plans:
                     step += 1
                     if self._is_cancelled():
@@ -1100,6 +1197,29 @@ class MultiModelGridInspectionWorker(WorkerBase):
             finally:
                 self._finish_profiling()
         self.finished.emit(combined)
+
+    def _layer_frames_per_row(self, model_id: str) -> int:
+        value = self._frames_per_row
+        if isinstance(value, dict):
+            return int(value.get(model_id) or value.get("", 0) or 0)
+        return int(value or 0)
+
+    def _settle_sparse(self, model_id: str, payloads: dict, config: GridDamageAnalysisConfig) -> None:
+        """Sparse cells need every frame of the layer: marked after its frames, then sent again."""
+
+        if self._is_cancelled() or not payloads or not sparse_cells_on(config):
+            return
+        with self._profiler.stage("validation.grid.sparse_cells", frame_count=len(payloads)):
+            changed = settle_sparse_layer(
+                payloads,
+                self._records,
+                model_id,
+                frames_per_row=self._layer_frames_per_row(model_id),
+                reach_sites=self._sparse_reach_sites,
+                cancelled=self._is_cancelled,
+            )
+        if changed:
+            self.multiModelResultsReady.emit({model_id: {str(frame): dict(value) for frame, value in changed.items()}})
 
     def _run_plan(
         self,

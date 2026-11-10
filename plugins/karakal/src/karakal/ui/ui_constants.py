@@ -110,21 +110,22 @@ GRID_INSPECTION_ERROR_TYPE_OPTIONS = (
     ("grid_error.small_artifact", "small_artifact"),
     ("grid_error.broken_geometry", "broken_geometry"),
     ("grid_error.merged_contour", "merged_contour"),
-    ("grid_error.split_cell", "split_cell"),
-    ("grid_error.unknown_anomaly", "unknown_anomaly"),
+    # Split cells and unknown pieces are broken geometry (cell_error_adapter): no boxes of their own.
+    # After the classes: a broken cell that is also sparse keeps the colour of its class.
+    ("grid_error.sparse_cell", "sparse_cell"),
     ("grid_error.class_conflict", "class_conflict"),
     ("grid_error.network_only", "network_only"),
     ("grid_error.conductor_zone", "conductor_zone"),
 )
 # Types whose checkbox has a "grid_error.<type>_hint" tooltip.
-GRID_ERROR_TYPE_HINTS = frozenset({"small_artifact", "split_cell", "unknown_anomaly", "conductor_zone"})
-# Geometry, debris and merge keep their colors; split and unknown are new (core.error_classes).
+GRID_ERROR_TYPE_HINTS = frozenset({"small_artifact", "sparse_cell", "conductor_zone"})
+# Debris, geometry and merge keep their colours from the first versions; the sparse cell is bright
+# lime, a colour no other mark has.
 GRID_INSPECTION_ERROR_TYPE_COLORS = {
     "small_artifact": "#ec4899",
     "broken_geometry": "#38bdf8",
     "merged_contour": "#a855f7",
-    "split_cell": "#f97316",
-    "unknown_anomaly": "#eab308",
+    "sparse_cell": "#a3e635",
     "class_conflict": "#e11d48",
     "network_only": "#14b8a6",
     "conductor_zone": "#64748b",

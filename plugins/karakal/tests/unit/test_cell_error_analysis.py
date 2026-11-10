@@ -198,7 +198,10 @@ def test_old_shape_of_the_result_still_feeds_the_matrix_and_old_export(bank) -> 
     result = analyze_cell_errors(frame.mask, bank, frame_id="f7")
     legacy = to_grid_frame_result(result)
     reasons = {reason for cell in legacy.per_cell_results for reason in cell.reasons}
-    assert {"broken_geometry", "small_artifact", "merged_contour", "split_cell", "conductor_zone"} <= reasons
+    assert {"broken_geometry", "small_artifact", "merged_contour", "conductor_zone"} <= reasons
+    # A split cell is broken geometry for the operator; its class stays among the features.
+    assert "split_cell" not in reasons
+    assert any(dict(cell.feature_snapshot).get("reason:split_fragments") for cell in legacy.per_cell_results if "broken_geometry" in cell.reasons)
     assert legacy.broken_cells == len(result.regions)
     assert legacy.cell_width == 18 and legacy.cell_height == 40
     for cell in legacy.per_cell_results:

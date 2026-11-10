@@ -153,6 +153,8 @@ class FrameSetsPanel(QWidget):
     clearSelectionRequested = pyqtSignal()
     exportOpened = pyqtSignal()
     exportChoicesChanged = pyqtSignal()
+    # The operator picked the error types of the error picture, the errors over the mask and the table.
+    exportTypesChanged = pyqtSignal()
     exportBrowseRequested = pyqtSignal()
     exportRequested = pyqtSignal()
     openFolderRequested = pyqtSignal()
@@ -316,6 +318,18 @@ class FrameSetsPanel(QWidget):
                 self.fill_black_check.setStyleSheet("margin-left: 18px;")
                 self.fill_black_check.toggled.connect(lambda _checked: self.exportChoicesChanged.emit())
                 items_layout.addWidget(self.fill_black_check)
+                # What the error picture shows: its own choice of types, the filter's at first.
+                self.error_types_title = QLabel(self._t("frame_sets.export.error_types"), items_column)
+                self.error_types_title.setToolTip(self._t("frame_sets.export.error_types_hint"))
+                self.error_types_title.setStyleSheet(_MUTED + " margin-left: 18px;")
+                items_layout.addWidget(self.error_types_title)
+                self.error_types_box = QWidget(items_column)
+                self.error_types_layout = QVBoxLayout(self.error_types_box)
+                self.error_types_layout.setContentsMargins(18, 0, 0, 0)
+                self.error_types_layout.setSpacing(1)
+                items_layout.addWidget(self.error_types_box)
+                self.error_type_checks: dict[str, QCheckBox] = {}
+                self._error_type_counts: dict[str, QLabel] = {}
         summary_label = QLabel(self._t("frame_sets.export.summary_items"), items_column)
         summary_label.setStyleSheet(_MUTED + " font-weight: 600;")
         items_layout.addWidget(summary_label)
@@ -539,6 +553,54 @@ class FrameSetsPanel(QWidget):
             check.blockSignals(True)
             check.setChecked(bool(value))
             check.blockSignals(False)
+
+    def set_export_error_types(
+        self,
+        options: list[tuple[str, str, str]],
+        chosen,
+        counts: dict[str, int] | None = None,
+        *,
+        enabled: bool = True,
+    ) -> None:
+        """Types the error picture can show: (type, label, colour); ticked ones are ``chosen``; next
+        to each, how many such errors the exported frames have."""
+
+        chosen = {str(item) for item in chosen}
+        if [key for key, _label, _color in options] != list(self.error_type_checks):
+            while self.error_types_layout.count():
+                item = self.error_types_layout.takeAt(0)
+                if item.widget() is not None:
+                    item.widget().deleteLater()
+            self.error_type_checks.clear()
+            self._error_type_counts.clear()
+            for key, label, color in options:
+                row = QWidget(self.error_types_box)
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(6)
+                swatch = QLabel(row)
+                swatch.setFixedSize(12, 12)
+                swatch.setStyleSheet(f"background: {color}; border-radius: 2px;")
+                check = QCheckBox(label, row)
+                check.toggled.connect(lambda _checked: self.exportTypesChanged.emit())
+                count = QLabel(row)
+                count.setStyleSheet(_MUTED)
+                row_layout.addWidget(swatch)
+                row_layout.addWidget(check, 1)
+                row_layout.addWidget(count)
+                self.error_types_layout.addWidget(row)
+                self.error_type_checks[key] = check
+                self._error_type_counts[key] = count
+        for key, check in self.error_type_checks.items():
+            check.blockSignals(True)
+            check.setChecked(key in chosen)
+            check.blockSignals(False)
+            self._error_type_counts[key].setText(str(int((counts or {}).get(key, 0))) if counts is not None else "")
+        self.error_types_title.setEnabled(bool(enabled))
+        self.error_types_box.setEnabled(bool(enabled))
+
+    def export_error_types(self) -> frozenset[str]:
+        return frozenset(key for key, check in self.error_type_checks.items() if check.isChecked())
 
     def export_fill_black(self) -> bool:
         return bool(self.fill_black_check.isChecked())

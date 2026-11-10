@@ -77,6 +77,9 @@ class BatchJob:
     build_settings: dict
     config_payload: dict
     performance_config: object = None
+    # Frames per row of the snapshot (0: frames have no neighbours) and the sparse cell distance.
+    frames_per_row: int = 0
+    sparse_reach_sites: float = 4.0
 
 
 @dataclass(slots=True)
@@ -251,6 +254,8 @@ class _BatchThread(QThread):
             performance_config=job.performance_config,
             requested_layers=job.requested_layers,
             conflict_pairs=pairs,
+            frames_per_row=int(job.frames_per_row),
+            sparse_reach_sites=float(job.sparse_reach_sites),
         )
         if self.paused:
             worker.request_pause()
@@ -700,6 +705,8 @@ class BatchController(QObject):
             build_settings=p._build_build_settings_payload(),
             config_payload=dict(config_payload),
             performance_config=getattr(p._view, "performance_config", None),
+            frames_per_row=int(spin.value()) if (spin := getattr(p._view, "frames_per_row_spin", None)) is not None else 0,
+            sparse_reach_sites=float(getattr(p, "_grid_sparse_reach_sites", 4)),
         )
 
     @staticmethod

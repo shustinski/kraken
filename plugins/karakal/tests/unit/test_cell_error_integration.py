@@ -44,7 +44,7 @@ def test_run_builds_the_bank_in_the_worker_and_frame_window_uses_it(tmp_path, qt
         for cell in result.per_cell_results
         for reason in cell.reasons
     }
-    assert {"broken_geometry", "small_artifact", "split_cell"} <= reasons
+    assert {"broken_geometry", "small_artifact"} <= reasons and "split_cell" not in reasons
 
     record = state.build_result.records[0]
     values = dict(presenter._grid_tuning_values())

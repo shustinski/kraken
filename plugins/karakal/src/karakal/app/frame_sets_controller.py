@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QFileDialog, QMenu, QProgressDialog
 
 from ..core.frame_set_export import (
     ITEM_ERRORS,
+    ITEM_ERRORS_OVER_MASK,
     ITEM_MASK,
     FrameSetExportFrame,
     FrameSetExportModel,
@@ -37,7 +38,7 @@ from ..core.frame_sets import (
     frames_below,
 )
 from ..ui.frame_sets_panel import SLIDER_STEPS, FrameSetsPanel, FrameSetsSlider
-from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_OPTIONS
+from ..ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS, GRID_INSPECTION_ERROR_TYPE_OPTIONS
 
 _LOGGER = logging.getLogger(__name__)
 REFRESH_DEBOUNCE_MS = 120
@@ -96,6 +97,9 @@ class FrameSetsController(QObject):
         self._export_canvas = False
         self._export_table = True
         self._export_fill_black = False
+        # Error types of the error picture and the table: None follows the defect filter until the
+        # operator picks them in the export.
+        self._export_error_types: frozenset[str] | None = None
         self._export_set_id = ""
         self._export_run_name = ""
         self._last_report = None
@@ -134,6 +138,7 @@ class FrameSetsController(QObject):
         panel.clearSelectionRequested.connect(lambda: self.matrix.set_range_selected_keys(()))
         panel.exportOpened.connect(self._on_export_opened)
         panel.exportChoicesChanged.connect(self._on_export_choices_changed)
+        panel.exportTypesChanged.connect(self._on_export_types_changed)
         panel.exportBrowseRequested.connect(self._browse_output_dir)
         panel.exportRequested.connect(self._run_export)
         panel.openFolderRequested.connect(self._open_export_folder)
@@ -553,6 +558,24 @@ class FrameSetsController(QObject):
         self._export_run_name = self.panel.export_folder_name()
         QTimer.singleShot(0, self._refresh_panel)
 
+    def _on_export_types_changed(self) -> None:
+        self._export_error_types = self.panel.export_error_types()
+        QTimer.singleShot(0, self._refresh_panel)
+
+    def _export_type_options(self) -> list[tuple[str, str, str]]:
+        return [
+            (str(value), self._t(label_key), GRID_INSPECTION_ERROR_TYPE_COLORS.get(str(value), "#94a3b8"))
+            for label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS
+            if value not in _DEFECT_FILTER_SKIP
+        ]
+
+    def _chosen_export_types(self) -> tuple[str, ...]:
+        offered = [key for key, _label, _color in self._export_type_options()]
+        if self._export_error_types is not None:
+            return tuple(key for key in offered if key in self._export_error_types)
+        filtered = set(self._p._selected_grid_error_types())
+        return tuple(key for key in offered if key in filtered)
+
     def _refresh_export(self, state, qualities, all_keys, selected) -> None:
         rows = [(view_id, name, count) for view_id, name, count, _removable in self._set_rows(
             state, qualities, all_keys, selected, removable=False
@@ -568,6 +591,16 @@ class FrameSetsController(QObject):
         self.panel.set_export_sets(rows, self._export_set_id)
         self.panel.set_output_dir(str(self._output_dir()))
         plan = self._build_plan(state, qualities, all_keys, selected)
+        counts: dict[str, int] = {}
+        for frame in plan.frames:
+            for key, value in frame.defect_counts.items():
+                counts[key] = counts.get(key, 0) + int(value)
+        self.panel.set_export_error_types(
+            self._export_type_options(),
+            plan.error_types,
+            counts,
+            enabled=bool({ITEM_ERRORS, ITEM_ERRORS_OVER_MASK} & set(plan.items)) or plan.table,
+        )
         set_count = len(self._model(state).set_keys(self._export_set_id, all_keys, qualities, selected))
         self.panel.set_fill_black_available(ITEM_ERRORS in plan.items and 0 < set_count < len(all_keys))
         has_items = bool(plan.items) or plan.canvas or plan.table
@@ -668,9 +701,7 @@ class FrameSetsController(QObject):
                     defect_counts=dict(counts.get(key, {})),
                 )
             )
-        error_types = tuple(
-            value for value in self._p._selected_grid_error_types() if value not in _DEFECT_FILTER_SKIP
-        )
+        error_types = self._chosen_export_types()
         dirt = getattr(self._p, "_dirt_controller", None)
         canvas_colors = {}
         if self._export_canvas:

@@ -106,6 +106,13 @@ def narrow_grid_frame_result(
         cells.append(replace(cell, reasons=(), status="normal", score=0.0))
     if not changed:
         return result
+    return with_cells(result, cells)
+
+
+def with_cells(result: GridFrameAnalysisResult, cells) -> GridFrameAnalysisResult:
+    """The frame result with these records, its counts and score recounted from them."""
+
+    cells = list(cells)
     cell_rows = [cell for cell in cells if "conductor_zone" not in (cell.reasons or ())]
     damage = _damage_score(cell_rows, max(1, len(cell_rows))) if cell_rows else 0.0
     bad = [cell for cell in cell_rows if cell.status != "normal"]

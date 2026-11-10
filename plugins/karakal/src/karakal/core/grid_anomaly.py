@@ -72,6 +72,7 @@ GRID_DAMAGE_REASON_TYPES = (
     "merged_contour",
     "split_cell",
     "unknown_anomaly",
+    "sparse_cell",
     "edge_clipped_cell",
     "class_conflict",
     "conductor_zone",
@@ -514,6 +515,8 @@ _DEFECT_REASON_PRIORITY: dict[str, int] = {
     "small_artifact": 30,
     "confidence_only_cell": 28,
     "binary_only_cell": 26,
+    # A flag next to the class of a broken cell: the class keeps the colour and the rank.
+    "sparse_cell": 5,
 }
 
 
@@ -4071,13 +4074,16 @@ def _is_cell_like_candidate(
     )
 
 
-def _status_for_reasons(_reasons: tuple[str, ...]) -> str:
-    """Every detected error is a broken cell, including debris on its own.
+def _status_for_reasons(reasons: tuple[str, ...]) -> str:
+    """Every detected error is a broken cell, including debris on its own; a cell that is only
+    sparse (no neighbours around, core.sparse_cells) is suspicious.
 
-    Older results may still carry status ``suspicious`` or ``artifact``. Those
+    Older results may still carry status ``suspicious`` or ``artifact`` for other reasons. Those
     values stay readable; new analysis does not emit them for debris.
     """
 
+    if reasons and all(str(reason) == "sparse_cell" for reason in reasons):
+        return "suspicious"
     return "broken"
 
 

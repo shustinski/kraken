@@ -266,3 +266,21 @@ def test_panel_export_runs_for_the_chosen_set(tmp_path, qtbot) -> None:
     qtbot.waitUntil(lambda: controller._last_report is not None, timeout=10000)
     assert len(list((controller._last_report.set_dir / "Маски").iterdir())) == len(records)
     assert controller.panel.done_label.text()
+
+
+def test_export_picks_its_own_error_types(tmp_path, qtbot) -> None:
+    widget, presenter, state, controller, records = _grid_widget(tmp_path, qtbot)
+    widget.grid_inspection_legend.set_expanded(True)
+    controller.panel.open_export_button.click()
+    checks = controller.panel.error_type_checks
+    # The filter's types at first; split and unknown cells are geometry and have no box of their own.
+    assert "split_cell" not in checks and "unknown_anomaly" not in checks and "conductor_zone" not in checks
+    assert {"small_artifact", "broken_geometry", "merged_contour", "sparse_cell"} <= set(checks)
+    filtered = set(presenter._selected_grid_error_types())
+    assert {key for key, check in checks.items() if check.isChecked()} == {key for key in checks if key in filtered}
+    for key, check in checks.items():
+        check.setChecked(key == "merged_contour")
+    controller._refresh_panel()
+    plan = controller._build_plan(state, controller._qualities(), {record.key for record in records}, set())
+    assert plan.error_types == ("merged_contour",)
+    assert {key for key, check in controller.panel.error_type_checks.items() if check.isChecked()} == {"merged_contour"}

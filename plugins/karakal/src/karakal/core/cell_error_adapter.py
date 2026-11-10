@@ -25,13 +25,16 @@ from .grid_anomaly import (
     _damage_score,
 )
 
-# Old reason code of each class. SPLIT and UNKNOWN are new codes.
+# Reason code of each class as the filter, the matrix and the export show it. A split cell and an
+# unknown piece are broken geometry for the operator (there is no filter of their own); the class
+# itself stays in the feature snapshot (``reason:split_fragments``, ``reason:large_irregular``) and in
+# the machine maps (error_maps).
 CLASS_REASONS: dict[int, str] = {
     ec.BAD_GEOMETRY: "broken_geometry",
     ec.DEBRIS: "small_artifact",
     ec.MERGE: "merged_contour",
-    ec.SPLIT: "split_cell",
-    ec.UNKNOWN: "unknown_anomaly",
+    ec.SPLIT: "broken_geometry",
+    ec.UNKNOWN: "broken_geometry",
     ec.IGNORE: "conductor_zone",
 }
 MAX_OUTLINE_POINTS = 96

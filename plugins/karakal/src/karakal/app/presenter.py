@@ -102,6 +102,7 @@ from ..core.domain import (
     ModelSpec,
 )
 from ..core.grid_narrowing import GridNarrowing, can_narrow, default_run_debris_min_area, narrow_grid_frame_result
+from ..core.sparse_cells import DEFAULT_SPARSE_REACH_SITES, SPARSE_REACH_RANGE, SPARSE_REASON, copy_sparse_marks
 from ..core.pair_agreement import (
     AGREEMENT_MAX_COVER,
     AGREEMENT_REASON,
@@ -319,6 +320,8 @@ class KarakalPresenter(QObject):
         self._grid_custom_tuning = None
         self._grid_preview_tuning = None
         self._grid_debris_min_area_px = int(DEBRIS_MIN_AREA_PX)
+        # Sparse cell: no other cell along its row and column within this many lattice pitches.
+        self._grid_sparse_reach_sites = int(DEFAULT_SPARSE_REACH_SITES)
         self._pair_conflict_min_area_px = int(CONFLICT_MIN_AREA_PX)
         self._pair_conflict_min_share = float(CONFLICT_MIN_CELL_SHARE)
         self._pair_agreement_max_cover = float(AGREEMENT_MAX_COVER)
@@ -572,6 +575,7 @@ class KarakalPresenter(QObject):
         payload["debris_min_area_px"] = int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX))
         # The run keeps debris down to this size; the operator's size is applied on display.
         payload["debris_analysis_floor_px"] = float(DEBRIS_ANALYSIS_FLOOR_PX)
+        payload["sparse_reach_sites"] = int(getattr(self, "_grid_sparse_reach_sites", DEFAULT_SPARSE_REACH_SITES))
         # Shown conflicts of ones/zeros pairs; applied on display, never a reason for a new run.
         payload["conflict_min_area_px"] = int(getattr(self, "_pair_conflict_min_area_px", CONFLICT_MIN_AREA_PX))
         payload["conflict_min_cell_share"] = float(getattr(self, "_pair_conflict_min_share", CONFLICT_MIN_CELL_SHARE))
@@ -623,6 +627,11 @@ class KarakalPresenter(QObject):
         if values.get("debris_min_area_px") is not None:
             try:
                 self._apply_grid_debris_min_area(int(values["debris_min_area_px"]))
+            except (TypeError, ValueError):
+                pass
+        if values.get("sparse_reach_sites") is not None:
+            try:
+                self._apply_grid_sparse_reach(int(values["sparse_reach_sites"]))
             except (TypeError, ValueError):
                 pass
         if values.get("conflict_min_area_px") is not None or values.get("conflict_min_cell_share") is not None:
@@ -6438,6 +6447,8 @@ class KarakalPresenter(QObject):
                 performance_config=self._view.performance_config,
                 requested_layers=base_layers or ("confidence", "binary"),
                 conflict_pairs=conflict_pairs,
+                frames_per_row=self._grid_sparse_frames_per_row(state, multi_model_ids),
+                sparse_reach_sites=self._grid_sparse_reach_sites,
             )
         elif has_selected_sources and model_id:
             base_layers = tuple(requested_layers)
@@ -6448,6 +6459,8 @@ class KarakalPresenter(QObject):
                 reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
                 requested_layers=base_layers or ("confidence", "binary"),
+                frames_per_row=self._grid_sparse_frames_per_row(state, (model_id,)).get(str(model_id), 0),
+                sparse_reach_sites=self._grid_sparse_reach_sites,
             )
         else:
             self._worker = GridInspectionWorker(
@@ -6456,6 +6469,12 @@ class KarakalPresenter(QObject):
                 model_id=model_id,
                 reference_profile=reference_profile,
                 performance_config=self._view.performance_config,
+                frames_per_row=(
+                    self._grid_sparse_frames_per_row(state, (model_id,)).get(str(model_id), 0)
+                    if model_id
+                    else int(getattr(state.layout_config, "frames_per_row", 0) or 0)
+                ),
+                sparse_reach_sites=self._grid_sparse_reach_sites,
             )
         self._launch_grid_inspection_worker(state)
         dirt = getattr(self, "_dirt_controller", None)
@@ -6812,6 +6831,9 @@ class KarakalPresenter(QObject):
             live.get("conductor_zone_enabled")
         ):
             return True
+        # Sparse cells are marked over the whole layer: another distance needs the run again.
+        if "sparse_reach_sites" in stored and int(stored["sparse_reach_sites"]) != int(live.get("sparse_reach_sites", 0)):
+            return True
         run_types = stored.get("enabled_error_types")
         return not can_narrow(
             run_debris_min_area_px=default_run_debris_min_area(stored),
@@ -6841,6 +6863,7 @@ class KarakalPresenter(QObject):
             "merged_contour",
             "split_cell",
             "unknown_anomaly",
+            "sparse_cell",
             "edge_clipped_cell",
         }
         binary = layers.get("binary")
@@ -7113,6 +7136,28 @@ class KarakalPresenter(QObject):
         for control in controls:
             if control is not None and control is not source and control.value() != self._grid_debris_min_area_px:
                 control.set_value(self._grid_debris_min_area_px)
+
+    def _apply_grid_sparse_reach(self, value: int) -> None:
+        low, high = SPARSE_REACH_RANGE
+        self._grid_sparse_reach_sites = max(int(low), min(int(high), int(value)))
+        control = getattr(self._view, "grid_sparse_reach_spin", None)
+        if control is not None and control.value() != self._grid_sparse_reach_sites:
+            blocker = QSignalBlocker(control)
+            control.setValue(self._grid_sparse_reach_sites)
+            del blocker
+
+    def _on_grid_sparse_reach_changed(self, value: int) -> None:
+        """Another distance marks other cells: the run is recounted (frames come from the cache)."""
+
+        self._apply_grid_sparse_reach(int(value))
+        self._persist_state()
+        self._grid_types_refresh_timer.start()
+
+    def _grid_sparse_frames_per_row(self, state, model_ids) -> dict[str, int]:
+        """Frames per row of each layer as its matrix lays them: the neighbour frames of sparse cells."""
+
+        default = int(getattr(getattr(state, "layout_config", None), "frames_per_row", 0) or 0)
+        return {str(model_id): self._layer_frames_per_row(str(model_id)) or default for model_id in model_ids if model_id}
 
     def _on_grid_debris_min_area_changed(self, value: int, source=None) -> None:
         self._apply_grid_debris_min_area(
@@ -7550,7 +7595,21 @@ class KarakalPresenter(QObject):
             result = narrow_grid_frame_result(
                 result, GridNarrowing(debris_min_area_px=int(getattr(self, "_grid_debris_min_area_px", DEBRIS_MIN_AREA_PX)))
             )
+            selected = getattr(self, "_selected_grid_error_types", None)
+            if callable(selected) and SPARSE_REASON in set(selected()):
+                # One frame cannot tell its sparse cells (the neighbour frames take part): the run's marks.
+                result = copy_sparse_marks(result, KarakalPresenter._stored_binary_result(self, state, frame_id))
         return KarakalPresenter._with_stored_class_conflict(self, result, state, frame_id)
+
+    def _stored_binary_result(self, state, frame_id: str):
+        if state is None:
+            return None
+        model_id = str(self._grid_inspection_model_id_for_state(state) or "")
+        by_model = getattr(state, "grid_inspection_payloads_by_model", {}) or {}
+        stored = ((by_model.get(model_id) or {}).get("binary") or {}).get(str(frame_id))
+        if stored is None:
+            stored = ((getattr(state, "grid_inspection_payloads_by_layer", {}) or {}).get("binary") or {}).get(str(frame_id))
+        return stored
 
     def _unified_grid_payloads_for_keys(
         self,

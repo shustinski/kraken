@@ -55,6 +55,7 @@ from ..core.analysis_profiles import AnalysisPreflightReport, DEFAULT_ANALYSIS_P
 from ..core.domain import BuildResult
 from ..core.pair_agreement import AGREEMENT_MAX_COVER, AGREEMENT_RUN_MAX_COVER
 from ..core.pair_conflict import CONFLICT_ANALYSIS_FLOOR_PX, CONFLICT_MIN_AREA_PX, CONFLICT_MIN_CELL_SHARE
+from ..core.sparse_cells import DEFAULT_SPARSE_REACH_SITES, SPARSE_REACH_RANGE
 from ..core.performance import PerformanceConfig
 from ..ui.toolbar_icons import toolbar_icon
 from ..ui.app_icon import apply_karakal_icon
@@ -669,6 +670,12 @@ class KarakalWidget(QWidget):
             self.grid_tuning_preset_combo.addItem(self._t(f"grid_tuning.preset.{preset_key}"), preset_key)
         self.grid_tuning_preset_combo.setCurrentIndex(self.grid_tuning_preset_combo.findData("balanced"))
         self.grid_debris_min_area_control = DebrisMinAreaControl(self._t, parent=self)
+        # Sparse cell: no other cell along its row and column within this many lattice pitches.
+        self.grid_sparse_reach_spin = _NoWheelSpinBox(self)
+        self.grid_sparse_reach_spin.setRange(int(SPARSE_REACH_RANGE[0]), int(SPARSE_REACH_RANGE[1]))
+        self.grid_sparse_reach_spin.setValue(int(DEFAULT_SPARSE_REACH_SITES))
+        self.grid_sparse_reach_spin.setKeyboardTracking(False)
+        self.grid_sparse_reach_spin.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
         # Conflicts of a ones/zeros pair: shown from this area and this share of the smaller cell.
         self.grid_conflict_min_area_spin = _NoWheelSpinBox(self)
         self.grid_conflict_min_area_spin.setRange(int(CONFLICT_ANALYSIS_FLOOR_PX), 2000)
@@ -1870,6 +1877,11 @@ class KarakalWidget(QWidget):
             self.grid_debris_min_area_control,
         )
         grid_tuning_layout.addWidget(self._grid_debris_min_area_row)
+        self._grid_sparse_reach_row = self._build_setting_row(
+            self._t("grid_tuning.sparse_reach"),
+            self.grid_sparse_reach_spin,
+        )
+        grid_tuning_layout.addWidget(self._grid_sparse_reach_row)
         self._grid_conflict_min_area_row = self._build_setting_row(
             self._t("grid_tuning.conflict_min_area"),
             self.grid_conflict_min_area_spin,
@@ -1961,6 +1973,7 @@ class KarakalWidget(QWidget):
                 "_grid_layer_display_row": "grid_tuning.display_layer",
                 "_grid_tuning_preset_row": "grid_tuning.preset",
                 "_grid_debris_min_area_row": "grid_tuning.debris_min_area",
+                "_grid_sparse_reach_row": "grid_tuning.sparse_reach",
                 "_grid_conflict_min_area_row": "grid_tuning.conflict_min_area",
                 "_grid_conflict_min_share_row": "grid_tuning.conflict_min_share",
                 "_grid_agreement_cover_row": "grid_tuning.agreement_cover",
@@ -2129,6 +2142,8 @@ class KarakalWidget(QWidget):
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))
         if hasattr(self, "grid_matrix_layer_label"):
             self.grid_matrix_layer_label.setText(self._t("grid_matrix_layer.label"))
+        if hasattr(self, "grid_sparse_reach_spin"):
+            self.grid_sparse_reach_spin.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
         if hasattr(self, "grid_conflict_min_area_spin"):
             self.grid_conflict_min_area_spin.setToolTip(self._t("grid_tuning.conflict_min_area_hint"))
             self.grid_conflict_min_share_spin.setToolTip(self._t("grid_tuning.conflict_min_share_hint"))
@@ -2408,6 +2423,7 @@ class KarakalWidget(QWidget):
         )
         self.grid_tuning_preset_combo.currentIndexChanged.connect(self._presenter._on_grid_tuning_preset_changed)
         self.grid_debris_min_area_control.valueChanged.connect(self._presenter._on_grid_debris_min_area_changed)
+        self.grid_sparse_reach_spin.valueChanged.connect(self._presenter._on_grid_sparse_reach_changed)
         for _metric_key, card in getattr(self, "grid_inspection_histogram_cards", {}).items():
             if hasattr(card, "binClicked"):
                 card.binClicked.connect(

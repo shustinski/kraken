@@ -596,3 +596,41 @@ QToolTip {
     border-radius: 8px;
     padding: 6px;
 }
+
+#managerRail {
+    background-color: #f3f6fb;
+    border-right: 1px solid #d7e0eb;
+}
+
+#managerRail QToolButton {
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 6px;
+}
+
+#managerRail QToolButton:hover {
+    background-color: #e4edf7;
+}
+
+#managerRail QToolButton:checked {
+    background-color: #d7e6fb;
+}
+
+#projectTabs QTabBar::close-button {
+    subcontrol-origin: padding;
+    subcontrol-position: right;
+    right: 4px;
+}
+
+#projectTabs QToolButton#projectTabCloseButton {
+    background: transparent;
+    border: none;
+    padding: 0px;
+    min-width: 16px;
+    min-height: 16px;
+}
+
+#projectTabs QToolButton#projectTabCloseButton:hover {
+    background-color: #e4edf7;
+}

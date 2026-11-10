@@ -47,9 +47,7 @@ def click(widget, text):
 
 
 def select_catalog_project(controller, name, *, open_workspace=False):
-    navigation = controller.shell.navigation_list
-    item = controller.shell._navigation_items["projects"]
-    QTest.mouseClick(navigation.viewport(), Qt.MouseButton.LeftButton, pos=navigation.visualItemRect(item).center())
+    controller.shell.rail_actions["projects"].click()
     catalog = controller.catalog_page
     model, view = catalog.project_model, catalog.project_list
     index = next(model.index(i, 0) for i in range(model.rowCount()) if model.index(i, 0).data() == name)

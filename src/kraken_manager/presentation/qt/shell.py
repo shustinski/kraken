@@ -2,22 +2,30 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Callable
 
-from PyQt6.QtCore import QPointF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
 from kraken_core.settings import QSettings
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMenu,
     QPushButton,
-    QSizePolicy,
     QStackedWidget,
     QTabBar,
     QToolButton,
@@ -85,7 +93,6 @@ class ProjectManagerShell(QMainWindow):
         self.setWindowTitle("Kraken")
         self.resize(1280, 800)
         self._pages: dict[str, QWidget] = {}
-        self._navigation_items: dict[str, QListWidgetItem] = {}
         self._selection_counts: dict[str, int] = {}
         self.close_guard: Callable[[], bool] | None = None
 
@@ -93,7 +100,7 @@ class ProjectManagerShell(QMainWindow):
         root = QHBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        self.sidebar = self._build_sidebar()
+        self.rail = self._build_rail()
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("managerPageStack")
         content = QWidget()
@@ -102,14 +109,23 @@ class ProjectManagerShell(QMainWindow):
         content_layout.setSpacing(0)
         content_layout.addLayout(self._build_project_tab_row())
         content_layout.addWidget(self.page_stack, 1)
-        root.addWidget(self.sidebar)
+        root.addWidget(self.rail)
         root.addWidget(content, 1)
         self.setCentralWidget(central)
+
+        self._session_summary_label = QLabel("Нет активной сессии")
+        self._session_summary_label.setObjectName("sessionSummary")
+        self._session_summary_label.setWordWrap(True)
+        self._sync_status_label = QLabel("")
+        self._sync_status_label.setObjectName("syncStatus")
+        self._sync_status_label.setWordWrap(True)
+        self._sync_status_label.hide()
+        self.statusBar().addWidget(self._session_summary_label)
+        self.statusBar().addWidget(self._sync_status_label)
+
         self._build_workspace_menus()
 
         self._register_default_pages()
-        self.navigation_list.currentRowChanged.connect(self._on_navigation_row_changed)
-        self.navigation_list.itemClicked.connect(self._on_navigation_item_clicked)
         self.projectTabs.currentChanged.connect(self._on_project_tab_changed)
         self.projectTabs.tabCloseRequested.connect(self._on_project_tab_close_requested)
         self.add_project_button.clicked.connect(self._on_add_project_button_clicked)
@@ -197,33 +213,83 @@ class ProjectManagerShell(QMainWindow):
         )
         return border, fill
 
-    def _build_sidebar(self) -> QWidget:
-        sidebar = QFrame()
-        sidebar.setObjectName("managerSidebar")
-        sidebar.setMinimumWidth(190)
-        sidebar.setMaximumWidth(280)
-        sidebar.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(14, 18, 14, 14)
-        layout.setSpacing(12)
-        brand = QLabel("KRAKEN")
-        brand.setObjectName("managerBrand")
-        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(brand)
-        self.navigation_list = QListWidget()
-        self.navigation_list.setObjectName("managerNavigation")
-        self.navigation_list.setSpacing(3)
-        layout.addWidget(self.navigation_list, 1)
-        self.session_label = QLabel("Нет активной сессии")
-        self.session_label.setObjectName("sessionSummary")
-        self.session_label.setWordWrap(True)
-        layout.addWidget(self.session_label)
-        self.sync_status_label = QLabel("")
-        self.sync_status_label.setObjectName("syncStatus")
-        self.sync_status_label.setWordWrap(True)
-        self.sync_status_label.hide()
-        layout.addWidget(self.sync_status_label)
-        return sidebar
+    def _build_rail(self) -> QWidget:
+        rail = QFrame()
+        rail.setObjectName("managerRail")
+        rail.setFixedWidth(48)
+        layout = QVBoxLayout(rail)
+        layout.setContentsMargins(6, 8, 6, 8)
+        layout.setSpacing(6)
+        self.rail_actions: dict[str, QToolButton] = {}
+        group = QButtonGroup(rail)
+        # Qt 6 exclusive groups lock the checked button (setChecked(False) on
+        # it is a no-op), but an active project tab must leave every section
+        # button unchecked, so exclusivity is enforced by show_page() instead.
+        group.setExclusive(False)
+        for key, label in self.DEFAULT_NAVIGATION:
+            button = QToolButton()
+            button.setObjectName(f"railButton_{key}")
+            button.setCheckable(True)
+            button.setAutoRaise(True)
+            button.setToolTip(str(label))
+            button.setIcon(QIcon(self._rail_icon(key)))
+            button.setIconSize(QSize(22, 22))
+            button.clicked.connect(lambda _checked=False, section=key: self._on_rail_clicked(section))
+            group.addButton(button)
+            self.rail_actions[key] = button
+            layout.addWidget(button)
+        layout.addStretch(1)
+        return rail
+
+    def _on_rail_clicked(self, key: str) -> None:
+        self.navigationRequested.emit(key)
+        self.show_page(key)
+
+    @staticmethod
+    def _rail_icon(key: str) -> QPixmap:
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#647d9c"), 2.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        if key == "projects":
+            folder = QPainterPath()
+            folder.moveTo(3, 8)
+            folder.lineTo(9, 8)
+            folder.lineTo(11, 10)
+            folder.lineTo(21, 10)
+            folder.lineTo(21, 18)
+            folder.lineTo(3, 18)
+            folder.closeSubpath()
+            painter.drawPath(folder)
+        elif key == "my_work":
+            painter.drawEllipse(QPointF(12, 8), 3.5, 3.5)
+            painter.drawArc(QRectF(5, 12, 14, 14), 180 * 16, 180 * 16)
+        elif key == "statistics":
+            painter.drawLine(QPointF(6, 19), QPointF(6, 11))
+            painter.drawLine(QPointF(12, 19), QPointF(12, 5))
+            painter.drawLine(QPointF(18, 19), QPointF(18, 13))
+        elif key == "performers":
+            painter.drawEllipse(QPointF(9, 8), 3, 3)
+            painter.drawEllipse(QPointF(15, 8), 3, 3)
+            painter.drawArc(QRectF(2, 12, 13, 13), 180 * 16, 180 * 16)
+            painter.drawArc(QRectF(9, 12, 13, 13), 180 * 16, 180 * 16)
+        elif key == "plugins":
+            painter.drawRoundedRect(QRectF(7, 11, 10, 8), 2, 2)
+            painter.drawLine(QPointF(10, 11), QPointF(10, 4))
+            painter.drawLine(QPointF(14, 11), QPointF(14, 4))
+        elif key == "administration":
+            painter.drawEllipse(QPointF(12, 12), 4, 4)
+            for angle in range(0, 360, 45):
+                radians = math.radians(angle)
+                painter.drawLine(
+                    QPointF(12 + 6 * math.cos(radians), 12 + 6 * math.sin(radians)),
+                    QPointF(12 + 9 * math.cos(radians), 12 + 9 * math.sin(radians)),
+                )
+        painter.end()
+        return pixmap
 
     def _build_project_tab_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -279,6 +345,7 @@ class ProjectManagerShell(QMainWindow):
 
     def _build_tab_close_button(self) -> QToolButton:
         button = QToolButton()
+        button.setObjectName("projectTabCloseButton")
         button.setAutoRaise(True)
         button.setFixedSize(16, 16)
         button.setIcon(self._tab_close_icon)
@@ -295,18 +362,10 @@ class ProjectManagerShell(QMainWindow):
             "plugins": PluginsPage(),
             "administration": AdministrationPage(),
         }
-        labels = dict(self.DEFAULT_NAVIGATION)
         for key, page in pages.items():
-            self.register_page(key, labels[key], page)
+            self.register_page(key, page)
 
-    def register_page(
-        self,
-        key: str,
-        label: str,
-        page: QWidget,
-        *,
-        navigation: bool = True,
-    ) -> None:
+    def register_page(self, key: str, page: QWidget) -> None:
         normalized = str(key).strip()
         if not normalized:
             raise ValueError("page key must not be empty")
@@ -314,11 +373,6 @@ class ProjectManagerShell(QMainWindow):
             raise ValueError(f"page {normalized!r} is already registered")
         self._pages[normalized] = page
         self.page_stack.addWidget(page)
-        if navigation:
-            item = QListWidgetItem(str(label))
-            item.setData(Qt.ItemDataRole.UserRole, normalized)
-            self.navigation_list.addItem(item)
-            self._navigation_items[normalized] = item
 
     def replace_page(self, key: str, page: QWidget) -> QWidget:
         """Swap a placeholder without changing its navigation position."""
@@ -350,9 +404,8 @@ class ProjectManagerShell(QMainWindow):
             raise KeyError(normalized)
         changed = self.page_stack.currentWidget() is not page
         self.page_stack.setCurrentWidget(page)
-        navigation_item = self._navigation_items.get(normalized)
-        if navigation_item is not None and self.navigation_list.currentItem() is not navigation_item:
-            self.navigation_list.setCurrentItem(navigation_item)
+        for section, button in self.rail_actions.items():
+            button.setChecked(section == normalized)
         if changed:
             self.pageChanged.emit(normalized)
         self._sync_chrome_for_current_page()
@@ -360,10 +413,8 @@ class ProjectManagerShell(QMainWindow):
             self.project_tab_activated.emit(None)
 
     def set_page_visible(self, key: str, visible: bool) -> None:
-        item = self._navigation_items.get(str(key))
-        if item is None:
-            raise KeyError(str(key))
-        item.setHidden(not bool(visible))
+        button = self.rail_actions[str(key)]
+        button.setVisible(bool(visible))
         if not visible and self.current_page_key() == str(key):
             self.show_page("projects")
 
@@ -377,7 +428,7 @@ class ProjectManagerShell(QMainWindow):
                 # re-open always runs the activation sync.
                 self.projectTabs.setCurrentIndex(index)
             return existing
-        self.register_page(key, name, page, navigation=False)
+        self.register_page(key, page)
         # The tab bar does not auto-activate the added tab; keep its signals
         # blocked until the tab data is in place, then activate it explicitly.
         self.projectTabs.blockSignals(True)
@@ -461,6 +512,8 @@ class ProjectManagerShell(QMainWindow):
         if page is None:
             return
         self.page_stack.setCurrentWidget(page)
+        for button in self.rail_actions.values():
+            button.setChecked(False)
         self._sync_chrome_for_current_page()
         self._push_selection_count()
         self.project_tab_activated.emit(project_id)
@@ -492,7 +545,7 @@ class ProjectManagerShell(QMainWindow):
         self.frame_properties_action.setEnabled(count == 1)
 
     def set_session_summary(self, text: str) -> None:
-        self.session_label.setText(str(text) or "Нет активной сессии")
+        self._session_summary_label.setText(str(text) or "Нет активной сессии")
 
     def set_sync_status(self, status: str) -> None:
         labels = {
@@ -500,25 +553,12 @@ class ProjectManagerShell(QMainWindow):
             "reconnecting": "● Переподключение…",
             "offline": "● Офлайн",
         }
-        self.sync_status_label.setText(labels.get(str(status), str(status)))
-        self.sync_status_label.setProperty("status", str(status))
-        self.sync_status_label.setVisible(bool(status))
-        self.sync_status_label.style().unpolish(self.sync_status_label)
-        self.sync_status_label.style().polish(self.sync_status_label)
-
-    def _on_navigation_row_changed(self, row: int) -> None:
-        item = self.navigation_list.item(row)
-        if item is None:
-            return
-        key = str(item.data(Qt.ItemDataRole.UserRole) or "")
-        if not key:
-            return
-        self.navigationRequested.emit(key)
-        self.show_page(key)
-
-    def _on_navigation_item_clicked(self, item: QListWidgetItem) -> None:
-        if str(item.data(Qt.ItemDataRole.UserRole)) != self.current_page_key():
-            self._on_navigation_row_changed(self.navigation_list.row(item))
+        label = self._sync_status_label
+        label.setText(labels.get(str(status), str(status)))
+        label.setProperty("status", str(status))
+        label.setVisible(bool(status))
+        label.style().unpolish(label)
+        label.style().polish(label)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.close_guard is not None and not self.close_guard():

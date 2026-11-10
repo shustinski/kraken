@@ -75,8 +75,10 @@ def test_local_administration_page_is_wired_for_desktop_session(qapp, tmp_path) 
 
     _configure_administration_page(shell, service, session)
 
-    administration_item = shell._navigation_items["administration"]
-    assert not administration_item.isHidden()
+    # isVisible() is only meaningful once the window is shown (Qt 6 semantics).
+    shell.show()
+    administration_button = shell.rail_actions["administration"]
+    assert administration_button.isVisible()
     page = shell.page("administration")
     assert page is not None
     labels = [button.text() for button in page.findChildren(QPushButton)]

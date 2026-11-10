@@ -5,7 +5,7 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QTabBar, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QTabBar, QWidget
 
 from kraken_manager.presentation.qt import (
     FrameSelection,
@@ -40,7 +40,7 @@ def test_project_manager_shell_has_stable_navigation_and_replaceable_pages(qapp)
     shell = ProjectManagerShell()
 
     assert shell.current_page_key() == "projects"
-    assert shell.navigation_list.count() == 6
+    assert len(shell.rail_actions) == 6
     assert shell.page("statistics") is not None
 
     replacement = QWidget()
@@ -52,17 +52,53 @@ def test_project_manager_shell_has_stable_navigation_and_replaceable_pages(qapp)
     assert shell.current_page_key() == "statistics"
 
 
-def test_project_manager_shell_can_hide_administration_navigation(qapp):
+def test_shell_rail_exposes_section_buttons_in_order(qapp):
     shell = ProjectManagerShell()
-    administration_item = shell._navigation_items["administration"]
+    assert list(shell.rail_actions) == [
+        "projects", "my_work", "statistics", "performers", "plugins", "administration",
+    ]
+    for button in shell.rail_actions.values():
+        assert not button.icon().isNull()
+        assert button.toolTip()
+    assert not hasattr(shell, "navigation_list")
 
+
+def test_shell_rail_button_switches_section_and_highlights(qapp):
+    shell = ProjectManagerShell()
+    shell.rail_actions["statistics"].click()
+    assert shell.current_page_key() == "statistics"
+    assert shell.rail_actions["statistics"].isChecked()
+    assert not shell.rail_actions["projects"].isChecked()
+    shell.open_project_tab("p-1", "P1", QWidget())
+    assert not any(button.isChecked() for button in shell.rail_actions.values())
+
+
+def test_shell_set_page_visible_hides_rail_button_and_falls_back(qapp):
+    shell = ProjectManagerShell()
+    # isVisible() is only meaningful once the window is shown (Qt 6 semantics).
+    shell.show()
     shell.show_page("administration")
     shell.set_page_visible("administration", False)
-
-    assert administration_item.isHidden()
+    assert not shell.rail_actions["administration"].isVisible()
     assert shell.current_page_key() == "projects"
     shell.set_page_visible("administration", True)
-    assert not administration_item.isHidden()
+    assert shell.rail_actions["administration"].isVisible()
+
+
+def test_shell_session_and_sync_labels_live_in_status_bar(qapp):
+    shell = ProjectManagerShell()
+    # isVisible() is only meaningful once the window is shown (Qt 6 semantics).
+    shell.show()
+    shell.set_session_summary("mark\nЛокальная сессия + сервер http://127.0.0.1:8080")
+    shell.set_sync_status("synchronized")
+    session_label = shell.findChild(QLabel, "sessionSummary")
+    sync_label = shell.findChild(QLabel, "syncStatus")
+    assert session_label is not None and session_label.isVisible()
+    assert "mark" in session_label.text()
+    assert sync_label is not None and sync_label.isVisible()
+    assert sync_label.text() == "● Синхронизировано"
+    shell.set_sync_status("")
+    assert not sync_label.isVisible()
 
 
 def test_selected_projects_navigation_can_return_from_workspace(qtbot):
@@ -70,10 +106,7 @@ def test_selected_projects_navigation_can_return_from_workspace(qtbot):
     qtbot.addWidget(shell)
     shell.open_project_tab("p-1", "Project", QWidget())
     shell.show()
-    item = shell._navigation_items["projects"]
-    assert shell.navigation_list.currentItem() is item
-    qtbot.mouseClick(shell.navigation_list.viewport(), Qt.MouseButton.LeftButton,
-                     pos=shell.navigation_list.visualItemRect(item).center())
+    qtbot.mouseClick(shell.rail_actions["projects"], Qt.MouseButton.LeftButton)
     assert shell.current_page_key() == "projects"
     assert shell.current_project_id() is None
 

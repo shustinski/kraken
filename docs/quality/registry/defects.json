@@ -304,6 +304,24 @@
       ],
       "fixed_in": "",
       "repro": "На Windows pytest tests/test_quality_dialog.py -q — 2 failed в TemporaryDirectory-cleanup (тело теста зелёное): после создания продуктом data\\workspace-source\\new_test\\aux — os.rmdir(new_test) падает WinError 145 «Папка не пуста»."
+    },
+    {
+      "id": "D20",
+      "component": "test_harness",
+      "title": "Уборка TemporaryDirectory в тестах локальной аутентификации падает: внешний on-access сканер держит свежий SQLite-файл и бросает в каталог мимолётный <db>-SHM.tmp",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_local_auth.py::LocalAccountTests::test_account_sessions_are_opaque_revocable_and_persistent",
+        "tests/test_local_auth.py::LocalAccountTests::test_cleanup_waits_for_a_foreign_handle_on_the_database",
+        "tests/test_local_auth.py::LocalAccountTests::test_cleanup_retries_when_the_final_rmdir_reports_not_empty"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt",
+        "docs/quality/evidence/2026-11-10/d20-green-foreign-lock.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На Windows-машине с on-access антивирусом под нагрузкой: тело test_account_sessions_are_opaque_revocable_and_persistent зелёное, но TemporaryDirectory.__exit__ падает: os.unlink('...\\accounts.sqlite3') — WinError 32 (файл занят другим процессом) либо os.rmdir(tempdir) — WinError 145 «Папка не пуста», т.к. между обходом rmtree и финальным rmdir в каталоге появляется мимолётный ACCOUNTS.SQLITE3-SHM.tmp (создаётся и удаляется внешним процессом; в bundled sqlite3.dll 3.50.4 нет строки '.tmp' вовсе). Воспроизводится стресс-циклом тела теста с CPU-нагрузкой: в %TEMP% — 2-3 падения за ~1500 итераций, в C:\\code\\kraken\\.codex_tmp_scratch\\stressroot — 3 падения за 13 итераций; детерминированные RED-сценарии — docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt."
     }
   ]
 }

@@ -1,0 +1,87 @@
+D20 RED evidence — test_local_auth.py::LocalAccountTests::test_account_sessions_are_opaque_revocable_and_persistent
+Date: 2026-11-10/11, machine: ad\shustinsky.m.a Windows workstation (offline, Kaspersky on-access AV, %TEMP% = C:\Users\SHUSTI~1.A\AppData\Local\Temp)
+
+==========================================================================
+1. UNIT GATE FAILURE (docs/quality/evidence/2026-11-10/gate-unit/pytest(1).txt)
+==========================================================================
+The test BODY passed; the failure is in TemporaryDirectory.__exit__ cleanup:
+
+  _ LocalAccountTests.test_account_sessions_are_opaque_revocable_and_persistent _
+
+      def test_account_sessions_are_opaque_revocable_and_persistent(self) -> None:
+  >       with tempfile.TemporaryDirectory() as temporary:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  ...
+  C:\Program Files\Python314\Lib\shutil.py:707: in _rmtree_unsafe
+  >           os.rmdir(path)
+  E           OSError: [WinError 145] Папка не пуста: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpeqsjd0eu'
+
+FAILED tests/test_local_auth.py::LocalAccountTests::test_account_sessions_are_opaque_revocable_and_persistent
+1 failed, 1394 passed, 25 skipped, 31 subtests passed in 786.86s (0:13:06)
+
+The same test passed in the 12:23 and 15:53 gate runs of the same day -> flaky.
+
+==========================================================================
+2. REPRODUCTION (deterministic enough, stress loop of the exact test body + CPU load)
+==========================================================================
+Stress loop: each iteration runs the exact test body (LocalAccountStore create/
+authenticate/resolve/revoke/resolve) in a fresh temp dir, then deletes the dir.
+Background: N scrypt threads at 100% CPU (mimics the loaded gate machine).
+
+2.1 WinError 145 variant (same error as the gate) — the dir is "not empty" at the
+    final rmtree because a transient file ACCOUNTS.SQLITE3-SHM.tmp appears in the
+    temp dir right after the test body and vanishes within milliseconds:
+
+  ===== FAILURE at iteration 74 =====
+  tempdir: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpuuco9bn0'
+  before: ['accounts.sqlite3']
+  Traceback (most recent call last):
+    File "C:\code\kraken\.codex_tmp_scratch\stress_trace.py", line 56, in main
+      shutil.rmtree(temporary)
+    ...
+    File "C:\Program Files\Python314\Lib\shutil.py", line 707, in _rmtree_unsafe
+      os.rmdir(path)
+  OSError: [WinError 145] Папка не пуста: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpuuco9bn0'
+  after: ['ACCOUNTS.SQLITE3-SHM.tmp']
+
+  (the -SHM.tmp file is created and removed by an EXTERNAL process: the bundled
+  sqlite3.dll 3.50.4 contains no ".tmp" filename string at all)
+
+2.2 WinError 32 variant (foreign handle on the database file itself):
+
+  ===== FAILURE at iteration 3 ([WinError 32] Процесс не может получить доступ
+  к файлу, так как этот файл занят другим процессом:
+  'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmp0d64h6xw\\accounts.sqlite3') =====
+    body took 462.00ms; rmtree failed at +462.36ms
+
+  => at cleanup time ANOTHER process still holds accounts.sqlite3 open.
+
+2.3 The flake is not %TEMP%-specific: the same stress loop under
+  C:\code\kraken\.codex_tmp_scratch\stressroot fails the same way
+  (3 failures within the first 13 iterations) — any freshly created SQLite file
+  is subject to the external scanner on this machine.
+
+==========================================================================
+3. DETERMINISTIC RED OF THE REGRESSION SCENARIOS AGAINST THE OLD CLEANUP
+==========================================================================
+Driver: .codex_tmp_scratch/red_driver.py (scenarios = the two new regression
+tests, but with the OLD tempfile.TemporaryDirectory cleanup):
+
+  === scenario 1: foreign handle (WinError 32) vs OLD cleanup ===
+  scenario 1 passed? False (expected False = RED)
+    PermissionError: [WinError 32] Процесс не может получить доступ к файлу,
+    так как этот файл занят другим процессом:
+    'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmp2t2aqw\\accounts.sqlite3'
+    (raised from tempfile.TemporaryDirectory.__exit__ -> shutil.rmtree -> os.unlink)
+
+  === scenario 2: injected WinError 145 vs OLD cleanup ===
+  scenario 2 passed? False (expected False = RED)
+    OSError: [WinError 145] Папка не пуста: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmp5eq0xk4v'
+    (exactly the gate error)
+
+ROOT CAUSE: the test's own assertions all pass; the failure is in cleanup.
+An external on-access security scanner on this machine opens the freshly
+created SQLite file without FILE_SHARE_DELETE (deletion refused: WinError 32)
+and briefly stages a transient <DB>-SHM.tmp file in the same directory
+(final rmdir: WinError 145). The lock clears within milliseconds, but stdlib
+TemporaryDirectory performs a single non-retried rmtree.

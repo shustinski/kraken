@@ -8,6 +8,7 @@ from pathlib import Path
 from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt, QThread, QTimer, QSignalBlocker, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut, QTransform
 from PyQt6.QtWidgets import (
+    QToolButton,
     QAbstractItemView,
     QToolTip,
     QCheckBox,
@@ -499,6 +500,29 @@ class ExtendFrameDetailsDialog(QDialog):
         viewer_toolbar.addWidget(self.confidence_loading_label)
         viewer_toolbar.addWidget(self.confidence_loading_bar)
         viewer_layout.addLayout(viewer_toolbar)
+        # Defects of the frame by type (a click singles a type out) and the way through them.
+        self.grid_legend_bar = QWidget(viewer_widget)
+        self._grid_legend_layout = QHBoxLayout(self.grid_legend_bar)
+        self._grid_legend_layout.setContentsMargins(0, 2, 0, 2)
+        self._grid_legend_layout.setSpacing(4)
+        self._grid_legend_buttons: dict[str, QToolButton] = {}
+        self._grid_legend_layout.addStretch(1)
+        self.grid_prev_defect_button = QToolButton(self.grid_legend_bar)
+        self.grid_prev_defect_button.setText("◀")
+        self.grid_prev_defect_button.clicked.connect(lambda: self._step_grid_defect(-1))
+        self.grid_defect_position_label = QLabel(self.grid_legend_bar)
+        self.grid_next_defect_button = QToolButton(self.grid_legend_bar)
+        self.grid_next_defect_button.setText("▶")
+        self.grid_next_defect_button.clicked.connect(lambda: self._step_grid_defect(+1))
+        for widget in (self.grid_prev_defect_button, self.grid_defect_position_label, self.grid_next_defect_button):
+            self._grid_legend_layout.addWidget(widget)
+        self.grid_legend_bar.setVisible(False)
+        viewer_layout.addWidget(self.grid_legend_bar)
+        self._grid_solo_type: str | None = None
+        self._grid_hot_cell = None
+        self._grid_marked_cells: list = []
+        self._grid_defect_index = -1
+        self._grid_type_counts: dict[str, int] = {}
         self.overlay_view = _OverlayGraphicsView(viewer_widget)
         self.overlay_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         viewer_layout.addWidget(self.overlay_view, stretch=1)
@@ -831,6 +855,11 @@ class ExtendFrameDetailsDialog(QDialog):
             _detach_running_thread(worker, thread)
 
     def keyPressEvent(self, event) -> None:
+        # Ctrl+arrows go through the defects of the frame; plain arrows go to other frames.
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() in (Qt.Key.Key_Right, Qt.Key.Key_Left):
+            if self._step_grid_defect(+1 if event.key() == Qt.Key.Key_Right else -1):
+                event.accept()
+                return
         if event.key() == Qt.Key.Key_Right:
             if self._legacy_step_record(+1):
                 event.accept()
@@ -1052,6 +1081,9 @@ class ExtendFrameDetailsDialog(QDialog):
         ):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(lambda delta=delta: self._legacy_step_record(delta))
+        for key, delta in (("Ctrl+Right", +1), ("Ctrl+Left", -1)):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(lambda delta=delta: self._step_grid_defect(delta))
 
     def _connect_signals(self) -> None:
         self.result_kind_combo.currentIndexChanged.connect(self._refresh_result_from_controls)
@@ -3548,98 +3580,20 @@ class ExtendFrameDetailsDialog(QDialog):
         return pixmap
 
     def _grid_cell_defects_pixmap(self, model_id: str | None) -> QPixmap:
+        """A clear layer of the frame's size: the marks are scene items (_rebuild_grid_mark_items),
+        drawn once and sharp at any zoom."""
+
         selected_model = self._selected_model_for_current_comparison() if model_id is None else model_id
-        cache_key = (
-            "grid_cell_defects",
-            selected_model,
-            id(self._grid_inspection_result),
-            self._grid_layer_state_key(),
-            tuple((str(item.get("label")), tuple(item.get("bbox", ()))) for item in self._grid_examples),
-        )
         result = self._grid_cell_analysis_result(selected_model)
         self._comparison_score = float(getattr(result, "damage_score", getattr(result, "score", 0.0)))
+        height = max(1, int(getattr(result, "image_height", 0) or 1))
+        width = max(1, int(getattr(result, "image_width", 0) or 1))
+        cache_key = ("grid_cell_defects_clear", width, height)
         cached = self._overlay_cache.get(cache_key)
         if cached is not None:
             return cached
-        height = max(1, int(getattr(result, "image_height", 0) or 1))
-        width = max(1, int(getattr(result, "image_width", 0) or 1))
         pixmap = QPixmap(width, height)
         pixmap.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        for cell in getattr(result, "per_cell_results", getattr(result, "cells", ())) or ():
-            status = str(getattr(cell, "status", "") or "")
-            if not self._grid_mark_status_visible(status):
-                continue
-            if status != "normal" and self._grid_good_example_hides_cell(cell):
-                continue
-            if status != "normal" and not self._grid_cell_error_type_visible(cell):
-                continue
-            x = int(getattr(cell, "left", 0))
-            y = int(getattr(cell, "top", 0))
-            w = max(1, int(getattr(cell, "width", 1)))
-            h = max(1, int(getattr(cell, "height", 1)))
-            color = self._grid_cell_color(cell)
-            reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
-            zone_mode = self._conductor_zone_draw_mode(reasons)
-            if zone_mode == "skip":
-                continue
-            if zone_mode == "zone":
-                fill = QColor(color)
-                fill.setAlpha(70)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QBrush(fill, Qt.BrushStyle.BDiagPattern))
-                contour_color = QColor(color)
-                contour_color.setAlpha(220)
-                pen = QPen(contour_color, 2.0, Qt.PenStyle.DashLine)
-                pen.setCosmetic(True)
-                polygon = _cell_outline_polygon(cell)
-                if polygon is None:
-                    painter.drawRect(QRectF(x, y, w, h))
-                    painter.setPen(pen)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
-                else:
-                    painter.drawPolygon(polygon)
-                    painter.setPen(pen)
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawPolygon(polygon)
-                continue
-            fill_color, frame_color = self._grid_cell_fill_and_frame(cell)
-            if fill_color is None and frame_color is None:
-                fill_color = color
-            if fill_color is not None:
-                alpha = int(np.clip(round(55.0 + 145.0 * float(getattr(cell, "score", 0.0))), 55.0, 220.0))
-                fill = QColor(fill_color)
-                fill.setAlpha(alpha)
-                painter.fillRect(QRectF(x, y, w, h), fill)
-                contour_color = QColor(fill_color)
-                contour_color.setAlpha(245)
-                pen = QPen(contour_color, 2.0)
-                pen.setCosmetic(True)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(QRectF(x, y, max(1, w - 1), max(1, h - 1)))
-            if frame_color is not None:
-                # A sparse cell: a thick frame inside its box, as in the exported picture.
-                side = float(sparse_frame_width(w, h))
-                pen = QPen(QColor(frame_color), side)
-                pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(QRectF(x + side / 2.0, y + side / 2.0, max(1.0, w - side), max(1.0, h - side)))
-        for example in self._grid_examples:
-            bbox = tuple(example.get("bbox", ()))
-            if len(bbox) < 4:
-                continue
-            label = str(example.get("label") or "good")
-            color = QColor(34, 197, 94) if label == "good" else grid_inspection_error_type_color(label)
-            pen = QPen(color, 3.0, Qt.PenStyle.DashLine)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(QRectF(int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])))
-        painter.end()
         self._overlay_cache[cache_key] = pixmap
         return pixmap
 
@@ -4438,13 +4392,25 @@ class ExtendFrameDetailsDialog(QDialog):
         self._grid_mark_items = []
 
     def _rebuild_grid_mark_items(self) -> None:
+        """The marks of the frame (ui.defect_marks): an outline or a shape per type, the conductor zone
+        faint under them; a type singled out in the legend keeps its colour, the others fade."""
+
+        from .defect_marks import add_mark_items, shown_types
+
         self._clear_grid_mark_items()
+        self._grid_marked_cells = []
+        self._grid_type_counts = {}
         scene = self.overlay_view.scene()
         if scene is None or self._selected_result_kind() != "grid_cell_defects":
+            self._sync_grid_legend()
             return
         scale_x, scale_y = self._grid_scene_scale()
         result = self._grid_cell_analysis_result()
-        items = []
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        enabled = {key for key, checkbox in checks.items() if checkbox.isChecked()} if checks else None
+        solo = self._grid_solo_type
+        hot = self._grid_hot_cell
+        items: list = []
         for cell in getattr(result, "per_cell_results", ()) or ():
             status = str(getattr(cell, "status", "") or "")
             if not self._grid_mark_status_visible(status):
@@ -4457,51 +4423,30 @@ class ExtendFrameDetailsDialog(QDialog):
             zone_mode = self._conductor_zone_draw_mode(reasons)
             if zone_mode == "skip":
                 continue
-            color = self._grid_cell_color(cell)
-            color.setAlpha(230)
-            rect = QRectF(
-                float(getattr(cell, "left", 0)) * scale_x,
-                float(getattr(cell, "top", 0)) * scale_y,
-                max(2.0, float(getattr(cell, "width", 1)) * scale_x),
-                max(2.0, float(getattr(cell, "height", 1)) * scale_y),
-            )
-            if zone_mode == "zone":
-                fill = QColor(color)
-                fill.setAlpha(70)
-                pen = QPen(color, 2.0, Qt.PenStyle.DashLine)
+            if status == "normal" or not reasons:
+                x, y, w, h = (float(value) for value in tuple(getattr(cell, "bbox", (0, 0, 1, 1)))[:4])
+                pen = QPen(QColor(148, 163, 184, 120), 1.0)
                 pen.setCosmetic(True)
-                polygon = _cell_outline_polygon(cell, scale_x, scale_y)
-                if polygon is None:
-                    item = scene.addRect(rect, pen, QBrush(fill, Qt.BrushStyle.BDiagPattern))
-                else:
-                    item = scene.addPolygon(polygon, pen, QBrush(fill, Qt.BrushStyle.BDiagPattern))
-            else:
-                fill_color, frame_color = self._grid_cell_fill_and_frame(cell)
-                if fill_color is None and frame_color is None:
-                    fill_color = color
-                item = None
-                if fill_color is not None:
-                    fill_color = QColor(fill_color)
-                    fill_color.setAlpha(230)
-                    pen = QPen(fill_color, 3.0)
-                    pen.setCosmetic(True)
-                    item = scene.addRect(rect, pen, QBrush(QColor(fill_color.red(), fill_color.green(), fill_color.blue(), 70)))
-                    item.setZValue(30.0)
-                    items.append(item)
-                if frame_color is not None:
-                    # A sparse cell: a thick frame inside its box, over the fill of its other finding.
-                    side_x = float(sparse_frame_width(getattr(cell, "width", 1), getattr(cell, "height", 1))) * scale_x
-                    side_y = float(sparse_frame_width(getattr(cell, "width", 1), getattr(cell, "height", 1))) * scale_y
-                    side = min(side_x, side_y)
-                    pen = QPen(QColor(frame_color), side)
-                    pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
-                    inner = rect.adjusted(side / 2.0, side / 2.0, -side / 2.0, -side / 2.0)
-                    frame_item = scene.addRect(inner, pen, QBrush(Qt.BrushStyle.NoBrush))
-                    frame_item.setZValue(31.0)
-                    items.append(frame_item)
+                item = scene.addRect(QRectF(x * scale_x, y * scale_y, w * scale_x, h * scale_y), pen, QBrush(Qt.BrushStyle.NoBrush))
+                item.setZValue(29.0)
+                items.append(item)
                 continue
-            item.setZValue(30.0)
-            items.append(item)
+            types = shown_types(reasons, enabled)
+            if zone_mode == "cell":
+                types = [kind for kind in types if kind != "conductor_zone"]
+            if not types:
+                continue
+            for kind in types:
+                self._grid_type_counts[kind] = self._grid_type_counts.get(kind, 0) + 1
+            is_zone = types == ["conductor_zone"]
+            is_hot = cell is hot
+            dim = solo is not None and solo not in types
+            for item in add_mark_items(scene, cell, scale_x, scale_y, types, dim=dim, hot=is_hot):
+                item.setZValue(25.0 if is_zone else (32.0 if is_hot else 30.0))
+                items.append(item)
+            if not is_zone:
+                self._grid_marked_cells.append(cell)
+        self._grid_marked_cells.sort(key=lambda cell: (tuple(cell.bbox)[1], tuple(cell.bbox)[0]))
         for example in self._grid_examples:
             bbox = tuple(example.get("bbox", ()))
             if len(bbox) < 4:
@@ -4520,6 +4465,142 @@ class ExtendFrameDetailsDialog(QDialog):
             item.setZValue(40.0)
             items.append(item)
         self._grid_mark_items = items
+        self._sync_grid_legend()
+
+    # Legend, hover and the way through the defects -------------------------------------------------
+
+    def _grid_type_label(self, error_type: str) -> str:
+        labels = {str(value): self._t(label_key) for label_key, value in GRID_INSPECTION_ERROR_TYPE_OPTIONS}
+        return labels.get(str(error_type), str(error_type))
+
+    def _sync_grid_legend(self) -> None:
+        bar = getattr(self, "grid_legend_bar", None)
+        if bar is None:
+            return
+        shown = self._selected_result_kind() == "grid_cell_defects"
+        bar.setVisible(bool(shown))
+        if not shown:
+            return
+        from .defect_marks import shown_types
+
+        counts = self._grid_type_counts
+        order = shown_types(counts)
+        for kind in list(self._grid_legend_buttons):
+            if kind not in counts:
+                button = self._grid_legend_buttons.pop(kind)
+                self._grid_legend_layout.removeWidget(button)
+                button.deleteLater()
+        for index, kind in enumerate(order):
+            button = self._grid_legend_buttons.get(kind)
+            if button is None:
+                button = QToolButton(bar)
+                button.setCheckable(True)
+                button.setIcon(grid_inspection_error_type_icon(kind))
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+                button.setToolTip(self._t("details.legend_solo_hint"))
+                button.clicked.connect(lambda _checked=False, kind=kind: self._toggle_grid_solo(kind))
+                self._grid_legend_buttons[kind] = button
+            self._grid_legend_layout.insertWidget(index, button)
+            button.setText(f"{self._grid_type_label(kind)} · {counts[kind]}")
+            button.blockSignals(True)
+            button.setChecked(self._grid_solo_type == kind)
+            button.blockSignals(False)
+        if self._grid_solo_type is not None and self._grid_solo_type not in counts:
+            self._grid_solo_type = None
+        cells = self._grid_navigable_cells()
+        if self._grid_defect_index >= len(cells):
+            self._grid_defect_index = -1
+        position = "—" if self._grid_defect_index < 0 else str(self._grid_defect_index + 1)
+        self.grid_defect_position_label.setText(f"{position} / {len(cells)}")
+        self.grid_defect_position_label.setToolTip(self._t("details.defect_steps_hint"))
+        for button in (self.grid_prev_defect_button, self.grid_next_defect_button):
+            button.setEnabled(bool(cells))
+            button.setToolTip(self._t("details.defect_steps_hint"))
+
+    def _toggle_grid_solo(self, kind: str) -> None:
+        self._grid_solo_type = None if self._grid_solo_type == kind else str(kind)
+        self._grid_defect_index = -1
+        self._rebuild_grid_mark_items()
+
+    def _grid_navigable_cells(self) -> list:
+        from .defect_marks import shown_types
+
+        cells = list(self._grid_marked_cells)
+        if self._grid_solo_type is None:
+            return cells
+        return [cell for cell in cells if self._grid_solo_type in shown_types(getattr(cell, "reasons", ()) or ())]
+
+    def _step_grid_defect(self, delta: int) -> bool:
+        """The next or the previous defect of the frame (of the singled-out type), zoomed to."""
+
+        if self._selected_result_kind() != "grid_cell_defects":
+            return False
+        cells = self._grid_navigable_cells()
+        if not cells:
+            return False
+        if self._grid_defect_index < 0:
+            self._grid_defect_index = 0 if delta > 0 else len(cells) - 1
+        else:
+            self._grid_defect_index = (self._grid_defect_index + int(delta)) % len(cells)
+        cell = cells[self._grid_defect_index]
+        scale_x, scale_y = self._grid_scene_scale()
+        x, y, w, h = (float(value) for value in tuple(cell.bbox)[:4])
+        self._pending_grid_defect_focus = {"bbox": (x * scale_x, y * scale_y, w * scale_x, h * scale_y)}
+        self._grid_hot_cell = cell
+        self._rebuild_grid_mark_items()
+        self._apply_pending_grid_defect_focus()
+        return True
+
+    def _marked_cell_at(self, scene_pos: QPointF):
+        """The smallest marked defect under the cursor, with a few screen pixels of slack."""
+
+        if self._selected_result_kind() != "grid_cell_defects":
+            return None
+        scale_x, scale_y = self._grid_scene_scale()
+        x = float(scene_pos.x()) / max(scale_x, 1e-6)
+        y = float(scene_pos.y()) / max(scale_y, 1e-6)
+        view_scale = max(abs(float(self.overlay_view.transform().m11())), 1e-6)
+        slack = DEBRIS_HOVER_SLACK_SCREEN_PX / (view_scale * max(scale_x, 1e-6))
+        chosen, chosen_area = None, None
+        for cell in self._grid_marked_cells or self._grid_defect_cells():
+            left, top, width, height = (float(value) for value in tuple(cell.bbox)[:4])
+            if left - slack <= x <= left + width + slack and top - slack <= y <= top + height + slack:
+                area = width * height
+                if chosen_area is None or area < chosen_area:
+                    chosen, chosen_area = cell, area
+        return chosen
+
+    def _grid_defect_cells(self) -> list:
+        """The shown defects of the frame (what the marks are drawn for), without drawing them."""
+
+        from .defect_marks import shown_types
+
+        checks = getattr(self, "grid_error_type_checks", {}) or {}
+        enabled = {key for key, checkbox in checks.items() if checkbox.isChecked()} if checks else None
+        found = []
+        for cell in getattr(self._grid_cell_analysis_result(), "per_cell_results", ()) or ():
+            status = str(getattr(cell, "status", "") or "")
+            reasons = {str(reason) for reason in (getattr(cell, "reasons", ()) or ())}
+            if status == "normal" or not reasons or not self._grid_mark_status_visible(status):
+                continue
+            if self._grid_good_example_hides_cell(cell) or not self._grid_cell_error_type_visible(cell):
+                continue
+            if [kind for kind in shown_types(reasons, enabled) if kind != "conductor_zone"]:
+                found.append(cell)
+        return found
+
+    def _grid_mark_hover_text(self, cell) -> str:
+        from .defect_marks import shown_types
+
+        types = shown_types(getattr(cell, "reasons", ()) or ())
+        lines = [" + ".join(self._grid_type_label(kind) for kind in types)]
+        x, y, w, h = (int(value) for value in tuple(cell.bbox)[:4])
+        lines.append(self._t("details.mark_size", width=w, height=h, x=x, y=y))
+        if "small_artifact" in types:
+            debris = self._debris_hover_text(cell)
+            if debris:
+                lines.append(debris)
+        return "\n".join(line for line in lines if line)
 
     def _debris_cell_at(self, scene_pos: QPointF):
         """Smallest shown debris mark under the cursor, with a few screen pixels of slack for tiny pieces."""
@@ -4565,8 +4646,11 @@ class ExtendFrameDetailsDialog(QDialog):
         )
 
     def _on_overlay_hover(self, scene_pos: QPointF, global_pos: QPoint) -> None:
-        cell = self._debris_cell_at(scene_pos)
-        text = "" if cell is None else self._debris_hover_text(cell)
+        cell = self._marked_cell_at(scene_pos)
+        if cell is not self._grid_hot_cell:
+            self._grid_hot_cell = cell
+            self._rebuild_grid_mark_items()
+        text = "" if cell is None else self._grid_mark_hover_text(cell)
         if not text:
             self._hide_debris_hover()
             return

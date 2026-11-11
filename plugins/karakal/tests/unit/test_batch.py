@@ -102,7 +102,7 @@ def test_compute_and_export_from_the_home_page_and_open_the_matrix(tmp_path, qtb
     finished = _run_home(qtbot, controller, page)
     report = finished[0]
     assert report.frames == 3 and report.missing == ()
-    errors = report.output_dir / "Весь прогон" / "Ошибки"
+    errors = report.output_dir / "Весь прогон" / "Ошибки" / "Геометрия"
     for layer in layout.layers:
         written = sorted(path.name for path in (errors / layer.label).iterdir())
         assert len(written) == 3 and all(name.endswith(f".{fmt}") for name in written)

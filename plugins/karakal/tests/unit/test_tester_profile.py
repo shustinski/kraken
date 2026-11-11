@@ -39,7 +39,9 @@ def test_tester_profile_hides_unfinished_controls(tmp_path, qtbot, monkeypatch) 
     assert widget._presenter._analysis_profile == AnalysisProfileKind.GRID_DEFECTS
     assert widget.app_mode_combo.currentData() == "grid_inspection"
     assert not widget.pair_matrix_group.isVisibleTo(widget)
-    # Reference frames give the layer cell template; testers pick them too.
+    # Reference frames give the layer cell template; testers pick them too (folded under its button).
+    assert not widget._grid_reference_toggle.isHidden()
+    widget._grid_reference_toggle.setChecked(True)
     assert not widget._grid_reference_frame_row.isHidden()
     # Confidence fill defects are enabled in tester; the compute checkbox stays available.
     assert not widget.grid_layer_compute_checks["confidence"].isHidden()
@@ -74,7 +76,7 @@ def test_tester_profile_stays_hidden_after_two_models(tmp_path, qtbot, monkeypat
         assert not widget.grid_layer_compute_checks["confidence"].isHidden()
         assert widget.grid_layer_display_combo.findData("confidence") >= 0
         assert widget.grid_layer_display_combo.findData("derived_conflict") < 0
-        assert not widget._grid_reference_frame_row.isHidden()
+        assert not widget._grid_reference_toggle.isHidden()
         profiles = [
             button
             for button in widget.analysis_setup_panel.findChildren(QPushButton)

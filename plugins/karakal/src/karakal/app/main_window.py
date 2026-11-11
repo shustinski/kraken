@@ -671,8 +671,10 @@ class KarakalWidget(QWidget):
             self.grid_tuning_preset_combo.addItem(self._t(f"grid_tuning.preset.{preset_key}"), preset_key)
         self.grid_tuning_preset_combo.setCurrentIndex(self.grid_tuning_preset_combo.findData("balanced"))
         self.grid_debris_min_area_control = DebrisMinAreaControl(self._t, parent=self)
-        # Sparse cell search window: «auto» (DEFAULT_SPARSE_REACH_SITES pitches on both axes) or the
-        # operator's X (along the row) and Y (along the column), in lattice pitches.
+        # Sparse cell search area: «auto» (DEFAULT_SPARSE_REACH_SITES pitches each way) or the operator's
+        # X and Y in lattice pitches, each a slider with its number; free sides as 2 | 3 | 4 buttons.
+        from ..ui.filter_settings import ChoiceButtons, SpinSlider
+
         self.grid_sparse_reach_box = QWidget(self)
         sparse_layout = QGridLayout(self.grid_sparse_reach_box)
         sparse_layout.setContentsMargins(0, 0, 0, 0)
@@ -680,9 +682,9 @@ class KarakalWidget(QWidget):
         sparse_layout.setVerticalSpacing(2)
         self.grid_sparse_reach_auto_check = QCheckBox(self._t("grid_tuning.sparse_reach_auto"), self.grid_sparse_reach_box)
         self.grid_sparse_reach_auto_check.setChecked(True)
-        sparse_layout.addWidget(self.grid_sparse_reach_auto_check, 0, 0, 1, 4)
+        sparse_layout.addWidget(self.grid_sparse_reach_auto_check, 0, 0, 1, 2)
         self._grid_sparse_reach_axis_labels = []
-        for column, (axis, name) in enumerate((("x", "grid_sparse_reach_x_spin"), ("y", "grid_sparse_reach_y_spin"))):
+        for row_index, (axis, name) in enumerate((("x", "grid_sparse_reach_x_spin"), ("y", "grid_sparse_reach_y_spin")), start=1):
             label = QLabel(self._t(f"grid_tuning.sparse_reach_{axis}"), self.grid_sparse_reach_box)
             self._grid_sparse_reach_axis_labels.append((label, f"grid_tuning.sparse_reach_{axis}"))
             spin = _SparseSpin(self.grid_sparse_reach_box)
@@ -694,21 +696,27 @@ class KarakalWidget(QWidget):
             spin.setEnabled(False)
             spin.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             setattr(self, name, spin)
-            sparse_layout.addWidget(label, 1, 2 * column)
-            sparse_layout.addWidget(spin, 1, 2 * column + 1)
+            sparse_layout.addWidget(label, row_index, 0)
+            pair = SpinSlider(spin, parent=self.grid_sparse_reach_box)
+            self._grid_sparse_sliders = [*getattr(self, "_grid_sparse_sliders", []), pair.slider]
+            sparse_layout.addWidget(pair, row_index, 1)
         free_label = QLabel(self._t("grid_tuning.sparse_free_sides"), self.grid_sparse_reach_box)
         self._grid_sparse_reach_axis_labels.append((free_label, "grid_tuning.sparse_free_sides"))
         self.grid_sparse_free_spin = _NoWheelSpinBox(self.grid_sparse_reach_box)
         self.grid_sparse_free_spin.setRange(int(SPARSE_FREE_SIDES_RANGE[0]), int(SPARSE_FREE_SIDES_RANGE[1]))
         self.grid_sparse_free_spin.setValue(int(DEFAULT_SPARSE_FREE_SIDES))
         self.grid_sparse_free_spin.setKeyboardTracking(False)
-        self.grid_sparse_free_spin.setSuffix(" / 4")
-        sparse_layout.addWidget(free_label, 2, 0, 1, 3)
-        sparse_layout.addWidget(self.grid_sparse_free_spin, 2, 3)
+        self.grid_sparse_free_choice = ChoiceButtons(
+            self.grid_sparse_free_spin, range(int(SPARSE_FREE_SIDES_RANGE[0]), int(SPARSE_FREE_SIDES_RANGE[1]) + 1),
+            parent=self.grid_sparse_reach_box,
+        )
+        sparse_layout.addWidget(free_label, 3, 0)
+        sparse_layout.addWidget(self.grid_sparse_free_choice, 3, 1)
         self.grid_sparse_reach_hint = QLabel(self.grid_sparse_reach_box)
         self.grid_sparse_reach_hint.setWordWrap(True)
         self.grid_sparse_reach_hint.setStyleSheet("color: #8a94a3;")
-        sparse_layout.addWidget(self.grid_sparse_reach_hint, 3, 0, 1, 4)
+        sparse_layout.addWidget(self.grid_sparse_reach_hint, 4, 0, 1, 2)
+        sparse_layout.setColumnStretch(1, 1)
         self.grid_sparse_reach_box.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
         # Conflicts of a ones/zeros pair: shown from this area and this share of the smaller cell.
         self.grid_conflict_min_area_spin = _NoWheelSpinBox(self)
@@ -1329,6 +1337,11 @@ class KarakalWidget(QWidget):
         open_data_action = QAction(self._t("menu.settings.open_data_folder"), settings_menu)
         open_data_action.triggered.connect(self._open_data_folder)
         settings_menu.addAction(open_data_action)
+        live_hints_action = QAction(self._t("menu.settings.live_hints"), settings_menu)
+        live_hints_action.setCheckable(True)
+        live_hints_action.setChecked(self._settings_service.load_flag("ui/live_hints", True))
+        live_hints_action.toggled.connect(self._on_live_hints_toggled)
+        settings_menu.addAction(live_hints_action)
         settings_menu.addSeparator()
         save_profile_action = QAction(self._t("menu.settings.save_profile"), settings_menu)
         save_profile_action.triggered.connect(lambda _checked=False: self._presenter.save_profile_dialog())
@@ -1391,6 +1404,119 @@ class KarakalWidget(QWidget):
 
     def show_workspace(self) -> None:
         self.root_stack.setCurrentWidget(self.workspace)
+
+    # Defect filter panel ---------------------------------------------------------------------------
+
+    def _build_filter_sections(self) -> None:
+        """The settings of each filter, to show under it: debris size, the sparse cell area, the
+        ones/zeros conflict thresholds, the cover of «only one network found»."""
+
+        from ..ui.filter_settings import FilterSettingsSection, SpinSlider
+
+        sections: dict[str, FilterSettingsSection] = {}
+        debris = FilterSettingsSection(self)
+        self._grid_debris_min_area_row = self._build_setting_row(self._t("grid_filter.debris_min_area"), self.grid_debris_min_area_control)
+        debris.add_widget(self._grid_debris_min_area_row)
+        sections["small_artifact"] = debris
+        sparse = FilterSettingsSection(self)
+        self._grid_sparse_reach_row = self._build_setting_row(self._t("grid_filter.sparse_area"), self.grid_sparse_reach_box)
+        sparse.add_widget(self._grid_sparse_reach_row)
+        sections["sparse_cell"] = sparse
+        conflict = FilterSettingsSection(self)
+        area_pair = SpinSlider(self.grid_conflict_min_area_spin, log=True, parent=conflict)
+        share_pair = SpinSlider(self.grid_conflict_min_share_spin, parent=conflict)
+        self._grid_conflict_min_area_row = self._build_setting_row(self._t("grid_filter.conflict_min_area"), area_pair)
+        self._grid_conflict_min_share_row = self._build_setting_row(self._t("grid_filter.conflict_min_share"), share_pair)
+        conflict.add_widget(self._grid_conflict_min_area_row)
+        conflict.add_widget(self._grid_conflict_min_share_row)
+        sections["class_conflict"] = conflict
+        agreement = FilterSettingsSection(self)
+        cover_pair = SpinSlider(self.grid_agreement_cover_spin, parent=agreement)
+        self._grid_agreement_cover_row = self._build_setting_row(self._t("grid_filter.agreement_cover"), cover_pair)
+        agreement.add_widget(self._grid_agreement_cover_row)
+        sections["network_only"] = agreement
+        self._grid_filter_sections = sections
+        self._build_live_hints(area_pair, share_pair, cover_pair)
+
+    def _build_live_hints(self, area_pair, share_pair, cover_pair) -> None:
+        """Animated hints of the settings (ui.live_hints): on hovering a setting's title or dragging
+        its slider; the titles carry «ⓘ»."""
+
+        from ..ui.live_hints import LiveHint
+
+        self._live_hints_on = self._settings_service.load_flag("ui/live_hints", True)
+        enabled = lambda: bool(getattr(self, "_live_hints_on", True))  # noqa: E731
+        sparse_title = getattr(self._grid_sparse_reach_row, "_title_label", None)
+        specs = (
+            (
+                "debris",
+                lambda: {"min_area": self.grid_debris_min_area_control.value()},
+                (self._grid_debris_min_area_row, getattr(self.grid_debris_min_area_control, "_slider", None)),
+            ),
+            (
+                "sparse",
+                lambda: {
+                    "reach_x": 4.0 if self.grid_sparse_reach_auto_check.isChecked() else self.grid_sparse_reach_x_spin.value(),
+                    "reach_y": 4.0 if self.grid_sparse_reach_auto_check.isChecked() else self.grid_sparse_reach_y_spin.value(),
+                    "free_sides": self.grid_sparse_free_spin.value(),
+                },
+                (sparse_title, *getattr(self, "_grid_sparse_sliders", []), self.grid_sparse_free_choice),
+            ),
+            (
+                "conflict",
+                lambda: {"min_area": self.grid_conflict_min_area_spin.value(), "min_share": self.grid_conflict_min_share_spin.value()},
+                (getattr(self._grid_conflict_min_area_row, "_title_label", None), area_pair.slider,
+                 getattr(self._grid_conflict_min_share_row, "_title_label", None), share_pair.slider),
+            ),
+            (
+                "agreement",
+                lambda: {"cover": self.grid_agreement_cover_spin.value()},
+                (getattr(self._grid_agreement_cover_row, "_title_label", None), cover_pair.slider),
+            ),
+        )
+        self._live_hints = []
+        for key, values, widgets in specs:
+            widgets = [widget for widget in widgets if widget is not None]
+            # The debris row: its title, not the whole row (the number box opens no hint).
+            widgets = [getattr(widget, "_title_label", widget) for widget in widgets]
+            self._live_hints.append(
+                LiveHint(key, values, widgets, enabled=enabled, translate=self._t, parent=self._grid_inspection_tuning_group if hasattr(self, "_grid_inspection_tuning_group") else self)
+            )
+        for row in (self._grid_debris_min_area_row, self._grid_sparse_reach_row, self._grid_conflict_min_area_row,
+                    self._grid_conflict_min_share_row, self._grid_agreement_cover_row):
+            row._live_hint = True  # type: ignore[attr-defined]
+            label = getattr(row, "_title_label", None)
+            if label is not None:
+                label.setText(label.text() + "  ⓘ")
+                label.setCursor(Qt.CursorShape.WhatsThisCursor)
+
+    def _on_live_hints_toggled(self, checked: bool) -> None:
+        self._live_hints_on = bool(checked)
+        self._settings_service.save_flag("ui/live_hints", bool(checked))
+        self._settings_service.sync()
+        if not checked:
+            for hint in getattr(self, "_live_hints", ()):
+                hint.popup.hide()
+
+    def _sync_filter_sections(self) -> None:
+        """A filter's settings show when the switch is on and the filter is on and can be used."""
+
+        shown = bool(getattr(self, "grid_filter_settings_check", None) is not None and self.grid_filter_settings_check.isChecked())
+        for error_type, section in (getattr(self, "_grid_filter_sections", {}) or {}).items():
+            checkbox = self.grid_error_type_checks.get(error_type)
+            usable = checkbox is None or (
+                checkbox.isChecked() and not checkbox.testAttribute(Qt.WidgetAttribute.WA_ForceDisabled)
+            )
+            section.setVisible(shown and usable)
+
+    def _on_filter_settings_toggled(self, checked: bool) -> None:
+        self._settings_service.save_flag("ui/filter_settings_shown", bool(checked))
+        self._settings_service.sync()
+        self._sync_filter_sections()
+
+    def _on_reference_toggled(self, checked: bool) -> None:
+        self._grid_reference_toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        self._grid_reference_frame_row.setVisible(bool(checked))
 
     def _choose_data_folder(self) -> None:
         """Karakal's own folder: projects, profiles and exports (core.data_folder)."""
@@ -1932,7 +2058,17 @@ class KarakalWidget(QWidget):
         grid_tuning_layout = QVBoxLayout(self._grid_inspection_tuning_group)
         grid_tuning_layout.setContentsMargins(8, 8, 8, 8)
         grid_tuning_layout.setSpacing(8)
+        self._grid_reference_toggle = QToolButton(self._grid_inspection_tuning_group)
+        self._grid_reference_toggle.setCheckable(True)
+        self._grid_reference_toggle.setChecked(False)
+        self._grid_reference_toggle.setAutoRaise(True)
+        self._grid_reference_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._grid_reference_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self._grid_reference_toggle.setText(self._t("grid_reference.toggle"))
+        self._grid_reference_toggle.toggled.connect(self._on_reference_toggled)
+        grid_tuning_layout.addWidget(self._grid_reference_toggle)
         grid_tuning_layout.addWidget(self._grid_reference_frame_row)
+        self._grid_reference_frame_row.setVisible(False)
         self._grid_tuning_preset_row = self._build_setting_row(
             self._t("grid_tuning.preset"),
             self.grid_tuning_preset_combo,
@@ -1955,39 +2091,34 @@ class KarakalWidget(QWidget):
         )
         self._grid_layer_display_row.setVisible(False)
         grid_tuning_layout.addWidget(self._grid_layer_display_row)
-        self._grid_error_type_checks_title = QLabel(self._t("grid_tuning.enabled_errors"), self._grid_inspection_tuning_group)
+        types_header = QWidget(self._grid_inspection_tuning_group)
+        types_header_layout = QHBoxLayout(types_header)
+        types_header_layout.setContentsMargins(0, 0, 0, 0)
+        self._grid_error_type_checks_title = QLabel(self._t("grid_tuning.enabled_errors"), types_header)
         self._grid_error_type_checks_title.setWordWrap(True)
-        grid_tuning_layout.addWidget(self._grid_error_type_checks_title)
+        # One switch beside the title shows the settings of every filter right under it.
+        self.grid_filter_settings_check = QToolButton(types_header)
+        self.grid_filter_settings_check.setCheckable(True)
+        self.grid_filter_settings_check.setAutoRaise(True)
+        self.grid_filter_settings_check.setText(self._t("grid_filter.settings_toggle"))
+        self.grid_filter_settings_check.setToolTip(self._t("grid_filter.settings_toggle_hint"))
+        self.grid_filter_settings_check.setChecked(self._settings_service.load_flag("ui/filter_settings_shown", False))
+        types_header_layout.addWidget(self._grid_error_type_checks_title, 1)
+        types_header_layout.addWidget(self.grid_filter_settings_check)
+        grid_tuning_layout.addWidget(types_header)
+        self._build_filter_sections()
         for _label_key, error_type in GRID_INSPECTION_ERROR_TYPE_OPTIONS:
             checkbox = self.grid_error_type_checks.get(str(error_type))
             if checkbox is not None:
                 checkbox.setParent(self._grid_inspection_tuning_group)
                 grid_tuning_layout.addWidget(checkbox)
-        self._grid_debris_min_area_row = self._build_setting_row(
-            self._t("grid_tuning.debris_min_area"),
-            self.grid_debris_min_area_control,
-        )
-        grid_tuning_layout.addWidget(self._grid_debris_min_area_row)
-        self._grid_sparse_reach_row = self._build_setting_row(
-            self._t("grid_tuning.sparse_reach"),
-            self.grid_sparse_reach_box,
-        )
-        grid_tuning_layout.addWidget(self._grid_sparse_reach_row)
-        self._grid_conflict_min_area_row = self._build_setting_row(
-            self._t("grid_tuning.conflict_min_area"),
-            self.grid_conflict_min_area_spin,
-        )
-        grid_tuning_layout.addWidget(self._grid_conflict_min_area_row)
-        self._grid_conflict_min_share_row = self._build_setting_row(
-            self._t("grid_tuning.conflict_min_share"),
-            self.grid_conflict_min_share_spin,
-        )
-        grid_tuning_layout.addWidget(self._grid_conflict_min_share_row)
-        self._grid_agreement_cover_row = self._build_setting_row(
-            self._t("grid_tuning.agreement_cover"),
-            self.grid_agreement_cover_spin,
-        )
-        grid_tuning_layout.addWidget(self._grid_agreement_cover_row)
+                section = self._grid_filter_sections.get(str(error_type))
+                if section is not None:
+                    section.setParent(self._grid_inspection_tuning_group)
+                    grid_tuning_layout.addWidget(section)
+                checkbox.toggled.connect(lambda _checked=False: self._sync_filter_sections())
+        self.grid_filter_settings_check.toggled.connect(self._on_filter_settings_toggled)
+        self._sync_filter_sections()
         layout.addWidget(self._matrix_view_group)
         layout.addWidget(self._grid_inspection_tuning_group)
         layout.addWidget(self._analysis_task_group)
@@ -2063,17 +2194,17 @@ class KarakalWidget(QWidget):
                 "_grid_reference_frame_row": "grid_reference.label",
                 "_grid_layer_display_row": "grid_tuning.display_layer",
                 "_grid_tuning_preset_row": "grid_tuning.preset",
-                "_grid_debris_min_area_row": "grid_tuning.debris_min_area",
-                "_grid_sparse_reach_row": "grid_tuning.sparse_reach",
-                "_grid_conflict_min_area_row": "grid_tuning.conflict_min_area",
-                "_grid_conflict_min_share_row": "grid_tuning.conflict_min_share",
-                "_grid_agreement_cover_row": "grid_tuning.agreement_cover",
+                "_grid_debris_min_area_row": "grid_filter.debris_min_area",
+                "_grid_sparse_reach_row": "grid_filter.sparse_area",
+                "_grid_conflict_min_area_row": "grid_filter.conflict_min_area",
+                "_grid_conflict_min_share_row": "grid_filter.conflict_min_share",
+                "_grid_agreement_cover_row": "grid_filter.agreement_cover",
             }
             for row_name, label_key in grid_tuning_labels.items():
                 row = getattr(self, row_name, None)
                 label = getattr(row, "_title_label", None)
                 if label is not None:
-                    label.setText(self._t(label_key))
+                    label.setText(self._t(label_key) + ("  ⓘ" if getattr(row, "_live_hint", False) else ""))
             if hasattr(self, "grid_debris_min_area_control"):
                 self.grid_debris_min_area_control.retranslate(self._t)
             if hasattr(self, "grid_tuning_preset_combo"):
@@ -2233,6 +2364,10 @@ class KarakalWidget(QWidget):
             self.grid_inspection_layer_tabs.setTabText(1, self._t("grid_layer.binary"))
         if hasattr(self, "grid_matrix_layer_label"):
             self.grid_matrix_layer_label.setText(self._t("grid_matrix_layer.label"))
+        if hasattr(self, "grid_filter_settings_check"):
+            self.grid_filter_settings_check.setText(self._t("grid_filter.settings_toggle"))
+            self.grid_filter_settings_check.setToolTip(self._t("grid_filter.settings_toggle_hint"))
+            self._grid_reference_toggle.setText(self._t("grid_reference.toggle"))
         if hasattr(self, "grid_sparse_reach_box"):
             self.grid_sparse_reach_box.setToolTip(self._t("grid_tuning.sparse_reach_hint"))
             self.grid_sparse_reach_auto_check.setText(self._t("grid_tuning.sparse_reach_auto"))

@@ -139,9 +139,42 @@ def grid_display_error_type(reasons, enabled=None) -> str | None:
     return None
 
 
-# Drawn as a thick frame, not a fill: a cell that is also broken keeps the fill of its other finding,
-# so a picture read pixel by pixel holds the colours of both (and a sparse cell alone only a frame).
+# Shown as a frame over the fill of the cell's other finding (the colour layer of the comparison).
+# The exported error picture has its own rule: one picture per layer, several errors of a cell as
+# rings (core.grid_error_export.render_grid_error_image).
 GRID_ERROR_FRAME_TYPES = ("sparse_cell",)
+
+# The error picture is exported in layers, one picture per layer: what is wrong with the cell itself
+# (its shape) and what makes it suspicious around it. A cell with errors of both kinds is in both
+# pictures, each with its own colour: no error covers another. (key, folder of the export, types)
+GRID_ERROR_LAYER_GEOMETRY = "geometry"
+GRID_ERROR_LAYER_SURROUNDINGS = "surroundings"
+GRID_ERROR_LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (GRID_ERROR_LAYER_GEOMETRY, "Геометрия", ("small_artifact", "broken_geometry", "merged_contour")),
+    (GRID_ERROR_LAYER_SURROUNDINGS, "Окружение", ("sparse_cell", "class_conflict", "network_only")),
+)
+
+
+def grid_error_layer(error_type: str) -> str:
+    """Layer of an error type; a type of no layer (findings of older runs) is of the cell's shape."""
+
+    for key, _folder, types in GRID_ERROR_LAYERS:
+        if str(error_type) in types:
+            return key
+    return GRID_ERROR_LAYER_GEOMETRY
+
+
+def grid_error_layers_of(types) -> list[tuple[str, str, tuple[str, ...]]]:
+    """(key, folder, types) of the layers these types fall into, in the layers' order; only the given
+    types, and only layers with at least one of them."""
+
+    chosen = [str(item) for item in types or () if str(item)]
+    layers = []
+    for key, folder, _types in GRID_ERROR_LAYERS:
+        own = tuple(item for item in chosen if grid_error_layer(item) == key)
+        if own:
+            layers.append((key, folder, own))
+    return layers
 
 
 def sparse_frame_width(width: float, height: float) -> int:

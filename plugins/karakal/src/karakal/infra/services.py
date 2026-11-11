@@ -153,6 +153,15 @@ class KarakalSettingsService:
             {"mask_suffix": normalized.mask_suffix, "confidence_suffix": normalized.confidence_suffix},
         )
 
+    def load_flag(self, key: str, default: bool = False) -> bool:
+        value = self._settings.value(str(key), None)
+        if value is None:
+            return bool(default)
+        return str(value).strip().lower() in {"1", "true", "yes"}
+
+    def save_flag(self, key: str, value: bool) -> None:
+        self._settings.setValue(str(key), bool(value))
+
     def load_data_folder(self) -> str:
         """Karakal's own folder (projects, profiles, exports); empty: the default one."""
 

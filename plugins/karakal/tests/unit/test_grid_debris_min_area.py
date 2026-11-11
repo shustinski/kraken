@@ -206,13 +206,14 @@ def test_hover_over_debris_shows_its_size_and_the_limit(qtbot, monkeypatch) -> N
     monkeypatch.setattr(module.QToolTip, "hideText", lambda: hidden.append(True))
 
     dialog._on_overlay_hover(QPointF(103, 103), QPoint(0, 0))
-    assert shown == ["Мусор: 37 px (мин. размер 24 px)"]
+    assert len(shown) == 1 and shown[0].splitlines()[-1] == "Мусор: 37 px (мин. размер 24 px)"
+    assert shown[0].splitlines()[0] == "Мусор"
 
-    # Other defect types and empty space hide the hint.
+    # Every marked defect tells its types and size; empty space hides the hint.
     dialog._on_overlay_hover(QPointF(210, 210), QPoint(0, 0))
+    assert shown[-1].splitlines()[0] == "Нарушенная геометрия" and "30 × 30 px" in shown[-1]
     dialog._on_overlay_hover(QPointF(350, 50), QPoint(0, 0))
-    assert shown == ["Мусор: 37 px (мин. размер 24 px)"]
-    assert len(hidden) == 2
+    assert len(shown) == 2 and len(hidden) == 1
 
 
 def test_hover_skips_hidden_debris_and_results_without_area(qtbot) -> None:

@@ -146,17 +146,22 @@ class AnalysisSetupPanel(QGroupBox):
             self.modeChanged.emit(mode)
 
     def _refresh_description(self) -> None:
+        """Only what the operator needs on screen: which check validation picked and what is missing.
+        The description of the mode is the tooltip of its button and of this line."""
+
         profile = analysis_profile_definition(self._profile)
         description = self._t(profile.description_key)
+        lines = []
         if profile.app_mode == "validation":
-            text = self._t("setup.auto_profile", title=self._t(profile.title_key), description=description)
-            tooltip = self._t("setup.auto_profile.hint")
+            lines.append(self._t("setup.auto_profile_short", title=self._t(profile.title_key)))
+            tooltip = f"{description}\n\n{self._t('setup.auto_profile.hint')}"
         else:
-            text, tooltip = description, ""
+            tooltip = description
         if self._unavailable_reason:
-            text = f"{text}\n{self._unavailable_reason}"
-        self.profile_description_label.setText(text)
+            lines.append(self._unavailable_reason)
+        self.profile_description_label.setText("\n".join(lines))
         self.profile_description_label.setToolTip(tooltip)
+        self.profile_description_label.setVisible(bool(lines))
 
     def set_profile(self, value: AnalysisProfileKind | str) -> None:
         """Show the active analysis: its mode button and, for validation, which check was picked."""

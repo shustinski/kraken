@@ -95,9 +95,14 @@ def render_grid_error_image(
 ) -> np.ndarray:
     """Filled cell rectangles on black. Color follows only the selected types.
 
-    A sparse cell is a thick frame of its colour inside its box, over the fill of its other finding
-    (if it has one): a program reading the picture pixel by pixel finds both colours in that cell.
+    Every selected error of a cell keeps pixels of its own colour, none covers another: a cell with
+    one error is filled with its colour; with several, the first ones (in the filter's order, the
+    sparse cell first) are rings inside its box from the outside in and the last one fills the middle.
+    A program reading the picture pixel by pixel finds every colour of the cell. The export writes one
+    such picture per layer (ui_constants.GRID_ERROR_LAYERS), so a cell mostly has one colour there.
     """
+
+    from ..ui.ui_constants import grid_error_display_order
 
     selected = {str(item) for item in selected_types if str(item) and str(item) not in _EXCLUDED_EXPORT_TYPES}
     height = max(1, int(getattr(result, "image_height", 0) or 1))
@@ -111,24 +116,35 @@ def render_grid_error_image(
     if mode == "single" and not grayscale and single_color is not None:
         red, green, blue = (int(value) for value in single_color[:3])
         paint_bgr = (blue, green, red)
+    order = {kind: index for index, kind in enumerate(grid_error_display_order())}
+
+    def value_of(kind: str):
+        if grayscale:
+            return 255
+        if paint_bgr is not None:
+            return paint_bgr
+        red, green, blue = _grid_defect_reason_rgb((kind,), selected_types=selected)
+        return (blue, green, red)
+
     cells = []
     for cell in getattr(result, "per_cell_results", ()) or ():
         if str(getattr(cell, "status", "") or "") == "normal":
             continue
-        reasons = tuple(
+        reasons = {
             str(reason)
             for reason in (getattr(cell, "reasons", ()) or ())
             if str(reason) and str(reason) not in _EXCLUDED_EXPORT_TYPES
-        )
-        if not any(reason in selected for reason in reasons):
+        }
+        # Findings of older runs outside the filter's types come after them, by name.
+        kinds = sorted(reasons & selected, key=lambda kind: (order.get(kind, len(order)), kind))
+        if not kinds:
             continue
-        rank = max((_DEFECT_REASON_PRIORITY.get(reason, 10) for reason in reasons if reason in selected), default=0)
-        cells.append((rank, cell, reasons))
+        rank = max(_DEFECT_REASON_PRIORITY.get(kind, 10) for kind in kinds)
+        cells.append((rank, cell, kinds))
     cells.sort(key=lambda item: item[0])
-    from ..ui.ui_constants import grid_fill_and_frame, sparse_frame_width
 
-    frames: list[tuple[int, int, int, int, str]] = []
-    for _rank, cell, reasons in cells:
+    rings: list[tuple[int, int, int, int, list]] = []
+    for _rank, cell, kinds in cells:
         x = max(0, min(width - 1, int(getattr(cell, "left", 0))))
         y = max(0, min(height - 1, int(getattr(cell, "top", 0))))
         w = max(1, int(getattr(cell, "width", 1)))
@@ -137,34 +153,31 @@ def render_grid_error_image(
         y1 = min(height, y + h)
         if x1 <= x or y1 <= y:
             continue
-        fill, frame = grid_fill_and_frame(reasons, selected)
-        if frame is not None:
-            frames.append((x, y, x1, y1, frame))
-        if fill is None:
-            continue
-        if grayscale:
-            image[y:y1, x:x1] = 255
-            continue
-        if paint_bgr is not None:
-            image[y:y1, x:x1] = paint_bgr
-            continue
-        red, green, blue = _grid_defect_reason_rgb((fill,), selected_types=selected)
-        image[y:y1, x:x1] = (blue, green, red)
-    # Frames last: a neighbour's fill never covers them.
-    for x, y, x1, y1, frame in frames:
-        if grayscale:
-            value = 255
-        elif paint_bgr is not None:
-            value = paint_bgr
-        else:
-            red, green, blue = _grid_defect_reason_rgb((frame,), selected_types=selected)
-            value = (blue, green, red)
-        side = sparse_frame_width(x1 - x, y1 - y)
-        image[y : min(y1, y + side), x:x1] = value
-        image[max(y, y1 - side) : y1, x:x1] = value
-        image[y:y1, x : min(x1, x + side)] = value
-        image[y:y1, max(x, x1 - side) : x1] = value
+        image[y:y1, x:x1] = value_of(kinds[-1])
+        if len(kinds) > 1:
+            rings.append((x, y, x1, y1, [value_of(kind) for kind in kinds[:-1]]))
+    # Rings last: a neighbour's fill never covers them.
+    for x, y, x1, y1, values in rings:
+        side = error_ring_width(x1 - x, y1 - y, len(values))
+        for depth, value in enumerate(values):
+            left, top, right, bottom = x + depth * side, y + depth * side, x1 - depth * side, y1 - depth * side
+            if right <= left or bottom <= top:
+                break
+            image[top : min(bottom, top + side), left:right] = value
+            image[max(top, bottom - side) : bottom, left:right] = value
+            image[top:bottom, left : min(right, left + side)] = value
+            image[top:bottom, max(left, right - side) : right] = value
     return image
+
+
+def error_ring_width(width: int, height: int, rings: int) -> int:
+    """Width of each ring of a cell with ``rings`` rings around its middle: thick (as the sparse
+    cell's frame), but leaving the middle at least one ring wide."""
+
+    from ..ui.ui_constants import sparse_frame_width
+
+    short = max(1, min(int(width), int(height)))
+    return max(1, min(sparse_frame_width(width, height), short // (2 * max(1, int(rings)) + 1)))
 
 
 def _write_image(path: Path, image: np.ndarray, image_format: str) -> None:

@@ -119,7 +119,9 @@ def test_export_writes_chosen_items_table_and_report(tmp_path) -> None:
     report = export_frame_set(plan, tmp_path / "out")
     assert not report.missing
     set_dir = report.set_dir
-    assert len(list((set_dir / "Ошибки").glob("*.png"))) == 3
+    assert len(list((set_dir / "Ошибки" / "Геометрия").glob("*.png"))) == 3
+    # Only the geometry layer was chosen: no picture of the surroundings.
+    assert not (set_dir / "Ошибки" / "Окружение").exists()
     assert sorted(path.name for path in (set_dir / "Ошибки на маске").glob("*.png")) == [
         "frame.0000.png", "frame.0001.png", "frame.0002.png",
     ]
@@ -160,13 +162,13 @@ def test_export_fills_the_rest_of_the_run_with_black_error_frames(tmp_path) -> N
         items=frozenset({ITEM_ERRORS}), error_types=("merged_contour",), fill_frames=tuple(rest),
     )
     preview = preview_frame_set_export(plan, tmp_path / "out")
-    errors_line = next(line for line in preview.lines if "Ошибки" in line)
+    errors_line = next(line for line in preview.lines if "Геометрия" in line)
     assert "5 файлов" in errors_line and "чёрных: 3" in errors_line
     # Every number of the tree starts in the same column.
     starts = {match.end() - 1 for line in preview.lines if (match := re.search(r"\\\s+\d", line))}
     assert len(starts) == 1
     report = export_frame_set(plan, tmp_path / "out")
-    files = sorted((report.set_dir / "Ошибки").glob("*.png"))
+    files = sorted((report.set_dir / "Ошибки" / "Геометрия").glob("*.png"))
     assert [path.name for path in files] == [f"frame.{index:04d}.png" for index in range(5)]
     for path in files[2:]:
         image = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
@@ -284,3 +286,69 @@ def test_export_picks_its_own_error_types(tmp_path, qtbot) -> None:
     plan = controller._build_plan(state, controller._qualities(), {record.key for record in records}, set())
     assert plan.error_types == ("merged_contour",)
     assert {key for key, check in controller.panel.error_type_checks.items() if check.isChecked()} == {"merged_contour"}
+    # The types sit under their layers; a layer's check ticks or clears the whole layer.
+    from PyQt6.QtCore import Qt
+
+    layers = controller.panel.error_layer_checks
+    assert set(layers) == {"geometry", "surroundings"}
+    assert layers["geometry"].checkState() == Qt.CheckState.PartiallyChecked
+    assert layers["surroundings"].checkState() == Qt.CheckState.Unchecked
+    layers["surroundings"].click()
+    controller._refresh_panel()
+    plan = controller._build_plan(state, controller._qualities(), {record.key for record in records}, set())
+    surroundings = {key for key in controller.panel.error_type_checks if key in {"sparse_cell", "class_conflict", "network_only"}}
+    assert set(plan.error_types) == {"merged_contour"} | surroundings
+    assert controller.panel.error_layer_checks["surroundings"].checkState() == Qt.CheckState.Checked
+    controller.panel.error_layer_checks["geometry"].click()  # half ticked: the whole layer
+    assert all(controller.panel.error_type_checks[key].isChecked() for key in ("small_artifact", "broken_geometry", "merged_contour"))
+    controller.panel.error_layer_checks["geometry"].click()
+    assert not any(controller.panel.error_type_checks[key].isChecked() for key in ("small_artifact", "broken_geometry", "merged_contour"))
+
+
+def test_errors_are_written_per_layer_and_a_cell_keeps_every_error(tmp_path) -> None:
+    """Errors of the cell's shape and of its surroundings go to pictures of their own; two errors of
+    one layer in a cell are a ring and a middle, each of its own colour."""
+
+    from karakal.ui.ui_constants import GRID_INSPECTION_ERROR_TYPE_COLORS
+
+    def cell(column, reasons):
+        return GridCellAnalysisResult(0, column, (column * 20, 0, 18, 30), (0.0, 0.0), None, "broken", 0.9, reasons)
+
+    cells = (
+        cell(0, ("broken_geometry", "sparse_cell")),
+        cell(1, ("broken_geometry", "merged_contour")),
+        cell(2, ("sparse_cell",)),
+    )
+    result = GridFrameAnalysisResult(
+        frame_id="k0", frame_path="k0.png", image_width=80, image_height=40, grid_rows=1, grid_cols=3,
+        total_expected_cells=3, detected_cells=3, normal_cells=0, suspicious_cells=0, broken_cells=3,
+        missing_cells=0, artifact_cells=0, damage_score=1.0, severity_level="", grid_detected=True,
+        per_cell_results=cells,
+    )
+    frame = FrameSetExportFrame(key="k0", name="frame.0000.png", results={"m": result})
+    plan = FrameSetExportPlan(
+        set_name="Выделено", layer_title="Модель", frames=(frame,), models=(FrameSetExportModel("m", "Модель"),),
+        items=frozenset({ITEM_ERRORS}), error_types=("broken_geometry", "merged_contour", "sparse_cell"),
+    )
+    preview = preview_frame_set_export(plan, tmp_path / "out")
+    assert any(line.strip().startswith("Геометрия\\") for line in preview.lines)
+    assert any(line.strip().startswith("Окружение\\") for line in preview.lines)
+    report = export_frame_set(plan, tmp_path / "out")
+
+    def read(layer):
+        path = report.set_dir / "Ошибки" / layer / "frame.0000.png"
+        return cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    def bgr(kind):
+        value = GRID_INSPECTION_ERROR_TYPE_COLORS[kind].lstrip("#")
+        return [int(value[4:6], 16), int(value[2:4], 16), int(value[0:2], 16)]
+
+    geometry, surroundings = read("Геометрия"), read("Окружение")
+    # Broken and sparse: the shape in one picture, the loneliness in the other, both whole.
+    assert geometry[15, 9].tolist() == bgr("broken_geometry") and geometry[15, 0].tolist() == bgr("broken_geometry")
+    assert surroundings[15, 9].tolist() == bgr("sparse_cell")
+    # Broken and merged, one layer: the broken ring around the merged middle.
+    assert geometry[15, 20].tolist() == bgr("broken_geometry") and geometry[15, 29].tolist() == bgr("merged_contour")
+    assert not surroundings[:, 20:38].any()
+    # Sparse alone: only in the surroundings, filled.
+    assert surroundings[15, 49].tolist() == bgr("sparse_cell") and not geometry[:, 40:58].any()

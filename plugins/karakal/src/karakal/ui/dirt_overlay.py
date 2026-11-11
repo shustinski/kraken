@@ -37,7 +37,8 @@ LEVEL_QCOLORS = {
     LEVEL_MEDIUM: QColor(255, 140, 0),
     LEVEL_HEAVY: QColor(230, 40, 40),
 }
-BOX_COLOR = QColor(0, 220, 255)
+# Dirt is a background layer under the cell marks: quiet grey frames and thin dashed contours.
+BOX_COLOR = QColor(148, 163, 184)
 # Above the cell marks of the window (result layer 3.0, marks just above it).
 DIRT_Z = 5.0
 
@@ -175,7 +176,7 @@ class DirtOverlay:
             tip = region_tooltip(region, self._t)
             if self.box_check.isChecked():
                 x, y, w, h = region.bbox
-                pen = QPen(BOX_COLOR, 1.5, Qt.PenStyle.DashLine)
+                pen = QPen(BOX_COLOR, 1.0, Qt.PenStyle.DashLine)
                 pen.setCosmetic(True)
                 box = self._scene.addRect(QRectF(x * sx, y * sy, w * sx, h * sy), pen, QBrush(Qt.BrushStyle.NoBrush))
                 box.setToolTip(tip)
@@ -187,8 +188,8 @@ class DirtOverlay:
                 path.addPolygon(polygon)
                 path.closeSubpath()
                 fill = QColor(color)
-                fill.setAlpha(40)
-                pen = QPen(color, 2.5)
+                fill.setAlpha(18)
+                pen = QPen(color, 1.5, Qt.PenStyle.DashLine)
                 pen.setCosmetic(True)
                 outline = self._scene.addPath(path, pen, QBrush(fill))
                 outline.setToolTip(tip)
@@ -199,7 +200,7 @@ class DirtOverlay:
             )
             font = QFont()
             font.setBold(True)
-            font.setPointSize(10)
+            font.setPointSize(9)
             label.setFont(font)
             label.setBrush(QBrush(QColor(255, 255, 255)))
             label.setPen(QPen(QColor(0, 0, 0), 0.6))

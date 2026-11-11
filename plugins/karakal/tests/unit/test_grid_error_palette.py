@@ -51,10 +51,10 @@ def test_a_lone_broken_cell_is_shown_as_sparse() -> None:
     assert _grid_defect_reason_rgb(reasons, selected_types={"broken_geometry"}) == (blue.red(), blue.green(), blue.blue())
 
 
-def test_a_sparse_cell_is_a_thick_frame_over_the_fill_of_its_other_finding() -> None:
+def test_every_error_of_a_cell_keeps_pixels_of_its_own_colour() -> None:
     from karakal.core.grid_anomaly import GridCellAnalysisResult, GridFrameAnalysisResult
     from karakal.core.grid_error_export import render_grid_error_image
-    from karakal.ui.ui_constants import sparse_frame_width
+    from karakal.core.grid_error_export import error_ring_width
 
     def cell(index, bbox, reasons):
         return GridCellAnalysisResult(
@@ -75,16 +75,16 @@ def test_a_sparse_cell_is_a_thick_frame_over_the_fill_of_its_other_finding() -> 
         return [color.blue(), color.green(), color.red()]
 
     image = render_grid_error_image(result, ("broken_geometry", "sparse_cell"))
-    side = sparse_frame_width(22, 48)
+    side = error_ring_width(22, 48, 1)
     assert side >= 3
     x, y, w, h = both
     # The pixels of both colours in one cell: blue inside, the lime frame around.
     assert image[y + h // 2, x + w // 2].tolist() == bgr("broken_geometry")
     assert image[y + h // 2, x].tolist() == bgr("sparse_cell") and image[y, x + w // 2].tolist() == bgr("sparse_cell")
     assert image[y + h // 2, x + side].tolist() == bgr("broken_geometry")
-    # A sparse cell alone: only the frame.
+    # A sparse cell alone: filled with its colour, like any cell with one error.
     x, y, w, h = alone
-    assert image[y + h // 2, x + w // 2].tolist() == [0, 0, 0]
+    assert image[y + h // 2, x + w // 2].tolist() == bgr("sparse_cell")
     assert image[y + h // 2, x + w - 1].tolist() == bgr("sparse_cell")
     # The sparse type left out of the export: the cell is its geometry fill only.
     plain = render_grid_error_image(result, ("broken_geometry",))

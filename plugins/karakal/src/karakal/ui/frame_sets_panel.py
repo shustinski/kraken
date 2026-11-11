@@ -330,6 +330,8 @@ class FrameSetsPanel(QWidget):
                 items_layout.addWidget(self.error_types_box)
                 self.error_type_checks: dict[str, QCheckBox] = {}
                 self._error_type_counts: dict[str, QLabel] = {}
+                # One check per layer of errors over its types: ticks or clears the whole layer.
+                self.error_layer_checks: dict[str, QCheckBox] = {}
         summary_label = QLabel(self._t("frame_sets.export.summary_items"), items_column)
         summary_label.setStyleSheet(_MUTED + " font-weight: 600;")
         items_layout.addWidget(summary_label)
@@ -565,6 +567,8 @@ class FrameSetsPanel(QWidget):
         """Types the error picture can show: (type, label, colour); ticked ones are ``chosen``; next
         to each, how many such errors the exported frames have."""
 
+        from .ui_constants import GRID_ERROR_LAYERS, grid_error_layer
+
         chosen = {str(item) for item in chosen}
         if [key for key, _label, _color in options] != list(self.error_type_checks):
             while self.error_types_layout.count():
@@ -573,16 +577,26 @@ class FrameSetsPanel(QWidget):
                     item.widget().deleteLater()
             self.error_type_checks.clear()
             self._error_type_counts.clear()
+            self.error_layer_checks.clear()
+            folders = {key: folder for key, folder, _types in GRID_ERROR_LAYERS}
             for key, label, color in options:
+                layer = grid_error_layer(key)
+                if layer not in self.error_layer_checks:
+                    header = QCheckBox(self._t(f"frame_sets.export.layer.{layer}"), self.error_types_box)
+                    header.setToolTip(self._t("frame_sets.export.layer_hint", folder=folders.get(layer, "")))
+                    header.setStyleSheet("font-weight: 600;" + (" margin-top: 4px;" if self.error_layer_checks else ""))
+                    header.clicked.connect(lambda checked, layer=layer: self._on_error_layer_clicked(layer, checked))
+                    self.error_types_layout.addWidget(header)
+                    self.error_layer_checks[layer] = header
                 row = QWidget(self.error_types_box)
                 row_layout = QHBoxLayout(row)
-                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setContentsMargins(18, 0, 0, 0)
                 row_layout.setSpacing(6)
                 swatch = QLabel(row)
                 swatch.setFixedSize(12, 12)
                 swatch.setStyleSheet(f"background: {color}; border-radius: 2px;")
                 check = QCheckBox(label, row)
-                check.toggled.connect(lambda _checked: self.exportTypesChanged.emit())
+                check.toggled.connect(lambda _checked: self._on_error_type_toggled())
                 count = QLabel(row)
                 count.setStyleSheet(_MUTED)
                 row_layout.addWidget(swatch)
@@ -596,8 +610,44 @@ class FrameSetsPanel(QWidget):
             check.setChecked(key in chosen)
             check.blockSignals(False)
             self._error_type_counts[key].setText(str(int((counts or {}).get(key, 0))) if counts is not None else "")
+        self._sync_error_layer_checks()
         self.error_types_title.setEnabled(bool(enabled))
         self.error_types_box.setEnabled(bool(enabled))
+
+    def _layer_type_checks(self, layer: str) -> list[QCheckBox]:
+        from .ui_constants import grid_error_layer
+
+        return [check for key, check in self.error_type_checks.items() if grid_error_layer(key) == layer]
+
+    def _sync_error_layer_checks(self) -> None:
+        """A layer's check: ticked when all its types are, half ticked when some are."""
+
+        for layer, header in self.error_layer_checks.items():
+            checks = self._layer_type_checks(layer)
+            ticked = sum(1 for check in checks if check.isChecked())
+            header.blockSignals(True)
+            if 0 < ticked < len(checks):
+                header.setTristate(True)
+                header.setCheckState(Qt.CheckState.PartiallyChecked)
+            else:
+                header.setTristate(False)
+                header.setChecked(bool(checks) and ticked == len(checks))
+            header.blockSignals(False)
+
+    def _on_error_layer_clicked(self, layer: str, _checked: bool) -> None:
+        # A layer not fully ticked becomes fully ticked; a fully ticked one is cleared.
+        checks = self._layer_type_checks(layer)
+        state = not (checks and all(check.isChecked() for check in checks))
+        for check in checks:
+            check.blockSignals(True)
+            check.setChecked(state)
+            check.blockSignals(False)
+        self._sync_error_layer_checks()
+        self.exportTypesChanged.emit()
+
+    def _on_error_type_toggled(self) -> None:
+        self._sync_error_layer_checks()
+        self.exportTypesChanged.emit()
 
     def export_error_types(self) -> frozenset[str]:
         return frozenset(key for key, check in self.error_type_checks.items() if check.isChecked())

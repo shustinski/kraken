@@ -2331,7 +2331,10 @@ class KarakalPresenter(QObject):
             self._pair_matrix_guard = False
         legend = getattr(self._view, "pair_matrix_legend", None)
         if legend is not None:
-            legend.setText(self._t("pairs.legend" if pairs else "pairs.legend_no_classes"))
+            # The kinds of pairs are told by the tooltip; on screen only what to do when there are none.
+            legend.setText("" if pairs else self._t("pairs.legend_no_classes"))
+            legend.setVisible(not pairs)
+            table.setToolTip(self._t("pairs.legend"))
         self._sync_grid_pair_table_selection()
 
     def _grid_pair_header_label(self, index: int, spec: ModelSpec) -> str:
@@ -2887,6 +2890,9 @@ class KarakalPresenter(QObject):
 
     def _refresh_folder_rows(self) -> None:
         item_count = self.folder_list.count()
+        if hasattr(self, "folders_empty_hint"):
+            # «Add a folder» only while there is none.
+            self.folders_empty_hint.setVisible(item_count == 0)
         self.folder_list.setUpdatesEnabled(False)
         try:
             for row in range(item_count):
@@ -6777,6 +6783,10 @@ class KarakalPresenter(QObject):
                 user_wants=bool(getattr(self, wish, True)),
                 tooltip=tooltips[error_type],
             )
+        sync = getattr(self._view, "_sync_filter_sections", None)
+        if callable(sync):
+            # The settings under an unavailable filter fold away with it.
+            sync()
     def _on_class_conflict_checkbox_toggled(self, checked: bool) -> None:
         checks = getattr(self, "grid_error_type_checks", {}) or {}
         checkbox = checks.get("class_conflict") if isinstance(checks, dict) else None
@@ -7439,8 +7449,11 @@ class KarakalPresenter(QObject):
                     known[model_id] = pitch
                     state.grid_inspection_sparse_pitch = known
         if pitch is None:
-            label.setText(self._t("grid_tuning.sparse_reach_no_pitch"))
+            # Nothing to tell before a run: the line appears with the run's lattice pitch.
+            label.setText("")
+            label.setVisible(False)
             return
+        label.setVisible(True)
         reach = self._grid_sparse_reach_effective()
         label.setText(
             self._t(

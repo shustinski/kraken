@@ -55,6 +55,7 @@ from ..core.subpixel_grid import (
 from .i18n import Translator
 from .smooth_zoom import SmoothZoom, wheel_zoom_factor
 from .ui_constants import (
+    GRID_INSPECTION_ERROR_TYPE_COLORS,
     CARD_CONTENT_SPACING,
     DEFAULT_BORDER,
     DEFAULT_CELL_SIZE,
@@ -656,8 +657,50 @@ class _MatrixCellItem(QGraphicsRectItem):
         painter.setPen(self.pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect)
+        self._paint_defect_type_dots(painter, rect)
         self._paint_attention_marker(painter)
         painter.restore()
+
+    def _defect_types(self) -> tuple[str, ...]:
+        """Types of the frame's defects in the filter's order (cached per result)."""
+
+        result = self.grid_result
+        cached = getattr(self, "_defect_types_cache", None)
+        if cached is not None and cached[0] is result:
+            return cached[1]
+        from .defect_marks import shown_types
+
+        reasons: set[str] = set()
+        for cell in getattr(result, "per_cell_results", ()) or ():
+            if str(getattr(cell, "status", "") or "") != "normal":
+                reasons.update(str(reason) for reason in (getattr(cell, "reasons", ()) or ()))
+        reasons.discard("conductor_zone")
+        types = tuple(shown_types(reasons))
+        self._defect_types_cache = (result, types)
+        return types
+
+    def _paint_defect_type_dots(self, painter: QPainter, rect: QRectF) -> None:
+        """A dot per defect type of the frame along its lower edge, once the frame is big enough on
+        screen to tell them apart: what is wrong on a frame without opening it."""
+
+        if self.grid_result is None or self._excluded:
+            return
+        screen = rect.width() * max(0.01, abs(float(painter.worldTransform().m11())))
+        if screen < 22.0:
+            return
+        types = self._defect_types()
+        if not types:
+            return
+        side = max(2.0, rect.width() * 0.16)
+        gap = side * 0.35
+        x = rect.left() + gap
+        y = rect.bottom() - gap - side
+        outline = QPen(QColor(0, 0, 0, 200), 0.0)
+        for kind in types[:5]:
+            painter.setPen(outline)
+            painter.setBrush(QColor(GRID_INSPECTION_ERROR_TYPE_COLORS.get(kind, "#94a3b8")))
+            painter.drawRect(QRectF(x, y, side, side))
+            x += side + gap
 
     def _paint_base_cell(self, painter: QPainter) -> None:
         rect = self.rect()

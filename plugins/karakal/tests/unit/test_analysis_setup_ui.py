@@ -117,10 +117,15 @@ def test_grid_analysis_tuning_sliders_start_at_balanced_preset(tmp_path, qtbot) 
     widget = KarakalWidget(settings=settings)
     qtbot.addWidget(widget)
 
-    # The only slider here is the minimum debris size; sensitivities live in the thresholds window.
-    assert widget._grid_inspection_tuning_group.findChildren(QSlider) == widget.grid_debris_min_area_control.findChildren(
-        QSlider
-    )
+    # Sliders here belong to the settings of the filters (debris size, sparse area, pair thresholds);
+    # sensitivities live in the thresholds window.
+    from karakal.ui.filter_settings import SpinSlider
+
+    sliders = widget._grid_inspection_tuning_group.findChildren(QSlider)
+    owners = set(widget.grid_debris_min_area_control.findChildren(QSlider))
+    for pair in widget._grid_inspection_tuning_group.findChildren(SpinSlider):
+        owners.add(pair.slider)
+    assert sliders and set(sliders) == owners
     assert not hasattr(widget, "grid_tuning_sliders")
     assert widget.grid_tuning_preset_combo.currentData() == "balanced"
     assert "unified" in widget.grid_inspection_matrix_views

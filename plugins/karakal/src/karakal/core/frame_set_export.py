@@ -7,7 +7,11 @@ Layout of one export::
         Исходные снимки/            source image of every frame (copied as is)
         Маски/<model>/              mask of the layer (copied as is)
         Confidence/<model>/         confidence map of the layer (copied as is)
-        Ошибки/<model>/             defects as coloured cells on black; with
+        Ошибки/<layer>/<model>/     defects as coloured cells on black, one picture
+                                    per layer of errors: Геометрия (debris, broken
+                                    geometry, merge) and Окружение (sparse, 1∩0
+                                    conflict, one network only); a layer is written
+                                    when one of its types is chosen. With
                                     ``fill_frames`` the rest of the run is here
                                     too, as black frames (no errors to take)
         Ошибки на маске/<model>/    defects outlined over the mask
@@ -137,6 +141,15 @@ class FrameSetExportReport:
     written: int = 0
     missing: tuple[str, ...] = ()
     cancelled: bool = False
+
+
+def error_layers(plan: FrameSetExportPlan) -> list[tuple[str, tuple[str, ...]]]:
+    """(folder, types) of every error picture of a frame: one per layer with a chosen type; with no
+    type chosen, one black picture right in the errors folder."""
+
+    from ..ui.ui_constants import grid_error_layers_of
+
+    return [(folder, types) for _key, folder, types in grid_error_layers_of(plan.error_types)] or [("", ())]
 
 
 def _model_folders(plan: FrameSetExportPlan) -> dict[str, str]:
@@ -278,10 +291,27 @@ def preview_frame_set_export(
             text += f" (из них чёрных: {len(plan.fill_frames)})"
         return text
 
+    layers = error_layers(plan)
     for item in FRAME_ITEMS:
         if item not in plan.items:
             continue
         folder = ITEM_FOLDERS[item]
+        if item == ITEM_ERRORS and any(layer for layer, _types in layers):
+            rows.append((f"      {folder}\\", ""))
+            for layer, _types in layers:
+                if len(plan.models) <= 1:
+                    count, size = _count_and_size(plan, item, plan.models[0].model_id if plan.models else "")
+                    rows.append((f"        {layer}\\", files_text(item, count, size)))
+                    total_files += count
+                    total_bytes += size
+                    continue
+                rows.append((f"        {layer}\\", ""))
+                for model in plan.models:
+                    count, size = _count_and_size(plan, item, model.model_id)
+                    rows.append((f"          {model_folders[model.model_id]}\\", files_text(item, count, size)))
+                    total_files += count
+                    total_bytes += size
+            continue
         if item == ITEM_SOURCE or len(plan.models) <= 1:
             model_id = None if item == ITEM_SOURCE else (plan.models[0].model_id if plan.models else "")
             count, size = _count_and_size(plan, item, model_id)
@@ -497,24 +527,29 @@ def export_frame_set(
                     written += 1
                 else:
                     frame_missing = True
-            errors_bgr = None
-            if result is not None and (ITEM_ERRORS in plan.items or ITEM_ERRORS_OVER_MASK in plan.items):
-                errors_bgr = render_grid_error_image(result, plan.error_types, color_mode="color")
-                if errors_bgr.ndim == 2:
-                    errors_bgr = cv2.cvtColor(errors_bgr, cv2.COLOR_GRAY2BGR)
             stem = Path(frame.name).stem or frame.key
             if ITEM_ERRORS in plan.items:
-                if errors_bgr is None:
+                if result is None:
                     frame_missing = True
                 else:
-                    _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", errors_bgr, plan.errors_format)
-                    written += 1
+                    # One picture per layer: errors of the cell's shape and of its surroundings apart.
+                    for layer, types in error_layers(plan):
+                        errors_bgr = render_grid_error_image(result, types, color_mode="color")
+                        _write_image(
+                            set_dir / ITEM_FOLDERS[ITEM_ERRORS] / layer / model_dir / f"{stem}.png",
+                            errors_bgr,
+                            plan.errors_format,
+                        )
+                        written += 1
             if ITEM_ERRORS_OVER_MASK in plan.items:
                 mask = _read_gray(mask_path) if mask_path else None
-                if errors_bgr is None or mask is None:
+                if result is None or mask is None:
                     frame_missing = True
                 else:
-                    overlay = render_errors_over_mask(mask, errors_bgr)
+                    # For a person: the mask in grey, every error marked by its shape (ui.defect_marks).
+                    from ..ui.defect_marks import render_marked_errors
+
+                    overlay = render_marked_errors(mask, result, plan.error_types)
                     _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS_OVER_MASK] / model_dir / f"{stem}.png", overlay, "png")
                     written += 1
             if ITEM_ERROR_MAPS in plan.items:
@@ -560,8 +595,11 @@ def export_frame_set(
             stem = Path(frame.name).stem or frame.key
             for model in plan.models:
                 model_dir = model_folders.get(model.model_id, "")
-                _write_image(set_dir / ITEM_FOLDERS[ITEM_ERRORS] / model_dir / f"{stem}.png", black, plan.errors_format)
-                written += 1
+                for layer, _types in error_layers(plan):
+                    _write_image(
+                        set_dir / ITEM_FOLDERS[ITEM_ERRORS] / layer / model_dir / f"{stem}.png", black, plan.errors_format
+                    )
+                    written += 1
             if progress is not None:
                 progress(index + 1, total, frame.name)
     for job in dirt_jobs:

@@ -31,10 +31,13 @@ def kraken_tempdir() -> Iterator[str]:
     finally:
         # Fresh trees can be briefly held by the OS/antivirus, which surfaces
         # as transient WinError 145 on directory removal; retry before failing.
+        # ``break``, not ``return``: a ``return`` inside this generator's
+        # ``finally`` swallows an in-flight body exception (the context manager
+        # would report success), silently hiding test failures.
         for attempt in range(3):
             try:
                 _remove_tree(directory)
-                return
+                break
             except OSError:
                 if attempt == 2:
                     raise

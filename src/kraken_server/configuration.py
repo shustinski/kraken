@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ctypes
+import ipaddress
+import json
 import os
 import secrets
 import sys
@@ -10,6 +12,8 @@ import tomllib
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
+
+from kraken_manager.infrastructure.auth.ldap import resolve_ldap_tls
 
 from .blob_gateway import validate_public_gateway_url
 from .agent_resources import QueueResourceBudget
@@ -155,6 +159,16 @@ class ServerConfig:
     db_max_overflow: int = 10
     queue_budget: QueueResourceBudget | None = None
     recovery_roots: Path | None = None
+    ldap_url: str | None = None
+    ldap_base_dn: str | None = None
+    ldap_user_filter: str | None = None
+    ldap_bind_dn: str | None = None
+    ldap_bind_secret: Path | None = None
+    ldap_start_tls: bool = False
+    ldap_allow_insecure: bool = False
+    ldap_ca_file: Path | None = None
+    ldap_timeout: float = 5.0
+    lan_cidrs: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, path: Path | str) -> ServerConfig:
@@ -218,6 +232,21 @@ class ServerConfig:
         recovery_roots = resolve(storage.get("recovery_roots"), required=False)
         if recovery_roots is not None and not recovery_roots.is_file():
             raise ValueError("Required recovery_roots metadata is missing")
+        ldap_url = str(identity.get("ldap_url", "")).strip() or None
+        ldap_base_dn = str(identity.get("ldap_base_dn", "")).strip() or None
+        ldap_bind_dn = str(identity.get("ldap_bind_dn", "")).strip() or None
+        if ldap_url is not None and (ldap_base_dn is None or ldap_bind_dn is None):
+            raise ValueError("LDAP identity configuration is incomplete")
+        ldap_start_tls = bool(identity.get("ldap_start_tls", False))
+        ldap_allow_insecure = bool(identity.get("ldap_allow_insecure", False))
+        if ldap_url is not None:
+            resolve_ldap_tls(ldap_url, start_tls=ldap_start_tls, allow_insecure=ldap_allow_insecure)
+        lan_cidrs = tuple(str(entry).strip() for entry in identity.get("lan_cidrs", ()))
+        for entry in lan_cidrs:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"Invalid lan_cidrs entry: {entry}") from exc
         return cls(
             path=config_path,
             database_url_secret=resolve(database.get("url_secret")),  # type: ignore[arg-type]
@@ -243,6 +272,16 @@ class ServerConfig:
             db_max_overflow=max_overflow,
             queue_budget=queue_budget,
             recovery_roots=recovery_roots,
+            ldap_url=ldap_url,
+            ldap_base_dn=ldap_base_dn,
+            ldap_user_filter=str(identity.get("ldap_user_filter", "")).strip() or None,
+            ldap_bind_dn=ldap_bind_dn,
+            ldap_bind_secret=resolve(identity.get("ldap_bind_secret"), required=False),
+            ldap_start_tls=ldap_start_tls,
+            ldap_allow_insecure=ldap_allow_insecure,
+            ldap_ca_file=resolve(identity.get("ldap_ca_file"), required=False),
+            ldap_timeout=float(identity.get("ldap_timeout", 5.0)),
+            lan_cidrs=lan_cidrs,
         )
 
     @property
@@ -273,6 +312,34 @@ class ServerConfig:
             os.environ["KRAKEN_GITLAB_ISSUER"] = self.gitlab_issuer
         if self.gitlab_ca_file:
             os.environ["KRAKEN_GITLAB_CA_FILE"] = str(self.gitlab_ca_file)
+        if self.ldap_url:
+            os.environ["KRAKEN_LDAP_URL"] = self.ldap_url
+            os.environ["KRAKEN_LDAP_BASE_DN"] = self.ldap_base_dn
+            if self.ldap_user_filter:
+                os.environ["KRAKEN_LDAP_USER_FILTER"] = self.ldap_user_filter
+            os.environ["KRAKEN_LDAP_BIND_DN"] = self.ldap_bind_dn
+            if self.ldap_bind_secret is not None:
+                # The secret FILE PATH only: the bind password itself never enters the environment.
+                os.environ["KRAKEN_LDAP_BIND_SECRET_FILE"] = str(self.ldap_bind_secret)
+            os.environ["KRAKEN_LDAP_START_TLS"] = "1" if self.ldap_start_tls else "0"
+            os.environ["KRAKEN_LDAP_ALLOW_INSECURE"] = "1" if self.ldap_allow_insecure else "0"
+            if self.ldap_ca_file is not None:
+                os.environ["KRAKEN_LDAP_CA_FILE"] = str(self.ldap_ca_file)
+            os.environ["KRAKEN_LDAP_TIMEOUT"] = str(self.ldap_timeout)
+        else:
+            for name in (
+                "KRAKEN_LDAP_URL",
+                "KRAKEN_LDAP_BASE_DN",
+                "KRAKEN_LDAP_USER_FILTER",
+                "KRAKEN_LDAP_BIND_DN",
+                "KRAKEN_LDAP_BIND_SECRET_FILE",
+                "KRAKEN_LDAP_START_TLS",
+                "KRAKEN_LDAP_ALLOW_INSECURE",
+                "KRAKEN_LDAP_CA_FILE",
+                "KRAKEN_LDAP_TIMEOUT",
+            ):
+                os.environ.pop(name, None)
+        os.environ["KRAKEN_LAN_CIDRS"] = json.dumps(list(self.lan_cidrs))
         if self.blob_gateway_public_url is not None:
             if self.blob_gateway_bind is None or self.blob_gateway_executable is None:
                 raise ValueError("Enabled Blob Gateway configuration is incomplete")

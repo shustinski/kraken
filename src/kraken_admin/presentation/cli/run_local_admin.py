@@ -12,6 +12,7 @@ from kraken_admin.presentation.cli.install_service import (
 def _run_local_admin(args: argparse.Namespace) -> None:
     from kraken_server.configuration import ServerConfig
     from kraken_admin.application.accounts import (
+        account_rows,
         create_account,
         reset_password,
         revoke_maintainer,
@@ -20,28 +21,19 @@ def _run_local_admin(args: argparse.Namespace) -> None:
         set_server_admin,
     )
     from kraken_admin.infrastructure.composition import open_project_services
+    from kraken_manager.infrastructure.postgres.identity_store import PostgresIdentityAclStore
 
     store = _postgres_store(_database_url(args))
     command = args.command
     if command == "account-list":
-        items = [
-            {
-                "account_id": account.account_id,
-                "username": account.username,
-                "display_name": account.display_name,
-                "enabled": account.enabled,
-                "system_roles": sorted(store.global_roles_for(account.account_id)),
-                "created_at": str(account.created_at),
-            }
-            for account in store.list_accounts(include_disabled=True)
-        ]
+        items = account_rows(store)
         if args.json:
             print(json.dumps({"items": items}, ensure_ascii=False))
             return
         for item in items:
             roles = ", ".join(item["system_roles"]) or "-"
             state = "active" if item["enabled"] else "disabled"
-            print(f"{item['username']}\t{state}\t{roles}\t{item['display_name']}")
+            print(f"{item['username']}\t{state}\t{item['auth_provider']}\t{roles}\t{item['display_name']}")
         return
     if command == "account-create":
         account_id = create_account(
@@ -49,6 +41,7 @@ def _run_local_admin(args: argparse.Namespace) -> None:
             args.username,
             args.display_name,
             _password("Пароль новой учётной записи: "),
+            identities=PostgresIdentityAclStore(store.engine),
         )
         print(f"Создана учётная запись {account_id}")
         return

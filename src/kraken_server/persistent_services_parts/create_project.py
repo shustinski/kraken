@@ -97,6 +97,9 @@ class CreateProjectMixin:
                 "display_name": principal.display_name,
                 "email": principal.email,
                 "active": principal.active,
+                "login": principal.login,
+                "avatar_url": principal.avatar_url,
+                "status_text": principal.status_text,
                 "system_roles": sorted(role.value for role in principal.system_roles),
             }
             for principal in self.identities.list(include_inactive=include_inactive)
@@ -118,6 +121,9 @@ class CreateProjectMixin:
                     "display_name": account.display_name,
                     "email": None,
                     "active": bool(account.enabled),
+                    "login": account.username,
+                    "avatar_url": None,
+                    "status_text": None,
                     "system_roles": sorted(str(role) for role in system_roles),
                 }
         return list(people.values())

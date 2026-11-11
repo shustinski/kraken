@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from kraken_manager.domain.common import ProjectId, validate_uuid
-from kraken_manager.domain.identity import ProjectRole
+from kraken_manager.domain.identity import PrincipalProvider, ProjectRole
 
 
 def account_by_username(store: object, username: str) -> object:
@@ -13,7 +13,12 @@ def account_by_username(store: object, username: str) -> object:
     return account
 
 
-def create_account(store: object, username: str, display_name: str, password: str) -> str:
+def create_account(store: object, username: str, display_name: str, password: str, *,
+                   identities: object | None = None) -> str:
+    if identities is not None:
+        holder = identities.find_by_login(username.strip().casefold())  # type: ignore[attr-defined]
+        if holder is not None and holder.provider is not PrincipalProvider.LOCAL:
+            raise ValueError(f"Логин «{username}» уже занят доменной учётной записью")
     try:
         account = store.create_account(username, display_name, password, actor_id=None)  # type: ignore[attr-defined]
     except ValueError:
@@ -92,6 +97,8 @@ def set_server_admin(store: object, username: str, *, grant: bool) -> str:
 
 def reset_password(store: object, username: str, password: str) -> str:
     account = account_by_username(store, username)
+    if getattr(account, "auth_provider", "local") != "local":
+        raise ValueError("Пароль управляется доменом — сброс пароля недоступен для доменных учётных записей")
     store.reset_password(account.account_id, password, actor_id=None)  # type: ignore[attr-defined]
     return str(account.account_id)
 
@@ -130,6 +137,7 @@ def account_rows(store: object) -> list[dict[str, object]]:
             "username": account.username,
             "display_name": account.display_name,
             "enabled": bool(account.enabled),
+            "auth_provider": getattr(account, "auth_provider", "local"),
             "system_roles": sorted(store.global_roles_for(account.account_id)),  # type: ignore[attr-defined]
             "created_at": str(account.created_at),
         }

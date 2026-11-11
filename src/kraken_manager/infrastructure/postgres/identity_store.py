@@ -35,6 +35,18 @@ def _identity_tables() -> tuple[Any, Any, Any]:
         sa.Column("email", sa.Text),
         sa.Column("enabled", sa.Boolean, nullable=False),
         sa.Column("system_roles", sa.JSON, nullable=False),
+        sa.Column("login", sa.Text),
+        sa.Column("login_key", sa.Text),
+        sa.Column("avatar_url", sa.Text),
+        sa.Column("avatar_source", sa.Text),
+        sa.Column("status_text", sa.Text),
+        sa.Column("profile_updated_at", sa.DateTime(timezone=True)),
+    )
+    sa.Index(
+        "ux_principals_login_key",
+        principals.c.login_key,
+        unique=True,
+        postgresql_where=sa.text("login_key IS NOT NULL"),
     )
     acl = sa.Table(
         "project_acl",
@@ -77,6 +89,10 @@ class PostgresIdentityAclStore:
             email=row["email"],
             active=bool(row["enabled"]),
             system_roles=frozenset(SystemRole(value) for value in row["system_roles"]),
+            login=row.get("login"),
+            avatar_url=row.get("avatar_url"),
+            avatar_source=row.get("avatar_source"),
+            status_text=row.get("status_text"),
         )
 
     def get(self, principal_id: PrincipalId) -> Principal | None:
@@ -95,6 +111,14 @@ class PostgresIdentityAclStore:
             ).mappings().first()
         return None if row is None else self._principal(row)
 
+    def find_by_login(self, login_key: str) -> Principal | None:
+        sa, _ = _sqlalchemy()
+        with self._scope() as connection:
+            row = connection.execute(
+                sa.select(self.principals).where(self.principals.c.login_key == login_key)
+            ).mappings().first()
+        return None if row is None else self._principal(row)
+
     def list(self, *, include_inactive: bool = False) -> tuple[Principal, ...]:
         sa, _ = _sqlalchemy()
         statement = sa.select(self.principals)
@@ -109,7 +133,7 @@ class PostgresIdentityAclStore:
         return tuple(self._principal(row) for row in rows)
 
     def save(self, principal: Principal) -> None:
-        _, pg_insert = _sqlalchemy()
+        sa, pg_insert = _sqlalchemy()
         values = {
             "principal_id": str(principal.id),
             "external_key": principal.external_key,
@@ -120,15 +144,68 @@ class PostgresIdentityAclStore:
             "email": principal.email,
             "enabled": principal.active,
             "system_roles": sorted(role.value for role in principal.system_roles),
+            "login": principal.login,
+            "login_key": principal.login_key,
+            "avatar_url": principal.avatar_url,
+            "avatar_source": principal.avatar_source,
+            "status_text": principal.status_text,
+            "profile_updated_at": sa.func.now(),
         }
+        # On conflict only the identity/claim columns are refreshed: login and
+        # login_key travel with the in-memory principal (saving with
+        # login=None clears the stored claim), while the avatar/status profile
+        # columns are never touched, so a manual avatar or status survives
+        # every subsequent save.
+        p = self.principals.c
         with self._scope(write=True) as connection:
             connection.execute(
                 pg_insert(self.principals)
                 .values(**values)
                 .on_conflict_do_update(
-                    index_elements=[self.principals.c.principal_id],
-                    set_={key: value for key, value in values.items() if key != "principal_id"},
+                    index_elements=[p.principal_id],
+                    set_={
+                        p.external_key: values["external_key"],
+                        p.provider: values["provider"],
+                        p.issuer: values["issuer"],
+                        p.subject: values["subject"],
+                        p.display_name: values["display_name"],
+                        p.email: values["email"],
+                        p.enabled: values["enabled"],
+                        p.system_roles: values["system_roles"],
+                        p.login: values["login"],
+                        p.login_key: values["login_key"],
+                    },
                 )
+            )
+
+    def sync_avatar(self, principal_id: PrincipalId, avatar_url: str | None) -> None:
+        sa, _ = _sqlalchemy()
+        with self._scope(write=True) as connection:
+            connection.execute(
+                sa.update(self.principals)
+                .where(
+                    self.principals.c.principal_id == str(principal_id),
+                    sa.func.coalesce(self.principals.c.avatar_source, "") != "manual",
+                )
+                .values(avatar_url=avatar_url, avatar_source="ldap", profile_updated_at=sa.func.now())
+            )
+
+    def set_manual_avatar(self, principal_id: PrincipalId, avatar_url: str) -> None:
+        sa, _ = _sqlalchemy()
+        with self._scope(write=True) as connection:
+            connection.execute(
+                sa.update(self.principals)
+                .where(self.principals.c.principal_id == str(principal_id))
+                .values(avatar_url=avatar_url, avatar_source="manual", profile_updated_at=sa.func.now())
+            )
+
+    def set_status(self, principal_id: PrincipalId, status_text: str) -> None:
+        sa, _ = _sqlalchemy()
+        with self._scope(write=True) as connection:
+            connection.execute(
+                sa.update(self.principals)
+                .where(self.principals.c.principal_id == str(principal_id))
+                .values(status_text=status_text, profile_updated_at=sa.func.now())
             )
 
     def roles_for(self, project_id: ProjectId, principal_id: PrincipalId) -> frozenset[ProjectRole]:

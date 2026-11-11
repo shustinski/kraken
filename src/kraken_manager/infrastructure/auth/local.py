@@ -84,6 +84,7 @@ class LocalAccount:
     display_name: str
     enabled: bool
     created_at: str
+    auth_provider: str = "local"
 
 
 @dataclass(frozen=True, slots=True)

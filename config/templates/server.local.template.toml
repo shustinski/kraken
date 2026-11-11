@@ -60,3 +60,14 @@ enabled = false
 # Необязательный вход через корпоративный GitLab.
 # gitlab_issuer = "https://gitlab.example.com"
 # gitlab_ca_file = "ca/internal-ca.pem"
+
+# Прямой вход через корпоративный LDAP/Active Directory.
+# Пароль сервисной учётной записи хранится в отдельном DPAPI-файле,
+# на который ссылается ldap_bind_secret; в этот файл его записывать нельзя.
+# ldap_url = "ldap://DC.ad.inme:389"
+# ldap_base_dn = "DC=ad,DC=inme"
+# ldap_bind_dn = "CN=kraken,CN=Users,DC=ad,DC=inme"
+# ldap_bind_secret = "ldap-bind.secret"
+# ldap_start_tls = true
+# ldap_timeout = 5.0
+# lan_cidrs = ["192.168.0.0/16"]

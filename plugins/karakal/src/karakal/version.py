@@ -21,6 +21,9 @@ Version is <release>.<algorithm number><interface number>-beta<N>, e.g. 0.2.9101
        conflict checkbox switchable before a run and never asking for a new one;
   05 = sparse cells: a thick frame over the fill of the cell's other finding, the search area by X and
        Y with «auto», the free sides setting; pair filters available by the kinds of ticked pairs;
+  06 = the error picture in layers (geometry, surroundings) with every error of a cell kept as rings;
+       defects marked by shapes with a legend and stepping; filter settings under their filters with
+       sliders and animated hints; fewer explanations on screen;
   releases 0.2 and 0.3:
   01 = gradient panel with drop rules, frame sets and set export;
   02 = drop by the colour scale only, no defect sets, set note and badge above the matrix;
@@ -74,7 +77,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.4"
-INTERFACE_NUMBER = 5
+INTERFACE_NUMBER = 6
 BETA = 0
 
 

@@ -160,3 +160,27 @@ def test_existing_session_survives_ad_outage(database):
     me = client.get("/api/v1/session", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 200, me.text
     assert fake.calls == ["outage.user"]  # the authenticated path never touches AD
+
+
+def test_health_reports_domain_auth_enabled(database):
+    services, accounts, _owner, _config = database
+    fake = FakeLdap({"e2e": _ldap_identity("e2e", display="E2E User", email="e2e@inme")})
+    broker = make_broker(accounts, services.identities, fake, PostgresPerformerStore(services.engine))
+    client = TestClient(create_app(services=services, account_store=accounts,
+                                   session_resolver=HybridSessionResolver(accounts, services.identities, None,
+                                                                          performers=PostgresPerformerStore(services.engine)),
+                                   project_access_mode="acl", domain_auth=broker))
+    resp = client.get("/api/v1/health")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["domain_auth"] is True
+
+
+def test_health_reports_domain_auth_disabled(database):
+    services, accounts, _owner, _config = database
+    client = TestClient(create_app(services=services, account_store=accounts,
+                                   session_resolver=HybridSessionResolver(accounts, services.identities, None,
+                                                                          performers=PostgresPerformerStore(services.engine)),
+                                   project_access_mode="acl"))
+    resp = client.get("/api/v1/health")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["domain_auth"] is False

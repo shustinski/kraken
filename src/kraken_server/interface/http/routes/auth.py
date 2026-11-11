@@ -32,6 +32,7 @@ def register(ctx: HttpContext) -> None:
         if status.get("status") != "ok":
             return problem(503, "service.degraded", "Service degraded", str(status.get("detail", "")))
         status["blob_gateway"] = "enabled" if blob_gateway is not None else "proxy"
+        status["domain_auth"] = domain_auth is not None
         return status
 
     @app.post(f"{API_PREFIX}/auth/sessions")

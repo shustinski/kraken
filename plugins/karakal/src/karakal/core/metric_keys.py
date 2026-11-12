@@ -143,6 +143,8 @@ def _available_metric_keys_for_models(
         "f1",
         "mean_localization_distance",
     ]
+    if len(model_specs) >= 2:
+        keys[0:0] = ["topology_risk", "topology_events"]
     if len(model_specs) == 1:
         keys.extend(
             [
@@ -184,6 +186,13 @@ def _available_metric_keys_for_models(
                 "confidence_threshold_crossing_score",
             ]
         )
+    if records is not None and any(getattr(record, "original_path", None) for record in records):
+        keys.extend(["photo_mismatch_risk", "photo_quality_risk"])
+        for spec in model_specs:
+            keys.append(_model_metric_key("photo_mismatch_risk", spec.model_id))
+            if spec.prob_folder is not None and (model_ids_with_output is None or str(spec.model_id) in model_ids_with_output):
+                keys.append(_model_metric_key("confidence_ece", spec.model_id))
+                keys.append(_model_metric_key("confident_error_share", spec.model_id))
     for spec in model_specs:
         keys.append(_model_metric_key("model_confidence", spec.model_id))
         keys.append(_model_metric_key("model_uncertain_fraction", spec.model_id))
@@ -222,7 +231,17 @@ def metric_higher_is_better(metric_key: str) -> bool:
             return False
         if family == "model_point_contrast":
             return True
-    if metric_key in {"bce", "grid_inspection_damage_score", "mean_localization_distance"}:
+        if family in {"photo_mismatch_risk", "confidence_ece", "confident_error_share"}:
+            return False
+    if metric_key in {
+        "bce",
+        "grid_inspection_damage_score",
+        "mean_localization_distance",
+        "topology_risk",
+        "topology_events",
+        "photo_quality_risk",
+        "photo_mismatch_risk",
+    }:
         return False
     if metric_key in {
         "model_model_score",

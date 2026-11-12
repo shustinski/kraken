@@ -124,6 +124,11 @@ from .repository_shared import (
     replace,
     wait,
 )
+from .profiling import activate_profiler
+from .findings import findings_from_attention_issues, findings_from_payload, sort_findings
+from .topology_events import topology_findings, topology_metrics
+from .photo_consistency import photo_findings
+from .confidence_maps import resolve_confidence_encoding
 
 
 def _analytics_batch_size(total_items: int, worker_count: int) -> int:
@@ -509,6 +514,104 @@ def _build_model_payloads(
     )
 
 
+def _full_resolution_masks(
+    record: FrameRecord, model_specs: tuple[ModelSpec, ...], known: dict[str, np.ndarray] | None = None
+) -> dict[str, np.ndarray]:
+    """The models' masks of a frame as they are, all of one shape (the first one's).
+
+    The analysis may work on a scaled-down frame; a gap of a few pixels does not survive that,
+    so the masks are read again as they are (the image cache usually still holds them). ``known``:
+    the masks the analysis already made; one of the full size is taken as it is.
+    """
+
+    masks: dict[str, np.ndarray] = {}
+    for spec in model_specs:
+        with profile_stage("validation.full_resolution.load", frame_id=record.key):
+            gray = _load_optional_gray(record.model_mask_paths.get(spec.model_id))
+        if gray is None:
+            continue
+        ready = (known or {}).get(spec.model_id)
+        if ready is not None and ready.shape == gray.shape and ready.dtype == np.bool_:
+            masks[str(spec.model_id)] = ready
+            continue
+        masks[str(spec.model_id)] = _mask_from_gray(gray, threshold=spec.threshold)
+    if not masks:
+        return {}
+    shape = next(iter(masks.values())).shape
+    return {model_id: mask for model_id, mask in masks.items() if mask.shape == shape}
+
+
+def _frame_topology_findings(
+    record: FrameRecord,
+    model_specs: tuple[ModelSpec, ...],
+    geometry_mode: GeometryMode,
+    *,
+    point_match_radius: float,
+    masks: dict[str, np.ndarray] | None = None,
+) -> tuple:
+    """Topology events between the models of a frame, on masks at full resolution."""
+
+    masks = masks if masks is not None else _full_resolution_masks(record, model_specs)
+    if len(masks) < 2:
+        return ()
+    return topology_findings(masks, point=geometry_mode == GeometryMode.POINT, point_match_radius=point_match_radius)
+
+
+def _frame_photo_findings(
+    record: FrameRecord,
+    model_specs: tuple[ModelSpec, ...],
+    geometry_mode: GeometryMode,
+    *,
+    encoding: str,
+    masks: dict[str, np.ndarray] | None = None,
+) -> tuple[tuple, dict[str, float]]:
+    """The photo check of a frame (core/photo_consistency.py): findings and metrics."""
+
+    masks = masks if masks is not None else _full_resolution_masks(record, model_specs)
+    if not masks or not record.original_path:
+        return (), {}
+    with profile_stage("validation.photo.load", frame_id=record.key):
+        photo = _load_optional_gray(record.original_path)
+        confidences = {}
+        for spec in model_specs:
+            path = (record.model_prob_paths or {}).get(spec.model_id)
+            if path and str(spec.model_id) in masks:
+                gray = _load_optional_gray(path)
+                if gray is not None:
+                    confidences[str(spec.model_id)] = gray
+    if photo is None:
+        return (), {}
+    return photo_findings(
+        photo, masks, confidences=confidences, encoding=encoding, point=geometry_mode == GeometryMode.POINT
+    )
+
+
+# How each model's confidence maps are written, read once per run (a property of the model, not of
+# a frame): reading it costs a distance transform and a median per frame otherwise.
+_ENCODING_BY_MODEL: dict[str, str] = {}
+
+
+def _model_encoding(model_id: str, setting: str, values: np.ndarray, mask: np.ndarray | None) -> str:
+    if setting in ("probability", "confidence"):
+        return setting
+    known = _ENCODING_BY_MODEL.get(model_id)
+    if known is not None:
+        return known
+    found = resolve_confidence_encoding(setting, values, mask)
+    if mask is not None:
+        _ENCODING_BY_MODEL[model_id] = found
+    return found
+
+
+PHOTO_METRIC_FAMILIES = frozenset(
+    {"photo_quality_risk", "photo_mismatch_risk", "confidence_ece", "confident_error_share"}
+)
+
+
+def _metric_requires_photo(metric_key: str | None) -> bool:
+    return str(metric_key or "").split("::", 1)[0] in PHOTO_METRIC_FAMILIES
+
+
 def _metric_requires_model_confidence(metric_key: str | None) -> bool:
     parsed = _parse_model_metric_key(str(metric_key or ""))
     if parsed is None:
@@ -702,6 +805,8 @@ def _metric_requires_pairwise_metrics(metric_key: str | None) -> bool:
         "recall",
         "f1",
         "mean_localization_distance",
+        "topology_risk",
+        "topology_events",
     }
 
 
@@ -753,8 +858,14 @@ def _analyze_record_payload(
     include_boundary_distance: bool = True,
     comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
     include_attention_issues: bool = False,
+    extras: tuple[tuple[str, object], ...] = (),
 ) -> dict[str, object] | None:
+    """``extras``: further switches as (name, value) pairs, part of the cache key: ``photo_check``
+    (bool) reads the frame's photo against every mask, ``confidence_encoding`` how confidence maps
+    are written (``auto`` / ``probability`` / ``confidence``)."""
+
     timings_ms: dict[str, float] = {}
+    extra = dict(extras)
     cache_key = None
     if cache_enabled:
         cache_key = _record_payload_cache_key(
@@ -773,6 +884,7 @@ def _analyze_record_payload(
             include_boundary_distance=bool(include_boundary_distance),
             include_attention_issues=bool(include_attention_issues),
             comparison_pairs=comparison_pairs,
+            extras=tuple(extras),
         )
         with profile_stage("validation.cache.record.read", frame_id=record.key):
             cached = _load_cached_record_payload(cache_key)
@@ -848,6 +960,36 @@ def _analyze_record_payload(
         )
         disagreement = float(np.mean(1.0 - agreement_scores, dtype=np.float64)) if agreement_scores.size else 0.0
         model_model_score = float(np.mean(agreement_scores, dtype=np.float64)) if agreement_scores.size else 1.0
+    topology_payload: list[dict[str, object]] = []
+    photo_payload: list[dict[str, object]] = []
+    photo_values: dict[str, float] = {}
+    want_topology = include_pairwise_metrics and len(masks_by_model) >= 2
+    want_photo = bool(extra.get("photo_check")) and bool(record.original_path)
+    full_masks = (
+        _full_resolution_masks(record, model_specs, known=masks_by_model) if (want_topology or want_photo) else {}
+    )
+    if want_topology:
+        with profile_stage("validation.topology", frame_id=record.key):
+            topology_payload = [
+                finding.to_dict()
+                for finding in _frame_topology_findings(
+                    record,
+                    model_specs,
+                    resolved_geometry_mode,
+                    point_match_radius=float(point_match_radius),
+                    masks=full_masks,
+                )
+            ]
+    if want_photo:
+        with profile_stage("validation.photo", frame_id=record.key):
+            found, photo_values = _frame_photo_findings(
+                record,
+                model_specs,
+                resolved_geometry_mode,
+                encoding=str(extra.get("confidence_encoding") or "auto"),
+                masks=full_masks,
+            )
+            photo_payload = [finding.to_dict() for finding in found]
     pair_metric_values = _configured_pair_metric_values(
         _normalized_comparison_pairs(comparison_pairs),
         pairwise_rows,
@@ -861,6 +1003,8 @@ def _analyze_record_payload(
                 for model_id, probability in output_probabilities_by_model.items()
                 if bool(model_confidence_output_available.get(str(model_id), False))
             },
+            encoding=str(extra.get("confidence_encoding") or "auto"),
+            masks_by_model=masks_by_model,
         )
         if include_model_output_confidence
         else {}
@@ -890,7 +1034,14 @@ def _analyze_record_payload(
             for model_id, probability in output_probabilities_by_model.items():
                 if not bool(model_confidence_output_available.get(str(model_id), False)):
                     continue
-                model_confidence_output[str(model_id)] = _model_output_confidence_metrics(probability)
+                mask_for_encoding = masks_by_model.get(model_id)
+                encoding = _model_encoding(
+                    str(model_id),
+                    str(extra.get("confidence_encoding") or "auto"),
+                    probability,
+                    mask_for_encoding if mask_for_encoding is not None and mask_for_encoding.shape == probability.shape else None,
+                )
+                model_confidence_output[str(model_id)] = _model_output_confidence_metrics(probability, encoding)
     timings_ms["metrics"] = 1000.0 * (perf_counter() - metrics_started)
 
     attention_issues_by_model: dict[str, list[dict[str, object]]] = {}
@@ -907,6 +1058,11 @@ def _analyze_record_payload(
                             source="confidence",
                             model_id=model_key,
                             compute_mode=ATTENTION_COMPUTE_STANDARD,
+                            encoding=resolve_confidence_encoding(
+                                str(extra.get("confidence_encoding") or "auto"),
+                                output_probabilities_by_model[model_key],
+                                mask if np.asarray(mask).shape == output_probabilities_by_model[model_key].shape else None,
+                            ),
                         )
                         attention_issues_by_model[model_key] = attention_issues_to_payload(issues)
                         continue
@@ -947,6 +1103,9 @@ def _analyze_record_payload(
         "model_confidence_output_available": model_confidence_output_available,
         "attention_issues_by_model": attention_issues_by_model,
         "pairwise_rows": pairwise_rows,
+        "topology_findings": topology_payload,
+        "photo_findings": photo_payload,
+        "photo_metrics": photo_values,
         "timings_ms": timings_ms,
     }
     timings_ms["payload_assembly"] = 1000.0 * (perf_counter() - assemble_started)
@@ -993,7 +1152,9 @@ def _analyze_record_payload_for_executor(
         include_boundary_distance,
         comparison_pairs,
         include_attention_issues,
+        *rest,
     ) = args
+    extras = tuple(rest[0]) if rest else ()
     return record.key, _analyze_record_payload(
         record,
         model_specs,
@@ -1011,7 +1172,15 @@ def _analyze_record_payload_for_executor(
         include_boundary_distance,
         comparison_pairs,
         include_attention_issues=include_attention_issues,
+        extras=extras,
     )
+
+
+def _analyze_record_payload_in_thread(profiler, args) -> tuple[str, dict[str, object] | None]:
+    """A thread pool worker: the run's profiler is thread-local, so it is handed over explicitly."""
+
+    with activate_profiler(profiler):
+        return _analyze_record_payload_for_executor(args)
 
 
 def _analyze_record_payload_batch_for_executor(
@@ -1066,6 +1235,7 @@ def _iter_record_payloads(
     progress_callback=None,
     state_callback=None,
     cancel_check=None,
+    extras: tuple[tuple[str, object], ...] = (),
 ):
     """Yield per-record analytics payloads without retaining the whole dataset in RAM."""
 
@@ -1115,6 +1285,7 @@ def _iter_record_payloads(
                 include_boundary_distance,
                 comparison_pairs,
                 include_attention_issues=include_attention_issues,
+                extras=extras,
             )
             if state_callback is not None:
                 state_callback(record.key, "done")
@@ -1150,6 +1321,7 @@ def _iter_record_payloads(
                 include_boundary_distance,
                 comparison_pairs,
                 include_attention_issues,
+                extras,
             )
 
         def make_batch(order_index: int):
@@ -1157,6 +1329,7 @@ def _iter_record_payloads(
             stop = min(total_records, start + int(batch_size))
             return tuple(make_work_item(records[index]) for index in range(start, stop))
 
+        run_profiler = current_profiler()
         executor = executor_cls(max_workers=worker_count)
         shutdown_wait = True
         executor_shutdown = False
@@ -1171,7 +1344,7 @@ def _iter_record_payloads(
             def submit_work_item(order_index: int) -> None:
                 batch = make_batch(order_index)
                 if use_thread_pool:
-                    future = executor.submit(_analyze_record_payload_for_executor, batch[0])
+                    future = executor.submit(_analyze_record_payload_in_thread, run_profiler, batch[0])
                 else:
                     future = executor.submit(_analyze_record_payload_batch_for_executor, batch)
                 future_to_batch[future] = batch
@@ -1658,6 +1831,7 @@ def compute_build_result_analytics(
             cancel_check=cancel_check,
         )
     _clear_runtime_image_caches()
+    _ENCODING_BY_MODEL.clear()
     records = list(build_result.records)
     if not records:
         return replace(build_result, scores_computed=True)
@@ -1757,6 +1931,10 @@ def compute_build_result_analytics(
             include_boundary_distance=include_boundary_distance,
             comparison_pairs=comparison_pairs,
             include_attention_issues=bool(include_attention_issues),
+            extras=(
+                ("photo_check", bool(getattr(build_result.options, "photo_check", False)) or _metric_requires_photo(active_metric)),
+                ("confidence_encoding", str(getattr(build_result.options, "confidence_encoding", "auto") or "auto")),
+            ),
             progress_callback=progress_callback,
             state_callback=state_callback,
             cancel_check=cancel_check,
@@ -1786,6 +1964,8 @@ def compute_build_result_analytics(
                 str(model_id): tuple(rows) if isinstance(rows, (list, tuple)) else ()
                 for model_id, rows in dict(payload.get("attention_issues_by_model") or {}).items()
             }
+            topology = findings_from_payload(payload.get("topology_findings") or ())
+            photo = findings_from_payload(payload.get("photo_findings") or ())
             polygon_scores = _aggregate_inter_model_polygon_scores(pairwise_rows) if frame_type != "point" else {}
             point_scores = (
                 _aggregate_inter_model_point_scores(pairwise_rows, float(build_result.options.point_match_radius))
@@ -1802,6 +1982,9 @@ def compute_build_result_analytics(
             }
             metric_values.update(polygon_scores)
             metric_values.update(point_scores)
+            if len(pairwise_rows) > 0 or topology:
+                metric_values.update(topology_metrics(topology, len(build_result.model_specs)))
+            metric_values.update({str(key): float(value) for key, value in dict(payload.get("photo_metrics") or {}).items()})
             metric_values.update({str(key): float(value) for key, value in confidence_pairwise_metrics.items()})
             metric_values.update({str(key): float(value) for key, value in confidence_pair_metric_values.items()})
             metric_values.update({str(key): float(value) for key, value in combined_pair_metric_values.items()})
@@ -1844,6 +2027,7 @@ def compute_build_result_analytics(
                 notes=(),
                 frame_type=frame_type,
                 attention_issues_by_model=attention_issues_by_model,
+                findings=sort_findings(findings_from_attention_issues(attention_issues_by_model) + topology + photo),
             )
             updated_records_by_key[str(record.key)] = replace(record, summary=summary)
     finally:

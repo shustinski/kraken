@@ -33,6 +33,7 @@ from typing import Callable
 import numpy as np
 
 from .domain import BuildResult, FrameAnalysisSummary, FrameRecord
+from .findings import findings_from_heuristic_check
 from .frame_naming import DEFAULT_FRAME_NAMING, FrameNaming
 from .image_formats import SUPPORTED_IMAGE_EXTENSION_SET
 from .image_io import load_grayscale_image
@@ -1213,7 +1214,7 @@ def analyze_frame(gray: np.ndarray, config: HeuristicCheckConfig | None = None) 
     gross_raw = 1.0 if gross else 0.0
     extra["gross_count"] = float(len(gross))
     if geometry_raw >= 0.35:
-        _add_reasons(reasons, regions, regions, "off_axis_edges", geometry_raw, _component_boxes(off_regions, min_area=16))
+        _add_reasons(reasons, regions, "off_axis_edges", geometry_raw, _component_boxes(off_regions, min_area=16))
 
     features = {
         "metal_fraction": metal_fraction,
@@ -1416,7 +1417,14 @@ def compute_heuristic_check(
         if issues:
             risk_summary = _unrated_summary(row, issues, sensitivity_key)
             summary = FrameAnalysisSummary(
-                0.0, 0.0, 0.0, 0.0, notes=(VERDICT_UNREADABLE, *issues), frame_type="polygon", heuristic_check=risk_summary
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                notes=(VERDICT_UNREADABLE, *issues),
+                frame_type="polygon",
+                heuristic_check=risk_summary,
+                findings=findings_from_heuristic_check(risk_summary),
             )
             updated[key] = replace(record, summary=summary, score_ready=False, absolute_score=None)
             if state_callback is not None:
@@ -1483,6 +1491,7 @@ def compute_heuristic_check(
             notes=(verdict, *(reason.code for reason in risk_summary.reasons)),
             frame_type="polygon",
             heuristic_check=risk_summary,
+            findings=findings_from_heuristic_check(risk_summary),
         )
         updated[key] = replace(
             record,

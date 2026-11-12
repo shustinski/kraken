@@ -69,6 +69,7 @@ def _record_payload_cache_key(
     include_boundary_distance: bool = True,
     include_attention_issues: bool = False,
     comparison_pairs: tuple[ComparisonPairSelection, ...] = (),
+    extras: tuple[tuple[str, object], ...] = (),
 ) -> str:
     payload = {
         "version": ANALYSIS_CACHE_VERSION,
@@ -85,6 +86,7 @@ def _record_payload_cache_key(
         "include_pairwise_metrics": bool(include_pairwise_metrics),
         "include_boundary_distance": bool(include_boundary_distance),
         "include_attention_issues": bool(include_attention_issues),
+        "extras": [[str(name), value] for name, value in extras],
         "comparison_pairs": [
             {
                 "model_a_id": pair.model_a_id,

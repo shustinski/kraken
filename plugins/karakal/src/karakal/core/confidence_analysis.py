@@ -406,7 +406,9 @@ def _frame_uncertainty_components_from_probability(
     )
 
 
-def _model_output_confidence_metrics(confidence_map: np.ndarray) -> ModelOutputConfidenceMetrics:
+def _model_output_confidence_metrics(confidence_map: np.ndarray, encoding: str = "probability") -> ModelOutputConfidenceMetrics:
+    """``encoding``: how the map is written (``probability`` or ``confidence``, see confidence_maps)."""
+
     confidence = np.clip(np.asarray(confidence_map, dtype=np.float32), 0.0, 1.0)
     if confidence.ndim != 2 or confidence.size == 0:
         return ModelOutputConfidenceMetrics(
@@ -419,7 +421,7 @@ def _model_output_confidence_metrics(confidence_map: np.ndarray) -> ModelOutputC
             min_confidence=0.0,
             max_confidence=0.0,
         )
-    uncertainty = _uncertainty_map_from_probability(confidence)
+    uncertainty = build_model_uncertainty(confidence, encoding)
     support_weights = np.ones_like(confidence, dtype=np.float32)
     score, mean_uncertainty, uncertain_fraction, top_uncertainty_mean, largest_region = (
         _frame_uncertainty_components_from_maps(

@@ -39,7 +39,7 @@ from .pair_agreement import analyze_network_disagreement_chunk
 from .pair_conflict import analyze_class_conflict_chunk, is_agreement_key
 from .profiling import ProfileSnapshot, ProfilerRun, WorkerProfilePacket, activate_profiler, export_profile
 from .analytics import collect_frame_records, compute_build_result_analytics
-from .frame_details import load_frame_detail_base, load_frame_detail_model_confidence
+from .frame_details import load_frame_detail_base, load_frame_detail_findings, load_frame_detail_model_confidence
 
 
 def _grid_inspection_frame_timeout_seconds() -> float:
@@ -1428,6 +1428,34 @@ class DetailPayloadWorker(WorkerBase):
                     )
             except Exception as error:
                 _LOGGER.exception("Detail payload loading failed for %s", self._record.key)
+                self.failed.emit(str(error))
+                return
+            finally:
+                self._finish_profiling()
+        self.finished.emit(payload)
+
+
+class DetailFindingsWorker(WorkerBase):
+    """Gather (and compute what the run did not) every finding of one frame for the frame window."""
+
+    def __init__(
+        self,
+        record: FrameRecord,
+        build_result: BuildResult,
+        *,
+        performance_config: PerformanceConfig | None = None,
+    ) -> None:
+        super().__init__(performance_config=performance_config, analysis_type="validation_detail_findings")
+        self._record = record
+        self._build_result = build_result
+
+    def run(self) -> None:
+        with activate_profiler(self._profiler):
+            try:
+                with self._profiler.stage("validation.ui.detail.findings", frame_id=self._record.key, frame_count=1):
+                    payload = load_frame_detail_findings(self._record, self._build_result)
+            except Exception as error:
+                _LOGGER.exception("Detail findings failed for %s", self._record.key)
                 self.failed.emit(str(error))
                 return
             finally:

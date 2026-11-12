@@ -59,11 +59,64 @@ def normalize_model_confidence(confidence_map: np.ndarray | object) -> np.ndarra
     return normalize_unit_map(confidence_map)
 
 
-def build_model_uncertainty(confidence_map: np.ndarray | object) -> np.ndarray:
-    """Build model-output uncertainty with maximum uncertainty near 0.5."""
+def build_model_uncertainty(confidence_map: np.ndarray | object, encoding: str = "probability") -> np.ndarray:
+    """Model-output uncertainty (0 sure .. 1 unsure) of a written map.
+
+    ``probability`` (the probability of metal, the default as before): most unsure at 0.5.
+    ``confidence`` (white is sure, black is unsure): one minus the value.
+    """
 
     confidence = normalize_model_confidence(confidence_map)
+    if str(encoding) == ENCODING_CONFIDENCE:
+        return np.clip(1.0 - confidence, 0.0, 1.0).astype(np.float32, copy=False)
     return np.clip(1.0 - 2.0 * np.abs(confidence - np.float32(0.5)), 0.0, 1.0).astype(np.float32, copy=False)
+
+
+ENCODING_AUTO = "auto"
+ENCODING_PROBABILITY = "probability"
+ENCODING_CONFIDENCE = "confidence"
+CONFIDENCE_ENCODINGS = (ENCODING_AUTO, ENCODING_PROBABILITY, ENCODING_CONFIDENCE)
+
+
+def detect_confidence_encoding(confidence_map: np.ndarray | object, mask: np.ndarray | object | None) -> str:
+    """How a confidence map is written, read from where the mask is surely background.
+
+    Far from any metal a probability map is dark (no metal there) and a confidence map is light (sure
+    of it). Without such a place, without a mask, or with a mid-gray background (an underconfident
+    model looks the same in both), the old reading (probability) is kept: set the encoding then.
+    """
+
+    values = normalize_model_confidence(confidence_map)
+    if mask is None:
+        return ENCODING_PROBABILITY
+    mask_bool = np.asarray(mask, dtype=bool)
+    if mask_bool.shape != values.shape or not np.any(mask_bool) or np.all(mask_bool) or cv2 is None:
+        return ENCODING_PROBABILITY
+    # A median of the background needs no more than about 256k pixels of it.
+    step = max(1, int(np.ceil(np.sqrt(mask_bool.size / 262144.0))))
+    if step > 1:
+        values = values[::step, ::step]
+        mask_bool = mask_bool[::step, ::step]
+    distance = cv2.distanceTransform((~mask_bool).astype(np.uint8), cv2.DIST_L2, 3)
+    background = distance >= max(1.0, 4.0 / step)
+    if np.count_nonzero(background) < 50:
+        return ENCODING_PROBABILITY
+    # Only a clearly light background says "confidence"; a mid-gray one is unsure in either reading,
+    # so the old reading (probability) stays.
+    return ENCODING_CONFIDENCE if float(np.median(values[background])) > 0.75 else ENCODING_PROBABILITY
+
+
+def resolve_confidence_encoding(encoding: str | None, confidence_map: np.ndarray | object, mask: np.ndarray | object | None) -> str:
+    text = str(encoding or ENCODING_AUTO)
+    if text in (ENCODING_PROBABILITY, ENCODING_CONFIDENCE):
+        return text
+    return detect_confidence_encoding(confidence_map, mask)
+
+
+def confidence_of_map(confidence_map: np.ndarray | object, encoding: str) -> np.ndarray:
+    """How sure the model is (0 unsure .. 1 sure), whatever the map's encoding."""
+
+    return np.clip(1.0 - build_model_uncertainty(confidence_map, encoding), 0.0, 1.0).astype(np.float32, copy=False)
 
 
 def _is_binary_like(values: np.ndarray, *, tolerance: float = 1e-4) -> bool:

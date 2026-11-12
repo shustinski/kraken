@@ -71,7 +71,20 @@ from ..core.confidence_maps import (
     combine_uncertainty_maps,
     confidence_bad_area_intensity,
 )
-from ..core.workers import AttentionIssuesWorker, DetailConfidenceWorker, DetailPayloadWorker
+from ..core.workers import AttentionIssuesWorker, DetailConfidenceWorker, DetailFindingsWorker, DetailPayloadWorker
+from .finding_marks import (
+    add_finding_items,
+    add_label_stack,
+    color_of,
+    finding_heat,
+    kind_icon,
+    kind_sort_key,
+    label_places,
+    label_stack_size,
+    merge_findings,
+    place_labels,
+    scene_rect,
+)
 from ..ui.debris_min_area_control import DebrisMinAreaControl
 from ..ui.dirt_overlay import DirtOverlay
 from ..ui.i18n import Translator
@@ -90,6 +103,13 @@ from ..ui.ui_constants import (
 
 DETAIL_PIXEL_VIEW_THRESHOLD = 32.0
 # Layers of the heuristic check: every finding, then by group.
+# Layers of the findings of the validation checks (core/findings.py): the marks, their heat, and the
+# maps of the photo check behind them.
+FINDINGS_MARKS_KIND = "findings"
+FINDINGS_HEAT_KIND = "findings_heat"
+PHOTO_MAP_KINDS = ("photo_quality", "photo_conflict", "photo_metal")
+FINDINGS_RESULT_KINDS = (FINDINGS_MARKS_KIND, FINDINGS_HEAT_KIND, *PHOTO_MAP_KINDS)
+
 HEURISTIC_RESULT_KINDS = (
     "heuristic_all",
     "heuristic_gross",
@@ -397,6 +417,16 @@ class ExtendFrameDetailsDialog(QDialog):
         self._detail_request_generation = 0
         self._confidence_request_generation = 0
         self._attention_issue_list_ids: tuple[str, ...] | None = None
+        self._findings_thread: QThread | None = None
+        self._findings_worker = None
+        self._retired_findings_workers: list[tuple[object, QThread]] = []
+        self._findings_payload: dict[str, object] | None = None
+        self._findings_loading = False
+        self._finding_items: list = []
+        self._finding_solo_kind: str | None = None
+        self._finding_index = -1
+        self._finding_hot = None
+        self._finding_list_keys: tuple | None = None
         self._payload_loading = False
         self._legacy_base_hold_active = False
         self._hold_preview_mode: str | None = None
@@ -523,6 +553,35 @@ class ExtendFrameDetailsDialog(QDialog):
         self._grid_marked_cells: list = []
         self._grid_defect_index = -1
         self._grid_type_counts: dict[str, int] = {}
+        self.findings_legend_bar = QWidget(viewer_widget)
+        self._findings_legend_layout = QHBoxLayout(self.findings_legend_bar)
+        self._findings_legend_layout.setContentsMargins(0, 2, 0, 2)
+        self._findings_legend_layout.setSpacing(4)
+        self.findings_model_combo = QComboBox(self.findings_legend_bar)
+        self.findings_model_combo.setToolTip(self._t("details.findings_model_hint"))
+        self.findings_model_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.findings_model_combo.setMinimumContentsLength(12)
+        self.findings_model_combo.currentIndexChanged.connect(self._on_findings_filter_changed)
+        self._findings_legend_layout.addWidget(self.findings_model_combo)
+        self._findings_legend_buttons: dict[str, QToolButton] = {}
+        self._findings_chip_anchor = QLabel("", self.findings_legend_bar)
+        self._findings_legend_layout.addWidget(self._findings_chip_anchor)
+        self._findings_legend_layout.addStretch(1)
+        self.findings_labels_check = QCheckBox(self._t("details.findings_labels"), self.findings_legend_bar)
+        self.findings_labels_check.setChecked(True)
+        self.findings_labels_check.toggled.connect(lambda _checked: self._rebuild_finding_items())
+        self._findings_legend_layout.addWidget(self.findings_labels_check)
+        self.findings_prev_button = QToolButton(self.findings_legend_bar)
+        self.findings_prev_button.setText("◀")
+        self.findings_prev_button.clicked.connect(lambda: self._step_finding(-1))
+        self.findings_position_label = QLabel(self.findings_legend_bar)
+        self.findings_next_button = QToolButton(self.findings_legend_bar)
+        self.findings_next_button.setText("▶")
+        self.findings_next_button.clicked.connect(lambda: self._step_finding(+1))
+        for widget in (self.findings_prev_button, self.findings_position_label, self.findings_next_button):
+            self._findings_legend_layout.addWidget(widget)
+        self.findings_legend_bar.setVisible(False)
+        viewer_layout.addWidget(self.findings_legend_bar)
         self.overlay_view = _OverlayGraphicsView(viewer_widget)
         self.overlay_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         viewer_layout.addWidget(self.overlay_view, stretch=1)
@@ -782,6 +841,22 @@ class ExtendFrameDetailsDialog(QDialog):
         comparison_score_layout.addWidget(self.comparison_score_card)
         overview_layout.addWidget(comparison_score_group)
 
+        findings_group = QGroupBox(self._t("details.findings_group"), controls_host)
+        findings_layout = QVBoxLayout(findings_group)
+        self.findings_status_label = QLabel(self._t("details.findings_loading"), findings_group)
+        self.findings_status_label.setWordWrap(True)
+        findings_layout.addWidget(self.findings_status_label)
+        self.findings_list = QListWidget(findings_group)
+        self.findings_list.setMaximumHeight(240)
+        self.findings_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.findings_list.itemSelectionChanged.connect(self._on_finding_list_selected)
+        findings_layout.addWidget(self.findings_list)
+        self.findings_show_button = QPushButton(self._t("details.findings_show"), findings_group)
+        self.findings_show_button.clicked.connect(self._show_findings_layer)
+        findings_layout.addWidget(self.findings_show_button)
+        overview_layout.addWidget(findings_group)
+        self.findings_group = findings_group
+
         comparison_result_group = QGroupBox(self._t("details.comparisons"), controls_host)
         comparison_result_layout = QVBoxLayout(comparison_result_group)
         self.comparison_metrics_label = QLabel("-", comparison_result_group)
@@ -838,7 +913,12 @@ class ExtendFrameDetailsDialog(QDialog):
             *self._retired_confidence_workers,
             (self._attention_worker, self._attention_thread),
             *self._retired_attention_workers,
+            (self._findings_worker, self._findings_thread),
+            *self._retired_findings_workers,
         ]
+        self._findings_worker = None
+        self._findings_thread = None
+        self._retired_findings_workers = []
         self._detail_worker = None
         self._detail_thread = None
         self._retired_detail_workers = []
@@ -857,7 +937,7 @@ class ExtendFrameDetailsDialog(QDialog):
     def keyPressEvent(self, event) -> None:
         # Ctrl+arrows go through the defects of the frame; plain arrows go to other frames.
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() in (Qt.Key.Key_Right, Qt.Key.Key_Left):
-            if self._step_grid_defect(+1 if event.key() == Qt.Key.Key_Right else -1):
+            if self._step_marks(+1 if event.key() == Qt.Key.Key_Right else -1):
                 event.accept()
                 return
         if event.key() == Qt.Key.Key_Right:
@@ -1083,7 +1163,7 @@ class ExtendFrameDetailsDialog(QDialog):
             shortcut.activated.connect(lambda delta=delta: self._legacy_step_record(delta))
         for key, delta in (("Ctrl+Right", +1), ("Ctrl+Left", -1)):
             shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.activated.connect(lambda delta=delta: self._step_grid_defect(delta))
+            shortcut.activated.connect(lambda delta=delta: self._step_marks(delta))
 
     def _connect_signals(self) -> None:
         self.result_kind_combo.currentIndexChanged.connect(self._refresh_result_from_controls)
@@ -1093,6 +1173,7 @@ class ExtendFrameDetailsDialog(QDialog):
         self.overlay_view.contextRequested.connect(self._on_overlay_context_requested)
         self.overlay_view.hoverMoved.connect(self._on_overlay_hover)
         self.overlay_view.hoverLeft.connect(self._hide_debris_hover)
+        self.overlay_view.viewTransformChanged.connect(self._schedule_finding_labels)
         self.overlay_view.middlePressed.connect(self._activate_context_hold)
         self.overlay_view.middleReleased.connect(self._deactivate_base_hold)
         for widget in (
@@ -1362,6 +1443,8 @@ class ExtendFrameDetailsDialog(QDialog):
             return self._t("hint.input_output_heatmap")
         if result_kind == "attention_issues":
             return self._t("hint.attention_issues")
+        if result_kind in FINDINGS_RESULT_KINDS:
+            return self._t(f"hint.{result_kind}")
         if result_kind == "grid_cell_defects":
             return self._t("hint.grid_cell_defects")
         if (not self._is_point_geometry()) and result_kind == "confidence":
@@ -1554,6 +1637,7 @@ class ExtendFrameDetailsDialog(QDialog):
         thread = self._detail_thread
         self._detail_thread.finished.connect(lambda w=worker, t=thread: self._cleanup_detail_worker(w, t))
         self._detail_thread.start()
+        self._start_findings_worker(generation)
 
     def _on_payload_loaded(
         self,
@@ -3645,22 +3729,24 @@ class ExtendFrameDetailsDialog(QDialog):
 
     def _refresh_result_kind_options(self, preferred_kind: str | None = None) -> None:
         if self._allowed_result_kinds:
-            allowed = set(self._allowed_result_kinds)
+            allowed_kinds = self._effective_allowed_kinds()
+            allowed = set(allowed_kinds)
             current_kind = str(
                 preferred_kind
                 or self._sticky_result_kind
                 or self.result_kind_combo.currentData()
-                or self._allowed_result_kinds[0]
+                or allowed_kinds[0]
             )
             if current_kind not in allowed:
-                current_kind = self._allowed_result_kinds[0]
+                current_kind = allowed_kinds[0]
             labels_by_kind = {
                 "grid_cell_defects": self._t("details.grid_cell_defects"),
                 **{kind: self._t(f"details.{kind}") for kind in HEURISTIC_RESULT_KINDS},
+                **{kind: self._t(f"details.{kind}") for kind in FINDINGS_RESULT_KINDS},
             }
             self.result_kind_combo.blockSignals(True)
             self.result_kind_combo.clear()
-            for kind in self._allowed_result_kinds:
+            for kind in allowed_kinds:
                 self.result_kind_combo.addItem(labels_by_kind.get(kind, kind), kind)
                 combo_index = self.result_kind_combo.count() - 1
                 self.result_kind_combo.setItemData(
@@ -3676,12 +3762,8 @@ class ExtendFrameDetailsDialog(QDialog):
 
         current_kind = str(preferred_kind or self._sticky_result_kind or self.result_kind_combo.currentData() or "")
         if not current_kind:
-            if self._preferred_confidence_model_id() is not None:
-                current_kind = "confidence"
-            elif self._is_point_geometry():
-                current_kind = "point_matches"
-            else:
-                current_kind = "diff"
+            # Everything the checks found on the frame first.
+            current_kind = FINDINGS_MARKS_KIND
         confidence_model_id = self._confidence_model_id()
         confidence_output_available = self._model_confidence_output_available(confidence_model_id)
         result_confidence_kinds = {
@@ -3705,6 +3787,13 @@ class ExtendFrameDetailsDialog(QDialog):
 
         def append_item(label: str, key: str) -> None:
             items.append((f"  {label}", key))
+
+        append_header(self._t("details.result_group_findings"))
+        append_item(self._t("details.findings"), FINDINGS_MARKS_KIND)
+        append_item(self._t("details.findings_heat"), FINDINGS_HEAT_KIND)
+        if self._findings_photo_maps_available():
+            for kind in PHOTO_MAP_KINDS:
+                append_item(self._t(f"details.{kind}"), kind)
 
         risk_summary = self._payload.get("single_result_risk")
         if risk_summary is not None:
@@ -4646,6 +4735,16 @@ class ExtendFrameDetailsDialog(QDialog):
         )
 
     def _on_overlay_hover(self, scene_pos: QPointF, global_pos: QPoint) -> None:
+        if self._selected_result_kind() == FINDINGS_MARKS_KIND:
+            finding = self._finding_at(scene_pos)
+            if finding is not self._finding_hot:
+                self._finding_hot = finding
+                self._rebuild_finding_items()
+            if finding is None:
+                self._hide_debris_hover()
+                return
+            QToolTip.showText(global_pos, self._finding_hover_text(finding), self.overlay_view.viewport())
+            return
         cell = self._marked_cell_at(scene_pos)
         if cell is not self._grid_hot_cell:
             self._grid_hot_cell = cell
@@ -5494,6 +5593,600 @@ class ExtendFrameDetailsDialog(QDialog):
         self.overlay_view.fitInView(target, Qt.AspectRatioMode.KeepAspectRatio)
         self.overlay_view.centerOn(rect.center())
 
+
+    # Findings of the validation checks -----------------------------------------------------------------
+
+    def _effective_allowed_kinds(self) -> tuple[str, ...]:
+        """The layers of a restricted window, with the findings first (not for memory cells)."""
+
+        base = tuple(self._allowed_result_kinds)
+        if not base or base == ("grid_cell_defects",):
+            return base
+        extra = [FINDINGS_MARKS_KIND, FINDINGS_HEAT_KIND]
+        if self._findings_photo_maps_available():
+            extra.extend(PHOTO_MAP_KINDS)
+        return tuple(extra) + tuple(kind for kind in base if kind not in extra)
+
+    def _findings_photo_maps_available(self) -> bool:
+        payload = self._findings_payload or {}
+        return payload.get("photo_quality") is not None and payload.get("photo_metal") is not None
+
+    def _findings_enabled(self) -> bool:
+        """The findings of the validation checks are not for the memory-cell window."""
+
+        return tuple(self._allowed_result_kinds) != ("grid_cell_defects",)
+
+    def _start_findings_worker(self, generation: int) -> None:
+        self._stop_findings_worker()
+        self._clear_finding_items()
+        self._findings_payload = None
+        self._finding_index = -1
+        self._finding_hot = None
+        self._finding_list_keys = None
+        enabled = self._findings_enabled()
+        self.findings_group.setVisible(enabled)
+        self._findings_loading = enabled
+        if not enabled:
+            return
+        thread = QThread()
+        worker = DetailFindingsWorker(self._record, self._build_result, performance_config=self._performance_config)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda payload, g=generation: self._on_findings_loaded(payload, g))
+        worker.failed.connect(lambda message, g=generation: self._on_findings_failed(message, g))
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(lambda w=worker, t=thread: self._cleanup_findings_worker(w, t))
+        self._findings_worker = worker
+        self._findings_thread = thread
+        self._sync_findings_panel()
+        thread.start()
+
+    def _stop_findings_worker(self) -> None:
+        worker, thread = self._findings_worker, self._findings_thread
+        if thread is not None:
+            thread.quit()
+            if thread.isRunning() and worker is not None:
+                self._retired_findings_workers.append((worker, thread))
+            else:
+                self._cleanup_findings_worker(worker, thread)
+        self._findings_worker = None
+        self._findings_thread = None
+
+    def _cleanup_findings_worker(self, worker, thread) -> None:
+        if worker is not None:
+            worker.deleteLater()
+        if thread is not None:
+            thread.deleteLater()
+        self._retired_findings_workers = [
+            (old_worker, old_thread)
+            for old_worker, old_thread in self._retired_findings_workers
+            if old_worker is not worker and old_thread is not thread
+        ]
+        if worker is self._findings_worker:
+            self._findings_worker = None
+        if thread is self._findings_thread:
+            self._findings_thread = None
+
+    def _on_findings_loaded(self, payload: dict[str, object], generation: int) -> None:
+        if int(generation) != int(self._detail_request_generation):
+            return
+        self._findings_loading = False
+        self._findings_payload = dict(payload or {})
+        kinds = {finding.kind for finding in self._findings_all()}
+        if self._finding_solo_kind not in kinds:
+            self._finding_solo_kind = None
+        self._sync_findings_model_combo()
+        sticky = self._sticky_result_kind if self._sticky_result_kind in PHOTO_MAP_KINDS else None
+        if self._payload or self._allowed_result_kinds:
+            self._refresh_result_kind_options(sticky or self._selected_result_kind())
+        if self._selected_result_kind() in FINDINGS_RESULT_KINDS and not self._payload_loading:
+            self._refresh_result_layer()
+        else:
+            self._sync_findings_panel()
+
+    def _on_findings_failed(self, message: str, generation: int) -> None:
+        if int(generation) != int(self._detail_request_generation):
+            return
+        self._findings_loading = False
+        self._findings_payload = {"findings": (), "error": str(message)}
+        self._sync_findings_panel()
+
+    def _findings_all(self) -> tuple:
+        return tuple((self._findings_payload or {}).get("findings") or ())
+
+    def _findings_merged(self) -> tuple[list, dict[int, tuple]]:
+        """The findings with repeats folded (ui.finding_marks.merge_findings), worked out once per
+        payload: the same thing found by two checks, a fault of the photo found once per model."""
+
+        payload = self._findings_payload
+        if payload is None:
+            return [], {}
+        merged = payload.get("_merged")
+        if merged is None:
+            pairs = merge_findings(self._findings_all())
+            merged = ([lead for lead, _twins in pairs], {id(lead): twins for lead, twins in pairs})
+            payload["_merged"] = merged
+        return merged
+
+    def _findings_model_filter(self) -> str | None:
+        combo = getattr(self, "findings_model_combo", None)
+        value = combo.currentData() if combo is not None else None
+        return str(value) if value else None
+
+    def _findings_shown(self) -> list:
+        model = self._findings_model_filter()
+        leads, _twins = self._findings_merged()
+        return [finding for finding in leads if model is None or not finding.model_id or finding.model_id == model]
+
+    def _findings_navigable(self) -> list:
+        shown = self._findings_shown()
+        if self._finding_solo_kind is not None:
+            shown = [finding for finding in shown if finding.kind == self._finding_solo_kind]
+        # Places top to bottom and left to right, worst first in one place; the whole frame last.
+        return sorted(
+            shown,
+            key=lambda finding: (
+                finding.box is None,
+                round((finding.box or (0, 0, 0, 0))[1], 3),
+                round((finding.box or (0, 0, 0, 0))[0], 3),
+                -finding.severity,
+            ),
+        )
+
+    def _findings_model_names(self) -> dict[str, str]:
+        return {str(spec.model_id): str(spec.display_name or spec.model_id) for spec in self._build_result.model_specs}
+
+    def _sync_findings_model_combo(self) -> None:
+        combo = self.findings_model_combo
+        current = combo.currentData()
+        ids = list(
+            dict.fromkeys(
+                [
+                    *[str(value) for value in ((self._findings_payload or {}).get("model_ids") or ())],
+                    *[finding.model_id for finding in self._findings_all() if finding.model_id],
+                ]
+            )
+        )
+        names = self._findings_model_names()
+        blocker = QSignalBlocker(combo)
+        combo.clear()
+        combo.addItem(self._t("details.findings_all_models"), None)
+        for model_id in ids:
+            combo.addItem(names.get(model_id, model_id), model_id)
+        index = combo.findData(current)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        del blocker
+        combo.setVisible(len(ids) > 1)
+
+    def _on_findings_filter_changed(self, _index: int) -> None:
+        self._finding_index = -1
+        self._finding_hot = None
+        self._finding_list_keys = None
+        if self._selected_result_kind() in FINDINGS_RESULT_KINDS:
+            self._refresh_result_layer()
+        else:
+            self._sync_findings_panel()
+
+    def _translated(self, key: str, fallback: str) -> str:
+        text = self._t(key)
+        return fallback if text == key else text
+
+    def _finding_kind_label(self, kind: str) -> str:
+        """The kind in words: findings' own names, then those of the heuristic check and the attention
+        markers; a batch outlier keeps the feature it is about."""
+
+        text = str(kind)
+        base, _dot, rest = text.partition(".")
+        for key in (f"finding.kind.{text}", f"finding.kind.{base}", f"heuristic.reason.{base}", f"attention.issue.{text}"):
+            label = self._t(key)
+            if label != key:
+                return f"{label} ({rest})" if rest and not key.endswith(text) else label
+        return text
+
+    def _finding_diagnosis_label(self, diagnosis: str) -> str:
+        return self._translated(f"finding.diagnosis.{diagnosis}", str(diagnosis))
+
+    def _finding_detector_label(self, detector: str) -> str:
+        return self._translated(f"finding.detector.{detector}", str(detector))
+
+    def _finding_mark_label(self, finding) -> str:
+        text = self._finding_kind_label(finding.kind)
+        if finding.model_id and self.findings_model_combo.count() > 2:
+            text += f" · {self._findings_model_names().get(finding.model_id, finding.model_id)}"
+        return text
+
+    def _finding_list_text(self, finding) -> str:
+        kind, diagnosis = self._finding_kind_label(finding.kind), self._finding_diagnosis_label(finding.diagnosis)
+        parts = [kind] if diagnosis == kind else [kind, diagnosis]
+        if finding.model_id:
+            parts.append(self._findings_model_names().get(finding.model_id, finding.model_id))
+        if finding.box is None:
+            parts.append(self._t("details.findings_whole_frame"))
+        parts.append(f"{finding.severity:.2f}")
+        twins = self._findings_merged()[1].get(id(finding), ())
+        if twins:
+            parts.append(self._t("details.findings_checks", count=len({item.detector for item in (finding, *twins)})))
+        return " · ".join(parts)
+
+    def _finding_hover_text(self, finding) -> str:
+        names = self._findings_model_names()
+        twins = self._findings_merged()[1].get(id(finding), ())
+        lines = [f"{self._finding_kind_label(finding.kind)} — {self._finding_diagnosis_label(finding.diagnosis)}"]
+        models = list(dict.fromkeys(item.model_id for item in (finding, *twins) if item.model_id))
+        if models:
+            lines.append(self._t("details.findings_model", name=", ".join(names.get(model, model) for model in models)))
+        lines.append(
+            self._t(
+                "details.findings_found_by",
+                detector=self._finding_detector_label(finding.detector),
+                severity=f"{finding.severity:.2f}",
+            )
+        )
+        try:
+            base = self._base_array()
+            shape = (int(base.shape[0]), int(base.shape[1]))
+        except Exception:
+            shape = None
+        box = finding.pixel_box(shape) if shape is not None else None
+        if box is None:
+            lines.append(self._t("details.findings_whole_frame"))
+        else:
+            x, y, w, h = (int(round(value)) for value in box)
+            lines.append(self._t("details.mark_size", width=max(1, w), height=max(1, h), x=x, y=y))
+        for name, value in finding.evidence:
+            if name == "reference":
+                reference = self._findings_model_names().get(str(value), str(value))
+                lines.append(self._t("details.findings_against", name=self._translated(f"finding.reference.{value}", reference)))
+                continue
+            label = self._translated(f"finding.evidence.{name}", str(name))
+            shown = f"{value:.2f}" if isinstance(value, float) else str(value)
+            lines.append(f"{label}: {shown}")
+        if finding.detail:
+            lines.append(str(finding.detail))
+        seen = {(finding.detector, finding.diagnosis)}
+        for twin in twins:
+            if (twin.detector, twin.diagnosis) in seen:
+                continue
+            seen.add((twin.detector, twin.diagnosis))
+            lines.append(
+                self._t(
+                    "details.findings_also",
+                    detector=self._finding_detector_label(twin.detector),
+                    diagnosis=self._finding_diagnosis_label(twin.diagnosis),
+                )
+            )
+        return "\n".join(lines)
+
+    def _sync_findings_panel(self) -> None:
+        kind = self._selected_result_kind()
+        bar = getattr(self, "findings_legend_bar", None)
+        if bar is None:
+            return
+        bar.setVisible(kind == FINDINGS_MARKS_KIND)
+        shown = self._findings_shown()
+        counts: dict[str, int] = {}
+        for finding in shown:
+            counts[finding.kind] = counts.get(finding.kind, 0) + 1
+        order = sorted(counts, key=kind_sort_key)
+        for old_kind in list(self._findings_legend_buttons):
+            if old_kind not in counts:
+                button = self._findings_legend_buttons.pop(old_kind)
+                self._findings_legend_layout.removeWidget(button)
+                button.deleteLater()
+        anchor = self._findings_legend_layout.indexOf(self._findings_chip_anchor)
+        for index, finding_kind in enumerate(order):
+            button = self._findings_legend_buttons.get(finding_kind)
+            if button is None:
+                button = QToolButton(bar)
+                button.setCheckable(True)
+                button.setIcon(kind_icon(finding_kind))
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+                button.setToolTip(self._t("details.legend_solo_hint"))
+                button.clicked.connect(lambda _checked=False, value=finding_kind: self._toggle_finding_solo(value))
+                self._findings_legend_buttons[finding_kind] = button
+            self._findings_legend_layout.insertWidget(anchor + 1 + index, button)
+            button.setText(f"{self._finding_kind_label(finding_kind)} · {counts[finding_kind]}")
+            button.blockSignals(True)
+            button.setChecked(self._finding_solo_kind == finding_kind)
+            button.blockSignals(False)
+        navigable = self._findings_navigable()
+        if self._finding_index >= len(navigable):
+            self._finding_index = -1
+        position = "—" if self._finding_index < 0 else str(self._finding_index + 1)
+        self.findings_position_label.setText(f"{position} / {len(navigable)}")
+        for button in (self.findings_prev_button, self.findings_next_button):
+            button.setEnabled(bool(navigable))
+            button.setToolTip(self._t("details.defect_steps_hint"))
+        # The list of the panel: every finding the filter shows, in the order Ctrl+arrows go.
+        keys = tuple((finding.detector, finding.kind, finding.model_id, finding.box) for finding in navigable)
+        if keys != self._finding_list_keys:
+            self._finding_list_keys = keys
+            blocker = QSignalBlocker(self.findings_list)
+            self.findings_list.clear()
+            for row, finding in enumerate(navigable):
+                item = QListWidgetItem(kind_icon(finding.kind), self._finding_list_text(finding))
+                item.setToolTip(self._finding_hover_text(finding))
+                item.setData(Qt.ItemDataRole.UserRole, row)
+                self.findings_list.addItem(item)
+            del blocker
+        if 0 <= self._finding_index < self.findings_list.count():
+            blocker = QSignalBlocker(self.findings_list)
+            self.findings_list.setCurrentRow(self._finding_index)
+            del blocker
+        payload = self._findings_payload or {}
+        if self._findings_loading:
+            status = self._t("details.findings_loading")
+        elif payload.get("error"):
+            status = self._t("details.findings_failed", error=str(payload.get("error")))
+        elif not self._findings_all():
+            status = self._t("details.findings_none")
+        else:
+            status = self._t("details.findings_count", count=len(self._findings_all()), shown=len(shown))
+            computed = [self._finding_detector_label(name) for name in payload.get("computed") or ()]
+            if computed:
+                status += "\n" + self._t("details.findings_computed_now", checks=", ".join(computed))
+        self.findings_status_label.setText(status)
+        self.findings_show_button.setVisible(kind not in FINDINGS_RESULT_KINDS)
+
+    def _toggle_finding_solo(self, kind: str) -> None:
+        self._finding_solo_kind = None if self._finding_solo_kind == kind else str(kind)
+        self._finding_index = -1
+        self._finding_hot = None
+        self._finding_list_keys = None
+        self._rebuild_finding_items()
+
+    def _show_findings_layer(self) -> None:
+        index = self.result_kind_combo.findData(FINDINGS_MARKS_KIND)
+        if index >= 0:
+            self.result_kind_combo.setCurrentIndex(index)
+
+    def _clear_finding_items(self) -> None:
+        scene = self.overlay_view.scene() if hasattr(self, "overlay_view") else None
+        for item in list(self._finding_items):
+            try:
+                if scene is not None and item.scene() is scene:
+                    scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self._finding_items = []
+        self._clear_finding_labels()
+        self._finding_label_stacks = []
+
+    def _rebuild_finding_items(self) -> None:
+        """The marks of the findings over the frame (ui.finding_marks); a kind singled out in the legend
+        keeps its colour, the others fade; the finding under the cursor or stepped to is lit."""
+
+        self._clear_finding_items()
+        scene = self.overlay_view.scene()
+        if scene is None or self._selected_result_kind() != FINDINGS_MARKS_KIND:
+            self._sync_findings_panel()
+            return
+        rect = scene.sceneRect()
+        width, height = max(1.0, rect.width()), max(1.0, rect.height())
+        labels_on = self.findings_labels_check.isChecked()
+        band = 0
+        items: list = []
+        shown = sorted(self._findings_shown(), key=lambda finding: (finding is self._finding_hot, finding.severity))
+        bands: dict[int, int] = {}
+        for finding in shown:
+            dim = self._finding_solo_kind is not None and finding.kind != self._finding_solo_kind
+            hot = finding is self._finding_hot
+            frame_band = 0
+            if finding.box is None:
+                frame_band = band
+                bands[id(finding)] = band
+                band += 1
+            for item in add_finding_items(scene, finding, width, height, dim=dim, hot=hot, frame_band=frame_band):
+                item.setZValue(38.0 if hot else (27.0 if dim else 33.0))
+                items.append(item)
+        stacks: list = []
+        if labels_on:
+            # One stack of labels per place (overlapping boxes), hung under the place: the lit one
+            # first, then the worst; the whole frame's findings in one stack in the corner.
+            labelled = [finding for finding in shown if self._finding_solo_kind is None or finding.kind == self._finding_solo_kind]
+            labelled.sort(key=lambda finding: (finding is not self._finding_hot, -finding.severity))
+            for place in label_places(labelled):
+                lead = place[0]
+                if lead.box is None:
+                    inset = 3.0 + 6.0 * float(band)
+                    anchor = QPointF(inset + 2.0, inset + 2.0)
+                else:
+                    boxes = [scene_rect(item, width, height) for item in place]
+                    anchor = QPointF(min(box.left() for box in boxes), max(box.bottom() for box in boxes))
+                lines = []
+                seen: set[str] = set()
+                for finding in place:
+                    text = self._finding_mark_label(finding)
+                    if text in seen:
+                        continue
+                    seen.add(text)
+                    lines.append((text, color_of(finding.kind), finding is self._finding_hot))
+                stacks.append((anchor, lines))
+        self._finding_label_stacks = stacks
+        self._finding_label_scale = None
+        self._finding_items = items
+        self._relayout_finding_labels(force=True)
+        self._sync_findings_panel()
+
+    def _clear_finding_labels(self) -> None:
+        scene = self.overlay_view.scene() if hasattr(self, "overlay_view") else None
+        for item in list(getattr(self, "_finding_label_items", ())):
+            try:
+                if scene is not None and item.scene() is scene and item.parentItem() is None:
+                    scene.removeItem(item)
+            except RuntimeError:
+                pass
+        self._finding_label_items = []
+
+    def _relayout_finding_labels(self, force: bool = False) -> None:
+        """The labels of the findings laid out for the present zoom: a stack that would cover another
+        is left out (ui.finding_marks.place_labels); zooming in brings it back."""
+
+        scene = self.overlay_view.scene()
+        stacks = getattr(self, "_finding_label_stacks", None) or []
+        scale = max(abs(float(self.overlay_view.transform().m11())), 1e-6)
+        previous = getattr(self, "_finding_label_scale", None)
+        if not force and previous is not None and abs(scale / previous - 1.0) < 0.03:
+            return
+        self._clear_finding_labels()
+        self._finding_label_scale = scale
+        if scene is None or not stacks or self._selected_result_kind() != FINDINGS_MARKS_KIND:
+            return
+        sized = [(anchor, label_stack_size(lines)) for anchor, lines in stacks]
+        items: list = []
+        for index in place_labels(sized, scale):
+            anchor, lines = stacks[index]
+            for item in add_label_stack(scene, anchor, lines):
+                item.setZValue(39.0)
+                items.append(item)
+        self._finding_label_items = items
+
+    def _schedule_finding_labels(self) -> None:
+        if not getattr(self, "_finding_label_stacks", None):
+            return
+        timer = getattr(self, "_finding_label_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(80)
+            timer.timeout.connect(lambda: self._relayout_finding_labels())
+            self._finding_label_timer = timer
+        timer.start()
+
+    def _finding_at(self, scene_pos: QPointF):
+        """The smallest shown finding under the cursor, with a few screen pixels of slack."""
+
+        scene = self.overlay_view.scene()
+        if scene is None:
+            return None
+        rect = scene.sceneRect()
+        width, height = max(1.0, rect.width()), max(1.0, rect.height())
+        view_scale = max(abs(float(self.overlay_view.transform().m11())), 1e-6)
+        slack = DEBRIS_HOVER_SLACK_SCREEN_PX / view_scale
+        chosen, chosen_area = None, None
+        candidates = self._findings_navigable() if self._finding_solo_kind is not None else self._findings_shown()
+        for finding in candidates:
+            box = scene_rect(finding, width, height)
+            if box is None:
+                continue
+            if box.left() - slack <= scene_pos.x() <= box.right() + slack and box.top() - slack <= scene_pos.y() <= box.bottom() + slack:
+                area = box.width() * box.height()
+                if chosen_area is None or area < chosen_area:
+                    chosen, chosen_area = finding, area
+        return chosen
+
+    def _focus_finding(self, finding) -> None:
+        self._finding_hot = finding
+        self._rebuild_finding_items()
+        scene = self.overlay_view.scene()
+        if scene is None:
+            return
+        rect = scene.sceneRect()
+        box = scene_rect(finding, max(1.0, rect.width()), max(1.0, rect.height()))
+        self.overlay_view._smooth_zoom.stop()
+        if box is None:
+            self.overlay_view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            self._relayout_finding_labels()
+            return
+        margin = max(18.0, max(box.width(), box.height()) * 3.0)
+        target = box.adjusted(-margin, -margin, margin, margin).intersected(rect)
+        if target.isNull():
+            target = box.adjusted(-margin, -margin, margin, margin)
+        self.overlay_view.fitInView(target, Qt.AspectRatioMode.KeepAspectRatio)
+        self.overlay_view.centerOn(box.center())
+        self._relayout_finding_labels()
+
+    def _step_finding(self, delta: int) -> bool:
+        """The next or the previous finding of the frame (of the kind singled out), zoomed to."""
+
+        if self._selected_result_kind() != FINDINGS_MARKS_KIND:
+            return False
+        navigable = self._findings_navigable()
+        if not navigable:
+            return False
+        if self._finding_index < 0:
+            self._finding_index = 0 if delta > 0 else len(navigable) - 1
+        else:
+            self._finding_index = (self._finding_index + int(delta)) % len(navigable)
+        self._focus_finding(navigable[self._finding_index])
+        return True
+
+    def _step_marks(self, delta: int) -> bool:
+        return self._step_grid_defect(delta) or self._step_finding(delta)
+
+    def _on_finding_list_selected(self) -> None:
+        item = self.findings_list.currentItem()
+        if item is None:
+            return
+        row = item.data(Qt.ItemDataRole.UserRole)
+        navigable = self._findings_navigable()
+        if not isinstance(row, int) or not (0 <= row < len(navigable)):
+            return
+        if self._selected_result_kind() != FINDINGS_MARKS_KIND:
+            self._show_findings_layer()
+        self._finding_index = row
+        self._focus_finding(navigable[row])
+
+    @staticmethod
+    def _rgba_pixmap(rgba: np.ndarray) -> QPixmap:
+        rgba = np.ascontiguousarray(rgba, dtype=np.uint8)
+        height, width = rgba.shape[:2]
+        image = QImage(rgba.data, width, height, int(rgba.strides[0]), QImage.Format.Format_RGBA8888).copy()
+        return QPixmap.fromImage(image)
+
+    def _findings_base_shape(self) -> tuple[int, int] | None:
+        try:
+            base = self._base_array()
+        except Exception:
+            return None
+        if base is None or getattr(base, "ndim", 0) < 2:
+            return None
+        return int(base.shape[0]), int(base.shape[1])
+
+    def _findings_result_pixmap(self, kind: str) -> QPixmap:
+        shape = self._findings_base_shape()
+        payload = self._findings_payload or {}
+        if shape is None or kind == FINDINGS_MARKS_KIND:
+            return QPixmap()
+        height, width = shape
+        import cv2
+
+        rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        if kind == FINDINGS_HEAT_KIND:
+            heat = finding_heat(self._findings_shown(), (height, width), blur=max(1.0, min(height, width) / 300.0))
+            rgba[..., 0] = 255
+            rgba[..., 1] = np.clip(255.0 * (1.0 - heat), 0, 255).astype(np.uint8)
+            rgba[..., 3] = np.clip(200.0 * np.sqrt(heat), 0, 255).astype(np.uint8)
+            return self._rgba_pixmap(rgba)
+        quality = payload.get("photo_quality")
+        metal = payload.get("photo_metal")
+        if quality is None or metal is None:
+            return QPixmap()
+        if kind == "photo_quality":
+            poor = cv2.resize(1.0 - np.asarray(quality, dtype=np.float32), (width, height), interpolation=cv2.INTER_NEAREST)
+            rgba[..., 0] = 239
+            rgba[..., 1] = 68
+            rgba[..., 2] = 68
+            rgba[..., 3] = np.clip(190.0 * poor, 0, 255).astype(np.uint8)
+            return self._rgba_pixmap(rgba)
+        photo_metal = cv2.resize(np.asarray(metal, dtype=np.uint8), (width, height), interpolation=cv2.INTER_NEAREST) > 0
+        if kind == "photo_metal":
+            edge = photo_metal & ~(cv2.erode(photo_metal.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0)
+            rgba[photo_metal] = (34, 197, 94, 70)
+            rgba[edge] = (34, 197, 94, 220)
+            return self._rgba_pixmap(rgba)
+        masks = payload.get("masks") or {}
+        model_id = self._findings_model_filter() or self._selected_model_for_current_comparison()
+        if model_id not in masks:
+            model_id = next(iter(masks), None)
+        if model_id is None:
+            return QPixmap()
+        mask = cv2.resize(np.asarray(masks[model_id], dtype=np.uint8), (width, height), interpolation=cv2.INTER_NEAREST) > 0
+        rgba[mask & ~photo_metal] = (239, 68, 68, 190)
+        rgba[photo_metal & ~mask] = (59, 130, 246, 190)
+        return self._rgba_pixmap(rgba)
+
     def _refresh_result_layer(self) -> None:
         if self._payload_loading and not self._payload and self._grid_inspection_result is None:
             self._comparison_score = None
@@ -5505,7 +6198,10 @@ class ExtendFrameDetailsDialog(QDialog):
         mode = self._current_operation_mode()
         kind = self._selected_result_kind()
         confidence_model_id = self._confidence_model_id()
-        if kind.startswith("comparison_layer::"):
+        if kind in FINDINGS_RESULT_KINDS:
+            self._comparison_score = None
+            self.result_item.setPixmap(self._findings_result_pixmap(kind))
+        elif kind.startswith("comparison_layer::"):
             self._comparison_score = None
             self.result_item.setPixmap(self._comparison_raster_layer_pixmap(kind.split("::", 1)[1]))
         elif kind in {"risk_structure", "risk_source", "risk_confidence"}:
@@ -5563,6 +6259,7 @@ class ExtendFrameDetailsDialog(QDialog):
             self.result_item.setPixmap(pixmap)
         self._sync_selection_overlay_items()
         self._update_layer_states()
+        self._rebuild_finding_items()
         if kind == "grid_cell_defects":
             self._rebuild_grid_mark_items()
             self._publish_grid_defect_count()

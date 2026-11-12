@@ -175,45 +175,49 @@ def _point_coordinates(points: tuple[object, ...]) -> np.ndarray:
 
 
 def _point_match_threshold(point_a: object, point_b: object, base_radius: float) -> float:
-    _ = point_a, point_b
-    return float(max(0.0, float(base_radius)))
+    """How far apart two points may be and still be one point: the chosen radius, or half their
+    joint size when they are bigger (a wide via moved by its own radius is still the same via)."""
+
+    size = 0.5 * (float(getattr(point_a, "radius", 0.0) or 0.0) + float(getattr(point_b, "radius", 0.0) or 0.0))
+    return float(max(0.0, float(base_radius), size))
+
+
+# Above this many point pairs the optimal one-to-one matching costs too much; the greedy one is used.
+OPTIMAL_POINT_MATCH_MAX_PAIRS = 4_000_000
 
 
 def _match_point_sets(
     points_a: tuple[object, ...], points_b: tuple[object, ...], base_radius: float
 ) -> tuple[list[float], set[int], set[int]]:
+    """One-to-one matching of two point sets inside the match radius.
+
+    Optimal (the most pairs, then the shortest total distance) when the sets are small enough,
+    greedy by distance otherwise. Greedy can lose a pair: the closest pair taken first may leave
+    two points with no partner that a different choice would have matched.
+    """
+
     candidate_pairs: list[tuple[float, int, int]] = []
-    cKDTree = _get_ckdtree()
-    if cKDTree is not None and points_a and points_b:
+    if points_a and points_b:
         coords_a = _point_coordinates(points_a)
         coords_b = _point_coordinates(points_b)
-        radius = max(0.0, float(base_radius))
-        if coords_a.shape[0] > 0 and coords_b.shape[0] > 0 and radius >= 0.0:
-            tree_b = cKDTree(coords_b)
-            neighbors = tree_b.query_ball_point(coords_a, r=radius)
-            for index_a, neighbor_indices in enumerate(neighbors):
-                point_a = points_a[index_a]
-                for index_b in neighbor_indices:
-                    point_b = points_b[int(index_b)]
-                    distance = float(
-                        np.hypot(
-                            float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)),
-                            float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0)),
-                        )
-                    )
-                    if distance <= _point_match_threshold(point_a, point_b, base_radius):
-                        candidate_pairs.append((distance, index_a, int(index_b)))
-    else:
-        for index_a, point_a in enumerate(points_a):
-            for index_b, point_b in enumerate(points_b):
-                distance = float(
-                    np.hypot(
-                        float(getattr(point_a, "x", 0.0)) - float(getattr(point_b, "x", 0.0)),
-                        float(getattr(point_a, "y", 0.0)) - float(getattr(point_b, "y", 0.0)),
-                    )
-                )
-                if distance <= _point_match_threshold(point_a, point_b, base_radius):
-                    candidate_pairs.append((distance, index_a, index_b))
+        largest = max((float(getattr(point, "radius", 0.0) or 0.0) for point in (*points_a, *points_b)), default=0.0)
+        search = max(0.0, float(base_radius), largest)
+        cKDTree = _get_ckdtree()
+        if cKDTree is not None:
+            neighbors = cKDTree(coords_b).query_ball_point(coords_a, r=search)
+            index_pairs = ((index_a, int(index_b)) for index_a, found in enumerate(neighbors) for index_b in found)
+        else:
+            index_pairs = ((index_a, index_b) for index_a in range(len(points_a)) for index_b in range(len(points_b)))
+        for index_a, index_b in index_pairs:
+            point_a, point_b = points_a[index_a], points_b[index_b]
+            distance = float(np.hypot(coords_a[index_a, 0] - coords_b[index_b, 0], coords_a[index_a, 1] - coords_b[index_b, 1]))
+            if distance <= _point_match_threshold(point_a, point_b, base_radius):
+                candidate_pairs.append((distance, index_a, index_b))
+    if not candidate_pairs:
+        return [], set(), set()
+    optimal = _optimal_point_pairs(candidate_pairs, len(points_a), len(points_b))
+    if optimal is not None:
+        return [distance for distance, _a, _b in optimal], {a for _d, a, _b in optimal}, {b for _d, _a, b in optimal}
     candidate_pairs.sort(key=lambda item: (item[0], item[1], item[2]))
     matched_distances: list[float] = []
     matched_a: set[int] = set()
@@ -225,6 +229,38 @@ def _match_point_sets(
         matched_b.add(index_b)
         matched_distances.append(float(distance))
     return matched_distances, matched_a, matched_b
+
+
+def _optimal_point_pairs(
+    candidate_pairs: list[tuple[float, int, int]], count_a: int, count_b: int
+) -> list[tuple[float, int, int]] | None:
+    """The optimal matching over the candidate pairs, or None when SciPy is missing or it is too big."""
+
+    rows = sorted({index_a for _d, index_a, _b in candidate_pairs})
+    columns = sorted({index_b for _d, _a, index_b in candidate_pairs})
+    if len(rows) * len(columns) > OPTIMAL_POINT_MATCH_MAX_PAIRS:
+        return None
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except Exception:  # pragma: no cover - SciPy is a dependency
+        return None
+    row_of = {index: position for position, index in enumerate(rows)}
+    column_of = {index: position for position, index in enumerate(columns)}
+    largest = max(distance for distance, _a, _b in candidate_pairs)
+    # A pair that is not a candidate costs more than any number of candidates together, so the
+    # most candidate pairs are matched first, then the shortest total distance.
+    forbidden = (largest + 1.0) * (min(len(rows), len(columns)) + 1)
+    cost = np.full((len(rows), len(columns)), forbidden, dtype=np.float64)
+    for distance, index_a, index_b in candidate_pairs:
+        cost[row_of[index_a], column_of[index_b]] = distance
+    chosen_rows, chosen_columns = linear_sum_assignment(cost)
+    pairs = [
+        (float(cost[row, column]), rows[row], columns[column])
+        for row, column in zip(chosen_rows.tolist(), chosen_columns.tolist())
+        if cost[row, column] < forbidden
+    ]
+    del count_a, count_b
+    return pairs
 
 
 def _point_distance_scores(
@@ -673,15 +709,26 @@ def _pairwise_mask_metrics(
             else second["structure"]["component_count"]
         ),
     )
+    weights = MASK_AGREEMENT_SCORE_WEIGHTS
+    if both_binary_like:
+        # Binary masks: soft Dice/IoU are Dice/IoU; counting them twice only doubled overlap.
+        overlap_terms = [
+            (float(dice), weights["dice"] + weights["soft_dice"]),
+            (float(iou), weights["iou"] + weights["soft_iou"]),
+        ]
+    else:
+        overlap_terms = [
+            (float(soft_dice), weights["soft_dice"]),
+            (float(soft_iou), weights["soft_iou"]),
+            (float(dice), weights["dice"]),
+            (float(iou), weights["iou"]),
+        ]
     agreement_score = _weighted_mean(
         [
-            (float(soft_dice), MASK_AGREEMENT_SCORE_WEIGHTS["soft_dice"]),
-            (float(soft_iou), MASK_AGREEMENT_SCORE_WEIGHTS["soft_iou"]),
-            (float(ssim), MASK_AGREEMENT_SCORE_WEIGHTS["ssim"]),
-            (float(dice), MASK_AGREEMENT_SCORE_WEIGHTS["dice"]),
-            (float(iou), MASK_AGREEMENT_SCORE_WEIGHTS["iou"]),
-            (float(hausdorff_similarity), MASK_AGREEMENT_SCORE_WEIGHTS["hausdorff_term"]),
-            (float(centroid_similarity), MASK_AGREEMENT_SCORE_WEIGHTS["centroid_term"]),
+            *overlap_terms,
+            (float(count_agreement), weights["count_agreement"]),
+            (float(hausdorff_similarity), weights["hausdorff_term"]),
+            (float(centroid_similarity), weights["centroid_term"]),
         ]
     )
 
@@ -850,7 +897,24 @@ def _confidence_pair_metrics(confidence_a: np.ndarray, confidence_b: np.ndarray)
 def _configured_confidence_pair_metric_values(
     pairs: tuple[ComparisonPairSelection, ...],
     output_probabilities_by_model: dict[str, np.ndarray],
+    *,
+    encoding: str = "probability",
+    masks_by_model: dict[str, np.ndarray] | None = None,
 ) -> dict[str, float]:
+    """Pair metrics of two models' confidence maps, read as confidence (white is sure).
+
+    A probability map is turned into confidence first (|2p - 1|): its "low" values are background,
+    not doubt. ``encoding`` "auto" reads every map's encoding with its mask.
+    """
+
+    from .confidence_maps import confidence_of_map, resolve_confidence_encoding
+
+    def as_confidence(model_id: str, values: np.ndarray) -> np.ndarray:
+        mask = (masks_by_model or {}).get(model_id)
+        if mask is not None and np.asarray(mask).shape != np.asarray(values).shape:
+            mask = None
+        return confidence_of_map(values, resolve_confidence_encoding(encoding, values, mask))
+
     values: dict[str, float] = {}
     for pair in _normalized_comparison_pairs(pairs):
         model_a = str(pair.model_a_id)
@@ -859,6 +923,8 @@ def _configured_confidence_pair_metric_values(
         confidence_b = output_probabilities_by_model.get(model_b)
         if confidence_a is None or confidence_b is None:
             continue
+        confidence_a = as_confidence(model_a, confidence_a)
+        confidence_b = as_confidence(model_b, confidence_b)
         metrics = _confidence_pair_metrics(confidence_a, confidence_b)
         for operation, value in metrics.items():
             if math.isfinite(float(value)):

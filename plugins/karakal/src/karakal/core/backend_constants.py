@@ -24,7 +24,7 @@ FRAME_NUMBER_PATTERN = re.compile(r"^\d+$")
 CACHE_DIR = _default_cache_dir()
 ANALYSIS_CACHE_DIR = CACHE_DIR / "analysis_payloads"
 DETAIL_CACHE_DIR = CACHE_DIR / "detail_payloads"
-ANALYSIS_CACHE_VERSION = "v47_heuristic_check"
+ANALYSIS_CACHE_VERSION = "v48_topology_events"
 SCORE_CACHE_DB = CACHE_DIR / "score_cache.sqlite3"
 IMAGE_CACHE_SIZE = 256
 SQLITE_BATCH_SIZE = 900
@@ -34,10 +34,12 @@ METRIC_STATUS_ACTIVE = "active"
 METRIC_STATUS_AUXILIARY = "auxiliary"
 METRIC_STATUS_LEGACY = "legacy"
 
+# Soft Dice/IoU count only for soft outputs: for binary masks they equal Dice/IoU and their weight
+# goes there. The object count stands where a global SSIM (one window for the whole frame) was.
 MASK_AGREEMENT_SCORE_WEIGHTS = {
     "soft_dice": 0.20,
     "soft_iou": 0.15,
-    "ssim": 0.15,
+    "count_agreement": 0.15,
     "dice": 0.20,
     "iou": 0.15,
     "hausdorff_term": 0.10,

@@ -81,12 +81,11 @@ def build_source_mask(
     else:
         # brighter_inside: keep regions brighter than the global interior mean.
         interior_mean = float(np.mean(smoothed[interior], dtype=np.float64)) if np.any(interior) else 0.0
-        for label_id in range(1, count + 1):
-            if int(areas[label_id]) < min_area:
-                continue
-            region = labels == label_id
-            if float(np.mean(smoothed[region], dtype=np.float64)) >= interior_mean:
-                keep[label_id] = True
+        # The mean brightness of every region at once; one pass over the frame per region made
+        # a 4096 px photo take tens of seconds.
+        sums = np.bincount(labels.ravel(), weights=np.asarray(smoothed, dtype=np.float64).ravel(), minlength=count + 1)
+        means = sums / np.maximum(areas, 1)
+        keep = (areas >= min_area) & (means >= interior_mean)
 
     keep[0] = False
     if not np.any(keep):

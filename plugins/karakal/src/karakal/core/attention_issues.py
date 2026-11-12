@@ -123,6 +123,7 @@ def build_attention_issues(
     uncertainty_threshold: float = MODEL_RISK_UNCERTAINTY_THRESHOLD,
     compute_mode: str | None = None,
     probability_proxy: np.ndarray | object | None = None,
+    encoding: str = "probability",
 ) -> tuple[AttentionIssue, ...]:
     """Build ranked typed markers for uncertain regions.
 
@@ -148,7 +149,7 @@ def build_attention_issues(
         mask_bool = np.asarray(map_values >= 0.5, dtype=bool)
 
     if str(source) == "confidence":
-        uncertainty = build_model_uncertainty(map_values)
+        uncertainty = build_model_uncertainty(map_values, encoding)
         support = np.ones_like(uncertainty, dtype=bool)
     else:
         # Binary masks (0/1) have zero algorithmic uncertainty; reuse the same

@@ -52,12 +52,16 @@ OBJECT_TYPE_OPTIONS: tuple[tuple[str, str], ...] = (
 )
 
 INTER_MODEL_POLYGON_DISPLAY_KEYS: tuple[str, ...] = (
+    "topology_risk",
+    "photo_mismatch_risk",
+    "photo_quality_risk",
     "overall_polygon_score",
     "iou_score",
     "dice_score",
     "polygon_bce_score",
 )
 INTER_MODEL_POLYGON_PERCENTILE_KEYS: tuple[str, ...] = (
+    "topology_risk",
     "overall_polygon_score",
     "iou_score",
     "dice_score",
@@ -65,6 +69,9 @@ INTER_MODEL_POLYGON_PERCENTILE_KEYS: tuple[str, ...] = (
 )
 
 INTER_MODEL_POINT_DISPLAY_KEYS: tuple[str, ...] = (
+    "topology_risk",
+    "photo_mismatch_risk",
+    "photo_quality_risk",
     "overall_point_score",
     "precision_score",
     "recall_score",
@@ -72,6 +79,7 @@ INTER_MODEL_POINT_DISPLAY_KEYS: tuple[str, ...] = (
     "localization_score",
 )
 INTER_MODEL_POINT_PERCENTILE_KEYS: tuple[str, ...] = (
+    "topology_risk",
     "overall_point_score",
     "precision_score",
     "recall_score",
@@ -81,6 +89,9 @@ INTER_MODEL_POINT_PERCENTILE_KEYS: tuple[str, ...] = (
 
 SCORE_100_METRIC_KEYS = frozenset(
     {
+        "topology_risk",
+        "photo_mismatch_risk",
+        "photo_quality_risk",
         "overall_polygon_score",
         "iou_score",
         "dice_score",
@@ -106,8 +117,15 @@ CONFIDENCE_COMPARISON_DISPLAY_KEYS: tuple[str, ...] = (
     "confidence_threshold_crossing_score",
 )
 
+# Model-specific metric families (family::model) on the 0-100 scale, lower is better.
+SCORE_100_LOWER_FAMILIES = frozenset({"photo_mismatch_risk", "confidence_ece", "confident_error_share"})
+
 LOWER_IS_BETTER_METRIC_KEYS = frozenset(
     {
+        "photo_mismatch_risk",
+        "photo_quality_risk",
+        "topology_risk",
+        "topology_events",
         "bce",
         "grid_inspection_damage_score",
         "mean_localization_distance",
@@ -291,11 +309,13 @@ def default_metric_key(context: AnalysisContext) -> str:
 
 
 def metric_uses_100_scale(metric_key: str | None) -> bool:
-    return str(metric_key or "") in SCORE_100_METRIC_KEYS
+    text = str(metric_key or "")
+    return text in SCORE_100_METRIC_KEYS or text.split("::", 1)[0] in SCORE_100_LOWER_FAMILIES
 
 
 def metric_is_lower_better(metric_key: str | None) -> bool:
-    return str(metric_key or "") in LOWER_IS_BETTER_METRIC_KEYS
+    text = str(metric_key or "")
+    return text in LOWER_IS_BETTER_METRIC_KEYS or text.split("::", 1)[0] in SCORE_100_LOWER_FAMILIES
 
 
 def metric_visual_ratio(
@@ -309,7 +329,7 @@ def metric_visual_ratio(
         return None
     metric = str(metric_key or "")
     numeric = float(value)
-    if metric in SCORE_100_METRIC_KEYS:
+    if metric in SCORE_100_METRIC_KEYS or metric.split("::", 1)[0] in SCORE_100_LOWER_FAMILIES:
         return max(0.0, min(numeric / 100.0, 1.0))
     if metric == "bce":
         return max(0.0, min(numeric / max(1e-9, float(bce_score_cap)), 1.0))

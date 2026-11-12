@@ -12,11 +12,14 @@ from typing import Callable
 import numpy as np
 
 from .confidence_analysis import _model_output_confidence_metrics
+from .confidence_maps import build_model_uncertainty, resolve_confidence_encoding
 from .domain import BuildResult, FrameAnalysisSummary, FrameRecord
+from .findings import findings_from_single_result_risk
 from .image_io import load_grayscale_image, resize_grayscale_image
 from .mask_normalization import binarize_mask
 from .mask_primitives import _binary_dilate, _boundary_mask, _label_components, _mask_structure
 from .metric_keys import compute_metric_percentiles
+from .profiling import activate_profiler, current_profiler, profile_stage
 from .repository_shared import BuildCancelledError
 from .source_mask_from_gray import (
     SOURCE_MASK_ALGO_VERSION,
@@ -26,6 +29,7 @@ from .source_mask_from_gray import (
 )
 
 
+SINGLE_RESULT_RISK_VERSION = "single_result_risk.v1"
 SINGLE_RESULT_RISK_METRIC = "single_result_risk_score"
 MASK_STRUCTURE_RISK_METRIC = "mask_structure_risk"
 BATCH_OUTLIER_RISK_METRIC = "batch_outlier_risk"
@@ -308,17 +312,23 @@ def _extract_row(record: FrameRecord, model_id: str) -> _FeatureRow:
     if not path_text:
         return _FeatureRow(record, {}, 0.0, None, None, None, [], "missing_model_output")
     try:
-        gray = load_grayscale_image(Path(path_text))
-        # Masks saved as JPEG are gray at the edges; they are binarized, not rejected.
-        mask = binarize_mask(gray)
-        features, structure_raw, reasons = _mask_features(mask)
+        frame_id = str(record.key)
+        with profile_stage("validation.risk.load", frame_id=frame_id):
+            gray = load_grayscale_image(Path(path_text))
+            # Masks saved as JPEG are gray at the edges; they are binarized, not rejected.
+            mask = binarize_mask(gray)
+        with profile_stage("validation.risk.mask_structure", frame_id=frame_id):
+            features, structure_raw, reasons = _mask_features(mask)
         source_raw = None
         source_mask_raw = None
         if record.original_path:
-            source_gray = load_grayscale_image(Path(record.original_path))
-            source_raw, source_reasons = _source_alignment(mask, source_gray)
+            with profile_stage("validation.risk.load", frame_id=frame_id):
+                source_gray = load_grayscale_image(Path(record.original_path))
+            with profile_stage("validation.risk.source_alignment", frame_id=frame_id):
+                source_raw, source_reasons = _source_alignment(mask, source_gray)
             reasons.extend(source_reasons)
-            source_mask = build_source_mask(source_gray, target_shape=mask.shape)
+            with profile_stage("validation.risk.source_mask", frame_id=frame_id):
+                source_mask = build_source_mask(source_gray, target_shape=mask.shape)
             iou = mask_iou(source_mask, mask)
             dice = mask_dice(source_mask, mask)
             source_mask_raw = _clip01(1.0 - iou)
@@ -331,14 +341,17 @@ def _extract_row(record: FrameRecord, model_id: str) -> _FeatureRow:
         confidence_raw = None
         confidence_path = str((record.model_prob_paths or {}).get(model_id) or "")
         if confidence_path:
-            confidence_gray = load_grayscale_image(Path(confidence_path))
-            if confidence_gray.shape != mask.shape:
-                confidence_gray = resize_grayscale_image(confidence_gray, mask.shape)
-            confidence = np.asarray(confidence_gray, dtype=np.float32) / 255.0
-            confidence_raw = float(_model_output_confidence_metrics(confidence).frame_uncertainty_score)
-            uncertainty = 1.0 - np.abs(2.0 * confidence - 1.0)
-            if confidence_raw >= 0.35:
-                reasons.extend(_region_reasons(uncertainty >= 0.5, "low_confidence", confidence_raw))
+            with profile_stage("validation.risk.load", frame_id=frame_id):
+                confidence_gray = load_grayscale_image(Path(confidence_path))
+                if confidence_gray.shape != mask.shape:
+                    confidence_gray = resize_grayscale_image(confidence_gray, mask.shape)
+            with profile_stage("validation.risk.confidence", frame_id=frame_id):
+                confidence = np.asarray(confidence_gray, dtype=np.float32) / 255.0
+                encoding = resolve_confidence_encoding("auto", confidence, mask)
+                confidence_raw = float(_model_output_confidence_metrics(confidence, encoding).frame_uncertainty_score)
+                uncertainty = build_model_uncertainty(confidence, encoding)
+                if confidence_raw >= 0.35:
+                    reasons.extend(_region_reasons(uncertainty >= 0.5, "low_confidence", confidence_raw))
         return _FeatureRow(record, features, structure_raw, source_raw, source_mask_raw, confidence_raw, reasons)
     except Exception:
         return _FeatureRow(record, {}, 0.0, None, None, None, [], "decode_error")
@@ -433,6 +446,13 @@ def _extract_rows(
 
     ordered: list = [None] * len(source_records)
     completed = 0
+    # The run's profiler is thread-local: hand it to the pool threads, or their stages are lost.
+    profiler = current_profiler()
+
+    def extract_in_thread(record: FrameRecord, model: str) -> object:
+        with activate_profiler(profiler):
+            return extract(record, model)
+
     executor = ThreadPoolExecutor(max_workers=worker_count)
     shutdown_wait = True
     try:
@@ -442,7 +462,7 @@ def _extract_rows(
                 raise BuildCancelledError("Build cancelled")
             if state_callback is not None:
                 state_callback(str(record.key), "processing")
-            future = executor.submit(extract, record, model_id)
+            future = executor.submit(extract_in_thread, record, model_id)
             future_to_index[future] = index
 
         pending = set(future_to_index.keys())
@@ -609,6 +629,7 @@ def compute_single_result_risk(
             notes=tuple(reason.code for reason in reasons),
             frame_type="polygon",
             single_result_risk=risk_summary,
+            findings=findings_from_single_result_risk(risk_summary, model_id=str(model.model_id)),
         )
         updated[str(record.key)] = replace(
             record,

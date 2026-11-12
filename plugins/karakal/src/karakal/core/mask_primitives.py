@@ -240,8 +240,69 @@ def _neighborhood_codes(image: np.ndarray) -> np.ndarray:
     return code
 
 
+# Neighbour offsets (dy, dx) in the bit order of _neighborhood_codes.
+_NEIGHBOR_OFFSETS = ((-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1))
+
+
 def _skeletonize_binary(image: np.ndarray) -> None:
-    """Zhang-Suen thinning of a contiguous 0/1 image, in place."""
+    """Zhang-Suen thinning of a contiguous 0/1 image, in place, looking only at the boundary.
+
+    A pixel is removed only with 2..6 set neighbours, so only a pixel with an empty neighbour can
+    ever go. Each sub-iteration therefore reads the codes of the boundary pixels alone, and after
+    a removal the neighbours of the removed pixels join them. The result is the same as reading
+    every pixel (``_skeletonize_binary_dense``); the cost follows the boundary, not the area, which
+    matters for a metal pour that takes hundreds of passes to thin.
+
+    A pixel that stayed through both sub-iterations with the same neighbours can never go any more
+    (the two tables alternate and its code does not change); it leaves the candidates until a
+    neighbour of it is removed. Lines that thinned long ago so cost nothing while a pour still thins.
+    """
+
+    height, width = image.shape
+    if height == 0 or width == 0:
+        return
+    stride = width + 2
+    padded = np.zeros((height + 2, stride), dtype=np.uint8)
+    padded[1:-1, 1:-1] = image
+    pixels = padded.ravel()
+    offsets = np.asarray([dy * stride + dx for dy, dx in _NEIGHBOR_OFFSETS], dtype=np.intp)
+    codes = _neighborhood_codes(image)
+    ys, xs = np.nonzero((image == 1) & (codes != 255))
+    candidates = (ys.astype(np.intp) + 1) * stride + (xs.astype(np.intp) + 1)
+    # Sub-iterations a candidate went through with unchanged neighbours; whether it is a candidate.
+    age = np.zeros(pixels.size, dtype=np.uint8)
+    is_candidate = np.zeros(pixels.size, dtype=bool)
+    is_candidate[candidates] = True
+    tables = (_ZHANG_REMOVE_FIRST, _ZHANG_REMOVE_SECOND)
+    step = 0
+    while candidates.size:
+        code = np.zeros(candidates.size, dtype=np.uint8)
+        for bit, offset in enumerate(offsets):
+            code |= (pixels[candidates + offset] << bit).astype(np.uint8)
+        remove = tables[step % 2][code]
+        step += 1
+        kept = candidates[~remove]
+        age[kept] += 1
+        removed = candidates[remove]
+        new = np.zeros(0, dtype=np.intp)
+        if removed.size:
+            pixels[removed] = 0
+            is_candidate[removed] = False
+            near = np.unique((removed[:, None] + offsets[None, :]).ravel())
+            near = near[pixels[near] == 1]
+            age[near] = 0
+            new = near[~is_candidate[near]]
+            is_candidate[new] = True
+        candidates = np.concatenate([kept, new])
+        settled = age[candidates] >= 2
+        if np.any(settled):
+            is_candidate[candidates[settled]] = False
+            candidates = candidates[~settled]
+    image[:] = padded[1:-1, 1:-1]
+
+
+def _skeletonize_binary_dense(image: np.ndarray) -> None:
+    """Zhang-Suen thinning reading every pixel each pass: the reference ``_skeletonize_binary`` matches."""
 
     changed = True
     while changed:

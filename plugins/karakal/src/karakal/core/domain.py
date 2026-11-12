@@ -120,6 +120,11 @@ class BuildOptions:
     comparison_pairs: tuple[ComparisonPairSelection, ...] = ()
     comparison_target: ComparisonTarget = ComparisonTarget.OUTPUTS
     single_result_sensitivity: str = "balanced"
+    # Read the frame's photo against every mask (core/photo_consistency.py). Also on by itself when
+    # a photo metric is chosen.
+    photo_check: bool = False
+    # How confidence maps are written: "auto" (read from each map), "probability" or "confidence".
+    confidence_encoding: str = "auto"
     # File name suffixes: a mask is NAME<mask_suffix>, its confidence NAME<confidence_suffix>,
     # in one folder or in two (see core/frame_naming.py).
     mask_suffix: str = ""
@@ -447,6 +452,9 @@ class FrameAnalysisSummary:
     # Etch check of chip photos (core/heuristic_check.py). Read it with getattr: summaries
     # pickled before it existed have no such slot.
     heuristic_check: Any | None = None
+    # Everything the checks found on the frame, in one format (core/findings.py). Read it with
+    # core.findings.frame_findings: summaries pickled before it existed have no such slot.
+    findings: tuple[Any, ...] = ()
 
 
 @dataclass(slots=True)

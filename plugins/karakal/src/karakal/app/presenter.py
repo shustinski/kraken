@@ -76,6 +76,9 @@ from ..core.analysis_profiles import (
     build_standalone_preflight,
 )
 from ..core.heuristic_check import folder_holds_photos
+from ..core.findings import frame_findings, summarize_findings
+from ..core.topology_events import DETECTOR_TOPOLOGY
+from ..core.photo_consistency import DETECTOR_PHOTO
 from ..core.features import (
     show_confidence_defects,
     show_grid_examples,
@@ -4204,6 +4207,9 @@ class KarakalPresenter(QObject):
         if "::" in str(metric_key):
             return f"{level} {float(value) * 100.0:.1f}%"
         if str(metric_key) in {
+            "photo_mismatch_risk",
+            "photo_quality_risk",
+            "topology_risk",
             "overall_polygon_score",
             "iou_score",
             "dice_score",
@@ -4315,6 +4321,15 @@ class KarakalPresenter(QObject):
                 return self._t("hint.confidence_polygon")
         if metric_key_text == "overall_frame_score":
             return self._t("hint.overall")
+        if metric_key_text in {"topology_risk", "topology_events"}:
+            return self._t("hint.topology")
+        if metric_key_text.split("::", 1)[0] in {
+            "photo_mismatch_risk",
+            "photo_quality_risk",
+            "confidence_ece",
+            "confident_error_share",
+        }:
+            return self._t("hint.photo_check")
         if metric_key_text in {
             "overall_polygon_score",
             "iou_score",
@@ -4375,6 +4390,12 @@ class KarakalPresenter(QObject):
             "model_output_confidence": self._t("hint.model_output_confidence"),
             "model_uncertain_fraction": self._t("hint.confidence_polygon"),
             "model_point_contrast": self._t("hint.confidence_point"),
+            "topology_risk": self._t("hint.topology"),
+            "photo_mismatch_risk": self._t("hint.photo_check"),
+            "photo_quality_risk": self._t("hint.photo_check"),
+            "confidence_ece": self._t("hint.photo_check"),
+            "confident_error_share": self._t("hint.photo_check"),
+            "topology_events": self._t("hint.topology"),
             "overall_polygon_score": self._t("hint.inter_model_polygon"),
             "iou_score": self._t("hint.inter_model_polygon"),
             "dice_score": self._t("hint.inter_model_polygon"),
@@ -4429,6 +4450,18 @@ class KarakalPresenter(QObject):
             parts = [self._t(f"heuristic.verdict.{check.verdict}")]
             parts.extend(self._t(f"heuristic.reason.{reason.code.split('.', 1)[0]}") for reason in check.reasons[:3])
             return "; ".join(dict.fromkeys(parts))
+        if family in {"photo_mismatch_risk", "photo_quality_risk", "confidence_ece", "confident_error_share"}:
+            counts = summarize_findings(
+                finding for finding in frame_findings(summary) if finding.detector == DETECTOR_PHOTO
+            )
+            parts = [f"{self._t(f'finding.kind.{kind}')}: {count}" for kind, count in counts.items()]
+            return "; ".join(parts) or ("снимок и маски согласны" if is_ru else "photo and masks agree")
+        if family in {"topology_risk", "topology_events"}:
+            counts = summarize_findings(
+                finding for finding in frame_findings(summary) if finding.detector == DETECTOR_TOPOLOGY
+            )
+            parts = [f"{self._t(f'finding.kind.{kind}')}: {count}" for kind, count in counts.items()]
+            return "; ".join(parts) or ("расхождений в объектах нет" if is_ru else "no object disagreements")
         if family == "overall_frame_score":
             return self._t("metric.disagreement_score")
         if family in {"overall_polygon_score", "iou_score", "dice_score", "polygon_bce_score", "iou", "dice", "bce"}:
@@ -4460,7 +4493,7 @@ class KarakalPresenter(QObject):
             return "precision + recall + f1 + localization + tp/fp/fn"
         if family == "model_model_score":
             return (
-                "soft_dice + soft_iou + ssim + dice + iou + hausdorff + centroid"
+                "dice + iou (soft for soft outputs) + object count + hausdorff + centroid"
                 if summary.frame_type != "point"
                 else (
                     "precision + recall + f1_at_r + локализация + количество"
@@ -4531,6 +4564,10 @@ class KarakalPresenter(QObject):
             "iou_score": "IoU score",
             "dice_score": "Dice score",
             "polygon_bce_score": "BCE score",
+            "topology_risk": "Topology risk",
+            "photo_mismatch_risk": "Disagreement with the photo",
+            "photo_quality_risk": "Poor photo",
+            "topology_events": "Topology events",
             "overall_polygon_score": "Overall polygon score",
             "precision_score": "Precision score",
             "recall_score": "Recall score",
@@ -9002,7 +9039,10 @@ class KarakalPresenter(QObject):
             worker.deleteLater()
             thread.deleteLater()
             if not holders and self._worker_thread is None:
-                self._show_progress_bar(visible=False)
+                try:
+                    self._show_progress_bar(visible=False)
+                except RuntimeError:
+                    pass  # the main window closed while the preview was being worked out
 
         worker.finished.connect(_on_done)
         thread.started.connect(worker.run)

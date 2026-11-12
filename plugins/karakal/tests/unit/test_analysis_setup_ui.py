@@ -301,7 +301,9 @@ def test_single_result_details_show_reasons_and_anomaly_layers(tmp_path, qtbot) 
     dialog._refresh_result_kind_options("risk_structure")
     dialog._refresh_comparison_panel()
 
-    assert dialog.result_kind_combo.count() == 3
+    # The three risk layers, after the findings' marks and heat map.
+    kinds = [dialog.result_kind_combo.itemData(index) for index in range(dialog.result_kind_combo.count())]
+    assert kinds == ["findings", "findings_heat", "risk_structure", "risk_source", "risk_confidence"]
     assert "risk: 72.0/100" in dialog.comparison_metrics_label.text()
     assert "tiny_components" in dialog.comparison_events_label.text()
     for kind in ("risk_structure", "risk_source", "risk_confidence"):

@@ -431,6 +431,24 @@ def _extract_patch(image: np.ndarray, center_x: float, center_y: float, radius: 
     return image[y0:y1, x0:x1]
 
 
+def _component_slices(labels: np.ndarray, count: int) -> list[tuple[slice, slice] | None]:
+    """The bounding box of every label 1..count (None for a label with no pixels)."""
+
+    if count <= 0:
+        return []
+    try:
+        from scipy import ndimage
+
+        return list(ndimage.find_objects(labels, max_label=count))
+    except Exception:  # pragma: no cover - SciPy is a dependency; the slow way without it
+        slices: list[tuple[slice, slice] | None] = [None] * count
+        for label in range(1, count + 1):
+            ys, xs = np.nonzero(labels == label)
+            if ys.size:
+                slices[label - 1] = (slice(int(ys.min()), int(ys.max()) + 1), slice(int(xs.min()), int(xs.max()) + 1))
+        return slices
+
+
 def build_prediction_view_from_gray(model_name: str, pred_gray: np.ndarray, *, threshold: int = 128) -> _PredictionView:
     """Build lightweight prediction view from one grayscale output."""
 
@@ -439,10 +457,17 @@ def build_prediction_view_from_gray(model_name: str, pred_gray: np.ndarray, *, t
     labels, count = _label_components(pred_bin)
     points: list[_PredictionPoint] = []
     areas: list[int] = []
-    for label in range(1, int(count) + 1):
-        ys, xs = np.where(labels == label)
+    # Every point is read inside its own box: looking at the whole frame for each point made a
+    # dense via layer cost points x pixels.
+    for label, region in enumerate(_component_slices(labels, int(count)), start=1):
+        if region is None:
+            continue
+        own = labels[region] == label
+        ys, xs = np.nonzero(own)
         if xs.size == 0:
             continue
+        ys = ys + region[0].start
+        xs = xs + region[1].start
         area = int(xs.size)
         areas.append(area)
         centroid_x = float(np.mean(xs, dtype=np.float64))
@@ -456,7 +481,8 @@ def build_prediction_view_from_gray(model_name: str, pred_gray: np.ndarray, *, t
         local_contrast = float(max(0.0, peak - patch_mean))
         local_snr = float(local_contrast / max(1e-6, patch_std))
         radius = float(np.sqrt(area / np.pi))
-        boundary = _boundary_mask(labels == label)
+        # Outside its box the point has no pixels, as _boundary_mask pads: the same boundary.
+        boundary = _boundary_mask(own)
         perimeter = float(max(1, np.count_nonzero(boundary)))
         compactness = float(np.clip((4.0 * np.pi * area) / max(EPS, perimeter * perimeter), 0.0, 1.0))
         points.append(

@@ -376,3 +376,59 @@ def load_frame_detail(
         if confidence_row is not None:
             (detail_payload.setdefault("model_confidence", {}))[target_model_id] = confidence_row
     return _with_selected_detail_payload(detail_payload, target_model_id)
+
+
+def load_frame_detail_findings(record: FrameRecord, build_result: BuildResult) -> dict[str, object]:
+    """Everything the checks find on one frame, for the frame window.
+
+    The findings the run kept for the frame, and the checks it did not run computed now for this
+    frame alone: the topology events between the models (two models or more) and the photo check
+    (when the frame has a photo). Also the maps behind them: how good the photo is tile by tile and
+    the metal the photo shows. Boxes stay frame-relative; the maps are at the frame's full size.
+    """
+
+    from .analytics import _full_resolution_masks, _load_optional_gray
+    from .findings import frame_findings, sort_findings
+    from .photo_consistency import DETECTOR_PHOTO, photo_check
+    from .topology_events import DETECTOR_TOPOLOGY, topology_findings
+
+    findings = list(frame_findings(record.summary))
+    detectors = {finding.detector for finding in findings}
+    computed: list[str] = []
+    point = build_result.options.geometry_mode == GeometryMode.POINT
+    masks = _full_resolution_masks(record, tuple(build_result.model_specs))
+    if len(masks) >= 2 and DETECTOR_TOPOLOGY not in detectors:
+        findings.extend(
+            topology_findings(masks, point=point, point_match_radius=float(build_result.options.point_match_radius))
+        )
+        computed.append(DETECTOR_TOPOLOGY)
+    result: dict[str, object] = {"computed": computed}
+    photo = _load_optional_gray(record.original_path) if record.original_path else None
+    if photo is not None and masks:
+        confidences = {}
+        for spec in build_result.model_specs:
+            path = (record.model_prob_paths or {}).get(spec.model_id)
+            if path and str(spec.model_id) in masks:
+                gray = _load_optional_gray(path)
+                if gray is not None:
+                    confidences[str(spec.model_id)] = gray
+        found, metrics, quality = photo_check(
+            photo,
+            masks,
+            confidences=confidences,
+            encoding=str(getattr(build_result.options, "confidence_encoding", "auto") or "auto"),
+            point=point,
+        )
+        if DETECTOR_PHOTO not in detectors:
+            findings.extend(found)
+            computed.append(DETECTOR_PHOTO)
+        result["photo_metrics"] = metrics
+        if quality is not None:
+            result["photo_quality"] = np.asarray(quality.quality, dtype=np.float32)
+            result["photo_metal"] = np.asarray(quality.photo_metal, dtype=bool)
+            result["photo_misaligned"] = bool(quality.misaligned)
+            result["photo_shift"] = tuple(float(value) for value in quality.shift)
+    result["findings"] = sort_findings(findings)
+    result["masks"] = masks
+    result["model_ids"] = tuple(masks)
+    return result

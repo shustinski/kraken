@@ -350,7 +350,9 @@ def test_details_show_verdict_findings_and_layers(tmp_path: Path, qtbot) -> None
     dialog._refresh_result_kind_options("heuristic_all")
     dialog._refresh_comparison_panel()
 
-    assert dialog.result_kind_combo.count() == len(HEURISTIC_RESULT_KINDS)
+    # The heuristic layers, after the findings' marks and heat map.
+    kinds = [dialog.result_kind_combo.itemData(index) for index in range(dialog.result_kind_combo.count())]
+    assert kinds == ["findings", "findings_heat", *HEURISTIC_RESULT_KINDS]
     assert dialog._t("heuristic.verdict.topology") in dialog.comparison_metrics_label.text()
     assert dialog._t("heuristic.reason.open") in dialog.comparison_events_label.text()
     for kind in HEURISTIC_RESULT_KINDS:

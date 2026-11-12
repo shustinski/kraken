@@ -77,7 +77,7 @@ from __future__ import annotations
 from .core.algorithm_version import GRID_ALGORITHM_NUMBER
 
 RELEASE = "0.4"
-INTERFACE_NUMBER = 6
+INTERFACE_NUMBER = 7
 BETA = 0
 
 

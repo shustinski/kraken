@@ -132,7 +132,7 @@ def revoke_maintainer(
 
 def account_type_label(auth_provider: object) -> str:
     """Человекочитаемый тип учётной записи для таблиц."""
-    return "доменная" if str(auth_provider) == "ldap" else "локальная"
+    return "доменная" if str(auth_provider) == "ldap" else "серверная"
 
 
 def account_rows(store: object) -> list[dict[str, object]]:

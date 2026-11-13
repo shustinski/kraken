@@ -67,7 +67,7 @@ def test_admin_window_lists_accounts_projects_and_revokes_maintainer(qapp, tmp_p
     assert window.accounts.columnCount() == 5
     assert window.accounts.horizontalHeaderItem(2).text() == "Тип"
     assert window.accounts.horizontalHeaderItem(4).text() == "Создан"
-    assert window.accounts.item(0, 2).text() == "локальная"
+    assert window.accounts.item(0, 2).text() == "серверная"
     assert window.accounts.item(1, 1).text() == "operator"
     from PyQt6.QtWidgets import QPushButton
 
@@ -117,15 +117,15 @@ def test_admin_window_marks_ldap_accounts(qapp, tmp_path: Path, monkeypatch) -> 
     window._fill_accounts()
 
     assert window.accounts.item(0, 2).text() == "доменная"
-    assert window.accounts.item(1, 2).text() == "локальная"
+    assert window.accounts.item(1, 2).text() == "серверная"
 
 
 def test_account_type_label() -> None:
     from kraken_admin.application.accounts import account_type_label
 
     assert account_type_label("ldap") == "доменная"
-    assert account_type_label("local") == "локальная"
-    assert account_type_label(None) == "локальная"
+    assert account_type_label("local") == "серверная"
+    assert account_type_label(None) == "серверная"
 
 
 def test_shift_and_ctrl_selection_deletes_every_chosen_account(qapp, tmp_path: Path, monkeypatch) -> None:

@@ -1786,20 +1786,24 @@ class KarakalPresenter(QObject):
         self._set_comparison_target_option_enabled(ComparisonTarget.OUTPUTS, True, "")
         self._set_comparison_target_option_enabled(ComparisonTarget.CONFIDENCE, pair_available, pair_tooltip)
         self._set_comparison_target_option_enabled(ComparisonTarget.BOTH, pair_available, pair_tooltip)
-        if allow_fallback and (
-            (not available and self._selected_analysis_mode() == MODEL_OUTPUT_CONFIDENCE_MODE)
-            or (not pair_available and self._selected_analysis_mode() == CONFIDENCE_COMPARISON_MODE)
-            or (
-                not pair_available
-                and self._selected_comparison_target() in {ComparisonTarget.CONFIDENCE, ComparisonTarget.BOTH}
-            )
-        ):
-            if self._selected_analysis_mode() in {MODEL_OUTPUT_CONFIDENCE_MODE, CONFIDENCE_COMPARISON_MODE}:
+        # The mode falls back only when the mode itself cannot run. A confidence target with no pair
+        # of confidence maps falls back alone: the confidence audit of one layer (its target is
+        # «confidence») used to lose its mode here and ran the pair metrics of two models — no
+        # score, a grey matrix, «nothing happens» on the run button.
+        mode_unavailable = (not available and self._selected_analysis_mode() == MODEL_OUTPUT_CONFIDENCE_MODE) or (
+            not pair_available and self._selected_analysis_mode() == CONFIDENCE_COMPARISON_MODE
+        )
+        target_unavailable = not pair_available and self._selected_comparison_target() in {
+            ComparisonTarget.CONFIDENCE,
+            ComparisonTarget.BOTH,
+        }
+        if allow_fallback and (mode_unavailable or target_unavailable):
+            if mode_unavailable:
                 blocker = QSignalBlocker(self.analysis_mode_combo)
                 fallback_index = self.analysis_mode_combo.findData(INTER_MODEL_ANALYSIS_MODE)
                 self.analysis_mode_combo.setCurrentIndex(fallback_index if fallback_index >= 0 else 0)
                 del blocker
-            if self._selected_comparison_target() in {ComparisonTarget.CONFIDENCE, ComparisonTarget.BOTH}:
+            if target_unavailable:
                 blocker = QSignalBlocker(self.comparison_target_combo)
                 fallback_index = self.comparison_target_combo.findData(ComparisonTarget.OUTPUTS.value)
                 self.comparison_target_combo.setCurrentIndex(fallback_index if fallback_index >= 0 else 0)
@@ -8335,9 +8339,8 @@ class KarakalPresenter(QObject):
             state.processing_state_by_key.clear()
             state.build_result = result
             state.last_analytics_request_signature = request_signature or current_signature
-            state.grid_inspection_results_ready = False
-            state.grid_inspection_payload_by_key = {}
-            state.grid_inspection_payloads_by_layer = {}
+            # The cell check of the same frames stays: validation and cell inspection live in one
+            # project (validation used to wipe the cell results, and the project saved without them).
             self._invalidate_state_runtime_caches(state, clear_metric_results=True)
             self._sync_metric_controls(
                 result,
@@ -8500,9 +8503,6 @@ class KarakalPresenter(QObject):
         )
         state.metric_result_cache[metric_key] = state.build_result
         self._apply_tab_visual_settings(state, reset_view=False)
-        state.grid_inspection_results_ready = False
-        state.grid_inspection_payload_by_key = {}
-        state.grid_inspection_payloads_by_layer = {}
 
     def _on_metric_scope_changed(self, *_args) -> None:
         state = self._current_tab_state()

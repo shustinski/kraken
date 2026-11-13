@@ -422,6 +422,94 @@ def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, s
     assert seen["hint_visible"] is True
 
 
+def test_server_sign_in_works_when_domain_auth_disabled(qapp, tmp_path, monkeypatch, service_with_account):
+    """Серверная вкладка работает, даже когда доменная (LDAP) авторизация выключена:
+    предупреждений нет (гейта STATUS_DISABLED на серверном пути нет), вход через
+    configure_remote_local, переход на «Локальная», локальный вход завершает сессию.
+    Неожиданное предупреждение закрывается, чтобы сломанный диалог упирался в
+    дедлайн-отказ, а не висел."""
+    monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "disabled")
+    monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
+    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
+    calls: dict = {}
+    monkeypatch.setattr(
+        login_parts, "upsert_program_account",
+        lambda username, password, **kw: calls.setdefault("upsert", (username, password)),
+    )
+    monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: calls.setdefault("url", url))
+
+    def fake_configure(base_url, username, password):
+        calls["configure"] = (base_url, username, password)
+        return object()
+
+    monkeypatch.setattr(service_with_account, "configure_remote_local", fake_configure)
+    seen: dict = {}
+    stage = {"name": "server_sign_in"}
+    actors: list = []
+    timer = QTimer()
+    timer.setInterval(25)
+
+    def poll() -> None:
+        dialog = QApplication.activeModalWidget()
+        if isinstance(dialog, QMessageBox):
+            if "warning" not in seen:
+                seen["warning"] = dialog.text()
+                ok = dialog.button(QMessageBox.StandardButton.Ok)
+
+                def close_warning() -> None:
+                    if ok is not None:
+                        QTest.mouseClick(ok, Qt.MouseButton.LeftButton)
+
+                _post_action(actors, close_warning)
+            return
+        if not _is_login_dialog(dialog):
+            return
+        tabs = dialog.findChild(QTabWidget, "loginTabs")
+        if stage["name"] == "server_sign_in":
+            seen["server_status"] = dialog.findChild(QLabel, "loginServerStatus").text()
+            stage["name"] = "expect_handoff"
+            sign_in = dialog.findChild(QPushButton, "loginServerSignIn")
+
+            def click_sign_in() -> None:
+                if sign_in is None:
+                    raise AssertionError("loginServerSignIn not found")
+                dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
+                dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
+                QTest.mouseClick(sign_in, Qt.MouseButton.LeftButton)
+
+            _post_action(actors, click_sign_in)
+        elif stage["name"] == "expect_handoff":
+            if tabs.currentIndex() != 2:
+                return  # the click actor (20 ms) may not have fired before this poll
+            seen["handoff_tab"] = tabs.currentIndex()
+            stage["name"] = "local_login"
+            username_field = dialog.findChild(QLineEdit, "loginUsername")
+            password_field = dialog.findChild(QLineEdit, "loginPassword")
+            box = dialog.findChild(QDialogButtonBox)
+
+            def complete_local() -> None:
+                username_field.setText("mark")
+                password_field.setText("pw")
+                QTest.mouseClick(box.button(QDialogButtonBox.StandardButton.Ok), Qt.MouseButton.LeftButton)
+
+            _post_action(actors, complete_local)
+
+    timer.timeout.connect(poll)
+    timer.start()
+    deadline = _start_deadline_reject()
+    try:
+        session = login_parts._login(None, service_with_account)
+    finally:
+        timer.stop()
+        deadline.stop()
+        for actor in actors:
+            actor.stop()
+    assert session is not None
+    assert calls["configure"] == ("http://127.0.0.1:8080", "server-user", "server-pw")
+    assert seen["server_status"] == "Доменная авторизация не включена"
+    assert "warning" not in seen
+
+
 def test_server_sign_in_rejects_bad_credentials(qapp, tmp_path, monkeypatch, service_with_account):
     """401 от configure_remote_local (ValueError): предупреждение про серверную учётную запись,
     пароль очищается, диалог остаётся открытым, локальный вход доступен."""

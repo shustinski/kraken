@@ -142,7 +142,7 @@ def _build_local_tab(service: ProjectWorkspaceService):
 
 
 def _try_local_autologin(dialog, service: ProjectWorkspaceService) -> DesktopSession | None:
-    """Complete the mandatory local session after a successful server sign-in.
+    """Complete the mandatory local session after a successful remote sign-in.
 
     Mirrors ``development_session._autofill_credentials``: Windows identity
     verification first, then the remembered local credentials. Any failure
@@ -382,8 +382,8 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
             return None
         return url, entered_username, entered_password
 
-    def sign_in_server_account(url: str, entered_username: str, entered_password: str) -> bool:
-        """Вход через configure_remote_local и общий финал; False при ошибке (предупреждение показано)."""
+    def sign_in_server_account(url: str, entered_username: str, entered_password: str) -> None:
+        """Вход через configure_remote_local и общий финал; при ошибке предупреждение показано."""
         nonlocal domain_session
         try:
             service.configure_remote_local(base_url=url, username=entered_username, password=entered_password)
@@ -391,17 +391,16 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
             # URL уже проверен выше: это 401 сервера.
             server_password.clear()
             QMessageBox.warning(dialog, "Kraken", "Неверный пароль или учётная запись не найдена на сервере")
-            return False
+            return
         except RemoteServerError as exc:
             QMessageBox.warning(dialog, "Kraken", domain_login_error_text(exc))
-            return False
+            return
         domain_session = complete_remote_sign_in(
             url=url,
             entered_username=entered_username,
             entered_password=entered_password,
             password_field=server_password,
         )
-        return True
 
     def try_server_sign_in() -> None:
         prepared = prepare_server_entry()

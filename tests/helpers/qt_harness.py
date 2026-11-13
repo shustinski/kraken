@@ -66,6 +66,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QWidget,
 )
 
@@ -613,6 +614,9 @@ def _sign_in(service, account: tuple[str, str]):
         dialog = _active_modal()
         if dialog is None or not isinstance(dialog, QDialog) or isinstance(dialog, QMessageBox):
             return
+        tabs = dialog.findChild(QTabWidget, "loginTabs")
+        if tabs is not None:
+            tabs.setCurrentIndex(1)  # локальная вкладка — путь существующих тестов
         fields = {
             "initialAccountUsername": username,
             "initialAccountDisplayName": username,

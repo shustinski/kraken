@@ -501,7 +501,7 @@ def _build_server_tab():
    - Текст `loginLocalHint`: «Вход на сервер выполнен. Завершите локальный вход.»
    - `refresh_status(url: str | None = None) -> str` — URL по умолчанию из доменного поля; результат (маппинг как сейчас: enabled → «Доменная авторизация включена», disabled → «Доменная авторизация не включена», unreachable/пусто → «Сервер недоступен»/«Укажите адрес сервера») пишется в `status_label` **и** `server_status_label`.
    - Подключения: `server.editingFinished.connect(lambda: refresh_status(server.text()))` (как сейчас) и `server_address.editingFinished.connect(lambda: refresh_status(server_address.text()))`.
-   - Общий финал успешного серверного входа (вложенная функция внутри `_login`, после `refresh_status`):
+   - Общий финал успешного серверного входа (вложенная функция внутри `_login`; определяется после `domain_session: DesktopSession | None = None`):
 ```python
     def complete_remote_sign_in(*, url: str, username: str, password: str, password_field: QLineEdit) -> DesktopSession | None:
         """Сохранить учётные данные, попытаться завершить локальный вход (Windows Hello),
@@ -519,54 +519,57 @@ def _build_server_tab():
         return None
 ```
    - `try_domain_login` переиспользует `_server_url_problem` (три первых проверки заменяются `problem = _server_url_problem(url); if problem is not None: warn; return` — сообщения те же) и `complete_remote_sign_in` (хвост вместо ручного upsert/save/autologin/handoff): `domain_session = complete_remote_sign_in(url=url, username=entered_username, password=entered_password, password_field=domain_password)`.
-   - `try_server_sign_in` (без гейта `STATUS_DISABLED`!):
+   - Обработчики серверной вкладки (без гейта `STATUS_DISABLED`!) строятся на двух общих вложенных помощниках, определяемых после `complete_remote_sign_in` — повторяющийся преамбула и маппинг ошибок входа не дублируются:
 ```python
-    def try_server_sign_in() -> None:
-        nonlocal domain_session
+    def prepare_server_entry() -> tuple[str, str, str] | None:
+        """Общие проверки серверной вкладки: адрес, доступность сервера, заполненные поля.
+
+        При проблеме показывает предупреждение пользователю и возвращает None.
+        """
         url = server_address.text().strip().rstrip("/")
         problem = _server_url_problem(url)
         if problem is not None:
             QMessageBox.warning(dialog, "Kraken", problem)
-            return
+            return None
         if refresh_status(url) == STATUS_UNREACHABLE:
             QMessageBox.warning(dialog, "Kraken", "Сервер недоступен.")
-            return
+            return None
         entered_username = server_username.text().strip()
         entered_password = server_password.text()
         if not entered_username or not entered_password:
             QMessageBox.warning(dialog, "Kraken", "Введите логин и пароль серверной учётной записи.")
-            return
+            return None
+        return url, entered_username, entered_password
+
+    def sign_in_server_account(url: str, entered_username: str, entered_password: str) -> bool:
+        """Вход через configure_remote_local и общий финал; False при ошибке (предупреждение показано)."""
+        nonlocal domain_session
         try:
             service.configure_remote_local(base_url=url, username=entered_username, password=entered_password)
         except ValueError:
             # URL уже проверен выше: это 401 сервера.
             QMessageBox.warning(dialog, "Kraken", "Неверный пароль или учётная запись не найдена на сервере")
             server_password.clear()
-            return
+            return False
         except RemoteServerError as exc:
             QMessageBox.warning(dialog, "Kraken", domain_login_error_text(exc))
-            return
+            return False
         domain_session = complete_remote_sign_in(
             url=url, username=entered_username, password=entered_password, password_field=server_password
         )
-```
-   - `try_server_register`:
-```python
+        return True
+
+    def try_server_sign_in() -> None:
+        prepared = prepare_server_entry()
+        if prepared is None:
+            return
+        sign_in_server_account(*prepared)
+
     def try_server_register() -> None:
-        nonlocal domain_session
-        url = server_address.text().strip().rstrip("/")
-        problem = _server_url_problem(url)
-        if problem is not None:
-            QMessageBox.warning(dialog, "Kraken", problem)
+        prepared = prepare_server_entry()
+        if prepared is None:
             return
-        if refresh_status(url) == STATUS_UNREACHABLE:
-            QMessageBox.warning(dialog, "Kraken", "Сервер недоступен.")
-            return
-        entered_username = server_username.text().strip()
-        entered_password = server_password.text()
-        if not entered_username or not entered_password:
-            QMessageBox.warning(dialog, "Kraken", "Введите логин и пароль серверной учётной записи.")
-            return
+        url, entered_username, entered_password = prepared
         try:
             RemoteServerProjectService.register_local(
                 url, username=entered_username, password=entered_password, display_name=entered_username
@@ -575,18 +578,7 @@ def _build_server_tab():
             # Ответ сервера показываем как есть: 403 LAN gate, 409 занятый логин, 401.
             QMessageBox.warning(dialog, "Kraken", str(exc))
             return
-        try:
-            service.configure_remote_local(base_url=url, username=entered_username, password=entered_password)
-        except ValueError:
-            QMessageBox.warning(dialog, "Kraken", "Неверный пароль или учётная запись не найдена на сервере")
-            server_password.clear()
-            return
-        except RemoteServerError as exc:
-            QMessageBox.warning(dialog, "Kraken", domain_login_error_text(exc))
-            return
-        domain_session = complete_remote_sign_in(
-            url=url, username=entered_username, password=entered_password, password_field=server_password
-        )
+        sign_in_server_account(url, entered_username, entered_password)
 ```
    - Подключения кнопок: `server_sign_in.clicked.connect(try_server_sign_in)`, `server_register.clicked.connect(try_server_register)`.
 

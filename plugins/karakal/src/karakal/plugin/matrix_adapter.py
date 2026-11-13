@@ -13,9 +13,8 @@ from kraken_core.frame_matrix.models import (
 )
 from kraken_core.frame_matrix.ports import CancellationToken
 
-from ..core.analysis_modes import metric_visual_ratio
+from ..core.score_scale import metric_goodness
 from ..core.domain import BuildResult, FrameRecord
-from ..core.metric_keys import metric_higher_is_better
 from ..ui.matrix_view import interpolate_gradient_color
 from ..ui.ui_constants import DEFAULT_GRADIENT_NAME
 
@@ -45,15 +44,15 @@ def _record_goodness(record: FrameRecord, metric_key: str, score_view_mode: str,
         return max(0.0, min(1.0, float(record.score)))
     if record.absolute_score is None:
         return None
-    ratio = metric_visual_ratio(
+    goodness = metric_goodness(
         metric_key,
         float(record.absolute_score),
         point_match_radius=float(getattr(build_result.options, "point_match_radius", 3.0)),
         bce_score_cap=1.0,
     )
-    if ratio is None:
+    if goodness is None:
         return None
-    return max(0.0, min(1.0, float(ratio) if metric_higher_is_better(metric_key) else 1.0 - float(ratio)))
+    return max(0.0, min(1.0, float(goodness)))
 
 
 def project_build_result(

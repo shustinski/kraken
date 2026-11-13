@@ -196,7 +196,7 @@ def test_zero_grid_damage_uses_best_score_color(qtbot) -> None:
     assert dialog._comparison_score_metric_key() == GRID_INSPECTION_DAMAGE_METRIC_KEY
     assert "background-color: #1f5f3b" in dialog._comparison_score_style(0.0)
     assert "background-color: #8c2f39" in dialog._comparison_score_style(1.0)
-    assert dialog._comparison_score_text(0.0) == f"{dialog._t('score.level.good')} 0.0000"
+    assert dialog._comparison_score_text(0.0) == f"{dialog._t('score.level.good')} 0.0%"
 
 
 def test_shared_matrix_adapter_preserves_coordinates_and_heatmap_metadata() -> None:

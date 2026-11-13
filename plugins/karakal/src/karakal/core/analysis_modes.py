@@ -308,68 +308,9 @@ def default_metric_key(context: AnalysisContext) -> str:
     return "overall_frame_score"
 
 
-def metric_uses_100_scale(metric_key: str | None) -> bool:
-    text = str(metric_key or "")
-    return text in SCORE_100_METRIC_KEYS or text.split("::", 1)[0] in SCORE_100_LOWER_FAMILIES
-
-
-def metric_is_lower_better(metric_key: str | None) -> bool:
-    text = str(metric_key or "")
-    return text in LOWER_IS_BETTER_METRIC_KEYS or text.split("::", 1)[0] in SCORE_100_LOWER_FAMILIES
-
-
-def metric_visual_ratio(
-    metric_key: str | None,
-    value: float | None,
-    *,
-    point_match_radius: float,
-    bce_score_cap: float,
-) -> float | None:
-    if value is None:
-        return None
-    metric = str(metric_key or "")
-    numeric = float(value)
-    if metric in SCORE_100_METRIC_KEYS or metric.split("::", 1)[0] in SCORE_100_LOWER_FAMILIES:
-        return max(0.0, min(numeric / 100.0, 1.0))
-    if metric == "bce":
-        return max(0.0, min(numeric / max(1e-9, float(bce_score_cap)), 1.0))
-    if metric == "mean_localization_distance":
-        return max(0.0, min(numeric / max(1e-9, float(point_match_radius)), 1.0))
-    return max(0.0, min(numeric, 1.0))
-
-
-def metric_level_key(
-    metric_key: str | None,
-    value: float | None,
-    *,
-    point_match_radius: float,
-    bce_score_cap: float,
-) -> str | None:
-    ratio = metric_visual_ratio(
-        metric_key,
-        value,
-        point_match_radius=point_match_radius,
-        bce_score_cap=bce_score_cap,
-    )
-    if ratio is None:
-        return None
-    family = str(metric_key or "").split("::", 1)[0]
-    if family in {"model_confidence", "model_output_confidence"}:
-        return confidence_quality_level_key(ratio)
-    if str(metric_key or "") == "grid_inspection_damage_score":
-        if ratio < 0.33:
-            return "score.level.good"
-        if ratio < 0.66:
-            return "score.level.fair"
-        return "score.level.poor"
-    if not metric_is_lower_better(metric_key):
-        if ratio < 0.33:
-            return "score.level.poor"
-        if ratio < 0.66:
-            return "score.level.fair"
-        return "score.level.good"
-    if ratio < 0.33:
-        return "score.level.low"
-    if ratio < 0.66:
-        return "score.level.medium"
-    return "score.level.high"
+# Direction, range, level and colour of every score live in core/score_scale.py (one scale for all
+# modes); these names stay for the callers that import them from here.
+from .score_scale import metric_is_lower_better as metric_is_lower_better  # noqa: E402
+from .score_scale import metric_level_key as metric_level_key  # noqa: E402
+from .score_scale import metric_uses_100_scale as metric_uses_100_scale  # noqa: E402
+from .score_scale import metric_visual_ratio as metric_visual_ratio  # noqa: E402

@@ -46,6 +46,13 @@ from kraken_core.analysis_protocol import (
     AnalysisSourceRole,
 )
 
+from ..core.score_scale import (
+    format_metric_value,
+    metric_badge_style,
+    percentile_level_key,
+    relative_goodness,
+    score_badge_style,
+)
 from ..core.analysis_modes import (
     CONFIDENCE_COMPARISON_MODE,
     INTRA_MODEL_CONFIDENCE_MODE,
@@ -62,7 +69,6 @@ from ..core.analysis_modes import (
     display_metric_keys,
     geometry_mode_for_object_type,
     metric_level_key,
-    metric_visual_ratio,
     object_type_from_geometry_mode,
     percentile_basis_keys,
     resolve_analysis_context,
@@ -4140,59 +4146,18 @@ class KarakalPresenter(QObject):
         return metric_higher_is_better(metric_key)
 
     def _metric_score_style(self, value: float | None, metric_key: str) -> str:
-        ratio = metric_visual_ratio(
+        """The badge of a score: its colour comes from the one scale of all modes (core/score_scale)."""
+
+        return metric_badge_style(
             metric_key,
             value,
             point_match_radius=float(self.point_match_radius_spin.value()),
             bce_score_cap=float(BCE_SCORE_CAP),
         )
-        level_key = metric_level_key(
-            metric_key,
-            value,
-            point_match_radius=float(self.point_match_radius_spin.value()),
-            bce_score_cap=float(BCE_SCORE_CAP),
-        )
-        higher_is_better = self._metric_higher_is_better(metric_key)
-        family = str(metric_key or "").split("::", 1)[0]
-        if ratio is None or level_key is None:
-            background = "#2f3844"
-            foreground = "#edf3fb"
-        elif family in {"model_confidence", "model_output_confidence"}:
-            if level_key == "score.level.low":
-                background = "#1f5f3b"
-                foreground = "#e9fff1"
-            elif level_key == "score.level.moderate":
-                background = "#6f7a18"
-                foreground = "#f7ffd8"
-            elif level_key == "score.level.elevated":
-                background = "#a75d12"
-                foreground = "#fff0dc"
-            else:
-                background = "#8c2f39"
-                foreground = "#ffe9ec"
-        elif higher_is_better:
-            if ratio < 0.33:
-                background = "#8c2f39"
-                foreground = "#ffe9ec"
-            elif ratio < 0.66:
-                background = "#8a6a12"
-                foreground = "#fff7da"
-            else:
-                background = "#1f5f3b"
-                foreground = "#e9fff1"
-        else:
-            if ratio < 0.33:
-                background = "#1f5f3b"
-                foreground = "#e9fff1"
-            elif ratio < 0.66:
-                background = "#8a6a12"
-                foreground = "#fff7da"
-            else:
-                background = "#8c2f39"
-                foreground = "#ffe9ec"
-        return f"padding: 6px 10px; border-radius: 8px; background-color: {background}; color: {foreground}; font-weight: 700;"
 
     def _metric_score_text(self, value: float | None, metric_key: str) -> str:
+        """The level word and the value, written the same way in every window (core/score_scale)."""
+
         if value is None:
             return "-"
         level_key = metric_level_key(
@@ -4203,29 +4168,7 @@ class KarakalPresenter(QObject):
         )
         if level_key is None:
             return "-"
-        level = self._t(level_key)
-        if "::" in str(metric_key):
-            return f"{level} {float(value) * 100.0:.1f}%"
-        if str(metric_key) in {
-            "photo_mismatch_risk",
-            "photo_quality_risk",
-            "topology_risk",
-            "overall_polygon_score",
-            "iou_score",
-            "dice_score",
-            "polygon_bce_score",
-            "overall_point_score",
-            "precision_score",
-            "recall_score",
-            "f1_score",
-            "localization_score",
-            "confidence_model_score",
-            "confidence_difference_score",
-            "confidence_bce_score",
-            "confidence_threshold_crossing_score",
-        }:
-            return f"{level} {float(value):.1f}"
-        return f"{level} {float(value):.4f}"
+        return f"{self._t(level_key)} {format_metric_value(metric_key, value)}"
 
     def _metric_label(self, metric_key: str, build_result: BuildResult | None = None) -> str:
         metric_key_text = str(metric_key)
@@ -4680,24 +4623,9 @@ class KarakalPresenter(QObject):
         return decorated
 
     def _percentile_style(self, percentile: float | None, metric_key: str | None = None) -> str:
-        if percentile is None:
-            return self._metric_score_style(None, "overall_polygon_score")
-        clipped = max(0.0, min(float(percentile), 100.0))
-        # Percentiles shown in the UI are always goodness percentiles:
-        # low percentile means a worse frame, high percentile means a better one.
-        if clipped < 15.0:
-            background = "#8c2f39"
-            foreground = "#ffe9ec"
-        elif clipped < 35.0:
-            background = "#a75d12"
-            foreground = "#fff0dc"
-        elif clipped < 60.0:
-            background = "#6f7a18"
-            foreground = "#f7ffd8"
-        else:
-            background = "#1f5f3b"
-            foreground = "#e9fff1"
-        return f"padding: 6px 10px; border-radius: 8px; background-color: {background}; color: {foreground}; font-weight: 700;"
+        """Percentiles are goodness percentiles (100 — the best frame) on the same colours as scores."""
+
+        return score_badge_style(percentile_level_key(percentile))
 
     def _percentile_text(self, percentile: float | None) -> str:
         if percentile is None:
@@ -5359,30 +5287,10 @@ class KarakalPresenter(QObject):
         return []
 
     def _overall_score_style(self, value: float | None) -> str:
-        if value is None:
-            background = "#2f3844"
-            foreground = "#edf3fb"
-        elif value < 0.33:
-            background = "#1f5f3b"
-            foreground = "#e9fff1"
-        elif value < 0.66:
-            background = "#8a6a12"
-            foreground = "#fff7da"
-        else:
-            background = "#8c2f39"
-            foreground = "#ffe9ec"
-        return f"padding: 6px 10px; border-radius: 8px; background-color: {background}; color: {foreground}; font-weight: 700;"
+        return self._metric_score_style(value, "overall_frame_score")
 
     def _overall_score_text(self, value: float | None) -> str:
-        if value is None:
-            return "-"
-        if value < 0.33:
-            level = "LOW"
-        elif value < 0.66:
-            level = "MEDIUM"
-        else:
-            level = "HIGH"
-        return f"{level} {value:.4f}"
+        return self._metric_score_text(value, "overall_frame_score")
 
     def _show_progress_bar(
         self, *, visible: bool, current: int = 0, total: int = 0, key: str = "", format_text: str | None = None
@@ -8542,18 +8450,31 @@ class KarakalPresenter(QObject):
             self._apply_tab_visual_settings(state, reset_view=False)
             return
         updated_records: list[FrameRecord] = []
-        absolute_scores: list[float] = []
         higher_is_better = self._metric_higher_is_better(metric_key)
+        # A frame without the value is not scored (a missing risk used to count as zero: perfect).
+        values_by_key: dict[str, float] = {}
         for record in state.build_result.records:
             value = metric_value_for_record(record, metric_key)
-            numeric = float(value) if value is not None and isfinite(float(value)) else 0.0
-            absolute_scores.append(numeric)
+            if value is not None and isfinite(float(value)):
+                values_by_key[str(record.key)] = float(value)
+        absolute_scores = list(values_by_key.values())
         min_absolute = min(absolute_scores) if absolute_scores else 0.0
         max_absolute = max(absolute_scores) if absolute_scores else 0.0
-        span = max(1e-8, max_absolute - min_absolute)
-        for record, absolute in zip(state.build_result.records, absolute_scores):
-            relative = 0.0 if abs(max_absolute - min_absolute) <= 1e-8 else (absolute - min_absolute) / span
-            display = relative if higher_is_better else (1.0 - relative)
+        display_by_key = relative_goodness(
+            values_by_key,
+            metric_key,
+            point_match_radius=float(self.point_match_radius_spin.value()),
+            bce_score_cap=float(BCE_SCORE_CAP),
+        )
+        for record in state.build_result.records:
+            absolute = values_by_key.get(str(record.key))
+            if absolute is None:
+                updated_records.append(
+                    replace(record, score=0.0, absolute_score=None, relative_score=None, score_percentile=None, score_ready=False)
+                )
+                continue
+            display = float(display_by_key.get(str(record.key), 0.0))
+            relative = display if higher_is_better else 1.0 - display
             updated_records.append(
                 replace(
                     record,
@@ -8565,7 +8486,8 @@ class KarakalPresenter(QObject):
             )
         percentile_map = compute_metric_percentiles(updated_records, metric_key)
         updated_records = [
-            replace(record, score_percentile=float(percentile_map.get(record.key, 0.0))) for record in updated_records
+            replace(record, score_percentile=percentile_map.get(record.key)) if record.score_ready else record
+            for record in updated_records
         ]
         state.build_result = replace(
             state.build_result,

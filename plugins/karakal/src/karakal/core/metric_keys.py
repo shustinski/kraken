@@ -209,63 +209,11 @@ def metric_value_for_record(record: FrameRecord, metric_key: str) -> float | Non
 
 
 def metric_higher_is_better(metric_key: str) -> bool:
-    metric_key = str(metric_key or "")
-    parsed_pair = parse_pair_metric_key(metric_key)
-    if parsed_pair is not None:
-        _model_a, _model_b, operation = parsed_pair
-        return operation in {"iou", "dice"}
-    parsed_confidence_pair = parse_confidence_pair_metric_key(metric_key)
-    if parsed_confidence_pair is not None:
-        _model_a, _model_b, operation = parsed_confidence_pair
-        return operation in {"correlation", "low_iou"}
-    if parse_combined_pair_metric_key(metric_key) is not None:
-        return False
-    parsed = _parse_model_metric_key(metric_key)
-    if parsed is not None:
-        family, _model_id = parsed
-        if family == "model_uncertain_fraction":
-            return False
-        if family == "model_confidence":
-            return False
-        if family == "model_output_confidence":
-            return False
-        if family == "model_point_contrast":
-            return True
-        if family in {"photo_mismatch_risk", "confidence_ece", "confident_error_share"}:
-            return False
-    if metric_key in {
-        "bce",
-        "grid_inspection_damage_score",
-        "mean_localization_distance",
-        "topology_risk",
-        "topology_events",
-        "photo_quality_risk",
-        "photo_mismatch_risk",
-    }:
-        return False
-    if metric_key in {
-        "model_model_score",
-        "iou",
-        "dice",
-        "iou_score",
-        "dice_score",
-        "polygon_bce_score",
-        "overall_polygon_score",
-        "precision",
-        "recall",
-        "f1",
-        "precision_score",
-        "recall_score",
-        "f1_score",
-        "localization_score",
-        "overall_point_score",
-        "confidence_model_score",
-        "confidence_difference_score",
-        "confidence_bce_score",
-        "confidence_threshold_crossing_score",
-    }:
-        return True
-    return False
+    """Whether more is better; the one answer lives in core/score_scale.py."""
+
+    from .score_scale import metric_higher_is_better as higher_is_better
+
+    return higher_is_better(metric_key)
 
 
 def metric_percentile_high_is_bad(metric_key: str) -> bool:
@@ -319,18 +267,30 @@ def _ranked_percentile_map(ranked: list[FrameRecord]) -> dict[str, float]:
     return {record.key: float(100.0 * (denominator - index) / denominator) for index, record in enumerate(ranked)}
 
 
+def _metric_values_by_key(records, metric_key: str) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for record in records:
+        value = metric_value_for_record(record, metric_key)
+        if value is None or not np.isfinite(float(value)):
+            continue
+        values[str(record.key)] = float(value)
+    return values
+
+
 def compute_metric_percentiles(
     records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str
 ) -> dict[str, float]:
-    ranked = rank_records_by_metric(records, metric_key)
-    return _ranked_percentile_map(ranked)
+    """Goodness percentiles (100 — the best frame); equal values share one (core/score_scale.py)."""
+
+    from .score_scale import goodness_percentiles
+
+    return goodness_percentiles(_metric_values_by_key(records, metric_key), metric_key)
 
 
 def compute_metric_badness_percentiles(
     records: tuple[FrameRecord, ...] | list[FrameRecord], metric_key: str
 ) -> dict[str, float]:
-    ranked = rank_records_by_metric_badness(records, metric_key)
-    return _ranked_percentile_map(ranked)
+    return {key: 100.0 - value for key, value in compute_metric_percentiles(records, metric_key).items()}
 
 
 def select_candidate_records(

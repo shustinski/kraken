@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .backend_constants import BCE_SCORE_CAP
+from .score_scale import relative_goodness
 from .analysis_cache import (
     begin_analysis_cache_run,
     end_analysis_cache_run,
@@ -2054,21 +2056,29 @@ def compute_build_result_analytics(
     metric_is_required = _metric_requires_model_confidence(active_metric) or _metric_requires_model_output_confidence(
         active_metric
     )
+    del metric_is_required  # a frame without the value is not scored, whatever the metric
     metric_values_by_key: dict[str, float] = {}
     nan_count = 0
     for record in updated_records:
         value = _record_metric_value(record.summary, active_metric)
-        if value is None and metric_is_required:
+        # No value (no photo for the photo check, no confidence map...): the frame is not scored.
+        # It used to count as zero, and a missing risk looked like a perfect frame.
+        if value is None:
             continue
-        if value is not None and not np.isfinite(float(value)):
+        if not np.isfinite(float(value)):
             nan_count += 1
             continue
-        metric_values_by_key[str(record.key)] = float(value or 0.0)
+        metric_values_by_key[str(record.key)] = float(value)
     absolute_scores = list(metric_values_by_key.values())
     min_absolute = min(absolute_scores) if absolute_scores else 0.0
     max_absolute = max(absolute_scores) if absolute_scores else 0.0
-    span = max(EPS, max_absolute - min_absolute)
     higher_is_better = metric_higher_is_better(active_metric)
+    relative_by_key = relative_goodness(
+        metric_values_by_key,
+        active_metric,
+        point_match_radius=float(getattr(build_result.options, "point_match_radius", 3.0) or 3.0),
+        bce_score_cap=float(BCE_SCORE_CAP),
+    )
 
     scored_records: list[FrameRecord] = []
     best_key = None
@@ -2087,8 +2097,8 @@ def compute_build_result_analytics(
                 )
             )
             continue
-        relative = 0.0 if abs(max_absolute - min_absolute) <= EPS else (absolute - min_absolute) / span
-        display = relative if higher_is_better else (1.0 - relative)
+        display = float(relative_by_key.get(str(record.key), 0.0))
+        relative = display if higher_is_better else 1.0 - display
         scored = replace(
             record,
             score=float(display),
@@ -2103,7 +2113,8 @@ def compute_build_result_analytics(
 
     percentile_map = compute_metric_percentiles(scored_records, active_metric)
     scored_records = [
-        replace(record, score_percentile=float(percentile_map.get(record.key, 0.0))) for record in scored_records
+        replace(record, score_percentile=percentile_map.get(record.key)) if record.score_ready else record
+        for record in scored_records
     ]
     layer_match_counts: dict[str, int] = {}
     for record in scored_records:

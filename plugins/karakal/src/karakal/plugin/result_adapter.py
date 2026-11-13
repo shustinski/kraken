@@ -16,7 +16,7 @@ from kraken_core.analysis_protocol import (
     AnalysisScaleMode,
 )
 
-from ..core.analysis_modes import metric_visual_ratio
+from ..core.score_scale import metric_goodness
 from ..core.domain import BuildResult, FrameRecord
 from ..core.metric_keys import metric_higher_is_better
 from ..core.single_result_risk import SINGLE_RESULT_RISK_METRICS
@@ -32,15 +32,15 @@ def _frame_position(record: FrameRecord, index: int) -> tuple[int, int]:
 def _goodness(record: FrameRecord, metric_key: str, build_result: BuildResult) -> float | None:
     if not bool(record.score_ready) or record.absolute_score is None:
         return None
-    ratio = metric_visual_ratio(
+    goodness = metric_goodness(
         metric_key,
         float(record.absolute_score),
         point_match_radius=float(getattr(build_result.options, "point_match_radius", 3.0)),
         bce_score_cap=1.0,
     )
-    if ratio is None:
+    if goodness is None:
         return max(0.0, min(1.0, float(record.score)))
-    return max(0.0, min(1.0, float(ratio) if metric_higher_is_better(metric_key) else 1.0 - float(ratio)))
+    return max(0.0, min(1.0, float(goodness)))
 
 
 def _scale(metric_key: str, values: list[float], mode: AnalysisScaleMode) -> AnalysisScaleDefinition:

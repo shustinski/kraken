@@ -32,9 +32,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..core.score_scale import LEVEL_RGB, metric_goodness
 from ..core.backend_constants import CACHE_DIR, FRAME_NUMBER_PATTERN, POLYGON_SUPPORT_THRESHOLD
 from ..core.cache_utils import atomic_pickle_dump, estimate_size_bytes, trim_directory_by_bytes
-from ..core.analysis_modes import confidence_metric_family, metric_level_key, metric_visual_ratio
+from ..core.analysis_modes import confidence_metric_family, metric_level_key
 from ..core.confidence_maps import build_model_uncertainty
 from ..core.domain import FrameRecord
 from ..core.grid_anomaly import GridCellAnomalyResult, detect_grid_cell_anomalies
@@ -4133,17 +4134,13 @@ class MatrixListWidget(QGraphicsView):
             absolute_value = getattr(record, "absolute_score", None)
             if absolute_value is None:
                 return None
-            ratio = metric_visual_ratio(
+            goodness = metric_goodness(
                 self._metric_key,
                 float(absolute_value),
                 point_match_radius=float(self._point_match_radius),
                 bce_score_cap=float(self._bce_score_cap),
             )
-            if ratio is None:
-                return None
-            higher_is_better = metric_higher_is_better(str(self._metric_key or ""))
-            goodness = float(ratio) if higher_is_better else (1.0 - float(ratio))
-            return max(0.0, min(goodness, 1.0))
+            return None if goodness is None else max(0.0, min(float(goodness), 1.0))
         return float(record.score)
 
     @staticmethod
@@ -4162,42 +4159,18 @@ class MatrixListWidget(QGraphicsView):
         return interpolate_gradient_color(self._gradient_name, position)
 
     def _subpixel_color_for_value(self, score: float) -> QColor:
-        metric_key = str(self._metric_key or "")
-        ratio = metric_visual_ratio(
-            metric_key,
-            float(score),
-            point_match_radius=float(self._point_match_radius),
-            bce_score_cap=float(self._bce_score_cap),
-        )
-        if ratio is None:
-            return QColor(MATRIX_BACKGROUND_ALT)
+        """The colour of a value's level, the same as the badges of every window (core/score_scale)."""
+
         level_key = metric_level_key(
-            metric_key,
+            str(self._metric_key or ""),
             float(score),
             point_match_radius=float(self._point_match_radius),
             bce_score_cap=float(self._bce_score_cap),
         )
-        family = metric_key.split("::", 1)[0]
-        higher_is_better = metric_higher_is_better(metric_key)
-        if family in {"model_confidence", "model_output_confidence"}:
-            if level_key == "score.level.low":
-                return QColor(31, 95, 59, 235)
-            if level_key == "score.level.moderate":
-                return QColor(111, 122, 24, 235)
-            if level_key == "score.level.elevated":
-                return QColor(167, 93, 18, 235)
-            return QColor(140, 47, 57, 235)
-        if higher_is_better:
-            if ratio < 0.33:
-                return QColor(140, 47, 57, 235)
-            if ratio < 0.66:
-                return QColor(138, 106, 18, 235)
-            return QColor(31, 95, 59, 235)
-        if ratio < 0.33:
-            return QColor(31, 95, 59, 235)
-        if ratio < 0.66:
-            return QColor(138, 106, 18, 235)
-        return QColor(140, 47, 57, 235)
+        if level_key is None:
+            return QColor(MATRIX_BACKGROUND_ALT)
+        red, green, blue = LEVEL_RGB[level_key]
+        return QColor(red, green, blue, 235)
 
     def _grid_inspection_display_score(self, result: GridCellAnomalyResult | None) -> float | None:
         if result is None:

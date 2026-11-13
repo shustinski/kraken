@@ -36,7 +36,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..core.analysis_modes import CONFIDENCE_COMPARISON_MODE, metric_level_key, metric_visual_ratio
+from ..core.score_scale import format_metric_value, metric_badge_style
+from ..core.analysis_modes import CONFIDENCE_COMPARISON_MODE, metric_level_key
 from .smooth_zoom import SmoothZoom, wheel_zoom_factor
 from ..core.attention_issues import (
     AttentionIssue,
@@ -63,7 +64,6 @@ from ..core.confidence_analysis import (
 from ..core.image_io import load_grayscale_image, resize_grayscale_image
 from ..core.mask_metrics import _point_map_from_view, compute_comparison
 from ..core.mask_primitives import _boundary_mask, _distance_transform
-from ..core.metric_keys import metric_higher_is_better
 from ..core.confidence_maps import (
     DEFAULT_CONFIDENCE_BAD_AREA_THRESHOLD,
     build_algorithmic_uncertainty,
@@ -6327,58 +6327,17 @@ class ExtendFrameDetailsDialog(QDialog):
         return str(self._preferred_metric_key or self._build_result.selected_metric_key or "overall_frame_score")
 
     def _comparison_score_style(self, value: float | None, metric_key: str | None = None) -> str:
+        """The same badge as in the main window (core/score_scale): word and colour always agree."""
+
         active_metric = str(metric_key or self._comparison_score_metric_key())
-        ratio = metric_visual_ratio(
+        return metric_badge_style(
             active_metric,
             value,
             point_match_radius=float(getattr(self._build_result.options, "point_match_radius", 3.0) or 3.0),
             bce_score_cap=float(BCE_SCORE_CAP),
+            padding="8px 12px",
+            radius=10,
         )
-        level_key = metric_level_key(
-            active_metric,
-            value,
-            point_match_radius=float(getattr(self._build_result.options, "point_match_radius", 3.0) or 3.0),
-            bce_score_cap=float(BCE_SCORE_CAP),
-        )
-        higher_is_better = metric_higher_is_better(active_metric)
-        family = str(active_metric or "").split("::", 1)[0]
-        if ratio is None or level_key is None:
-            background = "#2f3844"
-            foreground = "#edf3fb"
-        elif family in {"model_confidence", "model_output_confidence"}:
-            if level_key == "score.level.low":
-                background = "#1f5f3b"
-                foreground = "#e9fff1"
-            elif level_key == "score.level.moderate":
-                background = "#6f7a18"
-                foreground = "#f7ffd8"
-            elif level_key == "score.level.elevated":
-                background = "#a75d12"
-                foreground = "#fff0dc"
-            else:
-                background = "#8c2f39"
-                foreground = "#ffe9ec"
-        elif higher_is_better:
-            if ratio < 0.33:
-                background = "#8c2f39"
-                foreground = "#ffe9ec"
-            elif ratio < 0.66:
-                background = "#8a6a12"
-                foreground = "#fff7da"
-            else:
-                background = "#1f5f3b"
-                foreground = "#e9fff1"
-        else:
-            if ratio < 0.33:
-                background = "#1f5f3b"
-                foreground = "#e9fff1"
-            elif ratio < 0.66:
-                background = "#8a6a12"
-                foreground = "#fff7da"
-            else:
-                background = "#8c2f39"
-                foreground = "#ffe9ec"
-        return f"padding: 8px 12px; border-radius: 10px; background-color: {background}; color: {foreground}; font-weight: 700;"
 
     def _comparison_score_text(self, value: float | None, metric_key: str | None = None) -> str:
         if value is None:
@@ -6392,10 +6351,7 @@ class ExtendFrameDetailsDialog(QDialog):
         )
         if level_key is None:
             return "-"
-        level = self._t(level_key)
-        if "::" in active_metric:
-            return f"{level} {float(value) * 100.0:.1f}%"
-        return f"{level} {float(value):.4f}"
+        return f"{self._t(level_key)} {format_metric_value(active_metric, value)}"
 
     def _heuristic_check_metrics_text(self, check) -> str:
         lines = [f"{self._t('heuristic.verdict')}: {self._t(f'heuristic.verdict.{check.verdict}')}"]

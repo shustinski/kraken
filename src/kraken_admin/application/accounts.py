@@ -130,6 +130,11 @@ def revoke_maintainer(
               expected_snapshot=snapshot(services.identities.assignments_for(ProjectId(project_id))))
 
 
+def account_type_label(auth_provider: object) -> str:
+    """Человекочитаемый тип учётной записи для таблиц."""
+    return "доменная" if str(auth_provider) == "ldap" else "локальная"
+
+
 def account_rows(store: object) -> list[dict[str, object]]:
     return [
         {

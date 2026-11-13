@@ -616,7 +616,7 @@ def _sign_in(service, account: tuple[str, str]):
             return
         tabs = dialog.findChild(QTabWidget, "loginTabs")
         if tabs is not None:
-            tabs.setCurrentIndex(1)  # локальная вкладка — путь существующих тестов
+            tabs.setCurrentIndex(2)  # локальная вкладка — путь существующих тестов
         fields = {
             "initialAccountUsername": username,
             "initialAccountDisplayName": username,

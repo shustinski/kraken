@@ -1,6 +1,7 @@
 """manager_app: login."""
 from __future__ import annotations
 import os
+import urllib.parse
 from kraken_manager.application.results import UserSession as DesktopSession
 from kraken_hub.application.workspace import ProjectWorkspaceService
 from kraken_hub.infrastructure.credentials import windows as windows_credentials
@@ -261,6 +262,10 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
             return
         if not url.startswith(("http://", "https://")):
             QMessageBox.warning(dialog, "Kraken", "Адрес сервера должен начинаться с http:// или https://.")
+            return
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
+            QMessageBox.warning(dialog, "Kraken", "Сетевой вход в Kraken Server требует HTTPS.")
             return
         state = refresh_status()
         if state == STATUS_UNREACHABLE:

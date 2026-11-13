@@ -210,3 +210,76 @@ def test_domain_submit_rejects_when_ldap_disabled(qapp, tmp_path, monkeypatch, s
     assert session is not None
     assert seen.get("warning_text"), "domain submit must warn while LDAP is disabled"
     assert "доменная авторизация не включена" in seen["warning_text"].lower()
+
+
+def test_domain_submit_warns_https_for_plain_http_non_loopback_url(qapp, tmp_path, monkeypatch, service_with_account):
+    """Plain-HTTP non-loopback URL: the HTTPS warning is the first modal,
+    configure_remote_local is never called, the dialog stays open afterwards."""
+    url = "http://172.20.10.11:8080"
+    monkeypatch.setattr(login_parts, "domain_server_status", lambda server, **kw: "enabled")
+    monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: url)
+
+    def forbidden_configure(**_kwargs):
+        pytest.fail("configure_remote_local must not be called for a plain-HTTP non-loopback URL")
+
+    monkeypatch.setattr(service_with_account, "configure_remote_local", forbidden_configure)
+    seen: dict = {}
+    stage = {"name": "fill_and_click"}
+    actors: list = []
+    timer = QTimer()
+    timer.setInterval(25)
+
+    def poll() -> None:
+        dialog = QApplication.activeModalWidget()
+        if isinstance(dialog, QMessageBox):
+            if "warning_text" not in seen:
+                seen["warning_text"] = dialog.text()
+                stage["name"] = "reject_dialog"
+                ok = dialog.button(QMessageBox.StandardButton.Ok)
+
+                def close_warning() -> None:
+                    if ok is not None:
+                        QTest.mouseClick(ok, Qt.MouseButton.LeftButton)
+
+                _post_action(actors, close_warning)
+            return
+        if not _is_login_dialog(dialog):
+            return
+        if stage["name"] == "fill_and_click":
+            stage["name"] = "expect_warning"
+            server_field = dialog.findChild(QLineEdit, "loginDomainServer")
+            username_field = dialog.findChild(QLineEdit, "loginDomainUsername")
+            password_field = dialog.findChild(QLineEdit, "loginDomainPassword")
+            submit = dialog.findChild(QPushButton, "loginDomainSubmit")
+
+            def click_domain() -> None:
+                assert server_field is not None and username_field is not None
+                assert password_field is not None and submit is not None
+                server_field.setText(url)
+                username_field.setText("mark")
+                password_field.setText("pw")
+                QTest.mouseClick(submit, Qt.MouseButton.LeftButton)
+
+            _post_action(actors, click_domain)
+        elif stage["name"] == "reject_dialog":
+            stage["name"] = "done"
+
+            def reject_login() -> None:
+                dialog.reject()
+
+            _post_action(actors, reject_login)
+
+    timer.timeout.connect(poll)
+    timer.start()
+    deadline = _start_deadline_reject()
+    try:
+        session = login_parts._login(None, service_with_account)
+    finally:
+        timer.stop()
+        deadline.stop()
+        for actor in actors:
+            actor.stop()
+    assert session is None
+    assert seen.get("warning_text"), "the HTTPS warning must be the first modal after submit"
+    assert "требует HTTPS" in seen["warning_text"]
+    assert "Неверный доменный пароль" not in seen["warning_text"]

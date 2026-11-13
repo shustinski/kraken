@@ -100,5 +100,8 @@ def upsert_program_account(
 def domain_login_error_text(exc: BaseException) -> str:
     """User-facing text for a failed domain login attempt."""
     if isinstance(exc, RemoteServerError) and exc.status is None:
-        return "Сервер недоступен"
+        # RemoteHttpClient raises "Cannot reach Kraken Server at <url>: ..." for network failures;
+        # other status-less errors (e.g. a disabled server account) keep their own message.
+        if str(exc).startswith("Cannot reach Kraken Server at"):
+            return "Сервер недоступен"
     return str(exc)

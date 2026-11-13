@@ -97,4 +97,5 @@ def test_upsert_keeps_gitlab_account_with_same_login(tmp_path):
 def test_error_text_maps_status_and_network():
     from kraken_hub.application.remote_error import RemoteServerError
     assert domain_login_error_text(RemoteServerError("Доменная авторизация временно недоступна", status=503)) == "Доменная авторизация временно недоступна"
-    assert domain_login_error_text(RemoteServerError("x", status=None)) == "Сервер недоступен"
+    assert domain_login_error_text(RemoteServerError("Cannot reach Kraken Server at http://127.0.0.1:9: [Errno 111] Connection refused", status=None)) == "Сервер недоступен"
+    assert domain_login_error_text(RemoteServerError("Серверная учётная запись отключена", status=None)) == "Серверная учётная запись отключена"

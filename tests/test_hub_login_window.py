@@ -408,6 +408,62 @@ def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, s
     assert service_with_account.login("server-user", "server-pw") is not None
 
 
+def test_saved_local_autologin_keeps_priority_over_mirror(qapp, tmp_path, monkeypatch, service_with_account):
+    """Сохранённая локальная сессия (`_try_local_autologin`) важнее зеркала: при её успехе
+    `login_or_create_local` не вызывается и возвращается именно авологиновая сессия."""
+    monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
+    monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
+    monkeypatch.setattr(login_parts, "upsert_program_account", lambda *a, **kw: None)
+    monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: None)
+    sentinel = object()
+    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: sentinel)
+    seen: dict = {}
+
+    def fake_mirror(username, password):
+        seen["mirror"] = (username, password)
+        return object()
+
+    monkeypatch.setattr(service_with_account, "login_or_create_local", fake_mirror)
+
+    def fake_configure(base_url, username, password):
+        return object()
+
+    monkeypatch.setattr(service_with_account, "configure_remote_local", fake_configure)
+    stage = {"name": "server_sign_in"}
+    actors: list = []
+    timer = QTimer()
+    timer.setInterval(25)
+
+    def poll() -> None:
+        dialog = QApplication.activeModalWidget()
+        if not _is_login_dialog(dialog) or stage["name"] != "server_sign_in":
+            return
+        stage["name"] = "clicked"
+        sign_in = dialog.findChild(QPushButton, "loginServerSignIn")
+
+        def click_sign_in() -> None:
+            if sign_in is None:
+                raise AssertionError("loginServerSignIn not found")
+            dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
+            dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
+            QTest.mouseClick(sign_in, Qt.MouseButton.LeftButton)
+
+        _post_action(actors, click_sign_in)
+
+    timer.timeout.connect(poll)
+    timer.start()
+    deadline = _start_deadline_reject()
+    try:
+        session = login_parts._login(None, service_with_account)
+    finally:
+        timer.stop()
+        deadline.stop()
+        for actor in actors:
+            actor.stop()
+    assert session is sentinel
+    assert "mirror" not in seen
+
+
 def test_server_sign_in_keeps_local_tab_when_local_account_rejects_password(
     qapp, tmp_path, monkeypatch, service_with_account
 ):

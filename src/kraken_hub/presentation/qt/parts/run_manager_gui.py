@@ -48,7 +48,9 @@ def run_manager_gui(
     configure_application_identity(app, app_id="Kraken.ProjectManager", icon_name="kraken")
     apply_app_theme(str(QSettings("Kraken", "KrakenHub").value("appearance/theme", THEME_SYSTEM)), app)
     local = service.local_administration
-    session = _development_session(local) or _login(None, local)
+    # _login gets the full service: the domain/server tabs call configure_remote_local,
+    # which only the composition wrapper has; the dev session stays local-only.
+    session = _development_session(local) or _login(None, service)
     if session is None:
         return 1
     _connect_saved_server(None, service, session.principal)

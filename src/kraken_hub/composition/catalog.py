@@ -562,6 +562,9 @@ class DualCatalogService(ProjectApplication):
     def login(self, username: str, password: str):
         return self.local.login(username, password)
 
+    def login_or_create_local(self, username: str, password: str):
+        return self.local.login_or_create_local(username, password)
+
     def archive_performer(self, performer_id):
         return self.local.archive_performer(performer_id)
 

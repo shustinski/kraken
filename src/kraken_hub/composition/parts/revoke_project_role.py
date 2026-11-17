@@ -259,6 +259,21 @@ class RevokeProjectRoleMixin:
             self.identities.save(principal)
         return DesktopSession(session.token, principal, session.expires_at)
 
+    def login_or_create_local(self, username: str, password: str) -> DesktopSession | None:
+        """Sign in the local account for ``username``, mirroring a sign-in already
+        verified remotely by creating the account when it is absent.
+
+        Returns None when a local account with that username already exists and
+        rejects the password — an existing local password is never overwritten —
+        or when the name is not a valid local account name.
+        """
+        try:
+            if self.accounts.get_by_username(username) is None:
+                self.accounts.create_account(username, username, password)
+        except ValueError:
+            return None
+        return self.login(username, password)
+
     def resolve_session(self, token: str) -> Principal | None:
         account = self.accounts.resolve_session(token)
         if account is None:

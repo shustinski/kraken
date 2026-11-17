@@ -347,8 +347,8 @@ def test_login_window_server_tab_layout(qapp, tmp_path, monkeypatch, service_wit
 
 
 def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, service_with_account):
-    """«Войти» серверной вкладки: configure_remote_local с введёнными данными, сохранение учётных данных,
-    переход на вкладку «Локальная» с подсказкой; локальный вход завершает сессию."""
+    """«Войти» серверной вкладки: configure_remote_local с введёнными данными, сохранение учётных
+    данных; зеркальная локальная учётка создаётся и диалог закрывается сразу с сессией."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
     monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
@@ -358,9 +358,68 @@ def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, s
         lambda username, password, **kw: calls.setdefault("upsert", (username, password)),
     )
     monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: calls.setdefault("url", url))
+    monkeypatch.setattr(
+        login_parts, "_remember_credentials",
+        lambda username, password, **kw: calls.setdefault("remembered", (username, password)),
+    )
 
     def fake_configure(base_url, username, password):
         calls["configure"] = (base_url, username, password)
+        return object()
+
+    monkeypatch.setattr(service_with_account, "configure_remote_local", fake_configure)
+    stage = {"name": "server_sign_in"}
+    actors: list = []
+    timer = QTimer()
+    timer.setInterval(25)
+
+    def poll() -> None:
+        dialog = QApplication.activeModalWidget()
+        if not _is_login_dialog(dialog) or stage["name"] != "server_sign_in":
+            return
+        stage["name"] = "clicked"
+        sign_in = dialog.findChild(QPushButton, "loginServerSignIn")
+
+        def click_sign_in() -> None:
+            if sign_in is None:
+                raise AssertionError("loginServerSignIn not found")
+            dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
+            dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
+            QTest.mouseClick(sign_in, Qt.MouseButton.LeftButton)
+
+        _post_action(actors, click_sign_in)
+
+    timer.timeout.connect(poll)
+    timer.start()
+    deadline = _start_deadline_reject()
+    try:
+        session = login_parts._login(None, service_with_account)
+    finally:
+        timer.stop()
+        deadline.stop()
+        for actor in actors:
+            actor.stop()
+    assert session is not None
+    assert session.principal.subject == "server-user"
+    assert calls["configure"] == ("http://127.0.0.1:8080", "server-user", "server-pw")
+    assert calls["upsert"] == ("server-user", "server-pw")
+    assert calls["url"] == "http://127.0.0.1:8080"
+    assert calls["remembered"] == ("server-user", "server-pw")
+    assert service_with_account.login("server-user", "server-pw") is not None
+
+
+def test_server_sign_in_keeps_local_tab_when_local_account_rejects_password(
+    qapp, tmp_path, monkeypatch, service_with_account
+):
+    """Локальная учётка «mark» уже есть с другим паролем: серверный вход «mark» его не
+    перезаписывает; подсказка и вкладка «Локальная», локальный вход mark/pw завершает сессию."""
+    monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
+    monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
+    monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
+    monkeypatch.setattr(login_parts, "upsert_program_account", lambda *a, **kw: None)
+    monkeypatch.setattr(login_parts, "save_program_server_url", lambda url, **kw: None)
+
+    def fake_configure(base_url, username, password):
         return object()
 
     monkeypatch.setattr(service_with_account, "configure_remote_local", fake_configure)
@@ -382,8 +441,8 @@ def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, s
             def click_sign_in() -> None:
                 if sign_in is None:
                     raise AssertionError("loginServerSignIn not found")
-                dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
-                dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
+                dialog.findChild(QLineEdit, "loginServerUsername").setText("mark")
+                dialog.findChild(QLineEdit, "loginServerPassword").setText("not-local-pw")
                 QTest.mouseClick(sign_in, Qt.MouseButton.LeftButton)
 
             _post_action(actors, click_sign_in)
@@ -414,18 +473,16 @@ def test_server_sign_in_success_completes_session(qapp, tmp_path, monkeypatch, s
         deadline.stop()
         for actor in actors:
             actor.stop()
-    assert session is not None
-    assert calls["configure"] == ("http://127.0.0.1:8080", "server-user", "server-pw")
-    assert calls["upsert"] == ("server-user", "server-pw")
-    assert calls["url"] == "http://127.0.0.1:8080"
     assert seen["handoff_tab"] == 2
     assert seen["hint_visible"] is True
+    assert session is not None
+    assert session.principal.subject == "mark"
 
 
 def test_server_sign_in_works_when_domain_auth_disabled(qapp, tmp_path, monkeypatch, service_with_account):
     """Серверная вкладка работает, даже когда доменная (LDAP) авторизация выключена:
     предупреждений нет (гейта STATUS_DISABLED на серверном пути нет), вход через
-    configure_remote_local, переход на «Локальная», локальный вход завершает сессию.
+    configure_remote_local завершает сессию зеркальной локальной учёткой.
     Неожиданное предупреждение закрывается, чтобы сломанный диалог упирался в
     дедлайн-отказ, а не висел."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "disabled")
@@ -462,37 +519,20 @@ def test_server_sign_in_works_when_domain_auth_disabled(qapp, tmp_path, monkeypa
 
                 _post_action(actors, close_warning)
             return
-        if not _is_login_dialog(dialog):
+        if not _is_login_dialog(dialog) or stage["name"] != "server_sign_in":
             return
-        tabs = dialog.findChild(QTabWidget, "loginTabs")
-        if stage["name"] == "server_sign_in":
-            seen["server_status"] = dialog.findChild(QLabel, "loginServerStatus").text()
-            stage["name"] = "expect_handoff"
-            sign_in = dialog.findChild(QPushButton, "loginServerSignIn")
+        seen["server_status"] = dialog.findChild(QLabel, "loginServerStatus").text()
+        stage["name"] = "clicked"
+        sign_in = dialog.findChild(QPushButton, "loginServerSignIn")
 
-            def click_sign_in() -> None:
-                if sign_in is None:
-                    raise AssertionError("loginServerSignIn not found")
-                dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
-                dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
-                QTest.mouseClick(sign_in, Qt.MouseButton.LeftButton)
+        def click_sign_in() -> None:
+            if sign_in is None:
+                raise AssertionError("loginServerSignIn not found")
+            dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
+            dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
+            QTest.mouseClick(sign_in, Qt.MouseButton.LeftButton)
 
-            _post_action(actors, click_sign_in)
-        elif stage["name"] == "expect_handoff":
-            if tabs.currentIndex() != 2:
-                return  # the click actor (20 ms) may not have fired before this poll
-            seen["handoff_tab"] = tabs.currentIndex()
-            stage["name"] = "local_login"
-            username_field = dialog.findChild(QLineEdit, "loginUsername")
-            password_field = dialog.findChild(QLineEdit, "loginPassword")
-            box = dialog.findChild(QDialogButtonBox)
-
-            def complete_local() -> None:
-                username_field.setText("mark")
-                password_field.setText("pw")
-                QTest.mouseClick(box.button(QDialogButtonBox.StandardButton.Ok), Qt.MouseButton.LeftButton)
-
-            _post_action(actors, complete_local)
+        _post_action(actors, click_sign_in)
 
     timer.timeout.connect(poll)
     timer.start()
@@ -505,6 +545,7 @@ def test_server_sign_in_works_when_domain_auth_disabled(qapp, tmp_path, monkeypa
         for actor in actors:
             actor.stop()
     assert session is not None
+    assert session.principal.subject == "server-user"
     assert calls["configure"] == ("http://127.0.0.1:8080", "server-user", "server-pw")
     assert seen["server_status"] == "Доменная авторизация не включена"
     assert "warning" not in seen
@@ -586,7 +627,7 @@ def test_server_sign_in_rejects_bad_credentials(qapp, tmp_path, monkeypatch, ser
 
 def test_server_register_creates_account_then_signs_in(qapp, tmp_path, monkeypatch, service_with_account):
     """«Создать и войти»: register_local (display_name == логин), затем configure_remote_local,
-    затем переход на вкладку «Локальная»."""
+    зеркальная локальная учётка создаётся и диалог закрывается сразу с сессией."""
     monkeypatch.setattr(login_parts, "domain_server_status", lambda url, **kw: "enabled")
     monkeypatch.setattr(login_parts, "program_server_url", lambda settings=None: "http://127.0.0.1:8080")
     monkeypatch.setattr(login_parts, "_try_local_autologin", lambda dialog, service: None)
@@ -608,7 +649,6 @@ def test_server_register_creates_account_then_signs_in(qapp, tmp_path, monkeypat
         return object()
 
     monkeypatch.setattr(service_with_account, "configure_remote_local", fake_configure)
-    seen: dict = {}
     stage = {"name": "server_register"}
     actors: list = []
     timer = QTimer()
@@ -616,36 +656,19 @@ def test_server_register_creates_account_then_signs_in(qapp, tmp_path, monkeypat
 
     def poll() -> None:
         dialog = QApplication.activeModalWidget()
-        if not _is_login_dialog(dialog):
+        if not _is_login_dialog(dialog) or stage["name"] != "server_register":
             return
-        tabs = dialog.findChild(QTabWidget, "loginTabs")
-        if stage["name"] == "server_register":
-            stage["name"] = "expect_handoff"
-            register = dialog.findChild(QPushButton, "loginServerRegister")
+        stage["name"] = "clicked"
+        register = dialog.findChild(QPushButton, "loginServerRegister")
 
-            def click_register() -> None:
-                if register is None:
-                    raise AssertionError("loginServerRegister not found")
-                dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
-                dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
-                QTest.mouseClick(register, Qt.MouseButton.LeftButton)
+        def click_register() -> None:
+            if register is None:
+                raise AssertionError("loginServerRegister not found")
+            dialog.findChild(QLineEdit, "loginServerUsername").setText("server-user")
+            dialog.findChild(QLineEdit, "loginServerPassword").setText("server-pw")
+            QTest.mouseClick(register, Qt.MouseButton.LeftButton)
 
-            _post_action(actors, click_register)
-        elif stage["name"] == "expect_handoff":
-            if tabs.currentIndex() != 2:
-                return  # the click actor (20 ms) may not have fired before this poll
-            seen["handoff_tab"] = tabs.currentIndex()
-            stage["name"] = "local_login"
-            username_field = dialog.findChild(QLineEdit, "loginUsername")
-            password_field = dialog.findChild(QLineEdit, "loginPassword")
-            box = dialog.findChild(QDialogButtonBox)
-
-            def complete_local() -> None:
-                username_field.setText("mark")
-                password_field.setText("pw")
-                QTest.mouseClick(box.button(QDialogButtonBox.StandardButton.Ok), Qt.MouseButton.LeftButton)
-
-            _post_action(actors, complete_local)
+        _post_action(actors, click_register)
 
     timer.timeout.connect(poll)
     timer.start()
@@ -658,10 +681,11 @@ def test_server_register_creates_account_then_signs_in(qapp, tmp_path, monkeypat
         for actor in actors:
             actor.stop()
     assert session is not None
+    assert session.principal.subject == "server-user"
     assert calls["register"] == ("http://127.0.0.1:8080", "server-user", "server-pw", "server-user")
     assert calls["configure"] == ("http://127.0.0.1:8080", "server-user", "server-pw")
     assert calls["upsert"] == ("server-user", "server-pw")
-    assert seen["handoff_tab"] == 2
+    assert service_with_account.login("server-user", "server-pw") is not None
 
 
 def test_server_register_shows_server_error_as_is(qapp, tmp_path, monkeypatch, service_with_account):

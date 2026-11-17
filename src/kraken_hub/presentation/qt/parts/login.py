@@ -312,11 +312,18 @@ def _login(parent, service: ProjectWorkspaceService) -> DesktopSession | None:
     def complete_remote_sign_in(
         *, url: str, entered_username: str, entered_password: str, password_field: QLineEdit
     ) -> DesktopSession | None:
-        """Сохранить учётные данные, попытаться завершить локальный вход (Windows Hello),
-        иначе передать пользователя на вкладку «Локальная» с подсказкой."""
+        """Завершить вход после успешной удалённой авторизации: сохранённая локальная
+        сессия, иначе вход в локальную учётку-зеркало (создаётся при отсутствии),
+        иначе вкладка «Локальная» с подсказкой."""
         upsert_program_account(entered_username, entered_password)
         save_program_server_url(url)
         session = _try_local_autologin(dialog, service)
+        if session is None:
+            # Удалённо проверенного входа достаточно: локальная учётка-зеркало
+            # создаётся, если её нет; чужой локальный пароль не перезаписывается.
+            session = service.login_or_create_local(entered_username, entered_password)
+            if session is not None:
+                _remember_credentials(entered_username, entered_password, data_directory=service.data_dir)
         if session is not None:
             password_field.clear()
             dialog.accept()

@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tools.quality.registry_schema import validate_registry
+from tools.quality.registry_schema import ACTION_TIERS, _require_enum, validate_registry
 from tools.quality.test_nodes import parse, resolve_node_id
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +99,82 @@ def test_mandatory_actions_tracked():
         for node_id in action.get("tests", []):
             problems.extend(f"{action['id']}: {problem}" for problem in resolve_node_id(node_id, REPO_ROOT))
     assert not problems, "untracked mandatory actions:\n" + "\n".join(problems)
+
+
+def _action_record(**overrides) -> dict:
+    """A minimal valid synthetic action record; keyword overrides tweak one field."""
+    record = {
+        "id": "X-SYNTHETIC",
+        "surface": "HUB",
+        "entry_point": "синтетическая запись",
+        "preconditions": [],
+        "expected_behavior": "ничего",
+        "side_effects": [],
+        "error_conditions": [],
+        "tier": "unit",
+        "status": "PASS",
+        "tests": [],
+        "evidence": [],
+        "mandatory": False,
+        "beta": True,
+    }
+    record.update(overrides)
+    return record
+
+
+def _validate_records(tmp_path: Path, *records: dict) -> list[str]:
+    path = tmp_path / "actions.json"
+    path.write_text(json.dumps({"actions": list(records)}, ensure_ascii=False), encoding="utf-8")
+    return validate_registry(path)
+
+
+def test_action_requires_boolean_beta_flag(tmp_path: Path):
+    record = _action_record()
+    del record["beta"]
+    problems = _validate_records(tmp_path, record)
+    assert any("'beta' must be a boolean" in problem for problem in problems)
+
+    for bad_beta in ("true", 1, None):
+        problems = _validate_records(tmp_path, _action_record(beta=bad_beta))
+        assert any("'beta' must be a boolean" in problem for problem in problems), f"beta={bad_beta!r} accepted"
+
+    assert not _validate_records(tmp_path, _action_record(beta=False, beta_out_reason="вне объёма беты — тест"))
+
+
+def test_beta_false_requires_beta_out_reason(tmp_path: Path):
+    problems = _validate_records(tmp_path, _action_record(beta=False))
+    assert any("'beta_out_reason' must be a non-empty string" in problem for problem in problems)
+
+    problems = _validate_records(tmp_path, _action_record(beta=False, beta_out_reason=""))
+    assert any("'beta_out_reason' must be a non-empty string" in problem for problem in problems)
+
+    problems = _validate_records(tmp_path, _action_record(beta=False, beta_out_reason="вне объёма беты — сшивка"))
+    assert not any("beta_out_reason" in problem for problem in problems)
+
+
+def test_beta_true_must_not_carry_beta_out_reason(tmp_path: Path):
+    problems = _validate_records(tmp_path, _action_record(beta=True, beta_out_reason="вне объёма беты — сшивка"))
+    assert any("beta_out_reason" in problem for problem in problems)
+
+
+def test_not_tested_rule_scopes_to_beta_not_mandatory(tmp_path: Path):
+    problems = _validate_records(tmp_path, _action_record(beta=True, mandatory=False, status="NOT_TESTED"))
+    assert any("NOT_TESTED action requires exception_reason" in problem for problem in problems)
+
+    problems = _validate_records(
+        tmp_path, _action_record(beta=False, mandatory=True, status="NOT_TESTED", beta_out_reason="вне объёма беты — тест")
+    )
+    assert not any("NOT_TESTED" in problem for problem in problems)
+
+    problems = _validate_records(tmp_path, _action_record(beta=True, status="NOT_TESTED", exception_reason="почва"))
+    assert not any("NOT_TESTED" in problem for problem in problems)
+
+
+def test_live_is_a_valid_action_tier():
+    assert "live" in ACTION_TIERS
+    problems: list[str] = []
+    _require_enum({"tier": "live"}, "tier", ACTION_TIERS, problems, "synthetic")
+    assert problems == []
 
 
 def _repo_python() -> Path:

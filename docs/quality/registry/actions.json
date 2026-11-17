@@ -12,7 +12,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-LOGIN",
@@ -26,7 +27,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-DEV-SESSION",
@@ -41,6 +43,8 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — dev-обвязка",
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -56,6 +60,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "Отдельной строки нет; подключение имплицируется в live-блоках (live-catalog, real-project-qt-view), но само действие не принималось"
     },
     {
@@ -71,6 +76,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -86,6 +92,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "Собственного прогона нет; контракт URL/секрета проверен в блоке UPDATER-INSTALL / REMOTE-HTTPS (BLOCKED)"
     },
     {
@@ -101,6 +108,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "Не предоставлены отдельный тестовый установщик и удалённый TLS-стенд. Проверки контракта URL/секрета прошли, скачивание/запуск реального установщика и удалённый HTTPS не выполнялись"
     },
     {
@@ -116,6 +124,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -133,7 +142,8 @@
         "tests/test_create_project_dialog_retry.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-REFRESH-CATALOG",
@@ -148,6 +158,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "Отдельной строки нет; перечитывание каталога имплицируется в live-catalog, но само действие не принималось"
     },
     {
@@ -164,7 +175,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/real-project-qt-view.json"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-BIND-WORKSPACE",
@@ -179,6 +191,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -193,7 +206,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-ARCHIVE-PROJECT",
@@ -207,7 +221,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-RESTORE-PROJECT",
@@ -221,7 +236,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-DELETE-PROJECT",
@@ -237,7 +253,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/live-catalog.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-PROJECT-PROPERTIES",
@@ -252,6 +269,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -266,7 +284,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-ADMIN-REFRESH",
@@ -281,6 +300,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -296,6 +316,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -310,7 +331,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-IMPORT-BACKUP",
@@ -324,7 +346,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-ATTACH-PROJECT",
@@ -339,6 +362,8 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — подключение проекта из локального каталога",
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -354,6 +379,8 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — миграция старых поручений",
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -371,7 +398,8 @@
         "tests/test_registered_principal_before_session.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-ADD-PERFORMER",
@@ -387,7 +415,8 @@
         "tests/test_remaining_qt_acceptance.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-EDIT-PERFORMER",
@@ -403,7 +432,8 @@
         "tests/test_remaining_qt_acceptance.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-DELETE-PERFORMER",
@@ -419,7 +449,8 @@
         "tests/test_remaining_qt_acceptance.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-MATRIX-CONTEXT",
@@ -434,6 +465,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -450,7 +482,8 @@
         "tests/test_remaining_qt_acceptance.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-ADD-LAYER",
@@ -470,7 +503,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/png-parity.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-REORDER-LAYERS",
@@ -485,6 +519,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -501,7 +536,8 @@
         "tests/test_metadata_layer_deletion.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-ADD-REPRESENTATION",
@@ -519,7 +555,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/png-parity.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-REPRESENTATION-LIFECYCLE",
@@ -534,6 +571,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -549,6 +587,8 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — технологический процесс слоя",
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -564,6 +604,8 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — сшивка",
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -580,7 +622,8 @@
         "tests/test_remaining_qt_acceptance.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-MY-WORK",
@@ -595,6 +638,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -611,7 +655,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/qt-acceptance.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "HUB-QUALITY",
@@ -627,7 +672,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/quality-clicks.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — контроль качества"
     },
     {
       "id": "HUB-MULTILAYER",
@@ -643,7 +690,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/qt-acceptance.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — физические слои и контакты"
     },
     {
       "id": "HUB-ELECTRICAL",
@@ -659,7 +708,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/qt-acceptance.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — электрическая связность"
     },
     {
       "id": "HUB-STITCH-FILES",
@@ -674,6 +725,8 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — сшивка",
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -690,7 +743,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/qt-acceptance.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — сшивка"
     },
     {
       "id": "HUB-ANALYSIS",
@@ -708,7 +763,9 @@
         "plugins/karakal/tests/unit/test_headless_analysis.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — Karakal"
     },
     {
       "id": "HUB-PLUGINS",
@@ -723,6 +780,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этого действия нет; сценарий не прогнан"
     },
     {
@@ -743,7 +801,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/statistics-verified.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-HEALTH-SESSION",
@@ -761,7 +820,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/p0-policy-network.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-PROJECTS",
@@ -777,7 +837,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/live-catalog.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-PRINCIPALS",
@@ -793,7 +854,8 @@
         "tests/test_registered_principal_before_session.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-LAYERS",
@@ -808,6 +870,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В SRV-POSTGRES-PERSISTENT проверены только создание и сохранность слоя; сканирование, импорт, переименование, порядок, архив и удаление серверных слоёв в прогоне не вызывались"
     },
     {
@@ -823,6 +886,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан"
     },
     {
@@ -842,7 +906,8 @@
         "docs/quality/evidence/2026-11-01/real-project-artifact-verification.json",
         "docs/quality/evidence/2026-11-01/upload-preflight-green.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-COMMANDS",
@@ -857,6 +922,7 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": true,
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан"
     },
     {
@@ -873,7 +939,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/live-catalog.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-HISTORY-STATISTICS",
@@ -889,7 +956,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/real-project-artifact-verification.json"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-NOTES-CHECKS-PACKAGES",
@@ -903,7 +971,8 @@
       "status": "PARTIAL",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-JOBS-AGENT-PROTOCOL",
@@ -921,7 +990,8 @@
         "docs/quality/evidence/2026-11-01/target-lease-green.txt",
         "docs/quality/evidence/2026-11-01/live-worker-contour-faults.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-ANALYSIS",
@@ -938,7 +1008,9 @@
         "plugins/karakal/tests/unit/test_headless_analysis.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — Karakal"
     },
     {
       "id": "SRV-QUALITY",
@@ -954,7 +1026,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/server-domain-remaining.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — контроль качества"
     },
     {
       "id": "SRV-LAYER-WORKFLOW",
@@ -969,6 +1043,8 @@
       "tests": [],
       "evidence": [],
       "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — технологический процесс слоя",
       "exception_reason": "В секции матрицы «Продолжение 2026-11-01» строки для этой группы маршрутов нет; сценарий не прогнан"
     },
     {
@@ -985,7 +1061,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/server-domain-remaining.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "SRV-PHYSICS",
@@ -1001,7 +1078,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/server-domain-remaining.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — физическая модель и сшивка"
     },
     {
       "id": "SRV-ELECTRICAL",
@@ -1017,7 +1096,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/server-domain-remaining.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — электрическая модель"
     },
     {
       "id": "AGT-HEALTH",
@@ -1031,7 +1112,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "AGT-REGISTRY-CONFIDENCE",
@@ -1050,7 +1132,9 @@
         "docs/quality/evidence/2026-11-01/d4-focused.txt",
         "docs/quality/evidence/2026-11-01/d4-confidence.json"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — Karakal"
     },
     {
       "id": "PLUGIN-CONTOUR-HELP",
@@ -1064,7 +1148,8 @@
       "status": "PARTIAL",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "PLUGIN-KRONA-HELP",
@@ -1078,7 +1163,9 @@
       "status": "PARTIAL",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — KRONA"
     },
     {
       "id": "PLUGIN-CSLISER-CAPABILITIES",
@@ -1092,7 +1179,9 @@
       "status": "PARTIAL",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — CSLISER"
     },
     {
       "id": "PLUGIN-KATEGB-HELP",
@@ -1106,7 +1195,9 @@
       "status": "PARTIAL",
       "tests": [],
       "evidence": [],
-      "mandatory": false
+      "mandatory": false,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — KateGB"
     },
     {
       "id": "PLUGIN-NEURALIMAGE-VERSION",
@@ -1120,7 +1211,8 @@
       "status": "PARTIAL",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "PLUGIN-CSLISER-SELF-TEST",
@@ -1134,7 +1226,9 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — CSLISER"
     },
     {
       "id": "PLUGIN-CSLISER-COPY-CANCEL-RECOVERY",
@@ -1150,7 +1244,9 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/plugins-acceptance-importlib.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — CSLISER"
     },
     {
       "id": "PLUGIN-KATEGB-CALCULATION",
@@ -1164,7 +1260,9 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": false
+      "mandatory": false,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — KateGB"
     },
     {
       "id": "PLUGIN-KRONA-LOGIC-VIEWER",
@@ -1181,7 +1279,9 @@
         "plugins/krona/tests/test_quality_qt.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — KRONA"
     },
     {
       "id": "PLUGIN-KARAKAL-COMPARE-MAP",
@@ -1198,7 +1298,9 @@
         "tests/test_server_analysis_workflow.py"
       ],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": false,
+      "beta_out_reason": "вне объёма беты — Karakal"
     },
     {
       "id": "PLUGIN-CONTOUR-DATASET-INTERACTIVE",
@@ -1214,7 +1316,8 @@
       "evidence": [
         "docs/quality/evidence/2026-11-01/server-acceptance.txt"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "BLOB-PUT-GET-RESTART",
@@ -1228,7 +1331,8 @@
       "status": "PASS",
       "tests": [],
       "evidence": [],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     },
     {
       "id": "PERSISTENT-GATEWAY-UPLOAD",
@@ -1247,7 +1351,8 @@
         "docs/quality/evidence/2026-11-01/upload-preflight-green.txt",
         "docs/quality/evidence/2026-11-01/live-contour-worker-receipt.json"
       ],
-      "mandatory": true
+      "mandatory": true,
+      "beta": true
     }
   ]
 }

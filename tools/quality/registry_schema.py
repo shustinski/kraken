@@ -18,7 +18,7 @@ from typing import Any
 DEFECT_STATUSES = ("OPEN", "RESOLVED", "EXCEPTION")
 DEFECT_SEVERITIES = ("critical", "major", "minor")
 ACTION_SURFACES = ("HUB", "MGR", "SRV", "AGT", "PLG", "GW")
-ACTION_TIERS = ("smoke", "unit", "integration", "gui", "stateful", "e2e", "extended", "regression")
+ACTION_TIERS = ("smoke", "unit", "integration", "gui", "stateful", "e2e", "extended", "regression", "live")
 ACTION_STATUSES = ("PASS", "FAIL", "PARTIAL", "BLOCKED", "NOT_TESTED", "NOT_APPLICABLE")
 
 
@@ -70,10 +70,16 @@ def _validate_action(record: dict[str, Any], problems: list[str], prefix: str) -
     _require_str_list(record, "evidence", problems, prefix)
     if not isinstance(record.get("mandatory"), bool):
         problems.append(f"{prefix}: 'mandatory' must be a boolean")
+    if not isinstance(record.get("beta"), bool):
+        problems.append(f"{prefix}: 'beta' must be a boolean")
+    if record.get("beta") is False:
+        _require_str(record, "beta_out_reason", problems, prefix)
+    elif record.get("beta") is True and "beta_out_reason" in record:
+        problems.append(f"{prefix}: beta action must not carry beta_out_reason")
     if record.get("status") == "BLOCKED" and not record.get("exception_reason"):
         problems.append(f"{prefix}: BLOCKED action requires exception_reason")
-    if record.get("status") == "NOT_TESTED" and record.get("mandatory") and not record.get("exception_reason"):
-        problems.append(f"{prefix}: mandatory NOT_TESTED action requires exception_reason")
+    if record.get("status") == "NOT_TESTED" and record.get("beta") is True and not record.get("exception_reason"):
+        problems.append(f"{prefix}: beta NOT_TESTED action requires exception_reason")
 
 
 def validate_registry(path: Path) -> list[str]:

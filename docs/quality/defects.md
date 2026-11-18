@@ -29,6 +29,7 @@
 | D20 | test_harness | RESOLVED | tests/test_local_auth.py::LocalAccountTests::test_account_sessions_are_opaque_revocable_and_persistent, tests/test_local_auth.py::LocalAccountTests::test_cleanup_waits_for_a_foreign_handle_on_the_database, tests/test_local_auth.py::LocalAccountTests::test_cleanup_retries_when_the_final_rmdir_reports_not_empty | — | docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt, docs/quality/evidence/2026-11-10/d20-green-foreign-lock.txt |
 | D21 | test_harness | OPEN | tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch, tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu | — | docs/quality/evidence/2026-11-18/d21-red.txt, docs/quality/evidence/2026-11-18/d21-green.txt |
 | D22 | kraken_admin | RESOLVED | tests/test_deletion_confirmation.py::test_folder_removal_deletes_windows_reserved_dos_names | 0b6d946 | docs/quality/evidence/2026-11-18/d22-red-probe.txt, docs/quality/evidence/2026-11-18/d22-green.txt, docs/quality/evidence/2026-11-18/gate-integration/receipt.json |
+| D23 | migrations | RESOLVED | tests/test_qt_harness.py::test_failure_capture_produces_artifacts, tests/test_domain_auth_broker.py::test_jit_first_domain_login_creates_account_principal_performer | b841cfa | docs/quality/evidence/2026-11-18/d23-red.txt, docs/quality/evidence/2026-11-18/d23-green.txt |
 <!-- quality-registry:generated-end -->
 
 ## Воспроизведено

@@ -357,6 +357,23 @@
       ],
       "fixed_in": "0b6d946",
       "repro": "На Windows: создать проект (продуктовая двухкорневая раскладка всегда содержит каталог категории aux), запросить и выполнить удаление проекта через Admin — ProjectDeletion.execute падает OSError [WinError 145] «Папка не пуста» в kraken_admin.infrastructure.stored_files.remove_stored_path -> shutil.rmtree на .kraken-trash/<request>/0. В интеграционном слое гейта 2026-11-18 (первый прогон со стенда): 6 failed в tests/test_admin_project_workflows.py. Минимальное воспроизведение механизма — shutil.rmtree дерева с aux: выживший элемент ровно aux (d22-red-probe.txt). Тот же класс, что D9/D10/D19, но на продуктовой стороне удаления."
+    },
+    {
+      "id": "D23",
+      "component": "migrations",
+      "title": "Программный запуск Alembic из тестов (Config(\"alembic.ini\") + command.upgrade) применяет logging.config.fileConfig в env.py, который заменяет все обработчики root-логгера и отключает перехват логов pytest и ring-буфер qt-harness",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_qt_harness.py::test_failure_capture_produces_artifacts",
+        "tests/test_domain_auth_broker.py::test_jit_first_domain_login_creates_account_principal_performer"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-18/d23-red.txt",
+        "docs/quality/evidence/2026-11-18/d23-green.txt"
+      ],
+      "fixed_in": "b841cfa",
+      "repro": "На машине с настроенным KRAKEN_TEST_POSTGRES_URL: прогон tests/test_domain_auth_broker.py совместно с tests/test_qt_harness.py. Тест доменной аутентификации вызывает фикстуру database (Config(\"alembic.ini\") + command.upgrade), env.py вызывает logging.config.fileConfig(alembic.ini), который снимает с root-логгера все обработчики, включая ring-обработчик qt-harness; маркер журнала, поставленный после этого, не доходит до файла свидетельства, и test_failure_capture_produces_artifacts падает (d23-red.txt; в полном гейт-прогоне 2026-11-18 падал unit-слой). После opt-out программных вызовов (attributes={\"configure_logger\": False}) — d23-green.txt. CLI alembic сохраняет прежнее поведение; kraken_server.run_migrations конфиг-файл не передаёт и не затронут."
     }
   ]
 }

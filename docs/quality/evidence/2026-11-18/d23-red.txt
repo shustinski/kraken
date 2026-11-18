@@ -1,0 +1,57 @@
+﻿.............F.                                                          [100%]
+================================== FAILURES ===================================
+___________________ test_failure_capture_produces_artifacts ___________________
+
+qapp = <PyQt6.QtWidgets.QApplication object at 0x000001E92A7DC230>
+harness_capture = {'capture': <function harness_capture.<locals>.capture at 0x000001E92A96B3D0>, 'evidence_dir': WindowsPath('C:/code/kr...ilure-widgets.json'), WindowsPath('C:/code/kraken/.test_runtime/repro-d23red/qt-harness0/controlled-failure-log.txt'))}
+
+    def test_failure_capture_produces_artifacts(qapp, harness_capture) -> None:  # noqa: F811
+        with kraken_tempdir() as data_dir:
+            with launch_hub(Path(data_dir), account=("operator", "")) as handle:
+                logging.getLogger("kraken_hub.tests").warning("qt-harness log marker")
+                # Controlled failure path: an invalid-state action through the real
+                # service layer тАФ a Windows reserved device name is rejected by the
+                # workspace-name validation before anything is written.
+                with pytest.raises(ValueError):
+                    handle.service.create_project(
+                        principal=handle.session.principal,
+                        name="aux",
+                        width=2,
+                        height=1,
+                        orientation=GridOrientation.Y_DOWN,
+                        idempotency_key="qt-harness-invalid-name",
+                        layer_template=False,
+                    )
+                png, tree_path, log_path = harness_capture["capture"]("controlled-failure")
+        assert png.is_file() and png.stat().st_size > 1000
+        payload = json.loads(tree_path.read_text(encoding="utf-8"))
+        assert payload["window_title"] == "Kraken"
+        assert payload["tree"]["class"] == "ProjectManagerShell"
+        assert any(
+            node["objectName"] == "projectCatalogList" for node in _find_nodes(payload["tree"], "projectCatalogList")
+        ), "catalog list missing from the captured widget tree"
+>       assert "qt-harness log marker" in log_path.read_text(encoding="utf-8")
+E       AssertionError: assert 'qt-harness log marker' in ''
+E        +  where '' = read_text(encoding='utf-8')
+E        +    where read_text = WindowsPath('C:/code/kraken/.test_runtime/repro-d23red/qt-harness0/controlled-failure-log.txt').read_text
+
+tests\test_qt_harness.py:124: AssertionError
+---------------------------- Captured Qt messages -----------------------------
+QtWarningMsg: This plugin does not support propagateSizeHints()
+QtWarningMsg: This plugin does not support propagateSizeHints()
+---------------------------- Captured stderr call -----------------------------
+WARNI [kraken_hub.tests] qt-harness log marker
+------------------------------ Captured log call ------------------------------
+WARNING  kraken_hub.tests:test_qt_harness.py:102 qt-harness log marker
+-------------------------- Captured stderr teardown ---------------------------
+ERROR [kraken_hub.tests] qt-harness failure capture failed
+Traceback (most recent call last):
+  File "C:\code\kraken\tests\helpers\qt_harness.py", line 566, in pytest_runtest_makereport
+    self._capture(label=self._item.name)
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\code\kraken\tests\helpers\qt_harness.py", line 588, in capture
+    raise RuntimeError("harness_capture: no hub launched by launch_hub")
+RuntimeError: harness_capture: no hub launched by launch_hub
+=========================== short test summary info ===========================
+FAILED tests/test_qt_harness.py::test_failure_capture_produces_artifacts - As...
+1 failed, 14 passed in 15.72s

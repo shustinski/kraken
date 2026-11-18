@@ -1,0 +1,58 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-18T04:22:35.6109068Z",
+    "tier":  "live",
+    "command":  [
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f9ad304267fb45fdb6dc06ada7640f89\\basetemp-live --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  25,
+    "passed":  14,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  11,
+    "skipped_tests":  [
+                          "tests.test_live_server_plugin_chain::test_neuralimage_reuses_verified_training_and_publishes_real_inference[neuralimage]",
+                          "tests.test_live_server_plugin_chain::test_neuralimage_hub_reread_only_selects_actual_published_masks[neuralimage]",
+                          "tests.test_live_server_plugin_chain::test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics[karakal]",
+                          "tests.test_live_server_plugin_chain::test_stitch_real_file_dialog_machine_compute_and_hub_block_view[stitch]",
+                          "tests.test_live_server_plugin_chain::test_stitch_hub_reread_only_opens_saved_mosaic_without_compute[stitch]",
+                          "tests.test_live_server_worker_acceptance::test_contour_machine_worker_publishes_versions_and_hub_reopens",
+                          "tests.test_live_ui_workflow::test_server_pipeline_training_recognition_reviews_and_reports_through_ui",
+                          "tests.test_live_ui_workflow::test_reopened_project_reviews_and_reports_through_ui",
+                          "tests.test_pipeline_live_contour::test_actual_contour_jobs_follow_pipeline_dependencies_and_publish_exact_versions",
+                          "tests.test_pipeline_live_neural_model::test_actual_cpu_training_to_pipeline_model_port_and_inference",
+                          "tests.test_neuralimage_headless_training::test_actual_headless_training_publishes_real_model_and_applied_workflow"
+                      ],
+    "duration_seconds":  1.488,
+    "status":  "PARTIAL",
+    "note":  "11 test(s) skipped; skipped tests are never counted as pass",
+    "runs":  [
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f9ad304267fb45fdb6dc06ada7640f89\\basetemp-live --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  25,
+                     "passed":  14,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  11,
+                     "skipped_tests":  [
+                                           "tests.test_live_server_plugin_chain::test_neuralimage_reuses_verified_training_and_publishes_real_inference[neuralimage]",
+                                           "tests.test_live_server_plugin_chain::test_neuralimage_hub_reread_only_selects_actual_published_masks[neuralimage]",
+                                           "tests.test_live_server_plugin_chain::test_karakal_hub_dialog_runs_machine_analysis_and_reopens_real_metrics[karakal]",
+                                           "tests.test_live_server_plugin_chain::test_stitch_real_file_dialog_machine_compute_and_hub_block_view[stitch]",
+                                           "tests.test_live_server_plugin_chain::test_stitch_hub_reread_only_opens_saved_mosaic_without_compute[stitch]",
+                                           "tests.test_live_server_worker_acceptance::test_contour_machine_worker_publishes_versions_and_hub_reopens",
+                                           "tests.test_live_ui_workflow::test_server_pipeline_training_recognition_reviews_and_reports_through_ui",
+                                           "tests.test_live_ui_workflow::test_reopened_project_reviews_and_reports_through_ui",
+                                           "tests.test_pipeline_live_contour::test_actual_contour_jobs_follow_pipeline_dependencies_and_publish_exact_versions",
+                                           "tests.test_pipeline_live_neural_model::test_actual_cpu_training_to_pipeline_model_port_and_inference",
+                                           "tests.test_neuralimage_headless_training::test_actual_headless_training_publishes_real_model_and_applied_workflow"
+                                       ],
+                     "duration_seconds":  1.488,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

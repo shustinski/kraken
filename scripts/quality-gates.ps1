@@ -21,7 +21,7 @@
 
 .PARAMETER Tier
     One or more of: smoke, unit, integration, gui, stateful, e2e, extended,
-    regression. Repeatable (comma- or space-separated).
+    regression, live. Repeatable (comma- or space-separated).
 
 .PARAMETER OutDir
     Evidence root for this run. Default: docs/quality/evidence/<yyyy-MM-dd>/.
@@ -99,6 +99,18 @@
                 plugins/). The list is split into import domains (see below);
                 each domain is one pytest invocation, merged in the receipt.
 
+    live        The stand-gated suites (see $liveFiles): live server plugin
+                chain/worker acceptance, live UI workflow, live pipeline and
+                headless-training files. They self-skip without their env
+                gates (KRAKEN_LIVE_WORKER_CONFIG, KRAKEN_UI_TEST_CONFIG,
+                KRAKEN_RUN_TRAINING_LIVE, KRAKEN_RUN_PIPELINE_LIVE,
+                KRAKEN_RUN_MODEL_FUNCTIONAL), so a run without them is
+                PARTIAL by design (skips are never pass). A PASS requires a
+                live stand up (plan Task 6); the gate never starts the stand
+                itself - the env-gate variables are inherited from the caller
+                environment, exactly like the integration tier inherits
+                KRAKEN_TEST_POSTGRES_URL.
+
     IMPORT DOMAINS (why some tiers run two pytest invocations):
         plugins/contour/tests/ is a Python package named `tests`
         (it has __init__.py). When a single pytest collection mixes tests/
@@ -112,7 +124,7 @@
         --import-mode=importlib (the convention of the `plugins` block in
         reproduce-stabilization.ps1) - and the receipts merge both JUnit
         files. Tiers that stay inside one domain (smoke, integration, gui,
-        e2e, registry) are single invocations.
+        e2e, live, registry) are single invocations.
 
     CONVENTIONS (from docs/quality/reproduce-stabilization.ps1):
       * receipt.json per run carries the exact command(s) and exit code(s);
@@ -155,7 +167,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('smoke', 'unit', 'integration', 'gui', 'stateful', 'e2e', 'extended', 'regression')]
+    [ValidateSet('smoke', 'unit', 'integration', 'gui', 'stateful', 'e2e', 'extended', 'regression', 'live')]
     [string[]]$Tier,
 
     [string]$OutDir = '',
@@ -565,6 +577,22 @@ $integrationFiles = @(
     'tests/test_work_templates_postgres.py'
 )
 
+# Stand-gated suites (live tier): live server plugin chain/worker acceptance,
+# live UI workflow, live pipeline and headless-training files. They self-skip
+# without their env gates (KRAKEN_LIVE_WORKER_CONFIG, KRAKEN_UI_TEST_CONFIG,
+# KRAKEN_RUN_TRAINING_LIVE, KRAKEN_RUN_PIPELINE_LIVE,
+# KRAKEN_RUN_MODEL_FUNCTIONAL); the gate never starts the stand itself, the
+# variables are inherited from the caller environment (like the integration
+# tier inherits KRAKEN_TEST_POSTGRES_URL).
+$liveFiles = @(
+    'tests/test_live_server_plugin_chain.py',
+    'tests/test_live_server_worker_acceptance.py',
+    'tests/test_live_ui_workflow.py',
+    'tests/test_pipeline_live_contour.py',
+    'tests/test_pipeline_live_neural_model.py',
+    'tests/test_neuralimage_headless_training.py'
+)
+
 # Offscreen pytest-qt suites (gui tier): the proven `qt` block of
 # reproduce-stabilization.ps1 plus the local layer_* Qt suites.
 $guiFiles = @(
@@ -647,6 +675,14 @@ try {
                 }
                 'integration' {
                     $st = Invoke-GateTier -Name 'integration' -Runs @(, $integrationFiles)
+                }
+                'live' {
+                    # env-gate variables (KRAKEN_LIVE_WORKER_CONFIG,
+                    # KRAKEN_UI_TEST_CONFIG, KRAKEN_RUN_TRAINING_LIVE,
+                    # KRAKEN_RUN_PIPELINE_LIVE, KRAKEN_RUN_MODEL_FUNCTIONAL)
+                    # are inherited from the caller environment; the gate
+                    # never starts the stand itself (plan Task 6).
+                    $st = Invoke-GateTier -Name 'live' -Runs @(, $liveFiles)
                 }
                 'gui' {
                     $st = Invoke-GateTier -Name 'gui' -Runs @(, $guiFiles)

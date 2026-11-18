@@ -16,7 +16,7 @@ pytest_plugins = ["tests.test_admin_project_workflows"]
 def test_execution_state_upgrade_preserves_existing_job_and_unblocks_gateway(database):
     services, _, _, _ = database
     engine = services.engine
-    command.downgrade(Config("alembic.ini"), "20261025_0010")
+    command.downgrade(Config("alembic.ini", attributes={"configure_logger": False}), "20261025_0010")
     job_id, project_id = str(uuid4()), str(uuid4())
     with engine.begin() as connection:
         connection.execute(sa.text("""
@@ -29,7 +29,7 @@ def test_execution_state_upgrade_preserves_existing_job_and_unblocks_gateway(dat
     gateway = PostgresAgentGateway(engine, tokens=None, blobs=None)
     with pytest.raises(sa.exc.ProgrammingError, match="execution_state"):
         gateway.project_execution_states(project_id)
-    command.upgrade(Config("alembic.ini"), "head")
+    command.upgrade(Config("alembic.ini", attributes={"configure_logger": False}), "head")
     with engine.connect() as connection:
         after = dict(connection.execute(sa.text("SELECT * FROM background_jobs WHERE job_id=:job"),
                                         {"job": job_id}).mappings().one())

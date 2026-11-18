@@ -8,7 +8,13 @@ from sqlalchemy import engine_from_config, pool
 
 
 config = context.config
-if config.config_file_name is not None:
+# fileConfig() replaces every root-logger handler (and, by default, disables
+# existing loggers). That is fine for the alembic CLI but wipes the caller's
+# logging when alembic is embedded programmatically (e.g. the pytest
+# `database` fixture or kraken_server.run_migrations). Programmatic callers
+# opt out with Config(..., attributes={"configure_logger": False}); the CLI
+# keeps the historic behaviour.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 database_url = os.environ.get("KRAKEN_DATABASE_URL")

@@ -74,7 +74,7 @@ def test_migration_backfills_local_principal_logins(tmp_path, monkeypatch):
         connection.execute(sa.text(f'CREATE SCHEMA "{schema}"'))
     scoped = sa.engine.make_url(url).update_query_dict({"options": f"-csearch_path={schema}"})
     monkeypatch.setenv("KRAKEN_DATABASE_URL", scoped.render_as_string(hide_password=False))
-    cfg = Config("alembic.ini")
+    cfg = Config("alembic.ini", attributes={"configure_logger": False})
     engine = sa.create_engine(scoped)
     try:
         command.upgrade(cfg, "20261029_0011")
@@ -130,7 +130,7 @@ def test_migration_backfill_skips_claimed_logins_and_writes_audit(tmp_path, monk
         connection.execute(sa.text(f'CREATE SCHEMA "{schema}"'))
     scoped = sa.engine.make_url(url).update_query_dict({"options": f"-csearch_path={schema}"})
     monkeypatch.setenv("KRAKEN_DATABASE_URL", scoped.render_as_string(hide_password=False))
-    cfg = Config("alembic.ini")
+    cfg = Config("alembic.ini", attributes={"configure_logger": False})
     engine = sa.create_engine(scoped)
     try:
         command.upgrade(cfg, "20261029_0011")

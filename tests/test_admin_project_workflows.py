@@ -45,7 +45,7 @@ def database(tmp_path, monkeypatch):
     monkeypatch.setenv("KRAKEN_DATABASE_URL", scoped.render_as_string(hide_password=False))
     engine = sa.create_engine(scoped)
     try:
-        command.upgrade(Config("alembic.ini"), "head")
+        command.upgrade(Config("alembic.ini", attributes={"configure_logger": False}), "head")
         services = open_project_services(str(scoped), tmp_path / "blobs", engine=engine)
         services.workspace_files = WorkspaceFileService(WorkspaceRegistry(tmp_path / "blobs" / "workspaces"))
         services.source_root = str(tmp_path / "source")

@@ -1,7 +1,7 @@
 """Coverage regression comparison for the local quality gate.
 
-Compares the verdicts of the mandatory UI actions (``ui_actions`` denominator:
-mandatory actions with surface != SRV) and the SRV API operations
+Compares the verdicts of the beta UI actions (``ui_actions`` denominator:
+beta actions with surface != SRV) and the beta SRV API operations
 (``api_operations`` denominator) between the previous committed coverage
 report and the JUnit evidence of the current gate run.
 
@@ -49,8 +49,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gate_compare: cannot read registry/base report: {exc}", file=sys.stderr)
         return 2
 
-    ui_ids = {a["id"] for a in actions if a.get("mandatory") and a.get("surface") != "SRV"}
-    api_ids = {a["id"] for a in actions if a.get("surface") == "SRV"}
+    ui_ids = {a["id"] for a in actions if a.get("beta") and a.get("surface") != "SRV"}
+    api_ids = {a["id"] for a in actions if a.get("beta") and a.get("surface") == "SRV"}
     base_pass = (ui_ids - set(metrics["ui_actions"]["uncovered"])) | (api_ids - set(metrics["api_operations"]["uncovered"]))
 
     results = collect_junit([Path(p) for p in args.new_junit], REPO_ROOT)

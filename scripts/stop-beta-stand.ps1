@@ -167,11 +167,15 @@ else {
 }
 
 # ---------------------------------------------------- 2. stop owned processes
-$agentStopped = Stop-StandProcess -ProcessId ([int]$state.agent_pid) -CommandLinePattern '*kraken_agent*'
+# Stand-specific command-line patterns, identical to the ones start-beta-stand
+# uses to identify these components (Find-StandPid): a recycled PID that now
+# belongs to a WORKING kraken_agent/kraken_server must never match, so
+# teardown can only ever kill processes started from this stand's directory.
+$agentStopped = Stop-StandProcess -ProcessId ([int]$state.agent_pid) -CommandLinePattern '*kraken_agent*beta-stand*agent-data*'
 if ($state.agent_pid) {
     Report 'stop-agent' $agentStopped "pid $($state.agent_pid)"
 }
-$serverStopped = Stop-StandProcess -ProcessId ([int]$state.server_pid) -CommandLinePattern '*kraken_server*'
+$serverStopped = Stop-StandProcess -ProcessId ([int]$state.server_pid) -CommandLinePattern '*kraken_server*beta-stand*server.toml*'
 if ($state.server_pid) {
     Report 'stop-server' $serverStopped "pid $($state.server_pid)"
 }

@@ -278,7 +278,10 @@ def _login(args: argparse.Namespace) -> int:
                                payload={'username': args.username, 'password': args.password,
                                         'display_name': args.display_name})
     except RemoteServerError as error:
-        if error.status not in {400, 403}:
+        # 400/403: registration refused; 409: the username is already taken
+        # (e.g. occupied by a non-local principal) - all fall through to the
+        # ordinary session login below.
+        if error.status not in {400, 403, 409}:
             raise
     if not payload:
         payload = http.request('POST', '/api/v1/auth/sessions', token='',

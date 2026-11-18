@@ -534,6 +534,8 @@ else {
     db_mode = $dbMode
     db_provisioned = $provisioned
     beta_username = $betaUsername
+    # Plaintext is acceptable here: state.json lives under .test_runtime (git-ignored
+    # '.*/' rule) and this is a throwaway loopback-only stand account, not a user secret.
     beta_password = $betaPassword
     protected_project_id = $projectId
     machine_token_id = $machineTokenId

@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from kraken_manager.infrastructure.workspace_files import _remove_tree
+from kraken_manager.infrastructure.workspace_files import remove_tree
 
 
 @contextmanager
@@ -18,7 +18,8 @@ def kraken_tempdir() -> Iterator[str]:
     a Kraken project tree on Windows: the source root contains a real ``aux``
     category directory, and ``rmtree`` fails with WinError 145 (reserved DOS
     device name). Cleanup goes through the same reserved-name-safe
-    ``_remove_tree`` the product code uses (defect D10).
+    ``_remove_tree`` the product code uses (defect D10). Now exposed publicly as
+    ``remove_tree`` because the admin deletion path needs it too.
 
     The yielded path is fully resolved: when ``TEMP`` is an 8.3 short path
     (Windows), the raw ``mkdtemp`` path would no longer compare equal to the
@@ -36,7 +37,7 @@ def kraken_tempdir() -> Iterator[str]:
         # would report success), silently hiding test failures.
         for attempt in range(3):
             try:
-                _remove_tree(directory)
+                remove_tree(directory)
                 break
             except OSError:
                 if attempt == 2:

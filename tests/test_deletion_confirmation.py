@@ -61,6 +61,24 @@ def test_file_removal_requires_confirmation(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+def test_folder_removal_deletes_windows_reserved_dos_names(tmp_path: Path) -> None:
+    """Project folders contain an ``aux`` directory; Windows cannot remove it via
+    ``shutil.rmtree`` (the name resolves to the AUX device), which used to fail
+    the whole project deletion with WinError 145."""
+    from kraken_manager.infrastructure.workspace_files import _make_directory
+
+    project_dir = tmp_path / "Example"
+    _make_directory(project_dir / "aux")
+    (project_dir / "aux" / "note.txt").write_text("auxiliary", encoding="utf-8")
+    _make_directory(project_dir / "img")
+    (project_dir / "img" / "frame.jpg").write_bytes(b"frame")
+    remove_stored_path(
+        project_dir,
+        DeletionAuthorization.grant(name_matches=False, auto_confirm=True, policy_enabled=True),
+    )
+    assert not project_dir.exists()
+
+
 def test_reason_and_auto_confirm_setting_are_durable(tmp_path: Path) -> None:
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'admin.sqlite3'}")
     request_table().create(engine)

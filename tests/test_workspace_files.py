@@ -20,7 +20,7 @@ from kraken_manager.infrastructure.workspace_files import (
     WorkspaceRegistry,
     _directory_target,
     _make_directory,
-    _remove_tree,
+    remove_tree,
     validate_workspace_roots,
 )
 
@@ -647,7 +647,7 @@ def test_make_directory_and_remove_tree_handle_stem_extension_reserved_names(
     (target / "file.txt").write_text("data", encoding="utf-8")
     assert os.path.isdir(_directory_target(target))
 
-    _remove_tree(target)
+    remove_tree(target)
     assert not os.path.exists(_directory_target(target))
     assert os.path.isdir(_directory_target(tmp_path / "nested"))
 

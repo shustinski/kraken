@@ -101,7 +101,7 @@ def _make_directory(path: Path, *, exist_ok: bool = False) -> None:
         raise FileExistsError(f"Папка уже существует: {path}")
 
 
-def _remove_tree(root: Path, *, ignore_errors: bool = False) -> None:
+def remove_tree(root: Path, *, ignore_errors: bool = False) -> None:
     """Recursively remove *root*, like ``shutil.rmtree``.
 
     Every directory is addressed through ``_directory_target`` so reserved
@@ -200,7 +200,7 @@ def _copy_directory(source: Path, destination: Path) -> None:
         _copy_children(source, stage)
         os.replace(stage, destination)
     except Exception:
-        _remove_tree(stage, ignore_errors=True)
+        remove_tree(stage, ignore_errors=True)
         raise
 
 
@@ -404,8 +404,8 @@ class WorkspaceFileService:
             for final, stage in reversed(promoted):
                 if final.exists() and not stage.exists():
                     os.replace(final, stage)
-            _remove_tree(source_stage, ignore_errors=True)
-            _remove_tree(derived_stage, ignore_errors=True)
+            remove_tree(source_stage, ignore_errors=True)
+            remove_tree(derived_stage, ignore_errors=True)
             raise
         binding = ProjectWorkspaceBinding(
             project_id=str(project_id),
@@ -473,13 +473,13 @@ class WorkspaceFileService:
     def _remove_created_project_dirs(source_project: Path, derived_project: Path) -> None:
         for path in (source_project, derived_project):
             if path.is_dir() and not path.is_symlink():
-                _remove_tree(path)
+                remove_tree(path)
 
     @staticmethod
     def remove_project_layout(binding: ProjectWorkspaceBinding) -> None:
         for path in (Path(binding.source_project_dir), Path(binding.derived_project_dir)):
             if path.is_dir() and not path.is_symlink():
-                _remove_tree(path)
+                remove_tree(path)
 
     @staticmethod
     def remove_managed_layer_layout(binding: LayerFileBinding, project: ProjectWorkspaceBinding) -> None:
@@ -496,7 +496,7 @@ class WorkspaceFileService:
                 continue
             candidate = _contained(source_root, Path(value))
             if candidate.is_dir() and not candidate.is_symlink():
-                _remove_tree(candidate)
+                remove_tree(candidate)
 
     def scan(self, root: Path | str, *, maximum_frames: int) -> LayerSourceScan:
         return scan_layer_source(root, maximum_frames=maximum_frames)
@@ -574,12 +574,12 @@ class WorkspaceFileService:
                 _make_directory(source.parent, exist_ok=True)
                 os.replace(trash, source)
         for root in stage.trash_roots:
-            _remove_tree(root, ignore_errors=True)
+            remove_tree(root, ignore_errors=True)
 
     @staticmethod
     def purge_layer_deletion(stage: LayerDeletionStage) -> None:
         for root in stage.trash_roots:
-            _remove_tree(root, ignore_errors=True)
+            remove_tree(root, ignore_errors=True)
 
     def bind_external_layer(
         self,
@@ -691,7 +691,7 @@ class WorkspaceFileService:
             self.registry.save_layer(project.project_id, binding)
         except Exception:
             for directory in reversed(created):
-                _remove_tree(directory, ignore_errors=True)
+                remove_tree(directory, ignore_errors=True)
             raise
         return binding, tuple(created)
 
@@ -706,7 +706,7 @@ class WorkspaceFileService:
                 continue
             candidate = _contained(source_project, Path(directory))
             if candidate.is_dir() and not candidate.is_symlink():
-                _remove_tree(candidate)
+                remove_tree(candidate)
 
     def import_layer(
         self,
@@ -851,7 +851,7 @@ class WorkspaceFileService:
                     os.replace(final, _directory_target(staged))
             raise
         finally:
-            _remove_tree(stage, ignore_errors=True)
+            remove_tree(stage, ignore_errors=True)
 
         binding = LayerFileBinding(
             layer_id=str(layer_id),
@@ -1032,8 +1032,8 @@ class WorkspaceFileService:
                     os.replace(previous, destination)
                 raise
             finally:
-                _remove_tree(stage, ignore_errors=True)
-                _remove_tree(previous, ignore_errors=True)
+                remove_tree(stage, ignore_errors=True)
+                remove_tree(previous, ignore_errors=True)
         published = replace(
             run,
             state=DerivedRunState.SUCCEEDED,
@@ -1065,5 +1065,6 @@ class WorkspaceFileService:
 __all__ = [
     "WorkspaceFileService",
     "WorkspaceRegistry",
+    "remove_tree",
     "validate_workspace_roots",
 ]

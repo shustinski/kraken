@@ -20,7 +20,11 @@ from kraken_manager.domain.common import ProjectId
 from kraken_manager.domain.identity import Principal, ProjectRole
 from kraken_manager.infrastructure.auth.local import ScryptPasswordHasher
 from kraken_manager.infrastructure.postgres.account_store import PostgresAccountStore
-from kraken_manager.infrastructure.workspace_files import WorkspaceFileService, WorkspaceRegistry
+from kraken_manager.infrastructure.workspace_files import (
+    WorkspaceFileService,
+    WorkspaceRegistry,
+    remove_tree,
+)
 from kraken_server.project_deletion import DeletionRequests, operation
 from kraken_server.services import CommandContext, ConflictError, ForbiddenError
 
@@ -103,13 +107,11 @@ def test_deletion_without_workspace_registry_removes_project_folders(database):
 
 
 def test_deletion_without_folders_or_registry_removes_database_project(database):
-    import shutil
-
     services, accounts, person, config = database
     target = project(services, person, "Empty")
     binding = services.workspace_files.registry.get_project(target["project_id"])
-    shutil.rmtree(binding.source_project_dir)
-    shutil.rmtree(binding.derived_project_dir)
+    remove_tree(Path(binding.source_project_dir))
+    remove_tree(Path(binding.derived_project_dir))
     services.workspace_files.registry.remove_project(target["project_id"])
     request = services.request_project_deletion(target["project_id"], str(person.id))
     cleaner = ProjectDeletion(services, accounts, config)
@@ -141,8 +143,8 @@ def test_failed_cleanup_blocks_writes_and_can_resume(database, monkeypatch):
     request = services.request_project_deletion(target["project_id"], str(person.id))
     cleaner = ProjectDeletion(services, accounts, config)
     import kraken_admin.infrastructure.stored_files as module
-    remove = module.shutil.rmtree
-    monkeypatch.setattr(module.shutil, "rmtree", lambda *_: (_ for _ in ()).throw(OSError("disk failure")))
+    remove = module.remove_tree
+    monkeypatch.setattr(module, "remove_tree", lambda *_: (_ for _ in ()).throw(OSError("disk failure")))
     with pytest.raises(OSError, match="disk failure"):
         cleaner.execute(request["request_id"], target["name"], cleaner.preview(request["request_id"]))
     with pytest.raises(ConflictError):
@@ -152,7 +154,7 @@ def test_failed_cleanup_blocks_writes_and_can_resume(database, monkeypatch):
         with pytest.raises(sa.exc.DBAPIError):
             connection.execute(sa.text("UPDATE projects SET name = 'changed' WHERE project_id = :id"),
                                {"id": target["project_id"]})
-    monkeypatch.setattr(module.shutil, "rmtree", remove)
+    monkeypatch.setattr(module, "remove_tree", remove)
     cleaner.execute(request["request_id"], target["name"], cleaner.preview(request["request_id"]))
     assert DeletionRequests(services.engine).list()[0]["state"] == "deleted"
 

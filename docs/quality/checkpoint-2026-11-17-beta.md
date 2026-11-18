@@ -2,9 +2,12 @@
 
 Дата прогона: 2026-11-18. Ветвь: `beta-stabilization-w1w2`.
 
-Команда: `scripts/quality-gates.ps1 -Tier smoke,unit,integration,gui,stateful,e2e,regression,live`
-(запуск обёрткой `.test_runtime/run-full-gate-task10.ps1` — тот же шаблон, что обёртка
-Task 8, из-за ловушек кавытей PowerShell 5.1). В сессию подложен только
+Команда (фактически выполненная): обёртка `.test_runtime/run-full-gate-task10.ps1`,
+которая вызывает `scripts/quality-gates.ps1 -Tier smoke,unit,integration,gui,stateful,e2e,regression,live`
+— это полный набор слоёв («all»): литерального ключа `all` в скрипте нет, поэтому
+обёртка передаёт развёрнутый список (тот же шаблон, что обёртка Task 8, из-за ловушек
+кавычек/запятых PowerShell 5.1). Слой registry выполняется гейтом безусловно как
+пререквизит; тестов для слоя `extended` в плане нет. В сессию подложен только
 `KRAKEN_TEST_POSTGRES_URL` из файла стенда; `KRAKEN_LIVE_WORKER_CONFIG`, все
 `KRAKEN_RUN_*` и `KRAKEN_TEST_PG_BIN` намеренно сняты — см. «Known gaps».
 
@@ -124,15 +127,28 @@ BLOCKED/NOT_APPLICABLE. Как и в Task 8, ручные правки стат�
 ## Проверка свежести (гибридное правило)
 
 Метод: одноразовый скрипт `.test_runtime/freshness_check.py` (не коммитится) для
-каждого `beta:true` действия с вердиктом PASS находит JUnit-файлы, содержащие его
-маппинг тестов, и сверяет атрибут `timestamp` testsuite и `mtime` файла. Проверены
-**все 15** бета-PASS действий (при требовании ≥5 по слоям): 11 gui (HUB-CREATE-PROJECT,
-HUB-PROJECT-ROLES, HUB-ADD/EDIT/DELETE-PERFORMER, HUB-REVIEW-RETURN, HUB-ADD-LAYER,
-HUB-LAYER-CONTEXT, HUB-ADD-REPRESENTATION, HUB-ISSUE-WORK, HUB-STATISTICS) и 4
-integration (SRV-HEALTH-SESSION, SRV-PRINCIPALS, SRV-ARTIFACTS,
-PERSISTENT-GATEWAY-UPLOAD); опирающиеся junit gate-gui / gate-unit / gate-integration /
-gate-regression — все с timestamp и mtime 2026-11-18. Нарушений нет: каждый
-бета-PASS подкреплён доказательствами сегодняшнего дня.
+каждого `beta:true` действия с вердиктом PASS (по `coverage-report.json` этого прогона)
+находит JUnit-файлы, содержащие его маппинг тестов, и сверяет атрибут `timestamp`
+testsuite и `mtime` файла. Проверены **все 15** бета-PASS действий (при требовании ≥5
+по слоям): 11 gui (HUB-CREATE-PROJECT, HUB-PROJECT-ROLES, HUB-ADD/EDIT/DELETE-PERFORMER,
+HUB-REVIEW-RETURN, HUB-ADD-LAYER, HUB-LAYER-CONTEXT, HUB-ADD-REPRESENTATION,
+HUB-ISSUE-WORK, HUB-STATISTICS) и 4 integration (SRV-HEALTH-SESSION, SRV-PRINCIPALS,
+SRV-ARTIFACTS, PERSISTENT-GATEWAY-UPLOAD). Опирающиеся junit — все с timestamp и mtime
+2026-11-18: `gate-gui/junit.xml` (2026-11-18T16:46:06+03:00, 90 тестов / 0 failures),
+`gate-integration/junit.xml` (2026-11-18T16:42:58+03:00, 147/0), `gate-regression/junit(1).xml`
+(2026-11-18T16:47:21+03:00, 149/0), `gate-unit/junit(1).xml` (2026-11-18T16:30:03+03:00,
+1628/0). Нарушений нет: каждый бета-PASS подкреплён доказательствами сегодняшнего дня.
+
+Ручная spot-проверка 5 действий (action → маппинг теста → опирающий junit с фактическим
+`timestamp` из файла; пути относительно `docs/quality/evidence/2026-11-18/`):
+
+| Действие | Маппинг теста | Опирающий junit (testsuite `timestamp`) |
+|---|---|---|
+| HUB-PROJECT-ROLES | tests/test_remaining_qt_acceptance.py (файловый маппинг) | gate-gui/junit.xml (2026-11-18T16:46:06+03:00) |
+| HUB-STATISTICS | tests/test_statistics_reports.py::test_csv_preserves_nested_immutable_event_payload | gate-unit/junit(1).xml (16:30:03+03:00), gate-regression/junit(1).xml (16:47:21+03:00) |
+| SRV-PRINCIPALS | tests/test_registered_principal_before_session.py | gate-integration/junit.xml (16:42:58+03:00) |
+| SRV-ARTIFACTS | tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version | gate-integration/junit.xml (16:42:58+03:00) |
+| PERSISTENT-GATEWAY-UPLOAD | tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version | gate-regression/junit(1).xml (16:47:21+03:00) |
 
 ## Готовность beta:true действий (таблица для W3; колонку «W3 сценарий» заполняет W3, id не выдумываются)
 

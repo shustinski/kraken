@@ -340,6 +340,23 @@
       "fixed_in": "",
       "repro": "На dev-машине с закрытой сетью (pypi.org и download.pytorch.org недоступны — DNS fail): pytest tests/offline/test_pytorch_resolution.py -q — 2 failed: uv sync --directory <ROOT> --locked --dry-run --offline ... падает с «Failed to build contour @ file:///C:/code/kraken/plugins/contour → Failed to resolve requirements from build-system.requires … network was disabled, registry packages may only be read from the cache». Тот же корень у uv lock --check, который на этой машине тоже падает — это внешний prerequisite для W4-упаковки и для любой будущей правки зависимостей.",
       "exception_reason": "на закрытой машине тесты гейтятся пробом; полное исправление из трёх частей: (1) uv-кэш из G:\\kraken-transfer содержит pybind11 3.1.0, wheel 0.48.0 и setuptools — при UV_CACHE_DIR=G:\\kraken-transfer\\uv-cache metadata Contour собирается офлайн; (2) в uv.lock нет build-зависимостей contour (лок устарел относительно build-system.requires) — пересобрать `uv lock` нужно один раз с доступом к download.pytorch.org: в uv-кэше комплекта есть байты колёс torch, но нет страниц простого индекса cu132 (simple-v20 содержит только .lock без тела ответа), офлайн-резолвер не может перечислить версии; (3) упаковки корня и neuralimage объявляют requires-python=\">=3.14\" без верхней границы, и uv строит неразрешимый форк Python>=3.15, где torch 2.12 не публикуется — при пересборке лока поставить fence \">=3.14,<3.15\" (torch 2.12.0+cu132 существует только под 3.14); на закрытой машине это правка pyproject, применимая вместе с пересборкой лока. Кэш комплекта G:\\kraken-transfer\\uv-cache служит UV_CACHE_DIR-ускорителем офлайн-резолва всего, кроме страниц индекса cu132 (отметка войдёт в docs/quality/beta-stand.md при его создании)."
+    },
+    {
+      "id": "D22",
+      "component": "kraken_admin",
+      "title": "Удаление проекта через Admin падает на Windows: remove_stored_path чистит staged-дерево stdlib shutil.rmtree, который не удаляет каталог категории aux с зарезервированным DOS-именем (WinError 145)",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_deletion_confirmation.py::test_folder_removal_deletes_windows_reserved_dos_names"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-18/d22-red-probe.txt",
+        "docs/quality/evidence/2026-11-18/d22-green.txt",
+        "docs/quality/evidence/2026-11-18/gate-integration/receipt.json"
+      ],
+      "fixed_in": "0b6d946",
+      "repro": "На Windows: создать проект (продуктовая двухкорневая раскладка всегда содержит каталог категории aux), запросить и выполнить удаление проекта через Admin — ProjectDeletion.execute падает OSError [WinError 145] «Папка не пуста» в kraken_admin.infrastructure.stored_files.remove_stored_path -> shutil.rmtree на .kraken-trash/<request>/0. В интеграционном слое гейта 2026-11-18 (первый прогон со стенда): 6 failed в tests/test_admin_project_workflows.py. Минимальное воспроизведение механизма — shutil.rmtree дерева с aux: выживший элемент ровно aux (d22-red-probe.txt). Тот же класс, что D9/D10/D19, но на продуктовой стороне удаления."
     }
   ]
 }

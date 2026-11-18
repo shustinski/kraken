@@ -1,0 +1,38 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-18T08:02:07.2305601Z",
+    "tier":  "gui",
+    "command":  [
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_work_planning_dialog.py tests/test_quality_dialog.py tests/test_multilayer_dialog.py tests/test_electrical_dialog.py tests/test_computed_stitch_dialog.py tests/test_analysis_qt_ui.py tests/test_local_analysis_map_ui.py tests/test_work_templates_dialog.py tests/test_vector_stitch_dialog.py tests/test_remaining_qt_acceptance.py tests/test_layer_creation_dialog.py tests/test_layer_management_features.py tests/test_layer_menu_permissions.py tests/test_layer_menu_profiling.py tests/test_layer_pipeline_dialog.py tests/test_layer_workflow_repairs.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-dff259c246fa4173901d1fa7575cd4cf\\basetemp-gui --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-gui\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  90,
+    "passed":  90,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  47.46,
+    "status":  "PASS",
+    "note":  "",
+    "runs":  [
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_work_planning_dialog.py tests/test_quality_dialog.py tests/test_multilayer_dialog.py tests/test_electrical_dialog.py tests/test_computed_stitch_dialog.py tests/test_analysis_qt_ui.py tests/test_local_analysis_map_ui.py tests/test_work_templates_dialog.py tests/test_vector_stitch_dialog.py tests/test_remaining_qt_acceptance.py tests/test_layer_creation_dialog.py tests/test_layer_management_features.py tests/test_layer_menu_permissions.py tests/test_layer_menu_profiling.py tests/test_layer_pipeline_dialog.py tests/test_layer_workflow_repairs.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-dff259c246fa4173901d1fa7575cd4cf\\basetemp-gui --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-gui\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  90,
+                     "passed":  90,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  47.46,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

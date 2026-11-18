@@ -1,8 +1,5 @@
 """Actual CPU inference -> same Pipeline layer port -> mosaic; no training."""
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 import time
 from uuid import uuid4
@@ -14,40 +11,14 @@ from kraken_manager.domain.pipeline_layer import PipelineLayerContent, PipelineL
 from kraken_manager.domain.multilayer import MultilayerModel
 from kraken_manager.infrastructure.filesystem import FilesystemEventStore
 from kraken_manager.infrastructure.mosaic import MosaicReader
+from tests.helpers.cuda_gate import cuda_precondition_holds
 from tests.test_stitch_plan_workflow import geometry as geometry
 
 kraken_defect = "D15"
 
-_CUDA_PROBE_TIMEOUT_SECONDS = 300
-
-
-def _cuda_precondition_holds() -> bool:
-    """Whether torch answers the test's CUDA question without crashing the process.
-
-    The test body asserts ``torch.cuda.is_available()`` is False under
-    ``CUDA_VISIBLE_DEVICES=-1`` (it runs pure CPU inference). On a machine whose
-    torch build crashes (Windows STATUS_ACCESS_VIOLATION) in the CUDA init path
-    instead of returning, that in-process call kills the whole pytest process,
-    so the precondition is probed in a disposable subprocess first (D15.1):
-    exit 0 means "no usable CUDA device and the call completed" (the test may
-    run); a crash, timeout, or non-zero exit means it must skip.
-    """
-    probe = "import sys, torch; sys.exit(0 if not torch.cuda.is_available() else 1)"
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1"}
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", probe],
-            capture_output=True,
-            timeout=_CUDA_PROBE_TIMEOUT_SECONDS,
-            env=env,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
-
 
 def test_actual_inference_outputs_are_sampled_without_replacing_geometry(geometry, tmp_path, monkeypatch):
-    if not _cuda_precondition_holds():
+    if not cuda_precondition_holds():
         pytest.skip("no usable CUDA device (probe exited/crashed)")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
     monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")

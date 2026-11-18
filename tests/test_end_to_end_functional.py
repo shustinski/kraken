@@ -18,9 +18,18 @@ import zipfile
 
 import pytest
 
+from tests.helpers.cuda_gate import cuda_precondition_holds
+
 
 @pytest.mark.skipif(os.environ.get("KRAKEN_RUN_END_TO_END_FUNCTIONAL") != "1", reason="Explicit bounded single-project E2E")
 def test_single_project_twenty_stage_functional_lifecycle(tmp_path):
+    # The gate subprocess forces bounded CPU training via CUDA_VISIBLE_DEVICES=-1.
+    # On a machine whose torch CUDA init path crashes instead of answering (D15.1),
+    # that value kills the training plugin process (STATUS_ACCESS_VIOLATION inside
+    # torch.cuda.is_available), so the precondition is probed in a disposable
+    # subprocess first; a crash means this tier must skip on this machine.
+    if not cuda_precondition_holds():
+        pytest.skip("no usable CUDA device (probe exited/crashed)")
     environment = dict(os.environ, CUDA_VISIBLE_DEVICES="-1" if os.name == "nt" else "",
         QT_QPA_PLATFORM="offscreen", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1",
         NEURALIMAGE_TORCH_COMPILE="0", KRAKEN_PROJECT_ACCESS_MODE="acl")

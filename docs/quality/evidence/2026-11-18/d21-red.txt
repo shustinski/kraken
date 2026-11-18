@@ -1,0 +1,130 @@
+FF                                                                       [100%]
+================================== FAILURES ===================================
+_____________ test_root_all_extras_and_groups_do_not_select_torch _____________
+
+    def test_root_all_extras_and_groups_do_not_select_torch() -> None:
+>       output = _dry_run("--all-groups", "--all-extras")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\offline\test_pytorch_resolution.py:49: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+extra = ('--all-groups', '--all-extras')
+scratch = 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpjt0irg0j'
+completed = CompletedProcess(args=['uv', 'sync', '--directory', 'C:\\code\\kraken', '--locked', '--dry-run', '--offline', '--all-g...etwork was disabled. When\n      the network is disabled, registry packages may only be read from the\n      cache.\n')
+@py_assert1 = 1
+
+    def _dry_run(*extra: str) -> str:
+        """``uv sync --dry-run`` against a throwaway empty project environment (D17).
+    
+        The dry run reports the difference between the locked resolution and the
+        current project environment. Diffing against the machine's real ``.venv``
+        makes the assertions state-dependent: with torch already installed it
+        appears in the "Would uninstall" list (and with it missing from a
+        workspace sync it appears in none). Pointing ``UV_PROJECT_ENVIRONMENT`` at
+        a fresh empty directory makes the result depend only on ``uv.lock``.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            completed = subprocess.run(
+                [
+                    "uv",
+                    "sync",
+                    "--directory",
+                    str(ROOT),
+                    "--locked",
+                    "--dry-run",
+                    "--offline",
+                    *extra,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=dict(os.environ, UV_PROJECT_ENVIRONMENT=scratch),
+            )
+>       assert completed.returncode == 0, completed.stderr
+E       AssertionError: Using CPython 3.14.7 interpreter at: C:\Program Files\Python314\python.exe
+E         Would create project environment at: C:\Users\SHUSTI~1.A\AppData\Local\Temp\tmpjt0irg0j
+E           \xd7 Failed to build `contour @ file:///C:/code/kraken/plugins/contour`
+E           \u251c\u2500\u25b6 Failed to resolve requirements from `build-system.requires`
+E           \u251c\u2500\u25b6 No solution found when resolving: `setuptools>=68`, `wheel`,
+E           \u2502   `pybind11>=3.1`
+E           \u2570\u2500\u25b6 Because setuptools was not found in the cache and you require
+E               setuptools>=68, we can conclude that your requirements are
+E               unsatisfiable.
+E         
+E               hint: Packages were unavailable because the network was disabled. When
+E               the network is disabled, registry packages may only be read from the
+E               cache.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['uv', 'sync', '--directory', 'C:\\code\\kraken', '--locked', '--dry-run', '--offline', '--all-g...etwork was disabled. When\n      the network is disabled, registry packages may only be read from the\n      cache.\n').returncode
+
+tests\offline\test_pytorch_resolution.py:44: AssertionError
+_________ test_workspace_all_packages_selects_cuda_132_torch_not_cpu __________
+
+    def test_workspace_all_packages_selects_cuda_132_torch_not_cpu() -> None:
+>       output = _dry_run("--all-packages", "--all-groups", "--all-extras")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\offline\test_pytorch_resolution.py:55: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+extra = ('--all-packages', '--all-groups', '--all-extras')
+scratch = 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpnbwns0gi'
+completed = CompletedProcess(args=['uv', 'sync', '--directory', 'C:\\code\\kraken', '--locked', '--dry-run', '--offline', '--all-p...etwork was disabled. When\n      the network is disabled, registry packages may only be read from the\n      cache.\n')
+@py_assert1 = 1
+
+    def _dry_run(*extra: str) -> str:
+        """``uv sync --dry-run`` against a throwaway empty project environment (D17).
+    
+        The dry run reports the difference between the locked resolution and the
+        current project environment. Diffing against the machine's real ``.venv``
+        makes the assertions state-dependent: with torch already installed it
+        appears in the "Would uninstall" list (and with it missing from a
+        workspace sync it appears in none). Pointing ``UV_PROJECT_ENVIRONMENT`` at
+        a fresh empty directory makes the result depend only on ``uv.lock``.
+        """
+        with tempfile.TemporaryDirectory() as scratch:
+            completed = subprocess.run(
+                [
+                    "uv",
+                    "sync",
+                    "--directory",
+                    str(ROOT),
+                    "--locked",
+                    "--dry-run",
+                    "--offline",
+                    *extra,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=dict(os.environ, UV_PROJECT_ENVIRONMENT=scratch),
+            )
+>       assert completed.returncode == 0, completed.stderr
+E       AssertionError: Using CPython 3.14.7 interpreter at: C:\Program Files\Python314\python.exe
+E         Would create project environment at: C:\Users\SHUSTI~1.A\AppData\Local\Temp\tmpnbwns0gi
+E           \xd7 Failed to build `contour @ file:///C:/code/kraken/plugins/contour`
+E           \u251c\u2500\u25b6 Failed to resolve requirements from `build-system.requires`
+E           \u251c\u2500\u25b6 No solution found when resolving: `setuptools>=68`, `wheel`,
+E           \u2502   `pybind11>=3.1`
+E           \u2570\u2500\u25b6 Because setuptools was not found in the cache and you require
+E               setuptools>=68, we can conclude that your requirements are
+E               unsatisfiable.
+E         
+E               hint: Packages were unavailable because the network was disabled. When
+E               the network is disabled, registry packages may only be read from the
+E               cache.
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['uv', 'sync', '--directory', 'C:\\code\\kraken', '--locked', '--dry-run', '--offline', '--all-p...etwork was disabled. When\n      the network is disabled, registry packages may only be read from the\n      cache.\n').returncode
+
+tests\offline\test_pytorch_resolution.py:44: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch
+FAILED tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu
+2 failed in 0.49s

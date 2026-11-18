@@ -322,6 +322,24 @@
       ],
       "fixed_in": "",
       "repro": "На Windows-машине с on-access антивирусом под нагрузкой: тело test_account_sessions_are_opaque_revocable_and_persistent зелёное, но TemporaryDirectory.__exit__ падает: os.unlink('...\\accounts.sqlite3') — WinError 32 (файл занят другим процессом) либо os.rmdir(tempdir) — WinError 145 «Папка не пуста», т.к. между обходом rmtree и финальным rmdir в каталоге появляется мимолётный ACCOUNTS.SQLITE3-SHM.tmp (создаётся и удаляется внешним процессом; в bundled sqlite3.dll 3.50.4 нет строки '.tmp' вовсе). Воспроизводится стресс-циклом тела теста с CPU-нагрузкой: в %TEMP% — 2-3 падения за ~1500 итераций, в C:\\code\\kraken\\.codex_tmp_scratch\\stressroot — 3 падения за 13 итераций; детерминированные RED-сценарии — docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt."
+    },
+    {
+      "id": "D21",
+      "component": "test_harness",
+      "title": "На закрытой машине офлайн-резолв uv невозможен: locked-тесты PyTorch-резолвции падают (build-зависимости contour вне кэша, страницы индекса cu132 не кэшированы, неразрешимый форк Python>=3.15)",
+      "status": "OPEN",
+      "severity": "major",
+      "regression_tests": [
+        "tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch",
+        "tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-18/d21-red.txt",
+        "docs/quality/evidence/2026-11-18/d21-green.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На dev-машине с закрытой сетью (pypi.org и download.pytorch.org недоступны — DNS fail): pytest tests/offline/test_pytorch_resolution.py -q — 2 failed: uv sync --directory <ROOT> --locked --dry-run --offline ... падает с «Failed to build contour @ file:///C:/code/kraken/plugins/contour → Failed to resolve requirements from build-system.requires … network was disabled, registry packages may only be read from the cache». Тот же корень у uv lock --check, который на этой машине тоже падает — это внешний prerequisite для W4-упаковки и для любой будущей правки зависимостей.",
+      "exception_reason": "на закрытой машине тесты гейтятся пробом; полное исправление из трёх частей: (1) uv-кэш из G:\\kraken-transfer содержит pybind11 3.1.0, wheel 0.48.0 и setuptools — при UV_CACHE_DIR=G:\\kraken-transfer\\uv-cache metadata Contour собирается офлайн; (2) в uv.lock нет build-зависимостей contour (лок устарел относительно build-system.requires) — пересобрать `uv lock` нужно один раз с доступом к download.pytorch.org: в uv-кэше комплекта есть байты колёс torch, но нет страниц простого индекса cu132 (simple-v20 содержит только .lock без тела ответа), офлайн-резолвер не может перечислить версии; (3) упаковки корня и neuralimage объявляют requires-python=\">=3.14\" без верхней границы, и uv строит неразрешимый форк Python>=3.15, где torch 2.12 не публикуется — при пересборке лока поставить fence \">=3.14,<3.15\" (torch 2.12.0+cu132 существует только под 3.14); на закрытой машине это правка pyproject, применимая вместе с пересборкой лока. Кэш комплекта G:\\kraken-transfer\\uv-cache служит UV_CACHE_DIR-ускорителем офлайн-резолва всего, кроме страниц индекса cu132 (отметка войдёт в docs/quality/beta-stand.md при его создании)."
     }
   ]
 }

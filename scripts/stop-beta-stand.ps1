@@ -200,11 +200,23 @@ if ($KeepDatabase) {
     Write-Host "beta-stand: keeping database $($state.db_name) (-KeepDatabase)"
 }
 elseif (Test-Path -LiteralPath $baseDbSecret) {
-    $dropArguments = @($helper, 'db-drop', '--source-secret', $baseDbSecret, '--database', [string]$state.db_name)
-    if ([string]$state.db_mode -eq 'schema') { $dropArguments += @('--schema', [string]$state.db_name) }
-    $drop = Invoke-NativeCapture -Exe $python -Arguments $dropArguments
-    if ($drop.Exit -eq 0) { Report 'drop-database' $true ($drop.Lines -join ' ') }
-    else { Report 'drop-database' $false ($drop.Lines -join ' ') }
+    # Same shared guard as the start script (db-drop also refuses reserved
+    # names itself): a recorded name pointing at the working database or the
+    # public schema must never reach DROP.
+    $dropMode = if ([string]$state.db_mode -eq 'schema') { 'schema' } else { 'database' }
+    $nameCheck = Invoke-NativeCapture -Exe $python -Arguments @(
+        $helper, 'check-database-name', '--source-secret', $baseDbSecret,
+        '--database', [string]$state.db_name, '--mode', $dropMode)
+    if ($nameCheck.Exit -ne 0) {
+        Report 'drop-database' $false ('recorded name refused: ' + ($nameCheck.Lines -join ' '))
+    }
+    else {
+        $dropArguments = @($helper, 'db-drop', '--source-secret', $baseDbSecret, '--database', [string]$state.db_name)
+        if ($dropMode -eq 'schema') { $dropArguments += @('--schema', [string]$state.db_name) }
+        $drop = Invoke-NativeCapture -Exe $python -Arguments $dropArguments
+        if ($drop.Exit -eq 0) { Report 'drop-database' $true ($drop.Lines -join ' ') }
+        else { Report 'drop-database' $false ($drop.Lines -join ' ') }
+    }
 }
 else {
     Report 'drop-database' $false 'config/local/database-url.secret not found'

@@ -216,6 +216,17 @@ if (-not (Test-Path -LiteralPath $baseDbSecret -PathType Leaf)) {
     $preconditionsOk = $false
 }
 if (-not $preconditionsOk) { exit 1 }
+# Guard the dedicated name BEFORE any DDL: it must never be the working
+# database, a maintenance/template database, or (schema-fallback mode) a
+# reserved schema such as public. Checked with the strictest mode because
+# provisioning may fall back to schema mode.
+$nameCheck = Invoke-NativeCapture -Exe $python -Arguments @(
+    $helper, 'check-database-name', '--source-secret', $baseDbSecret,
+    '--database', $DatabaseName, '--mode', 'schema')
+if ($nameCheck.Exit -ne 0) {
+    Report 'preconditions' $false ('-DatabaseName refused: ' + ($nameCheck.Lines -join ' '))
+    exit 1
+}
 New-Item -ItemType Directory -Path $standDir, $logsDir, $resultsDir -Force | Out-Null
 
 $state = $null
@@ -237,7 +248,8 @@ else {
         $helper, 'db-provision', '--source-secret', $baseDbSecret,
         '--destination-secret', $dbSecret, '--database', $DatabaseName, '--reset')
     if ($provision.Exit -ne 0) {
-        Write-Host '[beta-stand] CREATE DATABASE failed for the app role; falling back to a dedicated SCHEMA'
+        Write-Host ('[beta-stand] CREATE DATABASE failed (' + ($provision.Lines -join ' ') +
+            '); falling back to a dedicated SCHEMA')
         $provision = Invoke-NativeCapture -Exe $python -Arguments @(
             $helper, 'db-provision', '--source-secret', $baseDbSecret,
             '--destination-secret', $dbSecret, '--database', $DatabaseName, '--reset', '--mode', 'schema')

@@ -135,6 +135,12 @@ closed-network machines (contour build deps; cu132 index pages not cached).
 
 ## Свойства идемпотентности (проверено)
 
+- **Guard имени БД/схемы:** `-DatabaseName` проверяется ДО любого DDL
+  (`check-database-name`, та же функция в `db-provision`/`db-drop`): отказать
+  рабочему `kraken_local` (из base URL), `postgres`, `template*`, а в режиме
+  схемы — `public`, `information_schema`, `pg_*`. `FAIL preconditions`,
+  exit 1, ни одного подключения. Покрыто `tests/test_beta_stand_guard.py`.
+
 - Старт при живом стенде: все компоненты `PASS`/reused, БД не сбрасывается.
 - Старт после падения Server'а: БД сбрасывается (`--reset`), миграции до head,
   аккаунт/проект/токены пересоздаются.

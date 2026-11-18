@@ -12,6 +12,8 @@ Subcommands (each is idempotent; the start script owns the ordering):
 * ``render-server-config``  build the stand's server.toml from
   ``config/local/server.toml`` with a dedicated database secret name and an
   optional Blob Gateway executable.
+* ``check-database-name``   offline guard used by both PowerShell scripts:
+  refuse reserved/working database and schema names BEFORE any DDL.
 * ``db-provision``          create (or reset) the dedicated PostgreSQL
   database and write its DPAPI URL secret. ``--mode schema`` is the
   documented fallback when the app role lacks CREATEDB (separate SCHEMA in
@@ -44,10 +46,54 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import SQLAlchemyError
 
 from kraken_server.configuration import protect_secret, unprotect_secret
 
 _IDENTIFIER = re.compile(r'^[a-z_][a-z0-9_$]*$')
+
+# Reserved database names: the stand may never terminate connections to or
+# DROP these (the working base URL database is added per invocation).
+_RESERVED_DATABASES = frozenset({'postgres'})
+# Reserved schema names for the schema-fallback mode; ``pg_`` prefixes cover
+# pg_catalog/pg_toast/pg_temp_*.
+_RESERVED_SCHEMAS = frozenset({'public', 'information_schema'})
+
+
+def validate_stand_name(name: str, base_database: str, mode: str) -> str:
+    """Return '' when ``name`` is a safe dedicated stand object, else a reason.
+
+    Runs BEFORE any database connection: one wrong ``-DatabaseName`` must
+    never reach ``DROP DATABASE``/``DROP SCHEMA ... CASCADE`` on the working
+    database (``kraken_local``) or the working ``public`` schema. ``mode`` is
+    'database' or 'schema'; schema mode additionally protects the schema
+    namespace (public, information_schema, pg_*).
+    """
+    if not _IDENTIFIER.match(name or ''):
+        return f"unsafe PostgreSQL identifier: {name!r}"
+    lowered = name.lower()
+    if base_database and lowered == base_database.lower():
+        return f"refuses to reuse the base database {base_database!r}; the stand needs a dedicated name"
+    if lowered in _RESERVED_DATABASES or lowered.startswith('template'):
+        return f"{name!r} is a reserved PostgreSQL database"
+    if mode == 'schema':
+        if lowered in _RESERVED_SCHEMAS:
+            return f"{name!r} is a reserved schema and must not be dropped or reset"
+        if lowered.startswith('pg_'):
+            return f"schema names beginning with pg_ are reserved ({name!r})"
+    return ''
+
+
+def _check_database_name(args: argparse.Namespace) -> int:
+    # Precondition probe for the PowerShell scripts: validates the name
+    # against the base URL's database WITHOUT connecting anywhere.
+    base_database = make_url(unprotect_secret(Path(args.source_secret))).database or 'postgres'
+    reason = validate_stand_name(args.database, base_database, args.mode)
+    if reason:
+        print(json.dumps({'ok': False, 'database': args.database, 'mode': args.mode, 'reason': reason}))
+        return 1
+    print(json.dumps({'ok': True, 'database': args.database, 'mode': args.mode}))
+    return 0
 
 
 def _quoted(identifier: str) -> str:
@@ -74,12 +120,15 @@ def _terminate_connections(engine, database: str) -> None:
 
 def _db_provision(args: argparse.Namespace) -> int:
     source = unprotect_secret(Path(args.source_secret))
+    base_database = make_url(source).database or 'postgres'
+    # The guard precedes every connection/DDL statement (see validate_stand_name).
+    if reason := validate_stand_name(args.database, base_database, args.mode):
+        raise SystemExit(f'db-provision: {reason}')
     target_url = make_url(source).set(database=args.database)
     if args.mode == 'schema':
         # Documented fallback: a dedicated SCHEMA inside the base database
         # (used only when the role cannot CREATE DATABASE). The base schema
         # data of the working database stays untouched.
-        base_database = make_url(source).database or 'postgres'
         schema = _quoted(args.database)
         with _maintenance_engine(source, base_database).connect() as connection:
             exists = connection.execute(
@@ -99,18 +148,22 @@ def _db_provision(args: argparse.Namespace) -> int:
                           'schema': args.database,
                           'status': 'reset' if args.reset and exists else ('reused' if exists else 'created')}))
         return 0
-    with _maintenance_engine(source, 'postgres') as engine, engine.connect() as connection:
-        exists = connection.execute(
-            text('select 1 from pg_database where datname = :name'), {'name': args.database}).scalar()
-        status = 'reused'
-        if exists and args.reset:
-            _terminate_connections(engine, args.database)
-            connection.execute(text(f'drop database {_quoted(args.database)}'))
-            exists = None
-            status = 'reset'
-        if not exists:
-            connection.execute(text(f'create database {_quoted(args.database)}'))
-            status = 'created' if status != 'reset' else status
+    engine = _maintenance_engine(source, 'postgres')
+    try:
+        with engine.connect() as connection:
+            exists = connection.execute(
+                text('select 1 from pg_database where datname = :name'), {'name': args.database}).scalar()
+            status = 'reused'
+            if exists and args.reset:
+                _terminate_connections(engine, args.database)
+                connection.execute(text(f'drop database {_quoted(args.database)}'))
+                exists = None
+                status = 'reset'
+            if not exists:
+                connection.execute(text(f'create database {_quoted(args.database)}'))
+                status = 'created' if status != 'reset' else status
+    except SQLAlchemyError as error:
+        raise SystemExit(f'db-provision: {str(error).splitlines()[0][:300]}') from error
     protect_secret(target_url.render_as_string(hide_password=False), Path(args.destination_secret))
     print(json.dumps({'mode': 'database', 'database': args.database, 'status': status}))
     return 0
@@ -118,14 +171,20 @@ def _db_provision(args: argparse.Namespace) -> int:
 
 def _db_drop(args: argparse.Namespace) -> int:
     source = unprotect_secret(Path(args.source_secret))
+    base_database = make_url(source).database or 'postgres'
     if args.schema:
-        base_database = make_url(source).database or 'postgres'
+        # Same guard as provisioning: teardown must never drop a reserved name.
+        if reason := validate_stand_name(args.schema, base_database, 'schema'):
+            raise SystemExit(f'db-drop: {reason}')
         with _maintenance_engine(source, base_database).connect() as connection:
             connection.execute(text(f'drop schema if exists {_quoted(args.schema)} cascade'))
         print(json.dumps({'mode': 'schema', 'database': base_database,
                           'schema': args.schema, 'status': 'dropped'}))
         return 0
-    with _maintenance_engine(source, 'postgres') as engine, engine.connect() as connection:
+    if reason := validate_stand_name(args.database, base_database, 'database'):
+        raise SystemExit(f'db-drop: {reason}')
+    engine = _maintenance_engine(source, 'postgres')
+    with engine.connect() as connection:
         _terminate_connections(engine, args.database)
         connection.execute(text(f'drop database if exists {_quoted(args.database)}'))
     print(json.dumps({'mode': 'database', 'database': args.database, 'status': 'dropped'}))
@@ -342,6 +401,12 @@ def main() -> int:
     sub.add_argument('--gateway-executable', required=True, help='absolute path, or "none"')
     sub.add_argument('--gateway-secret-name', default='blob-gateway.secret')
     sub.set_defaults(handler=_render_server_config)
+
+    sub = commands.add_parser('check-database-name')
+    sub.add_argument('--source-secret', required=True)
+    sub.add_argument('--database', required=True)
+    sub.add_argument('--mode', choices=('database', 'schema'), default='schema')
+    sub.set_defaults(handler=_check_database_name)
 
     sub = commands.add_parser('db-provision')
     sub.add_argument('--source-secret', required=True)

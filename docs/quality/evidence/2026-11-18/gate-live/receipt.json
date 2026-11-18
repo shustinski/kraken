@@ -1,9 +1,9 @@
 ﻿{
     "gate":  "quality-gates",
-    "timestamp":  "2026-11-18T04:22:35.6109068Z",
+    "timestamp":  "2026-11-18T13:49:33.8671408Z",
     "tier":  "live",
     "command":  [
-                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f9ad304267fb45fdb6dc06ada7640f89\\basetemp-live --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml"
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-live --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml"
                 ],
     "exit_code":  0,
     "tests":  25,
@@ -24,12 +24,12 @@
                           "tests.test_pipeline_live_neural_model::test_actual_cpu_training_to_pipeline_model_port_and_inference",
                           "tests.test_neuralimage_headless_training::test_actual_headless_training_publishes_real_model_and_applied_workflow"
                       ],
-    "duration_seconds":  1.488,
+    "duration_seconds":  1.254,
     "status":  "PARTIAL",
     "note":  "11 test(s) skipped; skipped tests are never counted as pass",
     "runs":  [
                  {
-                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f9ad304267fb45fdb6dc06ada7640f89\\basetemp-live --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml",
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_live_server_plugin_chain.py tests/test_live_server_worker_acceptance.py tests/test_live_ui_workflow.py tests/test_pipeline_live_contour.py tests/test_pipeline_live_neural_model.py tests/test_neuralimage_headless_training.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-live --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml",
                      "exit_code":  0,
                      "tests":  25,
                      "passed":  14,
@@ -49,7 +49,7 @@
                                            "tests.test_pipeline_live_neural_model::test_actual_cpu_training_to_pipeline_model_port_and_inference",
                                            "tests.test_neuralimage_headless_training::test_actual_headless_training_publishes_real_model_and_applied_workflow"
                                        ],
-                     "duration_seconds":  1.488,
+                     "duration_seconds":  1.254,
                      "junit":  "junit.xml",
                      "log":  "pytest.txt",
                      "note":  ""

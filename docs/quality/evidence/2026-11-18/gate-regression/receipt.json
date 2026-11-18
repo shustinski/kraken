@@ -1,0 +1,63 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-18T13:49:31.7105079Z",
+    "tier":  "regression",
+    "command":  [
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/offline/test_offline_sync.py tests/offline/test_pytorch_resolution.py tests/test_create_project_dialog_retry.py tests/test_hub_embedded_service.py tests/test_hub_resume_remote_failure.py tests/test_karakal_agent_headless.py tests/test_layer_creation_dialog.py tests/test_local_auth.py tests/test_metadata_layer_deletion.py tests/test_pipeline_stitch_live_content.py tests/test_plugin_app_v1_bridges.py tests/test_project_create_idempotency.py tests/test_quality_dialog.py tests/test_registered_principal_before_session.py tests/test_remaining_qt_acceptance.py tests/test_server_managed_upload_preflight.py tests/test_server_workspace_inputs_parts/interactive_contour_opens.py tests/test_statistics_reports.py tests/test_two_root_service.py tests/test_workspace_files.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-regression(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(1).xml",
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit/test_frame_asset_sync.py plugins/contour/tests/unit/test_frame_switch_profiler.py plugins/contour/tests/unit/test_frames_per_row_launch.py plugins/contour/tests/unit/test_kraken_return.py plugins/contour/tests/unit/test_settings_store.py --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-regression(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(2).xml"
+                ],
+    "exit_code":  0,
+    "tests":  185,
+    "passed":  180,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  5,
+    "skipped_tests":  [
+                          "tests.offline.test_offline_sync::test_verify_installs_from_transfer_cache_and_empty_cache_fails",
+                          "tests.offline.test_offline_sync::test_repeated_export_reuses_dependency_cache",
+                          "tests.offline.test_pytorch_resolution::test_root_all_extras_and_groups_do_not_select_torch",
+                          "tests.offline.test_pytorch_resolution::test_workspace_all_packages_selects_cuda_132_torch_not_cpu",
+                          "tests.test_pipeline_stitch_live_content::test_actual_inference_outputs_are_sampled_without_replacing_geometry"
+                      ],
+    "duration_seconds":  128.255,
+    "status":  "PARTIAL",
+    "note":  "5 test(s) skipped; skipped tests are never counted as pass",
+    "runs":  [
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/offline/test_offline_sync.py tests/offline/test_pytorch_resolution.py tests/test_create_project_dialog_retry.py tests/test_hub_embedded_service.py tests/test_hub_resume_remote_failure.py tests/test_karakal_agent_headless.py tests/test_layer_creation_dialog.py tests/test_local_auth.py tests/test_metadata_layer_deletion.py tests/test_pipeline_stitch_live_content.py tests/test_plugin_app_v1_bridges.py tests/test_project_create_idempotency.py tests/test_quality_dialog.py tests/test_registered_principal_before_session.py tests/test_remaining_qt_acceptance.py tests/test_server_managed_upload_preflight.py tests/test_server_workspace_inputs_parts/interactive_contour_opens.py tests/test_statistics_reports.py tests/test_two_root_service.py tests/test_workspace_files.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-regression(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(1).xml",
+                     "exit_code":  0,
+                     "tests":  149,
+                     "passed":  144,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  5,
+                     "skipped_tests":  [
+                                           "tests.offline.test_offline_sync::test_verify_installs_from_transfer_cache_and_empty_cache_fails",
+                                           "tests.offline.test_offline_sync::test_repeated_export_reuses_dependency_cache",
+                                           "tests.offline.test_pytorch_resolution::test_root_all_extras_and_groups_do_not_select_torch",
+                                           "tests.offline.test_pytorch_resolution::test_workspace_all_packages_selects_cuda_132_torch_not_cpu",
+                                           "tests.test_pipeline_stitch_live_content::test_actual_inference_outputs_are_sampled_without_replacing_geometry"
+                                       ],
+                     "duration_seconds":  127.151,
+                     "junit":  "junit(1).xml",
+                     "log":  "pytest(1).txt",
+                     "note":  ""
+                 },
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit/test_frame_asset_sync.py plugins/contour/tests/unit/test_frame_switch_profiler.py plugins/contour/tests/unit/test_frames_per_row_launch.py plugins/contour/tests/unit/test_kraken_return.py plugins/contour/tests/unit/test_settings_store.py --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-regression(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(2).xml",
+                     "exit_code":  0,
+                     "tests":  36,
+                     "passed":  36,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  1.104,
+                     "junit":  "junit(2).xml",
+                     "log":  "pytest(2).txt",
+                     "note":  ""
+                 }
+             ]
+}

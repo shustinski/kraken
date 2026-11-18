@@ -22,4 +22,4 @@ SKIPPED [1] tests\test_server_backup.py:286: KRAKEN_TEST_POSTGRES_URL and KRAKEN
 SKIPPED [1] tests\test_server_backup.py:349: KRAKEN_TEST_POSTGRES_URL and KRAKEN_TEST_PG_BIN required for native backup/restore
 SKIPPED [1] tests\test_server_backup.py:364: KRAKEN_TEST_POSTGRES_URL and KRAKEN_TEST_PG_BIN required for native backup/restore
 SKIPPED [1] tests\test_server_backup.py:397: KRAKEN_TEST_POSTGRES_URL and KRAKEN_TEST_PG_BIN required for native backup/restore
-123 passed, 24 skipped, 1 warning in 190.43s (0:03:10)
+123 passed, 24 skipped, 1 warning in 181.30s (0:03:01)

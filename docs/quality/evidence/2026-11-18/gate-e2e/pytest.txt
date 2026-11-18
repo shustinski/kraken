@@ -1,0 +1,4 @@
+﻿s                                                                        [100%]
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_end_to_end_functional.py:32: no usable CUDA device (probe exited/crashed)
+1 skipped in 14.35s

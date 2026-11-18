@@ -1,0 +1,38 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-18T13:30:00.8510471Z",
+    "tier":  "registry",
+    "command":  [
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_quality_registry.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-registry --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-registry\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  13,
+    "passed":  13,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  1.293,
+    "status":  "PASS",
+    "note":  "",
+    "runs":  [
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_quality_registry.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-registry --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-registry\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  13,
+                     "passed":  13,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  0,
+                     "skipped_tests":  [
+
+                                       ],
+                     "duration_seconds":  1.293,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

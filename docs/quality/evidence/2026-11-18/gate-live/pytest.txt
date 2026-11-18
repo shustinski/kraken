@@ -11,4 +11,4 @@ SKIPPED [1] tests\test_live_ui_workflow.py:406: KRAKEN_UI_TEST_CONFIG must point
 SKIPPED [1] tests\test_pipeline_live_contour.py:23: explicit real Agent/Contour execution gate
 SKIPPED [1] tests\test_pipeline_live_neural_model.py:21: Explicit bounded actual CPU model gate
 SKIPPED [1] tests\test_neuralimage_headless_training.py:79: Explicit actual NeuralImage training subprocess gate
-14 passed, 11 skipped in 1.54s
+14 passed, 11 skipped in 1.31s

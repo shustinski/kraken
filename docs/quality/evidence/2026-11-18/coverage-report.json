@@ -1,0 +1,224 @@
+{
+  "generated_at": "2026-11-18T13:49:35+00:00",
+  "registry": "docs\\quality\\registry",
+  "junit_files": [
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-e2e\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-gui\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-integration\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-registry\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(1).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(2).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-smoke\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-unit\\junit(1).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-unit\\junit(2).xml"
+  ],
+  "base": "HEAD~1",
+  "metrics": {
+    "ui_actions": {
+      "covered": 12,
+      "total": 48,
+      "status_breakdown": {
+        "PASS": 12,
+        "FAIL": 0,
+        "PARTIAL": 0,
+        "BLOCKED": 1,
+        "NOT_TESTED": 35,
+        "NOT_APPLICABLE": 0
+      },
+      "uncovered": [
+        "AGT-HEALTH",
+        "AGT-OP-BINARY-SEGMENT",
+        "AGT-OP-DATASET-PREPARE",
+        "AGT-OP-TRAIN",
+        "AGT-OP-VECTORIZE",
+        "BLOB-PUT-GET-RESTART",
+        "HUB-ADMIN-REFRESH",
+        "HUB-ARCHIVE-PROJECT",
+        "HUB-BIND-WORKSPACE",
+        "HUB-BOOTSTRAP-ACCOUNT",
+        "HUB-CHECK-UPDATES",
+        "HUB-CONFIGURE-ROOTS",
+        "HUB-CONNECT-SAVED-SERVER",
+        "HUB-DELETE-PROJECT",
+        "HUB-EXPORT-BACKUP",
+        "HUB-IMPORT-BACKUP",
+        "HUB-LOGIN",
+        "HUB-LOGIN-TABBED",
+        "HUB-MATRIX-CONTEXT",
+        "HUB-MY-WORK",
+        "HUB-OPEN-PROJECT",
+        "HUB-PLUGINS",
+        "HUB-PREFERENCES",
+        "HUB-PROJECT-PROPERTIES",
+        "HUB-REFRESH-CATALOG",
+        "HUB-RENAME-PROJECT",
+        "HUB-REORDER-LAYERS",
+        "HUB-REPRESENTATION-LIFECYCLE",
+        "HUB-RESTORE-PROJECT",
+        "HUB-SCAN-INTEGRITY",
+        "HUB-UPDATE-SOURCE",
+        "HUB-WORK-PLAN",
+        "MGR-MATRIX-VISUAL",
+        "PLUGIN-CONTOUR-DATASET-INTERACTIVE",
+        "PLUGIN-CONTOUR-HELP",
+        "PLUGIN-NEURALIMAGE-VERSION"
+      ]
+    },
+    "api_operations": {
+      "covered": 3,
+      "total": 13,
+      "status_breakdown": {
+        "PASS": 3,
+        "FAIL": 0,
+        "PARTIAL": 0,
+        "BLOCKED": 0,
+        "NOT_TESTED": 10,
+        "NOT_APPLICABLE": 0
+      },
+      "uncovered": [
+        "ADMIN-SERVER-BACKUP-RESTORE",
+        "SRV-COMMANDS",
+        "SRV-HISTORY-STATISTICS",
+        "SRV-JOBS-AGENT-PROTOCOL",
+        "SRV-LAYERS",
+        "SRV-NOTES-CHECKS-PACKAGES",
+        "SRV-PLANS",
+        "SRV-PROJECTS",
+        "SRV-REPRESENTATIONS",
+        "SRV-WEBSOCKET"
+      ]
+    },
+    "error_paths": {
+      "covered": 0,
+      "total": 34,
+      "status_breakdown": {
+        "PASS": 0,
+        "FAIL": 0,
+        "PARTIAL": 0,
+        "BLOCKED": 0,
+        "NOT_TESTED": 34,
+        "NOT_APPLICABLE": 0
+      },
+      "uncovered": [
+        "ADMIN-SERVER-BACKUP-RESTORE::Восстановление на занятой базе отклоняется",
+        "AGT-HEALTH::Запрос без токена отклонён",
+        "AGT-OP-BINARY-SEGMENT::Отмена задания, падение плагина — задание помечено failed, проект не испорчен",
+        "AGT-OP-DATASET-PREPARE::Отмена задания, падение плагина — задание помечено failed, проект не испорчен",
+        "AGT-OP-TRAIN::Отмена задания, падение плагина — задание помечено failed, проект не испорчен",
+        "AGT-OP-VECTORIZE::Отмена задания, падение плагина — задание помечено failed, проект не испорчен",
+        "BLOB-PUT-GET-RESTART::Нет билета, неверный HMAC, чужая операция, просрочка — 401",
+        "HUB-ADD-LAYER::Смесь PNG и JPG блокирует скан",
+        "HUB-ADD-REPRESENTATION::Импорт неподдерживаемого вида отклоняется",
+        "HUB-BOOTSTRAP-ACCOUNT::Второй аккаунт отклоняется: A local account already exists",
+        "HUB-CREATE-PROJECT::Пустое имя отклоняется: «Название проекта: значение обязательно.»",
+        "HUB-DELETE-PROJECT::Неполное подтверждение именем отклоняется",
+        "HUB-IMPORT-BACKUP::Испорченная копия отклоняется ошибкой проверки",
+        "HUB-ISSUE-WORK::Отказ без каталога",
+        "HUB-LAYER-CONTEXT::Удаление требует точного имени слоя",
+        "HUB-LOGIN-TABBED::Неверные учётные данные — то же сообщение блокировки",
+        "HUB-LOGIN::Неверный пароль или блокировка: «Неверные учётные данные или аккаунт временно заблокирован.»",
+        "HUB-PROJECT-ROLES::Чужой If-Match — 409 revision.conflict",
+        "HUB-REVIEW-RETURN::Отказ без каталога",
+        "HUB-SCAN-INTEGRITY::«Обнаружены ошибки» при повреждённых данных",
+        "PERSISTENT-GATEWAY-UPLOAD::HTTP500 до исправления D8",
+        "PERSISTENT-GATEWAY-UPLOAD::Stale revision — 409",
+        "PLUGIN-CONTOUR-DATASET-INTERACTIVE::Headless-ветка отвергает frames.dataset.prepare.v1 (ValueError в worker.py)",
+        "SRV-ARTIFACTS::Stale revision — 409",
+        "SRV-ARTIFACTS::Чужой билет — 401",
+        "SRV-COMMANDS::Отказ без прав — 403",
+        "SRV-HEALTH-SESSION::application/problem+json на ошибки",
+        "SRV-HEALTH-SESSION::Неверный пароль — 401",
+        "SRV-JOBS-AGENT-PROTOCOL::CAS-конфликт — 409",
+        "SRV-JOBS-AGENT-PROTOCOL::Дубликат complete — 403",
+        "SRV-JOBS-AGENT-PROTOCOL::Неверный токен — 401",
+        "SRV-PLANS::Чужой If-Match — 409",
+        "SRV-PRINCIPALS::Наблюдатель не переименовывает проект — 403",
+        "SRV-PROJECTS::Чужой If-Match — 409 revision.conflict"
+      ]
+    },
+    "state_transitions": {
+      "covered": 0,
+      "total": 0,
+      "status_breakdown": {
+        "PASS": 0,
+        "FAIL": 0,
+        "PARTIAL": 0,
+        "BLOCKED": 0,
+        "NOT_TESTED": 0,
+        "NOT_APPLICABLE": 0
+      },
+      "uncovered": []
+    },
+    "tiers": {
+      "covered": 7,
+      "total": 8,
+      "status_breakdown": {
+        "PASS": 7,
+        "FAIL": 0,
+        "PARTIAL": 0,
+        "BLOCKED": 0,
+        "NOT_TESTED": 1,
+        "NOT_APPLICABLE": 0
+      },
+      "uncovered": [
+        "stateful"
+      ]
+    },
+    "defect_regressions": {
+      "covered": 17,
+      "total": 22,
+      "status_breakdown": {
+        "PASS": 17,
+        "FAIL": 0,
+        "PARTIAL": 0,
+        "BLOCKED": 0,
+        "NOT_TESTED": 5,
+        "NOT_APPLICABLE": 0
+      },
+      "uncovered": [
+        "D12",
+        "D13",
+        "D15",
+        "D16",
+        "D17"
+      ]
+    },
+    "source": {
+      "covered": 0,
+      "total": 0,
+      "status_breakdown": {
+        "PASS": 0,
+        "FAIL": 0,
+        "PARTIAL": 0,
+        "BLOCKED": 0,
+        "NOT_TESTED": 1,
+        "NOT_APPLICABLE": 0
+      },
+      "uncovered": [],
+      "changed_files": [
+        ".gitignore",
+        "docs/quality/evidence/2026-11-10/coverage-report.json",
+        "docs/quality/evidence/2026-11-10/gate-registry/junit.xml",
+        "docs/quality/evidence/2026-11-10/gate-registry/pytest.txt",
+        "docs/quality/evidence/2026-11-10/gate-registry/receipt.json",
+        "docs/quality/evidence/2026-11-10/gate-unit/junit(1).xml",
+        "docs/quality/evidence/2026-11-10/gate-unit/junit(2).xml",
+        "docs/quality/evidence/2026-11-10/gate-unit/pytest(1).txt",
+        "docs/quality/evidence/2026-11-10/gate-unit/pytest(2).txt",
+        "docs/quality/evidence/2026-11-10/gate-unit/receipt.json",
+        "docs/quality/evidence/2026-11-18/gate-gui/junit.xml",
+        "docs/quality/evidence/2026-11-18/gate-gui/pytest.txt",
+        "docs/quality/evidence/2026-11-18/gate-gui/receipt.json",
+        "docs/quality/evidence/2026-11-18/gate-integration/junit.xml",
+        "docs/quality/evidence/2026-11-18/gate-integration/pytest.txt",
+        "docs/quality/evidence/2026-11-18/gate-integration/receipt.json",
+        "docs/quality/evidence/2026-11-18/gate-live/junit.xml",
+        "docs/quality/evidence/2026-11-18/gate-live/pytest.txt",
+        "docs/quality/evidence/2026-11-18/gate-live/receipt.json",
+        "docs/quality/evidence/2026-11-18/gate-stateful/receipt.json",
+        "tests/test_filesystem_event_read_cache.py"
+      ]
+    }
+  }
+}

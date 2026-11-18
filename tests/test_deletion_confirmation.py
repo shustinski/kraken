@@ -18,6 +18,8 @@ from kraken_admin.infrastructure.stored_files import remove_stored_path
 from kraken_server.project_deletion import DeletionRequests, normalize_deletion_reason, request_table
 from kraken_server.services import ConflictError, ValidationError
 
+kraken_defect = "D22"
+
 
 def test_deletion_request_accepts_missing_body() -> None:
     pytest.importorskip("fastapi")

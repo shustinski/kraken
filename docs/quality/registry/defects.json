@@ -366,7 +366,10 @@
       "severity": "major",
       "regression_tests": [
         "tests/test_qt_harness.py::test_failure_capture_produces_artifacts",
-        "tests/test_domain_auth_broker.py::test_jit_first_domain_login_creates_account_principal_performer"
+        "tests/test_domain_auth_broker.py::test_jit_first_domain_login_creates_account_principal_performer",
+        "tests/test_alembic_env_logger_isolation.py::test_opt_out_preserves_caller_logging_and_runs_migrations",
+        "tests/test_alembic_env_logger_isolation.py::test_default_config_preserves_cli_logger_setup",
+        "tests/test_alembic_env_logger_isolation.py::test_explicit_configure_logger_true_still_clobbers"
       ],
       "evidence": [
         "docs/quality/evidence/2026-11-18/d23-red.txt",

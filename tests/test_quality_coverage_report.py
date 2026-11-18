@@ -36,6 +36,7 @@ def _action(
     error_conditions: list[str] | None = None,
     status: str = "PASS",
     mandatory: bool = True,
+    beta: bool = True,
     exception_reason: str | None = None,
 ) -> dict:
     record = {
@@ -51,6 +52,7 @@ def _action(
         "tests": tests or [],
         "evidence": [],
         "mandatory": mandatory,
+        "beta": beta,
     }
     if exception_reason is not None:
         record["exception_reason"] = exception_reason
@@ -103,7 +105,7 @@ ACTIONS = {
             exception_reason="no tests written yet",
         ),
         _action("A-NAA", "HUB", tier="unit", status="NOT_APPLICABLE"),
-        _action("A-OPT", "HUB", tier="unit", mandatory=False),
+        _action("A-OPT", "HUB", tier="unit", mandatory=False, beta=False),
         _action("S1", "SRV", tier="integration", tests=["tests/test_pass_action.py"]),
     ]
 }
@@ -160,10 +162,65 @@ def report(repo: Path) -> dict:
     return build_report(repo / "registry", [repo / "junit-main.xml"], repo_root=repo)
 
 
+def _beta_report(tmp_path: Path, actions: list[dict]) -> dict:
+    """Minimal registry (no JUnit evidence) for the beta-scoping of denominators."""
+    registry = tmp_path / "registry"
+    registry.mkdir()
+    (registry / "actions.json").write_text(json.dumps({"actions": actions}), encoding="utf-8")
+    (registry / "defects.json").write_text(json.dumps({"defects": []}), encoding="utf-8")
+    return build_report(registry, [], repo_root=tmp_path)
+
+
+def test_beta_false_hub_action_leaves_error_paths_and_ui_actions(tmp_path: Path):
+    """A beta:false HUB action is out of the error_paths and ui_actions denominators."""
+    result = _beta_report(
+        tmp_path,
+        [
+            _action("A-IN", "HUB", tier="unit", error_conditions=["cond one"]),
+            _action("A-OUT", "HUB", tier="unit", error_conditions=["cond two"], beta=False),
+        ],
+    )
+    assert result["ui_actions"]["total"] == 1
+    assert result["ui_actions"]["uncovered"] == ["A-IN"]
+    assert result["error_paths"]["total"] == 1
+    assert result["error_paths"]["uncovered"] == ["A-IN::cond one"]
+
+
+def test_beta_false_srv_action_leaves_api_operations(tmp_path: Path):
+    result = _beta_report(tmp_path, [_action("S-OUT", "SRV", tier="integration", beta=False)])
+    assert result["api_operations"]["total"] == 0
+    assert result["api_operations"]["uncovered"] == []
+
+
+def test_beta_true_srv_action_counted_in_api_operations(tmp_path: Path):
+    result = _beta_report(tmp_path, [_action("S-IN", "SRV", tier="integration", beta=True)])
+    assert result["api_operations"]["total"] == 1
+    assert result["api_operations"]["uncovered"] == ["S-IN"]
+
+
+def test_mandatory_no_longer_moves_any_denominator(tmp_path: Path):
+    """mandatory is informational now: only beta decides membership of the denominators."""
+    result = _beta_report(
+        tmp_path,
+        [
+            _action("A-OPT-BETA", "HUB", tier="unit", mandatory=False, beta=True, error_conditions=["cond"]),
+            _action("A-REQ-NOBETA", "HUB", tier="unit", mandatory=True, beta=False, error_conditions=["cond"]),
+            _action("S-OPT-BETA", "SRV", tier="integration", mandatory=False, beta=True),
+            _action("S-REQ-NOBETA", "SRV", tier="integration", mandatory=True, beta=False),
+        ],
+    )
+    assert result["ui_actions"]["total"] == 1
+    assert result["ui_actions"]["uncovered"] == ["A-OPT-BETA"]
+    assert result["api_operations"]["total"] == 1
+    assert result["api_operations"]["uncovered"] == ["S-OPT-BETA"]
+    assert result["error_paths"]["total"] == 1
+    assert result["error_paths"]["uncovered"] == ["A-OPT-BETA::cond"]
+
+
 def test_denominators_are_explicit(report: dict):
-    assert report["ui_actions"]["total"] == 5  # mandatory non-SRV, NOT_APPLICABLE and optional excluded
+    assert report["ui_actions"]["total"] == 5  # beta non-SRV, NOT_APPLICABLE and non-beta excluded
     assert report["api_operations"]["total"] == 1  # the single SRV action
-    assert report["error_paths"]["total"] == 3  # one unit per error condition of mandatory actions
+    assert report["error_paths"]["total"] == 3  # one unit per error condition of beta actions
     assert report["state_transitions"]["total"] == 0  # no evidence files provided
     assert report["tiers"]["total"] == 8
     assert report["defect_regressions"]["total"] == 3  # RESOLVED only, OPEN D3 excluded
@@ -198,7 +255,7 @@ def test_failing_test_makes_action_fail(report: dict):
     assert "D4" in report["defect_regressions"]["uncovered"]
 
 
-def test_mandatory_not_tested_without_exception_reason_still_reported(tmp_path: Path):
+def test_beta_not_tested_without_exception_reason_still_reported(tmp_path: Path):
     """The report does not enforce the registry schema; the registry test does."""
     registry = tmp_path / "registry"
     registry.mkdir()

@@ -29,9 +29,9 @@ Design rules (encoded in the report, not in prose):
 
 Metric denominators:
 
-* ``ui_actions``: mandatory actions with surface != SRV.
-* ``api_operations``: actions with surface SRV (same PASS rule).
-* ``error_paths``: one unit per ``error_conditions`` entry of each mandatory
+* ``ui_actions``: beta actions with surface != SRV.
+* ``api_operations``: beta actions with surface SRV (same PASS rule).
+* ``error_paths``: one unit per ``error_conditions`` entry of each beta
   action (id ``<action_id>::<condition>``). A unit is covered when a test
   listed in the action's ``tests`` carries ``pytest.mark.error_path``
   (function/class decorator or module-level ``pytestmark``) and passed.
@@ -507,15 +507,15 @@ def build_report(
     error_units = {
         f"{action['id']}::{condition}": error_condition_verdict(action, condition, results, repo)
         for action in actions
-        if action.get("mandatory")
+        if action.get("beta")
         for condition in action.get("error_conditions", [])
     }
     return {
         "ui_actions": _metric(
-            _units_for_actions(actions, results, repo, lambda a: bool(a.get("mandatory")) and a.get("surface") != "SRV")
+            _units_for_actions(actions, results, repo, lambda a: bool(a.get("beta")) and a.get("surface") != "SRV")
         ),
         "api_operations": _metric(
-            _units_for_actions(actions, results, repo, lambda a: a.get("surface") == "SRV")
+            _units_for_actions(actions, results, repo, lambda a: bool(a.get("beta")) and a.get("surface") == "SRV")
         ),
         "error_paths": _metric(error_units),
         "state_transitions": _metric(_state_transition_units([Path(p) for p in (state_transition_files or [])])),

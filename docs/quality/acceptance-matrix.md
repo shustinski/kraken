@@ -85,6 +85,12 @@
 | PLUGIN-CONTOUR-DATASET-INTERACTIVE | PLG | PARTIAL | docs/quality/evidence/2026-11-01/server-acceptance.txt |
 | BLOB-PUT-GET-RESTART | GW | PASS | — |
 | PERSISTENT-GATEWAY-UPLOAD | GW | PASS | docs/quality/evidence/2026-11-01/upload-preflight-green.txt, docs/quality/evidence/2026-11-01/live-contour-worker-receipt.json |
+| HUB-LOGIN-TABBED | HUB | NOT_TESTED | — |
+| ADMIN-SERVER-BACKUP-RESTORE | SRV | NOT_TESTED | — |
+| AGT-OP-VECTORIZE | AGT | NOT_TESTED | — |
+| AGT-OP-DATASET-PREPARE | AGT | NOT_TESTED | — |
+| AGT-OP-TRAIN | AGT | NOT_TESTED | — |
+| AGT-OP-BINARY-SEGMENT | AGT | NOT_TESTED | — |
 <!-- quality-registry:generated-end -->
 
 ## Продолжение 2026-11-01 (база `8cf3ea6`, исправления `71ce8dc`)

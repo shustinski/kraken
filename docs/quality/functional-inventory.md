@@ -97,6 +97,12 @@
 | PLUGIN-CONTOUR-DATASET-INTERACTIVE | PLG | PARTIAL | да | 0 | — |
 | BLOB-PUT-GET-RESTART | GW | PASS | да | 0 | — |
 | PERSISTENT-GATEWAY-UPLOAD | GW | PASS | да | 1 (tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version) | — |
+| HUB-LOGIN-TABBED | HUB | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
+| ADMIN-SERVER-BACKUP-RESTORE | SRV | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
+| AGT-OP-VECTORIZE | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
+| AGT-OP-DATASET-PREPARE | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
+| AGT-OP-TRAIN | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
+| AGT-OP-BINARY-SEGMENT | AGT | NOT_TESTED | да | 0 | сценарий ещё не прогнан; палитра W3 |
 <!-- quality-registry:generated-end -->
 
 ## Как устроены поверхности

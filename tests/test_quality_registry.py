@@ -177,6 +177,25 @@ def test_live_is_a_valid_action_tier():
     assert problems == []
 
 
+def test_new_beta_actions_are_registered():
+    """The W3-palette scenarios bind tests to these ids; they must exist in the real registry."""
+    new_ids = (
+        "HUB-LOGIN-TABBED",
+        "ADMIN-SERVER-BACKUP-RESTORE",
+        "AGT-OP-VECTORIZE",
+        "AGT-OP-DATASET-PREPARE",
+        "AGT-OP-TRAIN",
+        "AGT-OP-BINARY-SEGMENT",
+    )
+    actions = {action["id"]: action for action in _load(ACTIONS_JSON)["actions"]}
+    for action_id in new_ids:
+        assert action_id in actions, f"{action_id} missing from actions.json"
+        record = actions[action_id]
+        assert record["beta"] is True, f"{action_id} must be beta: true"
+        assert "beta_out_reason" not in record, f"{action_id} must not carry beta_out_reason"
+        assert record["expected_behavior"].strip(), f"{action_id} needs non-empty expected_behavior"
+
+
 def _repo_python() -> Path:
     """The repo's own interpreter (the venv this repo runs with), falling back to the current one."""
     venv = REPO_ROOT / ".venv"

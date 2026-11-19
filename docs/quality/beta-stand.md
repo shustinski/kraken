@@ -61,6 +61,37 @@ $env:KRAKEN_LIVE_WORKER_CONFIG  = 'C:\code\kraken\.test_runtime\beta-stand\live-
 $env:KRAKEN_TEST_POSTGRES_URL  = (Get-Content .test_runtime\beta-stand.env.json -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL
 ```
 
+## KRAKEN_UI_TEST_CONFIG для палитры W3
+
+Контракт `tests/test_live_ui_workflow.py` (header docstring): JSON-файл с ключами
+`server_url`, `username`, `password`, `source_directory`; в `source_directory`
+ровно **100 пронумерованных изображений** (`001.png`..`100.png`, grayscale 64×64).
+Файлы-источник и конфиг генерируются throwaway-скриптом (git-ignored, не коммитится):
+
+```powershell
+.venv\Scripts\python.exe .test_runtime\make-ui-test-config.py
+# -> .test_runtime\palette-source\001.png..100.png (100 файлов)
+# -> .test_runtime\beta-stand\ui-test-config.json (server_url/username/password
+#    из state.json стенда; source_directory — прямые слеши, POSIX-стиль)
+```
+
+Скрипт перечитывает `.test_runtime\beta-stand\state.json` (`utf-8-sig` — PowerShell
+пишет с BOM), поэтому после `-Restart`/`--reset` пересоздания аккаунта достаточно
+запустить его ещё раз — конфиг сойдётся с новыми учётными данными.
+
+Канонический преамбула-вызов для сценариев палитры (используется задачами W3
+дословно, подставляя дату доказательства и команду):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:KRAKEN_LIVE_WORKER_CONFIG='C:\code\kraken\.test_runtime\beta-stand\live-worker-config.json'; $env:KRAKEN_TEST_POSTGRES_URL=(Get-Content .test_runtime\beta-stand.env.json -Raw | ConvertFrom-Json).KRAKEN_TEST_POSTGRES_URL; $env:KRAKEN_UI_TEST_CONFIG='C:\code\kraken\.test_runtime\beta-stand\ui-test-config.json'; $env:QT_QPA_PLATFORM='offscreen'; <command>"
+```
+
+**Учётные записи.** Стенд провизнит ОДНУ учётную запись (`beta-stand`,
+`state.json`). Дополнительные пользователи сценарии регистрируют сами через
+`POST /api/v1/auth/accounts` на loopback — регистрация открыта при
+`domain_auth=false` (см. `src/kraken_server/interface/http/routes/auth.py`);
+роль в проекте выдаётся затем ACL-механизмом самого сценария.
+
 ## Teardown
 
 ```powershell

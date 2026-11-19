@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -63,6 +64,7 @@ def test_file_removal_requires_confirmation(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows short-name semantics required")
 def test_folder_removal_deletes_windows_reserved_dos_names(tmp_path: Path) -> None:
     """Project folders contain an ``aux`` directory; Windows cannot remove it via
     ``shutil.rmtree`` (the name resolves to the AUX device), which used to fail

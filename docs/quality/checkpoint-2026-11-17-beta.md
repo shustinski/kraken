@@ -6,7 +6,9 @@
 которая вызывает `scripts/quality-gates.ps1 -Tier smoke,unit,integration,gui,stateful,e2e,regression,live`
 — это полный набор слоёв («all»): литерального ключа `all` в скрипте нет, поэтому
 обёртка передаёт развёрнутый список (тот же шаблон, что обёртка Task 8, из-за ловушек
-кавычек/запятых PowerShell 5.1). Слой registry выполняется гейтом безусловно как
+кавычек/запятых PowerShell 5.1; с W3 запяточную ловушку устраняет сам
+`quality-gates.ps1` — `-Tier` перезащепляется по запятым, форма `-File -Tier a,b`
+работает, неизвестные имена слоёв — exit 2). Слой registry выполняется гейтом безусловно как
 пререквизит; тестов для слоя `extended` в плане нет. В сессию подложен только
 `KRAKEN_TEST_POSTGRES_URL` из файла стенда; `KRAKEN_LIVE_WORKER_CONFIG`, все
 `KRAKEN_RUN_*` и `KRAKEN_TEST_PG_BIN` намеренно сняты — см. «Known gaps».

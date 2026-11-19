@@ -21,7 +21,10 @@
 
 .PARAMETER Tier
     One or more of: smoke, unit, integration, gui, stateful, e2e, extended,
-    regression, live. Repeatable (comma- or space-separated).
+    regression, live. Repeatable (comma- or space-separated); comma-joined
+    values work through both `powershell -File` and `powershell -Command`
+    (elements are re-split on commas and validated; unknown names abort
+    with exit 2).
 
 .PARAMETER OutDir
     Evidence root for this run. Default: docs/quality/evidence/<yyyy-MM-dd>/.
@@ -167,7 +170,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('smoke', 'unit', 'integration', 'gui', 'stateful', 'e2e', 'extended', 'regression', 'live')]
     [string[]]$Tier,
 
     [string]$OutDir = '',
@@ -195,6 +197,17 @@ New-Item -ItemType Directory -Path $OutDir -Force | Out-Null
 $runRoot = Join-Path $repo ('.test_runtime\quality-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
 
+# PS 5.1: `powershell -File script.ps1 -Tier a,b` binds the WHOLE
+# "a,b" as one string[] element, so ValidateSet cannot see the parts.
+# Re-split every element on commas, then validate.
+$knownTiers = @('smoke','unit','integration','gui','stateful','e2e','extended','regression','live')
+$Tier = @($Tier | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$unknownTiers = @($Tier | Where-Object { $knownTiers -notcontains $_ } | Select-Object -Unique)
+if ($unknownTiers.Count -gt 0) {
+    Write-Host ('[gate] unknown tier(s): ' + ($unknownTiers -join ', ') + '; known: ' + ($knownTiers -join ', '))
+    exit 2
+}
+if ($Tier.Count -eq 0) { Write-Host '[gate] no tiers specified'; exit 2 }
 $Tier = @($Tier | Select-Object -Unique)
 $gateFailed = $false
 $script:failureReasons = @()

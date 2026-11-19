@@ -12,11 +12,14 @@ These tests exercise the validator itself - no live database is needed.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from tools.quality.beta_stand import validate_stand_name
 
 BASE = 'kraken_local'
+START_SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'start-beta-stand.ps1'
 
 
 @pytest.mark.parametrize('mode', ['database', 'schema'])
@@ -79,3 +82,23 @@ def test_schema_namespace_names_are_the_schema_mode_extra(name: str) -> None:
     # The start script nevertheless pre-checks with the strictest mode (schema)
     # because provisioning may still fall back to schema mode.
     assert validate_stand_name(name, BASE, 'database') == ''
+
+
+def test_start_script_checks_database_name_before_restart_teardown() -> None:
+    """Ordering pin: ``-Restart`` must not tear down before the name guard.
+
+    ``stop-beta-stand.ps1`` drops the stand's database/schema. A refused
+    ``-DatabaseName`` (e.g. ``kraken_local``) must fail with ``FAIL
+    preconditions`` *before* that teardown is invoked, so the script text
+    itself is pinned: the ``check-database-name`` guard must appear before
+    the restart teardown invocation.
+    """
+    text = START_SCRIPT.read_text(encoding='utf-8')
+    assert "'check-database-name'" in text
+    assert "& (Join-Path $PSScriptRoot 'stop-beta-stand.ps1')" in text
+    guard = text.index("'check-database-name'")
+    teardown = text.index("& (Join-Path $PSScriptRoot 'stop-beta-stand.ps1')")
+    assert guard < teardown, (
+        'start-beta-stand.ps1 must run the -DatabaseName check-database-name '
+        'guard before the -Restart stop-beta-stand.ps1 teardown'
+    )

@@ -194,13 +194,6 @@ function Find-StandPid {
     return 0
 }
 
-# ------------------------------------------------------------------ restart
-if ($Restart -and (Test-Path -LiteralPath $statePath)) {
-    Write-Host '[beta-stand] -Restart: running stop-beta-stand.ps1 first'
-    & (Join-Path $PSScriptRoot 'stop-beta-stand.ps1')
-    if ($LASTEXITCODE -ne 0) { throw 'stop-beta-stand.ps1 failed; refusing to start over a half-stopped stand' }
-}
-
 # ------------------------------------------------------------- preconditions
 $preconditionsOk = $true
 if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
@@ -226,6 +219,13 @@ $nameCheck = Invoke-NativeCapture -Exe $python -Arguments @(
 if ($nameCheck.Exit -ne 0) {
     Report 'preconditions' $false ('-DatabaseName refused: ' + ($nameCheck.Lines -join ' '))
     exit 1
+}
+# Restart teardown runs only AFTER the name guard above passed: a refused
+# -DatabaseName must never reach stop-beta-stand.ps1 (it drops databases/schemas).
+if ($Restart -and (Test-Path -LiteralPath $statePath)) {
+    Write-Host '[beta-stand] -Restart: running stop-beta-stand.ps1 first'
+    & (Join-Path $PSScriptRoot 'stop-beta-stand.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'stop-beta-stand.ps1 failed; refusing to start over a half-stopped stand' }
 }
 New-Item -ItemType Directory -Path $standDir, $logsDir, $resultsDir -Force | Out-Null
 

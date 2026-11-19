@@ -14,6 +14,8 @@ import pytest
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
 from kraken_manager.infrastructure.filesystem.event_store import FilesystemEventStore
+# Regression tests for defect D2 (docs/quality/defects.md).
+kraken_defect = "D2"
 
 
 def _imported_catalog_layer(tmp_path: Path):

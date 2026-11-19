@@ -1,0 +1,75 @@
+{
+    "probe":  "bringup_live_server",
+    "plan_task":  "4.1",
+    "timestamp_utc":  "2026-11-09T18:47:13.9000493Z",
+    "status":  "PARTIAL",
+    "server_url":  "http://127.0.0.1:8080",
+    "gateway_url":  "http://127.0.0.1:8081",
+    "keep_running":  true,
+    "health":  {
+                   "server":  {
+                                  "url":  "http://127.0.0.1:8080/api/v1/health",
+                                  "http_status":  200,
+                                  "body":  {
+                                               "status":  "ok",
+                                               "metadata":  "postgresql",
+                                               "api_version":  "v1",
+                                               "compute_admission":  {
+                                                                         "scope":  "global_server_queue",
+                                                                         "admission_enforced":  false,
+                                                                         "admission_ready":  false,
+                                                                         "state":  "unenforced",
+                                                                         "limits":  null,
+                                                                         "active_leases":  0,
+                                                                         "declared_reserved":  null,
+                                                                         "legacy_unknown_requests":  0,
+                                                                         "legacy_policy":  "reserve_entire_configured_budget",
+                                                                         "os_enforced":  false,
+                                                                         "per_host_capacity_enforced":  false
+                                                                     },
+                                               "blob_gateway":  "proxy"
+                                           }
+                              },
+                   "gateway":  {
+                                   "url":  "http://127.0.0.1:8081/health",
+                                   "status":  "BLOCKED",
+                                   "note":  "gateway not started; see processes.gateway"
+                               }
+               },
+    "processes":  {
+                      "server":  {
+                                     "started_by_probe":  true,
+                                     "pid":  22724,
+                                     "launcher_pid":  25356,
+                                     "log":  "C:\\Users\\shustinsky.m.a\\AppData\\Local\\Temp\\opencode\\live-bringup-20261109-214708\\server.log",
+                                     "stderr_log":  "C:\\Users\\shustinsky.m.a\\AppData\\Local\\Temp\\opencode\\live-bringup-20261109-214708\\server-stderr.log"
+                                 },
+                      "gateway":  {
+                                      "started_by_probe":  false,
+                                      "pid":  null,
+                                      "status":  "BLOCKED",
+                                      "error":  "Kraken Blob Gateway executable was not found: C:\\code\\kraken\\src\\kraken_admin\\blob_gateway\\target\\release\\kraken-blob-gateway.exe",
+                                      "executable_expected":  "C:\\code\\kraken\\src\\kraken_admin\\blob_gateway\\target\\release\\kraken-blob-gateway.exe"
+                                  }
+                  },
+    "protected_baseline":  {
+                               "status":  "BLOCKED",
+                               "error_type":  "FileNotFoundError",
+                               "error":  "[Errno 2] No such file or directory: \u0027C:\\\\code\\\\kraken\\\\.test_runtime\\\\live-server\\\\server-session.secret\u0027"
+                           },
+    "configuration":  {
+                          "server_config":  "C:\\code\\kraken\\config\\local\\server.toml",
+                          "database_url_secret":  "C:\\code\\kraken\\config\\local\\database-url.secret",
+                          "blob_gateway_secret":  "C:\\code\\kraken\\config\\local\\blob-gateway.secret",
+                          "blob_gateway_executable":  "C:\\code\\kraken\\src\\kraken_admin\\blob_gateway\\target\\release\\kraken-blob-gateway.exe",
+                          "note":  "paths only; no secret or token values are recorded in this receipt"
+                      },
+    "startup_commands":  {
+                             "server":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m kraken_server --config C:\\code\\kraken\\config\\local\\server.toml",
+                             "gateway":  "\u003cgateway executable\u003e with environment KRAKEN_BLOB_ROOT / KRAKEN_BLOB_GATEWAY_BIND / KRAKEN_BLOB_GATEWAY_SECRET=\u003credacted\u003e (exact BlobGatewayManager child environment, no CLI arguments)"
+                         },
+    "logs":  {
+                 "run_dir":  "C:\\Users\\shustinsky.m.a\\AppData\\Local\\Temp\\opencode\\live-bringup-20261109-214708"
+             },
+    "protected_project_id":  "7c622c09-73fa-552f-9a52-e80b64aeb3ef"
+}

@@ -28,6 +28,10 @@ from test_hub_embedded_service_parts.desktop_review_package import DesktopReview
 from test_hub_embedded_service_parts.backup_restore_requires import BackupRestoreRequiresMixin
 from test_hub_embedded_service_parts.v2_publications_are import V2PublicationsAreMixin
 
+# Regression tests for defect D10 (docs/quality/defects.md) live in this module:
+# every test below tears down a temporary Kraken project tree on Windows.
+kraken_defect = "D10"
+
 class EmbeddedProjectServiceTests(
     MemorySecretStoreMixin,
     ExportArtifactVersionMixin,

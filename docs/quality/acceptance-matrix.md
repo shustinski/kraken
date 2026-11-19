@@ -1,5 +1,98 @@
 # Матрица приёмки
 
+<!-- quality-registry:generated-begin (source: docs/quality/registry/actions.json — do not edit inside) -->
+## Автоматическая сводка из реестра (generated)
+
+| ID | Поверхность | Статус | Доказательства |
+|---|---|---|---|
+| HUB-BOOTSTRAP-ACCOUNT | HUB | PASS | — |
+| HUB-LOGIN | HUB | PASS | — |
+| HUB-DEV-SESSION | HUB | NOT_TESTED | — |
+| HUB-CONNECT-SAVED-SERVER | HUB | NOT_TESTED | — |
+| HUB-PREFERENCES | HUB | NOT_TESTED | — |
+| HUB-UPDATE-SOURCE | HUB | NOT_TESTED | — |
+| HUB-CHECK-UPDATES | HUB | BLOCKED | — |
+| MGR-MATRIX-VISUAL | MGR | NOT_TESTED | — |
+| HUB-CREATE-PROJECT | HUB | PASS | — |
+| HUB-REFRESH-CATALOG | HUB | NOT_TESTED | — |
+| HUB-OPEN-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-01/real-project-qt-view.json |
+| HUB-BIND-WORKSPACE | HUB | NOT_TESTED | — |
+| HUB-RENAME-PROJECT | HUB | PASS | — |
+| HUB-ARCHIVE-PROJECT | HUB | PASS | — |
+| HUB-RESTORE-PROJECT | HUB | PASS | — |
+| HUB-DELETE-PROJECT | HUB | PASS | docs/quality/evidence/2026-11-01/live-catalog.txt |
+| HUB-PROJECT-PROPERTIES | HUB | NOT_TESTED | — |
+| HUB-SCAN-INTEGRITY | HUB | PASS | — |
+| HUB-ADMIN-REFRESH | HUB | NOT_TESTED | — |
+| HUB-CONFIGURE-ROOTS | HUB | NOT_TESTED | — |
+| HUB-EXPORT-BACKUP | HUB | PASS | — |
+| HUB-IMPORT-BACKUP | HUB | PASS | — |
+| HUB-ATTACH-PROJECT | HUB | NOT_TESTED | — |
+| HUB-MIGRATE-LEGACY-WORK | HUB | NOT_TESTED | — |
+| HUB-PROJECT-ROLES | HUB | PASS | — |
+| HUB-ADD-PERFORMER | HUB | PASS | — |
+| HUB-EDIT-PERFORMER | HUB | PASS | — |
+| HUB-DELETE-PERFORMER | HUB | PASS | — |
+| HUB-MATRIX-CONTEXT | HUB | NOT_TESTED | — |
+| HUB-REVIEW-RETURN | HUB | PASS | — |
+| HUB-ADD-LAYER | HUB | PASS | docs/quality/evidence/2026-11-01/png-parity.txt |
+| HUB-REORDER-LAYERS | HUB | NOT_TESTED | — |
+| HUB-LAYER-CONTEXT | HUB | PARTIAL | — |
+| HUB-ADD-REPRESENTATION | HUB | PARTIAL | docs/quality/evidence/2026-11-01/png-parity.txt |
+| HUB-REPRESENTATION-LIFECYCLE | HUB | NOT_TESTED | — |
+| HUB-LAYER-WORKFLOW | HUB | NOT_TESTED | — |
+| HUB-PIPELINE-STITCH-STEP | HUB | NOT_TESTED | — |
+| HUB-ISSUE-WORK | HUB | PASS | — |
+| HUB-MY-WORK | HUB | NOT_TESTED | — |
+| HUB-WORK-PLAN | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
+| HUB-QUALITY | HUB | PASS | docs/quality/evidence/2026-11-01/quality-clicks.txt |
+| HUB-MULTILAYER | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
+| HUB-ELECTRICAL | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
+| HUB-STITCH-FILES | HUB | NOT_TESTED | — |
+| HUB-COMPUTED-STITCH | HUB | PASS | docs/quality/evidence/2026-11-01/qt-acceptance.txt |
+| HUB-ANALYSIS | HUB | PASS | — |
+| HUB-PLUGINS | HUB | NOT_TESTED | — |
+| HUB-STATISTICS | HUB | PASS | docs/quality/evidence/2026-11-01/statistics-verified.txt |
+| SRV-HEALTH-SESSION | SRV | PASS | docs/quality/evidence/2026-11-01/p0-policy-network.txt |
+| SRV-PROJECTS | SRV | PASS | docs/quality/evidence/2026-11-01/live-catalog.txt |
+| SRV-PRINCIPALS | SRV | PASS | — |
+| SRV-LAYERS | SRV | NOT_TESTED | — |
+| SRV-REPRESENTATIONS | SRV | NOT_TESTED | — |
+| SRV-ARTIFACTS | SRV | PASS | docs/quality/evidence/2026-11-01/real-project-artifact-verification.json, docs/quality/evidence/2026-11-01/upload-preflight-green.txt |
+| SRV-COMMANDS | SRV | NOT_TESTED | — |
+| SRV-WEBSOCKET | SRV | PASS | docs/quality/evidence/2026-11-01/live-catalog.txt |
+| SRV-HISTORY-STATISTICS | SRV | PARTIAL | docs/quality/evidence/2026-11-01/real-project-artifact-verification.json |
+| SRV-NOTES-CHECKS-PACKAGES | SRV | PARTIAL | — |
+| SRV-JOBS-AGENT-PROTOCOL | SRV | PASS | docs/quality/evidence/2026-11-01/server-acceptance.txt, docs/quality/evidence/2026-11-01/target-lease-green.txt, docs/quality/evidence/2026-11-01/live-worker-contour-faults.txt |
+| SRV-ANALYSIS | SRV | PASS | — |
+| SRV-QUALITY | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
+| SRV-LAYER-WORKFLOW | SRV | NOT_TESTED | — |
+| SRV-PLANS | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
+| SRV-PHYSICS | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
+| SRV-ELECTRICAL | SRV | PASS | docs/quality/evidence/2026-11-01/server-domain-remaining.txt |
+| AGT-HEALTH | AGT | PASS | — |
+| AGT-REGISTRY-CONFIDENCE | AGT | PASS | docs/quality/evidence/2026-11-01/d4-focused.txt, docs/quality/evidence/2026-11-01/d4-confidence.json |
+| PLUGIN-CONTOUR-HELP | PLG | PARTIAL | — |
+| PLUGIN-KRONA-HELP | PLG | PARTIAL | — |
+| PLUGIN-CSLISER-CAPABILITIES | PLG | PARTIAL | — |
+| PLUGIN-KATEGB-HELP | PLG | PARTIAL | — |
+| PLUGIN-NEURALIMAGE-VERSION | PLG | PARTIAL | — |
+| PLUGIN-CSLISER-SELF-TEST | PLG | PASS | — |
+| PLUGIN-CSLISER-COPY-CANCEL-RECOVERY | PLG | PASS | docs/quality/evidence/2026-11-01/plugins-acceptance-importlib.txt |
+| PLUGIN-KATEGB-CALCULATION | PLG | PASS | — |
+| PLUGIN-KRONA-LOGIC-VIEWER | PLG | PASS | — |
+| PLUGIN-KARAKAL-COMPARE-MAP | PLG | PASS | — |
+| PLUGIN-CONTOUR-DATASET-INTERACTIVE | PLG | PARTIAL | docs/quality/evidence/2026-11-01/server-acceptance.txt |
+| BLOB-PUT-GET-RESTART | GW | PASS | — |
+| PERSISTENT-GATEWAY-UPLOAD | GW | PASS | docs/quality/evidence/2026-11-01/upload-preflight-green.txt, docs/quality/evidence/2026-11-01/live-contour-worker-receipt.json |
+| HUB-LOGIN-TABBED | HUB | NOT_TESTED | — |
+| ADMIN-SERVER-BACKUP-RESTORE | SRV | NOT_TESTED | — |
+| AGT-OP-VECTORIZE | AGT | NOT_TESTED | — |
+| AGT-OP-DATASET-PREPARE | AGT | NOT_TESTED | — |
+| AGT-OP-TRAIN | AGT | NOT_TESTED | — |
+| AGT-OP-BINARY-SEGMENT | AGT | NOT_TESTED | — |
+<!-- quality-registry:generated-end -->
+
 ## Продолжение 2026-11-01 (база `8cf3ea6`, исправления `71ce8dc`)
 
 Прежние PASS ниже сохраняются. Уточнения этой секции имеют приоритет над историческим

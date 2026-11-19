@@ -18,15 +18,18 @@ from kraken_manager.workspace import (
     DerivedRun,
     DerivedRunKind,
     DerivedRunState,
+    FRAME_IMAGE_SUFFIXES,
     ImageConversionSettings,
     LayerFileBinding,
     LayerSourceMode,
     LayerSourceScan,
     ProjectWorkspaceBinding,
     WorkspaceValidationError,
+    _directory_target,
     map_frame_positions,
     scan_layer_source,
     validate_workspace_name,
+    walk_directory_tree,
 )
 
 
@@ -65,6 +68,79 @@ def _same_or_nested(first: Path, second: Path) -> bool:
     return first == second or first in second.parents or second in first.parents
 
 
+def _make_directory(path: Path, *, exist_ok: bool = False) -> None:
+    """Create *path* and any missing ancestors.
+
+    Windows rejects reserved DOS device names (``aux``, ``con``, ...) as a
+    final path component, so every component is created through
+    ``_directory_target`` instead of ``Path.mkdir``.
+
+    The final path follows ``Path.mkdir(parents=True, exist_ok=...)``: when
+    it already exists, ``exist_ok=False`` raises ``FileExistsError`` for both
+    directories and files, and ``exist_ok=True`` tolerates an existing
+    directory but still raises ``FileExistsError`` over an existing file.
+    """
+    missing: list[Path] = []
+    probe = path
+    while not os.path.exists(_directory_target(probe)):
+        missing.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    for index, component in enumerate(reversed(missing)):
+        try:
+            os.mkdir(_directory_target(component))
+        except FileExistsError:
+            if index == len(missing) - 1 and not exist_ok:
+                raise
+    target = _directory_target(path)
+    if os.path.exists(target) and not os.path.isdir(target):
+        raise FileExistsError(f"Путь существует и не является папкой: {path}")
+    if not missing and not exist_ok:
+        raise FileExistsError(f"Папка уже существует: {path}")
+
+
+def remove_tree(root: Path, *, ignore_errors: bool = False) -> None:
+    """Recursively remove *root*, like ``shutil.rmtree``.
+
+    Every directory is addressed through ``_directory_target`` so reserved
+    DOS names (``aux``, ...) are handled on Windows.
+    """
+
+    def visit(directory: str) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            if not ignore_errors:
+                raise
+            return
+        subdirectories: list[str] = []
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    subdirectories.append(entry.path)
+                else:
+                    os.unlink(entry.path)
+            except OSError:
+                if not ignore_errors:
+                    raise
+        for subdirectory in subdirectories:
+            visit(_directory_target(Path(subdirectory)))
+            try:
+                os.rmdir(_directory_target(Path(subdirectory)))
+            except OSError:
+                if not ignore_errors:
+                    raise
+
+    visit(_directory_target(root))
+    try:
+        os.rmdir(_directory_target(root))
+    except FileNotFoundError:
+        if not ignore_errors:
+            raise
+
+
 def _project_tree_root(project: ProjectWorkspaceBinding, candidate: Path) -> Path:
     resolved = candidate.resolve(strict=False)
     for root_text in (project.source_project_dir, project.derived_project_dir):
@@ -93,9 +169,6 @@ def _reject_project_ancestor(project: ProjectWorkspaceBinding, candidate: Path) 
             )
 
 
-_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".bmp", ".png"}
-
-
 def _directory(value: Path | str, message: str) -> Path:
     raw = Path(value).expanduser()
     if raw.is_symlink():
@@ -116,31 +189,31 @@ def _image_files(directory: Path) -> tuple[Path, ...]:
     return tuple(
         path
         for path in directory.iterdir()
-        if path.is_file() and not path.is_symlink() and path.suffix.casefold() in _IMAGE_SUFFIXES
+        if path.is_file() and not path.is_symlink() and path.suffix.casefold() in FRAME_IMAGE_SUFFIXES
     )
 
 
 def _copy_directory(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    _make_directory(destination.parent, exist_ok=True)
     stage = destination.parent / f".intake-{uuid4().hex}"
     try:
         _copy_children(source, stage)
         os.replace(stage, destination)
     except Exception:
-        shutil.rmtree(stage, ignore_errors=True)
+        remove_tree(stage, ignore_errors=True)
         raise
 
 
 def _copy_children(source: Path, destination: Path) -> None:
-    destination.mkdir()
-    for child in source.iterdir():
-        if child.is_symlink():
-            raise WorkspaceValidationError(f"Символические ссылки недопустимы: {child}")
-        target = destination / child.name
-        if child.is_dir():
-            _copy_children(child, target)
-        elif child.is_file():
-            shutil.copy2(child, target)
+    _make_directory(destination)
+    for entry in os.scandir(_directory_target(source)):
+        if entry.is_symlink():
+            raise WorkspaceValidationError(f"Символические ссылки недопустимы: {entry.path}")
+        target = destination / entry.name
+        if entry.is_dir(follow_symlinks=False):
+            _copy_children(Path(entry.path), target)
+        elif entry.is_file(follow_symlinks=False):
+            shutil.copy2(entry.path, target)
 
 
 def validate_workspace_roots(source_root: Path | str, derived_root: Path | str) -> tuple[Path, Path]:
@@ -320,9 +393,9 @@ class WorkspaceFileService:
         promoted: list[tuple[Path, Path]] = []
         try:
             for category in ("img", "ssc", "prv", "aux"):
-                (source_stage / category).mkdir(parents=True, exist_ok=False)
+                _make_directory(source_stage / category)
             for category in ("dataset", "result", "vector"):
-                (derived_stage / category).mkdir(parents=True, exist_ok=False)
+                _make_directory(derived_stage / category)
             os.replace(source_stage, source_final)
             promoted.append((source_final, source_stage))
             os.replace(derived_stage, derived_final)
@@ -331,8 +404,8 @@ class WorkspaceFileService:
             for final, stage in reversed(promoted):
                 if final.exists() and not stage.exists():
                     os.replace(final, stage)
-            shutil.rmtree(source_stage, ignore_errors=True)
-            shutil.rmtree(derived_stage, ignore_errors=True)
+            remove_tree(source_stage, ignore_errors=True)
+            remove_tree(derived_stage, ignore_errors=True)
             raise
         binding = ProjectWorkspaceBinding(
             project_id=str(project_id),
@@ -375,9 +448,9 @@ class WorkspaceFileService:
             raise FileExistsError(f"Папка проекта «{name}» уже существует.")
         try:
             for category in ("img", "ssc", "prv", "aux"):
-                (source_project / category).mkdir(parents=True, exist_ok=False)
+                _make_directory(source_project / category)
             for category in ("dataset", "result", "vector"):
-                (derived_project / category).mkdir(parents=True, exist_ok=False)
+                _make_directory(derived_project / category)
         except Exception:
             self._remove_created_project_dirs(source_project, derived_project)
             raise
@@ -400,13 +473,13 @@ class WorkspaceFileService:
     def _remove_created_project_dirs(source_project: Path, derived_project: Path) -> None:
         for path in (source_project, derived_project):
             if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
+                remove_tree(path)
 
     @staticmethod
     def remove_project_layout(binding: ProjectWorkspaceBinding) -> None:
         for path in (Path(binding.source_project_dir), Path(binding.derived_project_dir)):
             if path.is_dir() and not path.is_symlink():
-                shutil.rmtree(path)
+                remove_tree(path)
 
     @staticmethod
     def remove_managed_layer_layout(binding: LayerFileBinding, project: ProjectWorkspaceBinding) -> None:
@@ -423,7 +496,7 @@ class WorkspaceFileService:
                 continue
             candidate = _contained(source_root, Path(value))
             if candidate.is_dir() and not candidate.is_symlink():
-                shutil.rmtree(candidate)
+                remove_tree(candidate)
 
     def scan(self, root: Path | str, *, maximum_frames: int) -> LayerSourceScan:
         return scan_layer_source(root, maximum_frames=maximum_frames)
@@ -476,13 +549,13 @@ class WorkspaceFileService:
                     raise WorkspaceValidationError(
                         f"При удалении обнаружена недопустимая символическая ссылка: {source}"
                     )
-                trash.parent.mkdir(parents=True, exist_ok=True)
+                _make_directory(trash.parent, exist_ok=True)
                 os.replace(source, trash)
                 moved.append((source, trash))
         except Exception:
             for source, trash in reversed(moved):
                 if trash.exists() and not source.exists():
-                    source.parent.mkdir(parents=True, exist_ok=True)
+                    _make_directory(source.parent, exist_ok=True)
                     os.replace(trash, source)
             raise
         return LayerDeletionStage(
@@ -498,15 +571,15 @@ class WorkspaceFileService:
     def rollback_layer_deletion(stage: LayerDeletionStage) -> None:
         for source, trash in reversed(stage.moves):
             if trash.exists() and not source.exists():
-                source.parent.mkdir(parents=True, exist_ok=True)
+                _make_directory(source.parent, exist_ok=True)
                 os.replace(trash, source)
         for root in stage.trash_roots:
-            shutil.rmtree(root, ignore_errors=True)
+            remove_tree(root, ignore_errors=True)
 
     @staticmethod
     def purge_layer_deletion(stage: LayerDeletionStage) -> None:
         for root in stage.trash_roots:
-            shutil.rmtree(root, ignore_errors=True)
+            remove_tree(root, ignore_errors=True)
 
     def bind_external_layer(
         self,
@@ -525,7 +598,7 @@ class WorkspaceFileService:
             raise WorkspaceValidationError("Обязательно укажите папку изображений.")
         image_paths = tuple(
             path for path in images.iterdir()
-            if path.is_file() and path.suffix.casefold() in {".jpg", ".jpeg", ".bmp", ".png"}
+            if path.is_file() and path.suffix.casefold() in FRAME_IMAGE_SUFFIXES
         )
         if not image_paths:
             raise WorkspaceValidationError(
@@ -618,7 +691,7 @@ class WorkspaceFileService:
             self.registry.save_layer(project.project_id, binding)
         except Exception:
             for directory in reversed(created):
-                shutil.rmtree(directory, ignore_errors=True)
+                remove_tree(directory, ignore_errors=True)
             raise
         return binding, tuple(created)
 
@@ -633,7 +706,7 @@ class WorkspaceFileService:
                 continue
             candidate = _contained(source_project, Path(directory))
             if candidate.is_dir() and not candidate.is_symlink():
-                shutil.rmtree(candidate)
+                remove_tree(candidate)
 
     def import_layer(
         self,
@@ -688,7 +761,7 @@ class WorkspaceFileService:
         stage = source_project / f".import-{uuid4().hex}"
         stage.mkdir()
         for category in destinations:
-            (stage / category).mkdir()
+            _make_directory(stage / category)
         recognized_images = {Path(value).resolve() for value in scan.image_files}
         recognized_ssc = {Path(value).resolve() for value in scan.ssc_files}
         recognized_prv = {Path(value).resolve() for value in scan.prv_files}
@@ -721,8 +794,7 @@ class WorkspaceFileService:
             for raw in values:
                 source = Path(raw)
                 tasks.append((self._copy_file, (source, stage / category / source.name), source.name))
-        for current_text, directory_names, file_names in os.walk(selected_root, followlinks=False):
-            current = Path(current_text)
+        for current, directory_names, file_names in walk_directory_tree(selected_root):
             for directory_name in directory_names:
                 candidate = current / directory_name
                 if candidate.is_symlink():
@@ -730,7 +802,7 @@ class WorkspaceFileService:
                         f"Символические ссылки недопустимы: {candidate}"
                     )
                 relative_directory = candidate.relative_to(selected_root)
-                (stage / "aux" / relative_directory).mkdir(parents=True, exist_ok=True)
+                _make_directory(stage / "aux" / relative_directory, exist_ok=True)
             for file_name in file_names:
                 source = (current / file_name).resolve()
                 if source in skip_aux:
@@ -771,15 +843,15 @@ class WorkspaceFileService:
                     future.result()
             for category, final in destinations.items():
                 staged = stage / category
-                os.replace(staged, final)
+                os.replace(_directory_target(staged), final)
                 promoted.append((final, staged))
         except Exception:
             for final, staged in reversed(promoted):
-                if final.exists() and not staged.exists():
-                    os.replace(final, staged)
+                if final.exists() and not os.path.exists(_directory_target(staged)):
+                    os.replace(final, _directory_target(staged))
             raise
         finally:
-            shutil.rmtree(stage, ignore_errors=True)
+            remove_tree(stage, ignore_errors=True)
 
         binding = LayerFileBinding(
             layer_id=str(layer_id),
@@ -806,7 +878,7 @@ class WorkspaceFileService:
 
     @staticmethod
     def _copy_file(source: Path, target: Path) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _make_directory(target.parent, exist_ok=True)
         before = source.stat()
         shutil.copy2(source, target)
         after = source.stat()
@@ -825,7 +897,7 @@ class WorkspaceFileService:
         from PIL import Image, ImageOps
 
         before = source.stat()
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _make_directory(target.parent, exist_ok=True)
         with Image.open(source) as opened:
             image = ImageOps.exif_transpose(opened)
             if settings.flip_horizontal:
@@ -930,6 +1002,12 @@ class WorkspaceFileService:
             stage = destination.parent / f".publish-{run.run_id}"
             if stage.exists():
                 raise FileExistsError(f"Временная папка публикации уже существует: {stage}")
+            # Known limitation (defect D9): os.walk and shutil.copytree below
+            # cannot descend into subdirectories named after reserved DOS
+            # devices (con, aux, ...) on Windows. Plugin output names are
+            # controlled, so this is accepted for now; route through
+            # walk_directory_tree and _copy_directory if plugin outputs
+            # become untrusted.
             for current_text, directory_names, file_names in os.walk(
                 source, followlinks=False
             ):
@@ -954,8 +1032,8 @@ class WorkspaceFileService:
                     os.replace(previous, destination)
                 raise
             finally:
-                shutil.rmtree(stage, ignore_errors=True)
-                shutil.rmtree(previous, ignore_errors=True)
+                remove_tree(stage, ignore_errors=True)
+                remove_tree(previous, ignore_errors=True)
         published = replace(
             run,
             state=DerivedRunState.SUCCEEDED,
@@ -987,5 +1065,6 @@ class WorkspaceFileService:
 __all__ = [
     "WorkspaceFileService",
     "WorkspaceRegistry",
+    "remove_tree",
     "validate_workspace_roots",
 ]

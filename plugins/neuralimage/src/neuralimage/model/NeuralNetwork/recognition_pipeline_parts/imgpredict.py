@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from multiprocessing.synchronize import Event as MpEvent
 from PIL import Image
+from neuralimage.infrastructure import profiling
 from neuralimage.lib.file_retry import retry_file_read
 from neuralimage.uncertainty.config import UncertaintyConfig
 from neuralimage.model.NeuralNetwork.model_io import load_model_artifact
@@ -81,29 +82,35 @@ def imgpredict(
             continue
         if item == stop_token:
             break
-        restored = _restore_payload_array_from_multiprocessing(item, 'cutted_image')
-        restored = _restore_payload_array_from_multiprocessing(restored, 'context_image')
-        restored = _restore_payload_array_from_multiprocessing(restored, 'global_image')
-        restored = _restore_payload_array_from_multiprocessing(restored, 'patch_coords_norm')
-        restored = _restore_payload_array_from_multiprocessing(restored, 'patch_coords_px')
-        restored = _restore_payload_array_from_multiprocessing(restored, 'source_size_hw')
-        predicted = gpu_predict(
-            restored,
-            model,
-            gpu,
-            batch_size,
-            recognition_tta_enabled=recognition_tta_enabled,
-            confidence_tta_enabled=confidence_tta_enabled,
-            uncertainty=uncertainty,
-        )
-        predicted.pop('cutted_image', None)
-        predicted.pop('context_image', None)
-        predicted.pop('global_image', None)
-        predicted.pop('patch_coords_norm', None)
-        predicted.pop('patch_coords_px', None)
-        predicted.pop('source_size_hw', None)
-        _store_payload_array_for_multiprocessing(predicted, 'predicted_image')
-        _store_payload_array_for_multiprocessing(predicted, 'confidence_image')
-        _store_payload_array_for_multiprocessing(predicted, 'variance_image')
-        _store_payload_array_for_multiprocessing(predicted, 'disagreement_image')
-        predicted_queue.put(predicted)
+        with profiling.cprofile_region(
+            "recognition",
+            label="recognition predict",
+            extra=f"name={item.get('name', '')}",
+            enabled=profiling.recognition_profiling_enabled(),
+        ):
+            restored = _restore_payload_array_from_multiprocessing(item, 'cutted_image')
+            restored = _restore_payload_array_from_multiprocessing(restored, 'context_image')
+            restored = _restore_payload_array_from_multiprocessing(restored, 'global_image')
+            restored = _restore_payload_array_from_multiprocessing(restored, 'patch_coords_norm')
+            restored = _restore_payload_array_from_multiprocessing(restored, 'patch_coords_px')
+            restored = _restore_payload_array_from_multiprocessing(restored, 'source_size_hw')
+            predicted = gpu_predict(
+                restored,
+                model,
+                gpu,
+                batch_size,
+                recognition_tta_enabled=recognition_tta_enabled,
+                confidence_tta_enabled=confidence_tta_enabled,
+                uncertainty=uncertainty,
+            )
+            predicted.pop('cutted_image', None)
+            predicted.pop('context_image', None)
+            predicted.pop('global_image', None)
+            predicted.pop('patch_coords_norm', None)
+            predicted.pop('patch_coords_px', None)
+            predicted.pop('source_size_hw', None)
+            _store_payload_array_for_multiprocessing(predicted, 'predicted_image')
+            _store_payload_array_for_multiprocessing(predicted, 'confidence_image')
+            _store_payload_array_for_multiprocessing(predicted, 'variance_image')
+            _store_payload_array_for_multiprocessing(predicted, 'disagreement_image')
+            predicted_queue.put(predicted)

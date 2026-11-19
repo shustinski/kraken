@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test export artifact version."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.artifacts import ArtifactScope
@@ -11,7 +11,7 @@ class ExportArtifactVersionMixin:
     def test_export_artifact_version_supports_managed_and_verified_external_files(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             service = EmbeddedProjectService(root / "data")
             session = service.create_initial_account("owner", "Owner", "")

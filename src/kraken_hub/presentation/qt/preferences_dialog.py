@@ -292,22 +292,24 @@ class ProgramPreferencesDialog(QDialog):
         group_layout.addWidget(self._account_list)
         actions = QHBoxLayout()
         add_button = QPushButton("Добавить…", group)
+        create_button = QPushButton("Создать на сервере…", group)
         remove_button = QPushButton("Удалить", group)
         default_button = QPushButton("Сделать по умолчанию", group)
         add_button.clicked.connect(self._add_account)
+        create_button.clicked.connect(self._create_account_on_server)
         remove_button.clicked.connect(self._remove_account)
         default_button.clicked.connect(self._make_default)
         actions.addWidget(add_button)
+        actions.addWidget(create_button)
         actions.addWidget(remove_button)
         actions.addWidget(default_button)
         actions.addStretch(1)
         group_layout.addLayout(actions)
         layout.addWidget(group, 1)
-        supported = ", ".join(label for _key, label in ACCOUNT_PROVIDERS)
         hint = QLabel(
-            f"Поддерживаемые типы: {supported}. "
-            "Учётная запись по умолчанию подставляется при создании сетевого проекта. "
-            "Если такой записи ещё нет на сервере, она создаётся автоматически и видит только свои проекты.",
+            "Доменные пользователи вводят доменный логин и пароль — аккаунт создаётся на сервере при первом входе. "
+            "Серверные учётные записи (пользователи вне локальной сети) создаются в окне входа на вкладке "
+            "«Серверная учётная запись» («Создать и войти») или кнопкой «Создать на сервере…».",
             page,
         )
         hint.setWordWrap(True)
@@ -341,6 +343,38 @@ class ProgramPreferencesDialog(QDialog):
         self._accounts.append(account)
         self._accounts = _single_default(self._accounts)
         self._refresh_accounts()
+
+    def _create_account_on_server(self) -> None:
+        account = _AccountEditorDialog.edit(self)
+        if account is None:
+            return
+        if account.provider != "local":
+            QMessageBox.warning(self, "Учётная запись", "Создаётся только локальная учётная запись")
+            return
+        try:
+            url = self._validated_url()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Настройки", str(exc))
+            return
+        if not url:
+            QMessageBox.warning(self, "Настройки", "Сначала укажите адрес сервера")
+            return
+        from kraken_hub.infrastructure.remote.client import RemoteServerError, RemoteServerProjectService
+
+        try:
+            RemoteServerProjectService.register_local(
+                url,
+                username=account.username,
+                password=account.secret,
+                display_name=account.display_name,
+            )
+        except RemoteServerError as exc:
+            QMessageBox.warning(self, "Настройки", str(exc))
+            return
+        self._accounts.append(account)
+        self._accounts = _single_default(self._accounts)
+        self._refresh_accounts()
+        QMessageBox.information(self, "Учётная запись", "Учётная запись создана на сервере")
 
     def _remove_account(self) -> None:
         account_id = self._selected_account_id()

@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 from kraken_manager.application import PerformerStore, ensure_gitlab_performer
 from kraken_manager.application.errors import ConflictError
@@ -100,10 +101,16 @@ class LocalSQLitePerformerStoreTests(unittest.TestCase, PerformerStoreContract):
     "KRAKEN_TEST_POSTGRES_URL is not configured",
 )
 class PostgresPerformerStoreContractTests(unittest.TestCase, PerformerStoreContract):
-    """Run the same public contract against an explicitly configured test DB."""
+    """Run the same public contract against an explicitly configured test DB.
+
+    The contract asserts the exact contents of ``store.list()``, so it needs a
+    private schema: the beta stand's shared schema already carries performers
+    (e.g. the account created at bring-up), which would leak into ``list()``.
+    This mirrors the per-test schema convention of the other PG suites.
+    """
 
     def setUp(self) -> None:
-        from sqlalchemy import create_engine, delete
+        from sqlalchemy import create_engine, delete, make_url, text
 
         from kraken_manager.infrastructure.postgres import (
             PostgresIdentityAclStore,
@@ -111,7 +118,15 @@ class PostgresPerformerStoreContractTests(unittest.TestCase, PerformerStoreContr
         )
 
         self._delete = delete
-        self.engine = create_engine(os.environ["KRAKEN_TEST_POSTGRES_URL"])
+        url = os.environ["KRAKEN_TEST_POSTGRES_URL"]
+        self._base_engine = create_engine(url)
+        self._schema = "performer_test_" + uuid4().hex
+        with self._base_engine.begin() as connection:
+            connection.execute(text(f'CREATE SCHEMA "{self._schema}"'))
+        scoped = make_url(url).update_query_dict(
+            {"options": f"-csearch_path={self._schema}"}
+        )
+        self.engine = create_engine(scoped)
         identities = PostgresIdentityAclStore(self.engine, create_schema_for_tests=True)
         self.performer_store = PostgresPerformerStore(self.engine, create_schema_for_tests=True)
         with self.engine.begin() as connection:
@@ -127,19 +142,12 @@ class PostgresPerformerStoreContractTests(unittest.TestCase, PerformerStoreContr
         identities.save(_gitlab_principal())
 
     def tearDown(self) -> None:
-        with self.engine.begin() as connection:
-            connection.execute(
-                self._delete(self.performer_store.performers).where(
-                    self.performer_store.performers.c.performer_id.in_(
-                        (PERFORMER_ID, LINKED_PERFORMER_ID)
-                    )
-                )
-            )
-            identities = self.performer_store.metadata.tables["principals"]
-            connection.execute(
-                self._delete(identities).where(identities.c.principal_id == PRINCIPAL_ID)
-            )
+        from sqlalchemy import text
+
         self.engine.dispose()
+        with self._base_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{self._schema}" CASCADE'))
+        self._base_engine.dispose()
 
     def test_semantic_contract(self) -> None:
         self.assertIsInstance(self.performer_store, PerformerStore)

@@ -1,5 +1,8 @@
 """test_server_workspace_inputs: test interactive contour opens."""
 from __future__ import annotations
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
@@ -9,6 +12,41 @@ from kraken_server.app import SessionPrincipal, create_app
 from kraken_server.services import CommandContext
 
 from test_server_workspace_inputs_parts.desktop_job import _desktop_job
+
+# Regression test for defect D11 (docs/quality/defects.md): the interactive
+# Contour subprocess must run against an isolated settings profile whose only
+# pre-existing state is a persisted host CIF directory, and the managed job
+# must still open with its own vector context and return result.json.
+kraken_defect = "D11"
+
+# D14: the harness must point the plugin subprocess at this repository's own
+# source roots. The previous parents[1] computed <repo>/tests/... paths that
+# do not exist, so the subprocess silently fell through to the venv's
+# editable install and bisect/worktree runs tested the installed tree.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PLUGIN_SOURCE_ROOTS = (
+    _REPO_ROOT / "src",
+    _REPO_ROOT / "plugins" / "contour" / "src",
+    _REPO_ROOT / "plugins" / "neuralimage" / "src",
+)
+
+
+def _plugin_pythonpath() -> str:
+    return os.pathsep.join(str(root) for root in _PLUGIN_SOURCE_ROOTS)
+
+
+def test_subprocess_resolves_contour_from_harness_pythonpath():
+    """D14: the harness PYTHONPATH must resolve the plugins from this repo's sources."""
+    roots = _plugin_pythonpath().split(os.pathsep)
+    assert all(Path(root).is_dir() for root in roots), roots
+    completed = subprocess.run(
+        [sys.executable, "-c", "import contour; print(contour.__file__)"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "PYTHONPATH": _plugin_pythonpath()},
+    )
+    assert completed.stdout.strip().startswith(str(_REPO_ROOT / "plugins" / "contour" / "src"))
 
 @pytest.mark.parametrize("transfer_mode", ["proxy", "gateway"])
 @pytest.mark.parametrize("capability,partial", [
@@ -27,11 +65,21 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
     from kraken_manager.infrastructure.filesystem._codec import decode_model
     from kraken_manager.domain.workflows import PluginJob
 
-    root = Path(__file__).resolve().parents[1]
-    monkeypatch.setenv(
-        "PYTHONPATH",
-        os.pathsep.join((str(root / "src"), str(root / "plugins/contour/src"), str(root / "plugins/neuralimage/src"))),
+    monkeypatch.setenv("PYTHONPATH", _plugin_pythonpath())
+    # Isolate the plugin subprocess from the host user's QSettings profile
+    # (Windows registry by default) and seed it with a persisted host CIF
+    # directory: the managed job's vector index must stay job-scoped even
+    # when the host session state references unrelated CIF files.
+    settings_dir = tmp_path / "contour-settings"
+    settings_dir.mkdir()
+    host_cif = tmp_path / "host-cif"
+    host_cif.mkdir()
+    (host_cif / "host-stray.cif").write_text("L M1; E;\n", encoding="utf-8")
+    (settings_dir / "ViaLaNet_Contour.ini").write_text(
+        "[paths]\ncif_directory = {0}\n".format(str(host_cif).replace("\\", "/")),
+        encoding="utf-8",
     )
+    monkeypatch.setenv("VIALANET_SETTINGS_DIR", str(settings_dir))
 
     server, local, session, project, layer, target, gateway, payload = _desktop_job(tmp_path, capability)
     if capability == "frames.dataset.prepare.v1":
@@ -48,7 +96,7 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
             (cif_directory / name).write_text("DS 1 1 1; L M1; ( S 16 12 ); P 0 0 8 0 8 8 0 8; DF; E;\n", encoding="utf-8")
         local.commit_managed_import(
             principal=session.principal, project=project, layer=layer, representation=vectors,
-            plan=local.plan_import_directory(project=project, directory=cif_directory),
+            plan=local.plan_import_directory(project=project, directory=cif_directory, kind=RepresentationKind.VECTOR),
             idempotency_key="latest-cif-import",
         )
         payload = server.submit_plugin_job(
@@ -65,7 +113,7 @@ def test_interactive_contour_opens_with_images_and_returns_results(tmp_path, mon
             (cif_directory / name).write_text("DS 1 1 1; L M1; ( S 16 12 ); P 0 0 3 0 3 3 0 3; DF; E;\n", encoding="utf-8")
         local.commit_managed_import(
             principal=session.principal, project=project, layer=layer, representation=vectors,
-            plan=local.plan_import_directory(project=project, directory=cif_directory),
+            plan=local.plan_import_directory(project=project, directory=cif_directory, kind=RepresentationKind.VECTOR),
             idempotency_key="newer-cif-import",
         )
     source_root, derived_root = tmp_path / "workspace-source", tmp_path / "workspace-derived"
@@ -206,6 +254,13 @@ main([])
         # inputs (the pinned CIFs for dataset jobs) use this worker's client.
         assert len(input_tickets) == 2
         assert result["imported"]["requires_partial_confirmation"] is partial
+        # D13: a managed run must not persist job staging paths into the host
+        # settings profile; the isolated profile is the host profile stand-in.
+        profile_text = (settings_dir / "ViaLaNet_Contour.ini").read_text(encoding="utf-8")
+        staging_prefix = (
+            str(remote.data_dir / "desktop-jobs" / str(payload["id"]) / "staging").replace("\\", "/") + "/"
+        )
+        assert staging_prefix not in profile_text.replace("\\\\", "\\").replace("\\", "/")
         if partial:
             assert not result["imported"]["versions"]
             assert not local.frame_cells(project.id, layer.id, target.id)

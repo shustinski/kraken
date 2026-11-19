@@ -69,6 +69,7 @@ class AddLayerImagesMixin:
                 project=project,
                 directory=scan.working_directory,
                 mode=ImportMappingMode.ROW_MAJOR_SUFFIX,
+                kind=RepresentationKind.IMAGE,
             )
         except Exception as exc:
             QMessageBox.warning(dialog, "Ошибка проверки файлов", str(exc))

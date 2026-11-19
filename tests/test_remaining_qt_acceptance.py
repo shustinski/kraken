@@ -15,6 +15,9 @@ from kraken_manager.domain.roles import reset_acting_role, set_acting_role
 from kraken_manager.presentation.qt.role_management import RoleManagementDialog
 from tests.test_work_orders import _service
 
+# Regression tests for defect D6 (docs/quality/defects.md): statistics calculate/CSV/XLSX.
+kraken_defect = "D6"
+
 
 @pytest.fixture
 def desktop_acting_role() -> Iterator[None]:

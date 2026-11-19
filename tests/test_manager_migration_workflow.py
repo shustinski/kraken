@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import tempfile
 import unittest
 from pathlib import Path
 from uuid import uuid4
@@ -29,6 +28,8 @@ from kraken_manager.infrastructure.migration import (
     SnapshotFingerprint,
     SnapshotInventory,
 )
+
+from tests.test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 
 
 def _profile(profile_id: str, scope: StorageScope, *, max_frames: int = 1_000_000) -> StorageProfile:
@@ -253,7 +254,7 @@ class MigrationWorkflowTests(unittest.TestCase):
         )
 
     def test_interruption_is_durably_resumed_then_verified_and_cut_over(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             root = Path(directory)
             service, source, destination, repository, guard, locator = self._workflow(root)
             source.fail_before_sequence = 2
@@ -297,7 +298,7 @@ class MigrationWorkflowTests(unittest.TestCase):
             self.assertTrue(guard.is_read_only(finalized.source_guard_token or ""))
 
     def test_tamper_or_revision_mismatch_blocks_cutover(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             service, _, destination, repository, _, locator = self._workflow(Path(directory))
             planned = service.plan(self._request())
             service.start(planned.migration_id)
@@ -322,7 +323,7 @@ class MigrationWorkflowTests(unittest.TestCase):
             self.assertTrue(any("stream revisions mismatch" in e for e in revision_failure.exception.report.errors))
 
     def test_cutover_rollback_restores_locator_and_releases_guard_only_on_finalize(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             service, _, destination, _, guard, locator = self._workflow(Path(directory))
             planned = service.plan(self._request())
             service.start(planned.migration_id)
@@ -337,7 +338,7 @@ class MigrationWorkflowTests(unittest.TestCase):
             self.assertNotEqual(locator.current(PROJECT_ID), destination.locator)
 
     def test_preflight_enforces_identity_capacity_and_direction_rules(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             service, _, _, _, _, _ = self._workflow(Path(directory), available_bytes=1)
             planned = service.plan(self._request(gitlab_owner=False, unmapped=("local:alice",)))
             codes = {issue.code for issue in planned.preflight.errors}
@@ -348,7 +349,7 @@ class MigrationWorkflowTests(unittest.TestCase):
             with self.assertRaises(MigrationPreflightError):
                 service.start(planned.migration_id)
 
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             service, _, _, _, _, _ = self._workflow(
                 Path(directory),
                 source_scope=StorageScope.SHARED,

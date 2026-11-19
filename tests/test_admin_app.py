@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -8,7 +9,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtWidgets import QApplication
 
 from kraken_manager.domain.identity import ProjectRole
-from kraken_manager.infrastructure.auth.local import LocalAccountStore, ScryptPasswordHasher
+from kraken_manager.infrastructure.auth.local import LocalAccount, LocalAccountStore, ScryptPasswordHasher
 from kraken_admin.presentation.qt.window import AdminWindow
 from kraken_server.configuration import default_local_config_path
 from kraken_admin.presentation.cli.parser import _parser
@@ -63,8 +64,10 @@ def test_admin_window_lists_accounts_projects_and_revokes_maintainer(qapp, tmp_p
     window.reload()
 
     assert window.accounts.item(0, 1).text() == "admin"
-    assert window.accounts.columnCount() == 4
-    assert window.accounts.horizontalHeaderItem(3).text() == "Создан"
+    assert window.accounts.columnCount() == 5
+    assert window.accounts.horizontalHeaderItem(2).text() == "Тип"
+    assert window.accounts.horizontalHeaderItem(4).text() == "Создан"
+    assert window.accounts.item(0, 2).text() == "серверная"
     assert window.accounts.item(1, 1).text() == "operator"
     from PyQt6.QtWidgets import QPushButton
 
@@ -75,7 +78,7 @@ def test_admin_window_lists_accounts_projects_and_revokes_maintainer(qapp, tmp_p
     window.accounts.selectRow(1)
     window._set_enabled(False)
     assert store.get_account(operator.account_id).enabled is False
-    assert window.accounts.item(1, 2).text() == "отключена"
+    assert window.accounts.item(1, 3).text() == "отключена"
 
     from PyQt6.QtWidgets import QMessageBox
 
@@ -101,6 +104,30 @@ def test_admin_window_lists_accounts_projects_and_revokes_maintainer(qapp, tmp_p
     assert revoked == {"project": PROJECT_ID, "username": "owner"}
 
 
+def test_admin_window_marks_ldap_accounts(qapp, tmp_path: Path, monkeypatch) -> None:
+    del qapp
+    store = LocalAccountStore(tmp_path / "accounts.sqlite3", ScryptPasswordHasher())
+    local = store.create_account("mark", "Mark", "pw")
+    ldap = LocalAccount(str(uuid4()), "shustinsky.m.a", "Шустинский М.", True,
+                        "2026-11-11T00:00:00+00:00", "ldap")
+    window = AdminWindow()
+    window._accounts = store
+    window._services = _Services()
+    monkeypatch.setattr(store, "list_accounts", lambda include_disabled=True: (ldap, local))
+    window._fill_accounts()
+
+    assert window.accounts.item(0, 2).text() == "доменная"
+    assert window.accounts.item(1, 2).text() == "серверная"
+
+
+def test_account_type_label() -> None:
+    from kraken_admin.application.accounts import account_type_label
+
+    assert account_type_label("ldap") == "доменная"
+    assert account_type_label("local") == "серверная"
+    assert account_type_label(None) == "серверная"
+
+
 def test_shift_and_ctrl_selection_deletes_every_chosen_account(qapp, tmp_path: Path, monkeypatch) -> None:
     del qapp
     from PyQt6.QtWidgets import QAbstractItemView, QMessageBox, QTableWidgetSelectionRange
@@ -117,7 +144,8 @@ def test_shift_and_ctrl_selection_deletes_every_chosen_account(qapp, tmp_path: P
     assert window.accounts.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
     assert window.projects.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
     window.accounts.clearSelection()
-    window.accounts.setRangeSelected(QTableWidgetSelectionRange(1, 0, 2, 3), True)
+    window.accounts.setRangeSelected(
+        QTableWidgetSelectionRange(1, 0, 2, window.accounts.columnCount() - 1), True)
     assert window._selected_usernames() == ["guest", "operator"]
     monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes)
     monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)

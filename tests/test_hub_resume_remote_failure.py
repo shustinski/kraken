@@ -11,6 +11,9 @@ from kraken_hub.infrastructure.remote.client import RemoteAuth, RemoteServerProj
 from kraken_hub.presentation.qt.manager_app import DesktopController
 from kraken_manager.domain.identity import Principal
 
+# Regression tests for defect D7 (docs/quality/defects.md) live in this module.
+kraken_defect = "D7"
+
 
 def test_resume_survives_jobs_http_failure_and_can_retry(qtbot, tmp_path):
     project_id = "11111111-1111-4111-8111-111111111111"

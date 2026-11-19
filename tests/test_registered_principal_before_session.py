@@ -18,6 +18,9 @@ from kraken_manager.infrastructure.postgres.performer_store import PostgresPerfo
 from kraken_server.app import create_app
 from kraken_server.composition import HybridSessionResolver
 from tests.test_admin_project_workflows import project
+# Regression tests for defect D5 (docs/quality/defects.md).
+kraken_defect = "D5"
+
 
 pytest_plugins = ["tests.test_admin_project_workflows"]
 

@@ -875,9 +875,10 @@ class ProjectApplication:
         directory: PathLike[str] | str,
         mode: ImportMappingMode = ImportMappingMode.XY_FILENAME,
         regex: str | None = None,
+        kind: RepresentationKind = RepresentationKind.IMAGE,
     ) -> ImportPlan:
         return self._project_operations(project.id).plan_import_directory(
-            project=project, directory=directory, mode=mode, regex=regex
+            project=project, directory=directory, mode=mode, regex=regex, kind=kind
         )
 
     def plan_legacy_work_order_migration(self, *, principal: object, project_id: object) -> object:

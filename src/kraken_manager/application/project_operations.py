@@ -763,6 +763,7 @@ class WorkspaceOperations(Protocol):
         directory: PathLike[str] | str,
         mode: ImportMappingMode = ...,
         regex: str | None = ...,
+        kind: RepresentationKind = ...,
     ) -> ImportPlan: ...
 
     def project_workspace(self, project_id: ProjectId | str) -> ProjectWorkspaceBinding | None: ...

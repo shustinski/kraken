@@ -8,6 +8,7 @@ from pathlib import Path
 from kraken_server.configuration import default_local_config_path
 from kraken_admin.application.accounts import (
     account_rows,
+    account_type_label,
     audit_rows,
     create_account,
     delete_account,
@@ -162,9 +163,9 @@ class AdminWindow:
 
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.accounts = QTableWidget(0, 4, page)
+        self.accounts = QTableWidget(0, 5, page)
         self.accounts.setObjectName("adminAccountsTable")
-        self.accounts.setHorizontalHeaderLabels(("Пользователь", "Логин", "Состояние", "Создан"))
+        self.accounts.setHorizontalHeaderLabels(("Пользователь", "Логин", "Тип", "Состояние", "Создан"))
         self.accounts.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.accounts.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.accounts.horizontalHeader().setStretchLastSection(True)
@@ -270,8 +271,9 @@ class AdminWindow:
                 name.setData(Qt.ItemDataRole.UserRole, str(value["username"]))
                 self.accounts.setItem(row, 0, name)
                 self.accounts.setItem(row, 1, QTableWidgetItem(str(value["username"])))
-                self.accounts.setItem(row, 2, QTableWidgetItem("активна" if value["enabled"] else "отключена"))
-                self.accounts.setItem(row, 3, QTableWidgetItem(str(value["created_at"])))
+                self.accounts.setItem(row, 2, QTableWidgetItem(account_type_label(value["auth_provider"])))
+                self.accounts.setItem(row, 3, QTableWidgetItem("активна" if value["enabled"] else "отключена"))
+                self.accounts.setItem(row, 4, QTableWidgetItem(str(value["created_at"])))
         finally:
             self._filling = False
 

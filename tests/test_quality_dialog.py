@@ -1,17 +1,24 @@
 from tests.test_matrix_lifetime import run_qt_child
 
+kraken_defect = "D19"
+
 
 def test_quality_dialog_drives_real_local_issue_assignment_and_history():
     run_qt_child("""
-        import tempfile, time
+        import time
         from pathlib import Path
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QApplication, QPushButton
         from PyQt6.QtTest import QTest
         from kraken_hub.presentation.qt.quality_dialog import QualityDialog
         from tests.test_work_orders import _service, _project_with_frames
+        # D19: the project tree contains a real reserved-name ``aux`` directory,
+        # which stdlib shutil.rmtree (TemporaryDirectory cleanup) cannot remove
+        # on Windows (WinError 145); kraken_tempdir uses the product's
+        # reserved-name-safe _remove_tree (defect D10).
+        from tests.test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
         app = QApplication([])
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             service = _service(root)
             owner, performer, project, layer, images, vectors = _project_with_frames(service, root/'source', with_vectors=False)
@@ -78,7 +85,7 @@ def test_quality_dialog_drives_real_local_issue_assignment_and_history():
 
 def test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold():
     run_qt_child("""
-        import sys, tempfile, time
+        import sys, time
         from pathlib import Path
         sys.path.insert(0, str(Path('plugins/karakal/src').resolve()))
         import pytest
@@ -89,8 +96,10 @@ def test_quality_dialog_analysis_rule_uses_measured_runs_without_default_thresho
         from kraken_manager.infrastructure.analysis import FilesystemAnalysisStore
         from tests.test_quality_workflow import quality
         from tests.test_quality_analysis import real_inputs, real_run
+        # D19: reserved-name-safe cleanup, see the first test in this file.
+        from tests.test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
         app = QApplication([])
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             root = Path(temporary)
             q = quality.__wrapped__(root, pytest.MonkeyPatch())
             target, reference, correction = real_inputs(q, root)

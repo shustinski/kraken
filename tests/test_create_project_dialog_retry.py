@@ -22,6 +22,8 @@ from kraken_hub.composition import EmbeddedProjectService
 from kraken_hub.presentation.qt import manager_app
 from kraken_hub.presentation.qt.manager_app import DesktopController
 from kraken_manager.presentation.qt import ProjectManagerShell
+# Regression tests for defect D1 (docs/quality/defects.md).
+kraken_defect = "D1"
 
 
 @pytest.fixture

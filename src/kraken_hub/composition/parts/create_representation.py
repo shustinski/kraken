@@ -1,5 +1,6 @@
 """composition: create representation."""
 from __future__ import annotations
+from dataclasses import replace
 from pathlib import Path
 from kraken_core.safe_files import ensure_regular_directory
 from kraken_manager.application.dto import (
@@ -12,7 +13,14 @@ from kraken_manager.application.dto import (
     RenameRepresentationCommand,
     UpdateRepresentationNoteCommand,
 )
-from kraken_manager.application.imports import ImportMappingMode, ImportPlan, ImportPlanner, ImportSource
+from kraken_manager.application.imports import (
+    ImportIssue,
+    ImportMappingMode,
+    ImportPlan,
+    ImportPlanner,
+    ImportSource,
+    import_source_suffixes,
+)
 from kraken_manager.workspace import (
     DerivedRun,
 )
@@ -187,17 +195,40 @@ class CreateRepresentationMixin:
         directory: Path | str,
         mode: ImportMappingMode = ImportMappingMode.XY_FILENAME,
         regex: str | None = None,
+        kind: RepresentationKind = RepresentationKind.IMAGE,
     ) -> ImportPlan:
         root = ensure_regular_directory(directory)
-        sources = tuple(
-            ImportSource(str(path), path.name, path.stat().st_size)
-            for path in sorted(root.iterdir(), key=lambda item: item.name.casefold())
-            if path.is_file()
-        )
-        return ImportPlanner().plan(
+        suffixes = import_source_suffixes(kind)
+        sources: list[ImportSource] = []
+        ignored = 0
+        for path in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
+            if not path.is_file():
+                continue
+            if path.suffix.casefold() in suffixes:
+                sources.append(ImportSource(str(path), path.name, path.stat().st_size))
+            else:
+                ignored += 1
+        plan = ImportPlanner().plan(
             width=project.width,
             height=project.height,
-            sources=sources,
+            sources=tuple(sources),
             mode=mode,
             regex=regex,
         )
+        label = (
+            "vector files (CIF)"
+            if kind is RepresentationKind.VECTOR
+            else "frame images (JPG, JPEG, PNG or BMP)"
+        )
+        issues = list(plan.issues)
+        if not sources:
+            issues.append(
+                ImportIssue("no_import_sources", f"No {label} were found in the folder", True)
+            )
+        elif ignored:
+            issues.append(
+                ImportIssue("ignored_files", f"Ignored {ignored} file(s) that are not {label}", False)
+            )
+        if issues != list(plan.issues):
+            plan = replace(plan, issues=tuple(issues))
+        return plan

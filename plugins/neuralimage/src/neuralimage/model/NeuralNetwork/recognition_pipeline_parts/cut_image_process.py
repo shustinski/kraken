@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 import numpy as np
 from multiprocessing.synchronize import Event as MpEvent
+from neuralimage.infrastructure import profiling
 from neuralimage.preprocessing.config import PreprocessingConfig
 from neuralimage.preprocessing.pipeline import SemPreprocessingPipeline
 
@@ -51,25 +52,31 @@ def cut_image_process(
             continue
         if image_path == stop_token:
             break
-        image_payload = cut_image_prepare(
-            cast(Path, image_path),
-            size,
-            overlap,
-            use_context_branch=use_context_branch,
-            use_cross_attention=use_cross_attention,
-            context_crop_size=context_crop_size,
-            context_input_size=context_input_size,
-            compression_factor=compression_factor,
-            source_root=source_root,
-            preprocessing=preprocessing,
-        )
-        _store_payload_array_for_multiprocessing(image_payload, 'cutted_image')
-        _store_payload_array_for_multiprocessing(image_payload, 'context_image')
-        _store_payload_array_for_multiprocessing(image_payload, 'global_image')
-        _store_payload_array_for_multiprocessing(image_payload, 'patch_coords_norm')
-        _store_payload_array_for_multiprocessing(image_payload, 'patch_coords_px')
-        _store_payload_array_for_multiprocessing(image_payload, 'source_size_hw')
-        cutted_queue.put(image_payload)
+        with profiling.cprofile_region(
+            "recognition",
+            label="recognition cut",
+            extra=f"name={Path(image_path).name}",
+            enabled=profiling.recognition_profiling_enabled(),
+        ):
+            image_payload = cut_image_prepare(
+                cast(Path, image_path),
+                size,
+                overlap,
+                use_context_branch=use_context_branch,
+                use_cross_attention=use_cross_attention,
+                context_crop_size=context_crop_size,
+                context_input_size=context_input_size,
+                compression_factor=compression_factor,
+                source_root=source_root,
+                preprocessing=preprocessing,
+            )
+            _store_payload_array_for_multiprocessing(image_payload, 'cutted_image')
+            _store_payload_array_for_multiprocessing(image_payload, 'context_image')
+            _store_payload_array_for_multiprocessing(image_payload, 'global_image')
+            _store_payload_array_for_multiprocessing(image_payload, 'patch_coords_norm')
+            _store_payload_array_for_multiprocessing(image_payload, 'patch_coords_px')
+            _store_payload_array_for_multiprocessing(image_payload, 'source_size_hw')
+            cutted_queue.put(image_payload)
 
 def _apply_preprocessing_to_channel_first(
     work_image: np.ndarray,

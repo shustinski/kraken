@@ -189,6 +189,9 @@ def test_desktop_opens_legacy_project_with_optional_setup(
     controller._project_id = None
     controller._workspace = None
     controller._layer_dialog = None
+    controller._project_workspaces = {}
+    controller._pending_wakes = {}
+    shell.project_tab_activated.connect(controller._on_project_tab_activated)
     controller._error = pytest.fail
     controller._configure_analysis = lambda *_args: None
     monkeypatch.setattr(

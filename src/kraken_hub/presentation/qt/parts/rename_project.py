@@ -78,6 +78,7 @@ class RenameProjectMixin:
             self._error(str(exc))
             return
         self.refresh_projects()
+        self.shell.rename_project_tab(str(renamed.id), renamed.name)
         if self._project_id == str(renamed.id) and self._workspace is not None:
             self._workspace.set_project_title(renamed.name)
 
@@ -107,6 +108,8 @@ class RenameProjectMixin:
             self._error(str(exc))
             return
         self.refresh_projects()
+        if str(project.id) in self._project_workspaces:
+            self._on_project_tab_close_requested(str(project.id))
 
     def restore_project(self, item: ProjectListItem | None) -> None:
         if item is None:

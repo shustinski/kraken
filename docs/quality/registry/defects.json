@@ -1,0 +1,382 @@
+{
+  "defects": [
+    {
+      "id": "D1",
+      "component": "kraken_manager",
+      "title": "Повтор создания проекта с тем же ключом идемпотентности падает",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_project_create_idempotency.py",
+        "tests/test_create_project_dialog_retry.py"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/d1-review-red-edges.txt",
+        "docs/quality/evidence/2026-11-01/d1-review-green.txt"
+      ],
+      "fixed_in": "",
+      "repro": "Создать локальный проект «Аудит» с ключом project-audit и повторить create_project с тем же ключом, именем и размерами — FileExistsError: папка уже существует."
+    },
+    {
+      "id": "D2",
+      "component": "kraken_manager",
+      "title": "Слой без файловой привязки нельзя удалить, даже после импорта PNG",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_metadata_layer_deletion.py"
+      ],
+      "evidence": [],
+      "fixed_in": "",
+      "repro": "create_layer «M1», репрезентация изображений, commit_managed_import 1_1.png, удаление слоя по имени — WorkspaceValidationError: Layer has no two-root file binding."
+    },
+    {
+      "id": "D3",
+      "component": "kraken_manager",
+      "title": "Сканер нового слоя не принимает PNG",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_workspace_files.py::test_png_folder_scans_and_imports_as_images",
+        "tests/test_two_root_service.py::test_png_disk_import_survives_reopen",
+        "tests/test_layer_creation_dialog.py::test_png_scan_is_ready_without_bmp_conversion"
+      ],
+      "evidence": [],
+      "fixed_in": "",
+      "repro": "scan_layer_source по каталогу с одним frame_0.png — scan.ready False и текст «не найдены изображения JPG/JPEG или BMP»."
+    },
+    {
+      "id": "D4",
+      "component": "plugins/karakal",
+      "title": "Уверенность слоя Karakal регистрируется как интерактивная",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_karakal_agent_headless.py"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/d4-red.txt",
+        "docs/quality/evidence/2026-11-01/d4-ui-red.txt",
+        "docs/quality/evidence/2026-11-01/d4-focused.txt"
+      ],
+      "fixed_in": "",
+      "repro": "Собрать LocalAgentRuntime._registry() для исходных плагинов — layer.confidence.analyze.v1 записана с interactive: true и modes [\"interactive\"], команда python -m karakal.worker."
+    },
+    {
+      "id": "D5",
+      "component": "kraken_server",
+      "title": "Роль нельзя назначить новой учётной записи, пока та сама не обратится к API",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_registered_principal_before_session.py"
+      ],
+      "evidence": [],
+      "fixed_in": "",
+      "repro": "POST /auth/accounts, затем от имени владельца PUT /projects/{id}/acl/{principal}/viewer до первого запроса с токеном нового аккаунта — 404 Principal … was not found or is inactive."
+    },
+    {
+      "id": "D6",
+      "component": "kraken_hub",
+      "title": "Статистика не считает managed import и не экспортирует вложенный payload в CSV",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/test_statistics_reports.py::test_preflight_managed_import_counts_files_and_bytes_without_counting_other_versions",
+        "tests/test_statistics_reports.py::test_csv_preserves_nested_immutable_event_payload",
+        "tests/test_remaining_qt_acceptance.py::test_statistics_calculate_and_export_buttons_use_real_history"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/statistics-red.txt",
+        "docs/quality/evidence/2026-11-01/statistics-csv-red.txt",
+        "docs/quality/evidence/2026-11-01/statistics-verified.txt",
+        "docs/quality/evidence/2026-11-01/review.md"
+      ],
+      "fixed_in": "",
+      "repro": "commit_managed_import двух кадров — расчёт показывает 0 импортированных файлов; экспорт CSV падает: Object of type mappingproxy is not JSON serializable."
+    },
+    {
+      "id": "D7",
+      "component": "kraken_hub",
+      "title": "HTTP500 списка заданий завершает Hub из Qt callback",
+      "status": "RESOLVED",
+      "severity": "critical",
+      "regression_tests": [
+        "tests/test_hub_resume_remote_failure.py::test_resume_survives_jobs_http_failure_and_can_retry"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/hub-resume-red.txt",
+        "docs/quality/evidence/2026-11-01/hub-resume-green.txt",
+        "docs/quality/evidence/2026-11-01/schema-upgrade-working.json"
+      ],
+      "fixed_in": "f749893",
+      "repro": "На сервере со старой схемой _resume_agent_jobs: выбор active выполнялся вне try, исключение выходило из QTimer callback, процесс завершался с 0xc0000409."
+    },
+    {
+      "id": "D8",
+      "component": "kraken_server",
+      "title": "Persistent upload через Gateway возвращает HTTP500",
+      "status": "RESOLVED",
+      "severity": "critical",
+      "regression_tests": [
+        "tests/test_server_managed_upload_preflight.py::test_persistent_upload_preflight_checks_revision_and_replays_existing_version"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-01/upload-preflight-red.txt",
+        "docs/quality/evidence/2026-11-01/upload-preflight-green.txt",
+        "docs/quality/evidence/2026-11-01/upload-preflight-junit.xml"
+      ],
+      "fixed_in": "393bca4",
+      "repro": "Первый persistent upload после унификации команд: preflight вызывался как атрибут handler — AttributeError function.preflight и HTTP500."
+    },
+    {
+      "id": "D9",
+      "component": "kraken_manager",
+      "title": "Ход по папкам с зарезервированными именами Windows теряет данные (con, aux, …)",
+      "status": "RESOLVED",
+      "severity": "critical",
+      "regression_tests": [
+        "tests/test_workspace_files.py::test_scan_counts_files_inside_reserved_subdirectory",
+        "tests/test_workspace_files.py::test_import_layer_preserves_bytes_under_reserved_aux_subdirectory",
+        "tests/test_workspace_files.py::test_place_server_layer_copies_reserved_subdirectory_bytes",
+        "tests/test_workspace_files.py::test_make_directory_and_remove_tree_handle_stem_extension_reserved_names",
+        "tests/test_workspace_files.py::test_make_directory_exist_ok_contract"
+      ],
+      "evidence": [],
+      "fixed_in": "3e0f080",
+      "repro": "scan_layer_source по дереву с подпапкой con/data.txt — total_files=1 (файл невидим); import_layer создаёт пустую aux/<слой>/con без data.txt."
+    },
+    {
+      "id": "D10",
+      "component": "test_harness",
+      "title": "Teardown тестовой обвязки не может удалить дерево Kraken с зарезервированным именем (aux)",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/test_hub_embedded_service.py"
+      ],
+      "evidence": [],
+      "fixed_in": "f98c55f",
+      "repro": "На Windows pytest tests/test_hub_embedded_service.py — 16 тестов FAIL: в teardown WinError 145 (reserved DOS device name) при shutil.rmtree дерева с aux-категорией."
+    },
+    {
+      "id": "D11",
+      "component": "contour",
+      "title": "Интерактивное задание Contour не даёт result.json: сохранённый на хосте CIF-каталог перезаписывает векторный индекс задания",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_server_workspace_inputs.py::test_interactive_contour_opens_with_images_and_returns_results"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-09/interactive_contour_repro.txt",
+        "docs/quality/evidence/2026-11-09/manual_worker_run.txt",
+        "docs/quality/evidence/2026-11-09/interactive_contour_green.txt",
+        "docs/quality/evidence/2026-11-09/neighbor_suites_green.txt"
+      ],
+      "fixed_in": "103cce1",
+      "repro": "На машине, где профиль Contour содержит paths/cif_directory: pytest tests/test_server_workspace_inputs.py -q -k interactive_contour — 6 тестов FAIL, subprocess завершается с 0 без result.json."
+    },
+    {
+      "id": "D12",
+      "component": "contour",
+      "title": "Конфликт занятого слота профайлера узнаётся только по легаси-сообщению, и конвертация изображений редактора логирует ошибки",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "plugins/contour/tests/unit/test_frame_switch_profiler.py::FrameSwitchProfilerTests::test_conflict_detection_matches_the_real_cpython_slot_error"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-09/manual_worker_run.txt"
+      ],
+      "fixed_in": "f260105",
+      "repro": "В процессе, где слот cProfile-профайлера уже занят, конвертация изображений редактора с профайлингом логирует ERROR: ValueError: tool 2 is already in use (CPython 3.13+)."
+    },
+    {
+      "id": "D13",
+      "component": "contour",
+      "title": "Управляемый прогон Contour дописывает staging-пути задания в профиль настроек хоста",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "plugins/contour/tests/unit/test_settings_store.py::ManagedJobSettingsStoreTests",
+        "plugins/contour/tests/unit/test_kraken_return.py::test_agent_attach_resets_cif_directory_state_like_workspace_sibling"
+      ],
+      "evidence": [],
+      "fixed_in": "f260105",
+      "repro": "Управляемое задание Contour на машине с профилем хоста: после прогона HKCU\\Software\\ViaLaNet\\Contour содержит staging-пути задания (paths/*, session/*); agent-мост не делал двух robustness-сбросов workspace-близнеца."
+    },
+    {
+      "id": "D14",
+      "component": "test_harness",
+      "title": "Обвязка интерактивных тестов Contour строит несуществующие PYTHONPATH для subprocess плагинов",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/test_server_workspace_inputs.py::test_subprocess_resolves_contour_from_harness_pythonpath"
+      ],
+      "evidence": [],
+      "fixed_in": "f260105",
+      "repro": "tests/test_server_workspace_inputs_parts/interactive_contour_opens.py брала корень parents[1] = <repo>/tests — все три корня PYTHONPATH не существуют, subprocess молча резолвил editable-установку venv."
+    },
+    {
+      "id": "D15",
+      "component": "test_harness",
+      "title": "Юнит-слой: CUDA-вызов torch роняет весь pytest-процесс, и два юнит-теста Contour зависят от 8.3-коротких путей",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_pipeline_stitch_live_content.py",
+        "plugins/contour/tests/unit/test_frame_asset_sync.py::FrameAssetSyncTests::test_index_selected_cif_file_paths_requires_existing_files",
+        "plugins/contour/tests/unit/test_frames_per_row_launch.py::FramesPerRowLaunchTests::test_open_command_forwards_project_width_and_does_not_invent_one"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d15-red.txt",
+        "docs/quality/evidence/2026-11-10/d15-green.txt"
+      ],
+      "fixed_in": "",
+      "repro": "Прогон unit-слоя quality-гейта (scripts/quality-gates.ps1 -Tier unit, коммит 0356120) на машине, где %TEMP% в 8.3-короткой форме (C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp) и CUDA-инициализация torch падает: первый вызов слоя (pytest tests) завершается с exit -1073741819 (STATUS_ACCESS_VIOLATION) в torch.cuda.is_available() теста tests/test_pipeline_stitch_live_content.py и не доходит до остальных тестов; второй вызов (plugins/contour/tests/unit) — 2 failed на ассертах путей (short/long форма %TEMP%), 262 passed."
+    },
+    {
+      "id": "D16",
+      "component": "test_harness",
+      "title": "Тесты офлайн-экспорта, требующие настоящий PyPI-индекс, не гейтятся для офлайн-машин",
+      "status": "RESOLVED",
+      "severity": "minor",
+      "regression_tests": [
+        "tests/offline/test_offline_sync.py::test_verify_installs_from_transfer_cache_and_empty_cache_fails",
+        "tests/offline/test_offline_sync.py::test_repeated_export_reuses_dependency_cache"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-offline-sync.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На машине без интернета pytest tests/offline/test_offline_sync.py -q -k \"verify_installs_from_transfer_cache or repeated_export_reuses_dependency_cache\" — 2 failed: uv lock / export-режим uv sync не достают https://pypi.org/simple/ (dns error, os error 11001/11002) после 3 ретраев."
+    },
+    {
+      "id": "D17",
+      "component": "test_harness",
+      "title": "Dry-run ассерты PyTorch-резолвции зависят от состояния локального .venv и детерминированно падают на dev-машине",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch",
+        "tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-pytorch.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На машине, где .venv полностью заполнен (torch==2.12.0+cu132 установлен): pytest tests/offline/test_pytorch_resolution.py -q — 2 failed: root-прогон (all-groups all-extras) показывает torch в списке \"Would uninstall\", а workspace-прогон (all-packages) не показывает его вовсе (уже установлен, дифф пуст)."
+    },
+    {
+      "id": "D18",
+      "component": "test_harness",
+      "title": "Тесты Contour-моста сравнивают staging-пути без канонизации: 8.3-короткая и длинная формы %TEMP% расходятся",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif",
+        "tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_dataset_preparation_fills_dataset_path_instead_of_result_path"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-bridges.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-bridges-pytorch-offline.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На машине, где %TEMP% в 8.3-короткой форме (C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp): pytest tests/test_plugin_app_v1_bridges.py -q — 2 failed: путь tempfile.TemporaryDirectory() обвязки короткий, а ContourKrakenSession резолвит staging-пути в длинную форму (Path.resolve), и ассерты argv/input_paths расходятся."
+    },
+    {
+      "id": "D19",
+      "component": "test_harness",
+      "title": "Teardown тестов QualityDialog не может удалить дерево проекта: stdlib rmtree не удаляет aux-каталог с зарезервированным именем",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_quality_dialog.py::test_quality_dialog_drives_real_local_issue_assignment_and_history",
+        "tests/test_quality_dialog.py::test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d16-red-quality-dialog.txt",
+        "docs/quality/evidence/2026-11-10/d16-green-quality-dialog.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На Windows pytest tests/test_quality_dialog.py -q — 2 failed в TemporaryDirectory-cleanup (тело теста зелёное): после создания продуктом data\\workspace-source\\new_test\\aux — os.rmdir(new_test) падает WinError 145 «Папка не пуста»."
+    },
+    {
+      "id": "D20",
+      "component": "test_harness",
+      "title": "Уборка TemporaryDirectory в тестах локальной аутентификации падает: внешний on-access сканер держит свежий SQLite-файл и бросает в каталог мимолётный <db>-SHM.tmp",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_local_auth.py::LocalAccountTests::test_account_sessions_are_opaque_revocable_and_persistent",
+        "tests/test_local_auth.py::LocalAccountTests::test_cleanup_waits_for_a_foreign_handle_on_the_database",
+        "tests/test_local_auth.py::LocalAccountTests::test_cleanup_retries_when_the_final_rmdir_reports_not_empty"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt",
+        "docs/quality/evidence/2026-11-10/d20-green-foreign-lock.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На Windows-машине с on-access антивирусом под нагрузкой: тело test_account_sessions_are_opaque_revocable_and_persistent зелёное, но TemporaryDirectory.__exit__ падает: os.unlink('...\\accounts.sqlite3') — WinError 32 (файл занят другим процессом) либо os.rmdir(tempdir) — WinError 145 «Папка не пуста», т.к. между обходом rmtree и финальным rmdir в каталоге появляется мимолётный ACCOUNTS.SQLITE3-SHM.tmp (создаётся и удаляется внешним процессом; в bundled sqlite3.dll 3.50.4 нет строки '.tmp' вовсе). Воспроизводится стресс-циклом тела теста с CPU-нагрузкой: в %TEMP% — 2-3 падения за ~1500 итераций, в C:\\code\\kraken\\.codex_tmp_scratch\\stressroot — 3 падения за 13 итераций; детерминированные RED-сценарии — docs/quality/evidence/2026-11-10/d20-red-foreign-lock.txt."
+    },
+    {
+      "id": "D21",
+      "component": "test_harness",
+      "title": "На закрытой машине офлайн-резолв uv невозможен: locked-тесты PyTorch-резолвции падают (build-зависимости contour вне кэша, страницы индекса cu132 не кэшированы, неразрешимый форк Python>=3.15)",
+      "status": "OPEN",
+      "severity": "major",
+      "regression_tests": [
+        "tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch",
+        "tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-18/d21-red.txt",
+        "docs/quality/evidence/2026-11-18/d21-green.txt"
+      ],
+      "fixed_in": "",
+      "repro": "На dev-машине с закрытой сетью (pypi.org и download.pytorch.org недоступны — DNS fail): pytest tests/offline/test_pytorch_resolution.py -q — 2 failed: uv sync --directory <ROOT> --locked --dry-run --offline ... падает с «Failed to build contour @ file:///C:/code/kraken/plugins/contour → Failed to resolve requirements from build-system.requires … network was disabled, registry packages may only be read from the cache». Тот же корень у uv lock --check, который на этой машине тоже падает — это внешний prerequisite для W4-упаковки и для любой будущей правки зависимостей.",
+      "exception_reason": "на закрытой машине тесты гейтятся пробом; полное исправление из трёх частей: (1) uv-кэш из G:\\kraken-transfer содержит pybind11 3.1.0, wheel 0.48.0 и setuptools — при UV_CACHE_DIR=G:\\kraken-transfer\\uv-cache metadata Contour собирается офлайн; (2) в uv.lock нет build-зависимостей contour (лок устарел относительно build-system.requires) — пересобрать `uv lock` нужно один раз с доступом к download.pytorch.org: в uv-кэше комплекта есть байты колёс torch, но нет страниц простого индекса cu132 (simple-v20 содержит только .lock без тела ответа), офлайн-резолвер не может перечислить версии; (3) упаковки корня и neuralimage объявляют requires-python=\">=3.14\" без верхней границы, и uv строит неразрешимый форк Python>=3.15, где torch 2.12 не публикуется — при пересборке лока поставить fence \">=3.14,<3.15\" (torch 2.12.0+cu132 существует только под 3.14); на закрытой машине это правка pyproject, применимая вместе с пересборкой лока. Кэш комплекта G:\\kraken-transfer\\uv-cache служит UV_CACHE_DIR-ускорителем офлайн-резолва всего, кроме страниц индекса cu132 (отметка войдёт в docs/quality/beta-stand.md при его создании). С 19.11.2026 кэш комплекта отзеркален локально в .offline\\uv-cache (UV_CACHE_DIR=C:\\code\\kraken\\.offline\\uv-cache) — ускоритель офлайн-резолва работает без подключения G:."
+    },
+    {
+      "id": "D22",
+      "component": "kraken_admin",
+      "title": "Удаление проекта через Admin падает на Windows: remove_stored_path чистит staged-дерево stdlib shutil.rmtree, который не удаляет каталог категории aux с зарезервированным DOS-именем (WinError 145)",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_deletion_confirmation.py::test_folder_removal_deletes_windows_reserved_dos_names"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-18/d22-red-probe.txt",
+        "docs/quality/evidence/2026-11-18/d22-green.txt",
+        "docs/quality/evidence/2026-11-18/gate-integration/receipt.json"
+      ],
+      "fixed_in": "0b6d946",
+      "repro": "На Windows: создать проект (продуктовая двухкорневая раскладка всегда содержит каталог категории aux), запросить и выполнить удаление проекта через Admin — ProjectDeletion.execute падает OSError [WinError 145] «Папка не пуста» в kraken_admin.infrastructure.stored_files.remove_stored_path -> shutil.rmtree на .kraken-trash/<request>/0. В интеграционном слое гейта 2026-11-18 (первый прогон со стенда): 6 failed в tests/test_admin_project_workflows.py. Минимальное воспроизведение механизма — shutil.rmtree дерева с aux: выживший элемент ровно aux (d22-red-probe.txt). Тот же класс, что D9/D10/D19, но на продуктовой стороне удаления."
+    },
+    {
+      "id": "D23",
+      "component": "migrations",
+      "title": "Программный запуск Alembic из тестов (Config(\"alembic.ini\") + command.upgrade) применяет logging.config.fileConfig в env.py, который заменяет все обработчики root-логгера и отключает перехват логов pytest и ring-буфер qt-harness",
+      "status": "RESOLVED",
+      "severity": "major",
+      "regression_tests": [
+        "tests/test_qt_harness.py::test_failure_capture_produces_artifacts",
+        "tests/test_domain_auth_broker.py::test_jit_first_domain_login_creates_account_principal_performer",
+        "tests/test_alembic_env_logger_isolation.py::test_opt_out_preserves_caller_logging_and_runs_migrations",
+        "tests/test_alembic_env_logger_isolation.py::test_default_config_preserves_cli_logger_setup",
+        "tests/test_alembic_env_logger_isolation.py::test_explicit_configure_logger_true_still_clobbers"
+      ],
+      "evidence": [
+        "docs/quality/evidence/2026-11-18/d23-red.txt",
+        "docs/quality/evidence/2026-11-18/d23-green.txt"
+      ],
+      "fixed_in": "b841cfa",
+      "repro": "На машине с настроенным KRAKEN_TEST_POSTGRES_URL: прогон tests/test_domain_auth_broker.py совместно с tests/test_qt_harness.py. Тест доменной аутентификации вызывает фикстуру database (Config(\"alembic.ini\") + command.upgrade), env.py вызывает logging.config.fileConfig(alembic.ini), который снимает с root-логгера все обработчики, включая ring-обработчик qt-harness; маркер журнала, поставленный после этого, не доходит до файла свидетельства, и test_failure_capture_produces_artifacts падает (d23-red.txt; в полном гейт-прогоне 2026-11-18 падал unit-слой). После opt-out программных вызовов (attributes={\"configure_logger\": False}) — d23-green.txt. CLI alembic сохраняет прежнее поведение; kraken_server.run_migrations конфиг-файл не передаёт и не затронут."
+    }
+  ]
+}

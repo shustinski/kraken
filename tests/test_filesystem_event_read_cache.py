@@ -27,8 +27,12 @@ def test_filtered_read_keeps_positions_isolation_and_canonical_validation(tmp_pa
     selected[0].data["payload"]["values"].append(99)
     assert tuple(store.iter_project(event_types=("Selected",)))[0].data["payload"]["values"] == [1]
     # Filtering must still verify segments containing no selected events.
+    # The read-cache signature is (size, mtime_ns); a size-preserving rewrite
+    # can land in the same Windows last-write-time tick as the append, so the
+    # tamper also changes the file size - the same invalidation route the other
+    # tests here rely on - instead of racing the timestamp granularity.
     segment = next(store.layout.events_dir.glob("*.jsonl"))
-    segment.write_bytes(segment.read_bytes().replace(b'"revision":1', b'"revision":9', 1))
+    segment.write_bytes(segment.read_bytes().replace(b'"revision":1', b'"revision":99', 1))
     with pytest.raises(CorruptEventLogError):
         tuple(store.iter_project(event_types=("Missing",)))
 

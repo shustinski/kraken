@@ -328,18 +328,7 @@ class DualCatalogService(ProjectApplication):
         except RemoteServerError as exc:
             if exc.status != 401:
                 raise
-            try:
-                candidate = RemoteServerProjectService.register_local(
-                    url,
-                    username=username.strip(),
-                    password=password,
-                    display_name=username.strip(),
-                    data_dir=self.local.data_dir,
-                )
-            except RemoteServerError as register_error:
-                if register_error.status == 401:
-                    raise ValueError("Пароль не подходит к уже существующей учётной записи") from register_error
-                raise
+            raise ValueError("Учётная запись не найдена или неверный пароль") from exc
         return self._install_remote(candidate)
 
     def _install_remote(self, candidate: RemoteServerProjectService) -> RemoteServerProjectService:
@@ -572,6 +561,9 @@ class DualCatalogService(ProjectApplication):
 
     def login(self, username: str, password: str):
         return self.local.login(username, password)
+
+    def login_or_create_local(self, username: str, password: str):
+        return self.local.login_or_create_local(username, password)
 
     def archive_performer(self, performer_id):
         return self.local.archive_performer(performer_id)

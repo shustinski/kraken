@@ -32,6 +32,8 @@ from test_server_workspace_inputs_parts.server_preview_uses import (
 )
 from test_server_workspace_inputs_parts.prepared_server_images import (
     test_remote_source_preparation_calls_server_and_returns_frames,
+    test_unbound_layer_prepares_frames_from_representation_source,
+    test_unbound_layer_without_source_folder_is_rejected,
     test_selecting_linked_server_images_starts_preview_preparation,
     test_source_preparation_api_requires_session_and_passes_registered_ids,
     test_server_contour_actions_require_the_interactive_client_plugin,
@@ -53,7 +55,10 @@ from test_server_workspace_inputs_parts.task_pipeline_removal import test_task_a
 from test_server_workspace_inputs_parts.neural_training_rejects import test_neural_training_rejects_unsafe_dataset_paths
 from test_server_workspace_inputs_parts.training_window_receives import test_training_window_receives_samples_and_returns_model
 from test_server_workspace_inputs_parts.desktop_handoff_reports import test_desktop_handoff_reports_result_and_refreshes_on_qt_thread
-from test_server_workspace_inputs_parts.interactive_contour_opens import test_interactive_contour_opens_with_images_and_returns_results
+from test_server_workspace_inputs_parts.interactive_contour_opens import (
+    test_interactive_contour_opens_with_images_and_returns_results,
+    test_subprocess_resolves_contour_from_harness_pythonpath,
+)
 
 # Imported so existing callers and tests can patch or import these names
 # from this module after the implementation moved into focused units.
@@ -67,6 +72,8 @@ _FACADE_EXPORTS = (
     test_server_source_preparation_preserves_import_permissions,
     test_server_preview_uses_version_id_and_decodes_linked_image,
     test_remote_source_preparation_calls_server_and_returns_frames,
+    test_unbound_layer_prepares_frames_from_representation_source,
+    test_unbound_layer_without_source_folder_is_rejected,
     test_selecting_linked_server_images_starts_preview_preparation,
     test_source_preparation_api_requires_session_and_passes_registered_ids,
     test_server_contour_actions_require_the_interactive_client_plugin,
@@ -84,4 +91,5 @@ _FACADE_EXPORTS = (
     test_training_window_receives_samples_and_returns_model,
     test_desktop_handoff_reports_result_and_refreshes_on_qt_thread,
     test_interactive_contour_opens_with_images_and_returns_results,
+    test_subprocess_resolves_contour_from_harness_pythonpath,
 )

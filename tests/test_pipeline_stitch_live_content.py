@@ -4,15 +4,22 @@ from pathlib import Path
 import time
 from uuid import uuid4
 
+import pytest
+
 from kraken_manager.domain.pipeline import LayerPipelineDefinition, PipelineModelInput, PipelineOperation
 from kraken_manager.domain.pipeline_layer import PipelineLayerContent, PipelineLayerOperation
 from kraken_manager.domain.multilayer import MultilayerModel
 from kraken_manager.infrastructure.filesystem import FilesystemEventStore
 from kraken_manager.infrastructure.mosaic import MosaicReader
+from tests.helpers.cuda_gate import cuda_precondition_holds
 from tests.test_stitch_plan_workflow import geometry as geometry
+
+kraken_defect = "D15"
 
 
 def test_actual_inference_outputs_are_sampled_without_replacing_geometry(geometry, tmp_path, monkeypatch):
+    if not cuda_precondition_holds():
+        pytest.skip("no usable CUDA device (probe exited/crashed)")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
     monkeypatch.setenv("NEURALIMAGE_TORCH_COMPILE", "0")
     monkeypatch.delenv("NEURALIMAGE_SERVER_URL", raising=False)

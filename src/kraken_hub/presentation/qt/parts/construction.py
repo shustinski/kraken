@@ -7,6 +7,7 @@ from kraken_manager.infrastructure.plugin import AgentPluginGateway
 from kraken_manager.presentation.qt import (
     LayerManagerDialog,
     ProjectManagerShell,
+    ProjectWorkspacePage,
 )
 from kraken_manager.application.results import UserSession as DesktopSession
 from kraken_hub.application.workspace import ProjectWorkspaceService
@@ -126,6 +127,7 @@ class ConstructionMixin:
         self._workspace = None
         self._project_id = None
         self._layer_dialog: LayerManagerDialog | None = None
+        self._project_workspaces: dict[str, ProjectWorkspacePage] = {}
         self._background_workers: set[QThread] = set()
         self._source_preparation_keys: set[tuple[str, str]] = set()
         self._pending_wakes: dict[tuple[str, str, str], ProjectEventWake] = {}
@@ -155,6 +157,9 @@ class ConstructionMixin:
         self.shell.qualityRequested.connect(self.open_quality)
 
         self.shell.preferencesRequested.connect(self.open_preferences)
+        self.shell.project_tab_activated.connect(self._on_project_tab_activated)
+        self.shell.project_tab_close_requested.connect(self._on_project_tab_close_requested)
+        self.shell.addProjectRequested.connect(self.refresh_projects)
         self.shell.cellVisualModeChanged.connect(self._set_matrix_visual_mode)
         self.shell.reviewReturnRequested.connect(self.load_review_return)
         self.shell.framePropertiesRequested.connect(self.show_selected_frame)

@@ -13,9 +13,13 @@ from contour.infrastructure.frame_switch_profiler import (
 )
 from contour.infrastructure.profiling import (
     processing_profiling_enabled,
+    profiler_enable_conflict,
     try_enable_profiler,
     vertex_move_profiling_enabled,
 )
+
+# Regression test for defect D12 (docs/quality/defects.md) lives in this module.
+kraken_defect = "D12"
 
 
 class FrameSwitchProfilerTests(unittest.TestCase):
@@ -87,6 +91,23 @@ class FrameSwitchProfilerTests(unittest.TestCase):
             self.assertFalse(try_enable_profiler(inner))
         finally:
             outer.disable()
+
+    def test_conflict_detection_matches_the_real_cpython_slot_error(self) -> None:
+        # D12: CPython 3.13+ raises "tool 2 is already in use" (sys.monitoring
+        # tool id) for a taken profiler slot; the legacy wording must keep
+        # matching on older builds, and other ValueErrors are not conflicts.
+        outer = cProfile.Profile()
+        inner = cProfile.Profile()
+        outer.enable()
+        try:
+            with self.assertRaises(ValueError) as raised:
+                inner.enable()
+            self.assertTrue(profiler_enable_conflict(raised.exception))
+            self.assertFalse(try_enable_profiler(inner))
+        finally:
+            outer.disable()
+        self.assertTrue(profiler_enable_conflict(ValueError("Another profiling tool is already active")))
+        self.assertFalse(profiler_enable_conflict(ValueError("unexpected profiler state")))
 
     def test_specific_environment_switch_overrides_default(self) -> None:
         env = os.environ

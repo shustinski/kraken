@@ -1,0 +1,13 @@
+=== Run 1: pytest tests/offline/test_pytorch_resolution.py tests/offline/test_offline_sync.py -q (exit 0) ===
+.ss...........ss..                                                       [100%]
+=========================== short test summary info ===========================
+SKIPPED [2] tests\offline\test_pytorch_resolution.py:61: offline uv resolution unavailable on this machine (build deps and/or cu132 index pages missing, or unresolved Python>=3.15 torch fork) — see D21
+SKIPPED [2] tests\offline\test_offline_sync.py:42: pypi.org is not reachable from this machine (offline); the test needs the real PyPI index to build the uv transfer cache
+14 passed, 4 skipped in 30.25s
+
+=== Run 2 (determinism): identical command (exit 0) ===
+.ss...........ss..                                                       [100%]
+=========================== short test summary info ===========================
+SKIPPED [2] tests\offline\test_pytorch_resolution.py:61: offline uv resolution unavailable on this machine (build deps and/or cu132 index pages missing, or unresolved Python>=3.15 torch fork) — see D21
+SKIPPED [2] tests\offline\test_offline_sync.py:42: pypi.org is not reachable from this machine (offline); the test needs the real PyPI index to build the uv transfer cache
+14 passed, 4 skipped in 30.18s

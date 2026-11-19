@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test image vector representations."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.application.dto import CommandContext, CreateProjectCommand
@@ -12,7 +12,7 @@ from kraken_manager.infrastructure.filesystem import LocalProjectUnitOfWorkFacto
 
 class ImageVectorRepresentationsMixin:
     def test_image_and_vector_representations_can_be_added_to_a_layer(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             session = service.create_initial_account("operator", "Operator", "")
             project = service.create_project(
@@ -60,7 +60,7 @@ class ImageVectorRepresentationsMixin:
             self.assertEqual(image.id, vector.source_image_representation_id)
 
     def test_initial_account_is_created_with_identity_and_authenticated_session(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
 
             session = service.create_initial_account("operator", "Оператор", "correct horse battery staple")
@@ -71,7 +71,7 @@ class ImageVectorRepresentationsMixin:
             self.assertEqual(session.principal, service.resolve_session(session.token))
 
     def test_initial_account_cannot_be_created_when_an_account_exists(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             service.create_initial_account("operator", "Operator", "correct horse battery staple")
 
@@ -79,14 +79,14 @@ class ImageVectorRepresentationsMixin:
                 service.create_initial_account("second", "Second", "another correct password")
 
     def test_manual_performer_catalog_is_persistent(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             service = EmbeddedProjectService(Path(directory))
             created = service.create_manual_performer(name="Reviewer", color="#123ABC")
             reopened = EmbeddedProjectService(Path(directory))
             self.assertEqual((created,), reopened.list_performers())
 
     def test_manual_performer_can_be_updated_and_archived(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             service = EmbeddedProjectService(Path(directory))
             created = service.create_manual_performer(name="Reviewer", color="#123ABC")
 
@@ -104,7 +104,7 @@ class ImageVectorRepresentationsMixin:
             self.assertEqual((archived,), service.list_performers(include_archived=True))
 
     def test_authenticated_local_project_vertical_slice(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             service.accounts.create_account("operator", "Operator", "correct horse battery staple")
             session = service.login("operator", "correct horse battery staple")
@@ -131,7 +131,7 @@ class ImageVectorRepresentationsMixin:
             self.assertEqual(4, len(service.list_layers(project.id)))
 
     def test_local_profile_accepts_more_than_one_million_frames(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             account = service.accounts.create_account("operator", "Operator", "correct horse battery staple")
             session = service.login(account.username, "correct horse battery staple")
@@ -147,7 +147,7 @@ class ImageVectorRepresentationsMixin:
             self.assertEqual(1_000_100, project.frame_count)
 
     def test_event_first_commit_failure_is_recovered_before_next_read(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             account = service.accounts.create_account("operator", "Operator", "correct horse battery staple")
             session = service.login(account.username, "correct horse battery staple")

@@ -114,6 +114,7 @@ class RunMixin:
                     self._config.workload.source_root,
                     self._config.workload.preprocessing,
                     self._config.stop_token,
+                    self._config.workload.result_folder,
                 ),
             )
             process.start()
@@ -139,6 +140,7 @@ class RunMixin:
                     self._config.workload.confidence_tta_enabled,
                     self._config.workload.uncertainty,
                     self._config.stop_token,
+                    self._config.workload.result_folder,
                 ),
             )
             process.start()
@@ -168,6 +170,7 @@ class RunMixin:
                     self._config.workload.active_learning,
                     self._config.workload.active_learning_metadata,
                     self._config.stop_token,
+                    self._config.workload.result_folder,
                 ),
             )
             process.start()

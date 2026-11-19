@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test project acl changes."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.identity import ProjectRole
@@ -9,7 +9,7 @@ from kraken_manager.domain.project import GridOrientation
 
 class ProjectAclChangesMixin:
     def test_project_acl_changes_are_optimistic_idempotent_and_audited(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             owner = service.create_initial_account("owner", "Owner", "")
             service.accounts.create_account("worker", "Worker", "")
@@ -56,7 +56,7 @@ class ProjectAclChangesMixin:
             self.assertTrue({"ProjectRoleAssigned", "ProjectRoleRevoked"}.issubset(event_types))
 
     def test_last_project_owner_cannot_be_revoked(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
+        with kraken_tempdir() as temporary:
             service = EmbeddedProjectService(Path(temporary))
             owner = service.create_initial_account("owner", "Owner", "")
             project = service.create_project(

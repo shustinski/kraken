@@ -1,6 +1,6 @@
 """test_hub_embedded_service: test managed vector keeps."""
 from __future__ import annotations
-import tempfile
+from test_hub_embedded_service_parts.kraken_tempdir import kraken_tempdir
 from pathlib import Path
 from kraken_hub.composition import EmbeddedProjectService
 from kraken_manager.domain.project import GridOrientation, LayerType, RepresentationKind
@@ -8,7 +8,7 @@ from kraken_manager.domain.project import GridOrientation, LayerType, Representa
 
 class ManagedVectorKeepsMixin:
     def test_managed_vector_keeps_external_image_thumbnail_source(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
+        with kraken_tempdir() as directory:
             root = Path(directory)
             service = EmbeddedProjectService(root / "data")
             session = service.create_initial_account("owner", "Owner", "")
@@ -56,10 +56,14 @@ class ManagedVectorKeepsMixin:
             vector_directory = root / "vectors"
             vector_directory.mkdir()
             (vector_directory / "1_1.cif").write_text("CIF", encoding="utf-8")
+            (vector_directory / "1_1.ssc").write_bytes(b"sidecar")
             vector_plan = service.plan_import_directory(
                 project=project,
                 directory=vector_directory,
+                kind=RepresentationKind.VECTOR,
             )
+            self.assertTrue(vector_plan.ready)
+            self.assertEqual(("1_1.cif",), tuple(item.source.display_name for item in vector_plan.items))
             vector_result = service.commit_managed_import(
                 principal=session.principal,
                 project=project,

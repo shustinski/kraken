@@ -1,0 +1,18 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-18T13:46:54.4158317Z",
+    "tier":  "stateful",
+    "command":  "",
+    "exit_code":  null,
+    "tests":  0,
+    "passed":  0,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  0,
+    "skipped_tests":  [
+
+                      ],
+    "duration_seconds":  null,
+    "status":  "NOT_TESTED",
+    "note":  "tests/stateful/ does not exist yet (plan Task 3.x); an absent tier is not a gate failure"
+}

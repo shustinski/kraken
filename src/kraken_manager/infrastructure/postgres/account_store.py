@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -28,6 +29,7 @@ def _account_tables() -> tuple[Any, Any, Any, Any, Any]:
         sa.Column("failed_attempts", sa.Integer, nullable=False, server_default="0"),
         sa.Column("blocked_until", sa.DateTime(timezone=True)),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("auth_provider", sa.Text, nullable=False, server_default="local"),
     )
     sessions = sa.Table(
         "server_sessions",
@@ -93,6 +95,7 @@ class PostgresAccountStore:
             str(row["display_name"]),
             bool(row["enabled"]),
             created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+            str(row["auth_provider"] or "local"),
         )
 
     def create_account(
@@ -102,6 +105,7 @@ class PostgresAccountStore:
         password: str,
         *,
         actor_id: str | None = None,
+        auth_provider: str = "local",
     ) -> LocalAccount:
         username, username_key = self._normalize_username(username)
         display_name = display_name.strip()
@@ -118,12 +122,17 @@ class PostgresAccountStore:
             "failed_attempts": 0,
             "blocked_until": None,
             "created_at": now,
+            "auth_provider": auth_provider,
         }
         with self.engine.begin() as connection:
             connection.execute(self.accounts.insert(), values)
             if actor_id is not None:
                 self._record_audit(connection, actor_id, "account.created", values["account_id"])
-        return LocalAccount(values["account_id"], username, display_name, True, now.isoformat())
+        return LocalAccount(values["account_id"], username, display_name, True, now.isoformat(), auth_provider)
+
+    def create_ldap_account(self, username: str, display_name: str) -> LocalAccount:
+        """An LDAP account: the hash is structurally unusable, the password is managed by the domain."""
+        return self.create_account(username, display_name, secrets.token_urlsafe(32), auth_provider="ldap")
 
     def account_count(self) -> int:
         sa, _ = _sqlalchemy()
@@ -174,55 +183,114 @@ class PostgresAccountStore:
                 raise KeyError(account_id)
             connection.execute(sa.delete(self.sessions).where(self.sessions.c.account_id == account_id))
 
+    def _fetch_username_row(self, connection: Any, username_key: str) -> Any:
+        sa, _ = _sqlalchemy()
+        return (
+            connection.execute(
+                sa.select(self.accounts).where(self.accounts.c.username_key == username_key).with_for_update()
+            )
+            .mappings()
+            .first()
+        )
+
+    def _grant_session_or_lockout(
+        self,
+        connection: Any,
+        row: Any,
+        now: datetime,
+        verified: bool,
+        lifetime: timedelta,
+    ) -> LocalSession | None:
+        """Enabled/lockout gate, failure accounting, and session issue for a locked account row.
+
+        The caller must hold the enclosing transaction.
+        """
+        if not bool(row["enabled"]):
+            return None
+        blocked = row["blocked_until"]
+        if blocked is not None and blocked > now:
+            return None
+        sa, _ = _sqlalchemy()
+        if not verified:
+            attempts = int(row["failed_attempts"]) + 1
+            blocked_until = now + timedelta(minutes=min(60, 2 ** max(0, attempts - 5))) if attempts >= 5 else None
+            connection.execute(
+                sa.update(self.accounts)
+                .where(self.accounts.c.account_id == row["account_id"])
+                .values(failed_attempts=attempts, blocked_until=blocked_until)
+            )
+            return None
+        token = secrets.token_urlsafe(32)
+        expires_at = now + lifetime
+        connection.execute(
+            sa.update(self.accounts)
+            .where(self.accounts.c.account_id == row["account_id"])
+            .values(failed_attempts=0, blocked_until=None)
+        )
+        connection.execute(
+            self.sessions.insert(),
+            {
+                "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                "account_id": str(row["account_id"]),
+                "expires_at": expires_at,
+                "created_at": now,
+            },
+        )
+        return LocalSession(token, self._account(row), expires_at.isoformat())
+
     def authenticate(
         self,
         username: str,
         password: str,
         *,
         lifetime: timedelta = timedelta(hours=12),
+        verifier: Callable[[str, str], bool] | None = None,
     ) -> LocalSession | None:
         _, username_key = self._normalize_username(username)
         now = datetime.now(UTC)
-        sa, _ = _sqlalchemy()
         with self.engine.begin() as connection:
-            row = (
-                connection.execute(
-                    sa.select(self.accounts).where(self.accounts.c.username_key == username_key).with_for_update()
-                )
-                .mappings()
-                .first()
-            )
-            if row is None or not bool(row["enabled"]):
+            row = self._fetch_username_row(connection, username_key)
+            if row is None:
                 return None
-            blocked = row["blocked_until"]
-            if blocked is not None and blocked > now:
+            stored_hash = str(row["password_hash"])
+            if verifier is not None:
+                verified = bool(verifier(stored_hash, password))
+            else:
+                verified = self.hasher.verify(stored_hash, password)
+            return self._grant_session_or_lockout(connection, row, now, verified, lifetime)
+
+    def issue_session(self, username: str, *, lifetime: timedelta = timedelta(hours=12)) -> LocalSession | None:
+        """Issue a session without any password check — only right after an external (LDAP) verification."""
+        _, username_key = self._normalize_username(username)
+        now = datetime.now(UTC)
+        with self.engine.begin() as connection:
+            row = self._fetch_username_row(connection, username_key)
+            if row is None:
                 return None
-            if not self.hasher.verify(str(row["password_hash"]), password):
-                attempts = int(row["failed_attempts"]) + 1
-                blocked_until = now + timedelta(minutes=min(60, 2 ** max(0, attempts - 5))) if attempts >= 5 else None
-                connection.execute(
-                    sa.update(self.accounts)
-                    .where(self.accounts.c.account_id == row["account_id"])
-                    .values(failed_attempts=attempts, blocked_until=blocked_until)
-                )
-                return None
-            token = secrets.token_urlsafe(32)
-            expires_at = now + lifetime
-            connection.execute(
+            return self._grant_session_or_lockout(connection, row, now, True, lifetime)
+
+    def convert_to_ldap_account(self, account_id: str) -> LocalAccount | None:
+        """Rewrite a row as an LDAP account: fresh unusable hash, enabled.
+
+        Previous local sessions must already be revoked (via set_enabled(False)); this
+        method does not touch sessions. Returns None when no row matches.
+        """
+        sa, _ = _sqlalchemy()
+        password_hash = self.hasher.hash(secrets.token_urlsafe(32))
+        with self.engine.begin() as connection:
+            result = connection.execute(
                 sa.update(self.accounts)
-                .where(self.accounts.c.account_id == row["account_id"])
-                .values(failed_attempts=0, blocked_until=None)
+                .where(self.accounts.c.account_id == account_id)
+                .values(auth_provider="ldap", password_hash=password_hash, enabled=True)
             )
-            connection.execute(
-                self.sessions.insert(),
-                {
-                    "token_hash": hashlib.sha256(token.encode()).hexdigest(),
-                    "account_id": str(row["account_id"]),
-                    "expires_at": expires_at,
-                    "created_at": now,
-                },
+            if result.rowcount != 1:
+                return None
+            row = (
+                connection.execute(sa.select(self.accounts).where(self.accounts.c.account_id == account_id))
+                .mappings()
+                .one()
             )
-        return LocalSession(token, self._account(row), expires_at.isoformat())
+        return self._account(row)
 
     def resolve_session(self, token: str) -> LocalAccount | None:
         sa, _ = _sqlalchemy()
@@ -399,6 +467,17 @@ class PostgresAccountStore:
                 .one()
             )
         return self._account(row)
+
+    def record_audit(
+        self,
+        *,
+        action: str,
+        target_account_id: str | None = None,
+        details: dict[str, object] | None = None,
+        actor_id: str | None = None,
+    ) -> None:
+        with self.engine.begin() as connection:
+            self._record_audit(connection, actor_id, action, target_account_id, details)
 
     def _record_audit(
         self,

@@ -1,0 +1,17 @@
+D22 RED probe (mechanism reproduction, 2026-11-18)
+
+Command: .venv\Scripts\python.exe .test_runtime\d22_red_probe.py
+(stdlib shutil.rmtree over a tree built by the product helper _make_directory:
+Example/{aux/note.txt, img})
+
+tree: ['Example/aux', 'Example/aux/note.txt', 'Example/img']
+shutil.rmtree FAILED: OSError(41, 'Папка не пуста')  [WinError 145 ERROR_DIR_NOT_EMPTY]
+survivors: ['aux']
+
+Product-level RED (pre-fix, integration tier run 2026-11-18, before commits
+0b6d946/9d8647a): gate integration tier 8 failed / 115 passed / 24 skipped, exit 1 —
+six tests in tests/test_admin_project_workflows.py failed inside
+kraken_admin.infrastructure.stored_files.remove_stored_path -> shutil.rmtree with
+OSError [WinError 145] on .kraken-trash/<request>/0 (full tracebacks captured in the
+session log; the tier evidence was replaced by the final green re-run per the gate's
+stale-evidence rule — see task-8-report.md «Run log» and commit message 0b6d946).

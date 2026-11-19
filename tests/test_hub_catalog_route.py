@@ -22,7 +22,7 @@ class _Local(EmbeddedProjectService):
         self.calls.append("get_artifact_version")
         return "local-version"
 
-    def plan_import_directory(self, *, project, directory, mode=None, regex=None):
+    def plan_import_directory(self, *, project, directory, mode=None, regex=None, kind=None):
         self.calls.append("plan_import_directory")
         return "local-plan"
 
@@ -44,7 +44,7 @@ class _Remote(RemoteServerProjectService):
         self.calls.append("get_artifact_version")
         return "remote-version"
 
-    def plan_import_directory(self, *, project, directory, mode=None, regex=None):
+    def plan_import_directory(self, *, project, directory, mode=None, regex=None, kind=None):
         self.calls.append("plan_import_directory")
         return "remote-plan"
 

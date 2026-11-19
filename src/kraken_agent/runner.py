@@ -119,6 +119,8 @@ class SubprocessPluginRunner:
             "XDG_DATA_HOME",
             "XDG_CACHE_HOME",
             "XDG_STATE_HOME",
+            "VIALANET_SETTINGS_DIR",
+            "NEURALIMAGE_SETTINGS_DIR",
             "LANG",
             "LC_ALL",
             "PYTHONPATH",

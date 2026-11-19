@@ -17,6 +17,9 @@ from kraken_manager.workspace import (
     WorkspaceValidationError,
 )
 
+# Regression tests for defect D3 (docs/quality/defects.md).
+kraken_defect = "D3"
+
 
 def _project(tmp_path: Path):
     service = EmbeddedProjectService(tmp_path / "data")

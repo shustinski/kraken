@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,8 +25,23 @@ from neuralimage.kraken_bridge import (
 )
 
 
+kraken_defect = "D18"
+
+
 def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _canonical_path(path: str) -> str:
+    """Canonical path form for comparison (D18, same idiom as D15.2/D15.3).
+
+    %TEMP% may be an 8.3 short name (``C:\\Users\\SHUSTI~1.A\\...``) on this
+    machine while ``ContourKrakenSession`` resolves staging paths to long form;
+    ``realpath`` maps both forms to the same long path here and is the identity
+    where there is no 8.3 mangling, so the comparison keeps verifying the same
+    logical path.
+    """
+    return os.path.normcase(os.path.realpath(path))
 
 
 def _manifest(
@@ -82,9 +98,12 @@ class ContourBridgeV1Tests(unittest.TestCase):
             )
             self.assertIsNotNone(session)
             assert session is not None
-            self.assertEqual([root / "inputs" / "staged-frame.png"], list(session.input_paths))
-            self.assertEqual(str(root / "inputs" / "staged-frame.png"), argv[-1])
-            self.assertEqual(str(root / "outputs"), argv[-2])
+            self.assertEqual(
+                [_canonical_path(str(root / "inputs" / "staged-frame.png"))],
+                [_canonical_path(str(path)) for path in session.input_paths],
+            )
+            self.assertEqual(_canonical_path(str(root / "inputs" / "staged-frame.png")), _canonical_path(argv[-1]))
+            self.assertEqual(_canonical_path(str(root / "outputs")), _canonical_path(argv[-2]))
 
             cif_payload = b"DS 1 1 1;\nDF;\nE\n"
             (root / "outputs" / "staged-frame.cif").write_bytes(cif_payload)
@@ -113,8 +132,8 @@ class ContourBridgeV1Tests(unittest.TestCase):
             self.assertIsNotNone(session)
             self.assertIn("--dataset-dir", argv)
             self.assertNotIn("--output-dir", argv)
-            self.assertEqual(str(root / "outputs"), argv[argv.index("--dataset-dir") + 1])
-            self.assertEqual(str(root / "inputs" / "staged-frame.png"), argv[-1])
+            self.assertEqual(_canonical_path(str(root / "outputs")), _canonical_path(argv[argv.index("--dataset-dir") + 1]))
+            self.assertEqual(_canonical_path(str(root / "inputs" / "staged-frame.png")), _canonical_path(argv[-1]))
 
     def test_managed_mode_rejects_arbitrary_cli_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import QApplication
 
 from kraken_manager.workspace import scan_layer_source
 from kraken_manager.presentation.qt import LayerCreationDialog
+# Regression tests for defect D3 (docs/quality/defects.md).
+kraken_defect = "D3"
 
 
 @pytest.fixture(scope="module")

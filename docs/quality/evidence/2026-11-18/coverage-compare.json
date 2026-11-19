@@ -1,0 +1,60 @@
+{
+  "base_report": "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\coverage-base-report.json",
+  "new_junit": [
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-e2e\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-gui\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-integration\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-live\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-registry\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(1).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-regression\\junit(2).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-smoke\\junit.xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-unit\\junit(1).xml",
+    "C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-unit\\junit(2).xml"
+  ],
+  "base_pass": [
+    "ADMIN-SERVER-BACKUP-RESTORE",
+    "AGT-OP-BINARY-SEGMENT",
+    "AGT-OP-DATASET-PREPARE",
+    "AGT-OP-TRAIN",
+    "AGT-OP-VECTORIZE",
+    "HUB-ADD-LAYER",
+    "HUB-ADD-PERFORMER",
+    "HUB-ADD-REPRESENTATION",
+    "HUB-CREATE-PROJECT",
+    "HUB-DELETE-PERFORMER",
+    "HUB-EDIT-PERFORMER",
+    "HUB-ISSUE-WORK",
+    "HUB-LAYER-CONTEXT",
+    "HUB-LOGIN-TABBED",
+    "HUB-REVIEW-RETURN",
+    "HUB-STATISTICS"
+  ],
+  "regressions": [],
+  "newly_not_tested": [
+    "ADMIN-SERVER-BACKUP-RESTORE",
+    "AGT-OP-BINARY-SEGMENT",
+    "AGT-OP-DATASET-PREPARE",
+    "AGT-OP-TRAIN",
+    "AGT-OP-VECTORIZE",
+    "HUB-LOGIN-TABBED"
+  ],
+  "verdicts": {
+    "ADMIN-SERVER-BACKUP-RESTORE": "NOT_TESTED",
+    "AGT-OP-BINARY-SEGMENT": "NOT_TESTED",
+    "AGT-OP-DATASET-PREPARE": "NOT_TESTED",
+    "AGT-OP-TRAIN": "NOT_TESTED",
+    "AGT-OP-VECTORIZE": "NOT_TESTED",
+    "HUB-ADD-LAYER": "PASS",
+    "HUB-ADD-PERFORMER": "PASS",
+    "HUB-ADD-REPRESENTATION": "PASS",
+    "HUB-CREATE-PROJECT": "PASS",
+    "HUB-DELETE-PERFORMER": "PASS",
+    "HUB-EDIT-PERFORMER": "PASS",
+    "HUB-ISSUE-WORK": "PASS",
+    "HUB-LAYER-CONTEXT": "PASS",
+    "HUB-LOGIN-TABBED": "NOT_TESTED",
+    "HUB-REVIEW-RETURN": "PASS",
+    "HUB-STATISTICS": "PASS"
+  }
+}

@@ -68,6 +68,10 @@ def test_login_autofills_only_after_windows_verification(qapp, monkeypatch, tmp_
     verification_windows = []
     saved = []
     targets = []
+    monkeypatch.setattr(
+        "kraken_hub.presentation.qt.parts.login.program_server_url",
+        lambda settings=None: "",
+    )
     monkeypatch.setattr(windows_credentials, "credentials_available", lambda *, target: targets.append(target) or True)
     monkeypatch.setattr(windows_credentials, "load_credentials", lambda *, target: targets.append(target) or ("operator", "secret"))
     monkeypatch.setattr(
@@ -105,6 +109,10 @@ def test_login_autofills_only_after_windows_verification(qapp, monkeypatch, tmp_
 def test_login_does_not_autofill_when_windows_verification_is_cancelled(qapp, monkeypatch, tmp_path) -> None:
     service = EmbeddedProjectService(tmp_path)
     service.create_initial_account("operator", "Operator", "secret")
+    monkeypatch.setattr(
+        "kraken_hub.presentation.qt.parts.login.program_server_url",
+        lambda settings=None: "",
+    )
     monkeypatch.setattr(windows_credentials, "credentials_available", lambda **_kwargs: True)
     monkeypatch.setattr(windows_hello, "verify_windows_identity", lambda _window: False)
     monkeypatch.setattr(

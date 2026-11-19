@@ -9,6 +9,9 @@ from tests.test_admin_project_workflows import project
 
 pytest_plugins = ["tests.test_admin_project_workflows"]
 
+# Regression tests for defect D8 (docs/quality/defects.md) live in this module.
+kraken_defect = "D8"
+
 
 def test_persistent_upload_preflight_checks_revision_and_replays_existing_version(database):
     services, _, owner, _ = database

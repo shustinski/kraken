@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from kraken_admin.domain.deletion import DeletionAuthorization
+from kraken_manager.infrastructure.workspace_files import remove_tree
 
 
 def stage_stored_path(source: Path, trash: Path, authorization: DeletionAuthorization) -> None:
@@ -21,4 +21,6 @@ def remove_stored_path(path: Path, authorization: DeletionAuthorization) -> None
     if path.is_symlink() or not path.is_dir():
         path.unlink()
         return
-    shutil.rmtree(path)
+    # Project folders contain an ``aux`` directory; only a DOS-name aware
+    # removal (trailing-separator targets) can delete it on Windows.
+    remove_tree(path)

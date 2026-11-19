@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -18,9 +19,22 @@ from contour.application.model import StartupConfiguration
 from contour.kraken_bridge import prepare_contour_launch
 from kraken_core.plugin_protocol import PluginFrameInput, PluginJobManifest
 
+kraken_defect = "D15"
+
 
 def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _canonical_path(path: str) -> str:
+    """Canonical path form for comparison (D15.3): ``normcase(realpath(...))``.
+
+    %TEMP% may be an 8.3 short name (``C:\\Users\\SHUSTI~1.A\\...``) on this
+    machine while the product returns resolved (long) paths; ``realpath`` maps
+    both forms to the same long path here and is the identity where there is
+    no 8.3 mangling, so the comparison keeps verifying the same logical path.
+    """
+    return os.path.normcase(os.path.realpath(path))
 
 
 class FramesPerRowLaunchTests(unittest.TestCase):
@@ -83,7 +97,10 @@ class FramesPerRowLaunchTests(unittest.TestCase):
                 },
             )
             self.assertEqual(["--frames-per-row", "12"], argv[:2])
-            self.assertEqual(str(root / "inputs" / "staged-frame.png"), argv[-1])
+            self.assertEqual(
+                _canonical_path(str(root / "inputs" / "staged-frame.png")),
+                _canonical_path(argv[-1]),
+            )
 
             job_path.write_text(replace(manifest, parameters={}).to_json(), encoding="utf-8")
             _session, argv = prepare_contour_launch(

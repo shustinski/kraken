@@ -30,6 +30,9 @@ from contour.widget_parts.processing_mixin_parts.try_leave_current_frame import 
 
 pytestmark = pytest.mark.fast
 
+# Regression test for defect D13 (docs/quality/defects.md) lives in this module.
+kraken_defect = "D13"
+
 
 class _Editor(QWidget, TryLeaveCurrentFrameMixin):
     def __init__(self, output: Path, choice: TransitionPromptChoice, *, save_ok: bool = True):
@@ -315,6 +318,26 @@ def test_workspace_attach_restores_only_staged_vector_index(tmp_path, with_vecto
     assert editor._pending_cif_directory_state is None
     assert editor._pending_cif_directory_path_after_images is None
     assert editor._workspace.resolve_cif_path(session.input_paths[0]) == (str(vector_path) if vector_path else None)
+    editor.dirty = False
+    window.close()
+
+
+def test_agent_attach_resets_cif_directory_state_like_workspace_sibling(tmp_path):
+    """D13: the agent bridge must apply the same robustness resets as the workspace bridge."""
+    session = _session(tmp_path)
+    editor = _Editor(session.output_directory / "a.cif", TransitionPromptChoice.DISCARD)
+    editor._pending_restore_vector_paths = ["stale-user-project.cif"]
+    editor._pending_cif_directory_state = object()
+    editor._pending_cif_directory_path_after_images = "stale-directory"
+    editor._indexed_cif_directory = "stale-directory"
+    window = _ReturnWindow(editor)
+    window._pending_persisted_session_restore = True
+    session.attach_return_action(window)
+    assert not window._pending_persisted_session_restore
+    assert editor._pending_restore_vector_paths == []
+    assert editor._pending_cif_directory_state is None
+    assert editor._pending_cif_directory_path_after_images is None
+    assert editor._indexed_cif_directory is None
     editor.dirty = False
     window.close()
 

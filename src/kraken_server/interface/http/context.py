@@ -46,6 +46,10 @@ class HttpContext:
         self.agent_token_store: Any = None
         self.agent_gateway: Any = None
         self.blob_gateway: Any = None
+        self.domain_auth: Any = None
+        self.lan_gate: Callable[[str], bool] | None = None
+        self.client_ip: Callable[[Any], str] | None = None
+        self.identities: Any = None
         self.Body: Any = None
         self.Depends: Any = None
         self.HTTPException: Any = None
@@ -71,6 +75,10 @@ class HttpContext:
         self.system_roles: Any = None
 
 
+def _default_client_ip(request: Any) -> str:
+    return request.client.host if request.client else ""
+
+
 def build_http_context(
     services: ServerServices | None,
     account_store: Any | None,
@@ -83,6 +91,10 @@ def build_http_context(
     agent_token_store: Any | None,
     agent_gateway: Any | None,
     blob_gateway: Any | None,
+    domain_auth: Any | None = None,
+    lan_gate: Callable[[str], bool] | None = None,
+    client_ip: Callable[[Any], str] | None = None,
+    identities: Any | None = None,
 ) -> HttpContext:
     try:
         from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -328,13 +340,20 @@ def build_http_context(
             if subject.provider == "gitlab":
                 if live_gitlab_verifier is None or not live_gitlab_verifier(subject):
                     raise HTTPException(status_code=503, detail="Live GitLab identity verification failed")
-            elif subject.provider != "local":
+            elif subject.provider not in {"local", "ldap"}:
                 raise HTTPException(status_code=403, detail="Unsupported identity provider")
         enforce_acting_role(request, subject)
         return subject
 
     def system_roles(subject: SessionPrincipal) -> frozenset[str]:
-        if subject.provider == "local" and account_store is not None and hasattr(account_store, "global_roles_for"):
+        # Only local sessions carry an account id as their principal id; an LDAP
+        # session's principal id is the principal's uuid5, so the catalog is the
+        # source of truth for every non-local provider.
+        if (
+            subject.provider == "local"
+            and account_store is not None
+            and hasattr(account_store, "global_roles_for")
+        ):
             return frozenset(account_store.global_roles_for(subject.principal_id))
         lookup = getattr(backend, "principal_system_roles", None)
         if lookup is not None:
@@ -518,6 +537,10 @@ def build_http_context(
     ctx.agent_token_store = agent_token_store
     ctx.agent_gateway = agent_gateway
     ctx.blob_gateway = blob_gateway
+    ctx.domain_auth = domain_auth
+    ctx.lan_gate = lan_gate
+    ctx.client_ip = client_ip if client_ip is not None else _default_client_ip
+    ctx.identities = identities
     ctx.Body = Body
     ctx.Depends = Depends
     ctx.HTTPException = HTTPException

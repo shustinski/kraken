@@ -1,0 +1,40 @@
+﻿{
+    "gate":  "quality-gates",
+    "timestamp":  "2026-11-18T13:30:03.3581383Z",
+    "tier":  "smoke",
+    "command":  [
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_desktop_runtime_smoke.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-smoke --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-smoke\\junit.xml"
+                ],
+    "exit_code":  0,
+    "tests":  4,
+    "passed":  2,
+    "failed":  0,
+    "errors":  0,
+    "skipped":  2,
+    "skipped_tests":  [
+                          "tests.test_desktop_runtime_smoke::test_live_server_dual_catalog_smoke",
+                          "tests.test_desktop_runtime_smoke::test_live_agent_health_smoke"
+                      ],
+    "duration_seconds":  1.604,
+    "status":  "PARTIAL",
+    "note":  "2 test(s) skipped; skipped tests are never counted as pass",
+    "runs":  [
+                 {
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests/test_desktop_runtime_smoke.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f6e6b66e155b444282a7f2b174e6109f\\basetemp-smoke --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-18\\gate-smoke\\junit.xml",
+                     "exit_code":  0,
+                     "tests":  4,
+                     "passed":  2,
+                     "failed":  0,
+                     "errors":  0,
+                     "skipped":  2,
+                     "skipped_tests":  [
+                                           "tests.test_desktop_runtime_smoke::test_live_server_dual_catalog_smoke",
+                                           "tests.test_desktop_runtime_smoke::test_live_agent_health_smoke"
+                                       ],
+                     "duration_seconds":  1.604,
+                     "junit":  "junit.xml",
+                     "log":  "pytest.txt",
+                     "note":  ""
+                 }
+             ]
+}

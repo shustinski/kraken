@@ -88,7 +88,7 @@ def _project_with_frames(service: EmbeddedProjectService, root: Path, *, with_ve
             project=service.get_project(project.id),
             layer=service.list_layers(project.id)[0],
             representation=vectors,
-            plan=service.plan_import_directory(project=project, directory=vector_dir),
+            plan=service.plan_import_directory(project=project, directory=vector_dir, kind=RepresentationKind.VECTOR),
             idempotency_key="import-vectors",
         )
     return owner, performer, service.get_project(project.id), service.list_layers(project.id)[0], images, vectors

@@ -1,0 +1,110 @@
+﻿...........ss........................................................... [  5%]
+...................................................................... [ 10%]
+..................................sssssssssssssss....................... [ 15%]
+...............................................ss....................... [ 20%]
+....................................s......ss........................... [ 25%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+....................................................................F... [ 40%]
+........................................................... [ 44%]
+........................................................................ [ 49%]
+.........................................................s.............. [ 54%]
+............................................................... [ 59%]
+........................................................................ [ 64%]
+........................................................................ [ 69%]
+.....................................ss.......................... [ 73%]
+........................................................................ [ 78%]
+........................................................................ [ 84%]
+........................................................................ [ 89%]
+........................................................................ [ 94%]
+........................................................................ [ 99%]
+...........                                                              [100%]
+================================== FAILURES ===================================
+_ LocalAccountTests.test_account_sessions_are_opaque_revocable_and_persistent _
+
+self = <test_local_auth.LocalAccountTests testMethod=test_account_sessions_are_opaque_revocable_and_persistent>
+
+    def test_account_sessions_are_opaque_revocable_and_persistent(self) -> None:
+>       with tempfile.TemporaryDirectory() as temporary:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_local_auth.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Program Files\Python314\Lib\tempfile.py:972: in __exit__
+    self.cleanup()
+C:\Program Files\Python314\Lib\tempfile.py:976: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+C:\Program Files\Python314\Lib\tempfile.py:956: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+C:\Program Files\Python314\Lib\shutil.py:852: in rmtree
+    _rmtree_impl(path, dir_fd, onexc)
+C:\Program Files\Python314\Lib\shutil.py:711: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+path = 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpeqsjd0eu', dir_fd = None
+onexc = <function TemporaryDirectory._rmtree.<locals>.onexc at 0x000002633E5EDF30>
+
+    def _rmtree_unsafe(path, dir_fd, onexc):
+        if dir_fd is not None:
+            raise NotImplementedError("dir_fd unavailable on this platform")
+        try:
+            st = os.lstat(path)
+        except OSError as err:
+            onexc(os.lstat, path, err)
+            return
+        try:
+            if _rmtree_islink(st):
+                # symlinks to directories are forbidden, see bug #1669
+                raise OSError("Cannot call rmtree on a symbolic link")
+        except OSError as err:
+            onexc(os.path.islink, path, err)
+            # can't continue even if onexc hook returns
+            return
+        def onerror(err):
+            if not isinstance(err, FileNotFoundError):
+                onexc(os.scandir, err.filename, err)
+        results = os.walk(path, topdown=False, onerror=onerror, followlinks=os._walk_symlinks_as_files)
+        for dirpath, dirnames, filenames in results:
+            for name in dirnames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.rmdir(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.rmdir, fullname, err)
+            for name in filenames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.unlink(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.unlink, fullname, err)
+        try:
+>           os.rmdir(path)
+E           OSError: [WinError 145] ╨Я╨░╨┐╨║╨░ ╨╜╨╡ ╨┐╤Г╤Б╤В╨░: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpeqsjd0eu'
+
+C:\Program Files\Python314\Lib\shutil.py:707: OSError
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  C:\code\kraken\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/test_plugin_confidence_workflow.py::test_neuralimage_runs_real_model_and_publishes_the_requested_output[frames.binary-segment.v2]
+  C:\code\kraken\tests\test_plugin_confidence_workflow.py:69: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    assert set(saved.getdata()) <= {0, 255}
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [2] tests\offline\test_offline_sync.py:42: pypi.org is not reachable from this machine (offline); the test needs the real PyPI index to build the uv transfer cache
+SKIPPED [17] tests\test_blob_gateway.py:241: Rust Blob Gateway executable is not built
+SKIPPED [1] tests\test_desktop_runtime_smoke.py:113: Set KRAKEN_SMOKE_SERVER_URL and KRAKEN_SMOKE_SERVER_TOKEN for an isolated test server
+SKIPPED [1] tests\test_desktop_runtime_smoke.py:148: Set KRAKEN_SMOKE_AGENT_URL and KRAKEN_SMOKE_AGENT_TOKEN for an isolated test agent
+SKIPPED [1] tests\test_filesystem_event_read_cache.py:98: Requires actual POSIX fork
+SKIPPED [1] tests\test_filesystem_lock_recovery.py:155: Requires actual POSIX fork
+SKIPPED [1] tests\test_filesystem_lock_recovery.py:200: Requires actual POSIX fork
+SKIPPED [1] tests\test_pipeline_stitch_live_content.py:51: no usable CUDA device (probe exited/crashed)
+FAILED tests/test_local_auth.py::LocalAccountTests::test_account_sessions_are_opaque_revocable_and_persistent
+1 failed, 1394 passed, 25 skipped, 2 warnings, 31 subtests passed in 786.86s (0:13:06)

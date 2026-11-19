@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastapi import Request
+
+from kraken_manager.domain.identity import PrincipalProvider
+from kraken_manager.infrastructure.auth.ldap import LdapAuthenticationError, LdapUnavailable
 from kraken_server.interface.http.context import HttpContext
 from kraken_server.interface.http.prefix import API_PREFIX
 from kraken_server.services import ValidationError
@@ -15,6 +19,10 @@ def register(ctx: HttpContext) -> None:
     account_store = ctx.account_store
     session_resolver = ctx.session_resolver
     blob_gateway = ctx.blob_gateway
+    domain_auth = ctx.domain_auth
+    lan_gate = ctx.lan_gate
+    client_ip = ctx.client_ip
+    identities = ctx.identities
     HTTPException = ctx.HTTPException
     problem = ctx.problem
 
@@ -24,12 +32,23 @@ def register(ctx: HttpContext) -> None:
         if status.get("status") != "ok":
             return problem(503, "service.degraded", "Service degraded", str(status.get("detail", "")))
         status["blob_gateway"] = "enabled" if blob_gateway is not None else "proxy"
+        status["domain_auth"] = domain_auth is not None
         return status
 
     @app.post(f"{API_PREFIX}/auth/sessions")
     def create_session(payload: dict[str, Any]) -> dict[str, Any]:
         if account_store is None:
             return {"provider": "development", "access_token": str(payload.get("username", "developer"))}
+        if domain_auth is not None:
+            try:
+                session = domain_auth.authenticate(str(payload.get("username", "")), str(payload.get("password", "")))
+            except LdapUnavailable:
+                raise HTTPException(status_code=503, detail="Доменная авторизация временно недоступна")
+            except LdapAuthenticationError:
+                raise HTTPException(status_code=503, detail="Неверные учётные данные доменного аккаунта Kraken")
+            if session is None:
+                raise HTTPException(status_code=401, detail="Invalid credentials")
+            return local_session_payload(session)
         try:
             session = account_store.authenticate(str(payload.get("username", "")), str(payload.get("password", "")))
         except ValueError:
@@ -51,18 +70,26 @@ def register(ctx: HttpContext) -> None:
         }
 
     @app.post(f"{API_PREFIX}/auth/accounts", status_code=201)
-    def register_local_account(payload: dict[str, Any]) -> dict[str, Any]:
+    def register_local_account(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
         """Create an ordinary account, or sign in when the same password is already registered.
 
         The account receives no server administrator role. It may create its own
-        projects and sees only projects its Kraken roles allow.
+        projects and sees only projects its Kraken roles allow. When the LAN
+        gate is on, in-LAN clients must use their domain account instead.
         """
+        if lan_gate is not None and lan_gate(client_ip(request)):
+            detail = "Создание локальных аккаунтов из внутренней сети запрещено. Используйте доменную учётную запись."
+            raise HTTPException(status_code=403, detail=detail)
         store = require_account_store()
         username = str(payload.get("username", "")).strip()
         password = str(payload.get("password", ""))
         display_name = str(payload.get("display_name", "")).strip() or username
         if not username or not password:
             raise ValidationError("Username and password are required")
+        if identities is not None:
+            holder = identities.find_by_login(username.strip().casefold())
+            if holder is not None and holder.provider is not PrincipalProvider.LOCAL:
+                raise HTTPException(status_code=409, detail=f"Логин «{username}» уже занят")
         try:
             store.create_account(username, display_name, password)
         except ValueError as exc:

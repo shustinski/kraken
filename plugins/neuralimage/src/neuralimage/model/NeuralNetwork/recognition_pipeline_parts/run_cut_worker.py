@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 from multiprocessing.synchronize import Event as MpEvent
 from neuralimage.active_learning.config import ActiveLearningConfig
+from neuralimage.infrastructure import profiling
 from neuralimage.preprocessing.config import PreprocessingConfig
 from neuralimage.uncertainty.config import UncertaintyConfig
 
@@ -38,7 +39,11 @@ def _run_cut_worker(
     source_root: Path | None = None,
     preprocessing: PreprocessingConfig | None = None,
     stop_token: str = '__STOP__',
+    profile_base_dir: Path | None = None,
 ) -> None:
+    if profile_base_dir is not None:
+        profiling.set_profile_base_dir(Path(profile_base_dir))
+
     from neuralimage.model.NeuralNetwork.recognition_pipeline import cut_image_process
 
     try:
@@ -73,7 +78,11 @@ def _run_predict_worker(
     confidence_tta_enabled: bool = False,
     uncertainty: UncertaintyConfig | None = None,
     stop_token: str = '__STOP__',
+    profile_base_dir: Path | None = None,
 ) -> None:
+    if profile_base_dir is not None:
+        profiling.set_profile_base_dir(Path(profile_base_dir))
+
     try:
         imgpredict(
             prediction_queue,
@@ -104,7 +113,11 @@ def _run_sew_worker(
     active_learning: ActiveLearningConfig | None = None,
     active_learning_metadata: dict[str, object] | None = None,
     stop_token: str = '__STOP__',
+    profile_base_dir: Path | None = None,
 ) -> None:
+    if profile_base_dir is not None:
+        profiling.set_profile_base_dir(Path(profile_base_dir))
+
     try:
         imgsew(
             output_dir,

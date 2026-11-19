@@ -14,6 +14,7 @@ from __future__ import annotations
 import cProfile
 import logging
 import os
+import re
 from datetime import datetime
 from logging import FileHandler
 from pathlib import Path
@@ -97,8 +98,19 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     return max(minimum, value)
 
 
+# CPython 3.13+ reimplemented the legacy profiler slot on top of
+# sys.monitoring and reports a conflict with the tool id
+# ("tool 2 is already in use"); older builds use the legacy wording.
+_PROFILER_CONFLICT_LEGACY_MESSAGE = "Another profiling tool is already active"
+_PROFILER_CONFLICT_TOOL_IN_USE = re.compile(r"\btool\s+\d+\s+is already in use\b")
+
+
 def profiler_enable_conflict(exc: BaseException) -> bool:
-    return "Another profiling tool is already active" in str(exc)
+    message = str(exc)
+    return (
+        _PROFILER_CONFLICT_LEGACY_MESSAGE in message
+        or _PROFILER_CONFLICT_TOOL_IN_USE.search(message) is not None
+    )
 
 
 def try_enable_profiler(profiler: cProfile.Profile) -> bool:

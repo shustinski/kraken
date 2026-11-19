@@ -107,6 +107,7 @@ addopts = "-ra"
 "resources" = [
     "resources/*.json",
     "resources/*.md",
+    "resources/*.ini",
 ]
 "_internal" = [
     "resources/internal/icon.ico",

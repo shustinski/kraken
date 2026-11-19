@@ -10,6 +10,19 @@ from typing import Mapping
 from collections.abc import Iterator
 from typing import Protocol
 
+from kraken_manager.domain.project import RepresentationKind
+from kraken_manager.workspace import FRAME_IMAGE_SUFFIXES
+
+# Vector representations are imported from Caltech Intermediate Form files.
+VECTOR_SOURCE_SUFFIXES = frozenset({".cif"})
+
+
+def import_source_suffixes(kind: RepresentationKind) -> frozenset[str]:
+    """File suffixes accepted as import sources for a representation kind."""
+    if kind is RepresentationKind.VECTOR:
+        return VECTOR_SOURCE_SUFFIXES
+    return FRAME_IMAGE_SUFFIXES
+
 
 class ImportMappingMode(StrEnum):
     XY_FILENAME = "xy_filename"
@@ -249,4 +262,6 @@ __all__ = [
     "ImportPlanItem",
     "ImportPlanner",
     "ImportSource",
+    "VECTOR_SOURCE_SUFFIXES",
+    "import_source_suffixes",
 ]

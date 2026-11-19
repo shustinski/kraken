@@ -9,6 +9,7 @@ from kraken_core.asset_source import AssetSource
 from neuralimage.active_learning.config import ActiveLearningConfig
 from neuralimage.preprocessing.config import PreprocessingConfig
 from neuralimage.uncertainty.config import UncertaintyConfig
+from neuralimage.infrastructure import profiling
 
 from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.cut_image_prepare import cut_image_prepare
 
@@ -63,6 +64,7 @@ def run_single_thread_recognition(
     model.eval()
     model.to(device)
     publish('logging', 'Recognition started in single-thread mode.')
+    profiling.set_profile_base_dir(Path(result_folder))
 
     reporter = ProgressReporter(publish=publish, total_frames=len(source_files))
     reporter.publish_started()
@@ -73,123 +75,129 @@ def run_single_thread_recognition(
     for index, image_path in enumerate(source_files, start=1):
         if stop_event.is_set():
             break
-        prepared = cut_image_prepare(
-            image_path,
-            shape,
-            overlap,
-            use_context_branch=use_context_branch,
-            use_cross_attention=use_cross_attention,
-            context_crop_size=context_crop_size,
-            context_input_size=context_input_size,
-            compression_factor=compression_factor,
-            source_root=source_root,
-            preprocessing=preprocessing,
-            asset_source=asset_source,
-        )
-        predicted = gpu_predict(
-            prepared,
-            model,
-            device,
-            batch_size,
-            recognition_tta_enabled=recognition_tta_enabled,
-            confidence_tta_enabled=confidence_tta_enabled,
-            uncertainty=uncertainty,
-        )
-        # Some torch.compile configurations can produce degenerate outputs on inference.
-        if (not compile_fallback_checked) and hasattr(model, '_orig_mod'):
-            compile_fallback_checked = True
-            compiled_stats = predicted.get('_prediction_stats')
-            compiled_max = (
-                float(compiled_stats.get('max', 0.0))
-                if isinstance(compiled_stats, dict)
-                else 0.0
+        with profiling.cprofile_region(
+            "recognition",
+            label="recognition frame",
+            extra=f"frame={index}/{len(source_files)} name={Path(image_path).name}",
+            enabled=profiling.recognition_profiling_enabled(),
+        ):
+            prepared = cut_image_prepare(
+                image_path,
+                shape,
+                overlap,
+                use_context_branch=use_context_branch,
+                use_cross_attention=use_cross_attention,
+                context_crop_size=context_crop_size,
+                context_input_size=context_input_size,
+                compression_factor=compression_factor,
+                source_root=source_root,
+                preprocessing=preprocessing,
+                asset_source=asset_source,
             )
-            original_model = getattr(model, '_orig_mod', None)
-            if isinstance(original_model, nn.Module) and compiled_max <= 0.05:
-                publish(
-                    'logging',
-                    (
-                        'Recognition: low-probability output detected on torch.compile model; '
-                        'retrying with uncompiled model.'
-                    ),
-                )
-                original_model.eval()
-                original_model.to(device)
-                fallback_predicted = gpu_predict(
-                    prepared,
-                    original_model,
-                    device,
-                    batch_size,
-                    recognition_tta_enabled=recognition_tta_enabled,
-                    confidence_tta_enabled=confidence_tta_enabled,
-                    uncertainty=uncertainty,
-                )
-                fallback_stats = fallback_predicted.get('_prediction_stats')
-                fallback_max = (
-                    float(fallback_stats.get('max', 0.0))
-                    if isinstance(fallback_stats, dict)
+            predicted = gpu_predict(
+                prepared,
+                model,
+                device,
+                batch_size,
+                recognition_tta_enabled=recognition_tta_enabled,
+                confidence_tta_enabled=confidence_tta_enabled,
+                uncertainty=uncertainty,
+            )
+            # Some torch.compile configurations can produce degenerate outputs on inference.
+            if (not compile_fallback_checked) and hasattr(model, '_orig_mod'):
+                compile_fallback_checked = True
+                compiled_stats = predicted.get('_prediction_stats')
+                compiled_max = (
+                    float(compiled_stats.get('max', 0.0))
+                    if isinstance(compiled_stats, dict)
                     else 0.0
                 )
-                if fallback_max > (compiled_max + 0.01):
-                    model = original_model
-                    predicted = fallback_predicted
+                original_model = getattr(model, '_orig_mod', None)
+                if isinstance(original_model, nn.Module) and compiled_max <= 0.05:
                     publish(
                         'logging',
                         (
-                            'Recognition: switched to uncompiled model '
-                            f'(max prob {compiled_max:.6f} -> {fallback_max:.6f}).'
+                            'Recognition: low-probability output detected on torch.compile model; '
+                            'retrying with uncompiled model.'
                         ),
                     )
-        stats = predicted.get('_prediction_stats')
-        if isinstance(stats, dict):
-            prob_min = float(stats.get('min', 0.0))
-            prob_max = float(stats.get('max', 0.0))
-            prob_mean = float(stats.get('mean', 0.0))
-            non_finite = int(stats.get('non_finite', 0))
-            fp32_retries = int(stats.get('fp32_retries', 0))
-            should_log_stats = index == 1 or non_finite > 0 or prob_max <= 0.05
-            if should_log_stats:
-                publish(
-                    'logging',
-                    (
-                        f'Recognition output stats [{index}/{len(source_files)}]: '
-                        f'min={prob_min:.6f}, max={prob_max:.6f}, mean={prob_mean:.6f}, '
-                        f'non_finite={non_finite}, fp32_retries={fp32_retries}'
-                    ),
-                )
-            if prob_max <= 0.05:
-                publish(
-                    'logging',
-                    (
-                        'Recognition warning: output probabilities are very low '
-                        '(max <= 0.05), resulting masks can look black.'
-                    ),
-                )
-        output_path = sew(
-            result_folder,
-            predicted,
-            jpeg_quality=jpeg_quality,
-            threshold=(float(threshold) if binarize_output and threshold is not None else None),
-            postprocess_kernel_size=(int(postprocess_kernel_size) if postprocess_enabled else 0),
-            confidence_save_mode=confidence_save_mode,
-            lossless_binary_png=lossless_binary_png,
-            active_learning=active_learning,
-            active_learning_metadata=active_learning_metadata,
-        )
-        _publish_recognition_preview(
-            publish=publish,
-            source_path=image_path,
-            output_path=output_path,
-            frame_name=image_path.name,
-            asset_source=asset_source,
-        )
-        reporter.publish_frame(index)
-        publish('metrics', {
-            'type': 'recognition_completed',
-            'source_path': str(image_path),
-            'output_path': str(output_path),
-        })
-        _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
+                    original_model.eval()
+                    original_model.to(device)
+                    fallback_predicted = gpu_predict(
+                        prepared,
+                        original_model,
+                        device,
+                        batch_size,
+                        recognition_tta_enabled=recognition_tta_enabled,
+                        confidence_tta_enabled=confidence_tta_enabled,
+                        uncertainty=uncertainty,
+                    )
+                    fallback_stats = fallback_predicted.get('_prediction_stats')
+                    fallback_max = (
+                        float(fallback_stats.get('max', 0.0))
+                        if isinstance(fallback_stats, dict)
+                        else 0.0
+                    )
+                    if fallback_max > (compiled_max + 0.01):
+                        model = original_model
+                        predicted = fallback_predicted
+                        publish(
+                            'logging',
+                            (
+                                'Recognition: switched to uncompiled model '
+                                f'(max prob {compiled_max:.6f} -> {fallback_max:.6f}).'
+                            ),
+                        )
+            stats = predicted.get('_prediction_stats')
+            if isinstance(stats, dict):
+                prob_min = float(stats.get('min', 0.0))
+                prob_max = float(stats.get('max', 0.0))
+                prob_mean = float(stats.get('mean', 0.0))
+                non_finite = int(stats.get('non_finite', 0))
+                fp32_retries = int(stats.get('fp32_retries', 0))
+                should_log_stats = index == 1 or non_finite > 0 or prob_max <= 0.05
+                if should_log_stats:
+                    publish(
+                        'logging',
+                        (
+                            f'Recognition output stats [{index}/{len(source_files)}]: '
+                            f'min={prob_min:.6f}, max={prob_max:.6f}, mean={prob_mean:.6f}, '
+                            f'non_finite={non_finite}, fp32_retries={fp32_retries}'
+                        ),
+                    )
+                if prob_max <= 0.05:
+                    publish(
+                        'logging',
+                        (
+                            'Recognition warning: output probabilities are very low '
+                            '(max <= 0.05), resulting masks can look black.'
+                        ),
+                    )
+            output_path = sew(
+                result_folder,
+                predicted,
+                jpeg_quality=jpeg_quality,
+                threshold=(float(threshold) if binarize_output and threshold is not None else None),
+                postprocess_kernel_size=(int(postprocess_kernel_size) if postprocess_enabled else 0),
+                confidence_save_mode=confidence_save_mode,
+                lossless_binary_png=lossless_binary_png,
+                active_learning=active_learning,
+                active_learning_metadata=active_learning_metadata,
+            )
+            _publish_recognition_preview(
+                publish=publish,
+                source_path=image_path,
+                output_path=output_path,
+                frame_name=image_path.name,
+                asset_source=asset_source,
+            )
+            reporter.publish_frame(index)
+            publish('metrics', {
+                'type': 'recognition_completed',
+                'source_path': str(image_path),
+                'output_path': str(output_path),
+            })
+            _publish_memory_metrics(publish=publish, collect_memory_metrics=collect_memory_metrics)
 
 if TYPE_CHECKING:
     from neuralimage.model.NeuralNetwork.recognition_pipeline_parts.module_state import MemoryMetricsCollector, Publisher

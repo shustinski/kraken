@@ -50,6 +50,7 @@ def _offline_resolution_available() -> bool:
                 encoding="utf-8",
                 errors="replace",
                 env=dict(os.environ, UV_PROJECT_ENVIRONMENT=scratch),
+                timeout=120,
             )
         except (OSError, subprocess.SubprocessError):
             return False

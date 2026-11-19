@@ -1,494 +1,92 @@
-﻿...........FF..FF....................................................... [  5%]
+﻿...........ss........................................................... [  5%]
 ...................................................................... [ 10%]
 ..................................sssssssssssssss....................... [ 15%]
 ...............................................ss....................... [ 20%]
 ....................................s......ss........................... [ 25%]
 ........................................................................ [ 30%]
 ........................................................................ [ 35%]
-........................................................................ [ 40%]
+....................................................................F... [ 40%]
 ........................................................... [ 44%]
 ........................................................................ [ 49%]
-.........................................................s......FF...... [ 54%]
+.........................................................s.............. [ 54%]
 ............................................................... [ 59%]
-.................................FF..................................... [ 64%]
+........................................................................ [ 64%]
 ........................................................................ [ 69%]
 .....................................ss.......................... [ 73%]
-........................................................................ [ 79%]
+........................................................................ [ 78%]
 ........................................................................ [ 84%]
 ........................................................................ [ 89%]
 ........................................................................ [ 94%]
 ........................................................................ [ 99%]
-.........                                                                [100%]
+...........                                                              [100%]
 ================================== FAILURES ===================================
-_______ test_verify_installs_from_transfer_cache_and_empty_cache_fails ________
+_ LocalAccountTests.test_account_sessions_are_opaque_revocable_and_persistent _
 
-tmp_path = WindowsPath('C:/code/kraken/.test_runtime/quality-78e8fb68632947328a040b3dacbeff1f/basetemp-unit(1)/test_verify_installs_from_tran0')
+self = <test_local_auth.LocalAccountTests testMethod=test_account_sessions_are_opaque_revocable_and_persistent>
 
-    def test_verify_installs_from_transfer_cache_and_empty_cache_fails(tmp_path: Path) -> None:
-        source = tmp_path / "source"
-        _init_repo(source)
->       _pyproject(source, ["packaging==26.1"])
+    def test_account_sessions_are_opaque_revocable_and_persistent(self) -> None:
+>       with tempfile.TemporaryDirectory() as temporary:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-tests\offline\test_offline_sync.py:359: 
+tests\test_local_auth.py:19: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Program Files\Python314\Lib\tempfile.py:972: in __exit__
+    self.cleanup()
+C:\Program Files\Python314\Lib\tempfile.py:976: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+C:\Program Files\Python314\Lib\tempfile.py:956: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+C:\Program Files\Python314\Lib\shutil.py:852: in rmtree
+    _rmtree_impl(path, dir_fd, onexc)
+C:\Program Files\Python314\Lib\shutil.py:711: in _rmtree_unsafe
+    onexc(os.rmdir, path, err)
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
-path = WindowsPath('C:/code/kraken/.test_runtime/quality-78e8fb68632947328a040b3dacbeff1f/basetemp-unit(1)/test_verify_installs_from_tran0/source')
-dependencies = ['packaging==26.1']
+path = 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpeqsjd0eu', dir_fd = None
+onexc = <function TemporaryDirectory._rmtree.<locals>.onexc at 0x000002633E5EDF30>
 
-    def _pyproject(path: Path, dependencies: list[str] | None = None) -> None:
-        deps = dependencies or []
-        rendered = ", ".join(f'"{item}"' for item in deps)
-        (path / "offline_sample.py").write_text("VALUE = 1\n", encoding="utf-8")
-        (path / "pyproject.toml").write_text(
-            "\n".join(
-                [
-                    "[build-system]",
-                    'requires = ["setuptools>=69"]',
-                    'build-backend = "setuptools.build_meta"',
-                    "",
-                    "[project]",
-                    'name = "offline-sample"',
-                    'version = "0.0.1"',
-                    'requires-python = ">=3.14"',
-                    f"dependencies = [{rendered}]",
-                    "",
-                    "[tool.setuptools]",
-                    'py-modules = ["offline_sample"]',
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        locked = _run(["uv", "lock", "--directory", str(path)])
->       assert locked.returncode == 0, locked.stdout + locked.stderr
-E       AssertionError: Using CPython 3.14.7 interpreter at: C:\Program Files\Python314\python.exe
-E         error: Request failed after 3 retries
-E           Caused by: Failed to fetch: `https://pypi.org/simple/packaging/`
-E           Caused by: error sending request for url (https://pypi.org/simple/packaging/)
-E           Caused by: client error (Connect)
-E           Caused by: operation timed out
-E         
-E       assert 2 == 0
-E        +  where 2 = CompletedProcess(args=['uv', 'lock', '--directory', 'C:\\code\\kraken\\.test_runtime\\quality-78e8fb68632947328a040b3d...for url (https://pypi.org/simple/packaging/)\n  Caused by: client error (Connect)\n  Caused by: operation timed out\n').returncode
+    def _rmtree_unsafe(path, dir_fd, onexc):
+        if dir_fd is not None:
+            raise NotImplementedError("dir_fd unavailable on this platform")
+        try:
+            st = os.lstat(path)
+        except OSError as err:
+            onexc(os.lstat, path, err)
+            return
+        try:
+            if _rmtree_islink(st):
+                # symlinks to directories are forbidden, see bug #1669
+                raise OSError("Cannot call rmtree on a symbolic link")
+        except OSError as err:
+            onexc(os.path.islink, path, err)
+            # can't continue even if onexc hook returns
+            return
+        def onerror(err):
+            if not isinstance(err, FileNotFoundError):
+                onexc(os.scandir, err.filename, err)
+        results = os.walk(path, topdown=False, onerror=onerror, followlinks=os._walk_symlinks_as_files)
+        for dirpath, dirnames, filenames in results:
+            for name in dirnames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.rmdir(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.rmdir, fullname, err)
+            for name in filenames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.unlink(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.unlink, fullname, err)
+        try:
+>           os.rmdir(path)
+E           OSError: [WinError 145] ╨Я╨░╨┐╨║╨░ ╨╜╨╡ ╨┐╤Г╤Б╤В╨░: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpeqsjd0eu'
 
-tests\offline\test_offline_sync.py:81: AssertionError
-________________ test_repeated_export_reuses_dependency_cache _________________
-
-tmp_path = WindowsPath('C:/code/kraken/.test_runtime/quality-78e8fb68632947328a040b3dacbeff1f/basetemp-unit(1)/test_repeated_export_reuses_de0')
-
-    def test_repeated_export_reuses_dependency_cache(tmp_path: Path) -> None:
-        source = tmp_path / "source"
-        _init_repo(source)
-        _pyproject(source)
-        transfer = tmp_path / "transfer"
-        first = _sync("export", transfer, source)
->       assert first.returncode == 0, first.stderr
-E       AssertionError: OFFLINE_ERROR: offline-install
-E         uv sync failed while preparing the transfer cache.
-E         uv.exe : Using CPython 3.14.7 interpreter at: C:\Program Files\Python314\python.exe
-E         At C:\code\kraken\scripts\offline\KrakenOffline.psm1:276 char:32
-E         +         $script:LastUvOutput = & $File @Arguments 2>&1 | Out-String
-E         +                                ~~~~~~~~~~~~~~~~~~~~~~~
-E             + CategoryInfo          : NotSpecified: (Using CPython 3...n314\python.exe:String) [], RemoteException
-E             + FullyQualifiedErrorId : NativeCommandError
-E          
-E         Creating virtual environment at: 
-E         C:\Users\shustinsky.m.a\AppData\Local\Temp\kraken-offline-export-e7270cb9491f46f29fbeed0f3d66bb8e
-E         
-E         
-E            
-E         Building offline-sample @ file:///C:/code/kraken/.test_runtime/quality-78e8fb68632947328a040b3dacbeff1f/basetemp-unit(1
-E         )/test_repeated_export_reuses_de0/source
-E         
-E         
-E           ├Ч Failed to build `offline-sample @
-E           тФВ file:///C:/code/kraken/.test_runtime/quality-78e8fb68632947328a040b3dacbeff1f/basetemp-unit(1)/test_repeated_export
-E         _reuses_de0/source`
-E         
-E         
-E           тФЬтФАтЦ╢ Failed to resolve requirements from `build-system.requires`
-E         
-E         
-E           тФЬтФАтЦ╢ No solution found when resolving: `setuptools>=69`
-E         
-E         
-E           тФЬтФАтЦ╢ Request failed after 3 retries
-E         
-E         
-E           тФЬтФАтЦ╢ Failed to fetch: `https://pypi.org/simple/setuptools/`
-E         
-E         
-E           тФЬтФАтЦ╢ error sending request for url (https://pypi.org/simple/setuptools/)
-E         
-E         
-E           тФЬтФАтЦ╢ client error (Connect)
-E         
-E         
-E           тФЬтФАтЦ╢ dns error
-E         
-E         
-E           тХ░тФАтЦ╢ ╨Ю╨▒╤Л╤З╨╜╨╛ - ╤Н╤В╨╛ ╨▓╤А╨╡╨╝╨╡╨╜╨╜╨░╤П ╨╛╤И╨╕╨▒╨║╨░, ╨▓╨╛╨╖╨╜╨╕╨║╨░╤О╤Й╨░╤П ╨▓╨╛ ╨▓╤А╨╡╨╝╤П ╤А╨░╨╖╤А╨╡╤И╨╡╨╜╨╕╤П
-E               ╨╕╨╝╨╡╨╜╨╕ ╤Г╨╖╨╗╨░, ╨╕ ╨╛╨╖╨╜╨░╤З╨░╤О╤Й╨░╤П, ╤З╤В╨╛ ╨╗╨╛╨║╨░╨╗╤М╨╜╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А ╨╜╨╡ ╨┐╨╛╨╗╤Г╤З╨╕╨╗ ╨╛╤В╨▓╨╡╤В╨░ ╨╛╤В
-E               ╨┐╨╛╨╗╨╜╨╛╨╝╨╛╤З╨╜╨╛╨│╨╛ ╤Б╨╡╤А╨▓╨╡╤А╨░. (os error 11002)
-E         
-E         
-E         
-E         
-E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\code\\kraken\\scripts\\...╨╕ ╤Г╨╖╨╗╨░, ╨╕ ╨╛╨╖╨╜╨░╤З╨░╤О╤Й╨░╤П, ╤З╤В╨╛ ╨╗╨╛╨║╨░╨╗╤М╨╜╤Л╨╣ ╤Б╨╡╤А╨▓╨╡╤А ╨╜╨╡ ╨┐╨╛╨╗╤Г╤З╨╕╨╗ ╨╛╤В╨▓╨╡╤В╨░ ╨╛╤В\n      ╨┐╨╛╨╗╨╜╨╛╨╝╨╛╤З╨╜╨╛╨│╨╛ ╤Б╨╡╤А╨▓╨╡╤А╨░. (os error 11002)\n\n\n\n').returncode
-
-tests\offline\test_offline_sync.py:397: AssertionError
-_____________ test_root_all_extras_and_groups_do_not_select_torch _____________
-
-    def test_root_all_extras_and_groups_do_not_select_torch() -> None:
-        output = _dry_run("--all-groups", "--all-extras")
->       assert "torch==" not in output
-E       AssertionError: assert 'torch==' not in 'Would use p...nv==21.2.4\n'
-E         
-E         'torch==' is contained here:
-E           1.0.26
-E            - torch==2.12.0+cu132
-E         ?    +++++++
-E            - torchvision==0.27.0+cu132
-E            - tqdm==4.67.3...
-E         
-E         ...Full output truncated (3 lines hidden), use '-vv' to show
-
-tests\offline\test_pytorch_resolution.py:35: AssertionError
-_________ test_workspace_all_packages_selects_cuda_132_torch_not_cpu __________
-
-    def test_workspace_all_packages_selects_cuda_132_torch_not_cpu() -> None:
-        output = _dry_run("--all-packages", "--all-groups", "--all-extras")
->       assert "torch==2.12.0+cu132" in output
-E       AssertionError: assert 'torch==2.12.0+cu132' in 'Would use project environment at: .venv\nResolved 143 packages in 7ms\nWould download 2 packages\nWould uninstall 2 p...6.3.0 (from file:///C:/code/kraken/plugins/neuralimage)\n + neuralimage @ file:///C:/code/kraken/plugins/neuralimage\n'
-
-tests\offline\test_pytorch_resolution.py:41: AssertionError
-_ ContourBridgeV1Tests.test_dataset_preparation_fills_dataset_path_instead_of_result_path _
-
-self = <test_plugin_app_v1_bridges.ContourBridgeV1Tests testMethod=test_dataset_preparation_fills_dataset_path_instead_of_result_path>
-
-    def test_dataset_preparation_fills_dataset_path_instead_of_result_path(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            payload = b"image-payload"
-            manifest = _manifest(operation="frames.dataset.prepare.v1", payload=payload)
-            job_path, result_path = _workspace(root, manifest, payload)
-    
-            session, argv = prepare_contour_launch(
-                [],
-                environ={
-                    "KRAKEN_JOB_MANIFEST": str(job_path),
-                    "KRAKEN_RESULT_MANIFEST": str(result_path),
-                    "KRAKEN_STAGING_ROOT": str(root),
-                },
-            )
-    
-            self.assertIsNotNone(session)
-            self.assertIn("--dataset-dir", argv)
-            self.assertNotIn("--output-dir", argv)
->           self.assertEqual(str(root / "outputs"), argv[argv.index("--dataset-dir") + 1])
-E           AssertionError: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmp4rmflo2y\\outputs' != 'C:\\Users\\shustinsky.m.a\\AppData\\Local\\Temp\\tmp4rmflo2y\\outputs'
-E           - C:\Users\SHUSTI~1.A\AppData\Local\Temp\tmp4rmflo2y\outputs
-E           ?          ^^^^^^^^ ^
-E           + C:\Users\shustinsky.m.a\AppData\Local\Temp\tmp4rmflo2y\outputs
-E           ?          ^^^^^^^^^^ ^^^
-
-tests\test_plugin_app_v1_bridges.py:116: AssertionError
-_ ContourBridgeV1Tests.test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif _
-
-self = <test_plugin_app_v1_bridges.ContourBridgeV1Tests testMethod=test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif>
-
-    def test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            payload = b"image-payload"
-            manifest = _manifest(operation="frames.vectorize.v1", payload=payload)
-            job_path, result_path = _workspace(root, manifest, payload)
-            session, argv = prepare_contour_launch(
-                ["--language", "en"],
-                environ={
-                    "KRAKEN_JOB_MANIFEST": str(job_path),
-                    "KRAKEN_RESULT_MANIFEST": str(result_path),
-                    "KRAKEN_STAGING_ROOT": str(root),
-                },
-            )
-            self.assertIsNotNone(session)
-            assert session is not None
->           self.assertEqual([root / "inputs" / "staged-frame.png"], list(session.input_paths))
-E           AssertionError: Lists differ: [Wind[13 chars]sers/SHUSTI~1.A/AppData/Local/Temp/tmp5m187cw0[22 chars]ng')] != [Wind[13 chars]sers/shustinsky.m.a/AppData/Local/Temp/tmp5m18[26 chars]ng')]
-E           
-E           First differing element 0:
-E           WindowsPath('C:/Users/SHUSTI~1.A/AppData/Local/Temp/tmp5m187cw0[21 chars]png')
-E           WindowsPath('C:/Users/shustinsky.m.a/AppData/Local/Temp/tmp5m18[25 chars]png')
-E           
-E           - [WindowsPath('C:/Users/SHUSTI~1.A/AppData/Local/Temp/tmp5m187cw0/inputs/staged-frame.png')]
-E           ?                        ^^^^^^^^ ^
-E           
-E           + [WindowsPath('C:/Users/shustinsky.m.a/AppData/Local/Temp/tmp5m187cw0/inputs/staged-frame.png')]
-E           ?                        ^^^^^^^^^^ ^^^
-
-tests\test_plugin_app_v1_bridges.py:85: AssertionError
-_____ test_quality_dialog_drives_real_local_issue_assignment_and_history ______
-
-    def test_quality_dialog_drives_real_local_issue_assignment_and_history():
->       run_qt_child("""
-            import tempfile, time
-            from pathlib import Path
-            from PyQt6.QtCore import Qt
-            from PyQt6.QtWidgets import QApplication, QPushButton
-            from PyQt6.QtTest import QTest
-            from kraken_hub.presentation.qt.quality_dialog import QualityDialog
-            from tests.test_work_orders import _service, _project_with_frames
-            app = QApplication([])
-            with tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                service = _service(root)
-                owner, performer, project, layer, images, vectors = _project_with_frames(service, root/'source', with_vectors=False)
-                workers = set()
-                dialog = QualityDialog(service, owner.principal, project.id, background_workers=workers)
-                dialog.show()
-                def click(text):
-                    button = next(b for b in dialog.findChildren(QPushButton) if b.text() == text)
-                    assert button.isVisible() and button.isEnabled()
-                    QTest.mouseClick(button, Qt.MouseButton.LeftButton)
-                def idle():
-                    deadline = time.monotonic()+8
-                    while time.monotonic()<deadline:
-                        QTest.qWait(20)
-                        if dialog._worker is None and not dialog._deferred_details:
-                            QTest.qWait(30)
-                            if dialog._worker is None:
-                                return
-                    raise AssertionError(dialog.status.text())
-                idle()
-                dialog.title.setText('Conductor gap')
-                dialog.description.setText('Gap in selected frame')
-                click('╨Т╨╡╤А╤Б╨╕╨╕ ╨▓╤Л╨▒╤А╨░╨╜╨╜╨╛╨│╨╛ ╨║╨░╨┤╤А╨░')
-                idle()
-                assert dialog.versions.count() == 1
-                dialog.versions.setCurrentRow(0)
-                click('╨б╨╛╨╖╨┤╨░╤В╤М ╨┤╨╡╤Д╨╡╨║╤В')
-                idle()
-                assert dialog.issue.state.value == 'open', dialog.status.text()
-                assert dialog.table.rowCount() == 1
-                dialog.note.setText('Repair assigned')
-                click('╨Э╨░╨╖╨╜╨░╤З╨╕╤В╤М')
-                idle()
-                assert dialog.issue.state.value == 'assigned', dialog.status.text()
-                assert 'Repair assigned' in dialog.history.toPlainText()
-                dialog.note.setText('Correction cannot reuse the source version')
-                dialog.versions.setCurrentRow(0)
-                click('╨Ш╤Б╨┐╤А╨░╨▓╨╗╨╡╨╜╨╛')
-                idle()
-                assert dialog.issue.state.value == 'assigned'
-                assert dialog.status.text().startswith('╨Ю╤И╨╕╨▒╨║╨░:')
-                click('╨Ю╨▒╨╜╨╛╨▓╨╕╤В╤М')
-                idle()
-                assert dialog.issue.revision == 1
-                dialog.close()
-                assert not workers
-                del dialog
-                app.processEvents()
-                from kraken_hub.composition import EmbeddedProjectService
-                reopened = EmbeddedProjectService(service.data_dir)
-                dialog = QualityDialog(reopened, owner.principal, project.id, background_workers=workers)
-                dialog.show()
-                idle()
-                assert dialog.table.rowCount() == 1
-                dialog.table.selectRow(0)
-                idle()
-                assert dialog.issue.title == 'Conductor gap'
-                assert dialog.issue.state.value == 'assigned'
-                assert 'Repair assigned' in dialog.history.toPlainText()
-                dialog.close()
-                app.processEvents()
-        """)
-
-tests\test_quality_dialog.py:5: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-
-script = "\n        import tempfile, time\n        from pathlib import Path\n        from PyQt6.QtCore import Qt\n        from ...t 'Repair assigned' in dialog.history.toPlainText()\n            dialog.close()\n            app.processEvents()\n    "
-
-    def run_qt_child(script: str) -> None:
-        bootstrap = """
-    import os
-    if os.name == "nt":
-        import ctypes
-        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
-    import faulthandler
-    faulthandler.enable()
-    """
-        environment = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-        root = Path(__file__).resolve().parents[1]
-        environment["PYTHONPATH"] = str(root / "src")
-        child = subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(bootstrap) + textwrap.dedent(script)],
-            cwd=root, env=environment, capture_output=True, text=True, timeout=35,
-        )
->       assert child.returncode == 0, child.stdout + child.stderr
-E       AssertionError: Traceback (most recent call last):
-E           File "<string>", line 17, in <module>
-E             with tempfile.TemporaryDirectory() as temporary:
-E                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
-E           File "C:\Program Files\Python314\Lib\tempfile.py", line 972, in __exit__
-E             self.cleanup()
-E             ~~~~~~~~~~~~^^
-E           File "C:\Program Files\Python314\Lib\tempfile.py", line 976, in cleanup
-E             self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
-E             ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\tempfile.py", line 956, in _rmtree
-E             _shutil.rmtree(name, onexc=onexc)
-E             ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\shutil.py", line 852, in rmtree
-E             _rmtree_impl(path, dir_fd, onexc)
-E             ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\shutil.py", line 697, in _rmtree_unsafe
-E             onexc(os.rmdir, fullname, err)
-E             ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\shutil.py", line 693, in _rmtree_unsafe
-E             os.rmdir(fullname)
-E             ~~~~~~~~^^^^^^^^^^
-E         OSError: [WinError 145] ╨Я╨░╨┐╨║╨░ ╨╜╨╡ ╨┐╤Г╤Б╤В╨░: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmpizyloc1c\\data\\workspace-source\\new_test'
-E         
-E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['C:\\code\\kraken\\.venv\\Scripts\\python.exe', '-c', '\nimport os\nif os.name == "nt":\n    im...╨░: \'C:\\\\Users\\\\SHUSTI~1.A\\\\AppData\\\\Local\\\\Temp\\\\tmpizyloc1c\\\\data\\\\workspace-source\\\\new_test\'\n').returncode
-
-tests\test_matrix_lifetime.py:28: AssertionError
-_ test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold _
-
-    def test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold():
->       run_qt_child("""
-            import sys, tempfile, time
-            from pathlib import Path
-            sys.path.insert(0, str(Path('plugins/karakal/src').resolve()))
-            import pytest
-            from PyQt6.QtCore import Qt
-            from PyQt6.QtWidgets import QApplication
-            from PyQt6.QtTest import QTest
-            from kraken_hub.presentation.qt.quality_dialog import QualityDialog
-            from kraken_manager.infrastructure.analysis import FilesystemAnalysisStore
-            from tests.test_quality_workflow import quality
-            from tests.test_quality_analysis import real_inputs, real_run
-            app = QApplication([])
-            with tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                q = quality.__wrapped__(root, pytest.MonkeyPatch())
-                target, reference, correction = real_inputs(q, root)
-                store = FilesystemAnalysisStore(q.service.catalog_root, str(q.project.id))
-                original, _ = real_run(q, root/'original', store, target, reference)
-                checked, _ = real_run(q, root/'checked', store, correction, reference)
-                workers = set()
-                dialog = QualityDialog(q.service, q.owner, q.project.id, background_workers=workers)
-                dialog.show()
-                def idle():
-                    deadline=time.monotonic()+8
-                    while time.monotonic()<deadline:
-                        QTest.qWait(20)
-                        if dialog._worker is None and not dialog._deferred_details:
-                            QTest.qWait(30)
-                            if dialog._worker is None: return
-                    raise AssertionError(dialog.status.text())
-                idle()
-                dialog.load_analysis_runs()
-                idle()
-                assert dialog.analysis_runs.count()==2
-                for index in range(dialog.analysis_runs.count()):
-                    if dialog.analysis_runs.itemData(index)['run_id']==original.run_id:
-                        dialog.analysis_runs.setCurrentIndex(index)
-                        break
-                assert not dialog.analysis_threshold.text()
-                dialog.create_analysis_findings()
-                assert '╨┐╨╛╤А╨╛╨│' in dialog.status.text()
-                assert q.service.list_quality_issues(q.project.id)==()
-                dialog.analysis_threshold.setText('0.9')
-                dialog.create_analysis_findings()
-                idle()
-                assert dialog.issue.analysis_run_id==original.run_id, dialog.status.text()
-                assert dialog.issue.analysis_rule.metric_key=='iou'
-                dialog.note.setText('Repair measured target')
-                dialog.command('assign')
-                idle()
-                for index in range(dialog.versions.count()):
-                    if dialog.versions.item(index).data(Qt.ItemDataRole.UserRole)==str(correction.id):
-                        dialog.versions.setCurrentRow(index)
-                        break
-                dialog.note.setText('Target mask corrected')
-                dialog.command('correct')
-                idle()
-                assert dialog.issue.state.value=='corrected', dialog.status.text()
-                dialog.principal=q.reviewer
-                for index in range(dialog.analysis_runs.count()):
-                    if dialog.analysis_runs.itemData(index)['run_id']==checked.run_id:
-                        dialog.analysis_runs.setCurrentIndex(index)
-                        break
-                dialog.note.setText('Independent measured recheck')
-                dialog.recheck_analysis_finding()
-                idle()
-                assert dialog.issue.reviews[-1].passed, dialog.status.text()
-                assert dialog.issue.reviews[-1].observations[0][1]==1.0
-                dialog.note.setText('Accepted measured repair')
-                dialog.command('accept')
-                idle()
-                assert dialog.issue.state.value=='accepted', dialog.status.text()
-                dialog.show_analysis_readiness()
-                idle()
-                assert '╨│╨╛╤В╨╛╨▓ ╨║ ╨╕╤Б╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╨╜╨╕╤О' in dialog.history.toPlainText()
-                dialog.close()
-                assert not workers
-                del dialog
-                app.processEvents()
-        """)
-
-tests\test_quality_dialog.py:80: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
-
-script = "\n        import sys, tempfile, time\n        from pathlib import Path\n        sys.path.insert(0, str(Path('plugins/...         dialog.close()\n            assert not workers\n            del dialog\n            app.processEvents()\n    "
-
-    def run_qt_child(script: str) -> None:
-        bootstrap = """
-    import os
-    if os.name == "nt":
-        import ctypes
-        ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
-    import faulthandler
-    faulthandler.enable()
-    """
-        environment = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-        root = Path(__file__).resolve().parents[1]
-        environment["PYTHONPATH"] = str(root / "src")
-        child = subprocess.run(
-            [sys.executable, "-c", textwrap.dedent(bootstrap) + textwrap.dedent(script)],
-            cwd=root, env=environment, capture_output=True, text=True, timeout=35,
-        )
->       assert child.returncode == 0, child.stdout + child.stderr
-E       AssertionError: Traceback (most recent call last):
-E           File "<string>", line 21, in <module>
-E             with tempfile.TemporaryDirectory() as temporary:
-E                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~^^
-E           File "C:\Program Files\Python314\Lib\tempfile.py", line 972, in __exit__
-E             self.cleanup()
-E             ~~~~~~~~~~~~^^
-E           File "C:\Program Files\Python314\Lib\tempfile.py", line 976, in cleanup
-E             self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
-E             ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\tempfile.py", line 956, in _rmtree
-E             _shutil.rmtree(name, onexc=onexc)
-E             ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\shutil.py", line 852, in rmtree
-E             _rmtree_impl(path, dir_fd, onexc)
-E             ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\shutil.py", line 697, in _rmtree_unsafe
-E             onexc(os.rmdir, fullname, err)
-E             ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
-E           File "C:\Program Files\Python314\Lib\shutil.py", line 693, in _rmtree_unsafe
-E             os.rmdir(fullname)
-E             ~~~~~~~~^^^^^^^^^^
-E         OSError: [WinError 145] ╨Я╨░╨┐╨║╨░ ╨╜╨╡ ╨┐╤Г╤Б╤В╨░: 'C:\\Users\\SHUSTI~1.A\\AppData\\Local\\Temp\\tmp1uvw2_o0\\data\\workspace-source\\new_test'
-E         
-E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['C:\\code\\kraken\\.venv\\Scripts\\python.exe', '-c', '\nimport os\nif os.name == "nt":\n    im...╨░: \'C:\\\\Users\\\\SHUSTI~1.A\\\\AppData\\\\Local\\\\Temp\\\\tmp1uvw2_o0\\\\data\\\\workspace-source\\\\new_test\'\n').returncode
-
-tests\test_matrix_lifetime.py:28: AssertionError
+C:\Program Files\Python314\Lib\shutil.py:707: OSError
 ============================== warnings summary ===============================
 .venv\Lib\site-packages\fastapi\testclient.py:1
   C:\code\kraken\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
@@ -500,6 +98,7 @@ tests/test_plugin_confidence_workflow.py::test_neuralimage_runs_real_model_and_p
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ===========================
+SKIPPED [2] tests\offline\test_offline_sync.py:42: pypi.org is not reachable from this machine (offline); the test needs the real PyPI index to build the uv transfer cache
 SKIPPED [17] tests\test_blob_gateway.py:241: Rust Blob Gateway executable is not built
 SKIPPED [1] tests\test_desktop_runtime_smoke.py:113: Set KRAKEN_SMOKE_SERVER_URL and KRAKEN_SMOKE_SERVER_TOKEN for an isolated test server
 SKIPPED [1] tests\test_desktop_runtime_smoke.py:148: Set KRAKEN_SMOKE_AGENT_URL and KRAKEN_SMOKE_AGENT_TOKEN for an isolated test agent
@@ -507,12 +106,5 @@ SKIPPED [1] tests\test_filesystem_event_read_cache.py:98: Requires actual POSIX 
 SKIPPED [1] tests\test_filesystem_lock_recovery.py:155: Requires actual POSIX fork
 SKIPPED [1] tests\test_filesystem_lock_recovery.py:200: Requires actual POSIX fork
 SKIPPED [1] tests\test_pipeline_stitch_live_content.py:51: no usable CUDA device (probe exited/crashed)
-FAILED tests/offline/test_offline_sync.py::test_verify_installs_from_transfer_cache_and_empty_cache_fails
-FAILED tests/offline/test_offline_sync.py::test_repeated_export_reuses_dependency_cache
-FAILED tests/offline/test_pytorch_resolution.py::test_root_all_extras_and_groups_do_not_select_torch
-FAILED tests/offline/test_pytorch_resolution.py::test_workspace_all_packages_selects_cuda_132_torch_not_cpu
-FAILED tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_dataset_preparation_fills_dataset_path_instead_of_result_path
-FAILED tests/test_plugin_app_v1_bridges.py::ContourBridgeV1Tests::test_environment_launch_uses_exact_manifest_inputs_and_writes_hashed_cif
-FAILED tests/test_quality_dialog.py::test_quality_dialog_drives_real_local_issue_assignment_and_history
-FAILED tests/test_quality_dialog.py::test_quality_dialog_analysis_rule_uses_measured_runs_without_default_threshold
-8 failed, 1387 passed, 23 skipped, 2 warnings, 31 subtests passed in 748.54s (0:12:28)
+FAILED tests/test_local_auth.py::LocalAccountTests::test_account_sessions_are_opaque_revocable_and_persistent
+1 failed, 1394 passed, 25 skipped, 2 warnings, 31 subtests passed in 786.86s (0:13:06)

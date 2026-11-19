@@ -1,18 +1,20 @@
 ﻿{
     "gate":  "quality-gates",
-    "timestamp":  "2026-11-10T12:55:14.8958679Z",
+    "timestamp":  "2026-11-10T14:41:21.3763945Z",
     "tier":  "unit",
     "command":  [
-                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests --ignore=tests/test_live_server_plugin_chain.py --ignore=tests/test_live_server_worker_acceptance.py --ignore=tests/test_live_server_worker_faults.py --ignore=tests/test_live_ui_workflow.py --ignore=tests/test_neuralimage_headless_training.py --ignore=tests/test_pipeline_live_contour.py --ignore=tests/test_pipeline_live_neural_model.py --ignore=tests/test_end_to_end_functional.py --ignore=tests/test_admin_project_workflows.py --ignore=tests/test_agent_execution_schema_upgrade.py --ignore=tests/test_agent_queue_admission.py --ignore=tests/test_cif_media_upload.py --ignore=tests/test_device_candidate_postgres.py --ignore=tests/test_electrical_postgres.py --ignore=tests/test_legacy_work_order_postgres.py --ignore=tests/test_live_catalog_acceptance.py --ignore=tests/test_model_input_postgres.py --ignore=tests/test_multilayer_postgres.py --ignore=tests/test_performer_store.py --ignore=tests/test_pipeline_postgres.py --ignore=tests/test_pipeline_stitch_failures.py --ignore=tests/test_pipeline_stitch_postgres.py --ignore=tests/test_planning_named_selection.py --ignore=tests/test_planning_postgres.py --ignore=tests/test_planning_required_arguments.py --ignore=tests/test_quality_analysis_postgres.py --ignore=tests/test_quality_postgres.py --ignore=tests/test_registered_principal_before_session.py --ignore=tests/test_remote_stitch_dialog.py --ignore=tests/test_server_analysis_acceptance.py --ignore=tests/test_server_analysis_workflow.py --ignore=tests/test_server_backup.py --ignore=tests/test_server_managed_upload_preflight.py --ignore=tests/test_server_stitch_workflow.py --ignore=tests/test_server_vector_stitch.py --ignore=tests/test_stitch_plan_postgres.py --ignore=tests/test_targeted_machine_lease.py --ignore=tests/test_worker_runtime_postgres.py --ignore=tests/test_work_plan_analytics_postgres.py --ignore=tests/test_work_templates_postgres.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-78e8fb68632947328a040b3dacbeff1f\\basetemp-unit(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(1).xml",
-                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-78e8fb68632947328a040b3dacbeff1f\\basetemp-unit(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(2).xml"
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests --ignore=tests/test_live_server_plugin_chain.py --ignore=tests/test_live_server_worker_acceptance.py --ignore=tests/test_live_server_worker_faults.py --ignore=tests/test_live_ui_workflow.py --ignore=tests/test_neuralimage_headless_training.py --ignore=tests/test_pipeline_live_contour.py --ignore=tests/test_pipeline_live_neural_model.py --ignore=tests/test_end_to_end_functional.py --ignore=tests/test_admin_project_workflows.py --ignore=tests/test_agent_execution_schema_upgrade.py --ignore=tests/test_agent_queue_admission.py --ignore=tests/test_cif_media_upload.py --ignore=tests/test_device_candidate_postgres.py --ignore=tests/test_electrical_postgres.py --ignore=tests/test_legacy_work_order_postgres.py --ignore=tests/test_live_catalog_acceptance.py --ignore=tests/test_model_input_postgres.py --ignore=tests/test_multilayer_postgres.py --ignore=tests/test_performer_store.py --ignore=tests/test_pipeline_postgres.py --ignore=tests/test_pipeline_stitch_failures.py --ignore=tests/test_pipeline_stitch_postgres.py --ignore=tests/test_planning_named_selection.py --ignore=tests/test_planning_postgres.py --ignore=tests/test_planning_required_arguments.py --ignore=tests/test_quality_analysis_postgres.py --ignore=tests/test_quality_postgres.py --ignore=tests/test_registered_principal_before_session.py --ignore=tests/test_remote_stitch_dialog.py --ignore=tests/test_server_analysis_acceptance.py --ignore=tests/test_server_analysis_workflow.py --ignore=tests/test_server_backup.py --ignore=tests/test_server_managed_upload_preflight.py --ignore=tests/test_server_stitch_workflow.py --ignore=tests/test_server_vector_stitch.py --ignore=tests/test_stitch_plan_postgres.py --ignore=tests/test_targeted_machine_lease.py --ignore=tests/test_worker_runtime_postgres.py --ignore=tests/test_work_plan_analytics_postgres.py --ignore=tests/test_work_templates_postgres.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f15220f550f6483cbc7c689ee517f87c\\basetemp-unit(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(1).xml",
+                    "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f15220f550f6483cbc7c689ee517f87c\\basetemp-unit(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(2).xml"
                 ],
     "exit_code":  1,
-    "tests":  1713,
-    "passed":  1682,
-    "failed":  8,
+    "tests":  1715,
+    "passed":  1689,
+    "failed":  1,
     "errors":  0,
-    "skipped":  23,
+    "skipped":  25,
     "skipped_tests":  [
+                          "tests.offline.test_offline_sync::test_verify_installs_from_transfer_cache_and_empty_cache_fails",
+                          "tests.offline.test_offline_sync::test_repeated_export_reuses_dependency_cache",
                           "tests.test_blob_gateway::test_rust_gateway_streams_python_signed_upload_and_range_download",
                           "tests.test_blob_gateway::test_blob_benchmark_runs_parallel_streams",
                           "tests.test_blob_gateway_junctions::test_signed_request_rejects_blob_prefix_junction[1-download]",
@@ -37,19 +39,21 @@
                           "tests.test_server_backup_gateway::test_python_backup_gate_pauses_rust_upload_and_download",
                           "tests.test_server_backup_gateway::test_active_rust_stream_prevents_backup_and_survives_second_gateway_start"
                       ],
-    "duration_seconds":  820.92599999999993,
+    "duration_seconds":  855.047,
     "status":  "FAIL",
     "note":  "invocation(s) failed: 1 (tests failed)",
     "runs":  [
                  {
-                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests --ignore=tests/test_live_server_plugin_chain.py --ignore=tests/test_live_server_worker_acceptance.py --ignore=tests/test_live_server_worker_faults.py --ignore=tests/test_live_ui_workflow.py --ignore=tests/test_neuralimage_headless_training.py --ignore=tests/test_pipeline_live_contour.py --ignore=tests/test_pipeline_live_neural_model.py --ignore=tests/test_end_to_end_functional.py --ignore=tests/test_admin_project_workflows.py --ignore=tests/test_agent_execution_schema_upgrade.py --ignore=tests/test_agent_queue_admission.py --ignore=tests/test_cif_media_upload.py --ignore=tests/test_device_candidate_postgres.py --ignore=tests/test_electrical_postgres.py --ignore=tests/test_legacy_work_order_postgres.py --ignore=tests/test_live_catalog_acceptance.py --ignore=tests/test_model_input_postgres.py --ignore=tests/test_multilayer_postgres.py --ignore=tests/test_performer_store.py --ignore=tests/test_pipeline_postgres.py --ignore=tests/test_pipeline_stitch_failures.py --ignore=tests/test_pipeline_stitch_postgres.py --ignore=tests/test_planning_named_selection.py --ignore=tests/test_planning_postgres.py --ignore=tests/test_planning_required_arguments.py --ignore=tests/test_quality_analysis_postgres.py --ignore=tests/test_quality_postgres.py --ignore=tests/test_registered_principal_before_session.py --ignore=tests/test_remote_stitch_dialog.py --ignore=tests/test_server_analysis_acceptance.py --ignore=tests/test_server_analysis_workflow.py --ignore=tests/test_server_backup.py --ignore=tests/test_server_managed_upload_preflight.py --ignore=tests/test_server_stitch_workflow.py --ignore=tests/test_server_vector_stitch.py --ignore=tests/test_stitch_plan_postgres.py --ignore=tests/test_targeted_machine_lease.py --ignore=tests/test_worker_runtime_postgres.py --ignore=tests/test_work_plan_analytics_postgres.py --ignore=tests/test_work_templates_postgres.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-78e8fb68632947328a040b3dacbeff1f\\basetemp-unit(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(1).xml",
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest tests --ignore=tests/test_live_server_plugin_chain.py --ignore=tests/test_live_server_worker_acceptance.py --ignore=tests/test_live_server_worker_faults.py --ignore=tests/test_live_ui_workflow.py --ignore=tests/test_neuralimage_headless_training.py --ignore=tests/test_pipeline_live_contour.py --ignore=tests/test_pipeline_live_neural_model.py --ignore=tests/test_end_to_end_functional.py --ignore=tests/test_admin_project_workflows.py --ignore=tests/test_agent_execution_schema_upgrade.py --ignore=tests/test_agent_queue_admission.py --ignore=tests/test_cif_media_upload.py --ignore=tests/test_device_candidate_postgres.py --ignore=tests/test_electrical_postgres.py --ignore=tests/test_legacy_work_order_postgres.py --ignore=tests/test_live_catalog_acceptance.py --ignore=tests/test_model_input_postgres.py --ignore=tests/test_multilayer_postgres.py --ignore=tests/test_performer_store.py --ignore=tests/test_pipeline_postgres.py --ignore=tests/test_pipeline_stitch_failures.py --ignore=tests/test_pipeline_stitch_postgres.py --ignore=tests/test_planning_named_selection.py --ignore=tests/test_planning_postgres.py --ignore=tests/test_planning_required_arguments.py --ignore=tests/test_quality_analysis_postgres.py --ignore=tests/test_quality_postgres.py --ignore=tests/test_registered_principal_before_session.py --ignore=tests/test_remote_stitch_dialog.py --ignore=tests/test_server_analysis_acceptance.py --ignore=tests/test_server_analysis_workflow.py --ignore=tests/test_server_backup.py --ignore=tests/test_server_managed_upload_preflight.py --ignore=tests/test_server_stitch_workflow.py --ignore=tests/test_server_vector_stitch.py --ignore=tests/test_stitch_plan_postgres.py --ignore=tests/test_targeted_machine_lease.py --ignore=tests/test_worker_runtime_postgres.py --ignore=tests/test_work_plan_analytics_postgres.py --ignore=tests/test_work_templates_postgres.py -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f15220f550f6483cbc7c689ee517f87c\\basetemp-unit(1) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(1).xml",
                      "exit_code":  1,
-                     "tests":  1449,
-                     "passed":  1418,
-                     "failed":  8,
+                     "tests":  1451,
+                     "passed":  1425,
+                     "failed":  1,
                      "errors":  0,
-                     "skipped":  23,
+                     "skipped":  25,
                      "skipped_tests":  [
+                                           "tests.offline.test_offline_sync::test_verify_installs_from_transfer_cache_and_empty_cache_fails",
+                                           "tests.offline.test_offline_sync::test_repeated_export_reuses_dependency_cache",
                                            "tests.test_blob_gateway::test_rust_gateway_streams_python_signed_upload_and_range_download",
                                            "tests.test_blob_gateway::test_blob_benchmark_runs_parallel_streams",
                                            "tests.test_blob_gateway_junctions::test_signed_request_rejects_blob_prefix_junction[1-download]",
@@ -74,13 +78,13 @@
                                            "tests.test_server_backup_gateway::test_python_backup_gate_pauses_rust_upload_and_download",
                                            "tests.test_server_backup_gateway::test_active_rust_stream_prevents_backup_and_survives_second_gateway_start"
                                        ],
-                     "duration_seconds":  748.286,
+                     "duration_seconds":  786.653,
                      "junit":  "junit(1).xml",
                      "log":  "pytest(1).txt",
                      "note":  "tests failed"
                  },
                  {
-                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-78e8fb68632947328a040b3dacbeff1f\\basetemp-unit(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(2).xml",
+                     "command":  "C:\\code\\kraken\\.venv\\Scripts\\python.exe -m pytest plugins/contour/tests/unit --import-mode=importlib -q -p no:cacheprovider -o faulthandler_timeout=60 --basetemp=C:\\code\\kraken\\.test_runtime\\quality-f15220f550f6483cbc7c689ee517f87c\\basetemp-unit(2) --junitxml=C:\\code\\kraken\\docs\\quality\\evidence\\2026-11-10\\gate-unit\\junit(2).xml",
                      "exit_code":  0,
                      "tests":  264,
                      "passed":  264,
@@ -90,7 +94,7 @@
                      "skipped_tests":  [
 
                                        ],
-                     "duration_seconds":  72.64,
+                     "duration_seconds":  68.394,
                      "junit":  "junit(2).xml",
                      "log":  "pytest(2).txt",
                      "note":  ""

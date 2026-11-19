@@ -101,21 +101,24 @@ Gate сам стенд не поднимает: переменные насле�
 ## Blob Gateway: состояние на закрытых сетях
 
 Acceptance требует `transfer["mode"] == "gateway"` — обязателен Rust exe
-`blob_gateway\target\release\kraken-blob-gateway.exe`. На закрытой машине без
-сетевых источников его построить нельзя: crates.io недоступен, локального кэша
-реестра нет. Каноническая поставка — offline-kit: `offline/Create-OfflineKit.ps1`
-на машине с сетью генерирует `dependencies/cargo/vendor` (из `Cargo.lock`) и
-`config.toml` с `replace-with = 'offline-vendor'`; после переноса комплекта сборка
-на закрытой машине:
+`blob_gateway\target\release\kraken-blob-gateway.exe`. **С 19.11.2026 exe собран и
+поставки с носителя не требуется:** вендор крейтов отзеркален в
+`C:\code\kraken\.offline\cargo-vendor`, `.cargo\config.toml` настраивает
+`replace-with = 'kraken-offline-vendor'`, и сборка полностью офлайн:
 
 ```powershell
 cargo build --release --offline --manifest-path blob_gateway\Cargo.toml
 ```
 
-Либо перенести готовый `kraken-blob-gateway.exe` и положить по пути из
-`server.toml`/в `blob_gateway\target\release\`, затем перезапустить стенд. Без exe
-стенд остаётся в proxy-режиме: `integration`-слой работает полностью, live-приёмка
-падает на `assert transfer["mode"] == "gateway"` — это блокер среды, а не продукта.
+Проверено: sha256 `blob_gateway\Cargo.lock` совпадает с `Cargo.lock.sha256` комплекта;
+сборка `Finished release profile` exit 0; стенд со шлюзом `PASS gateway`;
+`tests/test_live_server_worker_acceptance.py` — `1 passed`, exit 0, дважды подряд
+(gateway-режим). Каноническая поставка вендора для свежей машины —
+`offline/Create-OfflineKit.ps1` на машине с сетью → `dependencies/cargo/vendor`.
+
+Если exe отсутствует, стенд остаётся в proxy-режиме: `integration`-слой работает
+полностью, live-приёмка падает на `assert transfer["mode"] == "gateway"` — это блокер
+среды, а не продукта.
 
 ## Fallback: схема вместо базы (зафиксированная замена)
 
@@ -132,6 +135,12 @@ fallback: **SCHEMA `kraken_beta_test` внутри базы `kraken_local`** с
 
 `UV_CACHE_DIR=G:\kraken-transfer\uv-cache` accelerates offline uv resolution on
 closed-network machines (contour build deps; cu132 index pages not cached).
+
+С 19.11.2026 кэш отзеркален локально в проект — подключать комплект для офлайн-резолва
+не нужно: `UV_CACHE_DIR=C:\code\kraken\.offline\uv-cache` (git-игнорируемая папка;
+там же `native-wheels\contour-0.9.10-cp314-win_amd64.whl`, `tools\uv.exe`,
+`tools\install-buildtools.ps1`, `kit-docs\`). Полная пересборка `uv.lock` по-прежнему
+требует один сетевой доступ к download.pytorch.org (страницы индекса cu132 не кэшируются).
 
 ## Свойства идемпотентности (проверено)
 

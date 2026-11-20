@@ -311,8 +311,10 @@ def _analytics_worker_count(
     override = _analytics_worker_env_override()
     if override is not None:
         return min(requested, max(1, int(override)))
-    if os.name != "nt" or geometry_mode == GeometryMode.POINT:
+    if os.name != "nt":
         return requested
+    # Caps are identical for polygon (conductors) and point (vias/contacts):
+    # parallelism only — metric formulas are unchanged for every geometry_mode.
     cpu_limit = max(1, os.cpu_count() or requested)
     if use_thread_pool:
         safe_limit = _cpu_limited_thread_worker_count(

@@ -744,19 +744,25 @@ class GridInspectionWorker(WorkerBase):
                         continue
                     chunk, _started_at = entry
                     if future in timed_out and not future.done():
+                        # Do not mark frames as timeout errors: recompute with the same
+                        # analyzer on this thread so validation quality is preserved.
                         future.cancel()
-                        errors = {key: "timeout" for key, _path in chunk}
-                        result = ({}, errors)
-                    else:
-                        try:
-                            result = future.result()
-                            if len(result) == 2 and isinstance(result[1], WorkerProfilePacket):
-                                result, packet = result
-                                self._profiler.merge_worker(packet)
-                        except Exception as error:
-                            _LOGGER.warning("Grid worker batch failed; scheduling sequential fallback: %s", error)
-                            fallback_chunks.append(chunk)
-                            continue
+                        _LOGGER.warning(
+                            "Grid worker batch timed out after %.1fs; scheduling sequential fallback (%d frame(s))",
+                            self.FRAME_TIMEOUT_SECONDS * max(1, len(chunk)),
+                            len(chunk),
+                        )
+                        fallback_chunks.append(chunk)
+                        continue
+                    try:
+                        result = future.result()
+                        if len(result) == 2 and isinstance(result[1], WorkerProfilePacket):
+                            result, packet = result
+                            self._profiler.merge_worker(packet)
+                    except Exception as error:
+                        _LOGGER.warning("Grid worker batch failed; scheduling sequential fallback: %s", error)
+                        fallback_chunks.append(chunk)
+                        continue
                     completed = self._apply_chunk_result(chunk, result, payloads, completed=completed, total=total)
             if fallback_chunks and not self._is_cancelled():
                 completed = self._run_sequential_chunks(
@@ -908,15 +914,29 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                             single_source_layer=single_source_layer,
                         )
                     else:
-                        self._run_pair_process(
-                            chunks,
-                            config,
-                            payloads,
-                            total,
-                            max_workers,
-                            opencv_threads,
-                            single_source_layer=single_source_layer,
-                        )
+                        try:
+                            self._run_pair_process(
+                                chunks,
+                                config,
+                                payloads,
+                                total,
+                                max_workers,
+                                opencv_threads,
+                                single_source_layer=single_source_layer,
+                            )
+                        except (OSError, RuntimeError) as error:
+                            _LOGGER.warning("Paired grid process pool failed; continuing sequentially: %s", error)
+                            remaining = tuple(
+                                tuple(item for item in chunk if item[0] not in payloads) for chunk in chunks
+                            )
+                            self._run_pair_sequential(
+                                tuple(chunk for chunk in remaining if chunk),
+                                config,
+                                payloads,
+                                total,
+                                completed=len(payloads),
+                                single_source_layer=single_source_layer,
+                            )
                 self._flush_partial_results()
                 self._settle_sparse(payloads)
                 if self._is_cancelled():
@@ -947,7 +967,7 @@ class PairedGridInspectionWorker(GridInspectionWorker):
             initializer=configure_grid_worker_process,
             initargs=(opencv_threads,),
         )
-        pending: dict[object, tuple[tuple[tuple[str, str, str], ...], float]] = {}
+        pending: dict[object, tuple[tuple[tuple[str, str, str], ...], float | None]] = {}
         submitted = 0
         completed = 0
         fallback_chunks: list[tuple[tuple[str, str, str], ...]] = []
@@ -981,15 +1001,39 @@ class PairedGridInspectionWorker(GridInspectionWorker):
                     except (OSError, RuntimeError) as error:
                         _LOGGER.warning("Could not submit paired grid batch; scheduling sequential fallback: %s", error)
                         fallback_chunks.append(chunk)
-                        continue
-                    pending[future] = (chunk, monotonic())
+                        fallback_chunks.extend(chunks[submitted:])
+                        submitted = len(chunks)
+                        break
+                    pending[future] = (chunk, None)
                     self._profiler.set_counter("worker.queue.depth", len(pending))
                 if not pending:
                     break
                 done, _not_done = wait(tuple(pending), timeout=0.05, return_when=FIRST_COMPLETED)
-                for future in done:
-                    chunk, _started_at = pending.pop(future)
+                now = monotonic()
+                for future, (chunk, started_at) in tuple(pending.items()):
+                    if started_at is None and (future.running() or future.done()):
+                        pending[future] = (chunk, now)
+                timed_out = {
+                    future
+                    for future, (chunk, started_at) in pending.items()
+                    if started_at is not None
+                    and now - started_at >= self.FRAME_TIMEOUT_SECONDS * max(1, len(chunk))
+                }
+                for future in set(done) | timed_out:
+                    entry = pending.pop(future, None)
                     self._profiler.set_counter("worker.queue.depth", len(pending))
+                    if entry is None:
+                        continue
+                    chunk, _started_at = entry
+                    if future in timed_out and not future.done():
+                        future.cancel()
+                        _LOGGER.warning(
+                            "Paired grid worker batch timed out after %.1fs; scheduling sequential fallback (%d frame(s))",
+                            self.FRAME_TIMEOUT_SECONDS * max(1, len(chunk)),
+                            len(chunk),
+                        )
+                        fallback_chunks.append(chunk)
+                        continue
                     try:
                         result = future.result()
                         if len(result) == 2 and isinstance(result[1], WorkerProfilePacket):
@@ -1283,16 +1327,28 @@ class MultiModelGridInspectionWorker(WorkerBase):
             return self._run_sequential(
                 chunks, analyze, payloads, key=key, completed_total=completed_total, item_total=item_total
             )
-        return self._run_process(
-            chunks,
-            analyze,
-            payloads,
-            key=key,
-            completed_total=completed_total,
-            item_total=item_total,
-            max_workers=max_workers,
-            opencv_threads=opencv_threads,
-        )
+        try:
+            return self._run_process(
+                chunks,
+                analyze,
+                payloads,
+                key=key,
+                completed_total=completed_total,
+                item_total=item_total,
+                max_workers=max_workers,
+                opencv_threads=opencv_threads,
+            )
+        except (OSError, RuntimeError) as error:
+            _LOGGER.warning("Multi-model grid process pool failed; continuing sequentially: %s", error)
+            remaining = tuple(tuple(item for item in chunk if item[0] not in payloads) for chunk in chunks)
+            return self._run_sequential(
+                tuple(chunk for chunk in remaining if chunk),
+                analyze,
+                payloads,
+                key=key,
+                completed_total=completed_total,
+                item_total=item_total,
+            )
 
     def _apply_chunk(
         self,
@@ -1359,9 +1415,10 @@ class MultiModelGridInspectionWorker(WorkerBase):
             initializer=configure_grid_worker_process,
             initargs=(opencv_threads,),
         )
-        pending: dict[object, tuple[tuple[str, str, str], ...]] = {}
+        pending: dict[object, tuple[tuple[tuple[str, str, str], ...], float | None]] = {}
         submitted = 0
         fallback_chunks: list[tuple[tuple[str, str, str], ...]] = []
+        timeout_seconds = _grid_inspection_frame_timeout_seconds()
         try:
             while not self._is_cancelled() and (submitted < len(chunks) or pending):
                 while submitted < len(chunks) and len(pending) < max_workers * 2:
@@ -1375,12 +1432,34 @@ class MultiModelGridInspectionWorker(WorkerBase):
                         fallback_chunks.extend(chunks[submitted:])
                         submitted = len(chunks)
                         break
-                    pending[future] = chunk
+                    pending[future] = (chunk, None)
                 if not pending:
                     break
                 done, _not_done = wait(tuple(pending), timeout=0.05, return_when=FIRST_COMPLETED)
-                for future in done:
-                    chunk = pending.pop(future, ())
+                now = monotonic()
+                for future, (chunk, started_at) in tuple(pending.items()):
+                    if started_at is None and (future.running() or future.done()):
+                        pending[future] = (chunk, now)
+                timed_out = {
+                    future
+                    for future, (chunk, started_at) in pending.items()
+                    if started_at is not None
+                    and now - started_at >= timeout_seconds * max(1, len(chunk))
+                }
+                for future in set(done) | timed_out:
+                    entry = pending.pop(future, None)
+                    if entry is None:
+                        continue
+                    chunk, _started_at = entry
+                    if future in timed_out and not future.done():
+                        future.cancel()
+                        _LOGGER.warning(
+                            "Multi-model grid worker batch timed out after %.1fs; sequential fallback (%d frame(s))",
+                            timeout_seconds * max(1, len(chunk)),
+                            len(chunk),
+                        )
+                        fallback_chunks.append(chunk)
+                        continue
                     try:
                         chunk_payloads, errors = future.result()
                     except Exception as error:

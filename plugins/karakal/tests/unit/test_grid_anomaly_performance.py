@@ -894,6 +894,118 @@ def test_grid_worker_falls_back_when_process_pool_cannot_start(tmp_path, monkeyp
     assert set(finished[0]) == {record.key for record in records}
 
 
+def test_grid_worker_timeout_recomputes_sequentially_without_dropping_frames(tmp_path, monkeypatch, caplog) -> None:
+    """Hung process-pool chunks must fall back to the same analyzer, not timeout errors."""
+
+    records = []
+    for index in range(4):
+        path = tmp_path / f"timeout_{index}.png"
+        assert cv2.imwrite(str(path), _synthetic_grid_frame(index, shape=(384, 512)))
+        records.append(FrameRecord(f"timeout_{index}", path.name, first_path=str(path)))
+
+    monkeypatch.setenv("KARAKAL_GRID_INSPECTION_EXECUTION", "process")
+    monkeypatch.setenv("KARAKAL_GRID_INSPECTION_CHUNK_SIZE", "2")
+    monkeypatch.setenv("KARAKAL_GRID_INSPECTION_FRAME_TIMEOUT", "0.01")
+
+    class HungFuture:
+        def __init__(self):
+            self._cancelled = False
+
+        def running(self) -> bool:
+            return not self._cancelled
+
+        def done(self) -> bool:
+            return self._cancelled
+
+        def cancel(self) -> bool:
+            self._cancelled = True
+            return True
+
+        def result(self):
+            raise AssertionError("hung future must not be read")
+
+    class HungExecutor:
+        def __init__(self, *_args, **_kwargs):
+            self._futures: list[HungFuture] = []
+
+        def submit(self, *_args, **_kwargs):
+            future = HungFuture()
+            self._futures.append(future)
+            return future
+
+        def shutdown(self, *_args, **_kwargs):
+            return None
+
+    clock = {"value": 0.0}
+
+    def fake_monotonic() -> float:
+        clock["value"] += 1.0
+        return clock["value"]
+
+    def fake_wait(futures, timeout=None, return_when=None):
+        _ = timeout, return_when
+        return set(), set(futures)
+
+    monkeypatch.setattr(workers_module, "ProcessPoolExecutor", HungExecutor)
+    monkeypatch.setattr(workers_module, "monotonic", fake_monotonic)
+    monkeypatch.setattr(workers_module, "wait", fake_wait)
+
+    finished = []
+    failed = []
+    errors = []
+    worker = GridInspectionWorker(records, use_cache=False)
+    # Rebuild timeout from the env we just set.
+    worker.FRAME_TIMEOUT_SECONDS = workers_module._grid_inspection_frame_timeout_seconds()
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+    worker.analysisErrors.connect(errors.append)
+
+    with caplog.at_level("WARNING"):
+        worker.run()
+
+    assert failed == []
+    assert errors == []
+    assert len(finished) == 1
+    assert set(finished[0]) == {record.key for record in records}
+    assert "scheduling sequential fallback" in caplog.text
+
+
+def test_paired_grid_worker_falls_back_when_process_pool_cannot_start(tmp_path, monkeypatch) -> None:
+    records = []
+    for index in range(4):
+        path = tmp_path / f"paired_{index}.png"
+        assert cv2.imwrite(str(path), _synthetic_grid_frame(index, shape=(384, 512)))
+        records.append(
+            FrameRecord(
+                f"paired_{index}",
+                path.name,
+                first_path=str(path),
+                model_mask_paths={"model-a": str(path)},
+                model_prob_paths={"model-a": str(path)},
+            )
+        )
+
+    monkeypatch.setenv("KARAKAL_GRID_INSPECTION_EXECUTION", "process")
+    monkeypatch.setenv("KARAKAL_GRID_INSPECTION_CHUNK_SIZE", "2")
+
+    class BrokenExecutor:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("process pool unavailable")
+
+    monkeypatch.setattr(workers_module, "ProcessPoolExecutor", BrokenExecutor)
+    finished = []
+    failed = []
+    worker = workers_module.PairedGridInspectionWorker(records, "model-a", use_cache=False)
+    worker.finished.connect(finished.append)
+    worker.failed.connect(failed.append)
+
+    worker.run()
+
+    assert failed == []
+    assert len(finished) == 1
+    assert set(finished[0]) == {record.key for record in records}
+
+
 def test_grid_cache_hit_corruption_and_file_change(tmp_path, monkeypatch) -> None:
     cache_dir = tmp_path / "cache"
     path = tmp_path / "frame.png"

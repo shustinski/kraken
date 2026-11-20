@@ -135,6 +135,30 @@ def test_full_size_three_model_comparison_limits_processes(monkeypatch) -> None:
     assert full < scaled
 
 
+def test_point_validation_uses_same_windows_worker_caps_as_polygon(monkeypatch) -> None:
+    """Vias/contacts (POINT) must not bypass Windows memory/CPU caps — parallelism only."""
+
+    from karakal.core import analytics
+    from karakal.core.domain import GeometryMode
+
+    monkeypatch.setattr(analytics.os, "name", "nt")
+    monkeypatch.setattr(analytics.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(analytics, "_available_memory_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(analytics, "_analytics_worker_env_override", lambda: None)
+    common = dict(
+        analysis_max_side=1024,
+        include_model_confidence=False,
+        include_pairwise_metrics=True,
+        model_count=3,
+        use_thread_pool=False,
+        source_side=2000,
+    )
+    polygon = analytics._analytics_worker_count(8, geometry_mode=GeometryMode.MASK, **common)
+    points = analytics._analytics_worker_count(8, geometry_mode=GeometryMode.POINT, **common)
+    assert polygon == points
+    assert 1 <= points <= 2
+
+
 def test_big_validation_runs_use_processes_on_windows(monkeypatch) -> None:
     from karakal.core import analytics
 
